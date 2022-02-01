@@ -1,15 +1,15 @@
+"""Macros for correlation analysis."""
+
 import numpy as np
 import xarray as xr
 from scipy.fft import fftshift, fft2, ifft2
 from scipy.signal import correlate, correlation_lags
 from joblib import delayed, Parallel
 
-__all__ = ['acf2','match_dims','xcorr1']
+__all__ = ['xacf2','match_dims','xcorr1']
 
 def acf2rect(IMG:np.ndarray):
-    """
-    Autocorrelation of rectangular image.
-    """
+    """Autocorrelation of rectangular image."""
     [M,N] = np.shape(IMG)
     IMG_p = np.zeros(shape=(2*M-1,2*N-1))
     IMG_p[:M,:N] = IMG
@@ -19,9 +19,7 @@ def acf2rect(IMG:np.ndarray):
     return ACF
 
 def acf2_arr(IMG:np.ndarray):
-    """
-    Autocorrelation of masked image.
-    """
+    """Autocorrelation of masked image."""
     ACF = acf2rect(~np.isnan(IMG))
     ACF[ACF<=1e-10] = np.nan
     with np.errstate(invalid='ignore'):

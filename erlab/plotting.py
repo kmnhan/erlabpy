@@ -1,4 +1,7 @@
+"""Plotting utilities."""
+
 import numpy as np
+import xarray as xr
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
 
@@ -7,11 +10,20 @@ from arpes.plotting.bz import bz_plot
 from arpes.plotting.utils import name_for_dim, unit_for_dim
 from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 
-__all__ = ['proportional_colorbar','plot_hex_bz','plot_hv_text','label_subplots']
+__all__ = ['proportional_colorbar','plot_hex_bz','plot_hv_text','label_subplots','annotate_cuts_erlab']
 
 def proportional_colorbar(ax=None,**kwargs):
-    """
-    Creates or replaces the colorbar with proper proportional spacing.
+    """Creates or replaces the colorbar with proportional spacing.
+
+    The default behavior of colorbars in `matplotlib` does not support
+    colors proportional to data in different norms. This function circumvents
+    this behavior. 
+
+    Returns
+    -------
+    cbar : `~matplotlib.colorbar.Colorbar`
+
+
     """
     if ax is None:
         ax = plt.gca()
@@ -53,43 +65,65 @@ def plot_hex_bz(a=3.54,rotate=0,ax=None,**kwargs):
         **kwargs
     )
 
-def annotate_cuts(ax, data, plotted_axes, include_text_labels=False, rotation=0, offset=[0,0], plot_kw={}, text_kw={}, **kwargs):
-    """Annotates a cut location onto a plot.
-    Example:
-        >>> annotate_cuts(ax, conv, ['kz', 'ky'], hv=80)
-    Args:
-        ax: The axes to plot onto
-        data: The original data
-        plotted_axes: The dimension names which were plotted
-        include_text_labels: Whether to include text labels
-        kwargs: Defines the coordinates of the cut location
+def annotate_cuts_erlab(data: xr.DataArray, plotted_dims,
+                        ax=None, include_text_labels=False,  textoffset=[0, 0], plot_kw={}, text_kw={}, **kwargs):
+    r"""Annotates a cut location onto a plot. 
+
+    Does the same job as `arpes.plotting.annotations.annotate_cuts`, but
+    handles line styles and annotations much better. 
+
+    Parameters
+    ----------
+    data : xarray.DataArray
+        The data before momentum space conversion.
+    plotted_dims: list of str
+        The dimension names currently plotted on the target axes.
+    ax : `~matplotlib.axes.Axes`, optional
+        The `~.axes.Axes` instance in which the annotation is placed,
+        defaults to the current axes when optional.
+    include_text_labels: bool, default=False
+        Wheter to include text labels.
+    plot_kw : dict, optional
+    text_kw : dict, optional
+    textoffset : list of float or tuple of float
+    **kwargs : dict
+        Defines the coordinates of the cut location
+
+    Examples
+    --------
+    >>> annotate_cuts(ax, conv, ['kz', 'ky'], hv=80)
+
     """
     converted_coordinates = convert_coordinates_to_kspace_forward(data)
-    assert len(plotted_axes) == 2, 'Only 2D axes can be can be annotated'
+    assert len(plotted_dims) == 2, 'Only 2D axes can be can be annotated'
     color = 'k'
     for k, v in kwargs.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
             v = [v]
 
-        selected = converted_coordinates.sel(**dict([[k, v]]), method="nearest")
+        selected = converted_coordinates.sel(**dict([[k,v]]), method='nearest')
+        
+        text_kw.setdefault('horizontalalignment','left')
+        text_kw.setdefault('verticalalignment','top')
+        text_kw.setdefault('color',color)
         
         for coords_dict, obj in selected.G.iterate_axis(k):
-            # css = [obj[d].values for d in plotted_axes]
-            plt_css = [np.mean(obj[d].values,axis=1) for d in plotted_axes]
+            # css = [obj[d].values for d in plotted_dims]
+            plt_css = [np.mean(obj[d].values,axis=1) for d in plotted_dims]
             ax.plot(*plt_css, color=color, ls='--', lw=0.85)
             if include_text_labels:
                 idx = np.argmin(plt_css[0])
                 # print([plt_css[0][idx],plt_css[1][idx]])
-                ax.text(
-                    plt_css[0][idx]+0.02+offset[0],
-                    plt_css[1][idx]+0.04+offset[1],
-                    "{} = {} {}".format(name_for_dim(k), int(np.rint(coords_dict[k].item())), unit_for_dim(k)),
-                    color=color,
-                    # size="medium",
-                    horizontalalignment='left',
-                    verticalalignment='top',
+                plt.text(
+                    x = plt_css[0][idx]+0.02+textoffset[0],
+                    y = plt_css[1][idx]+0.04+textoffset[1],
+                    s = "{} = {} {}".format(
+                        name_for_dim(k),
+                        int(np.rint(coords_dict[k].item())),
+                        unit_for_dim(k)
+                    ),
                     # transform=ax.transAxes
-                    rotation=rotation,
+                    **text_kw
                 )
 
 # TODO: fix format using name_for_dim and unit_for_dim, and change backend to matplotlib.pyplot.annotate
