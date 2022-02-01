@@ -67,6 +67,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     if cax is None:
         if ax is None:
             ax = plt.gca()
+            ax_ref = ax
         else:
             try: 
                 ax_ref = ax.flatten()[0]
