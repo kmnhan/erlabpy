@@ -21,21 +21,29 @@ Python macros for ERLab.
    conda activate envname
    ```
 
-3. **(Optional, for Apple silicon macs)** Install numpy with BLAS interface specified as vecLib. Not necessary but greatly speeds up linear algebra computations.
+3. **(Optional, for Apple silicon macs only)** Install numpy with BLAS interface specified as vecLib. Not necessary but optimizes linear algebra computations on Apple ARM.
    ```bash
    conda install cython pybind11
    pip install --no-binary :all: --no-use-pep517 numpy<1.22
    ```
 
-4. Install PyARPES.
+4. Change the current working directory to the location where you want the cloned directories to be. 
 
-5. Install PyImagetool.
+5. Install PyARPES.
    ```bash
-   git clone https://github.com/kgord831/PyImageTool.git
-   cd path/to/PyImageTool
-   pip install .
+   git clone https://github.com/kmnhan/arpes.git
+   cd arpes
+   pip install -e .
    ```
 
+6. Install igor dependency of PyARPES.
+   ```bash
+   pip install https://github.com/chstan/igorpy/tarball/712a4c4#egg=igor
+   ```
 
-
-
+7. Install PyImagetool.
+   ```bash
+   git clone https://github.com/kgord831/PyImageTool.git
+   cd PyImageTool
+   pip install -e .
+   ```
