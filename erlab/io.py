@@ -56,7 +56,7 @@ def fix_attr_format(da:xr.DataArray):
                 da = da.assign_attrs({key:''})
     return da
 
-def save_as_netcdf(data:xr.DataArray,filename:str,**kwargs):
+def save_as_netcdf(data:xr.DataArray, filename:str, **kwargs):
     """Saves data in 'netCDF4' format.
 
     Parameters

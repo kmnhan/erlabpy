@@ -14,7 +14,6 @@ def mask_with_hex_bz(kxymap:xr.DataArray, a=3.54, rotate=0,radius=None,invert=Tr
     dims = kxymap.dims
     assert len(dims) in (2,3), 'Input must be 2D or 3D'
     rotate = np.radians(rotate)
-    
 
     if 'kx' in dims:
         dimnames = ('ky','kx')
