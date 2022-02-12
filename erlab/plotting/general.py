@@ -8,38 +8,7 @@ from matplotlib.widgets import AxesWidget
 
 from pyimagetool import imagetool, RegularDataArray
 
-__all__ = ['ximagetool','proportional_colorbar']
-
-
-def ximagetool(da:xr.DataArray, prebin=None, cmap='viridis'):
-    """
-    Open imagetool from xarray.DataArray. Note that NaN values are displayed as zero.
-    """
-    if isinstance(da, xr.Dataset):
-        da = da.spectrum
-    if prebin is not None:
-        da = da.coarsen(prebin).mean()
-    dims = da.dims
-    if set(dims) == set(('kx', 'ky', 'eV')):
-        da = da.transpose('kx', 'ky', 'eV')
-
-    try:
-        units = ['('+da[dims[i]].units+')' for i in range(len(dims))]
-    except AttributeError:
-        units = ['' for i in range(len(dims))]
-    data = RegularDataArray(
-        da.fillna(0),
-        dims=[dims[i]+' '+units[i] for i in range(len(dims))]
-    )
-
-    # TODO: implement 4dim and raise error
-    tool = imagetool(data)
-    # tool.set_all_cmaps(cmap)
-    # tool.pg_win.load_ct('viridis')
-    # tool.pg_win.update()
-    # tool.info_bar.cmap_combobox.currentTextChanged.connect(tool.set_all_cmaps)
-    
-    return tool
+__all__ = ['ximagetool','proportional_colorbar','LabeledCursor']
 
 def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     r"""Replaces the current colorbar or creates a new colorbar with 
@@ -126,3 +95,137 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         **kwargs,
     )
     return cbar
+
+class LabeledCursor(AxesWidget):
+    """
+    A crosshair cursor that spans the axes and moves with mouse cursor.
+    For the cursor to remain responsive you must keep a reference to it.
+    Unlike `matplotlib.widgets.Cursor`, this also shows the current
+    cursor location.
+
+    Parameters
+    ----------
+    ax : `matplotlib.axes.Axes`
+        The `~.axes.Axes` to attach the cursor to.
+    horizOn : bool, default: True
+        Whether to draw the horizontal line.
+    vertOn : bool, default: True
+        Whether to draw the vertical line.
+    textOn : bool, default: True
+        Whether to show current cursor location.
+    useblit : bool, default: False
+        Use blitting for faster drawing if supported by the backend.
+    textprops : dict, default: {}
+        Keyword arguments to pass onto the text object.
+    
+    Other Parameters
+    ----------------
+    **lineprops
+        `.Line2D` properties that control the appearance of the lines.
+        See also `~.Axes.axhline`.
+    """
+
+    def __init__(self, ax, horizOn=True, vertOn=True, textOn=True,
+                 useblit=True, textprops={}, **lineprops):
+        super().__init__(ax)
+
+        self.connect_event('motion_notify_event', self.onmove)
+        self.connect_event('draw_event', self.clear)
+
+        self.visible = True
+        self.horizOn = horizOn
+        self.vertOn = vertOn
+        self.textOn = textOn
+        self.useblit = useblit and self.canvas.supports_blit
+
+        if self.useblit:
+            lineprops['animated'] = True
+            textprops['animated'] = True
+
+        self.lineh = ax.axhline(ax.get_ybound()[0], visible=False, **lineprops)
+        self.linev = ax.axvline(ax.get_xbound()[0], visible=False, **lineprops)
+        with plt.rc_context({'text.usetex':False}):
+            self.label = ax.text(0.95, 0.95, '', transform=ax.transAxes,
+                                 horizontalalignment='right',
+                                 verticalalignment='top', **textprops)
+        self.background = None
+        self.needclear = False
+
+    def clear(self, event):
+        """Internal event handler to clear the cursor."""
+        if self.ignore(event):
+            return
+        if self.useblit:
+            self.background = self.canvas.copy_from_bbox(self.ax.bbox)
+        self.linev.set_visible(False)
+        self.lineh.set_visible(False)
+        self.label.set_visible(False)
+
+    def onmove(self, event):
+        """Internal event handler to draw the cursor when the mouse moves."""
+        if self.ignore(event):
+            return
+        if not self.canvas.widgetlock.available(self):
+            return
+        if event.inaxes != self.ax:
+            self.linev.set_visible(False)
+            self.lineh.set_visible(False)
+            self.label.set_visible(False)
+
+            if self.needclear:
+                self.canvas.draw()
+                self.needclear = False
+            return
+        self.needclear = True
+        if not self.visible:
+            return
+        self.linev.set_xdata((event.xdata, event.xdata))
+        self.lineh.set_ydata((event.ydata, event.ydata))
+        self.label.set_text('(%1.3f, %1.3f)' % (event.xdata, event.ydata))
+        self.linev.set_visible(self.visible and self.vertOn)
+        self.lineh.set_visible(self.visible and self.horizOn)
+        self.label.set_visible(self.visible and self.textOn)
+
+        self._update()
+
+    def _update(self):
+        if self.useblit:
+            if self.background is not None:
+                self.canvas.restore_region(self.background)
+            self.ax.draw_artist(self.linev)
+            self.ax.draw_artist(self.lineh)
+            self.ax.draw_artist(self.label)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self.canvas.draw_idle()
+        return False
+
+def ximagetool(da:xr.DataArray, prebin=None, cmap='viridis'):
+    """
+    Open imagetool from xarray.DataArray. Note that NaN values are displayed as zero.
+    """
+    if isinstance(da, xr.Dataset):
+        da = da.spectrum
+    if prebin is not None:
+        da = da.coarsen(prebin).mean()
+    dims = da.dims
+    if set(dims) == set(('kx', 'ky', 'eV')):
+        da = da.transpose('kx', 'ky', 'eV')
+
+    try:
+        units = ['('+da[dims[i]].units+')' for i in range(len(dims))]
+    except AttributeError:
+        units = ['' for i in range(len(dims))]
+    data = RegularDataArray(
+        da.fillna(0),
+        dims=[dims[i]+' '+units[i] for i in range(len(dims))]
+    )
+
+    # TODO: implement 4dim and raise error
+    tool = imagetool(data)
+    # tool.set_all_cmaps(cmap)
+    # tool.pg_win.load_ct('viridis')
+    # tool.pg_win.update()
+    # tool.info_bar.cmap_combobox.currentTextChanged.connect(tool.set_all_cmaps)
+    
+    return tool
