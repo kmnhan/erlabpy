@@ -1,133 +1,19 @@
-"""Plotting utilities."""
-
-from typing import Type
+"""Plot annotations."""
 import numpy as np
 import xarray as xr
+
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import AnchoredText
-from scipy.spatial.transform import Rotation
 
-from arpes.utilities import bz
-from arpes.plotting.bz import bz_plot
 from arpes.plotting.utils import name_for_dim, unit_for_dim
 from arpes.utilities.conversion.forward import (
     convert_coordinates_to_kspace_forward
 )
 
-__all__ = ['proportional_colorbar','plot_hex_bz','plot_hv_text',
-           'label_subplots','annotate_cuts_erlab, label_subplot_properties']
+__all__ = ['plot_hv_text','label_subplots','annotate_cuts_erlab', 'label_subplot_properties']
 
-def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
-    r"""Replaces the current colorbar or creates a new colorbar with 
-    proportional spacing.
 
-    The default behavior of colorbars in `matplotlib` does not support
-    colors proportional to data in different norms. This function
-    circumvents this behavior. 
-
-    Parameters
-    ----------
-    mappable : `matplotlib.cm.ScalarMappable`, optional
-        The `matplotlib.cm.ScalarMappable` described by this colorbar.
-
-    cax : `matplotlib.axes.Axes`, optional
-        Axes into which the colorbar will be drawn.
-
-    ax : `matplotlib.axes.Axes`, list of Axes, optional
-        One or more parent axes from which space for a new colorbar axes
-        will be stolen, if `cax` is None.  This has no effect if `cax`
-        is set. If `mappable` is None and `ax` is given with more than
-        one Axes, the function will try to get the mappable from the
-        first one.
-
-    **kwargs : dict, optional
-        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the 
-        `matplotlib` documentation for a list of all possible arguments.
-
-    Returns
-    -------
-    cbar : `matplotlib.colorbar.Colorbar`
-
-    Examples
-    --------
-    ::
-
-        import numpy as np
-        import matplotlib.pyplot as plt
-        import matplotlib.colors as colors
-
-        # Create example data and plot
-        X, Y = np.mgrid[0:3:complex(0, 100), 0:2:complex(0, 100)]
-        pcm = plt.pcolormesh(X, Y, (1 + np.sin(Y * 10.)) * X**2,
-                             norm=colors.PowerNorm(gamma=0.5),
-                             cmap='Blues_r', shading='auto')
-
-        # Plot evenly spaced colorbar
-        proportional_colorbar()
-
-    """
-    if cax is None:
-        if ax is None:
-            ax = plt.gca()
-            ax_ref = ax
-        else:
-            try: 
-                ax_ref = ax.flatten()[0]
-            except AttributeError:
-                ax_ref = ax
-    else:
-        ax_ref = cax
-    if mappable is None:
-        mappable = plt.gci()
-        if mappable is None:
-            try:
-                mappable = ax_ref.collections[-1]
-            except IndexError:
-                pass
-            if mappable is None:
-                raise RuntimeError('No mappable was found to use for colorbar '
-                                   'creation. First define a mappable such as '
-                                   'an image (with imshow) or a contour set ('
-                                   'with contourf).')
-    if mappable.colorbar is None:
-        plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
-    ticks = mappable.colorbar.get_ticks()
-    mappable.colorbar.remove()
-    kwargs.setdefault('ticks',ticks)
-    cbar = plt.colorbar(
-        mappable=mappable,
-        cax=cax, ax=ax,
-        spacing='proportional',
-        boundaries=mappable.norm.inverse(np.linspace(0,1,mappable.cmap.N)),
-        **kwargs,
-    )
-    return cbar
-
-def plot_hex_bz(a=3.54, rotate=0, ax=None, **kwargs):
-    """
-    Plots a 2D hexagonal BZ overlay on the specified axes.
-    """
-    kwargs.setdefault('alpha',1)
-    kwargs.setdefault('color','k')
-    kwargs.setdefault('linestyle','-')
-    kwargs.setdefault('linewidth',0.5)
-    kwargs.setdefault('zorder',5)
-
-    if ax is None:
-        ax = plt.gca()
-        
-    bz_plot(
-        ax=ax,
-        cell=bz.hex_cell_2d(a / (2 * np.pi)),
-        paths=[],
-        repeat=None,
-        set_equal_aspect=False,
-        hide_ax=False,
-        transformations=[Rotation.from_rotvec([0, 0, rotate*np.pi/180])],
-        **kwargs
-    )
-
-def annotate_cuts_erlab(data: xr.DataArray, plotted_dims,
+def annotate_cuts_erlab(data:xr.DataArray, plotted_dims,
                         ax=None, include_text_labels=False, color='k',
                         textoffset=[0, 0], plot_kw={}, text_kw={}, **kwargs):
     r"""Annotates a cut location onto a plot. 
@@ -187,6 +73,7 @@ def annotate_cuts_erlab(data: xr.DataArray, plotted_dims,
     converted_coordinates = convert_coordinates_to_kspace_forward(data)
     text_kw.setdefault('horizontalalignment', 'left')
     text_kw.setdefault('verticalalignment', 'top')
+    plot_kw.setdefault('color', color)
     for k, v in kwargs.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
             v = [v]
@@ -194,13 +81,12 @@ def annotate_cuts_erlab(data: xr.DataArray, plotted_dims,
         for coords_dict, obj in selected.G.iterate_axis(k):
             plt_css = [np.mean(obj[d].values,axis=1) for d in plotted_dims]
             with plt.rc_context({'lines.linestyle': '--',
-                                 'lines.linewidth': 0.85,
-                                 'lines.color': color}):
+                                 'lines.linewidth': 0.85}):
                 ax.plot(*plt_css, **plot_kw)
             if include_text_labels:
                 idx = np.argmin(plt_css[0])
                 with plt.rc_context({'text.color':color}):
-                    plt.text(
+                    ax.text(
                         plt_css[0][idx] + 0.02 + textoffset[0],
                         plt_css[1][idx] + 0.04 + textoffset[1],
                         "{} = {} {}".format(
@@ -210,6 +96,7 @@ def annotate_cuts_erlab(data: xr.DataArray, plotted_dims,
                         ),
                         **text_kw
                     )
+
 
 def _alph_label(val, prefix, suffix, capital):
     """Generate labels from string or integer."""
@@ -278,7 +165,7 @@ def label_subplots(axs, values=None, order='C',
 
     """
     if plt.rcParams['text.usetex'] & (fontweight == 'bold'):
-        prefix = '\\bf{' + prefix
+        prefix = '\\textbf{' + prefix
         suffix = suffix + '}'
     axlist = np.array(axs, dtype=object).flatten(order=order)
     if values is None:
@@ -298,6 +185,27 @@ def label_subplots(axs, values=None, order='C',
                     bbox_transform=axlist[i].transAxes)
             axlist[i].add_artist(at)
 
+def property_label(key, value):
+    if plt.rcParams['text.usetex']:
+        prefix = "$"
+        base = "{} = {}~{}"
+        suffix = "$"
+    else:
+        prefix = ""
+        base = "{} = {} {}"
+        suffix = ""
+
+    if (key == 'Eb'):
+        value = np.rint(value * 1000).astype(int)
+    
+    if (value == 0) & (key == 'Eb'):
+        label = prefix + 'E = E_F' + suffix
+    else:
+        label = prefix + str(base.format(name_for_dim(key),
+                                         value, 
+                                         unit_for_dim(key))) + suffix
+    return label    
+
 def label_subplot_properties(axs, values, **kwargs):
     r"""Labels subplots with automatically generated labels.
 
@@ -315,14 +223,15 @@ def label_subplot_properties(axs, values, **kwargs):
     kwargs.setdefault('prefix','')
     kwargs.setdefault('suffix','')
     kwargs.setdefault('loc','upper right')
+
+    strlist = []
     for k, v in values.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
             v = [v]
-        label_subplots(axs,["{} = {} {}".format(
-                                name_for_dim(k),
-                                val,
-                                unit_for_dim(k)
-                            ) for val in v], **kwargs)
+        strlist.append([property_label(k,val) for val in v])
+    strlist = list(zip(*strlist))
+    strlist = ['\n'.join(strlist[i]) for i in range(len(strlist))]
+    label_subplots(axs, strlist, **kwargs)
 
 # TODO: fix format using name_for_dim and unit_for_dim
 def plot_hv_text(ax,val,x=0.025,y=0.975,**kwargs):
