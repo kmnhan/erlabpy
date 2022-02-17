@@ -142,12 +142,21 @@ class LabeledCursor(AxesWidget):
             lineprops['animated'] = True
             textprops['animated'] = True
 
-        self.lineh = ax.axhline(ax.get_ybound()[0], visible=False, **lineprops)
-        self.linev = ax.axvline(ax.get_xbound()[0], visible=False, **lineprops)
+        lcolor = lineprops.pop("color", lineprops.pop("c", "k"))
+        ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
+        lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.8))
+        lineprops.update(dict(color=lcolor, ls=ls, lw=lw, visible=False))
+        
+        tcolor = textprops.pop("color", textprops.pop("c", lcolor))
+        textprops.update(dict(color=tcolor, visible=False,
+                              horizontalalignment='right',
+                              verticalalignment='top',
+                              transform=ax.transAxes))
+
+        self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
+        self.linev = ax.axvline(ax.get_xbound()[0], **lineprops)
         with plt.rc_context({'text.usetex':False}):
-            self.label = ax.text(0.95, 0.95, '', transform=ax.transAxes,
-                                 horizontalalignment='right',
-                                 verticalalignment='top', **textprops)
+            self.label = ax.text(0.95, 0.95, '', **textprops)
         self.background = None
         self.needclear = False
 
