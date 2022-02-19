@@ -3,10 +3,8 @@
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
-    
 from matplotlib.widgets import AxesWidget
-
-from pyimagetool import imagetool, RegularDataArray
+from pyimagetool import RegularDataArray, imagetool
 
 __all__ = ['ximagetool','proportional_colorbar','LabeledCursor']
 

@@ -2,10 +2,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation
-
-from arpes.utilities import bz
 from arpes.plotting.bz import bz_plot
+from arpes.utilities import bz
+from scipy.spatial.transform import Rotation
 
 __all__ = ['plot_hex_bz']
 

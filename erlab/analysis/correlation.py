@@ -2,9 +2,9 @@
 
 import numpy as np
 import xarray as xr
-from scipy.fft import fftshift, fft2, ifft2
+from joblib import Parallel, delayed
+from scipy.fft import fft2, fftshift, ifft2
 from scipy.signal import correlate, correlation_lags
-from joblib import delayed, Parallel
 
 __all__ = ['xacf2','match_dims','xcorr1']
 

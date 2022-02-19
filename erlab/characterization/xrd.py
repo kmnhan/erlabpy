@@ -4,7 +4,8 @@ Currently only supports loading raw data from igor `.itx` files, but
 this is enough for only plotting with `matplotlib`.
 
 """
-import ast, re
+import ast
+import re
 
 import numpy as np
 import xarray as xr

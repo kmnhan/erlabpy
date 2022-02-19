@@ -1,19 +1,18 @@
-import numpy as np
-
 import sys
 import time
-
-from matplotlib import colors
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
-from matplotlib.widgets import Widget
-from matplotlib.ticker import AutoLocator
-from matplotlib.backends.qt_compat import QtWidgets, QtCore
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvas, NavigationToolbar2QT as NavigationToolbar)
-
-from joblib import Parallel, delayed
 from itertools import compress
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import colors
+from matplotlib.backends.backend_qtagg import FigureCanvas
+from matplotlib.backends.backend_qtagg import \
+    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.qt_compat import QtCore, QtWidgets
+from matplotlib.figure import Figure
+from matplotlib.ticker import AutoLocator
+from matplotlib.widgets import Widget
+from joblib import Parallel, delayed
 
 __all__ = ['itool']
 

@@ -1,14 +1,11 @@
 """Plot annotations."""
 import numpy as np
 import xarray as xr
-
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import AnchoredText
-
 from arpes.plotting.utils import name_for_dim, unit_for_dim
-from arpes.utilities.conversion.forward import (
+from arpes.utilities.conversion.forward import \
     convert_coordinates_to_kspace_forward
-)
 
 __all__ = ['plot_hv_text','label_subplots','annotate_cuts_erlab', 'label_subplot_properties']
 

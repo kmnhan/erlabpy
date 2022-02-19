@@ -1,14 +1,15 @@
 import sys
-import numpy as np
 
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from matplotlib.backends.backend_qtagg import FigureCanvas
+from matplotlib.backends.backend_qtagg import \
+    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
-from matplotlib.backends.qt_compat import QtWidgets, QtCore
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvas, NavigationToolbar2QT as NavigationToolbar)
-
 from arpes.utilities.conversion import convert_to_kspace
+
 from .bz import plot_hex_bz
 
 class kTool(QtWidgets.QMainWindow):
