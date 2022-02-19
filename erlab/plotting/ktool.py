@@ -11,19 +11,36 @@ from matplotlib.backends.backend_qtagg import (
 from arpes.utilities.conversion import convert_to_kspace
 from .bz import plot_hex_bz
 
-__all__ = ['ktool']
-
 class kTool(QtWidgets.QMainWindow):
     def __init__(self, data, bounds, resolution={'kx':0.02, 'ky':0.02}, gamma=0.5, cmap='terrain', *args, **kwargs):
         super().__init__()
         self.data = data
-        self.vals = data.values
+        _get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        self.has_eV = "eV" in self.data.dims
+        if self.has_eV:
+            self.data_all = self.data
+            self.coord_z = self.data_all['eV'].values
+            self.ind_z = _get_middle_index(self.coord_z)
+            self.data = self.data_all.isel(eV=self.ind_z)
+            self.lims_z = (self.coord_z[0], self.coord_z[-1])
+            self.inc_z = self.coord_z[1] - self.coord_z[0]
+        self.dim_x, self.dim_y = self.data.dims
+        self.coord_x, self.coord_y = (
+            self.data[self.dim_x].values,
+            self.data[self.dim_y].values,
+        )
+        self.lims_x, self.lims_y = (
+            (self.coord_x[0], self.coord_x[-1]),
+            (self.coord_y[0], self.coord_y[-1]),
+        )
+        self.vals = self.data.values
         self.bounds = bounds
         self.resolution = resolution
-        self.kxy = convert_to_kspace(self.data, bounds=self.bounds, resolution=self.resolution)
+        self.kxy = convert_to_kspace(self.data, bounds=self.bounds, resolution=self.resolution).T
         self.gamma = gamma
         self.cmap = cmap
-        
+        self.visible = True
+        self.background = None
         improps = dict(
             animated=True, visible=True,
             interpolation='none', aspect='auto', origin='lower',
@@ -35,33 +52,29 @@ class kTool(QtWidgets.QMainWindow):
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
 
-        self.main_canvas = FigureCanvas(Figure(figsize=(8,16),dpi=100))
-        self.addToolBar(QtCore.Qt.BottomToolBarArea,
-                        NavigationToolbar(self.main_canvas, self))
+        self.new_offsets_rad = {}
+        self.new_offsets_deg = {}
 
-        gs = self.main_canvas.figure.add_gridspec(1, 2)
-        self.ax0 = self.main_canvas.figure.add_subplot(gs[0])
-        self.ax1 = self.main_canvas.figure.add_subplot(gs[1])
+        self.canvas = FigureCanvas(Figure(figsize=(8,16),dpi=100))
+        self.addToolBar(QtCore.Qt.BottomToolBarArea,
+                        NavigationToolbar(self.canvas, self))
+
+        gs = self.canvas.figure.add_gridspec(1, 2)
+        self.ax0 = self.canvas.figure.add_subplot(gs[0])
+        self.ax1 = self.canvas.figure.add_subplot(gs[1])
         self.ax0.grid()
         self.ax1.grid()
         self.ax0.set_aspect('equal')
         self.ax1.set_aspect('equal')
-        self.main_canvas.figure.tight_layout()
-        plot_hex_bz(ax=self.ax1)
 
-        self.dim_x, self.dim_y = self.data.dims
-        self.coord_x, self.coord_y = (
-            self.data[self.dim_x].values,
-            self.data[self.dim_y].values,
-        )
-        self.lims_x, self.lims_y = (
-            (self.coord_x[0], self.coord_x[-1]),
-            (self.coord_y[0], self.coord_y[-1]),
-        )
         self.im_r = self.ax0.imshow(self.vals, extent=(*self.lims_x, *self.lims_y), **improps)
 
         self._update_extent()
         self.im_k = self.ax1.imshow(self.kxy.values, extent=self.extent, **improps)
+        self.ax0.set_xlabel(self.dim_x)
+        self.ax0.set_ylabel(self.dim_y)
+        self.ax1.set_xlabel(self.dim_kx)
+        self.ax1.set_ylabel(self.dim_ky)
 
         self.offsetpanel = QtWidgets.QWidget()
         offsetpanelcontent = QtWidgets.QHBoxLayout()
@@ -130,7 +143,6 @@ class kTool(QtWidgets.QMainWindow):
         colormaps.setToolTip("Colormap")
         colormaps.addItems(plt.colormaps())
         colormaps.setCurrentIndex(colormaps.findText(self.cmap))
-        self.main_canvas.draw()
         colormaps.currentTextChanged.connect(self._set_cmap)
         colorstabcontent.addWidget(gammalabel)
         colorstabcontent.addWidget(gammaspin)
@@ -138,38 +150,196 @@ class kTool(QtWidgets.QMainWindow):
         colorstabcontent.addStretch()
         self.colorstab.setLayout(colorstabcontent)
 
+        self.boundstab = QtWidgets.QWidget()
+        boundstabcontent = QtWidgets.QHBoxLayout(self.boundstab)
+        self.boundsgroup = QtWidgets.QGroupBox("Bounds")
+        self.boundsgrid = QtWidgets.QGridLayout(self.boundsgroup)
+        self.kxminlabel = QtWidgets.QLabel(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kxminlabel, 0, 0, 1, 1)
+        self.kxminspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kxminspin, 0, 1, 1, 1)
+        self.kxmaxlabel = QtWidgets.QLabel(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kxmaxlabel, 0, 2, 1, 1, QtCore.Qt.AlignHCenter)
+        self.kxmaxspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kxmaxspin, 0, 3, 1, 1)
+        self.kyminlabel = QtWidgets.QLabel(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kyminlabel, 1, 0, 1, 1)
+        self.kyminspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kyminspin, 1, 1, 1, 1)
+        self.kymaxlabel = QtWidgets.QLabel(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kymaxlabel, 1, 2, 1, 1, QtCore.Qt.AlignHCenter)
+        self.kymaxspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
+        self.boundsgrid.addWidget(self.kymaxspin, 1, 3, 1, 1)
+        boundstabcontent.addWidget(self.boundsgroup)
+        self.resolutiongroup = QtWidgets.QGroupBox("Resolution")
+        self.resgrid = QtWidgets.QGridLayout(self.resolutiongroup)
+        self.kxreslabel = QtWidgets.QLabel(self.resolutiongroup)
+        self.resgrid.addWidget(self.kxreslabel, 0, 0, 1, 1)
+        self.kxresspin = QtWidgets.QDoubleSpinBox(self.resolutiongroup)
+        self.resgrid.addWidget(self.kxresspin, 0, 1, 1, 1)
+        self.kyreslabel = QtWidgets.QLabel(self.resolutiongroup)
+        self.resgrid.addWidget(self.kyreslabel, 1, 0, 1, 1)
+        self.kyresspin = QtWidgets.QDoubleSpinBox(self.resolutiongroup)
+        self.resgrid.addWidget(self.kyresspin, 1, 1, 1, 1)
+        boundstabcontent.addWidget(self.resolutiongroup)
+        self.kxminlabel.setText("kx")
+        self.kxmaxlabel.setText("to")
+        self.kyminlabel.setText("ky")
+        self.kymaxlabel.setText("to")
+        self.kxreslabel.setText("kx")
+        self.kyreslabel.setText("ky")
+        self.kxminspin.setSingleStep(0.05)
+        self.kxmaxspin.setSingleStep(0.05)
+        self.kyminspin.setSingleStep(0.05)
+        self.kymaxspin.setSingleStep(0.05)
+        self.kxminspin.setRange(-50,50)
+        self.kxmaxspin.setRange(-50,50)
+        self.kyminspin.setRange(-50,50)
+        self.kymaxspin.setRange(-50,50)
+        self.kxminspin.setValue(self.bounds['kx'][0])
+        self.kxmaxspin.setValue(self.bounds['kx'][1])
+        self.kyminspin.setValue(self.bounds['ky'][0])
+        self.kymaxspin.setValue(self.bounds['ky'][1])
+        self.kxminspin.valueChanged.connect(lambda v: self._set_bounds('kx', 0, v))
+        self.kxmaxspin.valueChanged.connect(lambda v: self._set_bounds('kx', 1, v))
+        self.kyminspin.valueChanged.connect(lambda v: self._set_bounds('ky', 0, v))
+        self.kymaxspin.valueChanged.connect(lambda v: self._set_bounds('ky', 1, v))
+        self.kxresspin.setValue(self.resolution['kx'])
+        self.kyresspin.setValue(self.resolution['ky'])
+        self.kxresspin.setSingleStep(0.001)
+        self.kyresspin.setSingleStep(0.001)
+        self.kxresspin.setMinimum(0.001)
+        self.kyresspin.setMinimum(0.001)
+        self.kxresspin.valueChanged.connect(lambda v: self._set_resolution('kx', v))
+        self.kyresspin.valueChanged.connect(lambda v: self._set_resolution('ky', v))
+        self.kxresspin.setDecimals(3)
+        self.kyresspin.setDecimals(3)
+
+        
+
         self.tabwidget = QtWidgets.QTabWidget()
         self.tabwidget.addTab(self.offsetpanel, "Offsets")
+        self.tabwidget.addTab(self.boundstab, "Bounds")
         self.tabwidget.addTab(self.colorstab, "Colors")
-        # self.tabwidget.addTab(self.pathtab, "Path")
         self.layout.addWidget(self.tabwidget)
+        if self.has_eV:
+            zvaluepanel = QtWidgets.QWidget()
+            zvaluecontent = QtWidgets.QHBoxLayout()
+            self.zspin = QtWidgets.QDoubleSpinBox()
+            self.zspin.setSingleStep(self.inc_z)
+            self.zspin.setRange(*self.lims_z)
+            self.zspin.setValue(self.coord_z[self.ind_z])
+            self.zspin.valueChanged.connect(self._zspinchanged)
+            self.zslider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            self.zslider.setSingleStep(1)
+            self.zslider.setPageStep(10)
+            self.zslider.setMinimum(0)
+            self.zslider.setMaximum(len(self.coord_z)-1)
+            self.zslider.setValue(self.ind_z)
+            self.zslider.valueChanged.connect(self._zsliderchanged)
+            zvaluecontent.addWidget(self.zspin)
+            zvaluecontent.addWidget(self.zslider)
+            zvaluepanel.setLayout(zvaluecontent)
+            self.layout.addWidget(zvaluepanel)
         
-        self.layout.addWidget(self.main_canvas)
+        self.layout.addWidget(self.canvas)
+        # self.canvas.mpl_connect('draw_event', self.clear)
+        self.canvas.draw()
+        # self.im_r.set_visible(self.visible)
+        # self.im_k.set_visible(self.visible)
 
+    def clear(self, event):
+        self.im_r.set_visible(False)
+        self.im_k.set_visible(False)
+        # self.background = self.canvas.copy_from_bbox(self.canvas.figure.bbox)
+
+    def closeEvent(self, event):
+        # do stuff
+        print('ktool closed with offsets')
+        print('in radians:')
+        print(self.new_offsets_rad)
+        print('in degrees:')
+        print(self.new_offsets_deg)
+        event.accept()
+
+    def _update_plots(self):
+        self.im_r.set_visible(self.visible)
+        self.im_k.set_visible(self.visible)
+        # if self.background is not None:
+            # self.canvas.restore_region(self.background)
+        self.ax0.draw_artist(self.im_r)
+        self.ax1.draw_artist(self.im_k)
+        # self.canvas.blit()
+        self.canvas.draw()
+
+    def _set_resolution(self, ax, value):
+        self.resolution[ax] = value
+        self._update_kxy()
+        self._update_plots()
+
+    def _set_bounds(self, ax, ind, value):
+        self.bounds[ax][ind] = value
+        self._update_kxy()
+        self._update_plots()
+        if (ax == 'kx') & (ind == 0):
+            self.kxmaxspin.setMinimum(value)
+        elif (ax == 'kx') & (ind == 1):
+            self.kxminspin.setMaximum(value)
+        elif (ax == 'ky') & (ind == 0):
+            self.kymaxspin.setMinimum(value)
+        elif (ax == 'ky') & (ind == 1):
+            self.kyminspin.setMaximum(value)
+
+    def _zspinchanged(self, value):
+        self.ind_z = np.rint((value-self.lims_z[0])/self.inc_z).astype(int)
+        self.zslider.setValue(self.ind_z)
+        self._update_data()
+        self._update_kxy()
+        self.im_r.set_norm(colors.PowerNorm(self.gamma))
+        self._update_plots()
+
+    def _zsliderchanged(self, value):
+        self.ind_z = value
+        self.zspin.setValue(self.coord_z[self.ind_z])
+        self._update_data()
+        self._update_kxy()
+        self._update_plots()
+
+    def _update_data(self):
+        self.data = self.data_all.isel(eV=self.ind_z)
+        self.vals = self.data.values
+        self.im_r.set_data(self.vals)
+        self.im_r.set_norm(colors.PowerNorm(self.gamma))
+    
     def _set_gamma(self, gamma):
         self.gamma = gamma
         self.im_r.set_norm(colors.PowerNorm(self.gamma))
         self.im_k.set_norm(colors.PowerNorm(self.gamma))
-        self.main_canvas.draw()
+        self._update_plots()
 
     def _set_cmap(self, cmap):
         self.cmap = cmap
+        self.im_r.set_cmap(self.cmap)
         self.im_k.set_cmap(self.cmap)
-        self.main_canvas.draw()
+        self._update_plots()
 
     def _spinchanged(self, n, value):
         self.data.S.apply_offsets({self.offsetcoords[n]:value*np.pi/180})
+        self.new_offsets_rad[self.offsetcoords[n]] = value*np.pi/180
+        self.new_offsets_deg[self.offsetcoords[n]] = np.around(value, 3)
         self._update_kxy()
-        self.main_canvas.draw()
+        self._update_plots()
 
     def _update_kxy(self):
-        self.kxy = convert_to_kspace(self.data, bounds=self.bounds, resolution=self.resolution)
+        self.kxy = convert_to_kspace(self.data,
+            bounds=self.bounds, resolution=self.resolution).T
         self.im_k.set_data(self.kxy.values)
         self._update_extent()
         self.im_k.set_extent(self.extent)
+        self.im_k.set_norm(colors.PowerNorm(self.gamma))
 
     def _update_extent(self):
-        self.dim_kx, self.dim_ky = self.kxy.dims
+        self.dim_ky, self.dim_kx = self.kxy.dims
         self.coord_kx, self.coord_ky = (
             self.kxy[self.dim_kx].values,
             self.kxy[self.dim_ky].values,
@@ -179,7 +349,7 @@ class kTool(QtWidgets.QMainWindow):
             (self.coord_ky[0], self.coord_ky[-1]),
         )
         self.extent = (*self.lims_kx, *self.lims_ky)
-    
+
 
 def ktool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
@@ -189,10 +359,10 @@ def ktool(data, *args, **kwargs):
         'text.usetex':False,
     #     #  'mathtext.fontset':'stixsans',
         'font.size':7,
-        # 'font.family':'sans'
+        'font.family':'sans',
     }):
         app = kTool(data, *args, **kwargs)
-    # qapp.setStyle('Fusion')
+    qapp.setStyle('Fusion')
     app.show()
     app.activateWindow()
     app.raise_()
