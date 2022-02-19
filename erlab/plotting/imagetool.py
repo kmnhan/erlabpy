@@ -58,7 +58,7 @@ class MyCursor3(Widget):
         └───┴───┴─┘
     """
 
-    def __init__(self, canvas, axes, data, gamma=0.5, cmap='viridis', parallel=False, bench=False, **improps):
+    def __init__(self, canvas, axes, data, gamma=0.5, cmap='terrain_r', parallel=False, bench=False, **improps):
         self.canvas = canvas
         self.axes = axes
         self.data = data
@@ -153,6 +153,14 @@ class MyCursor3(Widget):
         self.cursors = self.xcursor + self.ycursor + self.zcursor
         self.all = self.maps + self.hists + self.cursors
         
+
+        for xc in self.xcursor: xc.set_label('X Cursor')
+        for yc in self.ycursor: yc.set_label('Y Cursor')
+        for zc in self.zcursor: zc.set_label('Z Cursor')
+        self.histx.set_label('X Profile')
+        self.histy.set_label('Y Profile')
+        self.histz.set_label('Z Profile')
+
         self.axes[0].set_xlabel(self.labelify(self.dim_x))
         self.axes[0].set_ylabel(self.labelify(self.dim_y))
         self.axes[1].set_xlabel(self.labelify(self.dim_x))
@@ -182,12 +190,12 @@ class MyCursor3(Widget):
                         True, True, True,
                         False, False, False,
                         False, False, False]
-        self._only_y = [False, True, True,
+        self._only_y = [False, True, False,
                         True, False, True, 
                         False, False, False,
                         True, True, True,
                         False, False, False]
-        self._only_z = [False, False, False,
+        self._only_z = [False, False, True,
                         True, True, False,
                         False, False, False,
                         False, False, False,
@@ -204,12 +212,14 @@ class MyCursor3(Widget):
                     # 'y', 'y', 'y', 'y', 'y', 'y', '', '', '']
         self.coord_list = ['', '', '', 'y', 'x', 'y', 'x', 'x', 'x', 'y', 'y', 'y', 'x', 'x', 'y']
         self.ax_index = [0, 4, 5, 1, 2, 3, 0, 1, 4, 0, 2, 5, 3, 5, 4]
-        self.axes[1].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=True)
-        self.axes[2].ticklabel_format(axis='x', style='sci', scilimits=(-2, 3), useMathText=True)
-        self.axes[3].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=True)
+        self.axes[1].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=False)
+        self.axes[2].ticklabel_format(axis='x', style='sci', scilimits=(-2, 3), useMathText=False)
+        self.axes[3].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=False)
+        if self.parallel:
+            self.pool = Parallel(n_jobs=-1,require='sharedmem',verbose=0)
         self.connect()
-        self.canvas.draw()
-        self._apply_change()
+        # self.canvas.draw()
+        # self._apply_change()
 
     def connect(self):
         """Connect events."""
@@ -238,6 +248,8 @@ class MyCursor3(Widget):
         self.axes[1].set_yticks([])
         self.axes[2].set_xticks([])
         self.axes[3].set_yticks([])
+        for obj in self.all:
+            obj.set_visible(True)
 
     def labelify(self, dim):
         labelformats = dict(
@@ -271,7 +283,6 @@ class MyCursor3(Widget):
         for obj in self.all:
             obj.set_visible(False)
         self._apply_change()
-        # self._apply_change()
 
     def set_gamma(self, gamma):
         self.gamma = gamma
@@ -311,9 +322,7 @@ class MyCursor3(Widget):
         self.needclear = True
         if not self.visible:
             return
-        # for obj in self.all:
-        #     obj.set_visible(False)
-
+        
         ind_x, ind_y, ind_z = self._last_ind_x, self._last_ind_y, self._last_ind_z
         x, y, z = self.coord_x[ind_x], self.coord_y[ind_y], self.coord_z[ind_z]
         if event.inaxes == self.axes[0]:
@@ -371,17 +380,16 @@ class MyCursor3(Widget):
     
     def _apply_change(self, cond=[True]*15):
         if self.parallel:
-            with Parallel(n_jobs=-1, require='sharedmem') as pool:
-                pool(delayed(self.set_data)(i)
-                     for i in list(compress(range(len(cond)), cond)))
-                pool(delayed(a.set_visible)(self.visible)
-                     for a in self.all)
-                self._update(pool=pool)
+            self.pool(delayed(self.set_data)(i)
+                    for i in list(compress(range(len(cond)), cond)))
+            self.pool(delayed(a.set_visible)(self.visible)
+                    for a in self.all)
+            self._update()
         else:
             for i in list(compress(range(len(cond)), cond)): self.set_data(i)
             for a in self.all: a.set_visible(self.visible)
             self._update()
-    def _update(self, pool=None):
+    def _update(self):
         self.axes[1].yaxis.set_major_locator(AutoLocator())
         self.axes[2].xaxis.set_major_locator(AutoLocator())
         self.axes[3].yaxis.set_major_locator(AutoLocator())
@@ -389,31 +397,23 @@ class MyCursor3(Widget):
             self.axes[i+1].relim()
             self.axes[i+1].autoscale_view()
         for im in self.maps: 
-            # im.set_cmap(self.cmap)
             im.set_norm(colors.PowerNorm(self.gamma))
         if self.background is not None:
             self.canvas.restore_region(self.background)
-        if (not self.parallel) or (pool is None):
-            # for art in self.maps:
-            #     art.draw()
-            # for i, art in list(zip(self.ax_index[3:] + [1, 2, 3],
-            #                        self.all[3:] + [self.axes[1].get_yaxis(),
-            #                                    self.axes[2].get_xaxis(),
-            #                                    self.axes[3].get_yaxis()])):
-            #     self.axes[i].draw_artist(art)
-            for i, art in list(zip(self.ax_index + [1, 2, 3],
-                                   self.all + [self.axes[1].get_yaxis(),
-                                               self.axes[2].get_xaxis(),
-                                               self.axes[3].get_yaxis()])):
-                self.axes[i].draw_artist(art)
-        else:
-            pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+        if self.parallel:
+            self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
                 [0, 4, 5, 1, 2, 3, 1, 2, 3],
-                self.maps + self.hists + [self.axes[1].get_yaxis(),
-                                          self.axes[2].get_xaxis(),
-                                          self.axes[3].get_yaxis()])))
-            pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+                self.maps + self.hists + [self.axes[1].yaxis,
+                                          self.axes[2].xaxis,
+                                          self.axes[3].yaxis])))
+            self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
                 [0, 1, 4, 0, 2, 5, 3, 5, 4], self.cursors)))
+        else:
+            for i, art in list(zip(self.ax_index + [1, 2, 3],
+                                   self.all + [self.axes[1].yaxis,
+                                               self.axes[2].xaxis,
+                                               self.axes[3].yaxis])):
+                self.axes[i].draw_artist(art)
         self.canvas.blit()
 
     def print_time(self):
@@ -426,7 +426,7 @@ class MyCursor3(Widget):
         self.fps = self.fps * 0.9 + fps2 * 0.1
         tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps )
         print(tx, end='\r')
-
+    
     def set_data(self,i):
         if i == 0: self.all[i].set_data(self.vals[:, :, self._last_ind_x])
         elif i == 1: self.all[i].set_data(self.vals[self._last_ind_y, :, :])
@@ -450,11 +450,12 @@ class MyCursor3(Widget):
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
         # print(points)
-        # ls = Lasso(self.axes[0],(0,0),self._onselectpath)
         # TODO
         pass
     def _onselectpath(self, verts):
         print(verts)
+
+
 
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, *args, **kwargs):
@@ -462,10 +463,18 @@ class ImageTool(QtWidgets.QMainWindow):
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
-
-        self.main_canvas = FigureCanvas(Figure(figsize=(8,16),dpi=100))
+        self.NavBar = NavigationToolbar
+        home_old = self.NavBar.home
+        def home_new(self, *args):
+            home_old(self, *args)
+            axes = self.canvas.figure.axes
+            axes[1].set_ylim(auto=True)
+            axes[2].set_xlim(auto=True)
+            axes[3].set_ylim(auto=True)
+        self.NavBar.home = home_new
+        self.main_canvas = FigureCanvas(Figure(figsize=(8,16), dpi=100))
         self.addToolBar(QtCore.Qt.BottomToolBarArea,
-                        NavigationToolbar(self.main_canvas, self))
+                        self.NavBar(self.main_canvas, self))
 
         gs = self.main_canvas.figure.add_gridspec(3, 3, width_ratios=(6,4,2), height_ratios=(2,4,6))
         self._axes_main = self.main_canvas.figure.add_subplot(gs[2, 0])
@@ -514,9 +523,12 @@ class ImageTool(QtWidgets.QMainWindow):
         self.infospin_x.setValue(self.mc._last_ind_x)
         self.infospin_y.setValue(self.mc._last_ind_y)
         self.infospin_z.setValue(self.mc._last_ind_z)
-        self.infospin_x.valueChanged.connect(lambda: self._spinchanged('x'))
-        self.infospin_y.valueChanged.connect(lambda: self._spinchanged('y'))
-        self.infospin_z.valueChanged.connect(lambda: self._spinchanged('z'))
+        self.infospin_x.valueChanged.connect(lambda v: self._spinchanged('x', v))
+        self.infospin_y.valueChanged.connect(lambda v: self._spinchanged('y', v))
+        self.infospin_z.valueChanged.connect(lambda v: self._spinchanged('z', v))
+        self.infospin_x.setWrapping(True)
+        self.infospin_y.setWrapping(True)
+        self.infospin_z.setWrapping(True)
         self.infodblspin_x.setRange(*self.mc.lims_x)
         self.infodblspin_y.setRange(*self.mc.lims_y)
         self.infodblspin_z.setRange(*self.mc.lims_z)
@@ -529,15 +541,20 @@ class ImageTool(QtWidgets.QMainWindow):
         self.infodblspin_x.setValue(self.mc.coord_x[self.mc._last_ind_x])
         self.infodblspin_y.setValue(self.mc.coord_y[self.mc._last_ind_y])
         self.infodblspin_z.setValue(self.mc.coord_z[self.mc._last_ind_z])
-        self.infodblspin_x.valueChanged.connect(lambda: self._spindblchanged('x'))
-        self.infodblspin_y.valueChanged.connect(lambda: self._spindblchanged('y'))
-        self.infodblspin_z.valueChanged.connect(lambda: self._spindblchanged('z'))
+        self.infodblspin_x.valueChanged.connect(lambda v: self._spindblchanged('x', v))
+        self.infodblspin_y.valueChanged.connect(lambda v: self._spindblchanged('y', v))
+        self.infodblspin_z.valueChanged.connect(lambda v: self._spindblchanged('z', v))
+        self.infodblspin_x.setWrapping(True)
+        self.infodblspin_y.setWrapping(True)
+        self.infodblspin_z.setWrapping(True)
         infotabcontent.addWidget(spinxlabel)
         infotabcontent.addWidget(self.infodblspin_x)
         infotabcontent.addWidget(self.infospin_x)
+        infotabcontent.addSpacing(20)
         infotabcontent.addWidget(spinylabel)
         infotabcontent.addWidget(self.infodblspin_y)
         infotabcontent.addWidget(self.infospin_y)
+        infotabcontent.addSpacing(20)
         infotabcontent.addWidget(spinzlabel)
         infotabcontent.addWidget(self.infodblspin_z)
         infotabcontent.addWidget(self.infospin_z)
@@ -585,37 +602,63 @@ class ImageTool(QtWidgets.QMainWindow):
         self.main_canvas.setFocus()
 
     def onmove_super(self, event):
+        if event.inaxes not in self._axes:
+            return
         if not event.button:
             if not self.mc._shift:
                 return
+        self.infospin_x.blockSignals(True)
+        self.infospin_y.blockSignals(True)
+        self.infospin_z.blockSignals(True)
+        self.infodblspin_x.blockSignals(True)
+        self.infodblspin_y.blockSignals(True)
+        self.infodblspin_z.blockSignals(True)
         self.infospin_x.setValue(self.mc._last_ind_x)
         self.infospin_y.setValue(self.mc._last_ind_y)
         self.infospin_z.setValue(self.mc._last_ind_z)
         self.infodblspin_x.setValue(self.mc.coord_x[self.mc._last_ind_x])
         self.infodblspin_y.setValue(self.mc.coord_y[self.mc._last_ind_y])
         self.infodblspin_z.setValue(self.mc.coord_z[self.mc._last_ind_z])
+        self.infospin_x.blockSignals(False)
+        self.infospin_y.blockSignals(False)
+        self.infospin_z.blockSignals(False)
+        self.infodblspin_x.blockSignals(False)
+        self.infodblspin_y.blockSignals(False)
+        self.infodblspin_z.blockSignals(False)
 
-    def _spinchanged(self, axis):
+    def _spinchanged(self, axis, index):
         if axis == 'x':
-            self.mc.set_value_x
-            self.infodblspin_x.setValue(self.mc.coord_x[self.mc._last_ind_x])
+            self.infodblspin_x.blockSignals(True)
+            self.mc.set_index_x(index)
+            self.infodblspin_x.setValue(self.mc.coord_x[index])
+            self.infodblspin_x.blockSignals(False)
         elif axis == 'y':
-            self.mc.set_value_y
-            self.infodblspin_y.setValue(self.mc.coord_y[self.mc._last_ind_y])
+            self.infodblspin_y.blockSignals(True)
+            self.mc.set_index_y(index)
+            self.infodblspin_y.setValue(self.mc.coord_y[index])
+            self.infodblspin_y.blockSignals(False)
         elif axis == 'z':
-            self.mc.set_value_z
-            self.infodblspin_z.setValue(self.mc.coord_z[self.mc._last_ind_z])
+            self.infodblspin_z.blockSignals(True)
+            self.mc.set_index_z(index)
+            self.infodblspin_z.setValue(self.mc.coord_z[index])
+            self.infodblspin_z.blockSignals(False)
     
-    def _spindblchanged(self, axis):
+    def _spindblchanged(self, axis, value):
         if axis == 'x':
-            self.mc.set_index_x
+            self.infospin_x.blockSignals(True)
+            self.mc.set_value_x(value)
             self.infospin_x.setValue(self.mc._last_ind_x)
+            self.infospin_x.blockSignals(False)
         elif axis == 'y':
-            self.mc.set_index_y
+            self.infospin_y.blockSignals(True)
+            self.mc.set_value_y(value)
             self.infospin_y.setValue(self.mc._last_ind_y)
+            self.infospin_y.blockSignals(False)
         elif axis == 'z':
-            self.mc.set_index_z
+            self.infospin_z.blockSignals(True)
+            self.mc.set_value_z(value)
             self.infospin_z.setValue(self.mc._last_ind_z)
+            self.infospin_z.blockSignals(False)
 
 def itool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
@@ -625,10 +668,11 @@ def itool(data, *args, **kwargs):
         'text.usetex':False,
     #     #  'mathtext.fontset':'stixsans',
         'font.size':7,
-        # 'font.family':'sans'
+        'font.family':'sans',
+        # 'font.family':'Helvetica',
     }):
         app = ImageTool(data, *args, **kwargs)
-    # qapp.setStyle('Fusion')
+    qapp.setStyle('Fusion')
     app.show()
     app.activateWindow()
     app.raise_()
