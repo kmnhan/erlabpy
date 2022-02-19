@@ -1,8 +1,8 @@
 # ERLab Python Macros
 Python macros for ERLab.
 
-## Requirements
-Installation process requires `git` and `conda`. 
+## Prerequisites
+Installation requires `git` and `conda`. 
 
 ### Installing Git
 - macOS (Intel & ARM): get Xcode Command Line Tools by running in your terminal window:
@@ -24,18 +24,25 @@ Installation process requires `git` and `conda`.
    ```
  - Otherwise: [Install conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html)
 
-### Dependencies for **Apple silicon macs**
+<!-- ### Dependencies for **Apple silicon macs**
    
    1. Install [homebrew](https://brew.sh).
 
    2. Install pyqt5 with brew.
       ```bash
       brew install pyqt@5
-      ```
+      ``` -->
 
 ## Installation
 
-Open a terminal window in the location where you want to store the cloned repositories and paste the following:
+1. Download the [`environment.yml`](https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml) file.
+2. Open a terminal window in the location where the downloaded `environment.yml` is located and paste the following:
+   ```bash
+   conda env create -f environment.yml -n envname
+   ```
+   Replace `envname` with the environment name.
+
+<!-- 
 - Apple silicon macs:
   ```bash
   conda create -n arpes python=3.9 -y 
@@ -124,4 +131,4 @@ Each step of the above script is explained below.
    git clone https://github.com/kmnhan/PyImageTool.git
    cd PyImageTool
    pip install -e .
-   ```
+   ``` -->
