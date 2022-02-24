@@ -16,10 +16,10 @@ from joblib import Parallel, delayed
 
 __all__ = ['itool']
 
-class MyCursor3(Widget):
-    """
-    Provide a vertical (default) and/or horizontal line cursor shared 
-    between multiple axes. For the cursor to remain responsive you must 
+class mpl_itool(Widget):
+    """A interactive tool based on `matplotlib` for exploring 3D data.
+    
+    For the tool to remain responsive you must 
     keep a reference to it.
     
     Parameters
@@ -27,13 +27,17 @@ class MyCursor3(Widget):
     canvas : `matplotlib.backend_bases.FigureCanvasBase`
         The FigureCanvas that contains all the axes.
     axes : list of `matplotlib.axes.Axes`
-        The `~.axes.Axes` to attach the cursor to.
-    parallel : bool, default: True
-        Use parallel processing for faster drawing.
+        The `~.axes.Axes` to attach the cursor to. See Notes for the
+        order of axes.
+    data : `xarray.DataArray`
+        The data to explore. Must have three coordinate axes.
+    snap :  bool, default: True
+        Snaps cursor to data pixels.
+    parallel : bool, default: False
+        Use multithreading. Currently has no performance improvement due
+        to the python global interpreter lock.
     bench : bool, default: False
         Whether to print frames per second.
-    vertOn: bool, default: True
-        Whether to draw the vertical line.
     
     Other Parameters
     ----------------
@@ -57,11 +61,12 @@ class MyCursor3(Widget):
         └───┴───┴─┘
     """
 
-    def __init__(self, canvas, axes, data, gamma=0.5, cmap='terrain_r', parallel=False, bench=False, **improps):
+    def __init__(self, canvas, axes, data, snap=False, gamma=0.5, cmap='terrain_r', parallel=False, bench=False, **improps):
         self.canvas = canvas
         self.axes = axes
         self.data = data
         self.vals = data.values
+        self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
         self.parallel = parallel
@@ -290,23 +295,29 @@ class MyCursor3(Widget):
     def set_index_x(self, xi):
         self._last_ind_x = xi
         self._apply_change(self._only_x)
+        self.cursor_pos[0] = self.coord_x[xi]
         
     def set_index_y(self, yi):
         self._last_ind_y = yi
         self._apply_change(self._only_y)
+        self.cursor_pos[1] = self.coord_y[yi]
 
     def set_index_z(self, zi):
         self._last_ind_z = zi
         self._apply_change(self._only_z)
+        self.cursor_pos[2] = self.coord_z[zi]
 
     def set_value_x(self, x):
         self.set_index_x(np.rint((x-self.lims_x[0])/self.inc_x).astype(int))
+        self.cursor_pos[0] = x
         
     def set_value_y(self, y):
         self.set_index_y(np.rint((y-self.lims_y[0])/self.inc_y).astype(int))
+        self.cursor_pos[1] = y
 
     def set_value_z(self, z):
         self.set_index_z(np.rint((z-self.lims_z[0])/self.inc_z).astype(int))
+        self.cursor_pos[2] = z
             
     def onmove(self, event):
         if self.ignore(event):
@@ -321,58 +332,67 @@ class MyCursor3(Widget):
         self.needclear = True
         if not self.visible:
             return
-        
-        ind_x, ind_y, ind_z = self._last_ind_x, self._last_ind_y, self._last_ind_z
-        x, y, z = self.coord_x[ind_x], self.coord_y[ind_y], self.coord_z[ind_z]
+        x, y, z = None, None, None
         if event.inaxes == self.axes[0]:
             dx, dy, dz = True, True, False
             x, y = event.xdata, event.ydata
-        if event.inaxes == self.axes[1]:
-            dx, dy, dz = True, False, False
-            x = event.xdata
-        if event.inaxes == self.axes[2]:
-            dx, dy, dz = False, True, False
-            y = event.ydata
-        if event.inaxes == self.axes[3]:
-            dx, dy, dz = False, False, True
-            z = event.xdata
-        if event.inaxes == self.axes[4]:
+        elif event.inaxes == self.axes[4]:
             dx, dy, dz = True, False, True
             x, z = event.xdata, event.ydata
-        if event.inaxes == self.axes[5]:
+        elif event.inaxes == self.axes[5]:
             dx, dy, dz = False, True, True
             z, y = event.xdata, event.ydata
-
+        elif event.inaxes == self.axes[1]:
+            dx, dy, dz = True, False, False
+            x = event.xdata
+        elif event.inaxes == self.axes[2]:
+            dx, dy, dz = False, True, False
+            y = event.ydata
+        elif event.inaxes == self.axes[3]:
+            dx, dy, dz = False, False, True
+            z = event.xdata
         if dx:
             ind_x = min(
                 np.searchsorted(self.coord_x + 0.5 * self.inc_x, x),
                 self.len_x - 1,
             )
+            if (ind_x == self._last_ind_x) & self.snap:
+                return
+            else:
+                self._last_ind_x = ind_x
         if dy:
             ind_y = min(
                 np.searchsorted(self.coord_y + 0.5 * self.inc_y, y),
                 self.len_y - 1,
             )
+            if (ind_y == self._last_ind_y) & self.snap:
+                return
+            else:
+                self._last_ind_y = ind_y
         if dz:
             ind_z = min(
                 np.searchsorted(self.coord_z + 0.5 * self.inc_z, z),
                 self.len_z - 1,
             )
-        dx, dy, dz = (ind_x != self._last_ind_x,
-                      ind_y != self._last_ind_y,
-                      ind_z != self._last_ind_z)
-        if dx:
-            self._last_ind_x = ind_x
-        if dy:
-            self._last_ind_y = ind_y
-        if dz:
-            self._last_ind_z = ind_z
+            if (ind_z == self._last_ind_z) & self.snap:
+                return
+            else: 
+                self._last_ind_z = ind_z
         cond = [dx, dy, dz,
                 dy or dz, dx or dz, dx or dy,
                 dx, dx, dx,
                 dy, dy, dy,
                 dz, dz, dz]
-
+        if self.snap:
+            self.cursor_pos = [
+                self.coord_x[self._last_ind_x],
+                self.coord_y[self._last_ind_y],
+                self.coord_z[self._last_ind_z]
+            ]
+        else:
+            self.cursor_pos = [x, y, z]
+            for i in range(6, 15):
+                cond[i] = True
         self._apply_change(cond)
         if self.bench:
             self.print_time()
@@ -414,7 +434,6 @@ class MyCursor3(Widget):
                                                self.axes[3].yaxis])):
                 self.axes[i].draw_artist(art)
         self.canvas.blit()
-
     def print_time(self):
         now = time.time()
         dt = (now-self.lastupdate)
@@ -426,7 +445,7 @@ class MyCursor3(Widget):
         tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps )
         print(tx, end='\r')
     
-    def set_data(self,i):
+    def set_data(self, i):
         if i == 0: self.all[i].set_data(self.vals[:, :, self._last_ind_x])
         elif i == 1: self.all[i].set_data(self.vals[self._last_ind_y, :, :])
         elif i == 2: self.all[i].set_data(self.vals[:, self._last_ind_z, :])
@@ -437,14 +456,14 @@ class MyCursor3(Widget):
         elif i == 5:
             self.all[i].set_ydata(self.vals[self._last_ind_y, :, self._last_ind_x])
         elif i in [6, 7, 8]:
-            self.all[i].set_xdata((self.coord_x[self._last_ind_x], self.coord_x[self._last_ind_x]))
+            self.all[i].set_xdata((self.cursor_pos[0], self.cursor_pos[0]))
         elif i in [9, 10, 11]: 
-            self.all[i].set_ydata((self.coord_y[self._last_ind_y], self.coord_y[self._last_ind_y]))
+            self.all[i].set_ydata((self.cursor_pos[1], self.cursor_pos[1]))
         elif i in [12, 13]: 
-            self.all[i].set_xdata((self.coord_z[self._last_ind_z], self.coord_z[self._last_ind_z]))
+            self.all[i].set_xdata((self.cursor_pos[2], self.cursor_pos[2]))
         elif i == 14: 
-            self.all[i].set_ydata((self.coord_z[self._last_ind_z], self.coord_z[self._last_ind_z]))
-        
+            self.all[i].set_ydata((self.cursor_pos[2], self.cursor_pos[2]))
+
     def _drawpath(self):
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
@@ -499,20 +518,20 @@ class ImageTool(QtWidgets.QMainWindow):
         self._axes[3].yaxis.tick_right()
         self.main_canvas.figure.set_tight_layout(True)
                 
-        self.mc = MyCursor3(self.main_canvas, self._axes,
+        self.mc = mpl_itool(self.main_canvas, self._axes,
                             data, *args, **kwargs)
 
         self.infotab = QtWidgets.QWidget()
-        infotabcontent = QtWidgets.QHBoxLayout()
+        infotabcontent = QtWidgets.QHBoxLayout(self.infotab)
         spinxlabel = QtWidgets.QLabel(self.mc.dim_x)
         spinylabel = QtWidgets.QLabel(self.mc.dim_y)
         spinzlabel = QtWidgets.QLabel(self.mc.dim_z)
-        self.infospin_x = QtWidgets.QSpinBox()
-        self.infospin_y = QtWidgets.QSpinBox()
-        self.infospin_z = QtWidgets.QSpinBox()
-        self.infodblspin_x = QtWidgets.QDoubleSpinBox()
-        self.infodblspin_y = QtWidgets.QDoubleSpinBox()
-        self.infodblspin_z = QtWidgets.QDoubleSpinBox()
+        self.infospin_x = QtWidgets.QSpinBox(self.infotab)
+        self.infospin_y = QtWidgets.QSpinBox(self.infotab)
+        self.infospin_z = QtWidgets.QSpinBox(self.infotab)
+        self.infodblspin_x = QtWidgets.QDoubleSpinBox(self.infotab)
+        self.infodblspin_y = QtWidgets.QDoubleSpinBox(self.infotab)
+        self.infodblspin_z = QtWidgets.QDoubleSpinBox(self.infotab)
         self.infospin_x.setRange(0, self.mc.len_x - 1)
         self.infospin_y.setRange(0, self.mc.len_y - 1)
         self.infospin_z.setRange(0, self.mc.len_z - 1)
@@ -546,6 +565,9 @@ class ImageTool(QtWidgets.QMainWindow):
         self.infodblspin_x.setWrapping(True)
         self.infodblspin_y.setWrapping(True)
         self.infodblspin_z.setWrapping(True)
+        cursorsnapcheck = QtWidgets.QCheckBox(self.infotab)
+        cursorsnapcheck.setChecked(self.mc.snap)
+        cursorsnapcheck.stateChanged.connect(self._assign_snap)
         infotabcontent.addWidget(spinxlabel)
         infotabcontent.addWidget(self.infodblspin_x)
         infotabcontent.addWidget(self.infospin_x)
@@ -558,7 +580,8 @@ class ImageTool(QtWidgets.QMainWindow):
         infotabcontent.addWidget(self.infodblspin_z)
         infotabcontent.addWidget(self.infospin_z)
         infotabcontent.addStretch()
-        self.infotab.setLayout(infotabcontent)
+        infotabcontent.addWidget(cursorsnapcheck)
+        infotabcontent.addWidget(QtWidgets.QLabel('Snap to Data'))
 
         self.colorstab = QtWidgets.QWidget()
         colorstabcontent = QtWidgets.QHBoxLayout()
@@ -641,7 +664,6 @@ class ImageTool(QtWidgets.QMainWindow):
             self.mc.set_index_z(index)
             self.infodblspin_z.setValue(self.mc.coord_z[index])
             self.infodblspin_z.blockSignals(False)
-    
     def _spindblchanged(self, axis, value):
         if axis == 'x':
             self.infospin_x.blockSignals(True)
@@ -658,7 +680,8 @@ class ImageTool(QtWidgets.QMainWindow):
             self.mc.set_value_z(value)
             self.infospin_z.setValue(self.mc._last_ind_z)
             self.infospin_z.blockSignals(False)
-
+    def _assign_snap(self, value):
+        self.mc.snap = value
 def itool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
