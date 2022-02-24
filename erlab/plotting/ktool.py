@@ -225,7 +225,7 @@ class kTool(QtWidgets.QMainWindow):
         self.layout.addWidget(self.tabwidget)
         if self.has_eV:
             zvaluepanel = QtWidgets.QWidget()
-            zvaluecontent = QtWidgets.QHBoxLayout()
+            zvaluecontent = QtWidgets.QHBoxLayout(zvaluepanel)
             self.zspin = QtWidgets.QDoubleSpinBox()
             self.zspin.setSingleStep(self.inc_z)
             self.zspin.setRange(*self.lims_z)
@@ -240,7 +240,6 @@ class kTool(QtWidgets.QMainWindow):
             self.zslider.valueChanged.connect(self._zsliderchanged)
             zvaluecontent.addWidget(self.zspin)
             zvaluecontent.addWidget(self.zslider)
-            zvaluepanel.setLayout(zvaluecontent)
             self.layout.addWidget(zvaluepanel)
         
         self.layout.addWidget(self.canvas)
@@ -293,7 +292,9 @@ class kTool(QtWidgets.QMainWindow):
 
     def _zspinchanged(self, value):
         self.ind_z = np.rint((value-self.lims_z[0])/self.inc_z).astype(int)
+        self.zslider.blockSignals(True)
         self.zslider.setValue(self.ind_z)
+        self.zslider.blockSignals(False)
         self._update_data()
         self._update_kxy()
         self.im_r.set_norm(colors.PowerNorm(self.gamma))
@@ -301,7 +302,9 @@ class kTool(QtWidgets.QMainWindow):
 
     def _zsliderchanged(self, value):
         self.ind_z = value
+        self.zspin.blockSignals(True)
         self.zspin.setValue(self.coord_z[self.ind_z])
+        self.zspin.blockSignals(False)
         self._update_data()
         self._update_kxy()
         self._update_plots()
@@ -325,9 +328,12 @@ class kTool(QtWidgets.QMainWindow):
         self._update_plots()
 
     def _spinchanged(self, n, value):
-        self.data.S.apply_offsets({self.offsetcoords[n]:value*np.pi/180})
+        # self.data.S.apply_offsets({self.offsetcoords[n]:value*np.pi/180})
         self.new_offsets_rad[self.offsetcoords[n]] = value*np.pi/180
         self.new_offsets_deg[self.offsetcoords[n]] = np.around(value, 3)
+        self.data.S.apply_offsets(self.new_offsets_rad)
+        if self.has_eV:
+            self.data_all.S.apply_offsets(self.new_offsets_rad)
         self._update_kxy()
         self._update_plots()
 
