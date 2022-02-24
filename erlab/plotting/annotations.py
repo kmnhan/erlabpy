@@ -203,7 +203,7 @@ def property_label(key, value):
                                          unit_for_dim(key))) + suffix
     return label    
 
-def label_subplot_properties(axs, values, **kwargs):
+def label_subplot_properties(axs, values, order='C', **kwargs):
     r"""Labels subplots with automatically generated labels.
 
     Parameters
@@ -214,6 +214,13 @@ def label_subplot_properties(axs, values, **kwargs):
         determined by the flattening method given by `order`.
     values : dict
         key-value pair of annotations.
+    order : {'C', 'F', 'A', 'K'}, optional
+        Order in which to flatten `ax`. 'C' means to flatten in
+        row-major (C-style) order. 'F' means to flatten in column-major 
+        (Fortran- style) order. 'A' means to flatten in column-major 
+        order if a is Fortran contiguous in memory, row-major order 
+        otherwise. 'K' means to flatten a in the order the elements 
+        occur in memory. The default is 'C'.
 
     """
     kwargs.setdefault('fontweight','medium')
@@ -225,6 +232,8 @@ def label_subplot_properties(axs, values, **kwargs):
     for k, v in values.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
             v = [v]
+        else:
+            v = np.array(v).flatten(order=order)
         strlist.append([property_label(k,val) for val in v])
     strlist = list(zip(*strlist))
     strlist = ['\n'.join(strlist[i]) for i in range(len(strlist))]
