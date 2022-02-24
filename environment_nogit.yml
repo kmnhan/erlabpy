@@ -46,8 +46,3 @@ dependencies:
   - uncertainties>=3.0.1
   - pip:
     - pyside6>=6.2.2
-    - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
-    - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
-    - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
-    - -e git+https://github.com/kmnhan/chinook.git#egg=chinook
-    - -e git+https://github.com/kmnhan/PyImageTool.git#egg=pyimagetool
