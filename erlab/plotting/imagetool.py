@@ -5,6 +5,7 @@ from itertools import compress
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from matplotlib.backend_bases import NavigationToolbar2, _Mode
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
@@ -252,8 +253,6 @@ class mpl_itool(Widget):
         self.axes[1].set_yticks([])
         self.axes[2].set_xticks([])
         self.axes[3].set_yticks([])
-        for obj in self.all:
-            obj.set_visible(True)
 
     def labelify(self, dim):
         labelformats = dict(
@@ -351,13 +350,19 @@ class mpl_itool(Widget):
         elif event.inaxes == self.axes[3]:
             dx, dy, dz = False, False, True
             z = event.xdata
+
+        cond = [dx, dy, dz,
+                dy or dz, dx or dz, dx or dy,
+                dx, dx, dx,
+                dy, dy, dy,
+                dz, dz, dz]
         if dx:
             ind_x = min(
                 np.searchsorted(self.coord_x + 0.5 * self.inc_x, x),
                 self.len_x - 1,
             )
             if (ind_x == self._last_ind_x) & self.snap:
-                return
+                dx = False
             else:
                 self._last_ind_x = ind_x
         if dy:
@@ -366,7 +371,7 @@ class mpl_itool(Widget):
                 self.len_y - 1,
             )
             if (ind_y == self._last_ind_y) & self.snap:
-                return
+                dy = False
             else:
                 self._last_ind_y = ind_y
         if dz:
@@ -375,14 +380,10 @@ class mpl_itool(Widget):
                 self.len_z - 1,
             )
             if (ind_z == self._last_ind_z) & self.snap:
-                return
-            else: 
+                dz = False
+            else:
                 self._last_ind_z = ind_z
-        cond = [dx, dy, dz,
-                dy or dz, dx or dz, dx or dy,
-                dx, dx, dx,
-                dy, dy, dy,
-                dz, dz, dz]
+
         if self.snap:
             self.cursor_pos = [
                 self.coord_x[self._last_ind_x],
@@ -391,8 +392,6 @@ class mpl_itool(Widget):
             ]
         else:
             self.cursor_pos = [x, y, z]
-            for i in range(6, 15):
-                cond[i] = True
         self._apply_change(cond)
         if self.bench:
             self.print_time()
@@ -481,19 +480,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
-        self.NavBar = NavigationToolbar
-        home_old = self.NavBar.home
-        def home_new(self, *args):
-            home_old(self, *args)
-            axes = self.canvas.figure.axes
-            axes[1].set_ylim(auto=True)
-            axes[2].set_xlim(auto=True)
-            axes[3].set_ylim(auto=True)
-        self.NavBar.home = home_new
-        self.main_canvas = FigureCanvas(Figure(figsize=(8,16), dpi=100))
-        self.addToolBar(QtCore.Qt.BottomToolBarArea,
-                        self.NavBar(self.main_canvas, self))
-
+        self.main_canvas = FigureCanvas(Figure())
         gs = self.main_canvas.figure.add_gridspec(3, 3, width_ratios=(6,4,2), height_ratios=(2,4,6))
         self._axes_main = self.main_canvas.figure.add_subplot(gs[2, 0])
         self._axes = [
@@ -520,7 +507,39 @@ class ImageTool(QtWidgets.QMainWindow):
                 
         self.mc = mpl_itool(self.main_canvas, self._axes,
                             data, *args, **kwargs)
-
+        
+        self.NavBar = NavigationToolbar
+        init_old = self.NavBar.__init__
+        def init_new(self, canvas, parent, coordinates=True):
+            self.parent = parent
+            init_old(self, canvas, parent, coordinates=coordinates)
+        home_old = self.NavBar.home
+        def home_new(self, *args):
+            home_old(self, *args)
+            axes = self.canvas.figure.axes
+            axes[1].set_ylim(auto=True)
+            axes[2].set_xlim(auto=True)
+            axes[3].set_ylim(auto=True)
+        pan_old = self.NavBar.pan
+        def pan_new(self, *args):
+            if self.mode == _Mode.PAN:
+                self.parent.mc.connect()
+            else:
+                self.parent.mc.disconnect()
+            pan_old(self, *args)
+        zoom_old = self.NavBar.zoom
+        def zoom_new(self, *args):
+            if self.mode == _Mode.ZOOM:
+                self.parent.mc.connect()
+            else:
+                self.parent.mc.disconnect()
+            zoom_old(self, *args)
+        self.NavBar.__init__ = init_new
+        self.NavBar.home = home_new
+        self.NavBar.pan = pan_new
+        self.NavBar.zoom = zoom_new
+        self.addToolBar(QtCore.Qt.BottomToolBarArea,
+                        self.NavBar(self.main_canvas, self))
         self.infotab = QtWidgets.QWidget()
         infotabcontent = QtWidgets.QHBoxLayout(self.infotab)
         spinxlabel = QtWidgets.QLabel(self.mc.dim_x)
