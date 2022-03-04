@@ -5,14 +5,14 @@ from itertools import compress
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors
-from matplotlib.backend_bases import NavigationToolbar2, _Mode
+from matplotlib.backend_bases import _Mode
 from matplotlib.backends.backend_qtagg import FigureCanvas
-from matplotlib.backends.backend_qtagg import \
-    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoLocator
 from matplotlib.widgets import Widget
+import qtawesome as qta
 from joblib import Parallel, delayed
 
 __all__ = ['itool']
@@ -52,7 +52,7 @@ class mpl_itool(Widget):
 
     Notes
     -----
-    Axes indices:
+    Axes indices for 3D data:
         ┌───┬─────┐
         │ 1 │     │
         │───┤  3  │
@@ -60,13 +60,19 @@ class mpl_itool(Widget):
         │───┼───┬─│
         │ 0 │ 5 │2│
         └───┴───┴─┘
+    Axes indices for 2D data:
+        ┌───┬───┐
+        │ 1 │   │
+        │───┼───│
+        │ 0 │ 2 │
+        └───┴───┘
     """
 
-    def __init__(self, canvas, axes, data, snap=False, gamma=0.5, cmap='terrain_r', parallel=False, bench=False, **improps):
+    def __init__(self, canvas, axes, data, snap=False, gamma=0.5,
+                 cmap='terrain_r', parallel=False, bench=False, **improps):
         self.canvas = canvas
         self.axes = axes
         self.data = data
-        self.vals = data.values
         self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
@@ -76,154 +82,187 @@ class mpl_itool(Widget):
         if not self.canvas.supports_blit:
             raise RuntimeError('Canvas does not support blit. '
                                'If running in ipython, add `%matplotlib qt`.')
-        
-        self.visible = True
-        self.background = None
-        self.needclear = False
 
         lineprops=dict(
-            ls='-', lw=.8, c='grey', animated=True, visible=False,
+            ls='-', lw=.8, c='grey', animated=False, visible=False,
         )
-
         improps.update(dict(
-            animated=True, visible=False,
+            animated=False, visible=False,
             interpolation='none', aspect='auto', origin='lower',
             norm=colors.PowerNorm(self.gamma), 
-            cmap=self.cmap
+            cmap=self.cmap, rasterized=True
         ))
 
-        self.dim_y, self.dim_z, self.dim_x = self.data.dims
-
-        self.coord_x, self.coord_y, self.coord_z = (
-            self.data[self.dim_x].values,
-            self.data[self.dim_y].values,
-            self.data[self.dim_z].values,
-        )
-        self.len_x, self.len_y, self.len_z = (len(self.coord_x), 
-                                              len(self.coord_y), 
-                                              len(self.coord_z))
-
-        self.inc_x, self.inc_y, self.inc_z = (
-            self.coord_x[1] - self.coord_x[0],
-            self.coord_y[1] - self.coord_y[0],
-            self.coord_z[1] - self.coord_z[0],
-        )
-
-        self.lims_x, self.lims_y, self.lims_z = (
-            (self.coord_x[0], self.coord_x[-1]),
-            (self.coord_y[0], self.coord_y[-1]),
-            (self.coord_z[0], self.coord_z[-1]),
-        )
-        _get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
-        xmid, ymid, zmid = (_get_middle_index(self.coord_x),
-                            _get_middle_index(self.coord_y),
-                            _get_middle_index(self.coord_z))
+        self.vals = self.data.values
+        self.ndim = self.data.ndim
+        if self.ndim == 2:
+            self.vals_T = self.vals.T
+        elif self.ndim == 3:
+            self.vals_T = np.transpose(self.vals, axes=(1,2,0))
+        self.dims = self.data.dims
+        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
+        self.shape = self.data.shape
+        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
+                          for i in range(self.ndim))
+        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
+                          for i in range(self.ndim))
         
-        self._last_ind_x, self._last_ind_y, self._last_ind_z = xmid, ymid, zmid
+        _get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        mids = tuple(_get_middle_index(self.coords[i])
+                     for i in range(self.ndim))
+        self.cursor_pos = [self.coords[i][mids[i]] for i in range(self.ndim)]
+        self._last_ind = list(mids)
         self._shift = False
 
-        self.map_xy = self.axes[0].imshow(self.vals[:,0,:],
-                                          extent=(*self.lims_x, *self.lims_y), **improps)
-        self.map_xz = self.axes[4].imshow(self.vals[0,:,:],
-                                          extent=(*self.lims_x, *self.lims_z), **improps)
-        self.map_zy = self.axes[5].imshow(self.vals[:,:,0],
-                                          extent=(*self.lims_z, *self.lims_y), **improps)
-        self.histx = self.axes[1].plot(
-            self.coord_x, self.vals[ymid,zmid,:],
-            visible=False, animated=True, color='k', lw=.8)[0]
-        self.histy = self.axes[2].plot(
-            self.vals[:,zmid,xmid], self.coord_y,
-            visible=False, animated=True, color='k', lw=.8)[0]
-        self.histz = self.axes[3].plot(
-            self.coord_z, self.vals[ymid,:,xmid],
-            visible=False, animated=True, color='k', lw=.8)[0]
-        self.xcursor = [
-            self.axes[0].axvline(self.coord_x[xmid], **lineprops),
-            self.axes[1].axvline(self.coord_x[xmid], **lineprops),
-            self.axes[4].axvline(self.coord_x[xmid], **lineprops),
-        ]
-        self.ycursor = [
-            self.axes[0].axhline(self.coord_y[ymid], **lineprops),
-            self.axes[2].axhline(self.coord_y[ymid], **lineprops),
-            self.axes[5].axhline(self.coord_y[ymid], **lineprops),
-        ]
-        self.zcursor = [
-            self.axes[3].axvline(self.coord_z[zmid], **lineprops),
-            self.axes[5].axvline(self.coord_z[zmid], **lineprops),
-            self.axes[4].axhline(self.coord_z[zmid], **lineprops),
-        ]
-        axes[3].axvline(0., animated=False, color='k', lw=.8, ls='--')
-        self.maps = [self.map_zy, self.map_xz, self.map_xy]
-        self.hists = [self.histx, self.histy, self.histz]
-        self.cursors = self.xcursor + self.ycursor + self.zcursor
+        if self.ndim == 2:
+            self.maps = (
+                self.axes[0].imshow(self.vals_T,
+                                    extent=(*self.lims[0], *self.lims[1]),
+                                    label='Main Image',
+                                    **improps),
+            )
+            self.hists = (
+                self.axes[1].plot(self.coords[0], self.vals[:,mids[1]],
+                                visible=False, animated=False, color='k',
+                                linewidth=.8, label='X Profile')[0],
+                self.axes[2].plot(self.vals[mids[0],:], self.coords[1],
+                                visible=False, animated=False, color='k',
+                                linewidth=.8, label='Y Profile')[0],
+            )
+            self.cursors = (
+                self.axes[0].axvline(self.coords[0][mids[0]],
+                                    label='X Cursor', **lineprops),
+                self.axes[1].axvline(self.coords[0][mids[0]],
+                                    label='X Cursor', **lineprops),
+                self.axes[0].axhline(self.coords[1][mids[1]],
+                                    label='Y Cursor', **lineprops),
+                self.axes[2].axhline(self.coords[1][mids[1]],
+                                    label='Y Cursor', **lineprops),
+            )
+            self.scaling_axes = (self.axes[1].yaxis,
+                                 self.axes[2].xaxis)
+            self.ax_index = (0, 1, 2, 0, 1, 0, 2, 1, 2)
+            self._only_axis = (
+                (False, False, True, True, True, False, False),
+                (False, True, False, False, False, True, True),
+            )
+        elif self.ndim == 3:
+            self.maps = (
+                self.axes[0].imshow(self.vals_T[:,mids[2],:], 
+                                    extent=(*self.lims[0], *self.lims[1]),
+                                    label='Main Image',
+                                    **improps),
+                self.axes[4].imshow(self.vals_T[mids[1],:,:],
+                                    extent=(*self.lims[0], *self.lims[2]),
+                                    label='Horiz Slice',
+                                    **improps),
+                self.axes[5].imshow(self.vals_T[:,:,mids[0]],
+                                    extent=(*self.lims[2], *self.lims[1]),
+                                    label='Vert Slice',
+                                    **improps),
+            )
+            self.hists = (
+                self.axes[1].plot(self.coords[0], self.vals[:,mids[1],mids[2]],
+                                visible=False, animated=False, color='k',
+                                linewidth=.8, label='X Profile')[0],
+                self.axes[2].plot(self.vals[mids[0],:,mids[2]], self.coords[1],
+                                visible=False, animated=False, color='k',
+                                linewidth=.8, label='Y Profile')[0],
+                self.axes[3].plot(self.coords[2], self.vals[mids[0],mids[1],:],
+                                visible=False, animated=False, color='k',
+                                linewidth=.8, label='Z Profile')[0],
+            )
+
+            self.cursors = (
+                self.axes[0].axvline(self.coords[0][mids[0]],
+                                    label='X Cursor', **lineprops),
+                self.axes[1].axvline(self.coords[0][mids[0]],
+                                    label='X Cursor', **lineprops),
+                self.axes[4].axvline(self.coords[0][mids[0]],
+                                    label='X Cursor', **lineprops),
+                self.axes[0].axhline(self.coords[1][mids[1]],
+                                    label='Y Cursor', **lineprops),
+                self.axes[2].axhline(self.coords[1][mids[1]],
+                                    label='Y Cursor', **lineprops),
+                self.axes[5].axhline(self.coords[1][mids[1]],
+                                    label='Y Cursor', **lineprops),
+                self.axes[3].axvline(self.coords[2][mids[2]],
+                                    label='Z Cursor', **lineprops),
+                self.axes[5].axvline(self.coords[2][mids[2]],
+                                    label='Z Cursor', **lineprops),
+                self.axes[4].axhline(self.coords[2][mids[2]],
+                                    label='Z Cursor', **lineprops),
+            )
+            self.scaling_axes = (self.axes[1].yaxis,
+                                 self.axes[2].xaxis,
+                                 self.axes[3].yaxis)
+            if self.lims[-1][-1] * self.lims[-1][0] < 0:
+                axes[3].axvline(0., animated=False, color='k',
+                                linewidth=.8, linestyle='--', label='Fermi Level')
+            self.ax_index = (0, 4, 5, 1, 2, 3, 0, 1, 4, 0, 2, 5, 3, 5, 4, 1, 2, 3)
+            self._only_axis = (
+                (False, False, True,
+                 False, True, True,
+                 True, True, True,
+                 False, False, False,
+                 False, False, False),
+                (False, True, False,
+                 True, False, True,
+                 False, False, False,
+                 True, True, True,
+                 False, False, False),
+                (True, False, False,
+                 True, True, False,
+                 False, False, False,
+                 False, False, False,
+                 True, True, True),
+            )
+            self.axes[3].set_xlabel(self.labelify(self.dims[2]))
+            self.axes[4].set_ylabel(self.labelify(self.dims[2]))
+            self.axes[5].set_xlabel(self.labelify(self.dims[2]))
+            self.axes[3].xaxis.set_label_position('top')
+            self.axes[3].set_xlim(self.lims[2])
+            self.axes[4].set_ylim(self.lims[2])
+            self.axes[5].set_xlim(self.lims[2])
+            self.axes[3].set_yticks([])
+            self.axes[3].ticklabel_format(axis='y', style='sci',
+                                          scilimits=(-2,3), useMathText=False)
+            
         self.all = self.maps + self.hists + self.cursors
-        
 
-        for xc in self.xcursor: xc.set_label('X Cursor')
-        for yc in self.ycursor: yc.set_label('Y Cursor')
-        for zc in self.zcursor: zc.set_label('Z Cursor')
-        self.histx.set_label('X Profile')
-        self.histy.set_label('Y Profile')
-        self.histz.set_label('Z Profile')
-
-        self.axes[0].set_xlabel(self.labelify(self.dim_x))
-        self.axes[0].set_ylabel(self.labelify(self.dim_y))
-        self.axes[1].set_xlabel(self.labelify(self.dim_x))
-        self.axes[2].set_ylabel(self.labelify(self.dim_y))
-        self.axes[3].set_xlabel(self.labelify(self.dim_z))
-        self.axes[4].set_ylabel(self.labelify(self.dim_z))
-        self.axes[5].set_xlabel(self.labelify(self.dim_z))
+        if self.ndim == 3:
+            pass
+        self.axes[0].set_xlabel(self.labelify(self.dims[0]))
+        self.axes[0].set_ylabel(self.labelify(self.dims[1]))
+        self.axes[1].set_xlabel(self.labelify(self.dims[0]))
+        self.axes[2].set_ylabel(self.labelify(self.dims[1]))
         self.axes[1].xaxis.set_label_position('top')
         self.axes[2].yaxis.set_label_position('right')
-        self.axes[3].xaxis.set_label_position('top')
-
-        self.axes[0].set_xlim(self.lims_x)
-        self.axes[0].set_ylim(self.lims_y)
-        self.axes[3].set_xlim(self.lims_z)
-        self.axes[4].set_ylim(self.lims_z)
-        self.axes[5].set_xlim(self.lims_z)
+        self.axes[0].set_xlim(self.lims[0])
+        self.axes[0].set_ylim(self.lims[1])
         self.axes[1].set_yticks([])
         self.axes[2].set_xticks([])
-        self.axes[3].set_yticks([])
+        self.axes[1].ticklabel_format(axis='y', style='sci',
+                                      scilimits=(-2,3), useMathText=False)
+        self.axes[2].ticklabel_format(axis='x', style='sci',
+                                      scilimits=(-2,3), useMathText=False)
+
         if self.bench:
             self.counter = 0.
             self.fps = 0.
             self.lastupdate = time.time()
-
-        self._only_x = [True, False, False,
-                        False, True, True,
-                        True, True, True,
-                        False, False, False,
-                        False, False, False]
-        self._only_y = [False, True, False,
-                        True, False, True, 
-                        False, False, False,
-                        True, True, True,
-                        False, False, False]
-        self._only_z = [False, False, True,
-                        True, True, False,
-                        False, False, False,
-                        False, False, False,
-                        True, True, True]
-        # if self.parallel:
-        # self.all = self.xcursor + self.zcursor[:-1] + [self.histy] \
-        #             + self.ycursor + [self.zcursor[-1], self.histx, self.histz] \
-        #             + self.maps
-        # 0 1 2  3 4 5  678 91011 121314
-        # 6  7  8  12 13 4  9  10 11 14 3   5   0   1   2 
-        # 0  1  2  3  4  5  6  7  8  9  10  11  12  13  14
-        # 12,13,14,10,5,11,0,1,2,6,7,8,3,4,9
-        # self.coord_list = ['x', 'x', 'x', 'x', 'x', 'x',
-                    # 'y', 'y', 'y', 'y', 'y', 'y', '', '', '']
-        self.coord_list = ['', '', '', 'y', 'x', 'y', 'x', 'x', 'x', 'y', 'y', 'y', 'x', 'x', 'y']
-        self.ax_index = [0, 4, 5, 1, 2, 3, 0, 1, 4, 0, 2, 5, 3, 5, 4]
-        self.axes[1].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=False)
-        self.axes[2].ticklabel_format(axis='x', style='sci', scilimits=(-2, 3), useMathText=False)
-        self.axes[3].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3), useMathText=False)
+        
         if self.parallel:
             self.pool = Parallel(n_jobs=-1,require='sharedmem',verbose=0)
+
+        self.visible = True
+        self.background = None
+        self.needclear = False
+
         self.connect()
         # self.canvas.draw()
+        # self.axes[1].xaxis.get_major_ticks()[0].label1.set_visible(False)
+        # self.axes[3].xaxis.get_major_ticks()[-1].label1.set_visible(False)
         # self._apply_change()
 
     def connect(self):
@@ -250,9 +289,11 @@ class mpl_itool(Widget):
         for obj in self.all:
             obj.set_visible(False)
         self.background = self.canvas.copy_from_bbox(self.canvas.figure.bbox)
-        self.axes[1].set_yticks([])
-        self.axes[2].set_xticks([])
-        self.axes[3].set_yticks([])
+        for ax in self.scaling_axes:
+            ax.set_ticks([])
+        # self.axes[1].set_yticks([])
+        # self.axes[2].set_xticks([])
+        # self.axes[3].set_yticks([])
 
     def labelify(self, dim):
         labelformats = dict(
@@ -291,33 +332,23 @@ class mpl_itool(Widget):
         self.gamma = gamma
         self._apply_change()
 
-    def set_index_x(self, xi):
-        self._last_ind_x = xi
-        self._apply_change(self._only_x)
-        self.cursor_pos[0] = self.coord_x[xi]
-        
-    def set_index_y(self, yi):
-        self._last_ind_y = yi
-        self._apply_change(self._only_y)
-        self.cursor_pos[1] = self.coord_y[yi]
+    def set_index(self, axis, index):
+        self._last_ind[axis] = index
+        self._apply_change(self._only_axis[axis])
+        self.cursor_pos[axis] = self.coords[axis][index]
 
-    def set_index_z(self, zi):
-        self._last_ind_z = zi
-        self._apply_change(self._only_z)
-        self.cursor_pos[2] = self.coord_z[zi]
+    def set_value(self, axis, val):
+        self.set_index(axis, self.get_index_of_value(axis, val))
+        self.cursor_pos[axis] = val
 
-    def set_value_x(self, x):
-        self.set_index_x(np.rint((x-self.lims_x[0])/self.inc_x).astype(int))
-        self.cursor_pos[0] = x
-        
-    def set_value_y(self, y):
-        self.set_index_y(np.rint((y-self.lims_y[0])/self.inc_y).astype(int))
-        self.cursor_pos[1] = y
+    def get_index_of_value(self, axis, val):
+        # return np.rint((val-self.lims[axis][0])/self.incs[axis]).astype(int)
+        return min(
+            np.searchsorted(self.coords[axis] + 0.5 * self.incs[axis], val),
+            self.shape[axis] - 1,
+        )
 
-    def set_value_z(self, z):
-        self.set_index_z(np.rint((z-self.lims_z[0])/self.inc_z).astype(int))
-        self.cursor_pos[2] = z
-            
+    
     def onmove(self, event):
         if self.ignore(event):
             return
@@ -335,60 +366,53 @@ class mpl_itool(Widget):
         if event.inaxes == self.axes[0]:
             dx, dy, dz = True, True, False
             x, y = event.xdata, event.ydata
-        elif event.inaxes == self.axes[4]:
-            dx, dy, dz = True, False, True
-            x, z = event.xdata, event.ydata
-        elif event.inaxes == self.axes[5]:
-            dx, dy, dz = False, True, True
-            z, y = event.xdata, event.ydata
         elif event.inaxes == self.axes[1]:
             dx, dy, dz = True, False, False
             x = event.xdata
         elif event.inaxes == self.axes[2]:
             dx, dy, dz = False, True, False
             y = event.ydata
+        elif event.inaxes == self.axes[4]:
+            dx, dy, dz = True, False, True
+            x, z = event.xdata, event.ydata
+        elif event.inaxes == self.axes[5]:
+            dx, dy, dz = False, True, True
+            z, y = event.xdata, event.ydata
         elif event.inaxes == self.axes[3]:
             dx, dy, dz = False, False, True
             z = event.xdata
 
-        cond = [dx, dy, dz,
-                dy or dz, dx or dz, dx or dy,
-                dx, dx, dx,
-                dy, dy, dy,
-                dz, dz, dz]
+        if self.ndim == 2:
+            cond = (False, dy, dx, dx, dx, dy, dy)
+        elif self.ndim == 3:
+            cond = (dz, dy, dx,
+                    dy or dz, dx or dz, dx or dy,
+                    dx, dx, dx,
+                    dy, dy, dy,
+                    dz, dz, dz)
+        
         if dx:
-            ind_x = min(
-                np.searchsorted(self.coord_x + 0.5 * self.inc_x, x),
-                self.len_x - 1,
-            )
-            if (ind_x == self._last_ind_x) & self.snap:
+            ind_x = self.get_index_of_value(0, x)
+            if self.snap & (ind_x == self._last_ind[0]):
                 dx = False
             else:
-                self._last_ind_x = ind_x
+                self._last_ind[0] = ind_x
         if dy:
-            ind_y = min(
-                np.searchsorted(self.coord_y + 0.5 * self.inc_y, y),
-                self.len_y - 1,
-            )
-            if (ind_y == self._last_ind_y) & self.snap:
+            ind_y = self.get_index_of_value(1, y)
+            if self.snap & (ind_y == self._last_ind[1]):
                 dy = False
             else:
-                self._last_ind_y = ind_y
+                self._last_ind[1] = ind_y
         if dz:
-            ind_z = min(
-                np.searchsorted(self.coord_z + 0.5 * self.inc_z, z),
-                self.len_z - 1,
-            )
-            if (ind_z == self._last_ind_z) & self.snap:
+            ind_z = self.get_index_of_value(2, z)
+            if self.snap & (ind_z == self._last_ind[2]):
                 dz = False
             else:
-                self._last_ind_z = ind_z
+                self._last_ind[2] = ind_z
 
         if self.snap:
             self.cursor_pos = [
-                self.coord_x[self._last_ind_x],
-                self.coord_y[self._last_ind_y],
-                self.coord_z[self._last_ind_z]
+                self.coords[i][self._last_ind[i]] for i in range(self.ndim)
             ]
         else:
             self.cursor_pos = [x, y, z]
@@ -396,7 +420,9 @@ class mpl_itool(Widget):
         if self.bench:
             self.print_time()
     
-    def _apply_change(self, cond=[True]*15):
+    def _apply_change(self, cond=None):
+        if cond is None:
+            cond = (True,) * len(self.all)
         if self.parallel:
             self.pool(delayed(self.set_data)(i)
                     for i in list(compress(range(len(cond)), cond)))
@@ -407,32 +433,31 @@ class mpl_itool(Widget):
             for i in list(compress(range(len(cond)), cond)): self.set_data(i)
             for a in self.all: a.set_visible(self.visible)
             self._update()
+
     def _update(self):
-        self.axes[1].yaxis.set_major_locator(AutoLocator())
-        self.axes[2].xaxis.set_major_locator(AutoLocator())
-        self.axes[3].yaxis.set_major_locator(AutoLocator())
-        for i in range(3):
-            self.axes[i+1].relim()
-            self.axes[i+1].autoscale_view()
+        for ax in self.scaling_axes:
+            ax.set_major_locator(AutoLocator())
+            ax.axes.relim()
+            ax.axes.autoscale_view()
         for im in self.maps: 
             im.set_norm(colors.PowerNorm(self.gamma))
         if self.background is not None:
             self.canvas.restore_region(self.background)
         if self.parallel:
-            self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-                [0, 4, 5, 1, 2, 3, 1, 2, 3],
-                self.maps + self.hists + [self.axes[1].yaxis,
-                                          self.axes[2].xaxis,
-                                          self.axes[3].yaxis])))
-            self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-                [0, 1, 4, 0, 2, 5, 3, 5, 4], self.cursors)))
+            raise NotImplementedError
+            # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+            #     (0, 4, 5, 1, 2, 3, 1, 2, 3),
+            #     self.maps + self.hists + (self.axes[1].yaxis,
+            #                               self.axes[2].xaxis,
+            #                               self.axes[3].yaxis))))
+            # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+            #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
         else:
-            for i, art in list(zip(self.ax_index + [1, 2, 3],
-                                   self.all + [self.axes[1].yaxis,
-                                               self.axes[2].xaxis,
-                                               self.axes[3].yaxis])):
+            for i, art in list(zip(self.ax_index,
+                                   self.all + self.scaling_axes)):
                 self.axes[i].draw_artist(art)
         self.canvas.blit()
+    
     def print_time(self):
         now = time.time()
         dt = (now-self.lastupdate)
@@ -444,24 +469,46 @@ class mpl_itool(Widget):
         tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps )
         print(tx, end='\r')
     
+
     def set_data(self, i):
-        if i == 0: self.all[i].set_data(self.vals[:, :, self._last_ind_x])
-        elif i == 1: self.all[i].set_data(self.vals[self._last_ind_y, :, :])
-        elif i == 2: self.all[i].set_data(self.vals[:, self._last_ind_z, :])
-        elif i == 3: 
-            self.all[i].set_ydata(self.vals[self._last_ind_y, self._last_ind_z, :])
+        if self.ndim == 2:
+            self.set_data_2d(i)
+        elif self.ndim == 3:
+            self.set_data_3d(i)
+
+    def set_data_2d(self, i):
+        if i == 0: 
+            self.all[i].set_data(self.vals_T)
+        elif i == 1: 
+            self.all[i].set_ydata(self.vals_T[self._last_ind[1],:])
+        elif i == 2: 
+            self.all[i].set_xdata(self.vals_T[:,self._last_ind[0]])
+        elif i in [3, 4]:
+            self.all[i].set_xdata((self.cursor_pos[0],self.cursor_pos[0]))
+        elif i in [5, 6]: 
+            self.all[i].set_ydata((self.cursor_pos[1],self.cursor_pos[1]))
+    
+    def set_data_3d(self, i):
+        if i == 0: 
+            self.all[i].set_data(self.vals_T[:,self._last_ind[2],:])
+        elif i == 1: 
+            self.all[i].set_data(self.vals_T[self._last_ind[1],:,:])
+        elif i == 2: 
+            self.all[i].set_data(self.vals_T[:,:,self._last_ind[0]])
+        elif i == 3:
+            self.all[i].set_ydata(self.vals[:,self._last_ind[1],self._last_ind[2]])
         elif i == 4: 
-            self.all[i].set_xdata(self.vals[:, self._last_ind_z, self._last_ind_x])
+            self.all[i].set_xdata(self.vals[self._last_ind[0],:,self._last_ind[2]])
         elif i == 5:
-            self.all[i].set_ydata(self.vals[self._last_ind_y, :, self._last_ind_x])
+            self.all[i].set_ydata(self.vals[self._last_ind[0],self._last_ind[1],:])
         elif i in [6, 7, 8]:
-            self.all[i].set_xdata((self.cursor_pos[0], self.cursor_pos[0]))
+            self.all[i].set_xdata((self.cursor_pos[0],self.cursor_pos[0]))
         elif i in [9, 10, 11]: 
-            self.all[i].set_ydata((self.cursor_pos[1], self.cursor_pos[1]))
+            self.all[i].set_ydata((self.cursor_pos[1],self.cursor_pos[1]))
         elif i in [12, 13]: 
-            self.all[i].set_xdata((self.cursor_pos[2], self.cursor_pos[2]))
+            self.all[i].set_xdata((self.cursor_pos[2],self.cursor_pos[2]))
         elif i == 14: 
-            self.all[i].set_ydata((self.cursor_pos[2], self.cursor_pos[2]))
+            self.all[i].set_ydata((self.cursor_pos[2],self.cursor_pos[2]))
 
     def _drawpath(self):
         # ld = LineDrawer(self.canvas, self.axes[0])
@@ -472,7 +519,50 @@ class mpl_itool(Widget):
     def _onselectpath(self, verts):
         print(verts)
 
-
+class ImageToolNavBar(NavigationToolbar2QT):
+    def __init__(self, canvas, parent, coordinates=True):
+        self.parent = parent
+        NavigationToolbar2QT.__init__(self, canvas, parent, coordinates=coordinates)
+    def _icon(self, name):
+        """
+        Construct a `.QIcon` from an image file *name*, including the extension
+        and relative to Matplotlib's "images" data directory.
+        """
+        name = name.replace('.png', '')
+        icons_dict = dict(
+            # back = qta.icon('ph.arrow-arc-left-fill'),
+            # forward = qta.icon('ph.arrow-arc-right-fill'),
+            # filesave = qta.icon('ph.floppy-disk-fill'),
+            # home = qta.icon('ph.corners-out-fill'),
+            # move = qta.icon('ph.arrows-out-cardinal-fill'),
+            # qt4_editor_options = qta.icon('ph.palette-fill'),
+            # zoom_to_rect = qta.icon('ph.crop-fill'),
+            # subplots = qta.icon('ph.squares-four-fill'),
+            back = qta.icon('msc.chevron-left'),
+            forward = qta.icon('msc.chevron-right'),
+            filesave = qta.icon('msc.save'),
+            home = qta.icon('msc.debug-step-back'),
+            move = qta.icon('msc.move'),
+            qt4_editor_options = qta.icon('msc.graph-line'),
+            zoom_to_rect = qta.icon('msc.search'),
+            subplots = qta.icon('msc.editor-layout'),
+        )
+        try:
+            return icons_dict[name]
+        except:
+            print(name)
+            raise Exception
+        # name = name.replace('.png', '_large.png')
+        # pm = QtGui.QPixmap(str(cbook._get_data_path('images', name)))
+        # _setDevicePixelRatio(pm, _devicePixelRatioF(self))
+        # if self.palette().color(self.backgroundRole()).value() < 128:
+            # icon_color = self.palette().color(self.foregroundRole())
+            # mask = pm.createMaskFromColor(
+                # QtGui.QColor('black'),
+                # _enum("QtCore.Qt.MaskMode").MaskOutColor)
+            # pm.fill(icon_color)
+            # pm.setMask(mask)
+        # return QtGui.QIcon(pm)
 
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, *args, **kwargs):
@@ -480,46 +570,55 @@ class ImageTool(QtWidgets.QMainWindow):
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
-        self.main_canvas = FigureCanvas(Figure())
-        gs = self.main_canvas.figure.add_gridspec(3, 3, width_ratios=(6,4,2), height_ratios=(2,4,6))
-        self._axes_main = self.main_canvas.figure.add_subplot(gs[2, 0])
-        self._axes = [
-            self._axes_main,
-            self.main_canvas.figure.add_subplot(gs[0, 0], sharex=self._axes_main),
-            self.main_canvas.figure.add_subplot(gs[2, 2], sharey=self._axes_main),
-            self.main_canvas.figure.add_subplot(gs[:2, 1:]),
-            self.main_canvas.figure.add_subplot(gs[1, 0], sharex=self._axes_main),
-            self.main_canvas.figure.add_subplot(gs[2, 1], sharey=self._axes_main),
-        ]
-        self._axes[0].set_label('Main Image')
-        self._axes[1].set_label('X Profile')
-        self._axes[2].set_label('Y Profile')
-        self._axes[3].set_label('Z Profile')
-        self._axes[4].set_label('Horiz Slice')
-        self._axes[5].set_label('Vert Slice')
-        self._axes[4].label_outer()
-        self._axes[5].label_outer()
+        self.figure = Figure(figsize=(10,10), dpi=75)
+        self.ndim = data.ndim
+        if self.ndim == 3:
+            gs = self.figure.add_gridspec(3, 3,
+                    width_ratios=(6,4,2), height_ratios=(2,4,6))
+            self._axes_main = self.figure.add_subplot(gs[2, 0])
+            self._axes = [
+                self._axes_main,
+                self.figure.add_subplot(gs[0,0], sharex=self._axes_main),
+                self.figure.add_subplot(gs[2,2], sharey=self._axes_main),
+                self.figure.add_subplot(gs[:2,1:]),
+                self.figure.add_subplot(gs[1,0], sharex=self._axes_main),
+                self.figure.add_subplot(gs[2,1], sharey=self._axes_main),
+            ]
+            self._axes[3].set_label('Z Profile Axes')
+            self._axes[4].set_label('Horiz Slice Axes')
+            self._axes[5].set_label('Vert Slice Axes')
+            self._axes[4].label_outer()
+            self._axes[5].label_outer()
+            self._axes[3].xaxis.tick_top()
+            self._axes[3].yaxis.tick_right()
+        elif self.ndim == 2:
+            gs = self.figure.add_gridspec(
+                    2, 2, width_ratios=(6,2), height_ratios=(2,6))
+            self._axes_main = self.figure.add_subplot(gs[1, 0])
+            self._axes = [
+                self._axes_main,
+                self.figure.add_subplot(gs[0, 0], sharex=self._axes_main),
+                self.figure.add_subplot(gs[1, 1], sharey=self._axes_main),
+            ]
+        self._axes[0].set_label('Main Image Axes')
+        self._axes[1].set_label('X Profile Axes')
+        self._axes[2].set_label('Y Profile Axes')
         self._axes[1].xaxis.tick_top()
         self._axes[2].yaxis.tick_right()
-        self._axes[3].xaxis.tick_top()
-        self._axes[3].yaxis.tick_right()
-        self.main_canvas.figure.set_tight_layout(True)
-                
+
+        self.figure.set_tight_layout(True)
+        self.main_canvas = FigureCanvas(self.figure)
         self.mc = mpl_itool(self.main_canvas, self._axes,
                             data, *args, **kwargs)
-        
-        self.NavBar = NavigationToolbar
-        init_old = self.NavBar.__init__
-        def init_new(self, canvas, parent, coordinates=True):
-            self.parent = parent
-            init_old(self, canvas, parent, coordinates=coordinates)
+        self.NavBar = ImageToolNavBar
         home_old = self.NavBar.home
         def home_new(self, *args):
             home_old(self, *args)
             axes = self.canvas.figure.axes
             axes[1].set_ylim(auto=True)
             axes[2].set_xlim(auto=True)
-            axes[3].set_ylim(auto=True)
+            if self.parent.mc.ndim == 3:
+                axes[3].set_ylim(auto=True)
         pan_old = self.NavBar.pan
         def pan_new(self, *args):
             if self.mode == _Mode.PAN:
@@ -534,7 +633,6 @@ class ImageTool(QtWidgets.QMainWindow):
             else:
                 self.parent.mc.disconnect()
             zoom_old(self, *args)
-        self.NavBar.__init__ = init_new
         self.NavBar.home = home_new
         self.NavBar.pan = pan_new
         self.NavBar.zoom = zoom_new
@@ -542,62 +640,37 @@ class ImageTool(QtWidgets.QMainWindow):
                         self.NavBar(self.main_canvas, self))
         self.infotab = QtWidgets.QWidget()
         infotabcontent = QtWidgets.QHBoxLayout(self.infotab)
-        spinxlabel = QtWidgets.QLabel(self.mc.dim_x)
-        spinylabel = QtWidgets.QLabel(self.mc.dim_y)
-        spinzlabel = QtWidgets.QLabel(self.mc.dim_z)
-        self.infospin_x = QtWidgets.QSpinBox(self.infotab)
-        self.infospin_y = QtWidgets.QSpinBox(self.infotab)
-        self.infospin_z = QtWidgets.QSpinBox(self.infotab)
-        self.infodblspin_x = QtWidgets.QDoubleSpinBox(self.infotab)
-        self.infodblspin_y = QtWidgets.QDoubleSpinBox(self.infotab)
-        self.infodblspin_z = QtWidgets.QDoubleSpinBox(self.infotab)
-        self.infospin_x.setRange(0, self.mc.len_x - 1)
-        self.infospin_y.setRange(0, self.mc.len_y - 1)
-        self.infospin_z.setRange(0, self.mc.len_z - 1)
-        self.infospin_x.setSingleStep(1)
-        self.infospin_y.setSingleStep(1)
-        self.infospin_z.setSingleStep(1)
-        self.infospin_x.setValue(self.mc._last_ind_x)
-        self.infospin_y.setValue(self.mc._last_ind_y)
-        self.infospin_z.setValue(self.mc._last_ind_z)
-        self.infospin_x.valueChanged.connect(lambda v: self._spinchanged('x', v))
-        self.infospin_y.valueChanged.connect(lambda v: self._spinchanged('y', v))
-        self.infospin_z.valueChanged.connect(lambda v: self._spinchanged('z', v))
-        self.infospin_x.setWrapping(True)
-        self.infospin_y.setWrapping(True)
-        self.infospin_z.setWrapping(True)
-        self.infodblspin_x.setRange(*self.mc.lims_x)
-        self.infodblspin_y.setRange(*self.mc.lims_y)
-        self.infodblspin_z.setRange(*self.mc.lims_z)
-        self.infodblspin_x.setSingleStep(self.mc.inc_x)
-        self.infodblspin_y.setSingleStep(self.mc.inc_y)
-        self.infodblspin_z.setSingleStep(self.mc.inc_z)
-        self.infodblspin_x.setDecimals(3)
-        self.infodblspin_y.setDecimals(3)
-        self.infodblspin_z.setDecimals(3)
-        self.infodblspin_x.setValue(self.mc.coord_x[self.mc._last_ind_x])
-        self.infodblspin_y.setValue(self.mc.coord_y[self.mc._last_ind_y])
-        self.infodblspin_z.setValue(self.mc.coord_z[self.mc._last_ind_z])
-        self.infodblspin_x.valueChanged.connect(lambda v: self._spindblchanged('x', v))
-        self.infodblspin_y.valueChanged.connect(lambda v: self._spindblchanged('y', v))
-        self.infodblspin_z.valueChanged.connect(lambda v: self._spindblchanged('z', v))
-        self.infodblspin_x.setWrapping(True)
-        self.infodblspin_y.setWrapping(True)
-        self.infodblspin_z.setWrapping(True)
+        spinlabels = tuple(QtWidgets.QLabel(self.mc.dims[i])
+                           for i in range(self.ndim))
+        self.infospinners = tuple(QtWidgets.QSpinBox(self.infotab)
+                                  for i in range(self.ndim))
+        self.infodblspinners = tuple(QtWidgets.QDoubleSpinBox(self.infotab)
+                                     for i in range(self.ndim))
+        for i in range(self.ndim):
+            self.infospinners[i].setRange(0, self.mc.shape[i] - 1)
+            self.infospinners[i].setSingleStep(1)
+            self.infospinners[i].setValue(self.mc._last_ind[i])
+            self.infospinners[i].setWrapping(True)
+            self.infospinners[i].valueChanged.connect(
+                lambda v, axis=i: self._spinchanged(axis, v))
+            self.infodblspinners[i].setRange(*self.mc.lims[i])
+            self.infodblspinners[i].setSingleStep(self.mc.incs[i])
+            self.infodblspinners[i].setDecimals(3)
+            self.infodblspinners[i].setValue(
+                self.mc.coords[i][self.mc._last_ind[i]])
+            self.infodblspinners[i].setWrapping(True)
+            self.infodblspinners[i].valueChanged.connect(
+                lambda v, axis=i: self._spindblchanged(axis, v))
+        
         cursorsnapcheck = QtWidgets.QCheckBox(self.infotab)
         cursorsnapcheck.setChecked(self.mc.snap)
         cursorsnapcheck.stateChanged.connect(self._assign_snap)
-        infotabcontent.addWidget(spinxlabel)
-        infotabcontent.addWidget(self.infodblspin_x)
-        infotabcontent.addWidget(self.infospin_x)
-        infotabcontent.addSpacing(20)
-        infotabcontent.addWidget(spinylabel)
-        infotabcontent.addWidget(self.infodblspin_y)
-        infotabcontent.addWidget(self.infospin_y)
-        infotabcontent.addSpacing(20)
-        infotabcontent.addWidget(spinzlabel)
-        infotabcontent.addWidget(self.infodblspin_z)
-        infotabcontent.addWidget(self.infospin_z)
+
+        for i in range(self.ndim):
+            infotabcontent.addWidget(spinlabels[i])
+            infotabcontent.addWidget(self.infodblspinners[i])
+            infotabcontent.addWidget(self.infospinners[i])
+            infotabcontent.addSpacing(20)
         infotabcontent.addStretch()
         infotabcontent.addWidget(cursorsnapcheck)
         infotabcontent.addWidget(QtWidgets.QLabel('Snap to Data'))
@@ -607,7 +680,8 @@ class ImageTool(QtWidgets.QMainWindow):
         gammalabel = QtWidgets.QLabel('g')
         gammaspin = QtWidgets.QDoubleSpinBox()
         gammaspin.setToolTip("Colormap Gamma")
-        gammaspin.setSingleStep(0.05)
+        gammaspin.setSingleStep(0.01)
+        gammaspin.setRange(0.01, 100.)
         gammaspin.setValue(self.mc.gamma)
         gammaspin.valueChanged.connect(self.mc.set_gamma)
         colormaps = QtWidgets.QComboBox()
@@ -621,15 +695,15 @@ class ImageTool(QtWidgets.QMainWindow):
         colorstabcontent.addWidget(colormaps)
         colorstabcontent.addStretch()
         self.colorstab.setLayout(colorstabcontent)
-
-        self.pathtab = QtWidgets.QWidget()
-        pathtabcontent = QtWidgets.QHBoxLayout()
-        pathlabel = QtWidgets.QLabel('Add point: `space`\nRemove point: `delete`\nFinish selection: `enter`')
-        pathstart = QtWidgets.QPushButton()
-        pathstart.clicked.connect(self.mc._drawpath)
-        pathtabcontent.addWidget(pathlabel)
-        pathtabcontent.addWidget(pathstart)
-        self.pathtab.setLayout(pathtabcontent)
+        
+        # self.pathtab = QtWidgets.QWidget()
+        # pathtabcontent = QtWidgets.QHBoxLayout()
+        # pathlabel = QtWidgets.QLabel('Add point: `space`\nRemove point: `delete`\nFinish selection: `enter`')
+        # pathstart = QtWidgets.QPushButton()
+        # pathstart.clicked.connect(self.mc._drawpath)
+        # pathtabcontent.addWidget(pathlabel)
+        # pathtabcontent.addWidget(pathstart)
+        # self.pathtab.setLayout(pathtabcontent)
 
         self.tabwidget = QtWidgets.QTabWidget()
         self.tabwidget.addTab(self.infotab, "Info")
@@ -638,7 +712,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.layout.addWidget(self.tabwidget)
         
         self.layout.addWidget(self.main_canvas)
-        self.main_canvas.mpl_connect('motion_notify_event',self.onmove_super)
+        self.main_canvas.mpl_connect('motion_notify_event', self.onmove_super)
         self.main_canvas.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.main_canvas.setFocus()
 
@@ -648,71 +722,47 @@ class ImageTool(QtWidgets.QMainWindow):
         if not event.button:
             if not self.mc._shift:
                 return
-        self.infospin_x.blockSignals(True)
-        self.infospin_y.blockSignals(True)
-        self.infospin_z.blockSignals(True)
-        self.infodblspin_x.blockSignals(True)
-        self.infodblspin_y.blockSignals(True)
-        self.infodblspin_z.blockSignals(True)
-        self.infospin_x.setValue(self.mc._last_ind_x)
-        self.infospin_y.setValue(self.mc._last_ind_y)
-        self.infospin_z.setValue(self.mc._last_ind_z)
-        self.infodblspin_x.setValue(self.mc.coord_x[self.mc._last_ind_x])
-        self.infodblspin_y.setValue(self.mc.coord_y[self.mc._last_ind_y])
-        self.infodblspin_z.setValue(self.mc.coord_z[self.mc._last_ind_z])
-        self.infospin_x.blockSignals(False)
-        self.infospin_y.blockSignals(False)
-        self.infospin_z.blockSignals(False)
-        self.infodblspin_x.blockSignals(False)
-        self.infodblspin_y.blockSignals(False)
-        self.infodblspin_z.blockSignals(False)
+        for i in range(self.ndim):
+            self.infospinners[i].blockSignals(True)
+            self.infospinners[i].setValue(self.mc._last_ind[i])
+            self.infospinners[i].blockSignals(False)
+            self.infodblspinners[i].blockSignals(True)
+            self.infodblspinners[i].setValue(
+                self.mc.coords[i][self.mc._last_ind[i]])
+            self.infodblspinners[i].blockSignals(False)
 
     def _spinchanged(self, axis, index):
-        if axis == 'x':
-            self.infodblspin_x.blockSignals(True)
-            self.mc.set_index_x(index)
-            self.infodblspin_x.setValue(self.mc.coord_x[index])
-            self.infodblspin_x.blockSignals(False)
-        elif axis == 'y':
-            self.infodblspin_y.blockSignals(True)
-            self.mc.set_index_y(index)
-            self.infodblspin_y.setValue(self.mc.coord_y[index])
-            self.infodblspin_y.blockSignals(False)
-        elif axis == 'z':
-            self.infodblspin_z.blockSignals(True)
-            self.mc.set_index_z(index)
-            self.infodblspin_z.setValue(self.mc.coord_z[index])
-            self.infodblspin_z.blockSignals(False)
+        self.infodblspinners[axis].blockSignals(True)
+        self.mc.set_index(axis, index)
+        self.infodblspinners[axis].setValue(self.mc.coords[axis][index])
+        self.infodblspinners[axis].blockSignals(False)
+
     def _spindblchanged(self, axis, value):
-        if axis == 'x':
-            self.infospin_x.blockSignals(True)
-            self.mc.set_value_x(value)
-            self.infospin_x.setValue(self.mc._last_ind_x)
-            self.infospin_x.blockSignals(False)
-        elif axis == 'y':
-            self.infospin_y.blockSignals(True)
-            self.mc.set_value_y(value)
-            self.infospin_y.setValue(self.mc._last_ind_y)
-            self.infospin_y.blockSignals(False)
-        elif axis == 'z':
-            self.infospin_z.blockSignals(True)
-            self.mc.set_value_z(value)
-            self.infospin_z.setValue(self.mc._last_ind_z)
-            self.infospin_z.blockSignals(False)
+        self.infospinners[axis].blockSignals(True)
+        self.mc.set_value(axis, value)
+        self.infospinners[axis].setValue(self.mc._last_ind[axis])
+        self.infospinners[axis].blockSignals(False)
+
     def _assign_snap(self, value):
         self.mc.snap = value
 def itool(data, *args, **kwargs):
+    # TODO: implement multiple windows, add transpose, add binning
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     with plt.rc_context({
         'text.usetex':False,
-    #     #  'mathtext.fontset':'stixsans',
-        'font.size':7,
-        'font.family':'sans',
-        # 'font.family':'Helvetica',
+        # 'font.family':'SF Pro',
+        # 'font.size':8,
+        # 'font.stretch':'condensed',
+        # 'mathtext.fontset':'cm',
+        # 'font.family':'fantasy',
     }):
         app = ImageTool(data, *args, **kwargs)
+
+    # qapp.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps) 
+    qapp.setAttribute(QtCore.Qt.AA_Use96Dpi) 
+
     qapp.setStyle('Fusion')
     app.show()
     app.activateWindow()
