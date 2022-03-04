@@ -33,7 +33,7 @@ dependencies:
   - joblib
   - lmfit>=1.0.0
   - pandas
-  - pint  
+  - pint
   - psutil
   - pygments
   - pyqtgraph>=0.12.3
@@ -44,5 +44,7 @@ dependencies:
   - titlecase
   - tqdm
   - uncertainties>=3.0.1
+  - qtawesome
   - pip:
     - pyside6>=6.2.2
+    - numba_progress
