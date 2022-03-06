@@ -47,7 +47,10 @@ dependencies:
   - qtawesome
   - pip:
     - pyside6>=6.2.2
+    - numbagg
+    - csaps
     - numba_progress
+    - darkdetect
     - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
     - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
     - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
