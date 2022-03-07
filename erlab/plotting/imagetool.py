@@ -137,7 +137,7 @@ class ColorButton(QtWidgets.QPushButton):
         self.colorChanged.emit(color.getRgbF())
         if self._color:
             self.setStyleSheet(
-                'QWidget { background-color: %s }'
+                'QWidget { background-color: %s; border: 0; }'
                 % self._color.name(QtGui.QColor.HexArgb))
         else:
             self.setStyleSheet('')
@@ -1001,6 +1001,13 @@ class ImageTool(QtWidgets.QMainWindow):
         self.NavBar.zoom = zoom_new
         self.addToolBar(QtCore.Qt.BottomToolBarArea,
                         self.NavBar(self.main_canvas, self))
+
+        self.icons = dict(
+            swap = qta.icon('msc.arrow-swap'),
+            lock = qta.icon('msc.lock'),
+            unlock = qta.icon('msc.unlock'),
+        )
+        
         self.cursortab = QtWidgets.QWidget()
         cursortab_content = QtWidgets.QHBoxLayout(self.cursortab)
         spinlabels = tuple(QtWidgets.QLabel(self.itool.dims[i])
@@ -1050,17 +1057,21 @@ class ImageTool(QtWidgets.QMainWindow):
         gamma_spin.valueChanged.connect(self.itool.set_gamma)
         gamma_label = QtWidgets.QLabel('g')
         gamma_label.setBuddy(gamma_spin)
-        cmap_combo = QtWidgets.QComboBox(self.colorstab)
-        cmap_combo.setToolTip('Colormap')
+        self._cmap_combo = QtWidgets.QComboBox(self.colorstab)
+        self._cmap_combo.setToolTip('Colormap')
         for name in plt.colormaps():
-            cmap_combo.addItem(QtGui.QIcon(colormap_to_QPixmap(name)), name)
-        cmap_combo.setCurrentIndex(cmap_combo.findText(self.itool.cmap))
-        cmap_combo.setIconSize(QtCore.QSize(60, 15))
-        lock_check = QtWidgets.QCheckBox(self.colorstab)
-        lock_check.setChecked(self.itool.clim_locked)
-        lock_check.stateChanged.connect(self.itool.toggle_clim_lock)
-        lock_label = QtWidgets.QLabel('Lock limits')
-        lock_label.setBuddy(lock_check)
+            self._cmap_combo.addItem(QtGui.QIcon(colormap_to_QPixmap(name)), name)
+        self._cmap_combo.setCurrentText(self.itool.cmap)
+        self._cmap_combo.setIconSize(QtCore.QSize(60, 15))
+        self._cmap_combo.currentTextChanged.connect(self.itool.set_cmap)
+        cmap_r_button = QtWidgets.QPushButton()
+        cmap_r_button.setIcon(self.icons['swap'])
+        cmap_r_button.setCheckable(True)
+        cmap_r_button.toggled.connect(self.reverse_cmap)
+        self._lock_check = QtWidgets.QPushButton(self.colorstab)
+        self._lock_check.setIcon(self.icons['unlock'])
+        self._lock_check.setCheckable(True)
+        self._lock_check.toggled.connect(self._toggle_clim_lock)
         colors_button = QtWidgets.QPushButton('Colors')
         colors_button.clicked.connect(self._color_button_clicked)
         style_combo = QtWidgets.QComboBox(self.colorstab)
@@ -1071,12 +1082,11 @@ class ImageTool(QtWidgets.QMainWindow):
         style_label.setBuddy(style_combo)
         style_combo.setCurrentIndex(style_combo.findText('Fusion'))
         self.main_canvas.draw()
-        cmap_combo.currentTextChanged.connect(self.itool.set_cmap)
         colorstab_content.addWidget(gamma_label)
         colorstab_content.addWidget(gamma_spin)
-        colorstab_content.addWidget(cmap_combo)
-        colorstab_content.addWidget(lock_check)
-        colorstab_content.addWidget(lock_label)
+        colorstab_content.addWidget(self._cmap_combo)
+        colorstab_content.addWidget(cmap_r_button)
+        colorstab_content.addWidget(self._lock_check)
         colorstab_content.addStretch()
         colorstab_content.addWidget(colors_button)
         colorstab_content.addStretch()
@@ -1142,6 +1152,21 @@ class ImageTool(QtWidgets.QMainWindow):
                 self.itool.coords[i][self.itool._last_ind[i]])
             self._cursor_dblspin[i].blockSignals(False)
 
+    def reverse_cmap(self, v):
+        if v:
+            self.itool.set_cmap(
+                plt.get_cmap(self._cmap_combo.currentText()).reversed())
+        else:
+            self.itool.set_cmap(
+                plt.get_cmap(self._cmap_combo.currentText()))
+
+    def _toggle_clim_lock(self, v):
+        if v:
+            self._lock_check.setIcon(self.icons['lock'])
+        else:
+            self._lock_check.setIcon(self.icons['unlock'])
+        self.itool.toggle_clim_lock(v)
+    
     def _navg_changed(self, axis, n):
         self.itool.set_navg(axis, n)
     
