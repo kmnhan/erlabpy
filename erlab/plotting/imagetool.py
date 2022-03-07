@@ -37,13 +37,18 @@ def change_style(style_name):
     QtWidgets.QApplication.setStyle(
         QtWidgets.QStyleFactory.create(style_name))
 
-def cmap2qpixmap(name:str):
+def colormap_to_QPixmap(name:str, h=64):
+    """Convert matplotlib colormap to a 256-by-`h` QPixmap"""
     cmap = plt.colormaps[name]
-    cmap_arr = cmap(np.tile(np.linspace(0, 1, 256), (256, 1))) * 255
+    cmap_arr = cmap(np.tile(np.linspace(0, 1, 256), (h, 1))) * 255
     img = QtGui.QImage(cmap_arr.astype(np.uint8).data,
                        cmap_arr.shape[1], cmap_arr.shape[0],
                        QtGui.QImage.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(img)
+
+def color_to_QColor(c, alpha=None):
+    """Convert matplotlib color to QtGui.Qcolor."""
+    return QtGui.QColor.fromRgbF(*colors.to_rgba(c, alpha=alpha))
 
 def move_mean_centered(a, window, min_count=None, axis=-1):
     w = (window - 1) // 2
@@ -106,6 +111,58 @@ def get_xy_y(a, b):
 def get_true_indices(a):
     return list(compress(range(len(a)), a))
 
+# https://www.pythonguis.com/widgets/qcolorbutton-a-color-selector-tool-for-pyqt/
+class ColorButton(QtWidgets.QPushButton):
+    '''
+    Custom Qt Widget to show a chosen color.
+
+    Left-clicking the button shows the color-chooser, while
+    right-clicking resets the color to None (no-color).
+    '''
+
+    colorChanged = QtCore.Signal(object)
+
+    def __init__(self, *args, color=None, **kwargs):
+        super(ColorButton, self).__init__(*args, **kwargs)
+
+        self._color = None
+        self._default = color
+        self.pressed.connect(self.onColorPicker)
+
+        # Set the initial/default state.
+        self.setColor(self._default)
+
+    def setColor(self, color):
+        self._color = color
+        self.colorChanged.emit(color.getRgbF())
+        if self._color:
+            self.setStyleSheet(
+                'QWidget { background-color: %s }'
+                % self._color.name(QtGui.QColor.HexArgb))
+        else:
+            self.setStyleSheet('')
+
+    def color(self):
+        return self._color
+
+    def onColorPicker(self):
+        '''
+        Show color-picker dialog to select color.
+
+        Qt will use the native dialog by default.
+
+        '''
+        dlg = QtWidgets.QColorDialog(self)
+        if self._color:
+            dlg.setCurrentColor(QtGui.QColor(self._color))
+        if dlg.exec_():
+            self.setColor(dlg.currentColor())
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.RightButton:
+            self.setColor(self._default)
+        return super(ColorButton, self).mousePressEvent(e)
+
 class mpl_itool(Widget):
     """A interactive tool based on `matplotlib` for exploring 3D data.
     
@@ -131,7 +188,7 @@ class mpl_itool(Widget):
     
     Other Parameters
     ----------------
-    **cursorprops
+    **self.cursorprops
         `.Line2D` properties that control the appearance of the lines.
         See also `~.Axes.axhline`.
 
@@ -154,13 +211,15 @@ class mpl_itool(Widget):
     """
 
     def __init__(self, canvas, axes, data, snap=False, gamma=0.5,
-                 cmap='magma', parallel=False, bench=False, **improps):
+                 cmap='magma', useblit=True, parallel=False, bench=False,
+                 cursorprops={}, lineprops={}, fermilineprops={}, **improps):
         self.canvas = canvas
         self.axes = axes
         self.data = parse_data(data)
         self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
+        self.useblit = useblit
         self.parallel = parallel
         self.bench = bench
 
@@ -170,28 +229,39 @@ class mpl_itool(Widget):
         for ax in self.axes:
             for loc, spine in ax.spines.items():
                 spine.set_position(('outward', 1))
-        cursorprops = dict(
-            ls='-', lw=.8, c=plt.rcParams.get('axes.edgecolor'), alpha=0.5,
+        self.cursorprops = cursorprops
+        self.lineprops = lineprops
+        self.fermilineprops = fermilineprops
+        self.improps = improps
+        self.cursorprops.update(dict(
+            linestyle='-', linewidth=.8,
+            color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
+                                 alpha=0.5),
             animated=False, visible=True,
-        )
-        lineprops = dict(
-            ls='-', lw=.8, c=plt.rcParams.get('axes.edgecolor'), alpha=1,
+        ))
+        self.lineprops.update(dict(
+            linestyle='-', linewidth=.8,
+            color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
+                                 alpha=1),
             animated=False, visible=True,
-        )
-        fermilineprops = dict(
-            ls='--', lw=.8, c=plt.rcParams.get('axes.edgecolor'), alpha=1,
+        ))
+        self.fermilineprops.update(dict(
+            linestyle='--', linewidth=.8,
+            color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
+                                 alpha=1),
             animated=False,
-        )
-        improps.update(dict(
+        ))
+        self.improps.update(dict(
             animated=False, visible=True,
             interpolation='none', aspect='auto', origin='lower',
-            norm=colors.PowerNorm(self.gamma), 
+            norm=colors.PowerNorm(self.gamma),
             cmap=self.cmap, rasterized=True
         ))
         spanprops = dict(
             # edgecolor=plt.rcParams.get('axes.edgecolor'),
             # lw=0.5, ls='--',
-            facecolor=plt.rcParams.get('axes.edgecolor'), alpha=0.15,
+            facecolor=colors.to_rgba(self.cursorprops['color'], alpha=1),
+            alpha=0.15,
             animated=False, visible=True,
         )
         self._get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
@@ -201,6 +271,8 @@ class mpl_itool(Widget):
         self.ndim = self.data.ndim
         self._assign_vals_T()
         self.avg_win = [1,] * self.ndim
+        self.clim_locked = False
+        self.clim_list = [()]  * self.ndim
         self.dims = self.data.dims
         self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
         self.shape = self.data.shape
@@ -220,23 +292,23 @@ class mpl_itool(Widget):
                 self.axes[0].imshow(self.vals_T,
                                     extent=(*self.lims[0], *self.lims[1]),
                                     label='Main Image',
-                                    **improps),
+                                    **self.improps),
             )
             self.hists = (
                 self.axes[1].plot(self.coords[0], self.vals[:,mids[1]],
-                                  label='X Profile', **lineprops)[0],
+                                  label='X Profile', **self.lineprops)[0],
                 self.axes[2].plot(self.vals[mids[0],:], self.coords[1],
-                                  label='Y Profile', **lineprops)[0],
+                                  label='Y Profile', **self.lineprops)[0],
             )
             self.cursors = (
                 self.axes[0].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **cursorprops),
+                                    label='X Cursor', **self.cursorprops),
                 self.axes[1].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **cursorprops),
+                                    label='X Cursor', **self.cursorprops),
                 self.axes[0].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **cursorprops),
+                                    label='Y Cursor', **self.cursorprops),
                 self.axes[2].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **cursorprops),
+                                    label='Y Cursor', **self.cursorprops),
             )
             self.spans = (
                 (
@@ -273,43 +345,43 @@ class mpl_itool(Widget):
                 self.axes[0].imshow(self.vals_T[:,mids[2],:], 
                                     extent=(*self.lims[0], *self.lims[1]),
                                     label='Main Image',
-                                    **improps),
+                                    **self.improps),
                 self.axes[4].imshow(self.vals_T[mids[1],:,:],
                                     extent=(*self.lims[0], *self.lims[2]),
                                     label='Horiz Slice',
-                                    **improps),
+                                    **self.improps),
                 self.axes[5].imshow(self.vals_T[:,:,mids[0]],
                                     extent=(*self.lims[2], *self.lims[1]),
                                     label='Vert Slice',
-                                    **improps),
+                                    **self.improps),
             )
             self.hists = (
                 self.axes[1].plot(self.coords[0], self.vals[:,mids[1],mids[2]],
-                                  label='X Profile', **lineprops)[0],
+                                  label='X Profile', **self.lineprops)[0],
                 self.axes[2].plot(self.vals[mids[0],:,mids[2]], self.coords[1],
-                                  label='Y Profile', **lineprops)[0],
+                                  label='Y Profile', **self.lineprops)[0],
                 self.axes[3].plot(self.coords[2], self.vals[mids[0],mids[1],:],
-                                  label='Z Profile', **lineprops)[0],
+                                  label='Z Profile', **self.lineprops)[0],
             )
             self.cursors = (
                 self.axes[0].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **cursorprops),
+                                    label='X Cursor', **self.cursorprops),
                 self.axes[1].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **cursorprops),
+                                    label='X Cursor', **self.cursorprops),
                 self.axes[4].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **cursorprops),
+                                    label='X Cursor', **self.cursorprops),
                 self.axes[0].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **cursorprops),
+                                    label='Y Cursor', **self.cursorprops),
                 self.axes[2].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **cursorprops),
+                                    label='Y Cursor', **self.cursorprops),
                 self.axes[5].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **cursorprops),
+                                    label='Y Cursor', **self.cursorprops),
                 self.axes[3].axvline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **cursorprops),
+                                    label='Z Cursor', **self.cursorprops),
                 self.axes[5].axvline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **cursorprops),
+                                    label='Z Cursor', **self.cursorprops),
                 self.axes[4].axhline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **cursorprops),
+                                    label='Z Cursor', **self.cursorprops),
             )
             self.spans = (
                 (
@@ -359,7 +431,7 @@ class mpl_itool(Widget):
                                  self.axes[2].xaxis,
                                  self.axes[3].yaxis)
             if self.lims[-1][-1] * self.lims[-1][0] < 0:
-                axes[3].axvline(0., label='Fermi Level', **fermilineprops)
+                axes[3].axvline(0., label='Fermi Level', **self.fermilineprops)
             self.ax_index = (0, 4, 5, # images
                              1, 2, 3, # profiles
                              0, 1, 4, 0, 2, 5, 3, 5, 4, # cursors
@@ -415,10 +487,8 @@ class mpl_itool(Widget):
         self.needclear = False
 
         self.connect()
-        # self.canvas.draw()
         # self.axes[1].xaxis.get_major_ticks()[0].label1.set_visible(False)
         # self.axes[3].xaxis.get_major_ticks()[-1].label1.set_visible(False)
-        # self._apply_change()
 
     def connect(self):
         """Connect events."""
@@ -438,19 +508,22 @@ class mpl_itool(Widget):
         self.canvas.mpl_disconnect(self._cidrelease)
 
     def clear(self, event):
-        """Clear the cursor."""
+        """Clear objects and save background."""
         if self.ignore(event):
             return
+        if self.useblit:
+            self.background = (
+                self.canvas.copy_from_bbox(self.canvas.figure.bbox))
         for obj in self.all:
             obj.set_visible(False)
         for axis in range(self.ndim):
             for span in self.spans[axis]:
                 span.set_visible(False)
-        self.background = self.canvas.copy_from_bbox(self.canvas.figure.bbox)
         for ax in self.scaling_axes:
             ax.set_ticks([])
 
     def labelify(self, dim):
+        """Prettify some frequently used axis labels."""
         labelformats = dict(
             kx = '$k_x$',
             ky = '$k_y$',
@@ -489,6 +562,14 @@ class mpl_itool(Widget):
             obj.set_visible(False)
         self._apply_change()
 
+    def toggle_clim_lock(self, lock):
+        if lock:
+            self.clim_locked = True
+            for i, m in enumerate(self.maps):
+                self.clim_list[i] = m.get_clim()
+        else:
+            self.clim_locked = False
+
     def set_gamma(self, gamma):
         self.gamma = gamma
         self._apply_change()
@@ -502,6 +583,16 @@ class mpl_itool(Widget):
         self._last_ind[axis] = self.get_index_of_value(axis, val)
         self.cursor_pos[axis] = val
         self._apply_change(self._only_axis[axis])
+
+    def set_cursor_color(self, c):
+        for cursor in self.cursors:
+            cursor.set_color(c)
+        self._apply_change()
+    
+    def set_line_color(self, c):
+        for line in self.hists:
+            line.set_color(c)
+        self._apply_change()
 
     def set_navg(self, axis, n):
         self.avg_win[axis] = n
@@ -541,8 +632,10 @@ class mpl_itool(Widget):
                 else:
                     span.set_xy(get_xy_y(*domain))
                 span.set_visible(self.visible)
-            for i, span in list(zip(self.span_ax_index[axis], self.spans[axis])):
-                self.axes[i].draw_artist(span)
+            if self.useblit:
+                for i, span in list(
+                    zip(self.span_ax_index[axis], self.spans[axis])):
+                    self.axes[i].draw_artist(span)
 
     def get_index_of_value(self, axis, val):
         # return np.rint((val-self.lims[axis][0])/self.incs[axis]).astype(int)
@@ -550,7 +643,7 @@ class mpl_itool(Widget):
             np.searchsorted(self.coords[axis] + 0.5 * self.incs[axis], val),
             self.shape[axis] - 1,
         )
-        
+
     def onmove(self, event):
         if self.ignore(event):
             return
@@ -561,7 +654,7 @@ class mpl_itool(Widget):
         if not event.button:
             if not self._shift:
                 return
-        self.needclear = True
+        self.needclear = False
         if not self.visible:
             return
         x, y, z = None, None, None
@@ -592,7 +685,6 @@ class mpl_itool(Widget):
                     dx, dx, dx,
                     dy, dy, dy,
                     dz, dz, dz)
-        
         if dx:
             ind_x = self.get_index_of_value(0, x)
             if self.snap & (ind_x == self._last_ind[0]):
@@ -641,30 +733,38 @@ class mpl_itool(Widget):
             ax.set_major_locator(AutoLocator())
             ax.axes.relim()
             ax.axes.autoscale_view()
-        for im in self.maps: 
-            im.set_norm(colors.PowerNorm(self.gamma))
-        if self.background is not None:
-            self.canvas.restore_region(self.background)
-        if self.parallel:
-            raise NotImplementedError
-            # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-            #     (0, 4, 5, 1, 2, 3, 1, 2, 3),
-            #     self.maps + self.hists + (self.axes[1].yaxis,
-            #                               self.axes[2].xaxis,
-            #                               self.axes[3].yaxis))))
-            # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-            #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
+        for i, m in enumerate(self.maps):
+            m.set_norm(colors.PowerNorm(self.gamma))
+            if self.clim_locked:
+                m.set_clim(self.clim_list[i])
+        
+        if self.useblit:
+            if self.background is not None:
+                self.canvas.restore_region(self.background)
+            if self.parallel:
+                raise NotImplementedError
+                # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+                #     (0, 4, 5, 1, 2, 3, 1, 2, 3),
+                #     self.maps + self.hists + (self.axes[1].yaxis,
+                #                               self.axes[2].xaxis,
+                #                               self.axes[3].yaxis))))
+                # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
+                #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
+            else:
+                for i, art in list(zip(self.ax_index,
+                                    self.all + self.scaling_axes)):
+                    self.axes[i].draw_artist(art)
+            if any(self.averaged):
+                self.update_spans()
+            self.canvas.blit()
         else:
-            for i, art in list(zip(self.ax_index,
-                                   self.all + self.scaling_axes)):
-                self.axes[i].draw_artist(art)
-            # if any(self.averaged):
-            self.update_spans()
-        self.canvas.blit()
+            if any(self.averaged):
+                self.update_spans()
+            self.canvas.draw_idle()
     
     def print_time(self):
         now = time.time()
-        dt = (now-self.lastupdate)
+        dt = now - self.lastupdate
         if dt <= 0:
             dt = 0.000000000001
         fps2 = 1.0 / dt
@@ -673,7 +773,6 @@ class mpl_itool(Widget):
         tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps )
         print(tx, end='\r')
     
-
     def set_data(self, i):
         if self.ndim == 2:
             self.set_data_2d(i)
@@ -767,6 +866,64 @@ class ImageToolNavBar(NavigationToolbar2QT):
             # pm.fill(icon_color)
             # pm.setMask(mask)
         # return QtGui.QIcon(pm)
+
+
+class ImageToolColors(QtWidgets.QDialog):
+    def __init__(self, parent):
+        self.parent = parent
+        super().__init__(self.parent)
+        self.setWindowTitle('Colors')
+
+        self.cursor_default = color_to_QColor(
+            self.parent.itool.cursorprops['color'])
+        self.line_default = color_to_QColor(
+            self.parent.itool.lineprops['color'])
+        self.cursor_current = color_to_QColor(
+            self.parent.itool.cursors[0].get_color())
+        self.line_current = color_to_QColor(
+            self.parent.itool.hists[0].get_color())
+
+        if ((self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) &
+            (self.line_default.getRgbF() == self.line_current.getRgbF())):
+            buttons = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok |
+                QtWidgets.QDialogButtonBox.Cancel
+            )
+        else:
+            buttons = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.RestoreDefaults |
+                QtWidgets.QDialogButtonBox.Ok |
+                QtWidgets.QDialogButtonBox.Cancel
+            )
+            buttons.button(
+                QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
+                    self.reset_colors)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+
+        cursorlabel = QtWidgets.QLabel('Cursors:')
+        linelabel = QtWidgets.QLabel('Lines:')
+        self.cursorpicker = ColorButton(color=self.cursor_current)
+        self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
+        self.linepicker = ColorButton(color=self.line_current)
+        self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
+        
+        layout = QtWidgets.QGridLayout()
+        layout.addWidget(cursorlabel, 0, 0)
+        layout.addWidget(self.cursorpicker, 0, 1)
+        layout.addWidget(linelabel, 1, 0)
+        layout.addWidget(self.linepicker, 1, 1)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+    
+    def reject(self):
+        self.cursorpicker.setColor(self.cursor_current)
+        self.linepicker.setColor(self.line_current)
+        super().reject()
+
+    def reset_colors(self):
+        self.cursorpicker.setColor(self.cursor_default)
+        self.linepicker.setColor(self.line_default)
 
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, *args, **kwargs):
@@ -868,9 +1025,11 @@ class ImageTool(QtWidgets.QMainWindow):
             self._cursor_dblspin[i].valueChanged.connect(
                 lambda v, axis=i: self._cursor_value_changed(axis, v))
         
-        cursorsnapcheck = QtWidgets.QCheckBox(self.cursortab)
-        cursorsnapcheck.setChecked(self.itool.snap)
-        cursorsnapcheck.stateChanged.connect(self._assign_snap)
+        snap_check = QtWidgets.QCheckBox(self.cursortab)
+        snap_check.setChecked(self.itool.snap)
+        snap_check.stateChanged.connect(self._assign_snap)
+        snap_label = QtWidgets.QLabel('Snap to data')
+        snap_label.setBuddy(snap_check)
 
         for i in range(self.ndim):
             cursortab_content.addWidget(spinlabels[i])
@@ -878,12 +1037,11 @@ class ImageTool(QtWidgets.QMainWindow):
             cursortab_content.addWidget(self._cursor_spin[i])
             cursortab_content.addSpacing(20)
         cursortab_content.addStretch()
-        cursortab_content.addWidget(cursorsnapcheck)
-        cursortab_content.addWidget(QtWidgets.QLabel('Snap to Data'))
+        cursortab_content.addWidget(snap_check)
+        cursortab_content.addWidget(snap_label)
 
         self.colorstab = QtWidgets.QWidget()
         colorstab_content = QtWidgets.QHBoxLayout(self.colorstab)
-
         gamma_spin = QtWidgets.QDoubleSpinBox()
         gamma_spin.setToolTip('Colormap Gamma')
         gamma_spin.setSingleStep(0.01)
@@ -892,29 +1050,38 @@ class ImageTool(QtWidgets.QMainWindow):
         gamma_spin.valueChanged.connect(self.itool.set_gamma)
         gamma_label = QtWidgets.QLabel('g')
         gamma_label.setBuddy(gamma_spin)
-        cmap_combo = QtWidgets.QComboBox()
+        cmap_combo = QtWidgets.QComboBox(self.colorstab)
         cmap_combo.setToolTip('Colormap')
         for name in plt.colormaps():
-            cmap_combo.addItem(QtGui.QIcon(cmap2qpixmap(name)), name)
+            cmap_combo.addItem(QtGui.QIcon(colormap_to_QPixmap(name)), name)
         cmap_combo.setCurrentIndex(cmap_combo.findText(self.itool.cmap))
-
-        _style_combo = QtWidgets.QComboBox()
-        _style_combo.setToolTip('Qt Style')
-        _style_combo.addItems(qt_style_names())
-        _style_combo.textActivated.connect(change_style)
-        _style_combo.setCurrentIndex(_style_combo.findText('Fusion'))
+        cmap_combo.setIconSize(QtCore.QSize(60, 15))
+        lock_check = QtWidgets.QCheckBox(self.colorstab)
+        lock_check.setChecked(self.itool.clim_locked)
+        lock_check.stateChanged.connect(self.itool.toggle_clim_lock)
+        lock_label = QtWidgets.QLabel('Lock limits')
+        lock_label.setBuddy(lock_check)
+        colors_button = QtWidgets.QPushButton('Colors')
+        colors_button.clicked.connect(self._color_button_clicked)
+        style_combo = QtWidgets.QComboBox(self.colorstab)
+        style_combo.setToolTip('Qt Style')
+        style_combo.addItems(qt_style_names())
+        style_combo.textActivated.connect(change_style)
         style_label = QtWidgets.QLabel('Style:')
-        style_label.setBuddy(_style_combo)
-
-        qt_style_names()
+        style_label.setBuddy(style_combo)
+        style_combo.setCurrentIndex(style_combo.findText('Fusion'))
         self.main_canvas.draw()
         cmap_combo.currentTextChanged.connect(self.itool.set_cmap)
         colorstab_content.addWidget(gamma_label)
         colorstab_content.addWidget(gamma_spin)
         colorstab_content.addWidget(cmap_combo)
+        colorstab_content.addWidget(lock_check)
+        colorstab_content.addWidget(lock_label)
+        colorstab_content.addStretch()
+        colorstab_content.addWidget(colors_button)
         colorstab_content.addStretch()
         colorstab_content.addWidget(style_label)
-        colorstab_content.addWidget(_style_combo)
+        colorstab_content.addWidget(style_combo)
         
         self.smoothtab = QtWidgets.QWidget()
         smoothtab_content = QtWidgets.QHBoxLayout(self.smoothtab)
@@ -958,6 +1125,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.main_canvas.mpl_connect('motion_notify_event', self.onmove_super)
         self.main_canvas.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.main_canvas.setFocus()
+        self.main_canvas.draw()
 
     def onmove_super(self, event):
         if event.inaxes not in self.axes:
@@ -993,11 +1161,22 @@ class ImageTool(QtWidgets.QMainWindow):
         self._cursor_spin[axis].setValue(self.itool._last_ind[axis])
         self._cursor_spin[axis].blockSignals(False)
 
+    def _color_button_clicked(self, s):
+        # print("click", s)
+        dialog = ImageToolColors(self)
+        if dialog.exec():
+            # print("Success!")
+            pass
+        else:
+            pass
+            # print("Cancel!")
+    
     def _assign_snap(self, value):
         self.itool.snap = value
+    
 
 def itool(data, *args, **kwargs):
-    # TODO: implement multiple windows, add transpose, add binning
+    # TODO: implement multiple windows, add transpose, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -1014,7 +1193,6 @@ def itool(data, *args, **kwargs):
         # 'mathtext.fontset':'cm',
         # 'font.family':'fantasy',
     }):
-        
         with plt.style.context(mpl_style):
             app = ImageTool(data, *args, **kwargs)
     change_style('Fusion')
@@ -1022,3 +1200,8 @@ def itool(data, *args, **kwargs):
     app.activateWindow()
     app.raise_()
     qapp.exec()
+
+if __name__ == "__main__":
+    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
+    itool(dat.transpose('kx','ky','eV'), useblit=True, bench=True)
+    # itool(dat.sel(eV=0,method='nearest'), useblit=True, bench=True)
