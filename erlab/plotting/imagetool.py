@@ -9,11 +9,10 @@ import xarray as xr
 import darkdetect
 import qtawesome as qta
 import matplotlib.pyplot as plt
-
 from matplotlib import colors
 from matplotlib.backend_bases import _Mode
-from matplotlib.backends.backend_qtagg import (FigureCanvas,
-                                               NavigationToolbar2QT)
+from matplotlib.backends.backend_qtagg import FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoLocator
@@ -223,7 +222,7 @@ class mpl_itool(Widget):
         self.parallel = parallel
         self.bench = bench
 
-        if not self.canvas.supports_blit:
+        if self.useblit and not self.canvas.supports_blit:
             raise RuntimeError('Canvas does not support blit. '
                                'If running in ipython, add `%matplotlib qt`.')
         for ax in self.axes:
@@ -237,13 +236,13 @@ class mpl_itool(Widget):
             linestyle='-', linewidth=.8,
             color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
                                  alpha=0.5),
-            animated=False, visible=True,
+            animated=self.useblit, visible=True,
         ))
         self.lineprops.update(dict(
             linestyle='-', linewidth=.8,
             color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
                                  alpha=1),
-            animated=False, visible=True,
+            animated=self.useblit, visible=True,
         ))
         self.fermilineprops.update(dict(
             linestyle='--', linewidth=.8,
@@ -252,17 +251,17 @@ class mpl_itool(Widget):
             animated=False,
         ))
         self.improps.update(dict(
-            animated=False, visible=True,
+            animated=self.useblit, visible=True,
             interpolation='none', aspect='auto', origin='lower',
             norm=colors.PowerNorm(self.gamma),
             cmap=self.cmap, rasterized=True
         ))
-        spanprops = dict(
+        self.spanprops = dict(
             # edgecolor=plt.rcParams.get('axes.edgecolor'),
             # lw=0.5, ls='--',
             facecolor=colors.to_rgba(self.cursorprops['color'], alpha=1),
             alpha=0.15,
-            animated=False, visible=True,
+            animated=self.useblit, visible=True,
         )
         self._get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
         
@@ -315,21 +314,21 @@ class mpl_itool(Widget):
                     self.axes[0].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
-                        label='X Span', **spanprops),
+                        label='X Span', **self.spanprops),
                     self.axes[1].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
-                        label='X Span', **spanprops),
+                        label='X Span', **self.spanprops),
                 ),
                 (
                     self.axes[0].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
-                        label='Y Span', **spanprops),
+                        label='Y Span', **self.spanprops),
                     self.axes[2].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
-                        label='Y Span', **spanprops),
+                        label='Y Span', **self.spanprops),
                 ),
             )
             self.scaling_axes = (self.axes[1].yaxis,
@@ -388,43 +387,43 @@ class mpl_itool(Widget):
                     self.axes[0].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
-                        label='X Span', **spanprops),
+                        label='X Span', **self.spanprops),
                     self.axes[1].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
-                        label='X Span', **spanprops),
+                        label='X Span', **self.spanprops),
                     self.axes[4].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
-                        label='X Span', **spanprops),
+                        label='X Span', **self.spanprops),
                 ),
                 (
                     self.axes[0].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
-                        label='Y Span', **spanprops),
+                        label='Y Span', **self.spanprops),
                     self.axes[2].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
-                        label='Y Span', **spanprops),
+                        label='Y Span', **self.spanprops),
                     self.axes[5].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
-                        label='Y Span', **spanprops),
+                        label='Y Span', **self.spanprops),
                 ),
                 (
                     self.axes[3].axvspan(
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
-                        label='Z Span', **spanprops),
+                        label='Z Span', **self.spanprops),
                     self.axes[5].axvspan(
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
-                        label='Z Span', **spanprops),
+                        label='Z Span', **self.spanprops),
                     self.axes[4].axhspan(
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
-                        label='Z Span', **spanprops),
+                        label='Z Span', **self.spanprops),
                 ),
             )
             self.scaling_axes = (self.axes[1].yaxis,
@@ -514,11 +513,11 @@ class mpl_itool(Widget):
         if self.useblit:
             self.background = (
                 self.canvas.copy_from_bbox(self.canvas.figure.bbox))
-        for obj in self.all:
-            obj.set_visible(False)
-        for axis in range(self.ndim):
-            for span in self.spans[axis]:
-                span.set_visible(False)
+            for obj in self.all:
+                obj.set_visible(False)
+            for axis in range(self.ndim):
+                for span in self.spans[axis]:
+                    span.set_visible(False)
         for ax in self.scaling_axes:
             ax.set_ticks([])
 
@@ -647,14 +646,14 @@ class mpl_itool(Widget):
     def onmove(self, event):
         if self.ignore(event):
             return
+        if not event.button:
+            if not self._shift:
+                return
         if event.inaxes not in self.axes:
             return
         if not self.canvas.widgetlock.available(self):
             return
-        if not event.button:
-            if not self._shift:
-                return
-        self.needclear = False
+        self.needclear = True
         if not self.visible:
             return
         x, y, z = None, None, None
@@ -932,7 +931,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
         self.figure = Figure(
-            figsize=(10,10), dpi=75, frameon=True, layout='constrained'
+            figsize=(10, 10), dpi=70, frameon=True, layout='constrained'
         )
         self.data = parse_data(data)
         self.ndim = self.data.ndim
