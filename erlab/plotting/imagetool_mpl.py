@@ -19,7 +19,7 @@ from matplotlib.ticker import AutoLocator
 from matplotlib.widgets import Widget
 from joblib import Parallel, delayed
 
-__all__ = ['itool']
+__all__ = ['mpl_itool']
 
 def qt_style_names():
     """Return a list of styles, default platform style first"""
@@ -1199,8 +1199,8 @@ class ImageTool(QtWidgets.QMainWindow):
         self.itool.snap = value
     
 
-def itool(data, *args, **kwargs):
-    # TODO: implement multiple windows, add transpose, equal aspect settings
+def mpl_itool(data, *args, **kwargs):
+
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -1224,8 +1224,3 @@ def itool(data, *args, **kwargs):
     app.activateWindow()
     app.raise_()
     qapp.exec()
-
-if __name__ == "__main__":
-    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
-    itool(dat.transpose('kx','ky','eV'), useblit=True, bench=True)
-    # itool(dat.sel(eV=0,method='nearest'), useblit=True, bench=True)
