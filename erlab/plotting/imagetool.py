@@ -332,117 +332,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.clim_locked = False
         self.clim_list = [()]  * self.ndim
         self._shift = False
-
-        
-        self.need_redraw = False
-        self.setFocusPolicy(QtCore.Qt.ClickFocus)
-        self.setFocus()
-        self.connect_signals()
-
-    def _update_stretch(self, factor=None):
-        self.ci.layout.setSpacing(0.)
-        self.ci.layout.setContentsMargins(0, 0, 0, 0)
-        if factor is None:
-            if self.ndim == 2:
-                factor = [1, 3]
-            elif self.ndim == 3:
-                factor = [7500, 35000, 57500]
-        for i in range(len(factor)):
-            self.ci.layout.setColumnMinimumWidth(i, 0.)
-            self.ci.layout.setColumnStretchFactor(i, factor[-i-1])
-            self.ci.layout.setRowStretchFactor(i, factor[i])
-
-    def _initialize_layout(self, horiz_pad=45, vert_pad=30, inner_pad=5,
-                           font_size=10., **plt_kws):
-        font = QtGui.QFont()
-        font.setPointSizeF(float(font_size))
-        if self.ndim == 2:
-            self.axes = [
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(0, 1, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
-            ]
-        elif self.ndim == 3:
-            self.axes = [
-                self.addPlot(2, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(2, 2, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
-                self.addPlot(0, 1, 2, 2, **plt_kws,
-                                    labels={'top':self.dims[2]}),
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[2]}),
-                self.addPlot(2, 1, 1, 1, **plt_kws,
-                                    labels={'bottom':self.dims[2]}),
-            ]
-        for i, p in enumerate(self.axes):
-            for axis in ['left', 'bottom', 'right', 'top']:
-                p.getAxis(axis).setTickFont(font)
-                p.getAxis(axis).setStyle(
-                    autoExpandTextSpace=False,
-                    autoReduceTextSpace=False,
-                )
-            p.showAxes((True, True, True, True),
-                       showValues=True, size=(inner_pad, inner_pad))
-            if i in [1, 4]:
-                self.axes[i].setXLink(self.axes[0])
-                self.axes[i].getAxis('bottom').setStyle(showValues=False)
-                self.axes[i].getAxis('left').setWidth(horiz_pad)
-            elif i in [2, 5]:
-                self.axes[i].setYLink(self.axes[0])
-                self.axes[i].getAxis('left').setStyle(showValues=False)
-                self.axes[i].getAxis('bottom').setHeight(vert_pad)
-            elif i == 3:        
-                self.axes[i].getAxis('bottom').setStyle(showValues=False)
-                self.axes[i].getAxis('left').setStyle(showValues=False)
-                self.axes[i].getAxis('top').setStyle(showValues=True)
-                self.axes[i].getAxis('right').setStyle(showValues=True)
-                self.axes[i].getAxis('right').setWidth(horiz_pad)
-                self.axes[i].getAxis('top').setHeight(vert_pad)
-            else: # i == 0
-                self.axes[i].getAxis('bottom').setHeight(vert_pad)
-                self.axes[i].getAxis('left').setWidth(horiz_pad)
-        self.axes[1].getAxis('top').setStyle(showValues=True)
-        self.axes[2].getAxis('right').setStyle(showValues=True)
-        self.axes[1].getAxis('top').setHeight(vert_pad)
-        self.axes[2].getAxis('right').setWidth(horiz_pad)
-        pg.ViewBox.suggestPadding = lambda *_: 0.
-        self._update_stretch()
-    def _lims_to_rect(self, i, j):
-        x = self.lims[i][0]
-        y = self.lims[j][0]
-        w = self.lims[i][-1] - x
-        h = self.lims[j][-1] - y
-        return x, y, w, h
-
-    def _get_middle_index(self, x):
-        return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
-        
-    def set_data(self, data, update=True):
-        self.data = parse_data(data)
-        self.ndim = self.data.ndim
-        self.vals = self.data.values
-        self._assign_vals_T()
-        self.dims = self.data.dims
-        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
-        self.shape = self.data.shape
-        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
-                          for i in range(self.ndim))
-        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
-                          for i in range(self.ndim))
         mids = tuple(self._get_middle_index(self.coords[i])
                      for i in range(self.ndim))
-        self.cursor_pos = [self.coords[i][mids[i]] for i in range(self.ndim)]
-        
-        self._last_ind = list(mids)
-
 
         if self.ndim == 2:
             self.maps = (
@@ -646,6 +537,115 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.all = self.maps + self.hists
         for i in range(len(self.cursors)): self.all += self.cursors[i]
         self.averaged = [False, ] * self.ndim
+        
+        self.need_redraw = False
+        self.setFocusPolicy(QtCore.Qt.ClickFocus)
+        self.setFocus()
+        self.connect_signals()
+
+    def _update_stretch(self, factor=None):
+        self.ci.layout.setSpacing(0.)
+        self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        if factor is None:
+            if self.ndim == 2:
+                factor = [1, 3]
+            elif self.ndim == 3:
+                factor = [7500, 35000, 57500]
+        for i in range(len(factor)):
+            self.ci.layout.setColumnMinimumWidth(i, 0.)
+            self.ci.layout.setColumnStretchFactor(i, factor[-i-1])
+            self.ci.layout.setRowStretchFactor(i, factor[i])
+
+    def _initialize_layout(self, horiz_pad=45, vert_pad=30, inner_pad=5,
+                           font_size=10., **plt_kws):
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+        if self.ndim == 2:
+            self.axes = [
+                self.addPlot(1, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[1],
+                                            'bottom':self.dims[0]}),
+                self.addPlot(0, 0, 1, 1, **plt_kws,
+                                    labels={'top':self.dims[0]}),
+                self.addPlot(0, 1, 1, 1, **plt_kws,
+                                    labels={'right':self.dims[1]}),
+            ]
+        elif self.ndim == 3:
+            self.axes = [
+                self.addPlot(2, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[1],
+                                            'bottom':self.dims[0]}),
+                self.addPlot(0, 0, 1, 1, **plt_kws,
+                                    labels={'top':self.dims[0]}),
+                self.addPlot(2, 2, 1, 1, **plt_kws,
+                                    labels={'right':self.dims[1]}),
+                self.addPlot(0, 1, 2, 2, **plt_kws,
+                                    labels={'top':self.dims[2]}),
+                self.addPlot(1, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[2]}),
+                self.addPlot(2, 1, 1, 1, **plt_kws,
+                                    labels={'bottom':self.dims[2]}),
+            ]
+        for i, p in enumerate(self.axes):
+            for axis in ['left', 'bottom', 'right', 'top']:
+                p.getAxis(axis).setTickFont(font)
+                p.getAxis(axis).setStyle(
+                    autoExpandTextSpace=False,
+                    autoReduceTextSpace=False,
+                )
+            p.showAxes((True, True, True, True),
+                       showValues=True, size=(inner_pad, inner_pad))
+            if i in [1, 4]:
+                self.axes[i].setXLink(self.axes[0])
+                self.axes[i].getAxis('bottom').setStyle(showValues=False)
+                self.axes[i].getAxis('left').setWidth(horiz_pad)
+            elif i in [2, 5]:
+                self.axes[i].setYLink(self.axes[0])
+                self.axes[i].getAxis('left').setStyle(showValues=False)
+                self.axes[i].getAxis('bottom').setHeight(vert_pad)
+            elif i == 3:        
+                self.axes[i].getAxis('bottom').setStyle(showValues=False)
+                self.axes[i].getAxis('left').setStyle(showValues=False)
+                self.axes[i].getAxis('top').setStyle(showValues=True)
+                self.axes[i].getAxis('right').setStyle(showValues=True)
+                self.axes[i].getAxis('right').setWidth(horiz_pad)
+                self.axes[i].getAxis('top').setHeight(vert_pad)
+            else: # i == 0
+                self.axes[i].getAxis('bottom').setHeight(vert_pad)
+                self.axes[i].getAxis('left').setWidth(horiz_pad)
+        self.axes[1].getAxis('top').setStyle(showValues=True)
+        self.axes[2].getAxis('right').setStyle(showValues=True)
+        self.axes[1].getAxis('top').setHeight(vert_pad)
+        self.axes[2].getAxis('right').setWidth(horiz_pad)
+        pg.ViewBox.suggestPadding = lambda *_: 0.
+        self._update_stretch()
+    def _lims_to_rect(self, i, j):
+        x = self.lims[i][0]
+        y = self.lims[j][0]
+        w = self.lims[i][-1] - x
+        h = self.lims[j][-1] - y
+        return x, y, w, h
+
+    def _get_middle_index(self, x):
+        return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        
+    def set_data(self, data, update=True):
+        self.data = parse_data(data)
+        self.ndim = self.data.ndim
+        self.vals = self.data.values
+        self._assign_vals_T()
+        self.dims = self.data.dims
+        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
+        self.shape = self.data.shape
+        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
+                          for i in range(self.ndim))
+        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
+                          for i in range(self.ndim))
+        mids = tuple(self._get_middle_index(self.coords[i])
+                     for i in range(self.ndim))
+        self.cursor_pos = [self.coords[i][mids[i]] for i in range(self.ndim)]
+        
+        self._last_ind = list(mids)
 
 
 
