@@ -548,7 +548,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.ci.layout.setContentsMargins(0, 0, 0, 0)
         if factor is None:
             if self.ndim == 2:
-                factor = [1, 3]
+                factor = [25000, 75000]
             elif self.ndim == 3:
                 factor = [7500, 35000, 57500]
         for i in range(len(factor)):
@@ -567,7 +567,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                                             'bottom':self.dims[0]}),
                 self.addPlot(0, 0, 1, 1, **plt_kws,
                                     labels={'top':self.dims[0]}),
-                self.addPlot(0, 1, 1, 1, **plt_kws,
+                self.addPlot(1, 1, 1, 1, **plt_kws,
                                     labels={'right':self.dims[1]}),
             ]
         elif self.ndim == 3:
@@ -657,7 +657,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def connect_signals(self):
         """Connect events."""
-        
         self.proxy = pg.SignalProxy(
             self.scene().sigMouseMoved,
             rateLimit=self.screen.refreshRate(),
@@ -1480,8 +1479,8 @@ def itool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    if darkdetect.isDark():
-        pass
+    # if darkdetect.isDark():
+        # pass
     app = ImageTool(data, *args, **kwargs)
     change_style('Fusion')
     app.show()
@@ -1492,5 +1491,6 @@ def itool(data, *args, **kwargs):
 if __name__ == "__main__":
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
     dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
-    itool(dat.transpose('kx','ky','eV'), bench=False)
-    # itool(dat.sel(eV=0,method='nearest'), useblit=True, bench=True)
+    # itool(dat.transpose('kx','ky','eV'), bench=False)
+    
+    itool(dat.sel(eV=0,method='nearest'), bench=False)
