@@ -1,4 +1,5 @@
 import sys
+import weakref
 from itertools import compress
 
 import numpy as np
@@ -67,34 +68,22 @@ def get_colormap_from_name(name:str, skipCache=True):
         except ValueError:
             return pg.colormap.get(name, source='colorcet', skipCache=skipCache)
 
-def get_powernorm_colormap(cmap, gamma):
+def get_powernorm_colormap(cmap, gamma, reverse=False, skipCache=True, mode=1):
     if isinstance(cmap, str):
-        cmap = get_colormap_from_name(cmap)
-    gamma = np.abs(gamma)
-    if gamma > 1:
+        cmap = get_colormap_from_name(cmap, skipCache=skipCache)
+    if reverse:
+        cmap.reverse()
+    if gamma == 1:
+        return cmap
+    # if not mode:
+    elif gamma > 1:
         mapping = np.power(np.linspace(0, 1, 4096), gamma)
-        cmap = pg.ColorMap(None, cmap.mapToQColor(mapping))
-    elif gamma < 1:
-        mapping = 1 - np.power(1 - np.linspace(0, 1, 4096), 1./gamma)
-        # cmap = pg.ColorMap(None, cmap.mapToQColor(mapping))
-        # pos, color = cmap.getStops(mode='float')
-        # color[:,:3] = 1 - color[:,:3]
-        # interp = (interp1d(pos, color, kind='cubic',
-                                    #  axis=0, copy=False)(mapping))
-        # caxis = np.linspace(0, 1e-5, 4)
-        # interp = (interp2d(caxis, pos, color, copy=False)(caxis, mapping))
-        # cmap = pg.ColorMap(None, [QtGui.QColor.fromRgbF(*x.tolist()) for x in interp])
-        cmap = pg.ColorMap(None, cmap.mapToQColor(mapping))
-        # cmap = pg.ColorMap(mapping, cmap.getLookupTable(0, 1, len(mapping), mode='qcolor'))
+    else:
+        mapping = 1 - np.power(np.linspace(1, 0, 4096), 1./gamma)
+    cmap.color = cmap.mapToFloat(mapping)
+    cmap.pos = np.linspace(0.0, 1.0, num=4096)
+    cmap.pos = np.linspace(0.0, 1.0, num=4096)
     return cmap
-
-    # pos, color = cmap.getStops()
-    # interp = interp1d(pos, color, kind='cubic', axis=0, copy=False)(mapping)
-    # return pg.ColorMap(None, interp)
-    # mapping = np.power(np.linspace(0, 1, 4096), 1./gamma, dtype=np.float32)
-    # return pg.ColorMap(mapping, cmap.getColors())
-    # return pg.ColorMap(mapping, cmap.getLookupTable(0, 1, len(mapping), mode='qcolor'))
-    # return pg.ColorMap(None, cmap.getLookupTable(0, 1, 512, alpha=True)**(1./gamma))
 
 def colormap_to_QPixmap(name:str, w=64, h=16, skipCache=True):
     """Convert pyqtgraph colormap to a `w`-by-`h` QPixmap thumbnail."""
@@ -338,15 +327,122 @@ class pg_itool(pg.GraphicsLayoutWidget):
         #     alpha=0.15,
         #     animated=self.useblit, visible=True,
         # )
-        self._get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        
         self.avg_win = [1,] * self.ndim
         self.clim_locked = False
         self.clim_list = [()]  * self.ndim
+        self._shift = False
+
+        
+        self.need_redraw = False
+        self.setFocusPolicy(QtCore.Qt.ClickFocus)
+        self.setFocus()
+        self.connect_signals()
+
+    def _update_stretch(self, factor=None):
+        self.ci.layout.setSpacing(0.)
+        self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        if factor is None:
+            if self.ndim == 2:
+                factor = [1, 3]
+            elif self.ndim == 3:
+                factor = [7500, 35000, 57500]
+        for i in range(len(factor)):
+            self.ci.layout.setColumnMinimumWidth(i, 0.)
+            self.ci.layout.setColumnStretchFactor(i, factor[-i-1])
+            self.ci.layout.setRowStretchFactor(i, factor[i])
+
+    def _initialize_layout(self, horiz_pad=45, vert_pad=30, inner_pad=5,
+                           font_size=10., **plt_kws):
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+        if self.ndim == 2:
+            self.axes = [
+                self.addPlot(1, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[1],
+                                            'bottom':self.dims[0]}),
+                self.addPlot(0, 0, 1, 1, **plt_kws,
+                                    labels={'top':self.dims[0]}),
+                self.addPlot(0, 1, 1, 1, **plt_kws,
+                                    labels={'right':self.dims[1]}),
+            ]
+        elif self.ndim == 3:
+            self.axes = [
+                self.addPlot(2, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[1],
+                                            'bottom':self.dims[0]}),
+                self.addPlot(0, 0, 1, 1, **plt_kws,
+                                    labels={'top':self.dims[0]}),
+                self.addPlot(2, 2, 1, 1, **plt_kws,
+                                    labels={'right':self.dims[1]}),
+                self.addPlot(0, 1, 2, 2, **plt_kws,
+                                    labels={'top':self.dims[2]}),
+                self.addPlot(1, 0, 1, 1, **plt_kws,
+                                    labels={'left':self.dims[2]}),
+                self.addPlot(2, 1, 1, 1, **plt_kws,
+                                    labels={'bottom':self.dims[2]}),
+            ]
+        for i, p in enumerate(self.axes):
+            for axis in ['left', 'bottom', 'right', 'top']:
+                p.getAxis(axis).setTickFont(font)
+                p.getAxis(axis).setStyle(
+                    autoExpandTextSpace=False,
+                    autoReduceTextSpace=False,
+                )
+            p.showAxes((True, True, True, True),
+                       showValues=True, size=(inner_pad, inner_pad))
+            if i in [1, 4]:
+                self.axes[i].setXLink(self.axes[0])
+                self.axes[i].getAxis('bottom').setStyle(showValues=False)
+                self.axes[i].getAxis('left').setWidth(horiz_pad)
+            elif i in [2, 5]:
+                self.axes[i].setYLink(self.axes[0])
+                self.axes[i].getAxis('left').setStyle(showValues=False)
+                self.axes[i].getAxis('bottom').setHeight(vert_pad)
+            elif i == 3:        
+                self.axes[i].getAxis('bottom').setStyle(showValues=False)
+                self.axes[i].getAxis('left').setStyle(showValues=False)
+                self.axes[i].getAxis('top').setStyle(showValues=True)
+                self.axes[i].getAxis('right').setStyle(showValues=True)
+                self.axes[i].getAxis('right').setWidth(horiz_pad)
+                self.axes[i].getAxis('top').setHeight(vert_pad)
+            else: # i == 0
+                self.axes[i].getAxis('bottom').setHeight(vert_pad)
+                self.axes[i].getAxis('left').setWidth(horiz_pad)
+        self.axes[1].getAxis('top').setStyle(showValues=True)
+        self.axes[2].getAxis('right').setStyle(showValues=True)
+        self.axes[1].getAxis('top').setHeight(vert_pad)
+        self.axes[2].getAxis('right').setWidth(horiz_pad)
+        pg.ViewBox.suggestPadding = lambda *_: 0.
+        self._update_stretch()
+    def _lims_to_rect(self, i, j):
+        x = self.lims[i][0]
+        y = self.lims[j][0]
+        w = self.lims[i][-1] - x
+        h = self.lims[j][-1] - y
+        return x, y, w, h
+
+    def _get_middle_index(self, x):
+        return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        
+    def set_data(self, data, update=True):
+        self.data = parse_data(data)
+        self.ndim = self.data.ndim
+        self.vals = self.data.values
+        self._assign_vals_T()
+        self.dims = self.data.dims
+        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
+        self.shape = self.data.shape
+        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
+                          for i in range(self.ndim))
+        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
+                          for i in range(self.ndim))
         mids = tuple(self._get_middle_index(self.coords[i])
                      for i in range(self.ndim))
         self.cursor_pos = [self.coords[i][mids[i]] for i in range(self.ndim)]
+        
         self._last_ind = list(mids)
-        self._shift = False
+
 
         if self.ndim == 2:
             self.maps = (
@@ -544,118 +640,27 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 True, True, True, False, False, False,
                  False, False, False, False, False, False, False, False, False,
             )
-
+        self.colorbar = myColorBar(image=self.maps[0], width=20)
+        self.addItem(self.colorbar, None, None, 4, 1)
+        self.colorbar.setVisible(False)
         self.all = self.maps + self.hists
         for i in range(len(self.cursors)): self.all += self.cursors[i]
         self.averaged = [False, ] * self.ndim
-        self.need_redraw = False
-        self.setFocusPolicy(QtCore.Qt.ClickFocus)
-        self.setFocus()
-        self.connect()
 
-    def _update_stretch(self, factor=None):
-        self.ci.layout.setSpacing(0.)
-        self.ci.layout.setContentsMargins(0, 0, 0, 0)
-        if factor is None:
-            if self.ndim == 2:
-                factor = [1, 3]
-            elif self.ndim == 3:
-                factor = [7500, 35000, 57500]
-        for i in range(len(factor)):
-            self.ci.layout.setColumnMinimumWidth(i, 0.)
-            self.ci.layout.setColumnStretchFactor(i, factor[-i-1])
-            self.ci.layout.setRowStretchFactor(i, factor[i])
 
-    def _initialize_layout(self, horiz_pad=45, vert_pad=30, inner_pad=5,
-                           font_size=10., **plt_kws):
-        font = QtGui.QFont()
-        font.setPointSizeF(float(font_size))
-        if self.ndim == 2:
-            self.axes = [
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(0, 1, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
-            ]
-        elif self.ndim == 3:
-            self.axes = [
-                self.addPlot(2, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(2, 2, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
-                self.addPlot(0, 1, 2, 2, **plt_kws,
-                                    labels={'top':self.dims[2]}),
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[2]}),
-                self.addPlot(2, 1, 1, 1, **plt_kws,
-                                    labels={'bottom':self.dims[2]}),
-            ]
-        for i, p in enumerate(self.axes):
-            for axis in ['left', 'bottom', 'right', 'top']:
-                p.getAxis(axis).setTickFont(font)
-            p.showAxes((True, True, True, True),
-                       showValues=True, size=(inner_pad, inner_pad))
-            if i in [1, 4]:
-                self.axes[i].setXLink(self.axes[0])
-                self.axes[i].getAxis('bottom').setStyle(showValues=False)
-                self.axes[i].getAxis('left').setWidth(horiz_pad)
-            elif i in [2, 5]:
-                self.axes[i].setYLink(self.axes[0])
-                self.axes[i].getAxis('left').setStyle(showValues=False)
-                self.axes[i].getAxis('bottom').setHeight(vert_pad)
-            elif i == 3:        
-                self.axes[i].getAxis('bottom').setStyle(showValues=False)
-                self.axes[i].getAxis('left').setStyle(showValues=False)
-                self.axes[i].getAxis('top').setStyle(showValues=True)
-                self.axes[i].getAxis('right').setStyle(showValues=True)
-                self.axes[i].getAxis('right').setWidth(horiz_pad)
-                self.axes[i].getAxis('top').setHeight(vert_pad)
-            else: # i == 0
-                self.axes[i].getAxis('bottom').setHeight(vert_pad)
-                self.axes[i].getAxis('left').setWidth(horiz_pad)
-        self.axes[1].getAxis('top').setStyle(showValues=True)
-        self.axes[1].getAxis('top').setHeight(vert_pad)
-        self.axes[2].getAxis('right').setStyle(showValues=True)
-        self.axes[2].getAxis('right').setWidth(horiz_pad)
-        pg.ViewBox.suggestPadding = lambda *_: 0.
-        self._update_stretch()
-    def _lims_to_rect(self, i, j):
-        x = self.lims[i][0]
-        y = self.lims[j][0]
-        w = self.lims[i][-1] - x
-        h = self.lims[j][-1] - y
-        return x, y, w, h
-    def set_data(self, data, update=True):
-        self.data = parse_data(data)
-        self.ndim = self.data.ndim
-        self.vals = self.data.values
-        self._assign_vals_T()
-        self.dims = self.data.dims
-        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
-        self.shape = self.data.shape
-        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
-                          for i in range(self.ndim))
-        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
-                          for i in range(self.ndim))
+
         if update is True:
             self._apply_change()
 
     def _cursor_drag(self, axis, line):
         self.set_value(axis, line.value())
 
-    def connect(self):
+    def connect_signals(self):
         """Connect events."""
         
         self.proxy = pg.SignalProxy(
             self.scene().sigMouseMoved,
-            # rateLimit=self.screen.refreshRate(),
-            rateLimit=10000,
+            rateLimit=self.screen.refreshRate(),
             slot=self.onmove
         )
         for axis, cursors in enumerate(self.cursors):
@@ -716,26 +721,27 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif self.ndim == 3:
             self.vals_T = np.transpose(self.vals, axes=(1, 2, 0))
     
-    def set_cmap(self, cmap=None):
-        if cmap is not None:
+    def set_cmap(self, cmap=None, gamma=None, reverse=False):
+        if cmap is not self.cmap:
             self.cmap = cmap
-        self.norm_cmap = get_powernorm_colormap(self.cmap, self.gamma)
+        if gamma is not self.gamma:
+            self.gamma = gamma
+        self.norm_cmap = get_powernorm_colormap(self.cmap, self.gamma,      
+                                                reverse=reverse)
         for im in self.maps:
-            im.setColorMap(self.norm_cmap)
+            im._colorMap = self.norm_cmap
+            im.setLookupTable(self.norm_cmap.getStops()[1], update=False)
         self._apply_change(self._only_maps)
 
-    def toggle_clim_lock(self, lock):
+    def set_clim_lock(self, lock):
+        self.colorbar.autolevels = ~lock
         if lock:
             self.clim_locked = True
             for i, m in enumerate(self.maps):
                 self.clim_list[i] = m.getLevels()
         else:
             self.clim_locked = False
-
-    def set_gamma(self, gamma):
-        self.gamma = gamma
-        self.set_cmap()
-
+    
     def set_index(self, axis, index):
         self._last_ind[axis] = index
         self.cursor_pos[axis] = self.coords[axis][index]
@@ -895,23 +901,25 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def _apply_change(self, cond=None):
         if cond is None:
             cond = (True,) * len(self.all)
-        for i in get_true_indices(cond): self.refresh_data(i)
-        self._update()
-    
-    def _update(self):
-        if self.clim_locked:
-            for i, m in enumerate(self.maps):
-                m.setLevels(self.clim_list[i])
-    
-    def refresh_data(self, i):
-        if self.ndim == 2:
-            self.refresh_data_2d(i)
-        elif self.ndim == 3:
-            self.refresh_data_3d(i)
+        for i in get_true_indices(cond):
+            self._refresh_data(i)
+    def transpose_axes(self, axis1, axis2):
+        dims_new = list(self.dims)
+        dims_new[axis1] = self.dims[axis2]
+        dims_new[axis2] = self.dims[axis1]
+        self.set_data(self.data.transpose(*dims_new), update=True)
     @supnan
-    def refresh_data_2d(self, i):
-        if i == 0: 
-            self.all[i].setImage(self.vals_T)
+    def _refresh_data(self, i):
+        if self.ndim == 2:
+            self._refresh_data_2d(i)
+        elif self.ndim == 3:
+            self._refresh_data_3d(i)
+    def _refresh_data_2d(self, i):
+        if i == 0:
+            if self.clim_locked:
+                self.all[i].setImage(self.vals_T, levels=self.clim_list[0])
+            else:
+                self.all[i].setImage(self.vals_T)
         elif i == 1: 
             self.all[i].setData(
                 self.coords[0],
@@ -926,14 +934,25 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.all[i].setPos(self.cursor_pos[0])
         elif i in [5, 6]: 
             self.all[i].setPos(self.cursor_pos[1])
-    @supnan
-    def refresh_data_3d(self, i):
+    def _refresh_data_3d(self, i):
         if i == 0: 
-            self.all[i].setImage(self.vals_T[:,self._last_ind[2],:])
+            if self.clim_locked:
+                self.all[i].setImage(self.vals_T[:,self._last_ind[2],:],
+                                     levels=self.clim_list[i])
+            else:
+                self.all[i].setImage(self.vals_T[:,self._last_ind[2],:])
         elif i == 1: 
-            self.all[i].setImage(self.vals_T[self._last_ind[1],:,:])
+            if self.clim_locked:
+                self.all[i].setImage(self.vals_T[self._last_ind[1],:,:],
+                                     levels=self.clim_list[i])
+            else:
+                self.all[i].setImage(self.vals_T[self._last_ind[1],:,:])
         elif i == 2: 
-            self.all[i].setImage(self.vals_T[:,:,self._last_ind[0]])
+            if self.clim_locked:
+                self.all[i].setImage(self.vals_T[:,:,self._last_ind[0]],
+                                     levels=self.clim_list[i])
+            else:
+                self.all[i].setImage(self.vals_T[:,:,self._last_ind[0]])
         elif i == 3:
             self.all[i].setData(
                 self.coords[0],
@@ -1023,6 +1042,169 @@ class ImageToolColors(QtWidgets.QDialog):
         self.cursorpicker.setColor(self.cursor_default)
         self.linepicker.setColor(self.line_default)
 
+class myColorBar(pg.PlotItem):
+    
+    def __init__(self, image, width=25, horiz_pad=45, vert_pad=30, inner_pad=5,     
+                 font_size=10, curve_kw={}, line_kw={'pen':'cyan'},
+                 *args, **kwargs):
+        super(myColorBar, self).__init__(*args, **kwargs)
+
+        self.cbar = pg.ImageItem(axisOrder='row-major')
+        self.npts = 4096
+        self.autolevels = True
+
+        self.cbar.setImage(np.linspace(0, 1, self.npts).reshape((-1, 1)))
+        self.addItem(self.cbar)
+        
+        self.isocurve = pg.IsocurveItem(**curve_kw)
+        self.isocurve.setZValue(5)
+
+        self.isoline = pg.InfiniteLine(angle=0, movable=True, **line_kw)
+        self.addItem(self.isoline)
+        self.isoline.setZValue(1000)
+        self.isoline.sigDragged.connect(self.update_level)
+
+        self.setImageItem(image)
+        self.setMouseEnabled(x=False, y=True)
+        self.setMenuEnabled(True)
+        
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+        self.layout.setColumnFixedWidth(1, width)
+        self.layout.setSpacing(0.)
+        self.layout.setContentsMargins(0., vert_pad, 0., vert_pad)
+        self.showAxes((True, True, True, True), size=(inner_pad, inner_pad))
+        self.getAxis('bottom').setStyle(showValues=False)
+        self.getAxis('left').setStyle(showValues=False)
+        self.getAxis('right').setStyle(
+            showValues=True, tickTextWidth=horiz_pad,
+            autoExpandTextSpace=False, autoReduceTextSpace=False)
+        # self.getAxis('top').setHeight(vert_pad)   
+        # self.getAxis('bottom').setHeight(vert_pad)
+        # self.getAxis('left').setWidth(inner_pad)
+        for axis in ['left', 'bottom', 'right', 'top']:
+            self.getAxis(axis).setTickFont(font)
+        
+    def setImageItem(self, img):
+        self.imageItem = weakref.ref(img)
+        self.isocurve.setParentItem(img)
+        img.sigImageChanged.connect(self.image_changed)
+        self.image_changed()
+    
+    def image_changed(self):
+        self.cmap_changed()
+        levels = self.imageItem().getLevels()
+        if self.autolevels:
+            self.cbar.setRect(0., levels[0], 1., levels[1] - levels[0])
+        else:
+            mn, mx = self.imageItem().quickMinMax(targetSize=2**16)
+            self.cbar.setRect(0., mn, 1., mx - mn)
+            self.cbar.setLevels(levels / (mx - mn) - mn)
+        self.update_isodata()
+        
+    def cmap_changed(self):
+        self.cmap = self.imageItem()._colorMap
+        self.lut = self.imageItem().lut
+        self.cbar._colorMap = self.cmap
+        self.cbar.setLookupTable(self.lut)
+        if not self.npts == self.lut.shape[0]:
+            self.npts = self.lut.shape[0]
+            self.cbar.setImage(np.linspace(0, 1, self.npts).reshape((-1, 1)))
+
+    def update_isodata(self):
+        self.isocurve.setData(self.imageItem().image)
+    def update_level(self, line):
+        self.isocurve.setLevel(line.value())
+
+    def setVisible(self, *args, **kwargs):
+        super().setVisible(*args, **kwargs)
+        self.getAxis('top').setStyle()
+        self.getAxis('bottom').setStyle()
+        self.getAxis('left').setStyle()
+        self.getAxis('right').setStyle()
+
+class dynamic_colorbar(pg.ColorBarItem):
+
+    def __init__(self, image,
+                 npts=4096, font_size=10, padding=(5, 30, 5, 30),
+                 curve_kw={}, line_kw={'pen':'cyan'}, *args, **kwargs):
+        kwargs['interactive'] = False
+        super(dynamic_colorbar, self).__init__(*args, **kwargs)
+        self.layout.setContentsMargins(*padding)
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+
+        self.npts = npts
+        self.setImageItem(image)
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+        self.axis.setTickFont(font)
+        if self.horizontal:
+            self.setRange( xRange=(0,self.npts), yRange=(0,1), padding=0 )
+            self.bar.setImage( np.linspace(0, 1, self.npts).reshape( (-1,1) ) )
+        else:
+            self.setRange( xRange=(0,1), yRange=(0,self.npts), padding=0 )
+            self.bar.setImage( np.linspace(0, 1, self.npts).reshape( (1,-1) ) )
+        self.imageItem = self.img_list[0]
+        # self.setLevels(self.imageItem().quickMinMax())
+        self.imageItem().sigImageChanged.connect(self.imagechanged)
+        self.isocurve = pg.IsocurveItem(**curve_kw)
+        self.isocurve.setParentItem(self.imageItem())
+        self.isocurve.setZValue(5)
+        self.update_isodata()
+        self.isoline = pg.InfiniteLine(angle=0, movable=True, **line_kw)
+        self.vb.addItem(self.isoline)
+        self.isoline.setZValue(1000)
+        # self.isoline.setValue(0.5)
+        self.imageItem().sigImageChanged.connect(self.update_isodata)
+        self.isoline.sigDragged.connect(self.update_level)
+    
+    def imagechanged(self):
+        self.axis.unlinkFromView()
+        self.setLevels(self.imageItem().quickMinMax())
+        self._colorMap = self.imageItem().getColorMap()
+        self.bar.setLookupTable(self._colorMap.getLookupTable(nPts=self.npts))
+        self.axis.linkToView(self.vb)
+    
+    def update_isodata(self):
+        self.isocurve.setData(self.imageItem().image)
+
+    def update_level(self, line):
+        self.isocurve.setLevel(line.value()*self.imageItem().getLevels()[-1])
+
+class isoHistogram(pg.HistogramLUTItem):
+
+    def __init__(self, *args, curve_kw={}, line_kw={}, **kwargs):
+        super(isoHistogram, self).__init__(*args, **kwargs)
+        self.layout.setContentsMargins(5, 20, 5, 20)
+        # self.gradient.setColorMap(self.imageItem().getColorMap())
+        # self.setLevels(*self.imageItem().quickMinMax())
+        # Isocurve drawing
+        self.isocurve = pg.IsocurveItem(**curve_kw)
+        self.isocurve.setParentItem(self.imageItem())
+        self.isocurve.setZValue(5)
+        self.update_isodata()
+        # Draggable line for setting isocurve level
+        self.isoline = pg.InfiniteLine(angle=0, movable=True, **line_kw)
+        self.vb.addItem(self.isoline)
+        # self.vb.setMouseEnabled(y=False)
+        self.isoline.setZValue(1000)
+        self.isoline.setValue(np.mean(self.imageItem().quickMinMax()))
+        # # Contrast/color control
+        # hist = pg.HistogramLUTItem()
+        # hist.setImageItem(self.imageItem)
+        # win.addItem(hist)
+        self.imageItem().sigImageChanged.connect(self.update_isodata)
+        self.isoline.sigDragged.connect(self.update_level)
+        # self.sigLevelsChanged.connect(self.update_isodata)
+
+    def update_isodata(self):
+        self.isocurve.setData(self.imageItem().image)
+
+    def update_level(self, line):
+        self.isocurve.setLevel(line.value())
+
+
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, *args, **kwargs):
         super().__init__()
@@ -1033,19 +1215,24 @@ class ImageTool(QtWidgets.QMainWindow):
         self.ndim = self.data.ndim
         self.itool = pg_itool(self.data, *args, **kwargs)
         self.icons = dict(
-            swap = qta.icon('msc.arrow-swap'),
-            lock = qta.icon('msc.lock'),
-            unlock = qta.icon('msc.unlock'),
+            invert = qta.icon('mdi6.invert-colors'),
+            invert_off = qta.icon('mdi6.invert-colors-off'),
+            lock = qta.icon('mdi6.lock'),
+            unlock = qta.icon('mdi6.lock-open-variant'),
+            colorbar = qta.icon('mdi6.gradient-vertical'),
+            transpose = qta.icon('mdi6.arrow-left-right'),
         )
         
         self.cursortab = QtWidgets.QWidget()
         cursortab_content = QtWidgets.QHBoxLayout(self.cursortab)
-        spinlabels = tuple(QtWidgets.QLabel(self.itool.dims[i])
-                           for i in range(self.ndim))
+        self._spinlabels = tuple(QtWidgets.QLabel(self.itool.dims[i])
+                                 for i in range(self.ndim))
         self._cursor_spin = tuple(QtWidgets.QSpinBox(self.cursortab)
                                   for i in range(self.ndim))
         self._cursor_dblspin = tuple(QtWidgets.QDoubleSpinBox(self.cursortab)
                                      for i in range(self.ndim))
+        self._transpose_button = tuple(QtWidgets.QPushButton(self.cursortab)
+                                       for i in range(self.ndim))
         for i in range(self.ndim):
             self._cursor_spin[i].setRange(0, self.itool.shape[i] - 1)
             self._cursor_spin[i].setSingleStep(1)
@@ -1061,6 +1248,9 @@ class ImageTool(QtWidgets.QMainWindow):
             self._cursor_dblspin[i].setWrapping(True)
             self._cursor_dblspin[i].valueChanged.connect(
                 lambda v, axis=i: self._cursor_value_changed(axis, v))
+            self._transpose_button[i].setIcon(self.icons['transpose'])
+            self._transpose_button[i].clicked.connect(
+                lambda axis1=i, axis2=i-1: self.transpose_axes(axis1,axis2))
         
         snap_check = QtWidgets.QCheckBox(self.cursortab)
         snap_check.setChecked(self.itool.snap)
@@ -1069,55 +1259,63 @@ class ImageTool(QtWidgets.QMainWindow):
         snap_label.setBuddy(snap_check)
 
         for i in range(self.ndim):
-            cursortab_content.addWidget(spinlabels[i])
-            cursortab_content.addWidget(self._cursor_dblspin[i])
+            cursortab_content.addWidget(self._transpose_button[i])
+            cursortab_content.addSpacing(10)
+            cursortab_content.addWidget(self._spinlabels[i])
             cursortab_content.addWidget(self._cursor_spin[i])
-            cursortab_content.addSpacing(20)
+            cursortab_content.addWidget(self._cursor_dblspin[i])
+            cursortab_content.addSpacing(10)
         cursortab_content.addStretch()
         cursortab_content.addWidget(snap_check)
         cursortab_content.addWidget(snap_label)
 
+
         self.colorstab = QtWidgets.QWidget()
         colorstab_content = QtWidgets.QHBoxLayout(self.colorstab)
-        gamma_spin = QtWidgets.QDoubleSpinBox()
-        gamma_spin.setToolTip('Colormap Gamma')
-        gamma_spin.setSingleStep(0.01)
-        gamma_spin.setRange(0.01, 100.)
-        gamma_spin.setValue(self.itool.gamma)
-        gamma_spin.valueChanged.connect(self.itool.set_gamma)
+
+        self._gamma_spin = QtWidgets.QDoubleSpinBox()
+        self._gamma_spin.setToolTip('Colormap gamma')
+        self._gamma_spin.setSingleStep(0.01)
+        self._gamma_spin.setRange(0.01, 100.)
+        self._gamma_spin.setValue(self.itool.gamma)
+        self._gamma_spin.valueChanged.connect(self.set_cmap)
         gamma_label = QtWidgets.QLabel('g')
-        gamma_label.setBuddy(gamma_spin)
-        # self._cmap_combo = QtWidgets.QComboBox(self.colorstab)
+        gamma_label.setBuddy(self._gamma_spin)
+
         self._cmap_combo = cmapComboBox(self.colorstab)
         self._cmap_combo.setMaximumWidth(175)
-        # self._cmap_combo.setToolTip('Colormap')
-        # for name in get_all_colormaps():
-        #     self._cmap_combo.addItem(QtGui.QIcon(colormap_to_QPixmap(name)), name)
         self._cmap_combo.setCurrentText(self.itool.cmap)
-        # self._cmap_combo.setIconSize(QtCore.QSize(60, 15))
         self._cmap_combo.currentTextChanged.connect(self.set_cmap)
+
         self._cmap_r_button = QtWidgets.QPushButton(self.colorstab)
-        self._cmap_r_button.setIcon(self.icons['swap'])
         self._cmap_r_button.setCheckable(True)
-        self._cmap_r_button.toggled.connect(self.reverse_cmap)
+        self._cmap_r_button.toggled.connect(self._set_cmap_reverse)
+        self._cmap_r_button.setIcon(self.icons['invert'])
+        self._cmap_r_button.setToolTip('Invert colormap')
+
         self._cmap_lock_button = QtWidgets.QPushButton(self.colorstab)
-        self._cmap_lock_button.setIcon(self.icons['unlock'])
         self._cmap_lock_button.setCheckable(True)
-        self._cmap_lock_button.toggled.connect(self._toggle_clim_lock)
+        self._cmap_lock_button.toggled.connect(self._set_clim_lock)
+        self._cmap_lock_button.setIcon(self.icons['unlock'])
+        self._cmap_lock_button.setToolTip('Lock colors')
+
         self._cbar_show_button = QtWidgets.QPushButton(self.colorstab)
         self._cbar_show_button.setCheckable(True)
-        self._cbar_show_button.setText('asdf')
+        self._cbar_show_button.toggled.connect(self.itool.colorbar.setVisible)
+        self._cbar_show_button.setIcon(self.icons['colorbar'])
+        self._cbar_show_button.setToolTip('Show colorbar')
+
         colors_button = QtWidgets.QPushButton('Colors')
         colors_button.clicked.connect(self._color_button_clicked)
         style_combo = QtWidgets.QComboBox(self.colorstab)
-        style_combo.setToolTip('Qt Style')
+        style_combo.setToolTip('Qt style')
         style_combo.addItems(qt_style_names())
         style_combo.textActivated.connect(change_style)
         style_label = QtWidgets.QLabel('Style:')
         style_label.setBuddy(style_combo)
         style_combo.setCurrentIndex(style_combo.findText('Fusion'))
         colorstab_content.addWidget(gamma_label)
-        colorstab_content.addWidget(gamma_spin)
+        colorstab_content.addWidget(self._gamma_spin)
         colorstab_content.addWidget(self._cmap_combo)
         colorstab_content.addWidget(self._cmap_r_button)
         colorstab_content.addWidget(self._cmap_lock_button)
@@ -1128,6 +1326,7 @@ class ImageTool(QtWidgets.QMainWindow):
         colorstab_content.addWidget(style_label)
         colorstab_content.addWidget(style_combo)
         
+
         self.smoothtab = QtWidgets.QWidget()
         smoothtab_content = QtWidgets.QHBoxLayout(self.smoothtab)
         navg_label = tuple(QtWidgets.QLabel(self.itool.dims[i])
@@ -1174,9 +1373,11 @@ class ImageTool(QtWidgets.QMainWindow):
         self.itool.setFocus()
         self.proxy = pg.SignalProxy(
             self.itool.scene().sigMouseMoved,
-            rateLimit=30,
+            rateLimit=self.itool.screen.refreshRate() * 0.5,
             slot=self.onmove_super
         )
+        # self.show()
+        # self._cbar_show_button.toggle()
 
     def onmove_super(self, evt):
         if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
@@ -1190,23 +1391,56 @@ class ImageTool(QtWidgets.QMainWindow):
                 self.itool.coords[i][self.itool._last_ind[i]])
             self._cursor_dblspin[i].blockSignals(False)
 
-    def set_cmap(self, cmap):
-        self.itool.set_cmap(cmap)
-        self._cmap_r_button.setChecked(False)
+    def transpose_axes(self, axis1, axis2):
+        self.itool.transpose_axes(axis1, axis2)
+        for i in range(self.ndim):
+            self._spinlabels[i].setText(self.itool.dims[i])
+            self._cursor_spin[i].setRange(0, self.itool.shape[i] - 1)
+            # self._cursor_spin[i].setSingleStep(1)
+            self._cursor_spin[i].setValue(self.itool._last_ind[i])
+            # self._cursor_spin[i].setWrapping(True)
+            # self._cursor_spin[i].valueChanged.connect(
+                # lambda v, axis=i: self._cursor_index_changed(axis, v))
+            self._cursor_dblspin[i].setRange(*self.itool.lims[i])
+            self._cursor_dblspin[i].setSingleStep(self.itool.incs[i])
+            # self._cursor_dblspin[i].setDecimals(3)
+            self._cursor_dblspin[i].setValue(
+                self.itool.coords[i][self.itool._last_ind[i]])
+            # self._cursor_dblspin[i].setWrapping(True)
+            # self._cursor_dblspin[i].valueChanged.connect(
+                # lambda v, axis=i: self._cursor_value_changed(axis, v))
+            # self._transpose_button[i].setIcon(self.icons['transpose'])
+            # self._transpose_button[i].clicked.connect(
+                # lambda axis1=i, axis2=i-1: self.transpose_axes(axis1,axis2))
 
-    def reverse_cmap(self, v):
-        current = get_colormap_from_name(self._cmap_combo.currentText(),
-                                  skipCache=True)
+    def set_cmap(self):
+        reverse = self._cmap_r_button.isChecked()
+        gamma = self._gamma_spin.value()
+        cmap = self._cmap_combo.currentText()
+        self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse)
+        # self._cmap_r_button.setChecked(False)
+
+    def _set_cmap_reverse(self, v):
         if v:
-            current.reverse()
-        self.itool.set_cmap(current)
+            self._cmap_r_button.setIcon(self.icons['invert_off'])
+        else:
+            self._cmap_r_button.setIcon(self.icons['invert'])
+        self.set_cmap()
+    # def set_gamma(self, gamma):
 
-    def _toggle_clim_lock(self, v):
+        # self.itool.set_gamma()
+
+    # def reverse_cmap(self, v):
+        # self.itool.set_cmap(reverse=v)
+
+
+
+    def _set_clim_lock(self, v):
         if v:
             self._cmap_lock_button.setIcon(self.icons['lock'])
         else:
             self._cmap_lock_button.setIcon(self.icons['unlock'])
-        self.itool.toggle_clim_lock(v)
+        self.itool.set_clim_lock(v)
     
     def _navg_changed(self, axis, n):
         self.itool.set_navg(axis, n)
@@ -1246,21 +1480,9 @@ def itool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    # print(qapp.devicePixelRatio())
     if darkdetect.isDark():
-        mpl_style = 'dark_background'
-    else:
-        mpl_style = 'default'
-    with plt.rc_context({
-        'text.usetex':False,
-        # 'font.family':'SF Pro',
-        # 'font.size':8,
-        # 'font.stretch':'condensed',
-        # 'mathtext.fontset':'cm',
-        # 'font.family':'fantasy',
-    }):
-        with plt.style.context(mpl_style):
-            app = ImageTool(data, *args, **kwargs)
+        pass
+    app = ImageTool(data, *args, **kwargs)
     change_style('Fusion')
     app.show()
     app.activateWindow()
@@ -1268,6 +1490,7 @@ def itool(data, *args, **kwargs):
     qapp.exec()
 
 if __name__ == "__main__":
-    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
+    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
+    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
     itool(dat.transpose('kx','ky','eV'), bench=False)
     # itool(dat.sel(eV=0,method='nearest'), useblit=True, bench=True)
