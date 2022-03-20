@@ -1,4 +1,5 @@
 import sys
+from typing import Type
 import weakref
 from itertools import compress
 
@@ -68,18 +69,17 @@ def get_colormap_from_name(name:str, skipCache=True):
         except ValueError:
             return pg.colormap.get(name, source='colorcet', skipCache=skipCache)
 
-def get_powernorm_colormap(cmap, gamma, reverse=False, skipCache=True, mode=1):
+def get_powernorm_colormap(cmap, gamma, reverse=False, skipCache=True, mode=0):
     if isinstance(cmap, str):
         cmap = get_colormap_from_name(cmap, skipCache=skipCache)
     if reverse:
         cmap.reverse()
     if gamma == 1:
         return cmap
-    # if not mode:
-    elif gamma > 1:
-        mapping = np.power(np.linspace(0, 1, 4096), gamma)
-    else:
+    if mode and (gamma < 1):
         mapping = 1 - np.power(np.linspace(1, 0, 4096), 1./gamma)
+    else:
+        mapping = np.power(np.linspace(0, 1, 4096), gamma)
     cmap.color = cmap.mapToFloat(mapping)
     cmap.pos = np.linspace(0.0, 1.0, num=4096)
     cmap.pos = np.linspace(0.0, 1.0, num=4096)
@@ -259,7 +259,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     
     Other Parameters
     ----------------
-    **self.cursorprops
+    **self.cursor_kw
         `.Line2D` properties that control the appearance of the lines.
         See also `~.Axes.axhline`.
 
@@ -282,261 +282,68 @@ class pg_itool(pg.GraphicsLayoutWidget):
     """
 
     def __init__(self, data, snap=False, gamma=0.5,
-                 cmap='magma', bench=False, layout_args={},
-                 cursorprops={}, lineprops={}, fermilineprops={}, improps={}, *args, **kwargs):
+                 cmap='magma', bench=False, plot_kw={}, cursor_kw={},
+                 image_kw={}, profile_kw={}, span_kw={}, fermi_kw={},
+                 *args, **kwargs):
         super(pg_itool, self).__init__(show=True, *args, **kwargs)
         self.qapp = QtCore.QCoreApplication.instance()
         self.screen = self.qapp.primaryScreen()
-        self.set_data(data, update=False)
-        self._initialize_layout(defaultPadding=0.01, clipToView=True, **layout_args)
+
         self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
         self.norm_cmap = get_powernorm_colormap(self.cmap, self.gamma)
         self.bench = bench
-        self.cursorprops = cursorprops
-        self.lineprops = lineprops
-        self.fermilineprops = fermilineprops
-        self.improps = improps
-        self.cursorprops.update(dict(
-            pen=pg.mkPen(0.5,alpha=0.5),
-            hoverPen=pg.mkPen(0.75,alpha=0.5),
+        self.plot_kw = plot_kw
+        self.cursor_kw = cursor_kw
+        self.image_kw = image_kw
+        self.profile_kw = profile_kw
+        self.span_kw = span_kw
+        self.fermi_kw = fermi_kw
+
+        self.cursor_kw.update(dict(
+            pen=pg.mkPen(0.5, alpha=0.5),
+            hoverPen=pg.mkPen(0.75, alpha=0.5),
         ))
-        # self.lineprops.update(dict(
+        # self.plot_kw.update(dict(defaultPadding=0.01, clipToView=True))
+        # self.profile_kw.update(dict(
         #     linestyle='-', linewidth=.8,
         #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
         #                          alpha=1),
         #     animated=self.useblit, visible=True,
         # ))
-        # self.fermilineprops.update(dict(
+        # self.fermi_kw.update(dict(
         #     linestyle='--', linewidth=.8,
         #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
         #                          alpha=1),
         #     animated=False,
         # ))
-        self.improps.update(dict(
+        self.image_kw.update(dict(
             # colorMap=get_colormap_from_name(self.cmap),
             colorMap=self.norm_cmap,
             # autoDownsample=True,
             axisOrder='row-major',
         ))
-        # self.spanprops = dict(
+        # self.span_kw.update(dict(
         #     # edgecolor=plt.rcParams.get('axes.edgecolor'),
         #     # lw=0.5, ls='--',
-        #     facecolor=colors.to_rgba(self.cursorprops['color'], alpha=1),
+        #     facecolor=colors.to_rgba(self.cursor_kw['color'], alpha=1),
         #     alpha=0.15,
         #     animated=self.useblit, visible=True,
-        # )
-        
-        self.avg_win = [1,] * self.ndim
-        self.clim_locked = False
-        self.clim_list = [()]  * self.ndim
-        self._shift = False
-        mids = tuple(self._get_middle_index(self.coords[i])
-                     for i in range(self.ndim))
+        # ))
 
-        if self.ndim == 2:
-            self.maps = (
-                pg.ImageItem(image=self.vals_T,
-                             rect=self._lims_to_rect(0, 1),
-                             name='Main Image', **self.improps),
-            )
-            self.hists = (
-                self.axes[1].plot(self.coords[0], self.vals[:,mids[1]],
-                                  name='X Profile', **self.lineprops),
-                self.axes[2].plot(self.vals[mids[0],:], self.coords[1],
-                                  name='Y Profile', **self.lineprops),
-            )
-            self.cursors = (
-                (
-                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
-                                    bounds=self.lims[0], movable=True,
-                                    name='X Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
-                                    bounds=self.lims[0], movable=True,
-                                    name='X Cursor', **self.cursorprops),
-                ),
-                (
-                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
-                                    movable=True, name='Y Cursor',
-                                    **self.cursorprops),
-                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
-                                    movable=True, name='Y Cursor',
-                                    **self.cursorprops),
-                ),
-            )
-            self.axes[0].addItem(self.maps[0])
-            self.axes[0].addItem(self.cursors[0][0])
-            self.axes[1].addItem(self.cursors[0][1])
-            self.axes[0].addItem(self.cursors[1][0])
-            self.axes[2].addItem(self.cursors[1][1])
-            # self.spans = (
-            #     (
-            #         self.axes[0].axvspan(
-            #             self.coords[0][self._last_ind[0]],
-            #             self.coords[0][self._last_ind[0]],
-            #             label='X Span', **self.spanprops),
-            #         self.axes[1].axvspan(
-            #             self.coords[0][self._last_ind[0]],
-            #             self.coords[0][self._last_ind[0]],
-            #             label='X Span', **self.spanprops),
-            #     ),
-            #     (
-            #         self.axes[0].axhspan(
-            #             self.coords[1][self._last_ind[1]],
-            #             self.coords[1][self._last_ind[1]],
-            #             label='Y Span', **self.spanprops),
-            #         self.axes[2].axhspan(
-            #             self.coords[1][self._last_ind[1]],
-            #             self.coords[1][self._last_ind[1]],
-            #             label='Y Span', **self.spanprops),
-            #     ),
-            # )
-            self.ax_index = (0, 1, 2, 0, 1, 0, 2, 1, 2)
-            self.span_ax_index = ((0, 1), (0, 2))
-            self._only_axis = (
-                (False, False, True, True, True, False, False),
-                (False, True, False, False, False, True, True),
-            )
-            self._only_maps = (
-                True, False, False, False, False, False, False,
-            )
-        elif self.ndim == 3:
-            self.maps = (
-                pg.ImageItem(image=self.vals_T[:,mids[2],:], 
-                             rect=self._lims_to_rect(0, 1),
-                             name='Main Image', **self.improps),
-                pg.ImageItem(image=self.vals_T[mids[1],:,:],
-                             rect=self._lims_to_rect(0, 2),
-                             name='Horiz Slice', **self.improps),
-                pg.ImageItem(image=self.vals_T[:,:,mids[0]],
-                             rect=self._lims_to_rect(2, 1),
-                             name='Vert Slice', **self.improps),
-            )
-            self.hists = (
-                self.axes[1].plot(self.coords[0], self.vals[:,mids[1],mids[2]],
-                                  name='X Profile', **self.lineprops),
-                self.axes[2].plot(self.vals[mids[0],:,mids[2]], self.coords[1],
-                                  name='Y Profile', **self.lineprops),
-                self.axes[3].plot(self.coords[2], self.vals[mids[0],mids[1],:],
-                                  name='Z Profile', **self.lineprops),
-            )
-            self.cursors = (
-                (
-                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
-                                    bounds=self.lims[0], movable=True,
-                                    name='X Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
-                                    bounds=self.lims[0], movable=True,
-                                    name='X Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
-                                    bounds=self.lims[0], movable=True,
-                                    name='X Cursor', **self.cursorprops),
-                ),
-                (
-                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
-                                    bounds=self.lims[1], movable=True,
-                                    name='Y Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
-                                    bounds=self.lims[1], movable=True,
-                                    name='Y Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
-                                    bounds=self.lims[1], movable=True,
-                                    name='Y Cursor', **self.cursorprops),
-                ),
-                (                    
-                    pg.InfiniteLine(self.coords[2][mids[2]], angle=90,
-                                    bounds=self.lims[2], movable=True,
-                                    name='Z Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[2][mids[2]], angle=90,
-                                    bounds=self.lims[2], movable=True,
-                                    name='Z Cursor', **self.cursorprops),
-                    pg.InfiniteLine(self.coords[2][mids[2]], angle=0,
-                                    bounds=self.lims[2], movable=True,
-                                    name='Z Cursor', **self.cursorprops),  
-                ),
-            )
-            self.axes[0].addItem(self.maps[0])
-            self.axes[4].addItem(self.maps[1])
-            self.axes[5].addItem(self.maps[2])
-            self.axes[0].addItem(self.cursors[0][0])
-            self.axes[1].addItem(self.cursors[0][1])
-            self.axes[4].addItem(self.cursors[0][2])
-            self.axes[0].addItem(self.cursors[1][0])
-            self.axes[2].addItem(self.cursors[1][1])
-            self.axes[5].addItem(self.cursors[1][2])
-            self.axes[3].addItem(self.cursors[2][0])
-            self.axes[5].addItem(self.cursors[2][1])
-            self.axes[4].addItem(self.cursors[2][2])
-            # self.spans = (
-            #     (
-            #         self.axes[0].axvspan(
-            #             self.coords[0][self._last_ind[0]],
-            #             self.coords[0][self._last_ind[0]],
-            #             label='X Span', **self.spanprops),
-            #         self.axes[1].axvspan(
-            #             self.coords[0][self._last_ind[0]],
-            #             self.coords[0][self._last_ind[0]],
-            #             label='X Span', **self.spanprops),
-            #         self.axes[4].axvspan(
-            #             self.coords[0][self._last_ind[0]],
-            #             self.coords[0][self._last_ind[0]],
-            #             label='X Span', **self.spanprops),
-            #     ),
-            #     (
-            #         self.axes[0].axhspan(
-            #             self.coords[1][self._last_ind[1]],
-            #             self.coords[1][self._last_ind[1]],
-            #             label='Y Span', **self.spanprops),
-            #         self.axes[2].axhspan(
-            #             self.coords[1][self._last_ind[1]],
-            #             self.coords[1][self._last_ind[1]],
-            #             label='Y Span', **self.spanprops),
-            #         self.axes[5].axhspan(
-            #             self.coords[1][self._last_ind[1]],
-            #             self.coords[1][self._last_ind[1]],
-            #             label='Y Span', **self.spanprops),
-            #     ),
-            #     (
-            #         self.axes[3].axvspan(
-            #             self.coords[2][self._last_ind[2]],
-            #             self.coords[2][self._last_ind[2]],
-            #             label='Z Span', **self.spanprops),
-            #         self.axes[5].axvspan(
-            #             self.coords[2][self._last_ind[2]],
-            #             self.coords[2][self._last_ind[2]],
-            #             label='Z Span', **self.spanprops),
-            #         self.axes[4].axhspan(
-            #             self.coords[2][self._last_ind[2]],
-            #             self.coords[2][self._last_ind[2]],
-            #             label='Z Span', **self.spanprops),
-            #     ),
-            # )
-            # if self.lims[-1][-1] * self.lims[-1][0] < 0:
-                # self.axes[3].axvline(0., label='Fermi Level', **self.fermilineprops)
-            self.ax_index = (0, 4, 5, # images
-                             1, 2, 3, # profiles
-                             0, 1, 4, 0, 2, 5, 3, 5, 4, # cursors
-                             1, 2, 3) # axes with dynamic limits
-            # self.span_ax_index = ((0, 1, 4), (0, 2, 5), (3, 5, 4))
-            self._only_axis = (
-                (False, False, True, False, True, True,
-                 True, True, True, False, False, False, False, False, False),
-                (False, True, False, True, False, True,
-                 False, False, False, True, True, True, False, False, False),
-                (True, False, False, True, True, False,
-                 False, False, False, False, False, False, True, True, True),
-            )
-            self._only_maps = (
-                True, True, True, False, False, False,
-                 False, False, False, False, False, False, False, False, False,
-            )
-        self.colorbar = myColorBar(image=self.maps[0], width=20)
-        self.addItem(self.colorbar, None, None, 4, 1)
-        self.colorbar.setVisible(False)
-        self.all = self.maps + self.hists
-        for i in range(len(self.cursors)): self.all += self.cursors[i]
-        self.averaged = [False, ] * self.ndim
+
+        self.ndim = None
+        
+        # self.vals = None
+        # self.vals_T = None
+        # self.dims = None
+        # self.coords = None
+        # self.shape = None
+        # self.incs = None
+        # self.lims = None
+        # self.cursor_pos = None
+        self.set_data(data, update_all=True)
         
         self.need_redraw = False
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
@@ -557,35 +364,26 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.ci.layout.setRowStretchFactor(i, factor[i])
 
     def _initialize_layout(self, horiz_pad=45, vert_pad=30, inner_pad=5,
-                           font_size=10., **plt_kws):
+                           font_size=10.):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
         if self.ndim == 2:
             self.axes = [
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(1, 1, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
+                self.addPlot(1, 0, 1, 1, **self.plot_kw),
+                self.addPlot(0, 0, 1, 1, **self.plot_kw),
+                self.addPlot(1, 1, 1, 1, **self.plot_kw),
             ]
         elif self.ndim == 3:
             self.axes = [
-                self.addPlot(2, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[1],
-                                            'bottom':self.dims[0]}),
-                self.addPlot(0, 0, 1, 1, **plt_kws,
-                                    labels={'top':self.dims[0]}),
-                self.addPlot(2, 2, 1, 1, **plt_kws,
-                                    labels={'right':self.dims[1]}),
-                self.addPlot(0, 1, 2, 2, **plt_kws,
-                                    labels={'top':self.dims[2]}),
-                self.addPlot(1, 0, 1, 1, **plt_kws,
-                                    labels={'left':self.dims[2]}),
-                self.addPlot(2, 1, 1, 1, **plt_kws,
-                                    labels={'bottom':self.dims[2]}),
+                self.addPlot(2, 0, 1, 1, **self.plot_kw),
+                self.addPlot(0, 0, 1, 1, **self.plot_kw),
+                self.addPlot(2, 2, 1, 1, **self.plot_kw),
+                self.addPlot(0, 1, 2, 2, **self.plot_kw),
+                self.addPlot(1, 0, 1, 1, **self.plot_kw),
+                self.addPlot(2, 1, 1, 1, **self.plot_kw),
             ]
+        else:
+            raise NotImplementedError('Only supports 2D and 3D arrays.')
         for i, p in enumerate(self.axes):
             for axis in ['left', 'bottom', 'right', 'top']:
                 p.getAxis(axis).setTickFont(font)
@@ -619,38 +417,263 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.axes[2].getAxis('right').setWidth(horiz_pad)
         pg.ViewBox.suggestPadding = lambda *_: 0.
         self._update_stretch()
+    
     def _lims_to_rect(self, i, j):
         x = self.lims[i][0]
         y = self.lims[j][0]
         w = self.lims[i][-1] - x
         h = self.lims[j][-1] - y
         return x, y, w, h
+    
+    def _initialize_plots(self):
+        if self.ndim == 2:
+            self.maps = (
+                pg.ImageItem(image=self.vals_T,
+                             rect=self._lims_to_rect(0, 1),
+                             name='Main Image', **self.image_kw),
+            )
+            self.hists = (
+                self.axes[1].plot(self.coords[0], self.vals[:,mids[1]],
+                                  name='X Profile', **self.profile_kw),
+                self.axes[2].plot(self.vals[mids[0],:], self.coords[1],
+                                  name='Y Profile', **self.profile_kw),
+            )
+            self.cursors = (
+                (
+                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
+                                    bounds=self.lims[0], movable=True,
+                                    name='X Cursor', **self.cursor_kw),
+                    pg.InfiniteLine(self.coords[0][mids[0]], angle=90,
+                                    bounds=self.lims[0], movable=True,
+                                    name='X Cursor', **self.cursor_kw),
+                ),
+                (
+                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
+                                    movable=True, name='Y Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(self.coords[1][mids[1]], angle=0,
+                                    movable=True, name='Y Cursor',
+                                    **self.cursor_kw),
+                ),
+            )
+            self.axes[0].addItem(self.maps[0])
+            self.axes[0].addItem(self.cursors[0][0])
+            self.axes[1].addItem(self.cursors[0][1])
+            self.axes[0].addItem(self.cursors[1][0])
+            self.axes[2].addItem(self.cursors[1][1])
+            # self.spans = (
+            #     (
+            #         self.axes[0].axvspan(
+            #             self.coords[0][self._last_ind[0]],
+            #             self.coords[0][self._last_ind[0]],
+            #             label='X Span', **self.span_kw),
+            #         self.axes[1].axvspan(
+            #             self.coords[0][self._last_ind[0]],
+            #             self.coords[0][self._last_ind[0]],
+            #             label='X Span', **self.span_kw),
+            #     ),
+            #     (
+            #         self.axes[0].axhspan(
+            #             self.coords[1][self._last_ind[1]],
+            #             self.coords[1][self._last_ind[1]],
+            #             label='Y Span', **self.span_kw),
+            #         self.axes[2].axhspan(
+            #             self.coords[1][self._last_ind[1]],
+            #             self.coords[1][self._last_ind[1]],
+            #             label='Y Span', **self.span_kw),
+            #     ),
+            # )
+            self.ax_index = (0, 1, 2, 0, 1, 0, 2, 1, 2)
+            self.span_ax_index = ((0, 1), (0, 2))
+            self._only_axis = (
+                (False, False, True, True, True, False, False),
+                (False, True, False, False, False, True, True),
+            )
+            self._only_maps = (
+                True, False, False, False, False, False, False,
+            )
+        elif self.ndim == 3:
+            self.maps = (
+                pg.ImageItem(name='Main Image', **self.image_kw),
+                pg.ImageItem(name='Horiz Slice', **self.image_kw),
+                pg.ImageItem(name='Vert Slice', **self.image_kw),
+            )
+            self.hists = (
+                self.axes[1].plot(name='X Profile', **self.profile_kw),
+                self.axes[2].plot(name='Y Profile', **self.profile_kw),
+                self.axes[3].plot(name='Z Profile', **self.profile_kw),
+            )
+            self.cursors = (
+                (
+                    pg.InfiniteLine(angle=90, movable=True, name='X Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=90, movable=True, name='X Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=90, movable=True, name='X Cursor',
+                                    **self.cursor_kw),
+                ),
+                (
+                    pg.InfiniteLine(angle=0, movable=True, name='Y Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=0, movable=True, name='Y Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=0, movable=True, name='Y Cursor',
+                                    **self.cursor_kw),
+                ),
+                (                    
+                    pg.InfiniteLine(angle=90, movable=True, name='Z Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=90, movable=True, name='Z Cursor',
+                                    **self.cursor_kw),
+                    pg.InfiniteLine(angle=0, movable=True, name='Z Cursor',
+                                    **self.cursor_kw),  
+                ),
+            )
+            self.axes[0].addItem(self.maps[0])
+            self.axes[4].addItem(self.maps[1])
+            self.axes[5].addItem(self.maps[2])
+            self.axes[0].addItem(self.cursors[0][0])
+            self.axes[1].addItem(self.cursors[0][1])
+            self.axes[4].addItem(self.cursors[0][2])
+            self.axes[0].addItem(self.cursors[1][0])
+            self.axes[2].addItem(self.cursors[1][1])
+            self.axes[5].addItem(self.cursors[1][2])
+            self.axes[3].addItem(self.cursors[2][0])
+            self.axes[5].addItem(self.cursors[2][1])
+            self.axes[4].addItem(self.cursors[2][2])
+            # self.spans = (
+            #     (
+            #         self.axes[0].axvspan(
+            #             self.coords[0][self._last_ind[0]],
+            #             self.coords[0][self._last_ind[0]],
+            #             label='X Span', **self.span_kw),
+            #         self.axes[1].axvspan(
+            #             self.coords[0][self._last_ind[0]],
+            #             self.coords[0][self._last_ind[0]],
+            #             label='X Span', **self.span_kw),
+            #         self.axes[4].axvspan(
+            #             self.coords[0][self._last_ind[0]],
+            #             self.coords[0][self._last_ind[0]],
+            #             label='X Span', **self.span_kw),
+            #     ),
+            #     (
+            #         self.axes[0].axhspan(
+            #             self.coords[1][self._last_ind[1]],
+            #             self.coords[1][self._last_ind[1]],
+            #             label='Y Span', **self.span_kw),
+            #         self.axes[2].axhspan(
+            #             self.coords[1][self._last_ind[1]],
+            #             self.coords[1][self._last_ind[1]],
+            #             label='Y Span', **self.span_kw),
+            #         self.axes[5].axhspan(
+            #             self.coords[1][self._last_ind[1]],
+            #             self.coords[1][self._last_ind[1]],
+            #             label='Y Span', **self.span_kw),
+            #     ),
+            #     (
+            #         self.axes[3].axvspan(
+            #             self.coords[2][self._last_ind[2]],
+            #             self.coords[2][self._last_ind[2]],
+            #             label='Z Span', **self.span_kw),
+            #         self.axes[5].axvspan(
+            #             self.coords[2][self._last_ind[2]],
+            #             self.coords[2][self._last_ind[2]],
+            #             label='Z Span', **self.span_kw),
+            #         self.axes[4].axhspan(
+            #             self.coords[2][self._last_ind[2]],
+            #             self.coords[2][self._last_ind[2]],
+            #             label='Z Span', **self.span_kw),
+            #     ),
+            # )
+            # if self.lims[-1][-1] * self.lims[-1][0] < 0:
+                # self.axes[3].axvline(0., label='Fermi Level', **self.fermi_kw)
+            self.ax_index = (0, 4, 5, # images
+                             1, 2, 3, # profiles
+                             0, 1, 4, 0, 2, 5, 3, 5, 4, # cursors
+                             1, 2, 3) # axes with dynamic limits
+            # self.span_ax_index = ((0, 1, 4), (0, 2, 5), (3, 5, 4))
+            self._only_axis = (
+                (False, False, True, False, True, True,
+                 True, True, True, False, False, False, False, False, False),
+                (False, True, False, True, False, True,
+                 False, False, False, True, True, True, False, False, False),
+                (True, False, False, True, True, False,
+                 False, False, False, False, False, False, True, True, True),
+            )
+            self._only_maps = (
+                True, True, True, False, False, False,
+                 False, False, False, False, False, False, False, False, False,
+            )
+        self.all = self.maps + self.hists
+        for i in range(len(self.cursors)): self.all += self.cursors[i]
 
     def _get_middle_index(self, x):
         return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+
+    def _refresh_bounds(self):
+        self.maps[0].setRect(self._lims_to_rect(0, 1))
+        if self.ndim == 3:
+            self.maps[1].setRect(self._lims_to_rect(0, 2))
+            self.maps[2].setRect(self._lims_to_rect(2, 1))
+
+        for axis, cursors in enumerate(self.cursors):
+            for c in cursors:
+                c.setBounds(self.lims[axis])
+
+    def set_labels(self, labels=None):
+        """labels: list or tuple of str"""
+        if labels is None:
+            labels = self.dims
+        self.axes[0].setLabels(left=labels[1], bottom=labels[0]),
+        self.axes[1].setLabels(top=labels[0]),
+        self.axes[2].setLabels(right=labels[1]),
+        if self.ndim == 3:
+            self.axes[3].setLabels(top=labels[2]),
+            self.axes[4].setLabels(left=labels[2]),
+            self.axes[5].setLabels(bottom=labels[2]),
         
-    def set_data(self, data, update=True):
+    def set_data(self, data, update_all=False, reset_cursor=True):
+        
+        # Data properties
         self.data = parse_data(data)
+        ndim_old = self.ndim
         self.ndim = self.data.ndim
+        if self.ndim != ndim_old:
+            update_all = True
         self.vals = self.data.values
         self._assign_vals_T()
         self.dims = self.data.dims
-        self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
         self.shape = self.data.shape
-        self.incs = tuple(self.coords[i][1] - self.coords[i][0]
-                          for i in range(self.ndim))
-        self.lims = tuple((self.coords[i][0], self.coords[i][-1])
-                          for i in range(self.ndim))
-        mids = tuple(self._get_middle_index(self.coords[i])
-                     for i in range(self.ndim))
-        self.cursor_pos = [self.coords[i][mids[i]] for i in range(self.ndim)]
+        self.coords = tuple(self.data[dim].values for dim in self.dims)
+        self.incs = tuple(coord[1] - coord[0] for coord in self.coords)
+        self.lims = tuple((coord[0], coord[-1]) for coord in self.coords)
+
+        if update_all:
+            self.clear()
+            self._initialize_layout()
+            self._initialize_plots()
+            self.avg_win = [1,] * self.ndim
+            self.clim_locked = False
+            self.clim_list = [()]  * self.ndim
+            self.averaged = [False, ] * self.ndim
         
-        self._last_ind = list(mids)
+        # Imagetool properties
+        if reset_cursor is True:
+            self.cursor_pos = [None, ] * self.ndim
+            self._last_ind = [None, ] * self.ndim
+            self.reset_cursor()
+        self.set_labels()
+        self._apply_change()
+        self._refresh_bounds()
+        if update_all:
+            self.colorbar = myColorBar(image=self.maps[0], width=20)
+            self.addItem(self.colorbar, None, None, 4, 1)
+            self.colorbar.setVisible(False)
 
-
-
-        if update is True:
-            self._apply_change()
+    def reset_cursor(self):
+        """Return the cursor to the center of the image."""
+        for axis, coord in enumerate(self.coords):
+            self.set_index(axis, self._get_middle_index(coord), update=False)
 
     def _cursor_drag(self, axis, line):
         self.set_value(axis, line.value())
@@ -687,38 +710,31 @@ class pg_itool(pg.GraphicsLayoutWidget):
             fps = 1 / average
             self.axes[1].setTitle('%0.2f fps - %0.1f ms avg' % (fps, average * 1_000))
         
-    
-    def disconnect(self):
-        """Disconnect events."""
-        # self.canvas.mpl_disconnect(self._cidmotion)
-        # self.canvas.mpl_disconnect(self._ciddraw)
-        # self.canvas.mpl_disconnect(self._cidpress)
-        # self.canvas.mpl_disconnect(self._cidrelease)
-        pass
-
-    def labelify(self, dim):
-        """Prettify some frequently used axis labels."""
-        labelformats = dict(
-            kx = '$k_x$',
-            ky = '$k_y$',
-            kz = '$k_z$',
-            alpha = '$\\alpha$',
-            beta = '$\\beta$',
-            theta = '$\\theta$',
-            phi = '$\\phi$',
-            chi = '$\\chi$',
-            eV = '$E$'
-        )
-        try:
-            return labelformats[dim]
-        except KeyError:
-            return dim
+    # def labelify(self, dim):
+    #     """Prettify some frequently used axis labels."""
+    #     labelformats = dict(
+    #         kx = '$k_x$',
+    #         ky = '$k_y$',
+    #         kz = '$k_z$',
+    #         alpha = '$\\alpha$',
+    #         beta = '$\\beta$',
+    #         theta = '$\\theta$',
+    #         phi = '$\\phi$',
+    #         chi = '$\\chi$',
+    #         eV = '$E$'
+    #     )
+    #     try:
+    #         return labelformats[dim]
+    #     except KeyError:
+    #         return dim
 
     def _assign_vals_T(self):
         if self.ndim == 2:
             self.vals_T = self.vals.T
         elif self.ndim == 3:
             self.vals_T = np.transpose(self.vals, axes=(1, 2, 0))
+        else:
+            raise NotImplementedError('Wrong data dimensions')
     
     def set_cmap(self, cmap=None, gamma=None, reverse=False):
         if cmap is not self.cmap:
@@ -741,15 +757,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
         else:
             self.clim_locked = False
     
-    def set_index(self, axis, index):
+    def set_index(self, axis, index, update=True):
         self._last_ind[axis] = index
         self.cursor_pos[axis] = self.coords[axis][index]
-        self._apply_change(self._only_axis[axis])
+        if update is True:
+            self._apply_change(self._only_axis[axis])
 
-    def set_value(self, axis, val):
+    def set_value(self, axis, val, update=True):
         self._last_ind[axis] = self.get_index_of_value(axis, val)
         self.cursor_pos[axis] = val
-        self._apply_change(self._only_axis[axis])
+        if update is True:
+            self._apply_change(self._only_axis[axis])
 
     def set_cursor_color(self, c):
         for cursor in self.cursors:
@@ -904,9 +922,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._refresh_data(i)
     def transpose_axes(self, axis1, axis2):
         dims_new = list(self.dims)
-        dims_new[axis1] = self.dims[axis2]
-        dims_new[axis2] = self.dims[axis1]
-        self.set_data(self.data.transpose(*dims_new), update=True)
+        dims_new[axis1], dims_new[axis2] = self.dims[axis2], self.dims[axis1]
+        new_data = self.data.transpose(*dims_new)
+        self.cursor_pos[axis2], self.cursor_pos[axis1] = self.cursor_pos[axis1], self.cursor_pos[axis2]
+        self._last_ind[axis2], self._last_ind[axis1] = self._last_ind[axis1], self._last_ind[axis2]
+        self.set_data(new_data, update_all=False, reset_cursor=True)
     @supnan
     def _refresh_data(self, i):
         if self.ndim == 2:
@@ -991,9 +1011,9 @@ class ImageToolColors(QtWidgets.QDialog):
         self.setWindowTitle('Colors')
 
         self.cursor_default = color_to_QColor(
-            self.parent.itool.cursorprops['color'])
+            self.parent.itool.cursor_kw['color'])
         self.line_default = color_to_QColor(
-            self.parent.itool.lineprops['color'])
+            self.parent.itool.profile_kw['color'])
         self.cursor_current = color_to_QColor(
             self.parent.itool.cursors[0].get_color())
         self.line_current = color_to_QColor(
@@ -1115,8 +1135,9 @@ class myColorBar(pg.PlotItem):
     def update_level(self, line):
         self.isocurve.setLevel(line.value())
 
-    def setVisible(self, *args, **kwargs):
-        super().setVisible(*args, **kwargs)
+    def setVisible(self, visible, *args, **kwargs):
+        super().setVisible(visible, *args, **kwargs)
+        self.isocurve.setVisible(visible, *args, **kwargs)
         self.getAxis('top').setStyle()
         self.getAxis('bottom').setStyle()
         self.getAxis('left').setStyle()
@@ -1373,14 +1394,17 @@ class ImageTool(QtWidgets.QMainWindow):
         self.proxy = pg.SignalProxy(
             self.itool.scene().sigMouseMoved,
             rateLimit=self.itool.screen.refreshRate() * 0.5,
-            slot=self.onmove_super
+            slot=self.update_cursor_spins
         )
+        for cursors in self.itool.cursors:
+            for c in cursors:
+                c.sigDragged.connect(self.update_cursor_spins)
         # self.show()
         # self._cbar_show_button.toggle()
 
-    def onmove_super(self, evt):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            return
+    def update_cursor_spins(self):
+        # if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            # return
         for i in range(self.ndim):
             self._cursor_spin[i].blockSignals(True)
             self._cursor_spin[i].setValue(self.itool._last_ind[i])
@@ -1417,7 +1441,7 @@ class ImageTool(QtWidgets.QMainWindow):
         gamma = self._gamma_spin.value()
         cmap = self._cmap_combo.currentText()
         self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse)
-        # self._cmap_r_button.setChecked(False)
+
 
     def _set_cmap_reverse(self, v):
         if v:
@@ -1425,14 +1449,6 @@ class ImageTool(QtWidgets.QMainWindow):
         else:
             self._cmap_r_button.setIcon(self.icons['invert'])
         self.set_cmap()
-    # def set_gamma(self, gamma):
-
-        # self.itool.set_gamma()
-
-    # def reverse_cmap(self, v):
-        # self.itool.set_cmap(reverse=v)
-
-
 
     def _set_clim_lock(self, v):
         if v:
@@ -1489,8 +1505,11 @@ def itool(data, *args, **kwargs):
     qapp.exec()
 
 if __name__ == "__main__":
+    # from pyimagetool import RegularDataArray, imagetool
+    # from erlab.plotting import ximagetool
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
     dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
-    # itool(dat.transpose('kx','ky','eV'), bench=False)
+    itool(dat.transpose('kx','ky','eV'), bench=False)
+    # imagetool(dat)
     
-    itool(dat.sel(eV=0,method='nearest'), bench=False)
+    # itool(dat.sel(eV=0,method='nearest'), bench=False)
