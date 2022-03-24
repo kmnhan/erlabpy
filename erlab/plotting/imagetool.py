@@ -1,6 +1,6 @@
 import sys
 import weakref
-from itertools import compress
+from itertools import chain, compress
 
 import numpy as np
 import numba
@@ -559,7 +559,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
         cursor_c = pg.mkColor(0.5)
         cursor_c.setAlphaF(0.75)
-        cursor_c_hover = pg.mkColor(0.5)
+        cursor_c_hover = pg.mkColor(0.75)
         cursor_c_hover.setAlphaF(0.75)
         span_c = pg.mkColor(0.5)
         span_c.setAlphaF(0.15)
@@ -836,10 +836,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
                  False, False, False, False, False, False, False, False, False,
             )
         self.all = self.maps + self.hists
-        for ss in self.spans:
-            for s in ss:
-                s.setVisible(False)
-        for i in range(len(self.cursors)): self.all += self.cursors[i]
+        for s in chain.from_iterable(self.spans):
+            s.setVisible(False)
+        for i in range(len(self.cursors)):
+            self.all += self.cursors[i]
 
     def _get_middle_index(self, x):
         return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
@@ -1107,8 +1107,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if self.bench:
             self._t_start = perf_counter()
         if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            for c in chain.from_iterable(self.cursors):
+                c.setMovable(True)
             return
-        
+        else:
+            for c in chain.from_iterable(self.cursors):
+                c.setMovable(False)
         axis_ind, datapos = self._get_curr_axes_index(evt[0])
         if axis_ind is None:
             return
@@ -1619,14 +1623,14 @@ class myColorBar(pg.PlotItem):
         
     def cmap_changed(self):
         self.cmap = self.imageItem()._colorMap
-        # self.lut = self.imageItem().lut
-        self.lut = self.cmap.getStops()[1]
-        # if not self.npts == self.lut.shape[0]:
-            # self.npts = self.lut.shape[0]
-            # self.cbar.setImage(self.cmap.pos.reshape((-1, 1)))
-        # self.cbar._colorMap = self.cmap
-        # self.cbar.setLookupTable(self.lut)
-        self.cbar.setColorMap(self.cmap)
+        self.lut = self.imageItem().lut
+        # self.lut = self.cmap.getStops()[1]
+        if not self.npts == self.lut.shape[0]:
+            self.npts = self.lut.shape[0]
+            self.cbar.setImage(self.cmap.pos.reshape((-1, 1)))
+        self.cbar._colorMap = self.cmap
+        self.cbar.setLookupTable(self.lut)
+        # self.cbar.setColorMap(self.cmap)
         # pg.ImageItem
 
     def update_isodata(self):
@@ -2003,9 +2007,10 @@ def itool(data, *args, **kwargs):
 if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
     # from erlab.plotting import ximagetool
-    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
-    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
+    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy09.nc')
+    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
+    dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     itool(dat)
     # from erlab.plotting.imagetool_mpl import itoolmpl
     # itoolmpl(dat)
