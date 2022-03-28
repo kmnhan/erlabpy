@@ -1199,7 +1199,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.itool.snap = value
     
 
-def mpl_itool(data, *args, **kwargs):
+def itoolmpl(data, *args, **kwargs):
 
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
