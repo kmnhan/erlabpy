@@ -500,20 +500,36 @@ class pg_itool(pg.GraphicsLayoutWidget):
     ----------
     data : `xarray.DataArray`
         The data to explore. Must have three coordinate axes.
+
     snap :  bool, default: True
         Wheter to snap the cursor to data pixels.
+
     gamma : float, default: 0.5
         Colormap default gamma.
     cmap : str or `pyqtgraph.colorMap`, default: 'magma'
         Default colormap.
+
     bench : bool, default: False
         Whether to print frames per second.
-        
-    Other Parameters
-    ----------------
-    **self.cursor_kw
-        `.Line2D` properties that control the appearance of the lines.
-        See also `~.Axes.axhline`.
+
+    plot_kw : dict, optional
+        Extra arguments to `matplotlib.pyplot.plot`: refer to the 
+        `matplotlib` documentation for a list of all possible arguments.
+    cursor_kw : dict, optional
+        Extra arguments to `pyqtgraph.InfiniteLine`: refer to the 
+        `pyqtgraph` documentation for a list of all possible arguments.
+    image_kw : dict, optional
+        Extra arguments to `pyqtgraph.ImageItem`: refer to the 
+        `pyqtgraph` documentation for a list of all possible arguments.
+    profile_kw : dict, optional
+        Extra arguments to `PlotDataItem.__init__`: refer to the 
+        `pyqtgraph` documentation for a list of all possible arguments.
+    span_kw : dict, optional
+        Extra arguments to `pyqtgraph.LinearRegionItem`: refer to the 
+        `pyqtgraph` documentation for a list of all possible arguments.
+    fermi_kw : dict, optional
+        Extra arguments to `pyqtgraph.InfiniteLine`: refer to the 
+        `pyqtgraph` documentation for a list of all possible arguments.
 
     Notes
     -----
@@ -531,14 +547,14 @@ class pg_itool(pg.GraphicsLayoutWidget):
         │───┼───│
         │ 0 │ 2 │
         └───┴───┘
-
     
     Signals
     -------
     sigDataChanged(self)
     sigIndexChanged(indices, values)
-    """
 
+    """
+    
     sigDataChanged = QtCore.Signal(object)
     sigIndexChanged = QtCore.Signal(list, list)
 
@@ -548,7 +564,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     _get_middle_index = lambda _, x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
 
     def __init__(self, data, snap=False, gamma=0.5,
-                 cmap='magma', bench=False, plot_kw={}, cursor_kw={},
+                 cmap='twilight', bench=False, plot_kw={}, cursor_kw={},
                  image_kw={}, profile_kw={}, span_kw={}, fermi_kw={},
                  *args, **kwargs):
         super().__init__(show=True, *args, **kwargs)
@@ -557,10 +573,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
-        self.norm_cmap = get_powernorm_colormap(
-            self.cmap, self.gamma,
-            reverse=False, skipCache=False, highContrast=False,
-        )
         self.bench = bench
         self.colorbar = None
         self.plot_kw = plot_kw
@@ -601,7 +613,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # ))
         self.image_kw.update(dict(
             # colorMap=get_colormap_from_name(self.cmap),
-            colorMap=self.norm_cmap,
+            # colorMap=self.norm_cmap,
             autoDownsample=True,
             axisOrder='row-major',
         ))
@@ -623,7 +635,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # self.cursor_pos = None
         
         self.set_data(data, update_all=True, reset_cursor=True)
-        
+        self.set_cmap()
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.setFocus()
         self.connect_signals()
@@ -922,28 +934,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return 6, self._get_mouse_datapos(self.colorbar, pos)    
         return None, None
 
-    def _store_curr_axes(self, evt):
-        axis_ind, _ = self._get_curr_axes_index(evt.scenePos())
-        if axis_ind == 0:
-            self.last_axes = 0
-        elif axis_ind == 1:
-            self.last_axes = 1
-        elif axis_ind == 2:
-            self.last_axes = 2
-        elif axis_ind == 6:
-            self.last_axes = 6
-        elif self.data_ndim == 2:
-            return
-        elif axis_ind == 4:
-            self.last_axes = 4
-        elif axis_ind == 5:
-            self.last_axes = 5
-        elif axis_ind == 3:
-            self.last_axes = 3
-        else:
-            return
-        
-
     def reset_timer(self, *args):
         self._elapsed.clear()
 
@@ -984,6 +974,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
             raise NotImplementedError('Wrong data dimensions')
     
     def set_cmap(self, cmap=None, gamma=None, reverse=False, highContrast=False):
+        if cmap is None:
+            cmap = self.cmap
+        if gamma is None:
+            gamma =  self.gamma
         if cmap is not self.cmap:
             self.cmap = cmap
         if gamma is not self.gamma:
@@ -1129,27 +1123,20 @@ class pg_itool(pg.GraphicsLayoutWidget):
         axis_ind, datapos = self._get_curr_axes_index(evt[0])
         if axis_ind is None:
             return
-        x, y, z = None, None, None
-        if axis_ind == 0:
-            x, y = datapos
-        elif axis_ind == 1:
-            x = datapos[0]
-        elif axis_ind == 2:
-            y = datapos[1]
-        elif axis_ind == 3:
-            z = datapos[0]
-        elif axis_ind == 4:
-            x, z = datapos
-        elif axis_ind == 5:
-            z, y = datapos
+        
+        V = [None] * self.data_ndim
+        if axis_ind == 0: V[0:2] = datapos
+        elif axis_ind == 1: V[0] = datapos[0]
+        elif axis_ind == 2: V[1] = datapos[1]
+        elif axis_ind == 3: V[2] = datapos[0]
+        elif axis_ind == 4: V[0], V[2] = datapos
+        elif axis_ind == 5: V[2], V[1] = datapos
         elif axis_ind == 6:
             self.colorbar.isoline.setPos(datapos[1])
             return
-        dx, dy, dz = x is not None, y is not None, z is not None
-
-        D = [dx, dy, dz]
-        V = [x, y, z]
-
+        D = [v is not None for v in V]
+        if not any(D):
+            return
         for i in range(self.data_ndim):
             if D[i]:
                 ind = self.get_index_of_value(i, V[i])
@@ -1162,16 +1149,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 V[i] = self.cursor_pos[i]
         if not any(D):
             return
-        dx, dy, dz = D
         if not self.snap:
             self.cursor_pos = V
-        # self._apply_change(cond)
         self._apply_change(D)
         if self.bench:
             self._measure_fps()
 
-
-    
     def _apply_change(self, cond=None):
         if cond is None:
             update = (True,) * len(self.all)
@@ -1707,7 +1690,7 @@ class itoolCursors(QtWidgets.QWidget):
         for i, button in enumerate(self._transpose_button):
             transpose_layout.addWidget(button)
             button.setIcon(qta.icon(fonticons['transpose'][i]))
-        # self.layout.addStretch()
+        self.layout.addStretch()
         self.layout.addWidget(self._snap_button)
     
     def update_content(self):
@@ -1792,6 +1775,7 @@ class itoolColors(QtWidgets.QWidget):
         self._gamma_spin.valueChanged.connect(self.set_cmap)
         gamma_label = QtWidgets.QLabel('g')
         gamma_label.setBuddy(self._gamma_spin)
+        # gamma_label.setMaximumWidth(10)
 
         self._cmap_combo = itoolColorMaps(self)
         self._cmap_combo.setMaximumWidth(175)
@@ -1844,9 +1828,12 @@ class itoolColors(QtWidgets.QWidget):
         button_layout.addWidget(self._cbar_show_button, 0, 3)
         button_layout.addWidget(colors_button, 0, 4)
 
+        # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
+                        #    QtWidgets.QSizePolicy.Minimum)
+
         self.layout.addWidget(self._cmap_group)
         self.layout.addWidget(self._button_group)
-        # self.layout.addStretch()
+        self.layout.addStretch()
         # self.layout.addStretch()
         # self.layout.addWidget(style_combo)
 
@@ -1982,12 +1969,16 @@ class itoolBinning(QtWidgets.QWidget):
         self.itool._refresh_navg()
     
 class ImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data, *args, **kwargs):
+    def __init__(self, data, title=None, *args, **kwargs):
         super().__init__()
-        self._main = QtWidgets.QWidget()
+        self._main = QtWidgets.QWidget(self)
+        self.data = parse_data(data)
+        if title is None:
+            title = self.data.name
+        self.setWindowTitle(title)
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
-        self.data = parse_data(data)
+        
         self.data_ndim = self.data.ndim
 
         self.itool = pg_itool(self.data, *args, **kwargs)
@@ -2026,35 +2017,48 @@ class ImageTool(QtWidgets.QMainWindow):
             self.smoothtab.initialize_functions()
 
 
+
 def itool(data, *args, **kwargs):
     # TODO: implement multiple windows, add transpose, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    # if darkdetect.isDark():
-        # pass
-    app = ImageTool(data, *args, **kwargs)
     change_style('Fusion')
-    app.show()
-    app.activateWindow()
-    app.raise_()
+
+    if isinstance(data, (list, tuple)):
+        win = tuple()
+        for d in data:
+            win += (ImageTool(d, *args, **kwargs), )
+        for w in win:
+            w.show()
+        win[-1].activateWindow()
+        win[-1].raise_()
+    else:
+        win = ImageTool(data, *args, **kwargs)
+        win.show()
+        win.activateWindow()
+        win.raise_()
+    
     qapp.exec()
 
 if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
     # from erlab.plotting import ximagetool
     from arpes.io import load_data
-    dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
+    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
-    # dat = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211211_00008.fits',
-                    # location='BL1001-ERLab').spectrum
-    itool(dat)
+    dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
+                    location='BL1001-ERLab').spectrum
+    dat16 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00016.fits',
+                    location='BL1001-ERLab').spectrum
+    # itool(dat)
     # from erlab.plotting.imagetool_mpl import itoolmpl
     # itoolmpl(dat)
     # gkmk_cvs = load_data('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
-    # itool(gkmk_cvs)
+    # itool([gkmk_cvs, dat])
+    itool([dat10, dat16])
     # itool(dat, bench=False)
     # itool(dat.sel(eV=0,method='nearest'), bench=False)
     # imagetool(dat)
