@@ -3,10 +3,12 @@
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
 from matplotlib.widgets import AxesWidget
 from pyimagetool import RegularDataArray, imagetool
 
-__all__ = ['ximagetool','proportional_colorbar','LabeledCursor']
+__all__ = ['ximagetool', 'proportional_colorbar', 'LabeledCursor', 
+           'plot_array', 'plot_slices']
 
 def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     r"""Replaces the current colorbar or creates a new colorbar with 
@@ -74,7 +76,10 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
             try:
                 mappable = ax_ref.collections[-1]
             except IndexError:
-                pass
+                try:
+                    mappable = ax_ref.get_images()[-1]
+                except IndexError:
+                    pass
             if mappable is None:
                 raise RuntimeError('No mappable was found to use for colorbar '
                                    'creation. First define a mappable such as '
@@ -140,7 +145,7 @@ class LabeledCursor(AxesWidget):
             lineprops['animated'] = True
             textprops['animated'] = True
 
-        lcolor = lineprops.pop("color", lineprops.pop("c", "k"))
+        lcolor = lineprops.pop("color", lineprops.pop("c", "0.35"))
         ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
         lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.8))
         lineprops.update(dict(color=lcolor, ls=ls, lw=lw, visible=False))
@@ -225,7 +230,7 @@ def ximagetool(da:xr.DataArray, prebin=None, cmap='viridis'):
         units = ['' for i in range(len(dims))]
     data = RegularDataArray(
         da.fillna(0),
-        dims=[dims[i]+' '+units[i] for i in range(len(dims))]
+        dims=[dims[i]+' '+units[i] for i in range(len(dims))],
     )
 
     # TODO: implement 4dim and raise error
@@ -236,3 +241,149 @@ def ximagetool(da:xr.DataArray, prebin=None, cmap='viridis'):
     # tool.info_bar.cmap_combobox.currentTextChanged.connect(tool.set_all_cmaps)
     
     return tool
+
+def plot_array(arr:xr.DataArray, ax=None,
+               cursor=False, cursorprops={}, **improps):
+    """Plots a 2D `xr.DataArray` using imshow, which is much faster."""
+    if isinstance(arr, xr.Dataset):
+        arr = arr.spectrum
+    if ax is None:
+        ax = plt.gca()
+    coords = [arr[d] for d in arr.dims]
+    coords.reverse()
+    extent = tuple(m for c in coords for m in (c[0], c[-1]))
+    
+    improps.setdefault('cmap', 'twilight')
+    colorbar = improps.pop('colorbar', False)
+    gamma = improps.pop('gamma', 0.5)
+    improps['norm'] = improps.pop('norm', colors.PowerNorm(gamma))
+    
+    improps.update(dict(
+        extent=extent, aspect='auto', origin='lower',
+    ))
+    
+    img = ax.imshow(arr.values, **improps)
+    ax.set_xlabel(arr.dims[1])
+    ax.set_ylabel(arr.dims[0])
+        
+    if colorbar:
+        proportional_colorbar(ax=ax)
+    if cursor:
+        c = LabeledCursor(ax, **cursorprops)
+        return img, c
+    else:
+        return img
+    
+
+def plot_slices(maps, xlim=None, ylim=None, axis='square', show_all_labels=False,
+                 colorbar='lastcol', hide_colorbar_ticks=True, annotate=True,
+                 subplot_kw={}, annotate_kw={}, **values):
+    r"""Automated comparison plot of slices.
+
+    Parameters
+    ----------
+
+    maps : `xarray.DataArray`, list of DataArray
+        Arrays to compare.
+    
+    xlim : float or (float, float)
+    
+    ylim : float or (float, float)
+    
+    axis : {'equal', 'tight', 'scaled', 'auto', 'image', 'square'}
+    
+    show_all_labels : bool, default=False
+        
+    colorbar : {'lastcol', 'all', 'off'}, optional
+    
+    hide_colorbar_ticks : bool, default=False
+    
+    annotate : bool, default=True
+    
+    subplot_kw : dict, optional
+        Extra arguments to `matplotlib.pyplot.subplots`: refer to the 
+        `matplotlib` documentation for a list of all possible arguments.
+        
+    annotate_kw : dict, optional
+        Extra arguments to
+        `erlab.plotting.annotations.label_subplot_properties`. 
+    
+    **values : dict
+        key-value pair of cut location and bin widths. See examples.
+        Remaining arguments are passed onto 
+        `erlab.plotting.general.plot_array`.
+
+    Examples
+    --------
+    ::
+
+        # Two maps: map1, map2
+        # Create a figure with a 3 by 2 grid.
+        
+        fig, axes = compare_maps([map1, map2],
+                                 eV=[0, -0.1, -0.2],
+                                 eV_width=0.05)
+        
+    """
+    if isinstance(maps, xr.DataArray):
+        maps = [maps]
+    dims = maps[0].dims
+    
+    kwargs = {k: v for k, v in values.items() if k not in dims}
+    slice_kw = {k: v for k, v in values.items() if k not in kwargs}
+    slice_dim = list(slice_kw.keys())[0]
+    slice_levels = slice_kw[slice_dim]
+    slice_width = kwargs.pop(slice_dim+'_width', None)
+    
+    try:
+        slice_levels[0]
+    except TypeError:
+        slice_levels = [slice_levels]
+    try:
+        xlim[0]
+    except TypeError:
+        xlim = [xlim] * 2
+    try:
+        ylim[0]
+    except TypeError:
+        ylim = [ylim] * 2
+
+    if hide_colorbar_ticks:
+        cbar_args = dict(ticks=[])
+    else:
+        cbar_args = {}
+    for k, v in dict(sharex='col', sharey='row', layout='constrained').items():
+        subplot_kw.setdefault(k, v)
+    fig, axes = plt.subplots(len(slice_levels), len(maps), **subplot_kw)
+    if len(slice_levels) == 1:
+        axes = axes[:,np.newaxis].reshape(1,-1)
+    if len(maps) == 1:
+        axes = axes[:,np.newaxis].reshape(1,-1)
+    
+    for i in range(len(slice_levels)):
+        
+        fatsel_kw = {slice_dim: slice_levels[i]}
+        for j in range(len(maps)):
+            ax = axes[i,j]
+            if slice_width is not None:
+                fatsel_kw[slice_dim+'_width'] = slice_width
+            plot_array(maps[j].S.fat_sel(**fatsel_kw), ax=axes[i,j], **kwargs)
+    
+    for ax in axes.flatten():
+        if not show_all_labels:
+            if ax not in axes[:,0]:
+                ax.set_ylabel('')
+            if ax not in axes[-1,:]:
+                ax.set_xlabel('')
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.axis(axis)
+        if colorbar != 'off':
+            if colorbar == 'all' or ax in axes[:,-1]:
+                proportional_colorbar(ax=ax, **cbar_args)
+
+    fancy_labels(axes)
+    if annotate:
+        label_subplot_properties(axes, values={slice_dim: slice_levels * len(maps)},
+                                 **annotate_kw)
+    return fig, axes
