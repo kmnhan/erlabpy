@@ -6,7 +6,7 @@ from joblib import Parallel, delayed
 from scipy.fft import fft2, fftshift, ifft2
 from scipy.signal import correlate, correlation_lags
 
-__all__ = ['xacf2','match_dims','xcorr1']
+__all__ = ['xacf2','match_dims','xcorr1d']
 
 def acf2rect(IMG:np.ndarray):
     """Autocorrelation of rectangular image."""
