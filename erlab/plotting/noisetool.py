@@ -33,6 +33,81 @@ __all__ = ['noisetool']
 def boxcarfilt2(array, window_list, min_count_list=None):
     return move_mean_centered_multiaxis(array, window_list, min_count_list)
 
+
+def laplacian_O3(f, *varargs):
+    """ Third order accurate, 5-point formula. Not really laplacian, but second derivative along each axis. Sum the outputs to get laplacian."""
+    N = len(f.shape)  # number of dimensions
+    n = len(varargs)
+    if n == 0:
+        dx = [1.0]*N
+    elif n == 1:
+        dx = [varargs[0]]*N
+    elif n == N:
+        dx = list(varargs)
+    else:
+        raise SyntaxError("invalid number of arguments")
+
+    # use central differences on interior and first differences on endpoints
+
+    #print dx
+    outvals = []
+
+    # create slice objects --- initially all are [:, :, ..., :]
+    slice0 = [slice(None)]*N
+    slice1 = [slice(None)]*N
+    slice2 = [slice(None)]*N
+    slice3 = [slice(None)]*N
+    slice4 = [slice(None)]*N
+    
+    otype = f.dtype.char
+    if otype not in ['f', 'd', 'F', 'D']:
+        otype = 'd'
+
+    for axis in range(N):       
+        # select out appropriate parts for this dimension
+        out = np.zeros(f.shape, f.dtype.char)
+        
+        
+        # http://www.sitmo.com/eq/262 (3rd order accurate)
+        slice0[axis] = slice(2, -2)
+        slice1[axis] = slice(None, -4)
+        slice2[axis] = slice(1, -3)
+        slice3[axis] = slice(3, -1)
+        slice4[axis] = slice(4, None)
+        # 1D equivalent -- out[2:-2] = (-f[:-4] + 16*f[1:-3] + -30*f[2:-2] + 16*f[3:-1] - f[4:])/12.0
+        out[slice0] = (-f[slice1] + 16.0*f[slice2] - 30.0*f[slice0] + 16.0*f[slice3] - f[slice4])/12.0
+        
+        # http://www.sitmo.com/eq/260 (2nd order accurate; there's also a 3rd order accurate that requires 5 points) 
+        slice0[axis] = slice(None, 2)
+        slice1[axis] = slice(3, 5)
+        slice2[axis] = slice(2, 4)
+        slice3[axis] = slice(1, 3)
+        # 1D equivalent -- out[0:2] = 2*f[0:2] - 5*f[1:3] + 4*f[2:4] - f[3:5]
+        out[slice0] = (2.0*f[slice0] - 5.0*f[slice3] + 4.0*f[slice2] - f[slice1])
+        
+        slice0[axis] = slice(-2, None)
+        slice1[axis] = slice(-5, -3)
+        slice2[axis] = slice(-4, -2)
+        slice3[axis] = slice(-3, -1)
+        # 1D equivalent -- out[0:2] = 2*f[0:2] - 5*f[1:3] + 4*f[2:4] - f[3:5]
+        out[slice0] = (2.0*f[slice0] - 5.0*f[slice3] + 4.0*f[slice2] - f[slice1])
+        
+        # divide by step size
+        axis_dx = dx[axis]
+        outvals.append(out / (axis_dx*axis_dx))
+
+        # reset the slice object in this dimension to ":"
+        slice0[axis] = slice(None)
+        slice1[axis] = slice(None)
+        slice2[axis] = slice(None)
+        slice3[axis] = slice(None)
+        slice4[axis] = slice(None)
+
+    if N == 1:
+        return outvals[0]
+    else:
+        return outvals
+
 from PySide6 import QtCore, QtGui, QtWidgets
 QtWidgets.QGraphicsScene
 class NoiseTool(QtWidgets.QMainWindow):
@@ -68,49 +143,58 @@ class NoiseTool(QtWidgets.QMainWindow):
         
         self.use_gaussfilt = False
 
+        self.win_list = [1, 1]
+        self.smooth_num = 1
+        self.smooth2_num = 1
+        
+
         self._smooth_group = QtWidgets.QGroupBox('Smoothing')
         smooth_layout = QtWidgets.QGridLayout(self._smooth_group)
-        smooth_mode_check = QtWidgets.QCheckBox(self._smooth_group)
-        smooth_mode_check.setChecked(self.use_gaussfilt)
-        smooth_mode_check.stateChanged.connect(self.set_gauss_smooth)
+        self._smooth_mode_check = QtWidgets.QCheckBox(self._smooth_group)
+        self._smooth_mode_check.setChecked(self.use_gaussfilt)
         smooth_mode_label = QtWidgets.QLabel('Gaussian filter')
-        smooth_mode_label.setBuddy(smooth_mode_check)
+        smooth_mode_label.setBuddy(self._smooth_mode_check)
         self._smooth_x_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_x_spin.valueChanged.connect(
-            lambda val, ax=1: self.smooth_data(ax, val))
         self._smooth_y_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_y_spin.valueChanged.connect(
-            lambda val, ax=0: self.smooth_data(ax, val))
         self._smooth_n_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_x_spin_label = QtWidgets.QLabel('x')
-        self._smooth_y_spin_label = QtWidgets.QLabel('y')
-        self._smooth_n_spin_label = QtWidgets.QLabel('n')
         self._smooth_n_spin.setRange(1, 100)
-        self._smooth_n_spin.valueChanged.connect(self.set_smooth_num)
+        smooth_x_spin_label = QtWidgets.QLabel('x')
+        smooth_y_spin_label = QtWidgets.QLabel('y')
+        smooth_n_spin_label = QtWidgets.QLabel('n')
         smooth_layout.addWidget(smooth_mode_label, 0, 0)
-        smooth_layout.addWidget(smooth_mode_check, 0, 1)
-        smooth_layout.addWidget(self._smooth_x_spin_label, 1, 0)
+        smooth_layout.addWidget(self._smooth_mode_check, 0, 1)
+        smooth_layout.addWidget(smooth_x_spin_label, 1, 0)
         smooth_layout.addWidget(self._smooth_x_spin, 1, 1)
-        smooth_layout.addWidget(self._smooth_y_spin_label, 2, 0)
+        smooth_layout.addWidget(smooth_y_spin_label, 2, 0)
         smooth_layout.addWidget(self._smooth_y_spin, 2, 1)
-        smooth_layout.addWidget(self._smooth_n_spin_label, 3, 0)
+        smooth_layout.addWidget(smooth_n_spin_label, 3, 0)
         smooth_layout.addWidget(self._smooth_n_spin, 3, 1)
 
+
+        self._color_group = QtWidgets.QGroupBox('Color')
+        color_layout = QtWidgets.QGridLayout(self._color_group)
+        self._color_range_spin = (
+            QtWidgets.QDoubleSpinBox(self._smooth_group),
+            QtWidgets.QDoubleSpinBox(self._smooth_group),
+        )
+        for i, s in enumerate(self._color_range_spin):
+            s.setRange(0, 100)
+            s.setValue(10)
+            s.setSingleStep(0.1)
+            s.setSuffix(" %")
+            s.setDecimals(1)
+            color_layout.addWidget(s, i, 0)
+        self._color_range_spin[1].setValue(1)
 
         self._smooth2_group = QtWidgets.QGroupBox('2nd Smoothing')
         smooth2_layout = QtWidgets.QGridLayout(self._smooth2_group)
         self._smooth2_x_spin = QtWidgets.QSpinBox(self._smooth2_group)
-        self._smooth2_x_spin.valueChanged.connect(
-            lambda: self.deriv_data())
         self._smooth2_y_spin = QtWidgets.QSpinBox(self._smooth2_group)
-        self._smooth2_y_spin.valueChanged.connect(
-            lambda: self.deriv_data())
         self._smooth2_n_spin = QtWidgets.QSpinBox(self._smooth2_group)
         self._smooth2_x_spin_label = QtWidgets.QLabel('x')
         self._smooth2_y_spin_label = QtWidgets.QLabel('y')
         self._smooth2_n_spin_label = QtWidgets.QLabel('n')
         self._smooth2_n_spin.setRange(1, 100)
-        self._smooth2_n_spin.valueChanged.connect(self.set_smooth2_num)
         smooth2_layout.addWidget(self._smooth2_x_spin_label, 1, 0)
         smooth2_layout.addWidget(self._smooth2_x_spin, 1, 1)
         smooth2_layout.addWidget(self._smooth2_y_spin_label, 2, 0)
@@ -121,7 +205,6 @@ class NoiseTool(QtWidgets.QMainWindow):
         self._deriv_group = QtWidgets.QGroupBox('Derivative')
         deriv_layout = QtWidgets.QGridLayout(self._deriv_group)
         self._deriv_axis_combo = QtWidgets.QComboBox(self._deriv_group)
-        self._deriv_axis_combo.currentTextChanged.connect(self.deriv_data)
         self._deriv_axis_combo.addItems(['x', 'y'])
         deriv_layout.addWidget(self._deriv_axis_combo, 0, 0)
 
@@ -130,9 +213,7 @@ class NoiseTool(QtWidgets.QMainWindow):
         self._curv_alpha_spin = QtWidgets.QDoubleSpinBox(self._curv_group)
         self._curv_alpha_spin.setRange(-30, 30)
         self._curv_alpha_spin.setValue(0)
-        self._curv_alpha_spin.setSingleStep(0.01)
-        self._curv_alpha_spin.valueChanged.connect(
-            lambda beta: self.curv_data(beta=beta))
+        self._curv_alpha_spin.setSingleStep(0.05)
         curv_layout.addWidget(self._curv_alpha_spin, 0, 0)
 
         self._mingrad_group = QtWidgets.QGroupBox('Minimum Gradient')
@@ -140,8 +221,6 @@ class NoiseTool(QtWidgets.QMainWindow):
         self._mingrad_delta_spin = QtWidgets.QSpinBox(self._mingrad_group)
         self._mingrad_delta_spin.setRange(1,100)
         self._mingrad_delta_spin.setValue(1)
-        self._mingrad_delta_spin.valueChanged.connect(
-            lambda delta: self.mingrad_data(delta=delta))
         mingrad_layout.addWidget(self._mingrad_delta_spin, 0, 0)
 
         self._deriv_tab = QtWidgets.QWidget()
@@ -167,31 +246,60 @@ class NoiseTool(QtWidgets.QMainWindow):
         )
         
         self.layout.addWidget(self._smooth_group, 0, 0, 1, 1)
-        self.layout.addWidget(self.tabwidget, 0, 1, 1, 1)
-        self.layout.addWidget(plotwidget, 1, 0, 1, 2)
+        self.layout.addWidget(self._color_group, 0, 1, 1, 1)
+        self.layout.addWidget(self.tabwidget, 0, 2, 1, 1)
+        self.layout.addWidget(plotwidget, 1, 0, 2, 3)
 
-        self.win_list = [1, 1]
-        self.smooth_num = 1
-        self.smooth2_num = 1
+        self.use_curv = False
+        self.use_mingrad = False
+        self.use_deriv = True
 
         if data is not None:
             self.set_data(data)
-        
+
+        self._smooth_mode_check.stateChanged.connect(self.set_gauss_smooth)
+        self._smooth_x_spin.valueChanged.connect(
+            lambda val, ax=1: self.smooth_data(ax, val))
+        self._smooth_y_spin.valueChanged.connect(
+            lambda val, ax=0: self.smooth_data(ax, val))
+        self._smooth_n_spin.valueChanged.connect(self.set_smooth_num)
+        self._smooth2_x_spin.valueChanged.connect(
+            lambda: self.deriv_data())
+        self._smooth2_y_spin.valueChanged.connect(
+            lambda: self.deriv_data())
+        self._smooth2_n_spin.valueChanged.connect(self.set_smooth2_num)
+        self._deriv_axis_combo.currentTextChanged.connect(self.deriv_data)
+        self._curv_alpha_spin.valueChanged.connect(
+            lambda beta: self.curv_data(beta=beta))
+        self._mingrad_delta_spin.valueChanged.connect(
+            lambda delta: self.mingrad_data(delta=delta))
+        for s in self._color_range_spin:
+            s.valueChanged.connect(self._result_update_lims)
 
     def get_cutoff(self, data, cutoff=None):
+        q3, q1 = np.percentile(data, [75, 25])
+        ql = q1 - 1.5 * (q3 - q1)
+        qu = q3 + 1.5 * (q3 - q1)
+        i_qu = 100 * (data < qu).mean()
+        i_ql = 100 * (data < ql).mean()
+        for s in self._color_range_spin:
+            s.blockSignals(True)
+        self._color_range_spin[0].setMaximum(100 - i_qu)
+        self._color_range_spin[1].setMaximum(i_ql)
+        for s in self._color_range_spin:
+            s.blockSignals(False)
         if cutoff is None:
-            cutoff = [3, 3]
+            # cutoff = [30, 30]
+            cutoff = [s.value() for s in self._color_range_spin]
         else:
             try:
                 cutoff = list(cutoff.__iter__)
             except AttributeError:
                 cutoff = [cutoff] * 2
-        pl, q3, q1, pu = np.percentile(data,
-                                       [100-cutoff[0], 65, 20, cutoff[1]])
-        ql = q1 - 1.5 * (q3 - q1)
-        qu = q3 + 1.5 * (q3 - q1)
-        mn = min(pl, ql)
-        mx = max(pu, qu)
+
+        pu, pl = np.percentile(data, [100-cutoff[0], cutoff[1]])
+        mn = max(min(pl, ql), data.min())
+        mx = min(max(pu, qu), data.max())
         return [mn, mx]
 
     def set_gauss_smooth(self, value):
@@ -217,7 +325,7 @@ class NoiseTool(QtWidgets.QMainWindow):
         self.use_mingrad = True
         self.use_deriv = False
         # self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d = minimum_gradient(self.data_s, delta=delta)
+        self.data_s_d = -minimum_gradient(self.data_s, delta=delta)
         self._result_update_lims()
 
     def curv_data(self, alpha=1, beta=None):
@@ -226,8 +334,8 @@ class NoiseTool(QtWidgets.QMainWindow):
         self.use_mingrad = False
         if beta is None:
             beta = self._curv_alpha_spin.value()
-        # self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d = curvature(self.data_s/self.data_s.max(), alpha=alpha, beta=beta)
+        self.data_s_d = self.data_s.copy(deep=True)
+        self.data_s_d.values = curvature(self.data_s/self.data_s.max(), alpha=alpha, beta=beta, values=True)
         # m = self.data_s_d.max()
         # self.data_s_d /= m
         self._result_update_lims()
@@ -242,21 +350,24 @@ class NoiseTool(QtWidgets.QMainWindow):
             axis = 0
         elif axis == 'y':
             axis = 1
-        axis = self.data_dims[axis]
-        self.data_s_d = d1_along_axis(self.data_s, axis=axis)
+        # axis = self.data_dims[axis]
+        self.data_s_d = self.data_s.copy(deep=True)
+        self.data_s_d.values = np.gradient(self.data_s.values, axis=axis)
         amount = [self._smooth2_y_spin.value(),
                   self._smooth2_x_spin.value()]
+        self.use_gaussfilt = self._smooth_mode_check.isChecked()
         self.data_s_d.values = self.smoothfunc(self.data_s_d.values,
                                                amount,
                                                self.smooth2_num)
-        self.data_s_d = d1_along_axis(self.data_s_d, axis=axis)
+        self.data_s_d.values = np.gradient(self.data_s_d.values, axis=axis)
+        # self.data_s_d = d1_along_axis(self.data_s_d, axis=axis)
         self._result_update_lims()
 
     
     def _get_middle_index(self, x):
         return len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+    
     def smoothfunc(self, data, amount, num):
-        
         if not self.use_gaussfilt:
             for _ in range(num):
                 data = uniform_filter(data, amount, mode='constant', origin=(0, 0))
@@ -270,18 +381,14 @@ class NoiseTool(QtWidgets.QMainWindow):
     def smooth_data(self, axis=None, amount=None):
         if axis is not None:
             self.win_list[axis] = amount
+        else:
+            self.win_list = [self._smooth_y_spin.value(),
+                             self._smooth_x_spin.value()]
+        self.use_gaussfilt = self._smooth_mode_check.isChecked()
+            
         self.data_s = self.data.copy(deep=True)
         vals = self.data_s.values
 
-        # if not self.use_gaussfilt:
-            # for i in range(self.smooth_num):
-                # vals = uniform_filter(vals, size=self.win_list, mode='mirror')
-        # else:
-            # self.sigma_list = [(self.win_list[0]-1)/3,
-                            #    (self.win_list[1]-1)/3]
-            # for i in range(self.smooth_num):
-                # vals = gaussian_filter(vals, sigma=self.sigma_list, mode='mirror')
-        # self.data_s.values = vals
         self.data_s.values = self.smoothfunc(vals,
                                              self.win_list,
                                              self.smooth_num)
@@ -305,7 +412,8 @@ class NoiseTool(QtWidgets.QMainWindow):
         return QtCore.QRectF(x, y, w, h)
 
     def set_data(self, data):
-        self.data = parse_data(data)
+        self.data = parse_data(data).fillna(0)
+        self.data_s = self.data.copy(deep=True)
         self.vals = self.data.values
         self.data_dims = self.data.dims
         self.data_coords = tuple(self.data[dim].values
@@ -319,8 +427,9 @@ class NoiseTool(QtWidgets.QMainWindow):
         self._smooth_y_spin.setRange(1, self.data_shape[1] - 1)
         self._smooth2_x_spin.setRange(1, self.data_shape[0] - 1)
         self._smooth2_y_spin.setRange(1, self.data_shape[1] - 1)
-        self.images[0].setImage(self.vals,
-                                rect=self._lims_to_rect(1, 0))
+        self.smooth_data()
+        # self.images[0].setImage(self.vals,
+                                # rect=self._lims_to_rect(1, 0))
 
 def noisetool(data, *args, **kwargs):
     # TODO: implement multiple windows, add transpose, equal aspect settings
