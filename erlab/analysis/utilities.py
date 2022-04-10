@@ -1,24 +1,26 @@
-import numpy as np
-import xarray as xr
+import arpes.xarray_extensions
 import lmfit
 import matplotlib.pyplot as plt
-import arpes.xarray_extensions
+import numpy as np
+import xarray as xr
 
-from ..plotting.general import proportional_colorbar, plot_array
+from ..plotting import plot_array, proportional_colorbar
 
 __all__ = ['correct_with_edge']
 
-def correct_with_edge(fmap:xr.DataArray, modelresult:lmfit.model.ModelResult,
+
+def correct_with_edge(fmap: xr.DataArray, modelresult: lmfit.model.ModelResult,
                       plot=False, **improps):
+
     if isinstance(fmap, xr.Dataset):
         fmap = fmap.spectrum
     edge_quad = modelresult.eval(x=fmap.phi)
-    corrected = fmap.G.shift_by(edge_quad-np.amax(edge_quad), "eV")
-    
+    corrected = fmap.G.shift_by(edge_quad - np.amax(edge_quad), "eV")
+
     if plot is True:
         modelresult.plot()
         _, axes = plt.subplots(1, 2, layout='constrained', figsize=(10, 5))
-        
+
         improps.setdefault('cmap', 'twilight')
 
         if fmap.ndim > 2:
@@ -35,7 +37,7 @@ def correct_with_edge(fmap:xr.DataArray, modelresult:lmfit.model.ModelResult,
             # fmap.S.plot(ax=axes[0], **improps)
             # corrected.S.plot(ax=axes[1], **improps)
         edge_quad.plot(ax=axes[0], ls='--', color='0.35')
-        
+
         proportional_colorbar(ax=axes[0])
         proportional_colorbar(ax=axes[1])
         axes[0].set_title('Data')

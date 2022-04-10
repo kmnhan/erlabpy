@@ -8,18 +8,62 @@ from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
+from matplotlib.patches import Ellipse
+from matplotlib.transforms import Affine2D
 from arpes.utilities.conversion import convert_to_kspace
-
 from .bz import plot_hex_bz
+from .imagetool import parse_data
+import copy
+
+
+def plot_bz_tise2(ax=None,a0=3.54,pockets=False,rotation=0,**kwargs):
+    """
+    Plots a TiSe2 BZ on top of specified axis.
+    """
+    kwargs.setdefault('alpha',1)
+    kwargs.setdefault('color','k')
+    kwargs.setdefault('linestyle','-')
+    kwargs.setdefault('linewidth',0.5)
+    kwargs.setdefault('zorder',5)
+    # kwargs.setdefault('ax',plt.gca())
+
+    # warnings.warn('Deprecated plot_bz_tise2')
+    if ax is None:
+        ax = plt.gca()
+    plot_hex_bz(a=3.54, rotate=rotation+30, ax=ax)
+    if pockets is True:
+        color = kwargs.pop('color', None)
+        kwargs['edgecolor'] = color
+        kwargs['facecolor'] = 'none'
+        p1 = Ellipse((0, 2*np.pi/(np.sqrt(3)*a0)), width=0.2, height=0.2, **kwargs)
+        p2 = copy.deepcopy(p1)
+        p3 = copy.deepcopy(p1)
+        p4 = copy.deepcopy(p1)
+        p5 = copy.deepcopy(p1)
+        p6 = copy.deepcopy(p1)
+        p1.set_transform(Affine2D().rotate_deg(rotation+0) + ax.transData)
+        p2.set_transform(Affine2D().rotate_deg(rotation+60) + ax.transData)
+        p3.set_transform(Affine2D().rotate_deg(rotation+120) + ax.transData)
+        p4.set_transform(Affine2D().rotate_deg(rotation+180) + ax.transData)
+        p5.set_transform(Affine2D().rotate_deg(rotation+240) + ax.transData)
+        p6.set_transform(Affine2D().rotate_deg(rotation+300) + ax.transData)
+        ax.add_patch(p1)
+        ax.add_patch(p2)
+        ax.add_patch(p3)
+        ax.add_patch(p4)
+        ax.add_patch(p5)
+        ax.add_patch(p6)
+
 
 class kTool(QtWidgets.QMainWindow):
-    def __init__(self, data, bounds, resolution={'kx':0.02, 'ky':0.02}, gamma=0.5, cmap='terrain', *args, **kwargs):
+    def __init__(self, data, bounds={'kx':[-1.5,1.5], 'ky':[-1.5,1.5]}, resolution={'kx':0.02, 'ky':0.02}, gamma=0.5, cmap='twilight', *args, **kwargs):
         super().__init__()
-        self.data = data
+        self.data = parse_data(data)
         _get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
         self.has_eV = "eV" in self.data.dims
-        if self.has_eV:
-            self.data_all = self.data
+        self.show_eV = self.has_eV and self.data.ndim == 3
+        if self.show_eV:
+            self.data_all = self.data.copy(deep=True)
             self.coord_z = self.data_all['eV'].values
             self.ind_z = _get_middle_index(self.coord_z)
             self.data = self.data_all.isel(eV=self.ind_z)
@@ -118,6 +162,7 @@ class kTool(QtWidgets.QMainWindow):
         self.spin2.valueChanged.connect(lambda v: self._spinchanged(2, v))
         self.spin3.valueChanged.connect(lambda v: self._spinchanged(3, v))
         self.spin4.valueChanged.connect(lambda v: self._spinchanged(4, v))
+        
 
         offsetpanelcontent.addWidget(spin0label)
         offsetpanelcontent.addWidget(self.spin0)
@@ -223,7 +268,7 @@ class kTool(QtWidgets.QMainWindow):
         self.tabwidget.addTab(self.boundstab, "Bounds")
         self.tabwidget.addTab(self.colorstab, "Colors")
         self.layout.addWidget(self.tabwidget)
-        if self.has_eV:
+        if self.show_eV:
             zvaluepanel = QtWidgets.QWidget()
             zvaluecontent = QtWidgets.QHBoxLayout(zvaluepanel)
             self.zspin = QtWidgets.QDoubleSpinBox()
@@ -244,7 +289,10 @@ class kTool(QtWidgets.QMainWindow):
         
         self.layout.addWidget(self.canvas)
         # self.canvas.mpl_connect('draw_event', self.clear)
+
+        plot_bz_tise2(ax=self.ax1, pockets=True)
         self.canvas.draw()
+        self.spin4.setValue(np.rad2deg(data.chi))
         # self.im_r.set_visible(self.visible)
         # self.im_k.set_visible(self.visible)
 
@@ -329,10 +377,10 @@ class kTool(QtWidgets.QMainWindow):
 
     def _spinchanged(self, n, value):
         # self.data.S.apply_offsets({self.offsetcoords[n]:value*np.pi/180})
-        self.new_offsets_rad[self.offsetcoords[n]] = value*np.pi/180
+        self.new_offsets_rad[self.offsetcoords[n]] = np.deg2rad(value)
         self.new_offsets_deg[self.offsetcoords[n]] = np.around(value, 3)
         self.data.S.apply_offsets(self.new_offsets_rad)
-        if self.has_eV:
+        if self.show_eV:
             self.data_all.S.apply_offsets(self.new_offsets_rad)
         self._update_kxy()
         self._update_plots()

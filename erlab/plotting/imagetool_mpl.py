@@ -2,24 +2,25 @@ import sys
 import time
 from itertools import compress
 
-import numpy as np
 import bottleneck as bn
+import darkdetect
+import matplotlib.pyplot as plt
+import numpy as np
+import qtawesome as qta
 # import numbagg
 import xarray as xr
-import darkdetect
-import qtawesome as qta
-import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
 from matplotlib import colors
 from matplotlib.backend_bases import _Mode
-from matplotlib.backends.backend_qtagg import FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import (FigureCanvas,
+                                               NavigationToolbar2QT)
 from matplotlib.backends.qt_compat import QtCore, QtGui, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoLocator
 from matplotlib.widgets import Widget
-from joblib import Parallel, delayed
 
 __all__ = ['mpl_itool']
+
 
 def qt_style_names():
     """Return a list of styles, default platform style first"""
@@ -32,11 +33,13 @@ def qt_style_names():
             result.append(style)
     return result
 
+
 def change_style(style_name):
     QtWidgets.QApplication.setStyle(
         QtWidgets.QStyleFactory.create(style_name))
 
-def colormap_to_QPixmap(name:str, h=64):
+
+def colormap_to_QPixmap(name: str, h=64):
     """Convert matplotlib colormap to a 256-by-`h` QPixmap"""
     cmap = plt.colormaps[name]
     cmap_arr = cmap(np.tile(np.linspace(0, 1, 256), (h, 1))) * 255
@@ -45,9 +48,11 @@ def colormap_to_QPixmap(name:str, h=64):
                        QtGui.QImage.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(img)
 
+
 def color_to_QColor(c, alpha=None):
     """Convert matplotlib color to QtGui.Qcolor."""
     return QtGui.QColor.fromRgbF(*colors.to_rgba(c, alpha=alpha))
+
 
 def move_mean_centered(a, window, min_count=None, axis=-1):
     w = (window - 1) // 2
@@ -60,13 +65,14 @@ def move_mean_centered(a, window, min_count=None, axis=-1):
     val = bn.move_mean(a, window, min_count=min_count, axis=axis)
     return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
 
+
 def move_mean_centered_multiaxis(a, window_list,
                                  min_count_list=None, axis_list=[-1, ]):
     if not isinstance(axis_list, list):
         axis_list = [axis_list, ]
     w_list = [(window - 1) // 2 for window in window_list]
     pad_width = [(0, 0)] * a.ndim
-    slicer = [slice(None),] * a.ndim
+    slicer = [slice(None), ] * a.ndim
     if min_count_list is None:
         min_count_list = [w + 1 for w in w_list]
     for axis in axis_list:
@@ -75,6 +81,8 @@ def move_mean_centered_multiaxis(a, window_list,
     a = np.pad(a, pad_width, constant_values=np.nan)
     val = _move_mean_multiaxis_calc(a, window_list, min_count_list, axis_list)
     return val[tuple(slicer)]
+
+
 def _move_mean_multiaxis_calc(a_padded, window_list,
                               min_count_list, axis_list):
     val = a_padded
@@ -83,11 +91,12 @@ def _move_mean_multiaxis_calc(a_padded, window_list,
                            min_count=min_count_list[axis], axis=axis)
     return val
 
+
 def parse_data(data):
     if isinstance(data, xr.Dataset):
         try:
             data = data.spectrum
-        except:
+        except BaseException:
             raise TypeError(
                 'input argument data must be a xarray.DataArray or a '
                 'numpy.ndarray. Create an xarray.DataArray '
@@ -98,19 +107,25 @@ def parse_data(data):
         data = xr.DataArray(data)
     return data
 
+
 def is_vertical(artist):
     return artist.axes.get_xaxis_transform() == artist.get_transform()
+
 
 def get_xy_x(a, b):
     return np.array([[a, 0.], [a, 1.], [b, 1.], [b, 0.], [a, 0.]])
 
+
 def get_xy_y(a, b):
     return np.array([[0., a], [0., b], [1., b], [1., a], [0., a]])
+
 
 def get_true_indices(a):
     return list(compress(range(len(a)), a))
 
 # https://www.pythonguis.com/widgets/qcolorbutton-a-color-selector-tool-for-pyqt/
+
+
 class ColorButton(QtWidgets.QPushButton):
     '''
     Custom Qt Widget to show a chosen color.
@@ -162,12 +177,13 @@ class ColorButton(QtWidgets.QPushButton):
             self.setColor(self._default)
         return super(ColorButton, self).mousePressEvent(e)
 
+
 class mpl_itool(Widget):
     """A interactive tool based on `matplotlib` for exploring 3D data.
-    
-    For the tool to remain responsive you must 
+
+    For the tool to remain responsive you must
     keep a reference to it.
-    
+
     Parameters
     ----------
     canvas : `matplotlib.backend_bases.FigureCanvasBase`
@@ -184,7 +200,7 @@ class mpl_itool(Widget):
         to the python global interpreter lock.
     bench : bool, default: False
         Whether to print frames per second.
-    
+
     Other Parameters
     ----------------
     **self.cursorprops
@@ -263,15 +279,16 @@ class mpl_itool(Widget):
             alpha=0.15,
             animated=self.useblit, visible=True,
         )
-        self._get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
-        
+        self._get_middle_index = lambda x: len(
+            x) // 2 - (1 if len(x) % 2 == 0 else 0)
+
         self.vals = self.data.values
-        
+
         self.ndim = self.data.ndim
         self._assign_vals_T()
-        self.avg_win = [1,] * self.ndim
+        self.avg_win = [1, ] * self.ndim
         self.clim_locked = False
-        self.clim_list = [()]  * self.ndim
+        self.clim_list = [()] * self.ndim
         self.dims = self.data.dims
         self.coords = tuple(self.data[self.dims[i]] for i in range(self.ndim))
         self.shape = self.data.shape
@@ -294,20 +311,20 @@ class mpl_itool(Widget):
                                     **self.improps),
             )
             self.hists = (
-                self.axes[1].plot(self.coords[0], self.vals[:,mids[1]],
+                self.axes[1].plot(self.coords[0], self.vals[:, mids[1]],
                                   label='X Profile', **self.lineprops)[0],
-                self.axes[2].plot(self.vals[mids[0],:], self.coords[1],
+                self.axes[2].plot(self.vals[mids[0], :], self.coords[1],
                                   label='Y Profile', **self.lineprops)[0],
             )
             self.cursors = (
                 self.axes[0].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **self.cursorprops),
+                                     label='X Cursor', **self.cursorprops),
                 self.axes[1].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **self.cursorprops),
+                                     label='X Cursor', **self.cursorprops),
                 self.axes[0].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **self.cursorprops),
+                                     label='Y Cursor', **self.cursorprops),
                 self.axes[2].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **self.cursorprops),
+                                     label='Y Cursor', **self.cursorprops),
             )
             self.spans = (
                 (
@@ -341,46 +358,46 @@ class mpl_itool(Widget):
             )
         elif self.ndim == 3:
             self.maps = (
-                self.axes[0].imshow(self.vals_T[:,mids[2],:], 
+                self.axes[0].imshow(self.vals_T[:, mids[2], :],
                                     extent=(*self.lims[0], *self.lims[1]),
                                     label='Main Image',
                                     **self.improps),
-                self.axes[4].imshow(self.vals_T[mids[1],:,:],
+                self.axes[4].imshow(self.vals_T[mids[1], :, :],
                                     extent=(*self.lims[0], *self.lims[2]),
                                     label='Horiz Slice',
                                     **self.improps),
-                self.axes[5].imshow(self.vals_T[:,:,mids[0]],
+                self.axes[5].imshow(self.vals_T[:, :, mids[0]],
                                     extent=(*self.lims[2], *self.lims[1]),
                                     label='Vert Slice',
                                     **self.improps),
             )
             self.hists = (
-                self.axes[1].plot(self.coords[0], self.vals[:,mids[1],mids[2]],
+                self.axes[1].plot(self.coords[0], self.vals[:, mids[1], mids[2]],
                                   label='X Profile', **self.lineprops)[0],
-                self.axes[2].plot(self.vals[mids[0],:,mids[2]], self.coords[1],
+                self.axes[2].plot(self.vals[mids[0], :, mids[2]], self.coords[1],
                                   label='Y Profile', **self.lineprops)[0],
-                self.axes[3].plot(self.coords[2], self.vals[mids[0],mids[1],:],
+                self.axes[3].plot(self.coords[2], self.vals[mids[0], mids[1], :],
                                   label='Z Profile', **self.lineprops)[0],
             )
             self.cursors = (
                 self.axes[0].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **self.cursorprops),
+                                     label='X Cursor', **self.cursorprops),
                 self.axes[1].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **self.cursorprops),
+                                     label='X Cursor', **self.cursorprops),
                 self.axes[4].axvline(self.coords[0][mids[0]],
-                                    label='X Cursor', **self.cursorprops),
+                                     label='X Cursor', **self.cursorprops),
                 self.axes[0].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **self.cursorprops),
+                                     label='Y Cursor', **self.cursorprops),
                 self.axes[2].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **self.cursorprops),
+                                     label='Y Cursor', **self.cursorprops),
                 self.axes[5].axhline(self.coords[1][mids[1]],
-                                    label='Y Cursor', **self.cursorprops),
+                                     label='Y Cursor', **self.cursorprops),
                 self.axes[3].axvline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **self.cursorprops),
+                                     label='Z Cursor', **self.cursorprops),
                 self.axes[5].axvline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **self.cursorprops),
+                                     label='Z Cursor', **self.cursorprops),
                 self.axes[4].axhline(self.coords[2][mids[2]],
-                                    label='Z Cursor', **self.cursorprops),
+                                     label='Z Cursor', **self.cursorprops),
             )
             self.spans = (
                 (
@@ -431,10 +448,10 @@ class mpl_itool(Widget):
                                  self.axes[3].yaxis)
             if self.lims[-1][-1] * self.lims[-1][0] < 0:
                 axes[3].axvline(0., label='Fermi Level', **self.fermilineprops)
-            self.ax_index = (0, 4, 5, # images
-                             1, 2, 3, # profiles
-                             0, 1, 4, 0, 2, 5, 3, 5, 4, # cursors
-                             1, 2, 3) # axes with dynamic limits
+            self.ax_index = (0, 4, 5,  # images
+                             1, 2, 3,  # profiles
+                             0, 1, 4, 0, 2, 5, 3, 5, 4,  # cursors
+                             1, 2, 3)  # axes with dynamic limits
             self.span_ax_index = ((0, 1, 4), (0, 2, 5), (3, 5, 4))
             self._only_axis = (
                 (False, False, True, False, True, True,
@@ -453,10 +470,10 @@ class mpl_itool(Widget):
             self.axes[5].set_xlim(self.lims[2])
             self.axes[3].set_yticks([])
             self.axes[3].ticklabel_format(axis='y', style='sci',
-                                          scilimits=(-2,3), useMathText=False)
+                                          scilimits=(-2, 3), useMathText=False)
 
         self.all = self.maps + self.hists + self.cursors
-        
+
         self.axes[0].set_xlabel(self.labelify(self.dims[0]))
         self.axes[0].set_ylabel(self.labelify(self.dims[1]))
         self.axes[1].set_xlabel(self.labelify(self.dims[0]))
@@ -468,18 +485,18 @@ class mpl_itool(Widget):
         self.axes[1].set_yticks([])
         self.axes[2].set_xticks([])
         self.axes[1].ticklabel_format(axis='y', style='sci',
-                                      scilimits=(-2,3), useMathText=False)
+                                      scilimits=(-2, 3), useMathText=False)
         self.axes[2].ticklabel_format(axis='x', style='sci',
-                                      scilimits=(-2,3), useMathText=False)
+                                      scilimits=(-2, 3), useMathText=False)
 
         if self.bench:
             self.counter = 0.
             self.fps = 0.
             self.lastupdate = time.time()
-        
+
         if self.parallel:
             self.pool = Parallel(n_jobs=-1, require='sharedmem', verbose=0)
-        
+
         self.averaged = [False, ] * self.ndim
         self.visible = True
         self.background = None
@@ -524,29 +541,29 @@ class mpl_itool(Widget):
     def labelify(self, dim):
         """Prettify some frequently used axis labels."""
         labelformats = dict(
-            kx = '$k_x$',
-            ky = '$k_y$',
-            kz = '$k_z$',
-            alpha = '$\\alpha$',
-            beta = '$\\beta$',
-            theta = '$\\theta$',
-            phi = '$\\phi$',
-            chi = '$\\chi$',
-            eV = '$E$'
+            kx='$k_x$',
+            ky='$k_y$',
+            kz='$k_z$',
+            alpha='$\\alpha$',
+            beta='$\\beta$',
+            theta='$\\theta$',
+            phi='$\\phi$',
+            chi='$\\chi$',
+            eV='$E$'
         )
         try:
             return labelformats[dim]
         except KeyError:
             return dim
 
-    def onpress(self,event):
+    def onpress(self, event):
         if event.key == 'shift':
             self._shift = True
 
-    def onrelease(self,event):
+    def onrelease(self, event):
         if event.key == 'shift':
             self._shift = False
-    
+
     def _assign_vals_T(self):
         if self.ndim == 2:
             self.vals_T = self.vals.T
@@ -555,7 +572,7 @@ class mpl_itool(Widget):
 
     def set_cmap(self, cmap):
         self.cmap = cmap
-        for im in self.maps: 
+        for im in self.maps:
             im.set_cmap(self.cmap)
         for obj in self.all:
             obj.set_visible(False)
@@ -587,7 +604,7 @@ class mpl_itool(Widget):
         for cursor in self.cursors:
             cursor.set_color(c)
         self._apply_change()
-    
+
     def set_line_color(self, c):
         for line in self.hists:
             line.set_color(c)
@@ -604,8 +621,8 @@ class mpl_itool(Widget):
                 return
         else:
             self.averaged[axis] = True
-        
-        if self.averaged[axis]: # if already averaged
+
+        if self.averaged[axis]:  # if already averaged
             self.vals = move_mean_centered_multiaxis(
                 self.data.values,
                 self.avg_win,
@@ -616,14 +633,14 @@ class mpl_itool(Widget):
             self.vals = move_mean_centered(self.vals, window=n, axis=axis)
         self._assign_vals_T()
         self._apply_change()
-    
+
     def update_spans(self):
         for axis in range(self.ndim):
             domain = (
                 self.coords[axis][self._last_ind[axis]]
-                    - self.avg_win[axis] // 2 * self.incs[axis],
-                self.coords[axis][self._last_ind[axis]] 
-                    + (self.avg_win[axis] - 1) // 2 * self.incs[axis],
+                - self.avg_win[axis] // 2 * self.incs[axis],
+                self.coords[axis][self._last_ind[axis]]
+                + (self.avg_win[axis] - 1) // 2 * self.incs[axis],
             )
             for span in self.spans[axis]:
                 if is_vertical(span):
@@ -633,7 +650,7 @@ class mpl_itool(Widget):
                 span.set_visible(self.visible)
             if self.useblit:
                 for i, span in list(
-                    zip(self.span_ax_index[axis], self.spans[axis])):
+                        zip(self.span_ax_index[axis], self.spans[axis])):
                     self.axes[i].draw_artist(span)
 
     def get_index_of_value(self, axis, val):
@@ -712,19 +729,21 @@ class mpl_itool(Widget):
         self._apply_change(cond)
         if self.bench:
             self.print_time()
-    
+
     def _apply_change(self, cond=None):
         if cond is None:
             cond = (True,) * len(self.all)
         if self.parallel:
             self.pool(delayed(self.set_data)(i)
-                    for i in get_true_indices(cond))
+                      for i in get_true_indices(cond))
             self.pool(delayed(a.set_visible)(self.visible)
-                    for a in self.all)
+                      for a in self.all)
             self._update()
         else:
-            for i in get_true_indices(cond): self.set_data(i)
-            for a in self.all: a.set_visible(self.visible)
+            for i in get_true_indices(cond):
+                self.set_data(i)
+            for a in self.all:
+                a.set_visible(self.visible)
             self._update()
 
     def _update(self):
@@ -736,7 +755,7 @@ class mpl_itool(Widget):
             m.set_norm(colors.PowerNorm(self.gamma))
             if self.clim_locked:
                 m.set_clim(self.clim_list[i])
-        
+
         if self.useblit:
             if self.background is not None:
                 self.canvas.restore_region(self.background)
@@ -751,7 +770,7 @@ class mpl_itool(Widget):
                 #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
             else:
                 for i, art in list(zip(self.ax_index,
-                                    self.all + self.scaling_axes)):
+                                       self.all + self.scaling_axes)):
                     self.axes[i].draw_artist(art)
             if any(self.averaged):
                 self.update_spans()
@@ -760,7 +779,7 @@ class mpl_itool(Widget):
             if any(self.averaged):
                 self.update_spans()
             self.canvas.draw_idle()
-    
+
     def print_time(self):
         now = time.time()
         dt = now - self.lastupdate
@@ -769,9 +788,9 @@ class mpl_itool(Widget):
         fps2 = 1.0 / dt
         self.lastupdate = now
         self.fps = self.fps * 0.9 + fps2 * 0.1
-        tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps )
+        tx = 'Mean Frame Rate:  {fps:.3f} FPS'.format(fps=self.fps)
         print(tx, end='\r')
-    
+
     def set_data(self, i):
         if self.ndim == 2:
             self.set_data_2d(i)
@@ -779,37 +798,40 @@ class mpl_itool(Widget):
             self.set_data_3d(i)
 
     def set_data_2d(self, i):
-        if i == 0: 
+        if i == 0:
             self.all[i].set_data(self.vals_T)
-        elif i == 1: 
-            self.all[i].set_ydata(self.vals_T[self._last_ind[1],:])
-        elif i == 2: 
-            self.all[i].set_xdata(self.vals_T[:,self._last_ind[0]])
+        elif i == 1:
+            self.all[i].set_ydata(self.vals_T[self._last_ind[1], :])
+        elif i == 2:
+            self.all[i].set_xdata(self.vals_T[:, self._last_ind[0]])
         elif i in [3, 4]:
-            self.all[i].set_xdata((self.cursor_pos[0],self.cursor_pos[0]))
-        elif i in [5, 6]: 
-            self.all[i].set_ydata((self.cursor_pos[1],self.cursor_pos[1]))
-    
+            self.all[i].set_xdata((self.cursor_pos[0], self.cursor_pos[0]))
+        elif i in [5, 6]:
+            self.all[i].set_ydata((self.cursor_pos[1], self.cursor_pos[1]))
+
     def set_data_3d(self, i):
-        if i == 0: 
-            self.all[i].set_data(self.vals_T[:,self._last_ind[2],:])
-        elif i == 1: 
-            self.all[i].set_data(self.vals_T[self._last_ind[1],:,:])
-        elif i == 2: 
-            self.all[i].set_data(self.vals_T[:,:,self._last_ind[0]])
+        if i == 0:
+            self.all[i].set_data(self.vals_T[:, self._last_ind[2], :])
+        elif i == 1:
+            self.all[i].set_data(self.vals_T[self._last_ind[1], :, :])
+        elif i == 2:
+            self.all[i].set_data(self.vals_T[:, :, self._last_ind[0]])
         elif i == 3:
-            self.all[i].set_ydata(self.vals[:,self._last_ind[1],self._last_ind[2]])
-        elif i == 4: 
-            self.all[i].set_xdata(self.vals[self._last_ind[0],:,self._last_ind[2]])
+            self.all[i].set_ydata(
+                self.vals[:, self._last_ind[1], self._last_ind[2]])
+        elif i == 4:
+            self.all[i].set_xdata(
+                self.vals[self._last_ind[0], :, self._last_ind[2]])
         elif i == 5:
-            self.all[i].set_ydata(self.vals[self._last_ind[0],self._last_ind[1],:])
+            self.all[i].set_ydata(
+                self.vals[self._last_ind[0], self._last_ind[1], :])
         elif i in [6, 7, 8]:
             self.all[i].set_xdata((self.cursor_pos[0], self.cursor_pos[0]))
-        elif i in [9, 10, 11]: 
+        elif i in [9, 10, 11]:
             self.all[i].set_ydata((self.cursor_pos[1], self.cursor_pos[1]))
-        elif i in [12, 13]: 
+        elif i in [12, 13]:
             self.all[i].set_xdata((self.cursor_pos[2], self.cursor_pos[2]))
-        elif i == 14: 
+        elif i == 14:
             self.all[i].set_ydata((self.cursor_pos[2], self.cursor_pos[2]))
 
     def _drawpath(self):
@@ -818,13 +840,17 @@ class mpl_itool(Widget):
         # print(points)
         # TODO
         pass
+
     def _onselectpath(self, verts):
         print(verts)
+
 
 class ImageToolNavBar(NavigationToolbar2QT):
     def __init__(self, canvas, parent, coordinates=True):
         self.parent = parent
-        NavigationToolbar2QT.__init__(self, canvas, parent, coordinates=coordinates)
+        NavigationToolbar2QT.__init__(
+            self, canvas, parent, coordinates=coordinates)
+
     def _icon(self, name):
         """
         Construct a `.QIcon` from an image file *name*, including the extension
@@ -840,18 +866,18 @@ class ImageToolNavBar(NavigationToolbar2QT):
             # qt4_editor_options = qta.icon('ph.palette-fill'),
             # zoom_to_rect = qta.icon('ph.crop-fill'),
             # subplots = qta.icon('ph.squares-four-fill'),
-            back = qta.icon('msc.chevron-left'),
-            forward = qta.icon('msc.chevron-right'),
-            filesave = qta.icon('msc.save'),
-            home = qta.icon('msc.debug-step-back'),
-            move = qta.icon('msc.move'),
-            qt4_editor_options = qta.icon('msc.graph-line'),
-            zoom_to_rect = qta.icon('msc.search'),
-            subplots = qta.icon('msc.editor-layout'),
+            back=qta.icon('msc.chevron-left'),
+            forward=qta.icon('msc.chevron-right'),
+            filesave=qta.icon('msc.save'),
+            home=qta.icon('msc.debug-step-back'),
+            move=qta.icon('msc.move'),
+            qt4_editor_options=qta.icon('msc.graph-line'),
+            zoom_to_rect=qta.icon('msc.search'),
+            subplots=qta.icon('msc.editor-layout'),
         )
         try:
             return icons_dict[name]
-        except:
+        except BaseException:
             print(name)
             raise Exception
         # name = name.replace('.png', '_large.png')
@@ -860,8 +886,8 @@ class ImageToolNavBar(NavigationToolbar2QT):
         # if self.palette().color(self.backgroundRole()).value() < 128:
             # icon_color = self.palette().color(self.foregroundRole())
             # mask = pm.createMaskFromColor(
-                # QtGui.QColor('black'),
-                # _enum("QtCore.Qt.MaskMode").MaskOutColor)
+            # QtGui.QColor('black'),
+            # _enum("QtCore.Qt.MaskMode").MaskOutColor)
             # pm.fill(icon_color)
             # pm.setMask(mask)
         # return QtGui.QIcon(pm)
@@ -883,7 +909,7 @@ class ImageToolColors(QtWidgets.QDialog):
             self.parent.itool.hists[0].get_color())
 
         if ((self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) &
-            (self.line_default.getRgbF() == self.line_current.getRgbF())):
+                (self.line_default.getRgbF() == self.line_current.getRgbF())):
             buttons = QtWidgets.QDialogButtonBox(
                 QtWidgets.QDialogButtonBox.Ok |
                 QtWidgets.QDialogButtonBox.Cancel
@@ -903,10 +929,11 @@ class ImageToolColors(QtWidgets.QDialog):
         cursorlabel = QtWidgets.QLabel('Cursors:')
         linelabel = QtWidgets.QLabel('Lines:')
         self.cursorpicker = ColorButton(color=self.cursor_current)
-        self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
+        self.cursorpicker.colorChanged.connect(
+            self.parent.itool.set_cursor_color)
         self.linepicker = ColorButton(color=self.line_current)
         self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
-        
+
         layout = QtWidgets.QGridLayout()
         layout.addWidget(cursorlabel, 0, 0)
         layout.addWidget(self.cursorpicker, 0, 1)
@@ -914,7 +941,7 @@ class ImageToolColors(QtWidgets.QDialog):
         layout.addWidget(self.linepicker, 1, 1)
         layout.addWidget(buttons)
         self.setLayout(layout)
-    
+
     def reject(self):
         self.cursorpicker.setColor(self.cursor_current)
         self.linepicker.setColor(self.line_current)
@@ -923,6 +950,7 @@ class ImageToolColors(QtWidgets.QDialog):
     def reset_colors(self):
         self.cursorpicker.setColor(self.cursor_default)
         self.linepicker.setColor(self.line_default)
+
 
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, *args, **kwargs):
@@ -937,15 +965,15 @@ class ImageTool(QtWidgets.QMainWindow):
         self.ndim = self.data.ndim
         if self.ndim == 3:
             gs = self.figure.add_gridspec(3, 3,
-                    width_ratios=(6,4,2), height_ratios=(2,4,6))
+                                          width_ratios=(6, 4, 2), height_ratios=(2, 4, 6))
             self._main_axes = self.figure.add_subplot(gs[2, 0])
             self.axes = [
                 self._main_axes,
-                self.figure.add_subplot(gs[0,0], sharex=self._main_axes),
-                self.figure.add_subplot(gs[2,2], sharey=self._main_axes),
-                self.figure.add_subplot(gs[:2,1:]),
-                self.figure.add_subplot(gs[1,0], sharex=self._main_axes),
-                self.figure.add_subplot(gs[2,1], sharey=self._main_axes),
+                self.figure.add_subplot(gs[0, 0], sharex=self._main_axes),
+                self.figure.add_subplot(gs[2, 2], sharey=self._main_axes),
+                self.figure.add_subplot(gs[:2, 1:]),
+                self.figure.add_subplot(gs[1, 0], sharex=self._main_axes),
+                self.figure.add_subplot(gs[2, 1], sharey=self._main_axes),
             ]
             self.axes[3].set_label('Z Profile Axes')
             self.axes[4].set_label('Horiz Slice Axes')
@@ -956,7 +984,7 @@ class ImageTool(QtWidgets.QMainWindow):
             self.axes[3].yaxis.tick_right()
         elif self.ndim == 2:
             gs = self.figure.add_gridspec(
-                    2, 2, width_ratios=(6,2), height_ratios=(2,6))
+                2, 2, width_ratios=(6, 2), height_ratios=(2, 6))
             self._main_axes = self.figure.add_subplot(gs[1, 0])
             self.axes = [
                 self._main_axes,
@@ -971,9 +999,10 @@ class ImageTool(QtWidgets.QMainWindow):
 
         self.main_canvas = FigureCanvas(self.figure)
         self.itool = mpl_itool(self.main_canvas, self.axes,
-                            self.data, *args, **kwargs)
+                               self.data, *args, **kwargs)
         self.NavBar = ImageToolNavBar
         home_old = self.NavBar.home
+
         def home_new(self, *args):
             home_old(self, *args)
             axes = self.canvas.figure.axes
@@ -982,6 +1011,7 @@ class ImageTool(QtWidgets.QMainWindow):
             if self.parent.itool.ndim == 3:
                 axes[3].set_ylim(auto=True)
         pan_old = self.NavBar.pan
+
         def pan_new(self, *args):
             if self.mode == _Mode.PAN:
                 self.parent.itool.connect()
@@ -989,6 +1019,7 @@ class ImageTool(QtWidgets.QMainWindow):
                 self.parent.itool.disconnect()
             pan_old(self, *args)
         zoom_old = self.NavBar.zoom
+
         def zoom_new(self, *args):
             if self.mode == _Mode.ZOOM:
                 self.parent.itool.connect()
@@ -1002,11 +1033,11 @@ class ImageTool(QtWidgets.QMainWindow):
                         self.NavBar(self.main_canvas, self))
 
         self.icons = dict(
-            swap = qta.icon('msc.arrow-swap'),
-            lock = qta.icon('msc.lock'),
-            unlock = qta.icon('msc.unlock'),
+            swap=qta.icon('msc.arrow-swap'),
+            lock=qta.icon('msc.lock'),
+            unlock=qta.icon('msc.unlock'),
         )
-        
+
         self.cursortab = QtWidgets.QWidget()
         cursortab_content = QtWidgets.QHBoxLayout(self.cursortab)
         spinlabels = tuple(QtWidgets.QLabel(self.itool.dims[i])
@@ -1030,7 +1061,7 @@ class ImageTool(QtWidgets.QMainWindow):
             self._cursor_dblspin[i].setWrapping(True)
             self._cursor_dblspin[i].valueChanged.connect(
                 lambda v, axis=i: self._cursor_value_changed(axis, v))
-        
+
         snap_check = QtWidgets.QCheckBox(self.cursortab)
         snap_check.setChecked(self.itool.snap)
         snap_check.stateChanged.connect(self._assign_snap)
@@ -1059,7 +1090,8 @@ class ImageTool(QtWidgets.QMainWindow):
         self._cmap_combo = QtWidgets.QComboBox(self.colorstab)
         self._cmap_combo.setToolTip('Colormap')
         for name in plt.colormaps():
-            self._cmap_combo.addItem(QtGui.QIcon(colormap_to_QPixmap(name)), name)
+            self._cmap_combo.addItem(QtGui.QIcon(
+                colormap_to_QPixmap(name)), name)
         self._cmap_combo.setCurrentText(self.itool.cmap)
         self._cmap_combo.setIconSize(QtCore.QSize(60, 15))
         self._cmap_combo.currentTextChanged.connect(self.itool.set_cmap)
@@ -1091,13 +1123,13 @@ class ImageTool(QtWidgets.QMainWindow):
         colorstab_content.addStretch()
         colorstab_content.addWidget(style_label)
         colorstab_content.addWidget(style_combo)
-        
+
         self.smoothtab = QtWidgets.QWidget()
         smoothtab_content = QtWidgets.QHBoxLayout(self.smoothtab)
         navg_label = tuple(QtWidgets.QLabel(self.itool.dims[i])
-                                  for i in range(self.ndim))
+                           for i in range(self.ndim))
         self._navg_spin = tuple(QtWidgets.QSpinBox(self.smoothtab)
-                                  for i in range(self.ndim))
+                                for i in range(self.ndim))
         navg_resetbutton = QtWidgets.QPushButton('Reset')
         navg_resetbutton.clicked.connect(self._navg_reset)
         for i in range(self.ndim):
@@ -1165,10 +1197,10 @@ class ImageTool(QtWidgets.QMainWindow):
         else:
             self._lock_check.setIcon(self.icons['unlock'])
         self.itool.toggle_clim_lock(v)
-    
+
     def _navg_changed(self, axis, n):
         self.itool.set_navg(axis, n)
-    
+
     def _navg_reset(self):
         for i in range(self.ndim):
             self._navg_spin[i].setValue(1)
@@ -1194,10 +1226,10 @@ class ImageTool(QtWidgets.QMainWindow):
         else:
             pass
             # print("Cancel!")
-    
+
     def _assign_snap(self, value):
         self.itool.snap = value
-    
+
 
 def itoolmpl(data, *args, **kwargs):
 
@@ -1210,7 +1242,7 @@ def itoolmpl(data, *args, **kwargs):
     else:
         mpl_style = 'default'
     with plt.rc_context({
-        'text.usetex':False,
+        'text.usetex': False,
         # 'font.family':'SF Pro',
         # 'font.size':8,
         # 'font.stretch':'condensed',
