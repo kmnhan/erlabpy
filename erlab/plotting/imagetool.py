@@ -13,7 +13,7 @@ import pyqtgraph as pg
 import xarray as xr
 from matplotlib import colors
 
-pg.setConfigOption("imageAxisOrder", "row-major")
+# pg.setConfigOption("imageAxisOrder", "row-major")
 # pg.setConfigOption('useNumba', True)
 # pg.setConfigOption('background', 'w')
 # pg.setConfigOption('foreground', 'k')
@@ -567,6 +567,66 @@ class ColorButton(QtWidgets.QPushButton):
         return super(ColorButton, self).mousePressEvent(e)
 
 
+class ItoolImageItem(pg.ImageItem):
+    def __init__(self, itool, *args, **kargs):
+        self.itool = itool
+        super().__init__(*args, **kargs)
+
+    def mouseDragEvent(self, ev):
+        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            super().mouseDragEvent(ev)
+            return
+        else:
+            ev.accept()
+            self.itool.onMouseDrag(ev)
+
+
+class ItoolPlotItem(pg.PlotItem):
+    def __init__(self, itool, *args, **kargs):
+        self.itool = itool
+        super().__init__(*args, **kargs)
+
+    def mouseDragEvent(self, ev):
+        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            ev.ignore()
+            return
+        else:
+            ev.accept()
+            self.itool.onMouseDrag(ev)
+
+
+class ItoolCursorLine(pg.InfiniteLine):
+    def __init__(self, itool, *args, **kargs):
+        self.itool = itool
+        super().__init__(*args, **kargs)
+
+    def mouseDragEvent(self, ev):
+        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            self.setMovable(True)
+            super().mouseDragEvent(ev)
+        else:
+            self.setMovable(False)
+            self.setMouseHover(False)
+            ev.ignore()
+
+    def mouseClickEvent(self, ev):
+        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            self.setMovable(True)
+            super().mouseClickEvent(ev)
+        else:
+            self.setMovable(False)
+            self.setMouseHover(False)
+            ev.ignore()
+
+    def hoverEvent(self, ev):
+        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            self.setMovable(True)
+            super().hoverEvent(ev)
+        else:
+            self.setMovable(False)
+            self.setMouseHover(False)
+
+
 class pg_itool(pg.GraphicsLayoutWidget):
     """A interactive tool based on `pyqtgraph` for exploring 3D data.
 
@@ -767,36 +827,19 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.ci.layout.setSpacing(inner_pad)
         self.ci.layout.setContentsMargins(0, 0, 0, 0)
         if self.data_ndim == 2:
-            self.axes = [
-                self.addPlot(1, 0, 1, 1, **self.plot_kw),
-                self.addPlot(0, 0, 1, 1, **self.plot_kw),
-                self.addPlot(1, 1, 1, 1, **self.plot_kw),
-            ]
+            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(3)]
+            self.addItem(self.axes[0], 1, 0, 1, 1)
+            self.addItem(self.axes[1], 0, 0, 1, 1)
+            self.addItem(self.axes[2], 1, 1, 1, 1)
             valid_selection = ((1, 0, 0, 1), (1, 1, 0, 0), (0, 0, 1, 1))
         elif self.data_ndim == 3:
-            self.axes = [
-                # None, None, None, None, None, None,
-                # self.addPlot(3, 0, 4, 4, **self.plot_kw),
-                # self.addPlot(0, 0, 1, 4, **self.plot_kw),
-                # self.addPlot(3, 6, 4, 1, **self.plot_kw),
-                # self.addPlot(0, 4, 3, 3, **self.plot_kw),
-                # self.addPlot(1, 0, 2, 4, **self.plot_kw),
-                # self.addPlot(3, 4, 4, 2, **self.plot_kw),
-                self.addPlot(2, 0, 1, 1, **self.plot_kw),
-                self.addPlot(0, 0, 1, 1, **self.plot_kw),
-                self.addPlot(2, 2, 1, 1, **self.plot_kw),
-                self.addPlot(0, 1, 2, 2, **self.plot_kw),
-                self.addPlot(1, 0, 1, 1, **self.plot_kw),
-                self.addPlot(2, 1, 1, 1, **self.plot_kw),
-            ]
-            # self.axes[1] = self.addPlot(rowspan=1, colspan=1, **self.plot_kw)
-            # self.axes[3] = self.addPlot(rowspan=2, colspan=2, **self.plot_kw)
-            # self.nextRow()
-            # self.axes[4] = self.addPlot(rowspan=1, colspan=1, **self.plot_kw)
-            # self.nextRow()
-            # self.axes[0] = self.addPlot(rowspan=1, colspan=1, **self.plot_kw)
-            # self.axes[5] = self.addPlot(rowspan=1, colspan=1, **self.plot_kw)
-            # self.axes[2] = self.addPlot(rowspan=1, colspan=1, **self.plot_kw)
+            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(6)]
+            self.addItem(self.axes[0], 2, 0, 1, 1)
+            self.addItem(self.axes[1], 0, 0, 1, 1)
+            self.addItem(self.axes[2], 2, 2, 1, 1)
+            self.addItem(self.axes[3], 0, 1, 2, 2)
+            self.addItem(self.axes[4], 1, 0, 1, 1)
+            self.addItem(self.axes[5], 2, 1, 1, 1)
             valid_selection = (
                 (1, 0, 0, 1),
                 (1, 1, 0, 0),
@@ -835,26 +878,26 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def _initialize_plots(self):
         if self.data_ndim == 2:
-            self.maps = (pg.ImageItem(name="Main Image", **self.image_kw),)
+            self.maps = (ItoolImageItem(self, name="Main Image", **self.image_kw),)
             self.hists = (
                 self.axes[1].plot(name="X Profile", **self.profile_kw),
                 self.axes[2].plot(name="Y Profile", **self.profile_kw),
             )
             self.cursors = (
                 (
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="X Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="X Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
                     ),
                 ),
                 (
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Y Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Y Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
                     ),
                 ),
             )
@@ -879,9 +922,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.axes[2].addItem(self.spans[1][1])
         elif self.data_ndim == 3:
             self.maps = (
-                pg.ImageItem(name="Main Image", **self.image_kw),
-                pg.ImageItem(name="Horiz Slice", **self.image_kw),
-                pg.ImageItem(name="Vert Slice", **self.image_kw),
+                ItoolImageItem(self, name="Main Image", **self.image_kw),
+                ItoolImageItem(self, name="Horiz Slice", **self.image_kw),
+                ItoolImageItem(self, name="Vert Slice", **self.image_kw),
             )
             self.hists = (
                 self.axes[1].plot(name="X Profile", **self.profile_kw),
@@ -890,36 +933,36 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
             self.cursors = (
                 (
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="X Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="X Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                ),
-                (
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Y Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
                     ),
                 ),
                 (
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="Z Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=90, movable=True, name="Z Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
                     ),
-                    pg.InfiniteLine(
-                        angle=0, movable=True, name="Z Cursor", **self.cursor_kw
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
+                    ),
+                ),
+                (
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="Z Cursor", **self.cursor_kw
+                    ),
+                    ItoolCursorLine(
+                        self, angle=90, movable=True, name="Z Cursor", **self.cursor_kw
+                    ),
+                    ItoolCursorLine(
+                        self, angle=0, movable=True, name="Z Cursor", **self.cursor_kw
                     ),
                 ),
             )
@@ -1045,11 +1088,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for axis, cursors in enumerate(self.cursors):
             for c in cursors:
                 c.sigDragged.connect(lambda v, i=axis: self.set_value(i, v.value()))
-        self.proxy = pg.SignalProxy(
-            self.scene().sigMouseMoved,
-            rateLimit=self.screen.refreshRate(),
-            slot=self.onmove,
-        )
+        # self.proxy = pg.SignalProxy(
+        #     self.scene().sigMouseMoved,
+        #     rateLimit=self.screen.refreshRate(),
+        #     slot=self.onMouseDrag,
+        # )
+        self.scene().sigMouseClicked.connect(self.onMouseDrag)
+
         if self.bench:
             from collections import deque
 
@@ -1101,9 +1146,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def _assign_vals_T(self):
         if self.data_ndim == 2:
-            self.data_vals_T = self.data_vals.T
+            self.data_vals_T = np.ascontiguousarray(self.data_vals.T)
         elif self.data_ndim == 3:
-            self.data_vals_T = np.transpose(self.data_vals, axes=(1, 2, 0))
+            self.data_vals_T = np.ascontiguousarray(
+                np.transpose(self.data_vals, axes=(1, 2, 0))
+            )
         else:
             raise NotImplementedError("Wrong data dimensions")
 
@@ -1256,17 +1303,26 @@ class pg_itool(pg.GraphicsLayoutWidget):
         mouse_point = plot.vb.mapSceneToView(pos)
         return mouse_point.x(), mouse_point.y()
 
-    def onmove(self, evt):
+    def onMouseDrag(self, evt):
         if self.bench:
             self._t_start = perf_counter()
-        if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            for c in chain.from_iterable(self.cursors):
-                c.setMovable(True)
+
+        #     for c in chain.from_iterable(self.cursors):
+        #         c.setMovable(True)
+        #     return
+        # else:
+        #     for c in chain.from_iterable(self.cursors):
+        #         c.setMovable(False)
+        # # axis_ind, datapos = self._get_curr_axes_index(evt[0])
+        axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
+        if hasattr(evt, "_buttonDownScenePos"):
+            axis_start, _ = self._get_curr_axes_index(evt.buttonDownScenePos())
+            if axis_ind != axis_start:
+                return
+        elif self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+            evt.ignore()
             return
-        else:
-            for c in chain.from_iterable(self.cursors):
-                c.setMovable(False)
-        axis_ind, datapos = self._get_curr_axes_index(evt[0])
+
         if axis_ind is None:
             return
 
@@ -1389,11 +1445,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 cursor.setPos(self.cursor_pos[i - 3])
                 if self.averaged[i - 3]:
                     self.update_spans(i - 3)
-        # elif i in [5, 6]:
-        #     self.all[i].maxRange = self.data_lims[1]
-        #     self.all[i].setPos(self.cursor_pos[1])
-        #     if self.averaged[1]:
-        #         self.update_spans(1)
 
     def _refresh_data_3d(self, i):
         if i == 0:
@@ -1462,16 +1513,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 cursor.setPos(self.cursor_pos[i - 6])
                 if self.averaged[i - 6]:
                     self.update_spans(i - 6)
-        # elif i in [9, 10, 11]:
-        #     self.all[i].maxRange = self.data_lims[1]
-        #     self.all[i].setPos(self.cursor_pos[1])
-        #     if self.averaged[1]:
-        #         self.update_spans(1)
-        # elif i in [12, 13, 14]:
-        #     self.all[i].maxRange = self.data_lims[2]
-        #     self.all[i].setPos(self.cursor_pos[2])
-        #     if self.averaged[2]:
-        #         self.update_spans(2)
 
     def _drawpath(self):
         # ld = LineDrawer(self.canvas, self.axes[0])
@@ -1489,53 +1530,54 @@ class ImageToolColors(QtWidgets.QDialog):
         self.parent = parent
         super().__init__(self.parent)
         self.setWindowTitle("Colors")
+        raise NotImplementedError
 
-        self.cursor_default = color_to_QColor(self.parent.itool.cursor_kw["color"])
-        self.line_default = color_to_QColor(self.parent.itool.profile_kw["color"])
-        self.cursor_current = color_to_QColor(self.parent.itool.cursors[0].get_color())
-        self.line_current = color_to_QColor(self.parent.itool.hists[0].get_color())
+    #     self.cursor_default = color_to_QColor(self.parent.itool.cursor_kw["color"])
+    #     self.line_default = color_to_QColor(self.parent.itool.profile_kw["color"])
+    #     self.cursor_current = color_to_QColor(self.parent.itool.cursors[0].get_color())
+    #     self.line_current = color_to_QColor(self.parent.itool.hists[0].get_color())
 
-        if (self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) & (
-            self.line_default.getRgbF() == self.line_current.getRgbF()
-        ):
-            buttons = QtWidgets.QDialogButtonBox(
-                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-            )
-        else:
-            buttons = QtWidgets.QDialogButtonBox(
-                QtWidgets.QDialogButtonBox.RestoreDefaults
-                | QtWidgets.QDialogButtonBox.Ok
-                | QtWidgets.QDialogButtonBox.Cancel
-            )
-            buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
-                self.reset_colors
-            )
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
+    #     if (self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) & (
+    #         self.line_default.getRgbF() == self.line_current.getRgbF()
+    #     ):
+    #         buttons = QtWidgets.QDialogButtonBox(
+    #             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+    #         )
+    #     else:
+    #         buttons = QtWidgets.QDialogButtonBox(
+    #             QtWidgets.QDialogButtonBox.RestoreDefaults
+    #             | QtWidgets.QDialogButtonBox.Ok
+    #             | QtWidgets.QDialogButtonBox.Cancel
+    #         )
+    #         buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
+    #             self.reset_colors
+    #         )
+    #     buttons.rejected.connect(self.reject)
+    #     buttons.accepted.connect(self.accept)
 
-        cursorlabel = QtWidgets.QLabel("Cursors:")
-        linelabel = QtWidgets.QLabel("Lines:")
-        self.cursorpicker = ColorButton(color=self.cursor_current)
-        self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
-        self.linepicker = ColorButton(color=self.line_current)
-        self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
+    #     cursorlabel = QtWidgets.QLabel("Cursors:")
+    #     linelabel = QtWidgets.QLabel("Lines:")
+    #     self.cursorpicker = ColorButton(color=self.cursor_current)
+    #     self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
+    #     self.linepicker = ColorButton(color=self.line_current)
+    #     self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
 
-        layout = QtWidgets.QGridLayout()
-        layout.addWidget(cursorlabel, 0, 0)
-        layout.addWidget(self.cursorpicker, 0, 1)
-        layout.addWidget(linelabel, 1, 0)
-        layout.addWidget(self.linepicker, 1, 1)
-        layout.addWidget(buttons)
-        self.setLayout(layout)
+    #     layout = QtWidgets.QGridLayout()
+    #     layout.addWidget(cursorlabel, 0, 0)
+    #     layout.addWidget(self.cursorpicker, 0, 1)
+    #     layout.addWidget(linelabel, 1, 0)
+    #     layout.addWidget(self.linepicker, 1, 1)
+    #     layout.addWidget(buttons)
+    #     self.setLayout(layout)
 
-    def reject(self):
-        self.cursorpicker.setColor(self.cursor_current)
-        self.linepicker.setColor(self.line_current)
-        super().reject()
+    # def reject(self):
+    #     self.cursorpicker.setColor(self.cursor_current)
+    #     self.linepicker.setColor(self.line_current)
+    #     super().reject()
 
-    def reset_colors(self):
-        self.cursorpicker.setColor(self.cursor_default)
-        self.linepicker.setColor(self.line_default)
+    # def reset_colors(self):
+    #     self.cursorpicker.setColor(self.cursor_default)
+    #     self.linepicker.setColor(self.line_default)
 
 
 @numba.njit(nogil=True)
