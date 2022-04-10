@@ -1,3 +1,4 @@
+from audioop import avg
 import sys
 import unittest.mock
 import weakref
@@ -703,9 +704,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def __init__(
         self,
         data,
-        snap=False,
+        snap=True,
         gamma=0.5,
-        cmap="twilight",
+        cmap="BlWh",
         bench=False,
         plot_kw={},
         cursor_kw={},
@@ -737,13 +738,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.gamma = 1.0
             self.cmap = "bwr"
 
-        cursor_c = pg.mkColor(0.5)
+        # cursor_c = pg.mkColor(0.5)
+        cursor_c, cursor_c_hover, span_c, span_c_edge = [pg.mkColor('cyan') for _ in range(4)]
         cursor_c.setAlphaF(0.75)
-        cursor_c_hover = pg.mkColor(0.75)
-        cursor_c_hover.setAlphaF(0.75)
-        span_c = pg.mkColor(0.5)
+        cursor_c_hover.setAlphaF(0.9)
         span_c.setAlphaF(0.15)
-        span_c_edge = pg.mkColor(0.5)
         span_c_edge.setAlphaF(0.35)
         # span_c_hover = pg.mkColor(0.75)
         # span_c_hover.setAlphaF(0.5)
@@ -1006,6 +1005,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.axes[4].addItem(self.spans[2][2])
             # if self.data_lims[-1][-1] * self.data_lims[-1][0] < 0:
             # self.axes[3].axvline(0., label='Fermi Level', **self.fermi_kw)
+            # for m in self.maps:
+            # m.sigImageChanged.connect(self._refresh_histograms)
+
         self.all = self.maps + self.hists + self.cursors
         for s in chain.from_iterable(self.spans):
             s.setVisible(False)
@@ -1071,7 +1073,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def toggle_colorbar(self, val):
         if self.colorbar is None:
-            self.colorbar = myColorBar(image=self.maps[0], width=20)
+            self.colorbar = ItoolColorBar(self, width=20)
             self.addItem(self.colorbar, None, None, self.ci.layout.rowCount(), 1)
         self.colorbar.setVisible(val)
 
@@ -1217,6 +1219,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._refresh_navg(reset=False)
 
     def _refresh_navg(self, reset=False):
+        self._slice_block = None
         if reset:
             for axis in range(self.data_ndim):
                 self.averaged[axis] = False
@@ -1224,20 +1227,62 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for axis in range(self.data_ndim):
             for s in self.spans[axis]:
                 s.setVisible(self.averaged[axis])
-        if not any(self.averaged):
-            self.data_vals = self.data.values
-        else:
-            vals = self.data.values
-            self.data_vals = move_mean_centered_multiaxis(vals, self.avg_win)
-        self._assign_vals_T()
+        # if not any(self.averaged):
+        #     self.data_vals = self.data.values
+        # else:
+        #     vals = self.data.values
+        #     self.data_vals = move_mean_centered_multiaxis(vals, self.avg_win)
+        # self._assign_vals_T()
         self._apply_change()
 
+    def _get_bin_slice(self, axis):
+        if self.averaged[axis]:
+            center = self._last_ind[axis]
+            window = self.avg_win[axis]
+            return slice(center - window // 2, center + (window - 1) // 2 + 1)
+        else:
+            return slice(self._last_ind[axis], self._last_ind[axis] + 1)
+
+    def _get_binned_data(self, axis):
+        self._slice_block = None
+        if not self.averaged[axis]:
+            return np.take(self.data_vals_T, self._last_ind[axis], axis=axis - 1)
+        else:
+            axis -= 1
+            return numbagg.nanmean(
+                self.data_vals_T[
+                    (slice(None),) * (axis % self.data_ndim)
+                    + (self._get_bin_slice(axis + 1),)
+                ],
+                axis=axis,
+            )
+
+    def _binned_profile(self, avg_axis):
+        if not any(self.averaged):
+            return self._block_slicer(avg_axis, [self._last_ind[i] for i in avg_axis])
+        slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
+        self._slice_block = self._block_slicer(avg_axis, slices)
+        return numbagg.nanmean(self._slice_block, axis=avg_axis)
+    
+    def _block_slicer(self, axis=None, slices=None):
+        axis = [ax % self.data_ndim for ax in axis]
+        return self.data_vals[
+            tuple(
+                slices[axis.index(d)] if d in axis else slice(None) for d in range(self.data_ndim)
+            )
+        ]
+
+    def slicer2(self, axis=None, slices=None):
+        axis = [ax % self.data_ndim for ax in axis]
+        slice_selector = dict(zip(axis, slices))
+        element = lambda dim_: slice_selector[dim_] if dim_ in slice_selector.keys() else slice(None)
+        return self.data_vals[tuple(element(dim) for dim in range(self.data_ndim))]
+
     def update_spans(self, axis):
-        center = self.data_coords[axis][self._last_ind[axis]]
-        region = (
-            center - self.avg_win[axis] // 2 * self.data_incs[axis],
-            center + (self.avg_win[axis] - 1) // 2 * self.data_incs[axis],
-        )
+        slc = self._get_bin_slice(axis)
+        lb = max(0, slc.start)
+        ub = min(self.data_shape[axis] - 1, slc.stop - 1)
+        region = self.data_coords[axis][[lb, ub]]
         for span in self.spans[axis]:
             span.setRegion(region)
 
@@ -1249,10 +1294,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if ind < 0:
             return 0
         return ind
-        # return min(
-        #     np.searchsorted(self.data_coords[axis] + 0.5 * self.data_incs[axis], val),
-        #     self.data_shape[axis] - 1,
-        # )
 
     def set_axis_lock(self, axis, lock):
         self.axis_locked[axis] = lock
@@ -1307,13 +1348,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if self.bench:
             self._t_start = perf_counter()
 
-        #     for c in chain.from_iterable(self.cursors):
-        #         c.setMovable(True)
-        #     return
-        # else:
-        #     for c in chain.from_iterable(self.cursors):
-        #         c.setMovable(False)
-        # # axis_ind, datapos = self._get_curr_axes_index(evt[0])
         axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
         if hasattr(evt, "_buttonDownScenePos"):
             axis_start, _ = self._get_curr_axes_index(evt.buttonDownScenePos())
@@ -1418,6 +1452,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
     #             return self.clim_list[i]
     #     else:
     #         self.all[i].getLevels()
+    # def _refresh_histograms(self):
+    #     self.hists[0].setData(self.data_coords[0], self.maps[0].image[self._last_ind[1], :])
+    #     self.hists[1].setData(self.maps[0].image[:, self._last_ind[0]], self.data_coords[1])
+    #     if self.data_ndim == 3:
+    #         self.hists[2].setData(self.data_coords[2], self.maps[1].image[:, self._last_ind[0]])
+
     def _refresh_data_2d(self, i):
         if i == 0:
             if self.clim_locked:
@@ -1433,11 +1473,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
                     self.all[i].setLevels([-lim, lim])
         elif i == 1:
             self.all[i].setData(
-                self.data_coords[0], self.data_vals_T[self._last_ind[1], :]
+                self.data_coords[0],
+                # self.data_vals_T[self._last_ind[1], :]
+                # self.maps[0].image[self._last_ind[1], :],
+                self._binned_profile([1]),
             )
         elif i == 2:
             self.all[i].setData(
-                self.data_vals_T[:, self._last_ind[0]], self.data_coords[1]
+                # self.data_vals_T[:, self._last_ind[0]],
+                # self.maps[0].image[:, self._last_ind[0]],
+                self._binned_profile([0]),
+                self.data_coords[1],
             )
         elif i in [3, 4]:
             for cursor in self.all[i]:
@@ -1450,13 +1496,15 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
-                    self.data_vals_T[:, self._last_ind[2], :],
+                    # self.data_vals_T[:, self._last_ind[2], :],
+                    self._get_binned_data(2),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(0, 1),
                 )
             else:
                 self.all[i].setImage(
-                    self.data_vals_T[:, self._last_ind[2], :],
+                    # self.data_vals_T[:, self._last_ind[2], :],
+                    self._get_binned_data(2),
                     rect=self._lims_to_rect(0, 1),
                 )
                 if self.zero_centered:
@@ -1465,13 +1513,15 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 1:
             if self.clim_locked:
                 self.all[i].setImage(
-                    self.data_vals_T[self._last_ind[1], :, :],
+                    # self.data_vals_T[self._last_ind[1], :, :],
+                    self._get_binned_data(1),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(0, 2),
                 )
             else:
                 self.all[i].setImage(
-                    self.data_vals_T[self._last_ind[1], :, :],
+                    # self.data_vals_T[self._last_ind[1], :, :],
+                    self._get_binned_data(1),
                     rect=self._lims_to_rect(0, 2),
                 )
                 if self.zero_centered:
@@ -1480,32 +1530,37 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 2:
             if self.clim_locked:
                 self.all[i].setImage(
-                    self.data_vals_T[:, :, self._last_ind[0]],
+                    self._get_binned_data(0),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(2, 1),
                 )
             else:
                 self.all[i].setImage(
-                    self.data_vals_T[:, :, self._last_ind[0]],
+                    self._get_binned_data(0),
                     rect=self._lims_to_rect(2, 1),
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
                     self.all[i].setLevels([-lim, lim])
         elif i == 3:
-            self.all[i].setData(
+            self.hists[0].setData(
                 self.data_coords[0],
-                self.data_vals[:, self._last_ind[1], self._last_ind[2]],
+                # self.data_vals[:, self._last_ind[1], self._last_ind[2]],
+                self._binned_profile((1, 2)),
             )
         elif i == 4:
-            self.all[i].setData(
-                self.data_vals[self._last_ind[0], :, self._last_ind[2]],
+            self.hists[1].setData(
+                # self.data_vals[self._last_ind[0], :, self._last_ind[2]],
+                # self.maps[0].image[:,self._last_ind[0]],
+                self._binned_profile((0, 2)),
                 self.data_coords[1],
             )
         elif i == 5:
-            self.all[i].setData(
+            self.hists[2].setData(
                 self.data_coords[2],
-                self.data_vals[self._last_ind[0], self._last_ind[1], :],
+                # self.data_vals[self._last_ind[0], self._last_ind[1], :],
+                # self.maps[1].image[:, self._last_ind[0]]
+                self._binned_profile((0, 1)),
             )
         elif i in [6, 7, 8]:
             for cursor in self.all[i]:
@@ -1796,7 +1851,7 @@ class betterIsocurve(pg.IsocurveItem):
         self,
         data=None,
         level=0,
-        pen="w",
+        pen="cyan",
         axisOrder=None,
         connected=False,
         extendToEdge=False,
@@ -1824,10 +1879,10 @@ class betterIsocurve(pg.IsocurveItem):
                 self.path.lineTo(*p)
 
 
-class myColorBar(pg.PlotItem):
+class ItoolColorBar(pg.PlotItem):
     def __init__(
         self,
-        image,
+        itool,
         width=25,
         horiz_pad=45,
         vert_pad=30,
@@ -1838,9 +1893,10 @@ class myColorBar(pg.PlotItem):
         *args,
         **kwargs,
     ):
-        super(myColorBar, self).__init__(*args, **kwargs)
+        super(ItoolColorBar, self).__init__(*args, **kwargs)
+        self.itool = itool
         self.setDefaultPadding(0)
-        self.cbar = pg.ImageItem(axisOrder="row-major")
+        self.cbar = ItoolImageItem(self.itool, axisOrder="row-major")
         self.npts = 4096
         self.autolevels = True
 
@@ -1850,12 +1906,12 @@ class myColorBar(pg.PlotItem):
         self.isocurve = betterIsocurve(**curve_kw)
         self.isocurve.setZValue(5)
 
-        self.isoline = pg.InfiniteLine(angle=0, movable=True, **line_kw)
+        self.isoline = ItoolCursorLine(self.itool, angle=0, movable=True, **line_kw)
         self.addItem(self.isoline)
         self.isoline.setZValue(1000)
         self.isoline.sigPositionChanged.connect(self.update_level)
 
-        self.setImageItem(image)
+        self.setImageItem(self.itool.maps[0])
         self.setMouseEnabled(x=False, y=True)
         self.setMenuEnabled(True)
 
@@ -2238,17 +2294,19 @@ class itoolColorMaps(QtWidgets.QComboBox):
         super().hidePopup()
 
 
-class itoolBinning(QtWidgets.QWidget):
+class itoolSmoothing(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.ndim = self.itool.data_ndim
         self.layout = FlowLayout(self)
+        self._bin_group = QtWidgets.QGroupBox(self)
         self.initialize_widgets()
         self.update_content()
         self.itool.sigDataChanged.connect(self.update_content)
 
     def initialize_widgets(self):
+        bin_layout = QtWidgets.QHBoxLayout(self._bin_group)
         self._spinlabels = tuple(QtWidgets.QLabel(self) for _ in range(self.ndim))
         self._spin = tuple(QtWidgets.QSpinBox(self) for _ in range(self.ndim))
         self._reset = QtWidgets.QPushButton("Reset")
@@ -2261,11 +2319,12 @@ class itoolBinning(QtWidgets.QWidget):
                 lambda n, axis=i: self.itool.set_navg(axis, n)
             )
         for i in range(self.ndim):
-            self.layout.addWidget(self._spinlabels[i])
-            self.layout.addWidget(self._spin[i])
-            # self.layout.addSpacing( , 20)
-        self.layout.addWidget(self._reset)
-        # self.layout.addStretch()
+            bin_layout.addWidget(self._spinlabels[i])
+            bin_layout.addWidget(self._spin[i])
+            # bin_layout.addSpacing( , 20)
+        bin_layout.addWidget(self._reset)
+        # bin_layout.addStretch()
+        self.layout.addWidget(self._bin_group)
 
     def initialize_functions(self):
         # numba overhead
@@ -2310,7 +2369,7 @@ class ImageTool(QtWidgets.QMainWindow):
 
         self.cursortab = itoolCursors(self.itool)
         self.colorstab = itoolColors(self.itool)
-        self.smoothtab = itoolBinning(self.itool)
+        self.smoothtab = itoolSmoothing(self.itool)
 
         # self.pathtab = QtWidgets.QWidget()
         # pathtabcontent = QtWidgets.QHBoxLayout()
@@ -2327,8 +2386,8 @@ class ImageTool(QtWidgets.QMainWindow):
         )
         self.tabwidget.addTab(self.cursortab, "Cursor")
         self.tabwidget.addTab(self.colorstab, "Appearance")
-        self.tabwidget.addTab(self.smoothtab, "Smoothing")
-        self.tabwidget.currentChanged.connect(self.tab_changed)
+        self.tabwidget.addTab(self.smoothtab, "Binning")
+        # self.tabwidget.currentChanged.connect(self.tab_changed)
         # self.tabwidget.addTab(self.pathtab, 'Path')
 
         self.layout.addWidget(self.itool)
@@ -2338,9 +2397,10 @@ class ImageTool(QtWidgets.QMainWindow):
         self.itool.setFocus()
 
     def tab_changed(self, i):
-        if i == self.tabwidget.indexOf(self.smoothtab):
+        pass
+        # if i == self.tabwidget.indexOf(self.smoothtab):
             # lazy loading
-            self.smoothtab.initialize_functions()
+            # self.smoothtab.initialize_functions()
 
 
 def itool(data, execute=None, *args, **kwargs):
@@ -2387,7 +2447,7 @@ if __name__ == "__main__":
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-    )
+    )#.sel(eV=-0.15, method='nearest')
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
