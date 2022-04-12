@@ -1,6 +1,4 @@
-from audioop import avg
 import sys
-import unittest.mock
 import weakref
 from itertools import chain, compress
 from time import perf_counter
@@ -12,13 +10,6 @@ import numbagg
 import numpy as np
 import pyqtgraph as pg
 import xarray as xr
-from matplotlib import colors
-
-# pg.setConfigOption("imageAxisOrder", "row-major")
-# pg.setConfigOption('useNumba', True)
-# pg.setConfigOption('background', 'w')
-# pg.setConfigOption('foreground', 'k')
-
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from PySide6 import QtSvg, QtSvgWidgets, QtWebEngineWidgets
 
@@ -30,12 +21,22 @@ else:
         pg_colormap_powernorm,
         pg_colormap_to_QPixmap,
     )
+
+# pg.setConfigOption("imageAxisOrder", "row-major")
+# pg.setConfigOption('useNumba', True)
+# pg.setConfigOption('background', 'w')
+# pg.setConfigOption('foreground', 'k')
+
+
 __all__ = ["itool"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 import qtawesome as qta
+import matplotlib.mathtext
+from matplotlib import figure, rc_context, rcParams
+from matplotlib.backends import backend_agg, backend_svg
 
 fonticons = dict(
     invert="mdi6.invert-colors",
@@ -54,6 +55,7 @@ fonticons = dict(
     palette="mdi6.palette-advanced",
     styles="mdi6.palette-swatch",
     layout="mdi6.page-layout-body",
+    zero_center="mdi6.format-vertical-align-center",
 )
 
 
@@ -61,18 +63,6 @@ fonticons = dict(
 # req = urllib.request.Request('')
 # with urllib.request.urlopen(req) as resp:
 #     mathjax = resp.read()
-
-
-import matplotlib.mathtext
-from matplotlib import figure, rc_context, rcParams
-from matplotlib.backends import backend_agg, backend_svg
-
-# rcParams.update({
-#     "text.usetex": True,
-#     "font.family": "serif",
-#     "font.serif": ["Palatino"],
-#     "pgf.texsystem": "lualatex",
-# })
 
 
 class FlowLayout(QtWidgets.QLayout):
@@ -574,7 +564,10 @@ class ItoolImageItem(pg.ImageItem):
         super().__init__(*args, **kargs)
 
     def mouseDragEvent(self, ev):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+        if (
+            self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier
+            or ev.button() != QtCore.Qt.MouseButton.LeftButton
+        ):
             super().mouseDragEvent(ev)
             return
         else:
@@ -739,7 +732,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.cmap = "bwr"
 
         # cursor_c = pg.mkColor(0.5)
-        cursor_c, cursor_c_hover, span_c, span_c_edge = [pg.mkColor('cyan') for _ in range(4)]
+        cursor_c, cursor_c_hover, span_c, span_c_edge = [
+            pg.mkColor("cyan") for _ in range(4)
+        ]
         cursor_c.setAlphaF(0.75)
         cursor_c_hover.setAlphaF(0.9)
         span_c.setAlphaF(0.15)
@@ -797,7 +792,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.setFocus()
         self.connect_signals()
 
-    def _update_stretch(self, factor=None):
+    def _update_stretch(self, factor=None, col=False, row=False):
         if factor is None:
             if self.data_ndim == 2:
                 factor = [25000, 75000]
@@ -813,10 +808,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
         #     return
 
         for i in range(len(factor)):
-
             self.ci.layout.setColumnMinimumWidth(i, 0.0)
-            self.ci.layout.setColumnStretchFactor(i, factor[-i - 1])
-            self.ci.layout.setRowStretchFactor(i, factor[i])
+            if col:
+                self.ci.layout.setColumnStretchFactor(i, factor[-i - 1])
+            if row:
+                self.ci.layout.setRowStretchFactor(i, factor[i])
 
     def _initialize_layout(
         self, horiz_pad=45, vert_pad=30, inner_pad=15, font_size=10.0
@@ -864,7 +860,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 p.setXLink(self.axes[0])
             elif i in [2, 5]:
                 p.setYLink(self.axes[0])
-        self._update_stretch()
+        self._update_stretch(col=True, row=True)
 
     def _lims_to_rect(self, i, j):
         x = self.data_lims[i][0] - self.data_incs[i]
@@ -1156,7 +1152,14 @@ class pg_itool(pg.GraphicsLayoutWidget):
         else:
             raise NotImplementedError("Wrong data dimensions")
 
-    def set_cmap(self, cmap=None, gamma=None, reverse=False, highContrast=False):
+    def set_cmap(
+        self,
+        cmap=None,
+        gamma=None,
+        reverse=False,
+        highContrast=False,
+        zeroCentered=None,
+    ):
         if cmap is None:
             cmap = self.cmap
         if gamma is None:
@@ -1165,12 +1168,16 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.cmap = cmap
         if gamma is not self.gamma:
             self.gamma = gamma
+        if zeroCentered is None:
+            zeroCentered = self.zero_centered
+        else:
+            self.zero_centered = zeroCentered
         self.norm_cmap = pg_colormap_powernorm(
             self.cmap,
             self.gamma,
             reverse=reverse,
             highContrast=highContrast,
-            zeroCentered=self.zero_centered,
+            zeroCentered=zeroCentered,
         )
         for im in self.maps:
             im._colorMap = self.norm_cmap
@@ -1263,19 +1270,24 @@ class pg_itool(pg.GraphicsLayoutWidget):
         slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
         self._slice_block = self._block_slicer(avg_axis, slices)
         return numbagg.nanmean(self._slice_block, axis=avg_axis)
-    
+
     def _block_slicer(self, axis=None, slices=None):
         axis = [ax % self.data_ndim for ax in axis]
         return self.data_vals[
             tuple(
-                slices[axis.index(d)] if d in axis else slice(None) for d in range(self.data_ndim)
+                slices[axis.index(d)] if d in axis else slice(None)
+                for d in range(self.data_ndim)
             )
         ]
 
     def slicer2(self, axis=None, slices=None):
         axis = [ax % self.data_ndim for ax in axis]
         slice_selector = dict(zip(axis, slices))
-        element = lambda dim_: slice_selector[dim_] if dim_ in slice_selector.keys() else slice(None)
+        element = (
+            lambda dim_: slice_selector[dim_]
+            if dim_ in slice_selector.keys()
+            else slice(None)
+        )
         return self.data_vals[tuple(element(dim) for dim in range(self.data_ndim))]
 
     def update_spans(self, axis):
@@ -1978,6 +1990,78 @@ class ItoolColorBar(pg.PlotItem):
         #               size=(45, 30))
 
 
+class itoolJoystick(pg.JoystickButton):
+    sigDragged = QtCore.Signal(object, object)
+
+    def __init__(self, parent=None):
+        QtWidgets.QPushButton.__init__(self, parent)
+        self.radius = 200
+        self.setCheckable(True)
+        self.state = None
+        self.setState(0, 0)
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(lambda: self.sigDragged.emit(self, self.state))
+        # self.setFixedWidth(50)
+        # self.setFixedHeight(50)
+
+    # def timeout(self):
+    # self.sigDragged.emit(self, self.state)
+    def mousePressEvent(self, ev):
+        # self.setChecked(True)
+        # lpos = ev.position() if hasattr(ev, 'position') else ev.localPos()
+        # self.pressPos = lpos
+        # ev.accept()
+        super().mousePressEvent(ev)
+        self.timer.start(1000 / 30)
+
+    # def mouseMoveEvent(self, ev):
+    #     lpos = ev.position() if hasattr(ev, 'position') else ev.localPos()
+    #     dif = lpos - self.pressPos
+    #     self.setState(dif.x(), -dif.y())
+    def setState(self, *xy):
+        xy = list(xy)
+        d = np.sqrt(xy[0] ** 2 + xy[1] ** 2)  # length
+        nxy = [0, 0]
+        for i in [0, 1]:
+            if xy[i] == 0:
+                nxy[i] = 0
+            else:
+                nxy[i] = xy[i] / d
+
+        if d > self.radius:
+            d = self.radius
+        d = (d / self.radius) ** 2
+        xy = [nxy[0] * d, nxy[1] * d]
+
+        w2 = self.width() / 2
+        h2 = self.height() / 2
+        self.spotPos = QtCore.QPoint(int(w2 * (1 + xy[0])), int(h2 * (1 - xy[1])))
+        self.update()
+        if self.state == xy:
+            return
+        self.state = xy
+        self.sigStateChanged.emit(self, self.state)
+
+    def mouseReleaseEvent(self, ev):
+        # self.setChecked(False)
+        # self.setState(0.575, 0.575)
+        super().mouseReleaseEvent(ev)
+        self.timer.stop()
+
+    # def doubleClickEvent(self, ev):
+    #     # self.setState(0.575, 0.575)
+    #     self.sigDragged.emit(self, self.state)
+    #     ev.accept()
+
+    # def setState(self, *xy):
+    # super().setState(*xy)
+    # self.sigDragged.emit(self, self.state)
+
+    # def mouseDragEvent(self, ev):
+    #     self.sigDragged.emit(self, self.state)
+    #     ev.accept()
+
+
 class itoolCursors(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2027,15 +2111,26 @@ class itoolCursors(QtWidgets.QWidget):
         self._snap_button.toggled.connect(self._assign_snap)
         self._snap_button.setIcon(qta.icon(fonticons["snap"]))
         self._snap_button.setToolTip("Snap cursor to data")
+
+        self._joystick = itoolJoystick(self)
+        # self._joystick.setFixedWidth(20)
+        # self._joystick.setFixedHeight(20)
+        # self.proxy = pg.SignalProxy(
+        #     self._joystick.sigDragged,
+        #     rateLimit=30,
+        #     slot=self._on_joystick,
+        # )
+        self._joystick.sigDragged.connect(self._on_joystick)
+
         for i in range(self.ndim):
             self._spinlabels[i].setCheckable(True)
             self._spinlabels[i].toggled.connect(
                 lambda v, axis=i: self.itool.set_axis_lock(axis, v)
             )
             self._spin[i].setSingleStep(1)
-            self._spin[i].setWrapping(True)
+            self._spin[i].setWrapping(False)
             self._dblspin[i].setDecimals(3)
-            self._dblspin[i].setWrapping(True)
+            self._dblspin[i].setWrapping(False)
             self._spin[i].valueChanged.connect(
                 lambda v, axis=i: self._index_changed(axis, v)
             )
@@ -2049,17 +2144,70 @@ class itoolCursors(QtWidgets.QWidget):
             cursor_layout.addWidget(self._spin[i], 0, 3 * i + 1)
             cursor_layout.addWidget(self._dblspin[i], 0, 3 * i + 2)
             # cursor_layout.addSpacing(5)
+        cursor_layout.addWidget(self._snap_button, 0, 3 * self.ndim)
+        cursor_layout.addWidget(self._joystick, 0, 3 * self.ndim + 1)
+
+        def sliderDblClickEvt(self, evt):
+            self.setValue(57500)
+
+        self._hslider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
+        self._hslider.setMinimum(0)
+        self._hslider.setMaximum(100000)
+        self._hslider.setValue(57500)
+        self._hslider.valueChanged.connect(lambda v: self._assign_stretch(v, col=True))
+        self._hslider.setFixedHeight(30)
+        self._hslider.setFixedWidth(30)
+
+        cursor_layout.addWidget(self._hslider, 0, 3 * self.ndim + 3)
+        self._vslider = QtWidgets.QSlider(QtCore.Qt.Vertical, self)
+        self._vslider.setMinimum(0)
+        self._vslider.setMaximum(100000)
+        self._vslider.setValue(57500)
+        self._vslider.setFixedHeight(30)
+        self._vslider.setFixedWidth(30)
+        cursor_layout.addWidget(self._vslider, 0, 3 * self.ndim + 2)
+        self._vslider.valueChanged.connect(lambda v: self._assign_stretch(v, row=True))
+
+        self._vslider.mouseDoubleClickEvent = lambda ev: sliderDblClickEvt(
+            self._vslider, ev
+        )
+        self._hslider.mouseDoubleClickEvent = lambda ev: sliderDblClickEvt(
+            self._hslider, ev
+        )
+
         self.layout.addWidget(self._cursor_group)
         self.layout.addWidget(self._transpose_group)
+
         for i, button in enumerate(self._transpose_button):
             transpose_layout.addWidget(button)
             button.setIcon(qta.icon(fonticons["transpose"][i]))
-        transpose_layout.addWidget(self._snap_button)
         # for hb in self._hide_button:
         #     hb.setIcon(qta.icon(fonticons['layout']))
         #     hb.setCheckable(True)
         #     transpose_layout.addWidget(hb)
         # self.layout.addStretch()
+
+    def _on_joystick(self, _, state):
+        # self._assign_stretch(100000*state[0], col=True)
+        # self._assign_stretch(100000*state[1], row=True)
+        factor = 1
+        for i in range(2):
+            if not self._spinlabels[i].isChecked():
+                if self.itool.snap:
+                    self._spin[i].setValue(
+                        self._spin[i].value()
+                        + np.sign(state[i])
+                        * (self.itool.data_shape[i] - 1)
+                        * np.float_power(np.abs(state[i]), factor)
+                    )
+                else:
+                    lims = self.itool.data_lims[i]
+                    self._dblspin[i].setValue(
+                        self._dblspin[i].value()
+                        + np.sign(state[i])
+                        * np.abs(lims[1] - lims[0])
+                        * np.float_power(np.abs(state[i]), factor)
+                    )
 
     def toggle_axes(self, toggle, i):
         # self.itool._update_stretch(factor=0)
@@ -2071,9 +2219,9 @@ class itoolCursors(QtWidgets.QWidget):
             self.layout.clear()
             self.ndim = ndim
             self.initialize_widgets()
-        self._snap_button.blockSignals(True)
+        # self._snap_button.blockSignals(True)
         self._snap_button.setChecked(self.itool.snap)
-        self._snap_button.blockSignals(False)
+        # self._snap_button.blockSignals(False)
 
         for i in range(self.ndim):
             self._spinlabels[i].blockSignals(True)
@@ -2102,6 +2250,14 @@ class itoolCursors(QtWidgets.QWidget):
             self._spinlabels[i].blockSignals(False)
             self._spin[i].blockSignals(False)
             self._dblspin[i].blockSignals(False)
+
+    def _assign_stretch(self, value, col=False, row=False):
+        if self.ndim == 2:
+            factor = [100000 - value, value]
+        elif self.ndim == 3:
+            # factor = [7500, 35000, 57500]
+            factor = [7500, 92500 - value, value]
+        self.itool._update_stretch(factor, col=col, row=row)
 
     def _assign_snap(self, value):
         if value:
@@ -2167,6 +2323,7 @@ class itoolColors(QtWidgets.QWidget):
         self._cmap_r_button.toggled.connect(self._set_cmap_reverse)
         self._cmap_r_button.setIcon(qta.icon(fonticons["invert"]))
         self._cmap_r_button.setToolTip("Invert colormap")
+        # self._cmap_r_button.setShortcut("R"
 
         self._cmap_mode_button = QtWidgets.QPushButton(self)
         self._cmap_mode_button.setCheckable(True)
@@ -2186,6 +2343,15 @@ class itoolColors(QtWidgets.QWidget):
         self._cbar_show_button.setIcon(qta.icon(fonticons["colorbar"]))
         self._cbar_show_button.setToolTip("Show colorbar")
 
+        self._zero_center_button = QtWidgets.QPushButton(self)
+        self._zero_center_button.setCheckable(True)
+        self._zero_center_button.setChecked(self.itool.zero_centered)
+        self._zero_center_button.toggled.connect(
+            lambda z: self.itool.set_cmap(zeroCentered=z)
+        )
+        self._zero_center_button.setIcon(qta.icon(fonticons["zero_center"]))
+        self._zero_center_button.setToolTip("Center colormap at zero")
+
         colors_button = QtWidgets.QPushButton(self)
         colors_button.clicked.connect(self._color_button_clicked)
         colors_button.setIcon(qta.icon(fonticons["palette"]))
@@ -2204,7 +2370,8 @@ class itoolColors(QtWidgets.QWidget):
         button_layout.addWidget(self._cmap_lock_button, 0, 1)
         button_layout.addWidget(self._cmap_mode_button, 0, 2)
         button_layout.addWidget(self._cbar_show_button, 0, 3)
-        button_layout.addWidget(colors_button, 0, 4)
+        button_layout.addWidget(self._zero_center_button, 0, 4)
+        button_layout.addWidget(colors_button, 0, 5)
 
         # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
         #    QtWidgets.QSizePolicy.Minimum)
@@ -2362,14 +2529,15 @@ class ImageTool(QtWidgets.QMainWindow):
         self.setWindowTitle(title)
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
+        self.layout.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
 
         self.data_ndim = self.data.ndim
 
         self.itool = pg_itool(self.data, *args, **kwargs)
 
-        self.cursortab = itoolCursors(self.itool)
-        self.colorstab = itoolColors(self.itool)
-        self.smoothtab = itoolSmoothing(self.itool)
+        self.tab1 = itoolCursors(self.itool)
+        self.tab2 = itoolColors(self.itool)
+        self.tab3 = itoolSmoothing(self.itool)
 
         # self.pathtab = QtWidgets.QWidget()
         # pathtabcontent = QtWidgets.QHBoxLayout()
@@ -2379,28 +2547,45 @@ class ImageTool(QtWidgets.QMainWindow):
         # pathtabcontent.addWidget(pathlabel)
         # pathtabcontent.addWidget(pathstart)
         # self.pathtab.setLayout(pathtabcontent)
+        # self.keyboard_shortcuts = (
+        #     QtGui.QShortcut(QtGui.QKeySequence("R"), self)
+        # )
+        
+        # Shortcut: (Description, Action)
+        self.keyboard_shortcuts = {
+            "R": ("Reverse colormap", self.tab2._cmap_r_button.click),
+            "L": ("Lock color levels", self.tab2._cmap_lock_button.click),
+            "S": ("Toggle cursor snap", self.tab1._snap_button.click),
+            "T": ("Transpose main image", self.tab1._transpose_button[1].click),
+        }
+        self._qshortcuts = [
+            QtGui.QShortcut(QtGui.QKeySequence(k), self)
+            for k in self.keyboard_shortcuts.keys()
+        ]
+        for i, action in enumerate(self.keyboard_shortcuts.values()):
+            self._qshortcuts[i].activated.connect(action[-1])
 
         self.tabwidget = QtWidgets.QTabWidget()
         self.tabwidget.setSizePolicy(
             QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Minimum
         )
-        self.tabwidget.addTab(self.cursortab, "Cursor")
-        self.tabwidget.addTab(self.colorstab, "Appearance")
-        self.tabwidget.addTab(self.smoothtab, "Binning")
+        self.tabwidget.addTab(self.tab1, "Cursor")
+        self.tabwidget.addTab(self.tab2, "Appearance")
+        self.tabwidget.addTab(self.tab3, "Binning")
         # self.tabwidget.currentChanged.connect(self.tab_changed)
         # self.tabwidget.addTab(self.pathtab, 'Path')
 
-        self.layout.addWidget(self.itool)
         self.layout.addWidget(self.tabwidget)
+        self.layout.addWidget(self.itool)
         self.resize(700, 700)
         self.itool.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.itool.setFocus()
 
     def tab_changed(self, i):
         pass
-        # if i == self.tabwidget.indexOf(self.smoothtab):
-            # lazy loading
-            # self.smoothtab.initialize_functions()
+        # if i == self.tabwidget.indexOf(self.tab3):
+        # lazy loading
+        # self.tab3.initialize_functions()
 
 
 def itool(data, execute=None, *args, **kwargs):
@@ -2442,12 +2627,12 @@ def itool(data, execute=None, *args, **kwargs):
 if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
     # from erlab.plotting import ximagetool
-    from arpes.io import load_data
+    # from arpes.io import load_data
 
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-    )#.sel(eV=-0.15, method='nearest')
+    )  # .sel(eV=-0.15, method='nearest')
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
