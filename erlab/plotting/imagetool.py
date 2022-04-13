@@ -820,7 +820,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
             if self.data_ndim == 2:
                 row_factor = (25000, 75000)
             elif self.data_ndim == 3:
-                # row = [7500, 35000, 57500]
                 row_factor = (100000, 200000, 300000)
         else:
             row_factor = row
@@ -830,6 +829,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
             col_factor = col
 
         self._stretch_factors = (row_factor, col_factor)
+
+        # for i in range(self.ci.layout.rowCount()):
+        #     for j in range(self.ci.layout.columnCount()):
+        #         item = self.ci.getItem(i, j)
+        #         if item is not None:
+        #             item.setSizePolicy(
+        #                 QtWidgets.QSizePolicy(
+        #                     QtWidgets.QSizePolicy.Policy.Expanding,
+        #                     QtWidgets.QSizePolicy.Policy.Expanding,
+        #                 )
+        #             )
 
         # for i, p in enumerate(self.axes):
         # if i in
@@ -845,38 +855,27 @@ class pg_itool(pg.GraphicsLayoutWidget):
         #             ax = p.getAxis(axis)
         #     p.setMinimumSize(1e-4, 1e-4)
         #     p.setMaximumSize(self.ci.width(), self.ci.height())
-        #     p.setSizePolicy(
-        #         QtWidgets.QSizePolicy(
-        #             QtWidgets.QSizePolicy.Policy.Ignored,
-        #             QtWidgets.QSizePolicy.Policy.Ignored,
-        #         )
+        # p.setSizePolicy(
+        #     QtWidgets.QSizePolicy(
+        #         QtWidgets.QSizePolicy.Policy.Ignored,
+        #         QtWidgets.QSizePolicy.Policy.Ignored,
         #     )
+        # )
         for i in range(self.ci.layout.rowCount()):
             self.ci.layout.setRowPreferredHeight(
                 i,
-                self.ci.height()
-                * row_factor[i]
-                / np.sum(row_factor),
+                self.ci.height() * row_factor[i] / np.sum(row_factor),
             )
             self.ci.layout.setRowStretchFactor(i, row_factor[i])
         for j in range(self.ci.layout.columnCount()):
             self.ci.layout.setColumnPreferredWidth(
                 j,
-                self.ci.width()
-                * col_factor[-j - 1]
-                / np.sum(col_factor),
+                self.ci.width() * col_factor[-j - 1] / np.sum(col_factor),
             )
             self.ci.layout.setColumnStretchFactor(j, col_factor[-j - 1])
         #         self.ci.layout.setColumnMinimumWidth(j, 0)
         #         self.ci.layout.setColumnMaximumWidth(j, self.ci.width())
-        # item = self.ci.getItem(i, j)
-        # if item is not None:
-        #     item.setSizePolicy(
-        #         QtWidgets.QSizePolicy(
-        #             QtWidgets.QSizePolicy.Policy.Minimum,
-        #             QtWidgets.QSizePolicy.Policy.Minimum,
-        #         )
-        #     )
+
         #     # item.setMinimumSize(1, 1)
         #     item.setMaximumSize(self.ci.width(), self.ci.height())
 
@@ -946,9 +945,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 p.setXLink(self.axes[0])
             elif i in [2, 5]:
                 p.setYLink(self.axes[0])
-            # p.setSizePolicy(
-            #     QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored
-            # )
         self._update_stretch()
 
     def _lims_to_rect(self, i, j):
@@ -1097,6 +1093,57 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for s in chain.from_iterable(self.spans):
             s.setVisible(False)
 
+    def toggle_axes(self, axis):
+
+        target = self.axes[axis]
+        toggle = False if target in self.ci.items.keys() else True
+
+        if self.data_ndim == 2:
+            ref_dims = ((1, 0, 1, 1), (0, 0, 1, 1), (1, 1, 1, 1))
+            top_left = (1,)
+            bottom_right = (2,)
+        elif self.data_ndim == 3:
+            ref_dims = (
+                (2, 0, 1, 1),
+                (0, 0, 1, 1),
+                (2, 2, 1, 1),
+                (0, 1, 2, 2),
+                (1, 0, 1, 1),
+                (2, 1, 1, 1),
+            )
+            top_left = (1, 4)
+            bottom_right = (5, 2)
+
+        if axis in top_left:
+            group = top_left
+            totalspan = (2, 1)
+        elif axis in bottom_right:
+            group = bottom_right
+            totalspan = (1, 2)
+        else:
+            if not toggle:
+                self.removeItem(target)
+                return
+            else:
+                self.addItem(target, *ref_dims[axis])
+                return
+        
+        anchors = tuple(ref_dims[i][:2] for i in group)
+        other = self.axes[group[group.index(axis) - 1]]
+        unique = False if other in self.ci.items.keys() else True
+        if not toggle:
+            self.removeItem(target)
+            if not unique:
+                self.removeItem(other)
+                self.addItem(other, *anchors[0], *totalspan)
+        else:
+            if unique:
+                self.addItem(target, *anchors[0], *totalspan)
+            else:
+                self.removeItem(other)
+                self.addItem(self.axes[group[0]], *anchors[0], 1, 1)
+                self.addItem(self.axes[group[1]], *anchors[1], 1, 1)
+
     def set_labels(self, labels=None):
         """labels: list or tuple of str"""
         if labels is None:
@@ -1168,10 +1215,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.addItem(self.colorbar, None, None, self.ci.layout.rowCount(), 1)
         self.colorbar.setVisible(val)
 
-    def reset_cursor(self):
+    def reset_cursor(self, update=False):
         """Return the cursor to the center of the image."""
         for axis, coord in enumerate(self.data_coords):
-            self.set_index(axis, self._get_middle_index(coord), update=False)
+            self.set_index(axis, self._get_middle_index(coord), update=update)
 
     def _cursor_drag(self, axis, line):
         self.set_value(axis, line.value())
@@ -2110,6 +2157,14 @@ class itoolJoystick(pg.JoystickButton):
         super().mousePressEvent(ev)
         self.timer.start(1000 / 30)
 
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        self.timer.stop()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.sigJoystickReset.emit(self)
+        ev.accept()
+
     def setState(self, *xy):
         xy = list(xy)
         d = np.sqrt(xy[0] ** 2 + xy[1] ** 2)  # length
@@ -2132,10 +2187,6 @@ class itoolJoystick(pg.JoystickButton):
         self.state = xy
         self.sigStateChanged.emit(self, self.state)
 
-    def mouseReleaseEvent(self, ev):
-        super().mouseReleaseEvent(ev)
-        self.timer.stop()
-
     def paintEvent(self, ev):
         super().paintEvent(ev)
         p = QtGui.QPainter(self)
@@ -2153,9 +2204,6 @@ class itoolJoystick(pg.JoystickButton):
 
         painter.drawControl(QtWidgets.QStyle.CE_PushButton, option)
 
-    def doubleClickEvent(self, ev):
-        ev.accept()
-        self.sigJoystickReset.emit(self)
     #     # self.setState(0.575, 0.575)
     #     self.sigDragged.emit(self, self.state)
 
@@ -2215,18 +2263,22 @@ class itoolCursors(QtWidgets.QWidget):
         #     self._hide_button[1].toggled.connect(
         #         lambda val, i=2: self.toggle_axes(val, i))
         # elif self.ndim == 3:
-        #     self._hide_button = (QtWidgets.QPushButton(self),
-        #                          QtWidgets.QPushButton(self),
-        #                          QtWidgets.QPushButton(self),
-        #                          QtWidgets.QPushButton(self))
-        #     self._hide_button[0].toggled.connect(
-        #         lambda val, i=3: self.toggle_axes(val, i))
-        #     self._hide_button[1].toggled.connect(
-        #         lambda val, i=2: self.toggle_axes(val, i))
-        #     self._hide_button[2].toggled.connect(
-        #         lambda val, i=4: self.toggle_axes(val, i))
-        #     self._hide_button[3].toggled.connect(
-        #         lambda val, i=5: self.toggle_axes(val, i))
+        self._hide_button = tuple(
+            QtWidgets.QPushButton(
+                self, text=str(i), clicked=lambda i=i: self.itool.toggle_axes(i)
+            )
+            for i in range(len(self.itool.axes))
+        )
+        for hb in self._hide_button:
+            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 10)
+        # self._hide_button[0].clicked.connect(
+        #     lambda val: self.toggle_axes(val, i))
+        # self._hide_button[1].clicked.connect(
+        #     lambda val: self.toggle_axes(val, i))
+        # self._hide_button[2].clicked.connect(
+        #     lambda val: self.toggle_axes(val, i))
+        # self._hide_button[3].clicked.connect(
+        #     lambda val: self.toggle_axes(val, i))
 
         self._snap_button = QtWidgets.QPushButton(
             self,
@@ -2238,6 +2290,7 @@ class itoolCursors(QtWidgets.QWidget):
 
         self._joystick = itoolJoystick(self)
         self._joystick.sigJoystickHeld.connect(self._joystick_held)
+        self._joystick.sigJoystickReset.connect(self._joystick_reset)
 
         # col_default = self.itool._stretch_factors[1]
         # self._hslider = QtWidgets.QSlider(
@@ -2301,18 +2354,26 @@ class itoolCursors(QtWidgets.QWidget):
         for i, button in enumerate(self._transpose_button):
             transpose_layout.addWidget(button)
             button.setIcon(qta.icon(fonticons["transpose"][i]))
-        # for hb in self._hide_button:
-        #     hb.setIcon(qta.icon(fonticons['layout']))
-        #     hb.setCheckable(True)
-        #     transpose_layout.addWidget(hb)
+        for hb in self._hide_button:
+            # hb.setIcon(qta.icon(fonticons["layout"]))
+            transpose_layout.addWidget(hb)
         # self.layout.addStretch()
+
+    def _joystick_reset(self, _):
+        if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
+            if self.ndim == 2:
+                self.itool._update_stretch((25000, 75000))
+            elif self.ndim == 3:
+                self.itool._update_stretch((100000, 200000, 300000))
+        else:
+            self.itool.reset_cursor(update=True)
 
     def _joystick_held(self, _, state):
         if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
             self._assign_stretch(row=20000 * state[1], col=20000 * state[0])
         else:
-            linearity = 1
-            factor = 1
+            linearity = 2
+            factor = 0.1
             for i in range(2):
                 if not self._spinlabels[i].isChecked():
                     if self.itool.snap:
@@ -2320,7 +2381,8 @@ class itoolCursors(QtWidgets.QWidget):
                             self._spin[i].value()
                             + np.sign(state[i])
                             * (self.itool.data_shape[i] - 1)
-                            * np.float_power(factor * np.abs(state[i]), linearity)
+                            * factor
+                            * np.float_power(np.abs(state[i]), linearity)
                         )
                     else:
                         lims = self.itool.data_lims[i]
@@ -2328,12 +2390,9 @@ class itoolCursors(QtWidgets.QWidget):
                             self._dblspin[i].value()
                             + np.sign(state[i])
                             * np.abs(lims[1] - lims[0])
-                            * np.float_power(factor * np.abs(state[i]), linearity)
+                            * factor
+                            * np.float_power(np.abs(state[i]), linearity)
                         )
-
-    def toggle_axes(self, toggle, i):
-        # self.itool._update_stretch(factor=0)
-        self.itool.axes[i].setVisible(not toggle)
 
     def update_content(self):
         ndim = self.itool.data_ndim
