@@ -720,9 +720,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def __init__(
         self,
         data,
-        snap=True,
-        gamma=0.5,
+        snap=False,
+        gamma=1.0,
         cmap="BlWh",
+        reverse=True,
         bench=False,
         plot_kw={},
         cursor_kw={},
@@ -741,6 +742,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.snap = snap
         self.gamma = gamma
         self.cmap = cmap
+        self.reverse = reverse
         self.bench = bench
         self.colorbar = None
         self.plot_kw = plot_kw
@@ -753,10 +755,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if self.zero_centered:
             self.gamma = 1.0
             self.cmap = "bwr"
-
         # cursor_c = pg.mkColor(0.5)
         cursor_c, cursor_c_hover, span_c, span_c_edge = [
-            pg.mkColor("cyan") for _ in range(4)
+            pg.mkColor(0.5) for _ in range(4)
         ]
         cursor_c.setAlphaF(0.75)
         cursor_c_hover.setAlphaF(0.9)
@@ -799,7 +800,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         )
 
         self.data_ndim = None
-
         # self.data_vals = None
         # self.data_vals_T = None
         # self.data_dims = None
@@ -820,7 +820,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             if self.data_ndim == 2:
                 row_factor = (25000, 75000)
             elif self.data_ndim == 3:
-                row_factor = (100000, 200000, 300000)
+                row_factor = (100000, 150000, 300000)
         else:
             row_factor = row
         if col is None:
@@ -1127,7 +1127,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             else:
                 self.addItem(target, *ref_dims[axis])
                 return
-        
+
         anchors = tuple(ref_dims[i][:2] for i in group)
         other = self.axes[group[group.index(axis) - 1]]
         unique = False if other in self.ci.items.keys() else True
@@ -1301,18 +1301,16 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self,
         cmap=None,
         gamma=None,
-        reverse=False,
+        reverse=None,
         highContrast=False,
         zeroCentered=None,
     ):
-        if cmap is None:
-            cmap = self.cmap
-        if gamma is None:
-            gamma = self.gamma
-        if cmap is not self.cmap:
+        if cmap is not None:
             self.cmap = cmap
-        if gamma is not self.gamma:
+        if gamma is not None:
             self.gamma = gamma
+        if reverse is not None:
+            self.reverse = reverse
         if zeroCentered is None:
             zeroCentered = self.zero_centered
         else:
@@ -1320,7 +1318,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.norm_cmap = pg_colormap_powernorm(
             self.cmap,
             self.gamma,
-            reverse=reverse,
+            reverse=self.reverse,
             highContrast=highContrast,
             zeroCentered=zeroCentered,
         )
@@ -2263,9 +2261,11 @@ class itoolCursors(QtWidgets.QWidget):
         #     self._hide_button[1].toggled.connect(
         #         lambda val, i=2: self.toggle_axes(val, i))
         # elif self.ndim == 3:
+        axes_names = ["Main Image", "X Profile", "Y Profile", "Z Profile", "Horiz Slice", "Vert Slice"]
+        
         self._hide_button = tuple(
             QtWidgets.QPushButton(
-                self, text=str(i), clicked=lambda i=i: self.itool.toggle_axes(i)
+                self, text=axes_names[i], clicked=lambda i=i: self.itool.toggle_axes(i)
             )
             for i in range(len(self.itool.axes))
         )
@@ -2361,10 +2361,7 @@ class itoolCursors(QtWidgets.QWidget):
 
     def _joystick_reset(self, _):
         if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
-            if self.ndim == 2:
-                self.itool._update_stretch((25000, 75000))
-            elif self.ndim == 3:
-                self.itool._update_stretch((100000, 200000, 300000))
+            self.itool._update_stretch()
         else:
             self.itool.reset_cursor(update=True)
 
@@ -2509,8 +2506,12 @@ class itoolColors(QtWidgets.QWidget):
 
         self._cmap_r_button = QtWidgets.QPushButton(self)
         self._cmap_r_button.setCheckable(True)
+        self._cmap_r_button.setChecked(self.itool.reverse)
         self._cmap_r_button.toggled.connect(self._set_cmap_reverse)
-        self._cmap_r_button.setIcon(qta.icon(fonticons["invert"]))
+        if self._cmap_r_button.isChecked():
+            self._cmap_r_button.setIcon(qta.icon(fonticons["invert_off"]))
+        else:
+            self._cmap_r_button.setIcon(qta.icon(fonticons["invert"]))
         self._cmap_r_button.setToolTip("Invert colormap")
         # self._cmap_r_button.setShortcut("R"
 
@@ -2798,7 +2799,7 @@ def itool(data, execute=None, *args, **kwargs):
     if execute is None:
         execute = True
         try:
-            shell = get_ipython().__class__.__name__
+            shell = get_ipython().__class__.__name__  # type: ignore
             if shell == "ZMQInteractiveShell":
                 execute = False
             elif shell == "TerminalInteractiveShell":
