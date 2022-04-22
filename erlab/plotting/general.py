@@ -247,7 +247,7 @@ def plot_slices(
     hide_colorbar_ticks=True,
     annotate=True,
     order="C",
-    cmap_order=None,
+    cmap_order="C",
     norm_order=None,
     subplot_kw=dict(),
     annotate_kw=dict(),
@@ -283,7 +283,6 @@ def plot_slices(
 
     order : {'C', 'F'}, optional
     cmap_order : {'C', 'F'}, optional
-        Opposite of `order` by default.
     norm_order : {'C', 'F'}, optional
         Same as `cmap_order` by default.
 
@@ -321,10 +320,7 @@ def plot_slices(
     if transpose:
         maps = [m.T for m in maps]
     if cmap_order is None:
-        if order == "F":
-            cmap_order = "C"
-        else:
-            cmap_order = "F"
+        cmap_order = order
     if norm_order is None:
         norm_order = cmap_order
     dims = maps[0].dims
