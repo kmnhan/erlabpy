@@ -2768,9 +2768,9 @@ class ImageTool(QtWidgets.QMainWindow):
         self.dock1 = Dock("Cursor", widget=self.tab1)
         self.dock2 = Dock("Appearance", widget=self.tab2)
         self.dock3 = Dock("Binning", widget=self.tab3)
-        self.dockarea.addDock(self.dock1)
-        self.dockarea.addDock(self.dock2, "below", self.dock1)
-        self.dockarea.addDock(self.dock3, "below", self.dock2)
+        self.dockarea.addDock(self.dock3)
+        self.dockarea.addDock(self.dock2, "above", self.dock3)
+        self.dockarea.addDock(self.dock1, "above", self.dock2)
         self.dockarea.setSizePolicy(
             QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
         )
