@@ -14,6 +14,7 @@ import qtawesome as qta
 import xarray as xr
 from matplotlib import figure, rc_context
 from matplotlib.backends import backend_agg, backend_svg
+from matplotlib.font_manager import FontProperties
 from pyqtgraph.dockarea.Dock import Dock
 from pyqtgraph.dockarea.DockArea import DockArea
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
@@ -438,19 +439,27 @@ class ItoolImageItem(xImageItem):
 
 
 def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
+    """Creates a QtGui.QPixmap from a mathtext string.
+
+    Parameters
+    ----------
+    s : str
+        Mathtext string to be rendered.
+    prop : matplotlib.font_manager.FontProperties
+        Font properties.
+    dpi : float, optional (default=300)
+        Dots per inch of the created pixmap.
+    **text_kw : dict, optional
+        Extra arguments to `matplotlib.figure.Figure.text`: refer to the
+        `matplotlib` documentation for a list of all possible arguments.
+
+    Returns
+    -------
+
+    A QtGui.QPixmap object.
+
     """
-    The get_pixmap_label function creates a pixmap of the mathtext label.
 
-    The function accepts a string containing LaTeX markup, and returns an instance of QtGui.QPixmap that contains the rendered image. The image is rendered using matplotlib's MathText parser, so all mathematical symbols can be used in the input string.
-
-    :param s: Used to Pass the string to be rendered.
-    :param prop=None: Used to Specify the font properties of the text.
-    :param dpi=300: Used to Set the resolution of the image.
-    :param **text_kw: Used to Pass keyword arguments to the text function of the figure class.
-    :return: The pixmap of the label.
-
-    :doc-author: Trelent
-    """
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=9)
@@ -468,10 +477,32 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
     return pixmap
 
 
-from matplotlib.font_manager import FontProperties
+def get_svg_label(
+    s: str, outfile: QtCore.QTemporaryFile, prop=None, dpi=300, **text_kw
+):
+    """Creates an SVG image from a mathtext string.
 
+    Parameters
+    ----------
+    s : str
+        Mathtext string to be rendered.
+    outfile : QtCore.QTemporaryFile
+        Output temp file to store the SVG.
+    prop : matplotlib.font_manager.FontProperties
+        Font properties.
+    dpi = 300
+        dpi : float, optional (default=300)
+    **text_kw : dict, optional
+        Extra arguments to `matplotlib.figure.Figure.text`: refer to the
+        `matplotlib` documentation for a list of all possible arguments.
 
-def get_svg_label(s: str, file: QtCore.QTemporaryFile, prop=None, dpi=300, **text_kw):
+    Returns
+    -------
+    filename : str
+        Name of the output file containing the rendered SVG.
+
+    """
+
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=12)
@@ -482,9 +513,9 @@ def get_svg_label(s: str, file: QtCore.QTemporaryFile, prop=None, dpi=300, **tex
     fig.text(0, depth / height, s, **text_kw)
 
     backend_svg.FigureCanvasSVG(fig)
-    if file.open():
-        fig.canvas.print_svg(file.fileName())
-    return file.fileName()
+    if outfile.open():
+        fig.canvas.print_svg(outfile.fileName())
+    return outfile.fileName()
 
 
 class ItoolAxisItem(pg.AxisItem):
@@ -2522,7 +2553,7 @@ class itoolColorControls(QtWidgets.QWidget):
         self._cmap_combo = ColorMapComboBox(self, maximumWidth=175)
         if isinstance(self.itool.cmap, str):
             self._cmap_combo.setCurrentText(self.itool.cmap)
-        
+
         self._cmap_combo.textActivated.connect(self._cmap_combo_changed)
 
         self._cmap_r_button = IconButton(
@@ -2615,9 +2646,9 @@ class itoolColorControls(QtWidgets.QWidget):
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
-    
+
     LOAD_ALL_TEXT = "Load all..."
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setPlaceholderText("Select colormap...")
@@ -2630,15 +2661,12 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.insertItem(0, self.LOAD_ALL_TEXT)
         self.thumbnails_loaded = False
         self.currentIndexChanged.connect(self.load_thumbnail)
-        
 
     def load_thumbnail(self, index):
         if not self.thumbnails_loaded:
             text = self.itemText(index)
             try:
-                self.setItemIcon(
-                    index, QtGui.QIcon(pg_colormap_to_QPixmap(text))
-                )
+                self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
             except KeyError:
                 pass
 
