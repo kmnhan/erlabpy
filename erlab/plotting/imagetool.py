@@ -61,6 +61,7 @@ ICON_NAME = dict(
     styles="mdi6.palette-swatch",
     layout="mdi6.page-layout-body",
     zero_center="mdi6.format-vertical-align-center",
+    table_eye="mdi6.table-eye",
 )
 from PySide6 import QtWidgets
 
@@ -2102,7 +2103,7 @@ class betterIsocurve(pg.IsocurveItem):
             self.path.moveTo(*line[0])
             for p in line[1:]:
                 self.path.lineTo(*p)
-    
+
     def setData(self, data, level=None):
         if self.parentItem() is not None:
             self.axisOrder = self.parentItem().axisOrder
@@ -2550,11 +2551,26 @@ class itoolColorControls(QtWidgets.QWidget):
         self._gamma_spin = QtWidgets.QDoubleSpinBox(
             self, toolTip="Colormap gamma", singleStep=0.01, value=self.itool.gamma
         )
-        self._gamma_spin.setRange(0.01, 100.0)
+
+        self._gamma_spin.setRange(0.03, 30.0)
         self._gamma_spin.valueChanged.connect(self.set_cmap)
         gamma_label = QtWidgets.QLabel("g", buddy=self._gamma_spin)
-        # gamma_label.setBuddy(self._gamma_spin)
-        # gamma_label.setMaximumWidth(10)
+
+        self.gamma_func = lambda y: 1000 * np.log10(y)
+        self.gamma_func_inv = lambda x: np.power(10, x / 1000)
+        self._gamma_slider = QtWidgets.QSlider(
+            self,
+            value=self.gamma_func(self.itool.gamma),
+            orientation=QtCore.Qt.Horizontal,
+        )
+        # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_func(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
+        self._gamma_slider.setRange(
+            self.gamma_func(self._gamma_spin.minimum()),
+            self.gamma_func(self._gamma_spin.maximum()),
+        )
+        self._gamma_slider.valueChanged.connect(
+            lambda x: self._gamma_spin.setValue(self.gamma_func_inv(x))
+        )
 
         self._cmap_combo = ColorMapComboBox(self, maximumWidth=175)
         if isinstance(self.itool.cmap, str):
@@ -2609,20 +2625,23 @@ class itoolColorControls(QtWidgets.QWidget):
 
         cmap_layout.addWidget(gamma_label, 0, 0)
         cmap_layout.addWidget(self._gamma_spin, 0, 1)
-        cmap_layout.addWidget(self._cmap_combo, 0, 2)
-        button_layout.addWidget(self._cmap_r_button)
-        button_layout.addWidget(self._cmap_lock_button)
-        button_layout.addWidget(self._cmap_mode_button)
-        button_layout.addWidget(self._cbar_show_button)
-        button_layout.addWidget(self._zero_center_button)
-        button_layout.addWidget(colors_button)
-        button_layout.addWidget(style_combo)
+        cmap_layout.addWidget(self._gamma_slider, 0, 2)
+
+        self.layout.addWidget(self._cmap_group)
+        self.layout.addWidget(self._cmap_combo)
+
+        self.layout.addWidget(self._cmap_r_button)
+        self.layout.addWidget(self._cmap_lock_button)
+        self.layout.addWidget(self._cmap_mode_button)
+        self.layout.addWidget(self._cbar_show_button)
+        self.layout.addWidget(self._zero_center_button)
+        self.layout.addWidget(colors_button)
+        self.layout.addWidget(style_combo)
 
         # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
         #    QtWidgets.QSizePolicy.Minimum)
 
-        self.layout.addWidget(self._cmap_group)
-        self.layout.addWidget(self._button_group)
+        # self.layout.addWidget(self._button_group)
 
     def _cmap_combo_changed(self, text=None):
         if text == "Load all...":
@@ -2633,6 +2652,9 @@ class itoolColorControls(QtWidgets.QWidget):
     def set_cmap(self, name=None):
         reverse = self._cmap_r_button.isChecked()
         gamma = self._gamma_spin.value()
+        self._gamma_slider.blockSignals(True)
+        self._gamma_slider.setValue(self.gamma_func(gamma))
+        self._gamma_slider.blockSignals(False)
         if isinstance(name, str):
             cmap = name
         else:
@@ -2713,13 +2735,13 @@ class itoolBinningControls(QtWidgets.QWidget):
         self.itool = itool
         self.ndim = self.itool.data_ndim
         self.layout = FlowLayout(self)
-        self._bin_group = BorderlessGroupBox(self, objectName="BinGroup")
+        # self._bin_group = BorderlessGroupBox(self, objectName="BinGroup")
         self.initialize_widgets()
         self.update_content()
         self.itool.sigDataChanged.connect(self.update_content)
 
     def initialize_widgets(self):
-        bin_layout = InnerQHBoxLayout(self._bin_group)
+        # bin_layout = InnerQHBoxLayout(self._bin_group)
         self._spinlabels = tuple(QtWidgets.QLabel(self) for _ in range(self.ndim))
         self._spin = tuple(QtWidgets.QSpinBox(self) for _ in range(self.ndim))
         self._reset = QtWidgets.QPushButton("Reset")
@@ -2732,12 +2754,12 @@ class itoolBinningControls(QtWidgets.QWidget):
                 lambda n, axis=i: self.itool.set_navg(axis, n)
             )
         for i in range(self.ndim):
-            bin_layout.addWidget(self._spinlabels[i])
-            bin_layout.addWidget(self._spin[i])
+            self.layout.addWidget(self._spinlabels[i])
+            self.layout.addWidget(self._spin[i])
             # bin_layout.addSpacing( , 20)
-        bin_layout.addWidget(self._reset)
+        self.layout.addWidget(self._reset)
         # bin_layout.addStretch()
-        self.layout.addWidget(self._bin_group)
+        # self.layout.addWidget(self._bin_group)
 
     def initialize_functions(self):
         # numba overhead
