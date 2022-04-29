@@ -14,19 +14,22 @@ import qtawesome as qta
 import xarray as xr
 from matplotlib import figure, rc_context
 from matplotlib.backends import backend_agg, backend_svg
+from pyqtgraph.dockarea.Dock import Dock
+from pyqtgraph.dockarea.DockArea import DockArea
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
-from PySide6 import QtSvg, QtSvgWidgets, QtWebEngineWidgets
+from PySide6 import QtSvg, QtSvgWidgets
 from superqt import QDoubleSlider
-from arpes.plotting.utils import label_for_dim
 
 if __name__ != "__main__":
     from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
+    from .interactive import parse_data, xImageItem
 else:
     from erlab.plotting.colors import (
         pg_colormap_names,
         pg_colormap_powernorm,
         pg_colormap_to_QPixmap,
     )
+    from erlab.plotting.interactive import parse_data, xImageItem
 
 
 # pg.setConfigOption("imageAxisOrder", "row-major")
@@ -41,18 +44,16 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
-fonticons = dict(
+ICON_NAME = dict(
     invert="mdi6.invert-colors",
     invert_off="mdi6.invert-colors-off",
     contrast="mdi6.contrast-box",
     lock="mdi6.lock",
     unlock="mdi6.lock-open-variant",
     colorbar="mdi6.gradient-vertical",
-    transpose=[
-        "mdi6.arrow-left-right",
-        "mdi6.arrow-top-left-bottom-right",
-        "mdi6.arrow-up-down",
-    ],
+    transpose_0="mdi6.arrow-left-right",
+    transpose_1="mdi6.arrow-top-left-bottom-right",
+    transpose_2="mdi6.arrow-up-down",
     snap="mdi6.grid",
     snap_off="mdi6.grid-off",
     palette="mdi6.palette-advanced",
@@ -60,27 +61,77 @@ fonticons = dict(
     layout="mdi6.page-layout-body",
     zero_center="mdi6.format-vertical-align-center",
 )
+from PySide6 import QtWidgets
 
 
-# import urllib.request
-# req = urllib.request.Request('')
-# with urllib.request.urlopen(req) as resp:
-#     mathjax = resp.read()
+class IconButton(QtWidgets.QPushButton):
+    def __init__(self, *args, on: str = None, off: str = None, **kwargs):
+        self.icon_key_on = None
+        self.icon_key_off = None
+        if on is not None:
+            self.icon_key_on = on
+            kwargs["icon"] = qta.icon(ICON_NAME[self.icon_key_on])
+        if off is not None:
+            if on is None and kwargs["icon"] is None:
+                raise ValueError("Icon for `on` state was not supplied.")
+            self.icon_key_off = off
+            kwargs.setdefault("checkable", True)
+        super().__init__(*args, **kwargs)
+        if self.isCheckable() and off is not None:
+            self.toggled.connect(self.refresh_icons)
+
+    def refresh_icons(self):
+        if self.icon_key_off is not None:
+            if self.isChecked():
+                self.setIcon(qta.icon(ICON_NAME[self.icon_key_off]))
+                return
+        self.setIcon(qta.icon(ICON_NAME[self.icon_key_on]))
+
+    def changeEvent(self, evt):
+        if evt.type() == QtCore.QEvent.PaletteChange:
+            qta.reset_cache()
+            self.refresh_icons()
+        super().changeEvent(evt)
+
+
+# class FlowLayout(QtGui.QVBoxLayout):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
 
 
 class FlowLayout(QtWidgets.QLayout):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, margin=0):
         super().__init__(parent)
 
         # if parent is not None:
-        # self.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
+        # self.setContentsMargins(QtCore.QMargins(margin, margin, margin, margin))
 
         self._item_list = []
+        self.setHorizontalSpacing(self.spacing())
+        self.setVerticalSpacing(self.spacing())
+        # self.setVerticalSpacing(0)
 
     def __del__(self):
         item = self.takeAt(0)
         while item:
             item = self.takeAt(0)
+
+    def horizontalSpacing(self):
+        return self._spacing_horizontal
+
+    def verticalSpacing(self):
+        return self._spacing_vertical
+
+    def setHorizontalSpacing(self, spacing: int):
+        self._spacing_horizontal = spacing
+
+    def setVerticalSpacing(self, spacing: int):
+        self._spacing_vertical = spacing
+
+    def setSpacing(self, spacing: int):
+        super().setSpacing(spacing)
+        self.setHorizontalSpacing(spacing)
+        self.setVerticalSpacing(spacing)
 
     def addItem(self, item):
         self._item_list.append(item)
@@ -133,7 +184,6 @@ class FlowLayout(QtWidgets.QLayout):
         x = rect.x()
         y = rect.y()
         line_height = 0
-        spacing = self.spacing()
 
         for item in self._item_list:
             style = item.widget().style()
@@ -147,8 +197,8 @@ class FlowLayout(QtWidgets.QLayout):
                 QtWidgets.QSizePolicy.PushButton,
                 QtCore.Qt.Vertical,
             )
-            space_x = spacing + layout_spacing_x
-            space_y = spacing + layout_spacing_y
+            space_x = self.horizontalSpacing() + layout_spacing_x
+            space_y = self.verticalSpacing() + layout_spacing_y
             next_x = x + item.sizeHint().width() + space_x
             if next_x - space_x > rect.right() and line_height > 0:
                 x = rect.x()
@@ -165,15 +215,24 @@ class FlowLayout(QtWidgets.QLayout):
         return y + line_height - rect.y()
 
 
-def remove_groupbox_border(box: QtWidgets.QGroupBox, name: str = None):
-    if name is None:
-        name = box.objectName()
+class InnerQHBoxLayout(QtWidgets.QHBoxLayout):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setContentsMargins(0, 0, 0, 0)
+        # self.setSpacing(1)
+
+
+class BorderlessGroupBox(QtWidgets.QWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        name = self.objectName()
         if name == "":
             raise ValueError(
-                "GroupBox has no objectName. Supply a name argument to set a new name."
+                "GroupBox has no objectName. Supply an "
+                "`objectName` argument to set a new name."
             )
-    box.setObjectName(name)
-    box.setStyleSheet("QGroupBox#" + name + " {border:0;}")
+        # self.setStyleSheet("QGroupBox#" + name + " {border:0;}")
+        self.setContentsMargins(0, 0, 0, 0)
 
 
 def qt_style_names():
@@ -303,22 +362,6 @@ def move_mean3d(a, window_list, min_count_list):
     return a
 
 
-def parse_data(data):
-    if isinstance(data, xr.Dataset):
-        try:
-            data = data.spectrum
-        except:
-            raise TypeError(
-                "input argument data must be a xarray.DataArray or a "
-                "numpy.ndarray. Create an xarray.DataArray "
-                "first, either with indexing on the Dataset or by "
-                "invoking the `to_array()` method."
-            ) from None
-    elif isinstance(data, np.ndarray):
-        data = xr.DataArray(data)
-    return data
-
-
 def get_true_indices(a):
     return list(compress(range(len(a)), a))
 
@@ -377,7 +420,7 @@ class ColorButton(QtWidgets.QPushButton):
         return super(ColorButton, self).mousePressEvent(e)
 
 
-class ItoolImageItem(pg.ImageItem):
+class ItoolImageItem(xImageItem):
     def __init__(self, itool, *args, **kargs):
         self.itool = itool
         super().__init__(*args, **kargs)
@@ -537,22 +580,6 @@ class ItoolPlotItem(pg.PlotItem):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
-        # self.setMinimumSize(1e-4, 1e-4)
-        # self.layout.setContentsMargins(0,0,0,0)
-        # for i in range(4):
-        #     self.layout.setRowPreferredHeight(i, 1e-4)
-        #     self.layout.setRowMinimumHeight(i, 1e-4)
-        #     self.layout.setRowSpacing(i, 1e-4)
-        #     self.layout.setRowStretchFactor(i, 0)
-
-        # for i in range(3):
-        #     self.layout.setColumnPreferredWidth(i, 1e-4)
-        #     self.layout.setColumnMinimumWidth(i, 1e-4)
-        #     self.layout.setColumnSpacing(i, 1e-4)
-        #     self.layout.setColumnStretchFactor(i, 0)
-        # self.layout.setRowStretchFactor(2, 1)
-        # self.layout.setColumnStretchFactor(1, 1)
-        # self.layout.setMinimumSize(1e-4, 1e-4)
 
     def mouseDragEvent(self, ev):
         if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
@@ -1154,7 +1181,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             labels_ = labels
         else:
             with rc_context({"text.usetex": True}):
-                labels_ = [label_for_dim(dim_name=l) for l in labels]
+                labels_ = [self.labelify(l) for l in labels]
 
         self.axes[0].setLabels(left=labels_[1], bottom=labels_[0], mode=labelmode)
         self.axes[1].setLabels(top=labels_[0], mode=labelmode)
@@ -1724,6 +1751,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 if self.averaged[i - 6]:
                     self.update_spans(i - 6)
 
+    def changeEvent(self, evt):
+        if evt.type() == QtCore.QEvent.PaletteChange:
+            if darkdetect.isDark():
+                pg.setConfigOption("background", "k")
+                pg.setConfigOption("foreground", "gray")
+            else:
+                pg.setConfigOption("background", "w")
+                pg.setConfigOption("foreground", "k")
+            self.update()
+        super().changeEvent(evt)
+
     def _drawpath(self):
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
@@ -2214,30 +2252,29 @@ class itoolJoystick(pg.JoystickButton):
     #     ev.accept()
 
 
-class itoolCursors(QtWidgets.QWidget):
+class itoolCursorControls(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.ndim = self.itool.data_ndim
-        # self.layout = QtWidgets.QHBoxLayout(self)
         self.layout = FlowLayout(self)
-        self._cursor_group = QtWidgets.QGroupBox(self, objectName="CursorGroup")
-        self._transpose_group = QtWidgets.QGroupBox(self, objectName="TransposeGroup")
-        remove_groupbox_border(self._cursor_group)
-        remove_groupbox_border(self._transpose_group)
+
         self.initialize_widgets()
         self.update_content()
         self.itool.sigIndexChanged.connect(self.update_spin)
         self.itool.sigDataChanged.connect(self.update_content)
 
     def initialize_widgets(self):
-        cursor_layout = QtWidgets.QHBoxLayout(self._cursor_group)
-        transpose_layout = QtWidgets.QHBoxLayout(self._transpose_group)
+        self._cursor_group = BorderlessGroupBox(self, objectName="CursorGroup")
+        self._transpose_group = BorderlessGroupBox(self, objectName="TransposeGroup")
+        cursor_layout = InnerQHBoxLayout(self._cursor_group)
+        transpose_layout = InnerQHBoxLayout(self._transpose_group)
 
-        cursor_layout.setContentsMargins(2, 2, 2, 2)
-        transpose_layout.setContentsMargins(2, 2, 2, 2)
-        self._spingroups = tuple(QtWidgets.QGroupBox(self) for _ in range(self.ndim))
-        spingrouplayouts = tuple(QtWidgets.QHBoxLayout(sg) for sg in self._spingroups)
+        self._spingroups = tuple(
+            BorderlessGroupBox(self, objectName=f"SpinGroup_{i}")
+            for i in range(self.ndim)
+        )
+        spingrouplayouts = tuple(InnerQHBoxLayout(sg) for sg in self._spingroups)
         self._spinlabels = tuple(
             QtWidgets.QPushButton(self._spingroups[i], checkable=True)
             for i in range(self.ndim)
@@ -2251,7 +2288,7 @@ class itoolCursors(QtWidgets.QWidget):
             for i in range(self.ndim)
         )
         self._transpose_button = tuple(
-            QtWidgets.QPushButton(self) for _ in range(self.ndim)
+            IconButton(self, on=f"transpose_{i}") for i in range(self.ndim)
         )
         # if self.ndim == 2:
         #     self._hide_button = (QtWidgets.QPushButton(self),
@@ -2261,8 +2298,15 @@ class itoolCursors(QtWidgets.QWidget):
         #     self._hide_button[1].toggled.connect(
         #         lambda val, i=2: self.toggle_axes(val, i))
         # elif self.ndim == 3:
-        axes_names = ["Main Image", "X Profile", "Y Profile", "Z Profile", "Horiz Slice", "Vert Slice"]
-        
+        axes_names = [
+            "Main Image",
+            "X Profile",
+            "Y Profile",
+            "Z Profile",
+            "Horiz Slice",
+            "Vert Slice",
+        ]
+
         self._hide_button = tuple(
             QtWidgets.QPushButton(
                 self, text=axes_names[i], clicked=lambda i=i: self.itool.toggle_axes(i)
@@ -2270,21 +2314,10 @@ class itoolCursors(QtWidgets.QWidget):
             for i in range(len(self.itool.axes))
         )
         for hb in self._hide_button:
-            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 10)
-        # self._hide_button[0].clicked.connect(
-        #     lambda val: self.toggle_axes(val, i))
-        # self._hide_button[1].clicked.connect(
-        #     lambda val: self.toggle_axes(val, i))
-        # self._hide_button[2].clicked.connect(
-        #     lambda val: self.toggle_axes(val, i))
-        # self._hide_button[3].clicked.connect(
-        #     lambda val: self.toggle_axes(val, i))
+            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 15)
 
-        self._snap_button = QtWidgets.QPushButton(
-            self,
-            checkable=True,
-            icon=qta.icon(fonticons["snap"]),
-            toolTip="Snap cursor to data",
+        self._snap_button = IconButton(
+            self, on="snap", off="snap_off", toolTip="Snap cursor to data"
         )
         self._snap_button.toggled.connect(self._assign_snap)
 
@@ -2322,8 +2355,6 @@ class itoolCursors(QtWidgets.QWidget):
         # cursor_layout.addWidget(self._vslider)
 
         for i in range(self.ndim):
-            self._spingroups[i].setCheckable(False)
-            remove_groupbox_border(self._spingroups[i], name=f"SpinGroup_{i}")
             self._spinlabels[i].toggled.connect(
                 lambda v, axis=i: self.itool.set_axis_lock(axis, v)
             )
@@ -2336,7 +2367,6 @@ class itoolCursors(QtWidgets.QWidget):
             self._transpose_button[i].clicked.connect(
                 lambda axis1=i, axis2=i - 1: self.itool.transpose_axes(axis1, axis2)
             )
-            spingrouplayouts[i].setContentsMargins(1, 2, 1, 1)
             spingrouplayouts[i].addWidget(self._spinlabels[i])
             spingrouplayouts[i].addWidget(self._spin[i])
             spingrouplayouts[i].addWidget(self._dblspin[i])
@@ -2351,12 +2381,10 @@ class itoolCursors(QtWidgets.QWidget):
         self.layout.addWidget(self._cursor_group)
         self.layout.addWidget(self._transpose_group)
 
-        for i, button in enumerate(self._transpose_button):
-            transpose_layout.addWidget(button)
-            button.setIcon(qta.icon(fonticons["transpose"][i]))
+        for tb in self._transpose_button:
+            transpose_layout.addWidget(tb)
         for hb in self._hide_button:
-            # hb.setIcon(qta.icon(fonticons["layout"]))
-            transpose_layout.addWidget(hb)
+            self.layout.addWidget(hb)
         # self.layout.addStretch()
 
     def _joystick_reset(self, _):
@@ -2369,8 +2397,8 @@ class itoolCursors(QtWidgets.QWidget):
         if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
             self._assign_stretch(row=20000 * state[1], col=20000 * state[0])
         else:
-            linearity = 2
-            factor = 0.1
+            linearity = 1
+            factor = 0.05
             for i in range(2):
                 if not self._spinlabels[i].isChecked():
                     if self.itool.snap:
@@ -2413,7 +2441,7 @@ class itoolCursors(QtWidgets.QWidget):
                 .fontMetrics()
                 .boundingRect(self._spinlabels[i].text())
                 .width()
-                + 10
+                + 15
             )
 
             self._spin[i].setRange(0, self.itool.data_shape[i] - 1)
@@ -2444,10 +2472,6 @@ class itoolCursors(QtWidgets.QWidget):
         self.itool._update_stretch(row=row_factor, col=col_factor)
 
     def _assign_snap(self, value):
-        if value:
-            self._snap_button.setIcon(qta.icon(fonticons["snap_off"]))
-        else:
-            self._snap_button.setIcon(qta.icon(fonticons["snap"]))
         self.itool.snap = value
 
     def _index_changed(self, axis, index):
@@ -2472,104 +2496,96 @@ class itoolCursors(QtWidgets.QWidget):
             self._dblspin[i].blockSignals(False)
 
 
-class itoolColors(QtWidgets.QWidget):
+class itoolColorControls(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.layout = FlowLayout(self)
-        self._cmap_group = QtWidgets.QGroupBox(self, objectName="CmapGrp")
-        self._button_group = QtWidgets.QGroupBox(self, objectName="ClrCtrls")
-        remove_groupbox_border(self._cmap_group)
-        remove_groupbox_border(self._button_group)
+        self._cmap_group = BorderlessGroupBox(self, objectName="CmapGroup")
+        self._button_group = BorderlessGroupBox(self, objectName="ClrCntrls")
         self.initialize_widgets()
 
     def initialize_widgets(self):
         cmap_layout = QtWidgets.QGridLayout(self._cmap_group)
-        button_layout = QtWidgets.QGridLayout(self._button_group)
+        button_layout = InnerQHBoxLayout(self._button_group)
+        cmap_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._gamma_spin = QtWidgets.QDoubleSpinBox(self)
-        self._gamma_spin.setToolTip("Colormap gamma")
-        self._gamma_spin.setSingleStep(0.01)
+        self._gamma_spin = QtWidgets.QDoubleSpinBox(
+            self, toolTip="Colormap gamma", singleStep=0.01, value=self.itool.gamma
+        )
         self._gamma_spin.setRange(0.01, 100.0)
-        self._gamma_spin.setValue(self.itool.gamma)
         self._gamma_spin.valueChanged.connect(self.set_cmap)
-        gamma_label = QtWidgets.QLabel("g")
-        gamma_label.setBuddy(self._gamma_spin)
+        gamma_label = QtWidgets.QLabel("g", buddy=self._gamma_spin)
+        # gamma_label.setBuddy(self._gamma_spin)
         # gamma_label.setMaximumWidth(10)
 
-        self._cmap_combo = itoolColorMaps(self)
-        self._cmap_combo.setMaximumWidth(175)
+        self._cmap_combo = ColorMapComboBox(self, maximumWidth=175)
         if isinstance(self.itool.cmap, str):
             self._cmap_combo.setCurrentText(self.itool.cmap)
-        self._cmap_combo.insertItem(0, "Load all...")
+        
         self._cmap_combo.textActivated.connect(self._cmap_combo_changed)
 
-        self._cmap_r_button = QtWidgets.QPushButton(self)
-        self._cmap_r_button.setCheckable(True)
+        self._cmap_r_button = IconButton(
+            self,
+            on="invert",
+            off="invert_off",
+            checkable=True,
+            toolTip="Invert colormap",
+        )
         self._cmap_r_button.setChecked(self.itool.reverse)
-        self._cmap_r_button.toggled.connect(self._set_cmap_reverse)
-        if self._cmap_r_button.isChecked():
-            self._cmap_r_button.setIcon(qta.icon(fonticons["invert_off"]))
-        else:
-            self._cmap_r_button.setIcon(qta.icon(fonticons["invert"]))
-        self._cmap_r_button.setToolTip("Invert colormap")
-        # self._cmap_r_button.setShortcut("R"
+        self._cmap_r_button.toggled.connect(self.set_cmap)
 
-        self._cmap_mode_button = QtWidgets.QPushButton(self)
-        self._cmap_mode_button.setCheckable(True)
+        self._cmap_mode_button = IconButton(
+            self, on="contrast", checkable=True, toolTip="High contrast mode"
+        )
         self._cmap_mode_button.toggled.connect(self.set_cmap)
-        self._cmap_mode_button.setIcon(qta.icon(fonticons["contrast"]))
-        self._cmap_mode_button.setToolTip("High contrast mode")
 
-        self._cmap_lock_button = QtWidgets.QPushButton(self)
-        self._cmap_lock_button.setCheckable(True)
-        self._cmap_lock_button.toggled.connect(self._set_clim_lock)
-        self._cmap_lock_button.setIcon(qta.icon(fonticons["unlock"]))
-        self._cmap_lock_button.setToolTip("Lock colors")
+        self._cmap_lock_button = IconButton(
+            self, on="unlock", off="lock", checkable=True, toolTip="Lock colors"
+        )
+        self._cmap_lock_button.toggled.connect(self.itool.set_clim_lock)
 
-        self._cbar_show_button = QtWidgets.QPushButton(self)
-        self._cbar_show_button.setCheckable(True)
+        self._cbar_show_button = IconButton(
+            self, on="colorbar", checkable=True, toolTip="Show colorbar"
+        )
         self._cbar_show_button.toggled.connect(self.itool.toggle_colorbar)
-        self._cbar_show_button.setIcon(qta.icon(fonticons["colorbar"]))
-        self._cbar_show_button.setToolTip("Show colorbar")
 
-        self._zero_center_button = QtWidgets.QPushButton(self)
-        self._zero_center_button.setCheckable(True)
-        self._zero_center_button.setChecked(self.itool.zero_centered)
+        self._zero_center_button = IconButton(
+            self,
+            on="zero_center",
+            checkable=True,
+            checked=self.itool.zero_centered,
+            toolTip="Center colormap at zero",
+        )
         self._zero_center_button.toggled.connect(
             lambda z: self.itool.set_cmap(zeroCentered=z)
         )
-        self._zero_center_button.setIcon(qta.icon(fonticons["zero_center"]))
-        self._zero_center_button.setToolTip("Center colormap at zero")
 
-        colors_button = QtWidgets.QPushButton(self)
-        colors_button.clicked.connect(self._color_button_clicked)
-        colors_button.setIcon(qta.icon(fonticons["palette"]))
-        # style_label = QtWidgets.QLabel('Style:', parent=self)
-        style_combo = QtWidgets.QComboBox(self)
-        style_combo.setToolTip("Qt style")
+        colors_button = IconButton(
+            self, on="palette", clicked=self._color_button_clicked
+        )
+        style_combo = QtWidgets.QComboBox(self, toolTip="Qt style")
         style_combo.addItems(qt_style_names())
-        style_combo.textActivated.connect(change_style)
+        style_combo.textActivated.connect(QtWidgets.QApplication.setStyle)
         style_combo.setCurrentText("Fusion")
         # style_label.setBuddy(style_combo)
 
         cmap_layout.addWidget(gamma_label, 0, 0)
         cmap_layout.addWidget(self._gamma_spin, 0, 1)
         cmap_layout.addWidget(self._cmap_combo, 0, 2)
-        button_layout.addWidget(self._cmap_r_button, 0, 0)
-        button_layout.addWidget(self._cmap_lock_button, 0, 1)
-        button_layout.addWidget(self._cmap_mode_button, 0, 2)
-        button_layout.addWidget(self._cbar_show_button, 0, 3)
-        button_layout.addWidget(self._zero_center_button, 0, 4)
-        button_layout.addWidget(colors_button, 0, 5)
+        button_layout.addWidget(self._cmap_r_button)
+        button_layout.addWidget(self._cmap_lock_button)
+        button_layout.addWidget(self._cmap_mode_button)
+        button_layout.addWidget(self._cbar_show_button)
+        button_layout.addWidget(self._zero_center_button)
+        button_layout.addWidget(colors_button)
+        button_layout.addWidget(style_combo)
 
         # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
         #    QtWidgets.QSizePolicy.Minimum)
 
         self.layout.addWidget(self._cmap_group)
         self.layout.addWidget(self._button_group)
-
-        self.layout.addWidget(style_combo)
 
     def _cmap_combo_changed(self, text=None):
         if text == "Load all...":
@@ -2587,20 +2603,6 @@ class itoolColors(QtWidgets.QWidget):
         mode = self._cmap_mode_button.isChecked()
         self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, highContrast=mode)
 
-    def _set_cmap_reverse(self, v):
-        if v:
-            self._cmap_r_button.setIcon(qta.icon(fonticons["invert_off"]))
-        else:
-            self._cmap_r_button.setIcon(qta.icon(fonticons["invert"]))
-        self.set_cmap()
-
-    def _set_clim_lock(self, v):
-        if v:
-            self._cmap_lock_button.setIcon(qta.icon(fonticons["lock"]))
-        else:
-            self._cmap_lock_button.setIcon(qta.icon(fonticons["unlock"]))
-        self.itool.set_clim_lock(v)
-
     def _color_button_clicked(self, s):
         # print("click", s)
         dialog = ImageToolColors(self)
@@ -2612,17 +2614,33 @@ class itoolColors(QtWidgets.QWidget):
             # print("Cancel!")
 
 
-class itoolColorMaps(QtWidgets.QComboBox):
+class ColorMapComboBox(QtWidgets.QComboBox):
+    
+    LOAD_ALL_TEXT = "Load all..."
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setPlaceholderText("Select colormap...")
-        self.colors = itoolColors
         self.setToolTip("Colormap")
         w, h = 64, 16
         self.setIconSize(QtCore.QSize(w, h))
         for name in pg_colormap_names("mpl"):
-            # for name in pg_colormap_names('local'):
-            self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name, w, h)), name)
+            # for name in pg_colormap_names("local"):
+            self.addItem(name)
+        self.insertItem(0, self.LOAD_ALL_TEXT)
+        self.thumbnails_loaded = False
+        self.currentIndexChanged.connect(self.load_thumbnail)
+        
+
+    def load_thumbnail(self, index):
+        if not self.thumbnails_loaded:
+            text = self.itemText(index)
+            try:
+                self.setItemIcon(
+                    index, QtGui.QIcon(pg_colormap_to_QPixmap(text))
+                )
+            except KeyError:
+                pass
 
     def load_all(self):
         self.clear()
@@ -2634,6 +2652,10 @@ class itoolColorMaps(QtWidgets.QComboBox):
         maxWidth = self.maximumWidth()
         if maxWidth and maxWidth < 16777215:
             self.setPopupMinimumWidthForItems()
+        if not self.thumbnails_loaded:
+            for i in range(self.count()):
+                self.load_thumbnail(i)
+            self.thumbnails_loaded = True
         super().showPopup()
 
     def setPopupMinimumWidthForItems(self):
@@ -2651,19 +2673,19 @@ class itoolColorMaps(QtWidgets.QComboBox):
         super().hidePopup()
 
 
-class itoolSmoothing(QtWidgets.QWidget):
+class itoolBinningControls(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.ndim = self.itool.data_ndim
         self.layout = FlowLayout(self)
-        self._bin_group = QtWidgets.QGroupBox(self)
+        self._bin_group = BorderlessGroupBox(self, objectName="BinGroup")
         self.initialize_widgets()
         self.update_content()
         self.itool.sigDataChanged.connect(self.update_content)
 
     def initialize_widgets(self):
-        bin_layout = QtWidgets.QHBoxLayout(self._bin_group)
+        bin_layout = InnerQHBoxLayout(self._bin_group)
         self._spinlabels = tuple(QtWidgets.QLabel(self) for _ in range(self.ndim))
         self._spin = tuple(QtWidgets.QSpinBox(self) for _ in range(self.ndim))
         self._reset = QtWidgets.QPushButton("Reset")
@@ -2709,9 +2731,11 @@ class itoolSmoothing(QtWidgets.QWidget):
         self.itool._refresh_navg()
 
 
+# from PySide6 import QtWidgets, QtCore
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, title=None, *args, **kwargs):
         super().__init__()
+        self.qapp = QtCore.QCoreApplication.instance()
         self._main = QtWidgets.QWidget(self)
         self.data = parse_data(data)
         if title is None:
@@ -2725,21 +2749,9 @@ class ImageTool(QtWidgets.QMainWindow):
 
         self.itool = pg_itool(self.data, *args, **kwargs)
 
-        self.tab1 = itoolCursors(self.itool)
-        self.tab2 = itoolColors(self.itool)
-        self.tab3 = itoolSmoothing(self.itool)
-
-        # self.pathtab = QtWidgets.QWidget()
-        # pathtabcontent = QtWidgets.QHBoxLayout()
-        # pathlabel = QtWidgets.QLabel('Add point: `space`\nRemove point: `delete`\nFinish selection: `enter`')
-        # pathstart = QtWidgets.QPushButton()
-        # pathstart.clicked.connect(self.itool._drawpath)
-        # pathtabcontent.addWidget(pathlabel)
-        # pathtabcontent.addWidget(pathstart)
-        # self.pathtab.setLayout(pathtabcontent)
-        # self.keyboard_shortcuts = (
-        #     QtGui.QShortcut(QtGui.QKeySequence("R"), self)
-        # )
+        self.tab1 = itoolCursorControls(self.itool)
+        self.tab2 = itoolColorControls(self.itool)
+        self.tab3 = itoolBinningControls(self.itool)
 
         # Shortcut: (Description, Action)
         self.keyboard_shortcuts = {
@@ -2751,22 +2763,28 @@ class ImageTool(QtWidgets.QMainWindow):
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
             sc.activated.connect(v[-1])
+        self.dockarea = DockArea()
 
-        self.tabwidget = QtWidgets.QTabWidget()
-        self.tabwidget.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Minimum
+        self.dock1 = Dock("Cursor", widget=self.tab1)
+        self.dock2 = Dock("Appearance", widget=self.tab2)
+        self.dock3 = Dock("Binning", widget=self.tab3)
+        self.dockarea.addDock(self.dock1)
+        self.dockarea.addDock(self.dock2, "below", self.dock1)
+        self.dockarea.addDock(self.dock3, "below", self.dock2)
+        self.dockarea.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
         )
-        self.tabwidget.addTab(self.tab1, "Cursor")
-        self.tabwidget.addTab(self.tab2, "Appearance")
-        self.tabwidget.addTab(self.tab3, "Binning")
-        # self.tabwidget.currentChanged.connect(self.tab_changed)
-        # self.tabwidget.addTab(self.pathtab, 'Path')
 
-        self.layout.addWidget(self.tabwidget)
+        self.layout.addWidget(self.dockarea)
         self.layout.addWidget(self.itool)
         self.resize(700, 700)
         self.itool.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.itool.setFocus()
+
+    def changeEvent(self, evt):
+        if evt.type() == QtCore.QEvent.PaletteChange:
+            self.qapp.setStyle(self.qapp.style().name())
+        super().changeEvent(evt)
 
     def tab_changed(self, i):
         pass
@@ -2819,7 +2837,7 @@ if __name__ == "__main__":
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-    )  # .sel(eV=-0.15, method='nearest')
+    )  # .sel(eV=-0.15, method="nearest")
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
