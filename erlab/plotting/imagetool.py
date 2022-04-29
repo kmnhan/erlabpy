@@ -1859,7 +1859,7 @@ class ImageToolColors(QtWidgets.QDialog):
     #     self.linepicker.setColor(self.line_default)
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, fastmath=True)
 def fast_isocurve_extend(data):
     d2 = np.empty((data.shape[0] + 2, data.shape[1] + 2), dtype=data.dtype)
     d2[1:-1, 1:-1] = data
@@ -1874,7 +1874,7 @@ def fast_isocurve_extend(data):
     return d2
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, fastmath=True)
 def fast_isocurve_lines(data, level, index, extendToEdge=False):
     sideTable = (
         [np.int64(x) for x in range(0)],
@@ -1921,7 +1921,7 @@ def fast_isocurve_lines(data, level, index, extendToEdge=False):
     return lines
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, fastmath=True)
 def fast_isocurve_lines_connected(data, level, index, extendToEdge=False):
     sideTable = (
         [np.int64(x) for x in range(0)],
@@ -1998,7 +1998,7 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
     if extendToEdge:
         data = fast_isocurve_extend(data)
 
-    ## mark everything below the isosurface level
+    # mark everything below the isosurface level
     mask = data < level
     index = np.zeros([x - 1 for x in mask.shape], dtype=np.int64)
     fields = np.empty((2, 2), dtype=object)
@@ -2008,7 +2008,8 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
             fields[i, j] = mask[slices[i], slices[j]]
             vertIndex = i + 2 * j
             index += fields[i, j] * 2**vertIndex
-    ### make four sub-fields and compute indexes for grid cells
+
+    # make four sub-fields and compute indexes for grid cells
     if connected:
         lines = fast_isocurve_lines_connected(data, level, index, extendToEdge)
         points = dict()
@@ -2101,6 +2102,11 @@ class betterIsocurve(pg.IsocurveItem):
             self.path.moveTo(*line[0])
             for p in line[1:]:
                 self.path.lineTo(*p)
+    
+    def setData(self, data, level=None):
+        if self.parentItem() is not None:
+            self.axisOrder = self.parentItem().axisOrder
+        super().setData(data, level)
 
 
 class ItoolColorBar(pg.PlotItem):
