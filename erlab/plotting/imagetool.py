@@ -63,7 +63,6 @@ ICON_NAME = dict(
     zero_center="mdi6.format-vertical-align-center",
     table_eye="mdi6.table-eye",
 )
-from PySide6 import QtWidgets
 
 
 class IconButton(QtWidgets.QPushButton):
@@ -218,6 +217,12 @@ class FlowLayout(QtWidgets.QLayout):
 
 
 class InnerQHBoxLayout(QtWidgets.QHBoxLayout):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setContentsMargins(0, 0, 0, 0)
+
+
+class InnerQGridLayout(QtWidgets.QGridLayout):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setContentsMargins(0, 0, 0, 0)
@@ -2312,17 +2317,21 @@ class itoolCursorControls(QtWidgets.QWidget):
             BorderlessGroupBox(self, objectName=f"SpinGroup_{i}")
             for i in range(self.ndim)
         )
-        spingrouplayouts = tuple(InnerQHBoxLayout(sg) for sg in self._spingroups)
+        self._spingrouplayouts = tuple(InnerQHBoxLayout(sg) for sg in self._spingroups)
         self._spinlabels = tuple(
             QtWidgets.QPushButton(self._spingroups[i], checkable=True)
             for i in range(self.ndim)
         )
         self._spin = tuple(
-            QtWidgets.QSpinBox(self._spingroups[i], singleStep=1, wrapping=False)
+            QtWidgets.QSpinBox(
+                self._spingroups[i], singleStep=1, wrapping=False, minimumWidth=60
+            )
             for i in range(self.ndim)
         )
         self._dblspin = tuple(
-            QtWidgets.QDoubleSpinBox(self._spingroups[i], decimals=3, wrapping=False)
+            QtWidgets.QDoubleSpinBox(
+                self._spingroups[i], decimals=3, wrapping=False, minimumWidth=70
+            )
             for i in range(self.ndim)
         )
         self._transpose_button = tuple(
@@ -2336,23 +2345,6 @@ class itoolCursorControls(QtWidgets.QWidget):
         #     self._hide_button[1].toggled.connect(
         #         lambda val, i=2: self.toggle_axes(val, i))
         # elif self.ndim == 3:
-        axes_names = [
-            "Main Image",
-            "X Profile",
-            "Y Profile",
-            "Z Profile",
-            "Horiz Slice",
-            "Vert Slice",
-        ]
-
-        self._hide_button = tuple(
-            QtWidgets.QPushButton(
-                self, text=axes_names[i], clicked=lambda i=i: self.itool.toggle_axes(i)
-            )
-            for i in range(len(self.itool.axes))
-        )
-        for hb in self._hide_button:
-            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 15)
 
         self._snap_button = IconButton(
             self, on="snap", off="snap_off", toolTip="Snap cursor to data"
@@ -2405,9 +2397,9 @@ class itoolCursorControls(QtWidgets.QWidget):
             self._transpose_button[i].clicked.connect(
                 lambda axis1=i, axis2=i - 1: self.itool.transpose_axes(axis1, axis2)
             )
-            spingrouplayouts[i].addWidget(self._spinlabels[i])
-            spingrouplayouts[i].addWidget(self._spin[i])
-            spingrouplayouts[i].addWidget(self._dblspin[i])
+            self._spingrouplayouts[i].addWidget(self._spinlabels[i])
+            self._spingrouplayouts[i].addWidget(self._spin[i])
+            self._spingrouplayouts[i].addWidget(self._dblspin[i])
             self.layout.addWidget(self._spingroups[i])
             # cursor_layout.addWidget(self._spinlabels[i], 0, 3 * i)
             # cursor_layout.addWidget(self._spin[i], 0, 3 * i + 1)
@@ -2421,8 +2413,7 @@ class itoolCursorControls(QtWidgets.QWidget):
 
         for tb in self._transpose_button:
             transpose_layout.addWidget(tb)
-        for hb in self._hide_button:
-            self.layout.addWidget(hb)
+
         # self.layout.addStretch()
 
     def _joystick_reset(self, _):
@@ -2467,6 +2458,9 @@ class itoolCursorControls(QtWidgets.QWidget):
         self._snap_button.setChecked(self.itool.snap)
         # self._snap_button.blockSignals(False)
 
+        width_spinlabel = []
+        width_dblspin = []
+        width_spin = []
         for i in range(self.ndim):
             self._spingroups[i].blockSignals(True)
             self._spin[i].blockSignals(True)
@@ -2474,7 +2468,8 @@ class itoolCursorControls(QtWidgets.QWidget):
 
             self._spinlabels[i].setText(self.itool.data_dims[i])
             self._spinlabels[i].setChecked(self.itool.axis_locked[i])
-            self._spinlabels[i].setMaximumWidth(
+
+            width_spinlabel.append(
                 self._spinlabels[i]
                 .fontMetrics()
                 .boundingRect(self._spinlabels[i].text())
@@ -2491,9 +2486,19 @@ class itoolCursorControls(QtWidgets.QWidget):
                 self.itool.data_coords[i][self.itool._last_ind[i]]
             )
 
+            width_dblspin.append(self._dblspin[i].width())
+            width_spin.append(self._spin[i].width())
+
             self._spinlabels[i].blockSignals(False)
             self._spin[i].blockSignals(False)
             self._dblspin[i].blockSignals(False)
+
+        for i in range(self.ndim):
+            self._spinlabels[i].setMaximumWidth(max(width_spinlabel))
+            # self._spingrouplayouts[i].setColumnMinimumWidth(1, max(width_spin))
+            # self._spingrouplayouts[i].setColumnMinimumWidth(2, max(width_dblspin))
+            # self._spin[i].setMaximumWidth(max(width_spin))
+            # self._dblspin[i].setMaximumWidth(max(width_dblspin))
 
     def _assign_stretch(self, row=None, col=None):
         if row is None:
@@ -2614,14 +2619,32 @@ class itoolColorControls(QtWidgets.QWidget):
             lambda z: self.itool.set_cmap(zeroCentered=z)
         )
 
+        axes_names = [
+            "Main Image",
+            "X Profile",
+            "Y Profile",
+            "Z Profile",
+            "Horiz Slice",
+            "Vert Slice",
+        ]
+        self._hide_button = tuple(
+            QtWidgets.QPushButton(
+                self, text=axes_names[i], clicked=lambda i=i: self.itool.toggle_axes(i)
+            )
+            for i in range(len(self.itool.axes))
+        )
+        self._axes_visibility_button = IconButton(self, on="table_eye", checkable=True)
+        self._axes_visibility_button.toggled.connect(
+            lambda v: [hb.setVisible(v) for hb in self._hide_button]
+        )
+
         colors_button = IconButton(
             self, on="palette", clicked=self._color_button_clicked
         )
-        style_combo = QtWidgets.QComboBox(self, toolTip="Qt style")
-        style_combo.addItems(qt_style_names())
-        style_combo.textActivated.connect(QtWidgets.QApplication.setStyle)
-        style_combo.setCurrentText("Fusion")
-        # style_label.setBuddy(style_combo)
+        # style_combo = QtWidgets.QComboBox(self, toolTip="Qt style")
+        # style_combo.addItems(qt_style_names())
+        # style_combo.textActivated.connect(QtWidgets.QApplication.setStyle)
+        # style_combo.setCurrentText("Fusion")
 
         cmap_layout.addWidget(gamma_label, 0, 0)
         cmap_layout.addWidget(self._gamma_spin, 0, 1)
@@ -2635,8 +2658,15 @@ class itoolColorControls(QtWidgets.QWidget):
         self.layout.addWidget(self._cmap_mode_button)
         self.layout.addWidget(self._cbar_show_button)
         self.layout.addWidget(self._zero_center_button)
+        self.layout.addWidget(self._axes_visibility_button)
         self.layout.addWidget(colors_button)
-        self.layout.addWidget(style_combo)
+        # self.layout.addWidget(style_combo)
+
+        for hb in self._hide_button:
+            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 15)
+        for hb in self._hide_button:
+            self.layout.addWidget(hb)
+            hb.setVisible(False)
 
         # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
         #    QtWidgets.QSizePolicy.Minimum)
@@ -2821,12 +2851,22 @@ class ImageTool(QtWidgets.QMainWindow):
             sc.activated.connect(v[-1])
         self.dockarea = DockArea()
 
-        self.dock1 = Dock("Cursor", widget=self.tab1)
-        self.dock2 = Dock("Appearance", widget=self.tab2)
-        self.dock3 = Dock("Binning", widget=self.tab3)
+        self.dock1 = Dock(
+            "Cursor", widget=self.tab1, size=(1, 1), autoOrientation=False
+        )
+        self.dock2 = Dock(
+            "Appearance", widget=self.tab2, size=(1, 1), autoOrientation=False
+        )
+        self.dock3 = Dock(
+            "Binning", widget=self.tab3, size=(1, 1), autoOrientation=False
+        )
+
+        self.dock1.layout.setContentsMargins(5, 5, 5, 5)
+        self.dock2.layout.setContentsMargins(5, 5, 5, 5)
+        self.dock3.layout.setContentsMargins(5, 5, 5, 5)
         self.dockarea.addDock(self.dock3)
-        self.dockarea.addDock(self.dock2, "above", self.dock3)
-        self.dockarea.addDock(self.dock1, "above", self.dock2)
+        self.dockarea.addDock(self.dock2, "left", self.dock3)
+        self.dockarea.addDock(self.dock1, "left", self.dock2)
         self.dockarea.setSizePolicy(
             QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
         )
