@@ -9,11 +9,11 @@ from arpes.utilities.conversion.forward import \
 from matplotlib.figure import Figure
 from matplotlib.offsetbox import AnchoredText
 from matplotlib.transforms import Affine2D
-
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from .colors import get_mappable, image_is_light
 
 __all__ = ['plot_hv_text','label_subplots','annotate_cuts_erlab', 
-           'label_subplot_properties', 'mark_points']
+           'label_subplot_properties', 'mark_points', 'get_si_str', 'add_sizebar']
 
 
 SI_PREFIXES = {24: 'Y', 21: 'Z', 18: 'E', 15: 'P', 12: 'T', 9: 'G',
@@ -30,6 +30,16 @@ SI_PREFIX_NAMES = ['yotta','zetta','exa','peta','tera',
             #   -1, -2, -3, -6, -9, -12, -15, -18, -21, -24]
 # SI_PREFIXES = ['Y', 'Z', 'E', 'P', 'T', 'G', 'M', 'k', 'h', 'da', '',
 #                'd', 'c', 'm', 'μ', 'n', 'p', 'f', 'a', 'z', 'y']
+
+def get_si_str(si:int):
+    if plt.rcParams['text.usetex'] and si == -6:
+        return "\\ensuremath{\\mu}"
+    else:
+        try:
+            return SI_PREFIXES[si]
+        except KeyError:
+            raise ValueError("Invalid SI prefix.")
+
 
 def annotate_cuts_erlab(data:xr.DataArray, plotted_dims,
                         ax=None, include_text_labels=False, color='k',
@@ -230,6 +240,8 @@ def label_subplots(axes, values=None, startfrom=1, order='C',
                     bbox_to_anchor=bbox_to_anchor,
                     bbox_transform=bbox_transform)
         axlist[i].add_artist(at)
+        
+        
 
 def property_label(key, value, decimals=0, si=0, name=None, unit=None):
     if name == '':
@@ -244,8 +256,8 @@ def property_label(key, value, decimals=0, si=0, name=None, unit=None):
         unit = unit_for_dim(key)
         if unit is None:
             unit = ''
-        
-    unit = SI_PREFIXES[si] + unit
+
+    unit = get_si_str(si) + unit
     value /= 10 ** si
     if decimals is not None:
         value = np.around(value, decimals=decimals)
@@ -317,6 +329,51 @@ def label_subplot_properties(axes, values, decimals=None, si=0,
     strlist = list(zip(*strlist))
     strlist = ['\n'.join(strlist[i]) for i in range(len(strlist))]
     label_subplots(axes, strlist, order=order, **kwargs)
+
+def add_sizebar(
+    ax,
+    resolution,
+    value,
+    unit,
+    si=0,
+    decimals=0,
+    label=None,
+    loc="lower right",
+    pad=0.1,
+    borderpad=0.5,
+    sep=5,
+    frameon=False,
+    **kwargs,
+):
+
+    pixels = value / resolution
+    unit = get_si_str(si) + unit
+    value = np.around(value / 10**si, decimals=decimals)
+    if int(value) == value:
+        value = int(value)
+    if label is None:
+        label = f"{value} {unit}"
+
+    kwargs.setdefault("color", "k")
+    mappable = get_mappable(ax, error=False)
+    if mappable is not None:
+        if not image_is_light(mappable):
+            kwargs.setdefault("color", "w")
+
+    asb = AnchoredSizeBar(
+        ax.transData,
+        pixels,
+        label,
+        loc=loc,
+        pad=pad,
+        borderpad=borderpad,
+        sep=sep,
+        frameon=frameon,
+        **kwargs,
+    )
+    ax.add_artist(asb)
+    return asb
+
 
 # TODO: fix format using name_for_dim and unit_for_dim
 def plot_hv_text(ax,val,x=0.025,y=0.975,**kwargs):
