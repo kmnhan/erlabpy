@@ -871,17 +871,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 brush=pg.mkBrush(span_c),
             )
         )
-
-        self.data_ndim = None
-        # self.data_vals = None
-        # self.data_vals_T = None
-        # self.data_dims = None
-        # self.data_coords = None
-        # self.data_shape = None
-        # self.data_incs = None
-        # self.data_lims = None
         # self.cursor_pos = None
-
+        self.data = None
         self.set_data(data, update_all=True, reset_cursor=True)
         self.set_cmap()
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
@@ -1294,21 +1285,59 @@ class pg_itool(pg.GraphicsLayoutWidget):
             if self.data_ndim == 4:
                 self.axes[6].setLabels(top=labels_[3], mode=labelmode)
 
+    # @property
+    # def data_vals_T(self):
+    #     if self.data_ndim == 2:
+    #         return np.ascontiguousarray(self.data_vals.T)
+    #     elif self.data_ndim == 3:
+    #         return np.ascontiguousarray(
+    #             np.transpose(self.data.values, axes=(1, 2, 0))
+    #         )
+    #     elif self.data_ndim == 4:
+    #         return np.ascontiguousarray(
+    #             np.transpose(self.data.values, axes=(1, 2, 3, 0))
+    #         )
+    @property
+    def data_dims(self):
+        return self.data.dims
+    @property
+    def data_shape(self):
+        return self.data.shape
+
+    @property
+    def data_ndim(self):
+        return self.data.ndim
+    
+    @property
+    def data_coords(self):
+        return tuple(self.data[dim].values for dim in self.data_dims)
+    
+    @property
+    def data_incs(self):
+        return tuple(coord[1] - coord[0] for coord in self.data_coords)
+    
+    @property
+    def data_lims(self):
+        return tuple((coord[0], coord[-1]) for coord in self.data_coords)
+    
+    
     def set_data(self, data, update_all=False, reset_cursor=True):
 
         # Data properties
+        if self.data is not None:
+            ndim_old = self.data_ndim
+            self.data = parse_data(data)
+        # self.data_ndim = self.data.ndim
+            if self.data_ndim != ndim_old:
+                update_all = True
         self.data = parse_data(data)
-        ndim_old = self.data_ndim
-        self.data_ndim = self.data.ndim
-        if self.data_ndim != ndim_old:
-            update_all = True
-        self.data_vals = self.data.values
+        # self.data_vals = self.data.values
         self._assign_vals_T()
-        self.data_dims = self.data.dims
-        self.data_shape = self.data.shape
-        self.data_coords = tuple(self.data[dim].values for dim in self.data_dims)
-        self.data_incs = tuple(coord[1] - coord[0] for coord in self.data_coords)
-        self.data_lims = tuple((coord[0], coord[-1]) for coord in self.data_coords)
+        # self.data_dims = self.data.dims
+        # self.data_shape = self.data.shape
+        # self.data_coords = tuple(self.data[dim].values for dim in self.data_dims)
+        # self.data_incs = tuple(coord[1] - coord[0] for coord in self.data_coords)
+        # self.data_lims = tuple((coord[0], coord[-1]) for coord in self.data_coords)
         if update_all:
             self.clear()
             self._initialize_layout()
@@ -1422,11 +1451,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.data_vals_T = np.ascontiguousarray(self.data_vals.T)
         elif self.data_ndim == 3:
             self.data_vals_T = np.ascontiguousarray(
-                np.transpose(self.data_vals, axes=(1, 2, 0))
+                np.transpose(self.data.values, axes=(1, 2, 0))
             )
         elif self.data_ndim == 4:
             self.data_vals_T = np.ascontiguousarray(
-                np.transpose(self.data_vals, axes=(1, 2, 3, 0))
+                np.transpose(self.data.values, axes=(1, 2, 3, 0))
             )
         else:
             raise NotImplementedError("Wrong data dimensions")
@@ -1503,7 +1532,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._refresh_navg(reset=False)
 
     def _refresh_navg(self, reset=False):
-        self._slice_block = None
         if reset:
             for axis in range(self.data_ndim):
                 self.averaged[axis] = False
@@ -1528,7 +1556,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
             return slice(self._last_ind[axis], self._last_ind[axis] + 1)
 
     def _get_binned_data(self, axis):
-        self._slice_block = None
         if not self.averaged[axis]:
             return np.take(self.data_vals_T, self._last_ind[axis], axis=axis - 1)
         else:
@@ -1545,8 +1572,18 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if not any(self.averaged):
             return self._block_slicer(avg_axis, [self._last_ind[i] for i in avg_axis])
         slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
-        self._slice_block = self._block_slicer(avg_axis, slices)
-        return numbagg.nanmean(self._slice_block, axis=avg_axis)
+        return self._block_slice_avg(avg_axis, slices)
+        # self._slice_block = self._block_slicer(avg_axis, slices)
+        # return numbagg.nanmean(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
+    
+    def _block_slice_avg(self, axis=None, slices=None):
+        axis = [(ax - 1) % self.data_ndim for ax in axis]
+        return numbagg.nanmean(self.data_vals_T[
+            tuple(
+                slices[axis.index(d)] if d in axis else slice(None)
+                for d in range(self.data_ndim)
+            )
+        ], axis=axis)
 
     def _block_slicer(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
@@ -1711,20 +1748,19 @@ class pg_itool(pg.GraphicsLayoutWidget):
                     update[2],
                 )
             elif self.data_ndim == 4:
-                # update = (
-                #     update[2] or update[3],
-                #     update[1] or update[3],
-                #     update[0] or update[3],
-                #     update[1] or update[2] or update[3],
-                #     update[0] or update[2] or update[3],
-                #     update[0] or update[1] or update[3],
-                #     update[0] or update[1] or update[2],
-                #     update[0],
-                #     update[1],
-                #     update[2],
-                #     update[3],
-                # )
-                update = (True,) * 11
+                update = (
+                    update[2] or update[3],
+                    update[1] or update[3],
+                    update[0] or update[3],
+                    update[1] or update[2] or update[3],
+                    update[0] or update[2] or update[3],
+                    update[0] or update[1] or update[3],
+                    update[0] or update[1] or update[2],
+                    update[0],
+                    update[1],
+                    update[2],
+                    update[3],
+                )
         elif len(update) != len(self.all):
             raise ValueError
         for i in get_true_indices(update):
@@ -1903,13 +1939,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 2:
             if self.clim_locked:
                 self.all[i].setImage(
-                    self._binned_profile((0, 3)).T,
+                    self._binned_profile((0, 3)),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(2, 1),
                 )
             else:
                 self.all[i].setImage(
-                    self._binned_profile((0, 3)).T,
+                    self._binned_profile((0, 3)),
                     rect=self._lims_to_rect(2, 1),
                 )
                 if self.zero_centered:
@@ -3084,7 +3120,9 @@ if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
     # from erlab.plotting import ximagetool
     # from arpes.io import load_data
-
+    # from guppy import hpy
+    # h=hpy()
+    import sys
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
         # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
@@ -3096,7 +3134,10 @@ if __name__ == "__main__":
     # location='BL1001-ERLab').spectrum
     # dat16 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00016.fits',
     # location='BL1001-ERLab').spectrum
+    # print(sys.getsizeof(dat.values))
+    print(round(dat.values.nbytes / 1024 / 1024,2))
     itool(dat)
+    # print(h.heap())
     # from erlab.plotting.imagetool_mpl import itoolmpl
     # itoolmpl(dat)
     # gkmk_cvs = load_data('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
