@@ -55,6 +55,7 @@ ICON_NAME = dict(
     transpose_0="mdi6.arrow-left-right",
     transpose_1="mdi6.arrow-top-left-bottom-right",
     transpose_2="mdi6.arrow-up-down",
+    transpose_3="mdi6.arrow-up-down",
     snap="mdi6.grid",
     snap_off="mdi6.grid-off",
     palette="mdi6.palette-advanced",
@@ -751,6 +752,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     Notes
     -----
+    Axes indices for 2D data:
+        ┌───┬───┐
+        │ 1 │   │
+        │───┼───│
+        │ 0 │ 2 │
+        └───┴───┘
     Axes indices for 3D data:
         ┌───┬─────┐
         │ 1 │     │
@@ -759,12 +766,14 @@ class pg_itool(pg.GraphicsLayoutWidget):
         │───┼───┬─│
         │ 0 │ 5 │2│
         └───┴───┴─┘
-    Axes indices for 2D data:
-        ┌───┬───┐
-        │ 1 │   │
-        │───┼───│
-        │ 0 │ 2 │
-        └───┴───┘
+    Axes indices for 4D data:
+        ┌───┬─────┐
+        │ 1 │  6  │
+        │───┼─────│
+        │ 4 │  3  │
+        │───┼───┬─│
+        │ 0 │ 5 │2│
+        └───┴───┴─┘
 
     Signals
     -------
@@ -776,7 +785,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     sigDataChanged = QtCore.Signal(object)
     sigIndexChanged = QtCore.Signal(list, list)
 
-    _only_axis = ("x", "y", "z")
+    _only_axis = ("x", "y", "z", "t")
     _only_maps = "maps"
 
     _get_middle_index = lambda _, x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
@@ -821,7 +830,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.cmap = "bwr"
         # cursor_c = pg.mkColor(0.5)
         cursor_c, cursor_c_hover, span_c, span_c_edge = [
-            pg.mkColor(0.5) for _ in range(4)
+            pg.mkColor("cyan") for _ in range(4)
         ]
         cursor_c.setAlphaF(0.75)
         cursor_c_hover.setAlphaF(0.9)
@@ -883,7 +892,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if row is None:
             if self.data_ndim == 2:
                 row_factor = (25000, 75000)
-            elif self.data_ndim == 3:
+            elif self.data_ndim >= 3:
                 row_factor = (100000, 150000, 300000)
         else:
             row_factor = row
@@ -994,8 +1003,26 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 (1, 0, 0, 0),
                 (0, 0, 0, 1),
             )
+        elif self.data_ndim == 4:
+            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(7)]
+            self.addItem(self.axes[0], 2, 0, 1, 1)
+            self.addItem(self.axes[1], 0, 0, 1, 1)
+            self.addItem(self.axes[2], 2, 2, 1, 1)
+            self.addItem(self.axes[3], 1, 1, 1, 2)
+            self.addItem(self.axes[4], 1, 0, 1, 1)
+            self.addItem(self.axes[5], 2, 1, 1, 1)
+            self.addItem(self.axes[6], 0, 1, 1, 2)
+            valid_selection = (
+                (1, 0, 0, 1),
+                (1, 1, 0, 0),
+                (0, 0, 1, 1),
+                (0, 0, 1, 0),
+                (1, 0, 0, 0),
+                (0, 0, 0, 1),
+                (0, 1, 1, 0),
+            )
         else:
-            raise NotImplementedError("Only supports 2D and 3D arrays.")
+            raise NotImplementedError("Only supports 2D, 3D, and 4D arrays.")
         for i, (p, sel) in enumerate(zip(self.axes, valid_selection)):
             p.setDefaultPadding(0)
             for axis in ["left", "bottom", "right", "top"]:
@@ -1064,7 +1091,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.axes[1].addItem(self.spans[0][1])
             self.axes[0].addItem(self.spans[1][0])
             self.axes[2].addItem(self.spans[1][1])
-        elif self.data_ndim == 3:
+        elif self.data_ndim >= 3:
             self.maps = (
                 ItoolImageItem(self, name="Main Image", **self.image_kw),
                 ItoolImageItem(self, name="Horiz Slice", **self.image_kw),
@@ -1152,6 +1179,25 @@ class pg_itool(pg.GraphicsLayoutWidget):
             # self.axes[3].axvline(0., label='Fermi Level', **self.fermi_kw)
             # for m in self.maps:
             # m.sigImageChanged.connect(self._refresh_histograms)
+            if self.data_ndim == 4:
+                self.hists += (self.axes[6].plot(name="T Profile", **self.profile_kw),)
+                self.cursors += (
+                    (
+                        ItoolCursorLine(
+                            self,
+                            angle=90,
+                            movable=True,
+                            name="T Cursor",
+                            **self.cursor_kw,
+                        ),
+                    ),
+                )
+                self.spans += (
+                    (pg.LinearRegionItem(orientation="vertical", **self.span_kw),),
+                )
+
+                self.axes[6].addItem(self.cursors[3][0])
+                self.axes[6].addItem(self.spans[3][0])
 
         self.all = self.maps + self.hists + self.cursors
         for s in chain.from_iterable(self.spans):
@@ -1166,6 +1212,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             ref_dims = ((1, 0, 1, 1), (0, 0, 1, 1), (1, 1, 1, 1))
             top_left = (1,)
             bottom_right = (2,)
+            top_right = tuple()
         elif self.data_ndim == 3:
             ref_dims = (
                 (2, 0, 1, 1),
@@ -1177,6 +1224,20 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
             top_left = (1, 4)
             bottom_right = (5, 2)
+            top_right = (3,)
+        elif self.data_ndim == 4:
+            ref_dims = (
+                (2, 0, 1, 1),
+                (0, 0, 1, 1),
+                (2, 2, 1, 1),
+                (0, 1, 1, 2),
+                (1, 0, 1, 1),
+                (2, 1, 1, 1),
+                (1, 1, 1, 2),
+            )
+            top_left = (1, 4)
+            bottom_right = (5, 2)
+            top_right = (6, 3)
 
         if axis in top_left:
             group = top_left
@@ -1184,6 +1245,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif axis in bottom_right:
             group = bottom_right
             totalspan = (1, 2)
+        elif axis in top_right:
+            group = top_right
+            totalspan = (2, 2)
         else:
             if not toggle:
                 self.removeItem(target)
@@ -1205,8 +1269,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 self.addItem(target, *anchors[0], *totalspan)
             else:
                 self.removeItem(other)
-                self.addItem(self.axes[group[0]], *anchors[0], 1, 1)
-                self.addItem(self.axes[group[1]], *anchors[1], 1, 1)
+                self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
+                self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
     def set_labels(self, labels=None):
         """labels: list or tuple of str"""
@@ -1223,10 +1287,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.axes[0].setLabels(left=labels_[1], bottom=labels_[0], mode=labelmode)
         self.axes[1].setLabels(top=labels_[0], mode=labelmode)
         self.axes[2].setLabels(right=labels_[1], mode=labelmode)
-        if self.data_ndim == 3:
+        if self.data_ndim >= 3:
             self.axes[3].setLabels(top=labels_[2], mode=labelmode)
             self.axes[4].setLabels(left=labels_[2], mode=labelmode)
             self.axes[5].setLabels(bottom=labels_[2], mode=labelmode)
+            if self.data_ndim == 4:
+                self.axes[6].setLabels(top=labels_[3], mode=labelmode)
 
     def set_data(self, data, update_all=False, reset_cursor=True):
 
@@ -1317,7 +1383,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return i, self._get_mouse_datapos(ax, pos)
         if self.colorbar is not None:
             if self.colorbar.sceneBoundingRect().contains(pos):
-                return 6, self._get_mouse_datapos(self.colorbar, pos)
+                return -1, self._get_mouse_datapos(self.colorbar, pos)
         return None, None
 
     def reset_timer(self, *args):
@@ -1357,6 +1423,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif self.data_ndim == 3:
             self.data_vals_T = np.ascontiguousarray(
                 np.transpose(self.data_vals, axes=(1, 2, 0))
+            )
+        elif self.data_ndim == 4:
+            self.data_vals_T = np.ascontiguousarray(
+                np.transpose(self.data_vals, axes=(1, 2, 3, 0))
             )
         else:
             raise NotImplementedError("Wrong data dimensions")
@@ -1479,23 +1549,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return numbagg.nanmean(self._slice_block, axis=avg_axis)
 
     def _block_slicer(self, axis=None, slices=None):
-        axis = [ax % self.data_ndim for ax in axis]
-        return self.data_vals[
+        axis = [(ax - 1) % self.data_ndim for ax in axis]
+        return self.data_vals_T[
             tuple(
                 slices[axis.index(d)] if d in axis else slice(None)
                 for d in range(self.data_ndim)
             )
         ]
-
-    def slicer2(self, axis=None, slices=None):
-        axis = [ax % self.data_ndim for ax in axis]
-        slice_selector = dict(zip(axis, slices))
-        element = (
-            lambda dim_: slice_selector[dim_]
-            if dim_ in slice_selector.keys()
-            else slice(None)
-        )
-        return self.data_vals[tuple(element(dim) for dim in range(self.data_ndim))]
 
     def update_spans(self, axis):
         slc = self._get_bin_slice(axis)
@@ -1593,6 +1653,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif axis_ind == 5:
             V[2], V[1] = datapos
         elif axis_ind == 6:
+            V[3] = datapos[0]
+        elif axis_ind == -1:
             self.colorbar.isoline.setPos(datapos[1])
             return
         D = [v is not None for v in V]
@@ -1624,6 +1686,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
                     update = (True,) + (False,) * 4
                 elif self.data_ndim == 3:
                     update = (True,) * 3 + (False,) * 6
+                elif self.data_ndim == 4:
+                    update = (True,) * 3 + (False,) * 8
             elif cond in self._only_axis:
                 update = [False] * self.data_ndim
                 update[self._only_axis.index(cond)] = True
@@ -1646,6 +1710,21 @@ class pg_itool(pg.GraphicsLayoutWidget):
                     update[1],
                     update[2],
                 )
+            elif self.data_ndim == 4:
+                # update = (
+                #     update[2] or update[3],
+                #     update[1] or update[3],
+                #     update[0] or update[3],
+                #     update[1] or update[2] or update[3],
+                #     update[0] or update[2] or update[3],
+                #     update[0] or update[1] or update[3],
+                #     update[0] or update[1] or update[2],
+                #     update[0],
+                #     update[1],
+                #     update[2],
+                #     update[3],
+                # )
+                update = (True,) * 11
         elif len(update) != len(self.all):
             raise ValueError
         for i in get_true_indices(update):
@@ -1661,6 +1740,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._refresh_data_2d(i)
         elif self.data_ndim == 3:
             self._refresh_data_3d(i)
+        elif self.data_ndim == 4:
+            self._refresh_data_4d(i)
         self.sigIndexChanged.emit(self._last_ind, self.cursor_pos)
 
     # def get_levels(self, i):
@@ -1787,6 +1868,79 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 cursor.setPos(self.cursor_pos[i - 6])
                 if self.averaged[i - 6]:
                     self.update_spans(i - 6)
+
+    def _refresh_data_4d(self, i):
+        if i == 0:
+            if self.clim_locked:
+                self.all[i].setImage(
+                    self._binned_profile((3, 2)),
+                    levels=self.clim_list[i],
+                    rect=self._lims_to_rect(0, 1),
+                )
+            else:
+                self.all[i].setImage(
+                    self._binned_profile((3, 2)),
+                    rect=self._lims_to_rect(0, 1),
+                )
+                if self.zero_centered:
+                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
+                    self.all[i].setLevels([-lim, lim])
+        elif i == 1:
+            if self.clim_locked:
+                self.all[i].setImage(
+                    self._binned_profile((1, 3)),
+                    levels=self.clim_list[i],
+                    rect=self._lims_to_rect(0, 2),
+                )
+            else:
+                self.all[i].setImage(
+                    self._binned_profile((1, 3)),
+                    rect=self._lims_to_rect(0, 2),
+                )
+                if self.zero_centered:
+                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
+                    self.all[i].setLevels([-lim, lim])
+        elif i == 2:
+            if self.clim_locked:
+                self.all[i].setImage(
+                    self._binned_profile((0, 3)).T,
+                    levels=self.clim_list[i],
+                    rect=self._lims_to_rect(2, 1),
+                )
+            else:
+                self.all[i].setImage(
+                    self._binned_profile((0, 3)).T,
+                    rect=self._lims_to_rect(2, 1),
+                )
+                if self.zero_centered:
+                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
+                    self.all[i].setLevels([-lim, lim])
+        elif i == 3:
+            self.hists[0].setData(
+                self.data_coords[0],
+                self._binned_profile((1, 2, 3)),
+            )
+        elif i == 4:
+            self.hists[1].setData(
+                self._binned_profile((0, 2, 3)),
+                self.data_coords[1],
+            )
+        elif i == 5:
+            self.hists[2].setData(
+                self.data_coords[2],
+                self._binned_profile((0, 1, 3)),
+            )
+        elif i == 6:
+            self.hists[3].setData(
+                self.data_coords[3],
+                self._binned_profile((0, 1, 2)),
+            )
+        elif i in [7, 8, 9, 10]:
+            for cursor in self.all[i]:
+                cursor.maxRange = self.data_lims[i - 7]
+                cursor.setPos(self.cursor_pos[i - 7])
+                if self.averaged[i - 7]:
+                    self.update_spans(i - 7)
 
     def changeEvent(self, evt):
         if evt.type() == QtCore.QEvent.PaletteChange:
@@ -2507,7 +2661,7 @@ class itoolCursorControls(QtWidgets.QWidget):
             col = 0
         if self.ndim == 2:
             raise NotImplementedError
-        elif self.ndim == 3:
+        elif self.ndim >= 3:
             r0, r1, r2 = self.itool._stretch_factors[0]
             c0, c1, c2 = self.itool._stretch_factors[1]
             row_factor = (r0, r1 - row, r2 + row)
@@ -2626,6 +2780,7 @@ class itoolColorControls(QtWidgets.QWidget):
             "Z Profile",
             "Horiz Slice",
             "Vert Slice",
+            "T Profile",
         ]
         self._hide_button = tuple(
             QtWidgets.QPushButton(
@@ -2932,7 +3087,8 @@ if __name__ == "__main__":
 
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
     )  # .sel(eV=-0.15, method="nearest")
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
