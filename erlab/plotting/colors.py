@@ -9,22 +9,32 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from pyqtgraph.Qt import QtGui
 
-__all__ = ['TwoSlopePowerNorm', 'get_mappable', 'proportional_colorbar',
-           'color_distance', 'close_to_white', 'prominent_color',
-           'image_is_light', 'mpl_color_to_QColor', 'pg_colormap_names',
-           'pg_colormap_from_name', 'pg_colormap_powernorm',
-           'pg_colormap_to_QPixmap']
+__all__ = [
+    "TwoSlopePowerNorm",
+    "get_mappable",
+    "proportional_colorbar",
+    "color_distance",
+    "close_to_white",
+    "prominent_color",
+    "image_is_light",
+    "mpl_color_to_QColor",
+    "pg_colormap_names",
+    "pg_colormap_from_name",
+    "pg_colormap_powernorm",
+    "pg_colormap_to_QPixmap",
+]
 
 
 def load_igor_ct(file, name):
-    file = pkgutil.get_data(__package__, 'IgorCT/' + file)
+    file = pkgutil.get_data(__package__, "IgorCT/" + file)
     cmap = LinearSegmentedColormap.from_list(
-        name, np.genfromtxt(StringIO(file.decode())) / 65535)
+        name, np.genfromtxt(StringIO(file.decode())) / 65535
+    )
     plt.colormaps.register(cmap)
     plt.colormaps.register(cmap.reversed())
 
 
-load_igor_ct('Blue-White.txt', 'BlWh')
+load_igor_ct("Blue-White.txt", "BlWh")
 
 
 class TwoSlopePowerNorm(colors.Normalize):
@@ -54,11 +64,9 @@ class TwoSlopePowerNorm(colors.Normalize):
         super().__init__(vmin=vmin, vmax=vmax)
         self._vcenter = vcenter
         if vcenter is not None and vmax is not None and vcenter >= vmax:
-            raise ValueError('vmin, vcenter, and vmax must be in '
-                             'ascending order')
+            raise ValueError("vmin, vcenter, and vmax must be in " "ascending order")
         if vcenter is not None and vmin is not None and vcenter <= vmin:
-            raise ValueError('vmin, vcenter, and vmax must be in '
-                             'ascending order')
+            raise ValueError("vmin, vcenter, and vmax must be in " "ascending order")
         self.gamma = gamma
 
     def __call__(self, value, clip=None):
@@ -130,33 +138,38 @@ class TwoSlopePowerNorm(colors.Normalize):
             val_ = val.copy()
             val_l = val[val_ < 0.5]
             val_u = val[val_ >= 0.5]
-            val[val_ < 0.5] = np.ma.power(1 - 2 * val_l, 1. / gamma) \
-                * (vmin - vcenter) + vcenter
-            val[val_ >= 0.5] = np.ma.power(2 * val_u - 1, 1. / gamma) \
-                * (vmax - vcenter) + vcenter
+            val[val_ < 0.5] = (
+                np.ma.power(1 - 2 * val_l, 1.0 / gamma) * (vmin - vcenter) + vcenter
+            )
+            val[val_ >= 0.5] = (
+                np.ma.power(2 * val_u - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+            )
             return np.ma.asarray(val)
         else:
             if value < 0.5:
-                return pow(1 - 2 * value, 1. / gamma) \
-                    * (vmin - vcenter) + vcenter
+                return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
             else:
-                return pow(2 * value - 1, 1. / gamma) \
-                    * (vmax - vcenter) + vcenter
+                return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
 
 
-def get_mappable(ax, error=True):
+def get_mappable(ax, image_only=False, error=True):
     try:
-        mappable = ax.collections[-1]
+        if not image_only:
+            mappable = ax.collections[-1]
+        else:
+            raise AttributeError
     except (IndexError, AttributeError):
         try:
             mappable = ax.get_images()[-1]
         except (IndexError, AttributeError):
             mappable = None
     if error is True and mappable is None:
-        raise RuntimeError('No mappable was found to use for colorbar '
-                           'creation. First define a mappable such as '
-                           'an image (with imshow) or a contour set ('
-                           'with contourf).')
+        raise RuntimeError(
+            "No mappable was found to use for colorbar "
+            "creation. First define a mappable such as "
+            "an image (with imshow) or a contour set ("
+            "with contourf)."
+        )
     return mappable
 
 
@@ -209,29 +222,32 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         proportional_colorbar()
 
     """
-    if cax is None:
-        if ax is None:
-            ax = plt.gca()
-            ax_ref = ax
-        else:
-            try:
-                ax_ref = ax.flatten()[0]
-            except AttributeError:
-                ax_ref = ax
+    # if cax is None:
+    if ax is None:
+        ax = plt.gca()
+        ax_ref = ax
     else:
-        ax_ref = cax
+        try:
+            ax_ref = ax.flatten()[0]
+        except AttributeError:
+            ax_ref = ax
+    # else:
+    #     ax_ref = cax
     if mappable is None:
         mappable = get_mappable(ax_ref)
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
     ticks = mappable.colorbar.get_ticks()
     mappable.colorbar.remove()
-    kwargs.setdefault('ticks', ticks)
+    kwargs.setdefault("ticks", ticks)
+    kwargs.setdefault("cmap", mappable.cmap)
+    kwargs.setdefault("norm", mappable.norm)
     cbar = plt.colorbar(
         mappable=mappable,
-        cax=cax, ax=ax,
-        spacing='proportional',
-        boundaries=mappable.norm.inverse(np.linspace(0, 1, mappable.cmap.N)),
+        cax=cax,
+        ax=ax,
+        spacing="proportional",
+        boundaries=kwargs["norm"].inverse(np.linspace(0, 1, kwargs["cmap"].N)),
         **kwargs,
     )
     return cbar
@@ -258,9 +274,12 @@ def close_to_white(c):
 
 
 def prominent_color(im):
-    hist, edges = np.histogram(np.nan_to_num(im.get_array()), 'auto')
+    im_array = im.get_array()
+    if im_array is None:
+        return colors.to_rgba("w")
+    hist, edges = np.histogram(np.nan_to_num(im_array), "auto")
     mx = hist.argmax()
-    return im.to_rgba(edges[mx:mx + 2].mean())
+    return im.to_rgba(edges[mx : mx + 2].mean())
 
 
 def image_is_light(im):
@@ -272,20 +291,20 @@ def mpl_color_to_QColor(c, alpha=None):
     return QtGui.QColor.fromRgbF(*colors.to_rgba(c, alpha=alpha))
 
 
-def pg_colormap_names(source='all'):
+def pg_colormap_names(source="all"):
     local = sorted(pg.colormap.listMaps())
-    if source == 'local':
+    if source == "local":
         return local
     else:
-        mpl = sorted(pg.colormap.listMaps(source='matplotlib'))
+        mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
         for cmap in mpl:
-            if cmap.startswith('cet_'):
+            if cmap.startswith("cet_"):
                 mpl = list(filter((cmap).__ne__, mpl))
-            elif cmap.endswith('_r'):
+            elif cmap.endswith("_r"):
                 # mpl_r.append(cmap)
                 mpl = list(filter((cmap).__ne__, mpl))
-        if source == 'all':
-            cet = sorted(pg.colormap.listMaps(source='colorcet'))
+        if source == "all":
+            cet = sorted(pg.colormap.listMaps(source="colorcet"))
             # if (mpl != []) and (cet != []):
             # local = []
             # mpl_r = []
@@ -300,15 +319,14 @@ def pg_colormap_from_name(name: str, skipCache=True):
         return pg.colormap.get(name, skipCache=skipCache)
     except FileNotFoundError:
         try:
-            return pg.colormap.get(name, source='matplotlib',
-                                   skipCache=skipCache)
+            return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
         except ValueError:
-            return pg.colormap.get(name, source='colorcet',
-                                   skipCache=skipCache)
+            return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
 
 
-def pg_colormap_powernorm(cmap, gamma, reverse=False, skipCache=True,
-                          highContrast=False, zeroCentered=False):
+def pg_colormap_powernorm(
+    cmap, gamma, reverse=False, skipCache=True, highContrast=False, zeroCentered=False
+):
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
     if reverse:
@@ -318,19 +336,17 @@ def pg_colormap_powernorm(cmap, gamma, reverse=False, skipCache=True,
         mapping = np.linspace(0, 1, N)
     elif highContrast and (gamma < 1):
         if zeroCentered:
-            map_half = (1 - np.power(
-                np.linspace(1, 0, int(N / 2)), 1. / gamma)) * 0.5 + 0.5
+            map_half = (
+                1 - np.power(np.linspace(1, 0, int(N / 2)), 1.0 / gamma)
+            ) * 0.5 + 0.5
             mapping = np.concatenate((-np.flip(map_half) + 1, map_half))
         else:
-            mapping = 1 - np.power(np.linspace(1, 0, N), 1. / gamma)
+            mapping = 1 - np.power(np.linspace(1, 0, N), 1.0 / gamma)
     else:
         if gamma < 1:
             N = 65536
         if zeroCentered:
-            map_half = np.power(
-                np.linspace(
-                    0, 1, int(
-                        N / 2)), gamma) * 0.5 + 0.5
+            map_half = np.power(np.linspace(0, 1, int(N / 2)), gamma) * 0.5 + 0.5
             mapping = np.concatenate((-np.flip(map_half) + 1, map_half))
         else:
             mapping = np.power(np.linspace(0, 1, N), gamma)
@@ -339,17 +355,16 @@ def pg_colormap_powernorm(cmap, gamma, reverse=False, skipCache=True,
     return cmap
 
 
-def pg_colormap_to_QPixmap(cmap, w=64, h=16, skipCache=False):
+def pg_colormap_to_QPixmap(cmap, w=64, h=16, skipCache=True):
     """Convert pyqtgraph colormap to a `w`-by-`h` QPixmap thumbnail."""
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
     # cmap_arr = np.reshape(cmap.getColors()[:, None], (1, -1, 4), order='C')
     # cmap_arr = np.reshape(
-        # cmap.getLookupTable(0, 1, w, alpha=True)[:, None], (1, -1, 4),
-        # order='C')
+    # cmap.getLookupTable(0, 1, w, alpha=True)[:, None], (1, -1, 4),
+    # order='C')
     cmap_arr = cmap.getLookupTable(0, 1, w, alpha=True)[:, None]
 
     # print(cmap_arr.shape)
-    img = QtGui.QImage(cmap_arr, w, 1,
-                       QtGui.QImage.Format_RGBA8888)
+    img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(img).scaled(w, h)
