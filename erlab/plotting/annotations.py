@@ -3,7 +3,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from arpes.plotting.utils import name_for_dim, unit_for_dim
 from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from matplotlib.figure import Figure
 from matplotlib.offsetbox import AnchoredText
@@ -19,7 +18,7 @@ __all__ = [
     "label_subplot_properties",
     "mark_points",
     "get_si_str",
-    "add_sizebar",
+    "sizebar",
 ]
 
 
@@ -289,7 +288,7 @@ def label_subplots(
             fs = fontsize
         bbox_transform = Affine2D().translate(*offset)
         label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
-        mappable = get_mappable(axlist[i], error=False)
+        mappable = get_mappable(axlist[i], image_only=True, error=False)
         clr = "k"
         if mappable is not None:
             if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
@@ -307,6 +306,95 @@ def label_subplots(
                 bbox_transform=bbox_transform,
             )
         axlist[i].add_artist(at)
+
+
+def name_for_dim(dim_name, escaped=True):
+    if plt.rcParams["text.usetex"]:
+        name = {
+            "temperature": "Temperature",
+            "T": "T",
+            "beta": r"\ensuremath{\beta}",
+            "theta": r"\ensuremath{\theta}",
+            "chi": r"\ensuremath{\chi}",
+            "alpha": r"\ensuremath{\alpha}",
+            "psi": r"\ensuremath{\psi}",
+            "phi": r"\ensuremath{\phi}",
+            "Eb": r"\ensuremath{E-E_F}",
+            "eV": r"\ensuremath{E}",
+            "kx": r"\ensuremath{k_{x}}",
+            "ky": r"\ensuremath{k_{y}}",
+            "kz": r"\ensuremath{k_{z}}",
+            "kp": r"\ensuremath{k_{\parallel}}",
+            "hv": r"\ensuremath{h\nu}",
+        }.get(dim_name)
+    else:
+        name = {
+            "temperature": "Temperature",
+            "beta": "β",
+            "theta": "θ",
+            "chi": "χ",
+            "alpha": "α",
+            "psi": "ψ",
+            "phi": "φ",
+            "Eb": "E-E_F",
+            "eV": "E",
+            "kx": "Kx",
+            "ky": "Ky",
+            "kz": "Kz",
+            "kp": "Kp", 
+            "hv": "Photon Energy",
+        }.get(dim_name)
+
+    if name is None:
+        name = dim_name
+    if not escaped:
+        name = name.replace("$", "")
+    return name
+
+
+def unit_for_dim(dim_name, escaped=True):
+    if plt.rcParams["text.usetex"]:
+        unit = {
+            "temperature": r"K",
+            "T": r"K",
+            "theta": r"rad",
+            "beta": r"rad",
+            "psi": r"rad",
+            "chi": r"rad",
+            "alpha": r"rad",
+            "phi": r"rad",
+            "Eb": r"eV",
+            "eV": r"eV",
+            "hv": r"eV",
+            "kx": r"Å\ensuremath{{}^{-1}}",
+            "ky": r"Å\ensuremath{{}^{-1}}",
+            "kz": r"Å\ensuremath{{}^{-1}}",
+            "kp": r"Å\ensuremath{{}^{-1}}",
+        }.get(dim_name)
+    else:
+        unit = {
+            "temperature": r"K",
+            "T": r"K",
+            "theta": r"rad",
+            "beta": r"rad",
+            "psi": r"rad",
+            "chi": r"rad",
+            "alpha": r"rad",
+            "phi": r"rad",
+            "Eb": r"eV",
+            "eV": r"eV",
+            "hv": r"eV",
+            "kx": r"1/Å",
+            "ky": r"1/Å",
+            "kz": r"1/Å",
+            "kp": r"1/Å",
+        }.get(dim_name)
+    if unit is None:
+        unit = ""
+    if not escaped:
+        unit = unit.replace("$", "")
+
+    return unit
 
 
 def property_label(key, value, decimals=0, si=0, name=None, unit=None):
@@ -403,7 +491,7 @@ def label_subplot_properties(
     label_subplots(axes, strlist, order=order, **kwargs)
 
 
-def add_sizebar(
+def sizebar(
     ax,
     resolution,
     value,
@@ -427,11 +515,13 @@ def add_sizebar(
     if label is None:
         label = f"{value} {unit}"
 
-    kwargs.setdefault("color", "k")
-    mappable = get_mappable(ax, error=False)
+    mappable = get_mappable(ax, image_only=True, error=False)
+    clr = "k"
     if mappable is not None:
-        if not image_is_light(mappable):
-            kwargs.setdefault("color", "w")
+        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+            if not image_is_light(mappable):
+                clr = "w"
+    kwargs.setdefault("color", clr)
 
     asb = AnchoredSizeBar(
         ax.transData,
