@@ -1,3 +1,4 @@
+import colorsys
 import sys
 import weakref
 from itertools import chain, compress
@@ -12,10 +13,11 @@ import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
 import xarray as xr
+from matplotlib import colors as mcolors
 from matplotlib import figure, rc_context
 from matplotlib.backends import backend_agg, backend_svg
 from matplotlib.font_manager import FontProperties
-from pyqtgraph.dockarea.Dock import Dock
+from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from PySide6 import QtSvg, QtSvgWidgets
@@ -433,16 +435,114 @@ class ItoolImageItem(xImageItem):
         self.itool = itool
         super().__init__(*args, **kargs)
 
-    def mouseDragEvent(self, ev):
-        if (
-            self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier
-            or ev.button() != QtCore.Qt.MouseButton.LeftButton
-        ):
-            super().mouseDragEvent(ev)
-            return
+
+class ItoolDockLabel(DockLabel):
+    def __init__(self, *args, color="#591e71", **kwargs):
+        self.bg_color = mcolors.to_hex(color)
+        super().__init__(*args, **kwargs)
+
+    def dim_color(self, color, l_factor=1.0, s_factor=1.0):
+        h, l, s = colorsys.rgb_to_hls(*mcolors.to_rgb(color))
+        return QtGui.QColor.fromRgbF(
+            *colorsys.hls_to_rgb(h, min(1, l * l_factor), min(1, s * s_factor))
+        ).name()
+
+    def set_fg_color(self):
+        rgb = list(mcolors.to_rgb(self.bg_color))
+        # for i in range(3):
+        #     if rgb[i] <= 0.04045:
+        #         rgb[i] /= 12.92
+        #     else:
+        #         rgb[i] = ((rgb[i] + 0.055) / 1.055) ** 2.4
+        # L = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        L = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
+        # if L > 0.179:
+        if L > 0.729:
+            self.fg_color = "#000000"
         else:
-            ev.accept()
-            self.itool.onMouseDrag(ev)
+            self.fg_color = "#ffffff"
+
+    def updateStyle(self):
+        r = "3px"
+        self.set_fg_color()
+        if self.dim:
+            if darkdetect.isDark():
+                self.dim_l_factor = 0.8
+            else:
+                self.dim_l_factor = 1.25
+            fg = self.dim_color(self.fg_color, self.dim_l_factor, 0.8)
+            bg = self.dim_color(self.bg_color, self.dim_l_factor, 0.8)
+        else:
+            fg = self.fg_color
+            bg = self.bg_color
+        border = self.dim_color(bg, 0.9)
+
+        if self.orientation == "vertical":
+            self.vStyle = f"""DockLabel {{
+                background-color : {bg};
+                color : {fg};
+                border-top-right-radius: 0px;
+                border-top-left-radius: {r};
+                border-bottom-right-radius: 0px;
+                border-bottom-left-radius: {r};
+                border-width: 0px;
+                border-right: 2px solid {border};
+                padding-top: 3px;
+                padding-bottom: 3px;
+                font-size: {self.fontSize};
+            }}"""
+            self.setStyleSheet(self.vStyle)
+        else:
+            self.hStyle = f"""DockLabel {{
+                background-color : {bg};
+                color : {fg};
+                border-top-right-radius: {r};
+                border-top-left-radius: {r};
+                border-bottom-right-radius: 0px;
+                border-bottom-left-radius: 0px;
+                border-width: 0px;
+                border-bottom: 2px solid {border};
+                padding-left: 3px;
+                padding-right: 3px;
+                font-size: {self.fontSize};
+            }}"""
+            self.setStyleSheet(self.hStyle)
+
+
+class ItoolDock(Dock):
+    def __init__(
+        self,
+        name,
+        area=None,
+        size=(10, 10),
+        widget=None,
+        hideTitle=False,
+        autoOrientation=True,
+        closable=False,
+        fontSize="13px",
+        color="#591e71",
+    ):
+        super().__init__(
+            name,
+            area=area,
+            size=size,
+            widget=widget,
+            hideTitle=hideTitle,
+            autoOrientation=autoOrientation,
+            closable=closable,
+            fontSize=fontSize,
+        )
+        self.label.setVisible(False)
+        self.label = ItoolDockLabel(name, self, closable, fontSize, color=color)
+        if closable:
+            self.label.sigCloseClicked.connect(self.close)
+        self.topLayout.addWidget(self.label, 0, 1)
+        self.topLayout.setContentsMargins(0, 0, 0, 0)
+
+    def changeEvent(self, evt):
+        if evt.type() == QtCore.QEvent.PaletteChange:
+            self.label.updateStyle()
+        super().changeEvent(evt)
 
 
 def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
@@ -618,14 +718,32 @@ class ItoolPlotItem(pg.PlotItem):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
+        # self.ctrl.transformGroup.setVisible(False)
+        for action in self.ctrlMenu.actions():
+            if action.text() in [
+                "Transforms",
+                "Downsample",
+                "Average",
+                "Alpha",
+                "Points",
+            ]:
+                action.setVisible(False)
+
+        for i in (0, 1):
+            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
+            self.vb.menu.ctrl[i].label.setVisible(False)
+        # self.ctrlMenu.menuAction().setVisible(False)
+        # self.setMenuEnabled(False, enableViewBoxMenu=None)
 
     def mouseDragEvent(self, ev):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            ev.ignore()
-            return
-        else:
+        if (
+            self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier
+            and ev.button() == QtCore.Qt.MouseButton.LeftButton
+        ):
             ev.accept()
             self.itool.onMouseDrag(ev)
+        else:
+            ev.ignore()
 
     def setLabels(self, mode=0, **kwds):
         for k in kwds.keys():
@@ -795,8 +913,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         data,
         snap=False,
         gamma=1.0,
-        cmap="BlWh",
-        reverse=True,
+        cmap="magma",
+        reverse=False,
         bench=False,
         plot_kw={},
         cursor_kw={},
@@ -845,7 +963,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 hoverPen=pg.mkPen(cursor_c_hover),
             )
         )
-        self.plot_kw.update(dict(defaultPadding=0.0, clipToView=True))
+        self.plot_kw.update(dict(defaultPadding=0.0, clipToView=False))
         # self.profile_kw.update(dict(
         #     linestyle='-', linewidth=.8,
         #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
@@ -860,7 +978,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # ))
         self.image_kw.update(
             dict(
-                autoDownsample=True,
+                autoDownsample=False,
                 axisOrder="row-major",
             )
         )
@@ -966,7 +1084,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # self.ci.layout.setRowPreferredHeight(i, -10)
 
     def _initialize_layout(
-        self, horiz_pad=45, vert_pad=30, inner_pad=15, font_size=10.0
+        self, horiz_pad=45, vert_pad=30, inner_pad=15, font_size=11.0
     ):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
@@ -1190,9 +1308,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 self.axes[6].addItem(self.cursors[3][0])
                 self.axes[6].addItem(self.spans[3][0])
 
-        self.all = self.maps + self.hists + self.cursors
         for s in chain.from_iterable(self.spans):
             s.setVisible(False)
+
+    @property
+    def all(self):
+        return self.maps + self.hists + self.cursors
 
     def toggle_axes(self, axis):
 
@@ -1285,21 +1406,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
             if self.data_ndim == 4:
                 self.axes[6].setLabels(top=labels_[3], mode=labelmode)
 
-    # @property
-    # def data_vals_T(self):
-    #     if self.data_ndim == 2:
-    #         return np.ascontiguousarray(self.data_vals.T)
-    #     elif self.data_ndim == 3:
-    #         return np.ascontiguousarray(
-    #             np.transpose(self.data.values, axes=(1, 2, 0))
-    #         )
-    #     elif self.data_ndim == 4:
-    #         return np.ascontiguousarray(
-    #             np.transpose(self.data.values, axes=(1, 2, 3, 0))
-    #         )
     @property
     def data_dims(self):
         return self.data.dims
+
     @property
     def data_shape(self):
         return self.data.shape
@@ -1307,37 +1417,54 @@ class pg_itool(pg.GraphicsLayoutWidget):
     @property
     def data_ndim(self):
         return self.data.ndim
-    
+
     @property
     def data_coords(self):
         return tuple(self.data[dim].values for dim in self.data_dims)
-    
+
     @property
     def data_incs(self):
         return tuple(coord[1] - coord[0] for coord in self.data_coords)
-    
+
     @property
     def data_lims(self):
         return tuple((coord[0], coord[-1]) for coord in self.data_coords)
-    
-    
-    def set_data(self, data, update_all=False, reset_cursor=True):
 
+    @property
+    def data_vals_T(self):
+        if self.data_ndim == 2:
+            return self.data.values.T
+        elif self.data_ndim == 3:
+            return self.data.values.transpose(1, 2, 0)
+        elif self.data_ndim == 4:
+            return self.data.values.transpose(1, 2, 3, 0)
+
+    def _assign_vals_T(self):
+        return
+
+    #     if self.data_ndim == 2:
+    #         self.data_vals_T = np.ascontiguousarray(self.data.values.T)
+    #     elif self.data_ndim == 3:
+    #         self.data_vals_T = np.ascontiguousarray(
+    #             np.transpose(self.data.values, axes=(1, 2, 0))
+    #         )
+    #     elif self.data_ndim == 4:
+    #         self.data_vals_T = np.ascontiguousarray(
+    #             np.transpose(self.data.values, axes=(1, 2, 3, 0))
+    #         )
+    #     else:
+    #         raise NotImplementedError("Wrong data dimensions")
+
+    def set_data(self, data, update_all=False, reset_cursor=True):
         # Data properties
         if self.data is not None:
             ndim_old = self.data_ndim
             self.data = parse_data(data)
-        # self.data_ndim = self.data.ndim
+            # self.data_ndim = self.data.ndim
             if self.data_ndim != ndim_old:
                 update_all = True
         self.data = parse_data(data)
-        # self.data_vals = self.data.values
         self._assign_vals_T()
-        # self.data_dims = self.data.dims
-        # self.data_shape = self.data.shape
-        # self.data_coords = tuple(self.data[dim].values for dim in self.data_dims)
-        # self.data_incs = tuple(coord[1] - coord[0] for coord in self.data_coords)
-        # self.data_lims = tuple((coord[0], coord[-1]) for coord in self.data_coords)
         if update_all:
             self.clear()
             self._initialize_layout()
@@ -1446,20 +1573,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         except KeyError:
             return text
 
-    def _assign_vals_T(self):
-        if self.data_ndim == 2:
-            self.data_vals_T = np.ascontiguousarray(self.data_vals.T)
-        elif self.data_ndim == 3:
-            self.data_vals_T = np.ascontiguousarray(
-                np.transpose(self.data.values, axes=(1, 2, 0))
-            )
-        elif self.data_ndim == 4:
-            self.data_vals_T = np.ascontiguousarray(
-                np.transpose(self.data.values, axes=(1, 2, 3, 0))
-            )
-        else:
-            raise NotImplementedError("Wrong data dimensions")
-
     def set_cmap(
         self,
         cmap=None,
@@ -1539,12 +1652,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for axis in range(self.data_ndim):
             for s in self.spans[axis]:
                 s.setVisible(self.averaged[axis])
-        # if not any(self.averaged):
-        #     self.data_vals = self.data.values
-        # else:
-        #     vals = self.data.values
-        #     self.data_vals = move_mean_centered_multiaxis(vals, self.avg_win)
-        # self._assign_vals_T()
         self._apply_change()
 
     def _get_bin_slice(self, axis):
@@ -1556,10 +1663,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
             return slice(self._last_ind[axis], self._last_ind[axis] + 1)
 
     def _get_binned_data(self, axis):
-        if not self.averaged[axis]:
-            return np.take(self.data_vals_T, self._last_ind[axis], axis=axis - 1)
+        axis -= 1
+        if not self.averaged[axis + 1]:
+            return self.data_vals_T[
+                (slice(None),) * (axis % self.data_ndim)
+                + (self._get_bin_slice(axis + 1),)
+            ].squeeze(axis=axis)
         else:
-            axis -= 1
             return numbagg.nanmean(
                 self.data_vals_T[
                     (slice(None),) * (axis % self.data_ndim)
@@ -1575,15 +1685,18 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return self._block_slice_avg(avg_axis, slices)
         # self._slice_block = self._block_slicer(avg_axis, slices)
         # return numbagg.nanmean(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
-    
+
     def _block_slice_avg(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
-        return numbagg.nanmean(self.data_vals_T[
-            tuple(
-                slices[axis.index(d)] if d in axis else slice(None)
-                for d in range(self.data_ndim)
-            )
-        ], axis=axis)
+        return numbagg.nanmean(
+            self.data_vals_T[
+                tuple(
+                    slices[axis.index(d)] if d in axis else slice(None)
+                    for d in range(self.data_ndim)
+                )
+            ],
+            axis=axis,
+        )
 
     def _block_slicer(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
@@ -1663,8 +1776,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def onMouseDrag(self, evt):
         if self.bench:
             self._t_start = perf_counter()
+        try:
+            axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
+        except AttributeError:
+            axis_ind, datapos = self._get_curr_axes_index(evt.scenePosition())
 
-        axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
         if hasattr(evt, "_buttonDownScenePos"):
             axis_start, _ = self._get_curr_axes_index(evt.buttonDownScenePos())
             if axis_ind != axis_start:
@@ -1810,14 +1926,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 1:
             self.all[i].setData(
                 self.data_coords[0],
-                # self.data_vals_T[self._last_ind[1], :]
-                # self.maps[0].image[self._last_ind[1], :],
                 self._binned_profile([1]),
             )
         elif i == 2:
             self.all[i].setData(
-                # self.data_vals_T[:, self._last_ind[0]],
-                # self.maps[0].image[:, self._last_ind[0]],
                 self._binned_profile([0]),
                 self.data_coords[1],
             )
@@ -1832,14 +1944,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
-                    # self.data_vals_T[:, self._last_ind[2], :],
                     self._get_binned_data(2),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(0, 1),
                 )
             else:
                 self.all[i].setImage(
-                    # self.data_vals_T[:, self._last_ind[2], :],
                     self._get_binned_data(2),
                     rect=self._lims_to_rect(0, 1),
                 )
@@ -1849,7 +1959,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 1:
             if self.clim_locked:
                 self.all[i].setImage(
-                    # self.data_vals_T[self._last_ind[1], :, :],
                     self._get_binned_data(1),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(0, 2),
@@ -1881,21 +1990,16 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif i == 3:
             self.hists[0].setData(
                 self.data_coords[0],
-                # self.data_vals[:, self._last_ind[1], self._last_ind[2]],
                 self._binned_profile((1, 2)),
             )
         elif i == 4:
             self.hists[1].setData(
-                # self.data_vals[self._last_ind[0], :, self._last_ind[2]],
-                # self.maps[0].image[:,self._last_ind[0]],
                 self._binned_profile((0, 2)),
                 self.data_coords[1],
             )
         elif i == 5:
             self.hists[2].setData(
                 self.data_coords[2],
-                # self.data_vals[self._last_ind[0], self._last_ind[1], :],
-                # self.maps[1].image[:, self._last_ind[0]]
                 self._binned_profile((0, 1)),
             )
         elif i in [6, 7, 8]:
@@ -2739,37 +2843,37 @@ class itoolColorControls(QtWidgets.QWidget):
         self.initialize_widgets()
 
     def initialize_widgets(self):
-        cmap_layout = QtWidgets.QGridLayout(self._cmap_group)
+        cmap_layout = InnerQHBoxLayout(self._cmap_group)
         button_layout = InnerQHBoxLayout(self._button_group)
-        cmap_layout.setContentsMargins(0, 0, 0, 0)
+        # cmap_layout.setContentsMargins(0, 0, 0, 0)
 
         self._gamma_spin = QtWidgets.QDoubleSpinBox(
-            self, toolTip="Colormap gamma", singleStep=0.01, value=self.itool.gamma
+            toolTip="Colormap gamma", singleStep=0.01, value=self.itool.gamma
         )
 
         self._gamma_spin.setRange(0.03, 30.0)
         self._gamma_spin.valueChanged.connect(self.set_cmap)
-        gamma_label = QtWidgets.QLabel("g", buddy=self._gamma_spin)
+        gamma_label = QtWidgets.QLabel("γ", buddy=self._gamma_spin)
 
-        self.gamma_func = lambda y: 1000 * np.log10(y)
-        self.gamma_func_inv = lambda x: np.power(10, x / 1000)
+        self.gamma_scale = lambda y: 1000 * np.log10(y)
+        self.gamma_scale_inv = lambda x: np.power(10, x / 1000)
         self._gamma_slider = QtWidgets.QSlider(
-            self,
-            value=self.gamma_func(self.itool.gamma),
+            toolTip="Colormap gamma",
+            value=self.gamma_scale(self.itool.gamma),
             orientation=QtCore.Qt.Horizontal,
         )
-        # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_func(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
+        # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_scale(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
         self._gamma_slider.setRange(
-            self.gamma_func(self._gamma_spin.minimum()),
-            self.gamma_func(self._gamma_spin.maximum()),
+            self.gamma_scale(self._gamma_spin.minimum()),
+            self.gamma_scale(self._gamma_spin.maximum()),
         )
         self._gamma_slider.valueChanged.connect(
-            lambda x: self._gamma_spin.setValue(self.gamma_func_inv(x))
+            lambda x: self._gamma_spin.setValue(self.gamma_scale_inv(x))
         )
 
         self._cmap_combo = ColorMapComboBox(self, maximumWidth=175)
         if isinstance(self.itool.cmap, str):
-            self._cmap_combo.setCurrentText(self.itool.cmap)
+            self._cmap_combo.setDefaultCmap(self.itool.cmap)
 
         self._cmap_combo.textActivated.connect(self._cmap_combo_changed)
 
@@ -2832,17 +2936,17 @@ class itoolColorControls(QtWidgets.QWidget):
         colors_button = IconButton(
             self, on="palette", clicked=self._color_button_clicked
         )
-        # style_combo = QtWidgets.QComboBox(self, toolTip="Qt style")
+        # style_combo = QtWidgets.QComboBox(toolTip="Qt style")
         # style_combo.addItems(qt_style_names())
         # style_combo.textActivated.connect(QtWidgets.QApplication.setStyle)
         # style_combo.setCurrentText("Fusion")
 
-        cmap_layout.addWidget(gamma_label, 0, 0)
-        cmap_layout.addWidget(self._gamma_spin, 0, 1)
-        cmap_layout.addWidget(self._gamma_slider, 0, 2)
+        cmap_layout.addWidget(gamma_label)
+        cmap_layout.addWidget(self._gamma_spin)
+        cmap_layout.addWidget(self._gamma_slider)
 
-        self.layout.addWidget(self._cmap_group)
         self.layout.addWidget(self._cmap_combo)
+        self.layout.addWidget(self._cmap_group)
 
         self.layout.addWidget(self._cmap_r_button)
         self.layout.addWidget(self._cmap_lock_button)
@@ -2874,7 +2978,7 @@ class itoolColorControls(QtWidgets.QWidget):
         reverse = self._cmap_r_button.isChecked()
         gamma = self._gamma_spin.value()
         self._gamma_slider.blockSignals(True)
-        self._gamma_slider.setValue(self.gamma_func(gamma))
+        self._gamma_slider.setValue(self.gamma_scale(gamma))
         self._gamma_slider.blockSignals(False)
         if isinstance(name, str):
             cmap = name
@@ -2910,6 +3014,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.insertItem(0, self.LOAD_ALL_TEXT)
         self.thumbnails_loaded = False
         self.currentIndexChanged.connect(self.load_thumbnail)
+        self.default_cmap = None
 
     def load_thumbnail(self, index):
         if not self.thumbnails_loaded:
@@ -2948,6 +3053,14 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.currentIndexChanged.emit(self.currentIndex())
         self.currentTextChanged.emit(self.currentText())
         super().hidePopup()
+
+    def setDefaultCmap(self, cmap: str):
+        self.default_cmap = cmap
+        self.setCurrentText(cmap)
+
+    def resetCmap(self):
+        if self.default_cmap is not None:
+            self.setCurrentText(self.default_cmap)
 
 
 class itoolBinningControls(QtWidgets.QWidget):
@@ -3030,6 +3143,32 @@ class ImageTool(QtWidgets.QMainWindow):
         self.tab2 = itoolColorControls(self.itool)
         self.tab3 = itoolBinningControls(self.itool)
 
+        self.dockarea = DockArea()
+
+        self.dock1 = ItoolDock(
+            "Cursor", widget=self.tab1, size=(1, 5), autoOrientation=False
+        )
+        self.dock2 = ItoolDock(
+            "Appearance", widget=self.tab2, size=(1, 5), autoOrientation=False
+        )
+        self.dock3 = ItoolDock(
+            "Binning", widget=self.tab3, size=(1, 5), autoOrientation=False
+        )
+
+        self.dock1.layout.setContentsMargins(5, 5, 5, 5)
+        self.dock2.layout.setContentsMargins(5, 5, 5, 5)
+        self.dock3.layout.setContentsMargins(5, 5, 5, 5)
+        self.dockarea.addDock(self.dock3)
+        self.dockarea.addDock(self.dock2, "above", self.dock3)
+        self.dockarea.addDock(self.dock1, "above", self.dock2)
+        self.dockarea.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
+        )
+
+        self.layout.addWidget(self.dockarea)
+        self.layout.addWidget(self.itool)
+        self.resize(700, 700)
+
         # Shortcut: (Description, Action)
         self.keyboard_shortcuts = {
             "R": ("Reverse colormap", self.tab2._cmap_r_button.click),
@@ -3040,31 +3179,7 @@ class ImageTool(QtWidgets.QMainWindow):
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
             sc.activated.connect(v[-1])
-        self.dockarea = DockArea()
 
-        self.dock1 = Dock(
-            "Cursor", widget=self.tab1, size=(1, 1), autoOrientation=False
-        )
-        self.dock2 = Dock(
-            "Appearance", widget=self.tab2, size=(1, 1), autoOrientation=False
-        )
-        self.dock3 = Dock(
-            "Binning", widget=self.tab3, size=(1, 1), autoOrientation=False
-        )
-
-        self.dock1.layout.setContentsMargins(5, 5, 5, 5)
-        self.dock2.layout.setContentsMargins(5, 5, 5, 5)
-        self.dock3.layout.setContentsMargins(5, 5, 5, 5)
-        self.dockarea.addDock(self.dock3)
-        self.dockarea.addDock(self.dock2, "left", self.dock3)
-        self.dockarea.addDock(self.dock1, "left", self.dock2)
-        self.dockarea.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
-        )
-
-        self.layout.addWidget(self.dockarea)
-        self.layout.addWidget(self.itool)
-        self.resize(700, 700)
         self.itool.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.itool.setFocus()
 
@@ -3123,6 +3238,7 @@ if __name__ == "__main__":
     # from guppy import hpy
     # h=hpy()
     import sys
+
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
         # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
@@ -3135,7 +3251,7 @@ if __name__ == "__main__":
     # dat16 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00016.fits',
     # location='BL1001-ERLab').spectrum
     # print(sys.getsizeof(dat.values))
-    print(round(dat.values.nbytes / 1024 / 1024,2))
+    print(dat.nbytes * 2**-20)
     itool(dat)
     # print(h.heap())
     # from erlab.plotting.imagetool_mpl import itoolmpl
