@@ -1,3 +1,5 @@
+"""Various helper functions and extensions to pyqtgraph."""
+
 import numpy as np
 import sys
 import pyqtgraph as pg
@@ -5,7 +7,13 @@ import xarray as xr
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
 
-__all__ = ["parse_data", "xImageItem", "ParameterGroup", "AnalysisWidgetBase"]
+__all__ = [
+    "parse_data",
+    "xImageItem",
+    "ParameterGroup",
+    "AnalysisWidgetBase",
+    "AnalysisWindow",
+]
 
 
 def parse_data(data):
@@ -21,7 +29,7 @@ def parse_data(data):
             ) from None
     elif isinstance(data, np.ndarray):
         data = xr.DataArray(data)
-    return data
+    return data#.astype(float, order="C")
 
 
 def array_rect(data):
@@ -226,7 +234,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
                 self.addItem(self.hists[i], 0, 2 * i + 1, 1, 1)
             self.axes[i].addItem(self.images[i])
             self.hists[i].setImageItem(self.images[i])
-    
+
     def set_input(self, data=None):
         if data is not None:
             self.input = parse_data(data)
@@ -291,23 +299,38 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
     def refresh_all(self):
         self.set_input()
         self.refresh_output()
-        
-    
+
+
 class AnalysisWindow(QtWidgets.QMainWindow):
-    def __init__(self, data=None, title=None, *args, **kwargs):
+    def __init__(self, data, title=None, *args, **kwargs):
         super().__init__()
-        self._main = QtWidgets.QWidget(self)
+
         self.data = parse_data(data)
         if title is None:
             title = self.data.name
         self.setWindowTitle(title)
+
+        self._main = QtWidgets.QWidget(self)
         self.setCentralWidget(self._main)
         self.layout = QtWidgets.QVBoxLayout(self._main)
-    
-    
-    # self.ci = GraphicsLayout(**kargs)
-    # for n in ['nextRow', 'nextCol', 'nextColumn', 'addPlot', 'addViewBox', 'addItem', 'getItem', 'addLayout', 'addLabel', 'removeItem', 'itemIndex', 'clear']:
-    #     setattr(self, n, getattr(self.ci, n))
+
+        self.aw = AnalysisWidgetBase(*args, **kwargs)
+        for n in [
+            "set_input",
+            "set_pre_function",
+            "set_pre_function_args",
+            "set_main_function",
+            "set_main_function_args",
+            "refresh_output",
+            "refresh_all",
+        ]:
+            setattr(self, n, getattr(self.aw, n))
+        self.layout.addWidget(self.aw)
+
+        self.set_input(data)
+
+    def addParameterGroup(self, *args, **kwargs):
+        self.layout.addWidget(ParameterGroup(*args, **kwargs))
 
 
 from scipy.ndimage import gaussian_filter, uniform_filter
@@ -326,7 +349,7 @@ if __name__ == "__main__":
 
     dat = xr.open_dataarray(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-    ).sel(eV=-0.15, method="nearest")
+    ).sel(eV=-0.15, method="nearest").fillna(0)
     win.set_input(dat)
 
     win.set_pre_function(gaussian_filter, sigma=[1, 1], only_values=True)

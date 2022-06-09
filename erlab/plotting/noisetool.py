@@ -13,16 +13,19 @@ import qtawesome as qta
 # import numbagg
 import xarray as xr
 from arpes.analysis.derivative import curvature, d1_along_axis, minimum_gradient
-from erlab.plotting.imagetool import (
-    change_style,
-    move_mean_centered_multiaxis,
-    parse_data,
-)
+if __name__ != "__main__":
+    from .imagetool import move_mean_centered_multiaxis
+    from .interactive import parse_data, xImageItem, AnalysisWidgetBase
+else:
+    from erlab.plotting.imagetool import (
+        move_mean_centered_multiaxis,
+    )
+    from erlab.plotting.interactive import parse_data, xImageItem, AnalysisWidgetBase
+
 from matplotlib import colors
 from PySide6 import QtCore, QtGui, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
-pg.setConfigOption("imageAxisOrder", "row-major")
 
 
 # pg.setConfigOption('useNumba', True)
@@ -119,8 +122,32 @@ def laplacian_O3(f, *varargs):
     else:
         return outvals
 
-
-QtWidgets.QGraphicsScene
+class NoiseToolNew(AnalysisWidgetBase):
+    def __init__(self, data, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_input(data)
+        
+        
+    
+    # def get_smoothfunc(self, amount, num, method="boxcar"):
+    #     if method == "boxcar":
+    #         def func(data):
+    #             out = data.copy(deep=True)
+    #             vals = data.values
+    #             for _ in range(num):
+    #                 vals = uniform_filter(vals, amount, mode="constant", origin=(0, 0))
+    #             out.values = vals
+    #             return out
+    #     elif method == "gaussian":
+    #         def func(data):
+    #             out = data.copy(deep=True)
+    #             vals = data.values
+    #             sigma = [(amount[0] - 1) / 3, (amount[1] - 1) / 3]
+    #             for _ in range(num):
+    #                 vals = gaussian_filter(vals, sigma=sigma)
+    #             out.values = vals
+    #             return out
+    #     return func
 
 
 class NoiseTool(QtWidgets.QMainWindow):
@@ -146,8 +173,8 @@ class NoiseTool(QtWidgets.QMainWindow):
         self.ax2.setXLink(self.ax1)
 
         self.images = [
-            pg.ImageItem(),
-            pg.ImageItem(),
+            pg.ImageItem(axisOrder="row-major"),
+            pg.ImageItem(axisOrder="row-major"),
         ]
         for i, img in enumerate(self.images):
             self.axes[i].addItem(img)
@@ -293,11 +320,11 @@ class NoiseTool(QtWidgets.QMainWindow):
         q3, q1 = np.percentile(data, [75, 25])
         ql = q1 - 1.5 * (q3 - q1)
         qu = q3 + 1.5 * (q3 - q1)
-        i_qu = 100 * (data < qu).mean()
+        i_qu = 100 * (data > qu).mean()
         i_ql = 100 * (data < ql).mean()
         for s in self._color_range_spin:
             s.blockSignals(True)
-        self._color_range_spin[0].setMaximum(100 - i_qu)
+        self._color_range_spin[0].setMaximum(i_qu)
         self._color_range_spin[1].setMaximum(i_ql)
         for s in self._color_range_spin:
             s.blockSignals(False)
@@ -448,7 +475,7 @@ def noisetool(data, *args, **kwargs):
     # if darkdetect.isDark():
     # pass
     app = NoiseTool(data, *args, **kwargs)
-    change_style("Fusion")
+    qapp.setStyle('Fusion')
     app.show()
     app.activateWindow()
     app.raise_()
@@ -468,15 +495,18 @@ if __name__ == "__main__":
     gkmk_cvs = gkmk_cvs.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
     noisetool(gkmk_cvs, bench=False)
 
-    dose_kmk_2 = load_data(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/f_003_R1_S001.pxt",
-        location="BL4",
-    ).spectrum
-    gkmk_cs1 = dose_kmk_2[0, :, :]
-    phi_new = np.linspace(gkmk_cs1.phi[0], gkmk_cs1.phi[-1], 1000)
-    eV_new = np.linspace(gkmk_cs1.eV[0], gkmk_cs1.eV[-1], 2000)
-    gkmk_cs1 = gkmk_cs1.interp(phi=phi_new, eV=eV_new)
-    gkmk_cs1 = gkmk_cs1.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
+    # dose_kmk_2 = load_data(
+    #     "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/f_003_R1_S001.pxt",
+    #     location="BL4",
+    # ).spectrum
+    # gkmk_cs1 = dose_kmk_2[0, :, :]
+    # phi_new = np.linspace(gkmk_cs1.phi[0], gkmk_cs1.phi[-1], 1000)
+    # eV_new = np.linspace(gkmk_cs1.eV[0], gkmk_cs1.eV[-1], 2000)
+    # gkmk_cs1 = gkmk_cs1.interp(phi=phi_new, eV=eV_new)
+    # gkmk_cs1 = gkmk_cs1.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
+    
+    
+    
     # noisetool(gkmk_cs1, bench=False)
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
     # noisetool(dat.sel(eV=0,method='nearest'), bench=False)

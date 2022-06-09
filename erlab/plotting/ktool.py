@@ -4,49 +4,48 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from matplotlib.backends.backend_qtagg import FigureCanvas
-from matplotlib.backends.backend_qtagg import \
-    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.patches import Ellipse
 from matplotlib.transforms import Affine2D
 from arpes.utilities.conversion import convert_to_kspace
 from .bz import plot_hex_bz
-from .imagetool import parse_data
+from .interactive import parse_data
 import copy
 
 
-def plot_bz_tise2(ax=None,a0=3.54,pockets=False,rotation=0,**kwargs):
+def plot_bz_tise2(ax=None, a=3.54, pockets=False, pocket_length=1.5, rotate=0, **kwargs):
     """
     Plots a TiSe2 BZ on top of specified axis.
     """
-    kwargs.setdefault('alpha',1)
-    kwargs.setdefault('color','k')
-    kwargs.setdefault('linestyle','-')
-    kwargs.setdefault('linewidth',0.5)
-    kwargs.setdefault('zorder',5)
+    kwargs.setdefault("alpha", 1)
+    kwargs.setdefault("color", "k")
+    kwargs.setdefault("linestyle", "-")
+    kwargs.setdefault("linewidth", 0.75)
+    kwargs.setdefault("zorder", 5)
     # kwargs.setdefault('ax',plt.gca())
 
     # warnings.warn('Deprecated plot_bz_tise2')
     if ax is None:
         ax = plt.gca()
-    plot_hex_bz(a=3.54, rotate=rotation+30, ax=ax)
+    plot_hex_bz(a=a, rotate=rotate, ax=ax)
     if pockets is True:
-        color = kwargs.pop('color', None)
-        kwargs['edgecolor'] = color
-        kwargs['facecolor'] = 'none'
-        p1 = Ellipse((0, 2*np.pi/(np.sqrt(3)*a0)), width=0.2, height=0.2, **kwargs)
+        color = kwargs.pop("color", None)
+        kwargs["edgecolor"] = color
+        kwargs["facecolor"] = "none"
+        p1 = Ellipse((0, 2 * np.pi / (np.sqrt(3) * a)), width=0.2, height=0.2*pocket_length, **kwargs)
         p2 = copy.deepcopy(p1)
         p3 = copy.deepcopy(p1)
         p4 = copy.deepcopy(p1)
         p5 = copy.deepcopy(p1)
         p6 = copy.deepcopy(p1)
-        p1.set_transform(Affine2D().rotate_deg(rotation+0) + ax.transData)
-        p2.set_transform(Affine2D().rotate_deg(rotation+60) + ax.transData)
-        p3.set_transform(Affine2D().rotate_deg(rotation+120) + ax.transData)
-        p4.set_transform(Affine2D().rotate_deg(rotation+180) + ax.transData)
-        p5.set_transform(Affine2D().rotate_deg(rotation+240) + ax.transData)
-        p6.set_transform(Affine2D().rotate_deg(rotation+300) + ax.transData)
+        p1.set_transform(Affine2D().rotate_deg(rotate - 30 + 0) + ax.transData)
+        p2.set_transform(Affine2D().rotate_deg(rotate - 30 + 60) + ax.transData)
+        p3.set_transform(Affine2D().rotate_deg(rotate - 30 + 120) + ax.transData)
+        p4.set_transform(Affine2D().rotate_deg(rotate - 30 + 180) + ax.transData)
+        p5.set_transform(Affine2D().rotate_deg(rotate - 30 + 240) + ax.transData)
+        p6.set_transform(Affine2D().rotate_deg(rotate - 30 + 300) + ax.transData)
         ax.add_patch(p1)
         ax.add_patch(p2)
         ax.add_patch(p3)
@@ -56,15 +55,27 @@ def plot_bz_tise2(ax=None,a0=3.54,pockets=False,rotation=0,**kwargs):
 
 
 class kTool(QtWidgets.QMainWindow):
-    def __init__(self, data, bounds={'kx':[-1.5,1.5], 'ky':[-1.5,1.5]}, resolution={'kx':0.02, 'ky':0.02}, gamma=0.5, cmap='twilight', *args, **kwargs):
-        super().__init__()
+    def __init__(
+        self,
+        data,
+        bounds={"kx": [-1.5, 1.5], "ky": [-1.5, 1.5]},
+        resolution={"kx": 0.02, "ky": 0.02},
+        gamma=0.5,
+        cmap="twilight",
+        plot_bz=True,
+        a=3.54,
+        rotate=0,
+        *args,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
         self.data = parse_data(data)
-        _get_middle_index = lambda x: len(x)//2 - (1 if len(x) % 2 == 0 else 0)
+        _get_middle_index = lambda x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
         self.has_eV = "eV" in self.data.dims
         self.show_eV = self.has_eV and self.data.ndim == 3
         if self.show_eV:
             self.data_all = self.data.copy(deep=True)
-            self.coord_z = self.data_all['eV'].values
+            self.coord_z = self.data_all["eV"].values
             self.ind_z = _get_middle_index(self.coord_z)
             self.data = self.data_all.isel(eV=self.ind_z)
             self.lims_z = (self.coord_z[0], self.coord_z[-1])
@@ -81,16 +92,21 @@ class kTool(QtWidgets.QMainWindow):
         self.vals = self.data.values
         self.bounds = bounds
         self.resolution = resolution
-        self.kxy = convert_to_kspace(self.data, bounds=self.bounds, resolution=self.resolution).T
+        self.kxy = convert_to_kspace(
+            self.data, bounds=self.bounds, resolution=self.resolution
+        ).T
         self.gamma = gamma
         self.cmap = cmap
         self.visible = True
         self.background = None
         improps = dict(
-            animated=True, visible=True,
-            interpolation='none', aspect='auto', origin='lower',
-            norm=colors.PowerNorm(self.gamma), 
-            cmap=self.cmap
+            animated=True,
+            visible=True,
+            interpolation="none",
+            aspect="auto",
+            origin="lower",
+            norm=colors.PowerNorm(self.gamma),
+            cmap=self.cmap,
         )
 
         self._main = QtWidgets.QWidget()
@@ -100,19 +116,24 @@ class kTool(QtWidgets.QMainWindow):
         self.new_offsets_rad = {}
         self.new_offsets_deg = {}
 
-        self.canvas = FigureCanvas(Figure(figsize=(8,16),dpi=100))
-        self.addToolBar(QtCore.Qt.BottomToolBarArea,
-                        NavigationToolbar(self.canvas, self))
+        self.canvas = FigureCanvas(
+            Figure(figsize=(8, 16), dpi=100, layout="constrained")
+        )
+        self.addToolBar(
+            QtCore.Qt.BottomToolBarArea, NavigationToolbar(self.canvas, self)
+        )
 
         gs = self.canvas.figure.add_gridspec(1, 2)
         self.ax0 = self.canvas.figure.add_subplot(gs[0])
         self.ax1 = self.canvas.figure.add_subplot(gs[1])
         self.ax0.grid()
         self.ax1.grid()
-        self.ax0.set_aspect('equal')
-        self.ax1.set_aspect('equal')
+        self.ax0.set_aspect("equal")
+        self.ax1.set_aspect("equal")
 
-        self.im_r = self.ax0.imshow(self.vals, extent=(*self.lims_x, *self.lims_y), **improps)
+        self.im_r = self.ax0.imshow(
+            self.vals, extent=(*self.lims_x, *self.lims_y), **improps
+        )
 
         self._update_extent()
         self.im_k = self.ax1.imshow(self.kxy.values, extent=self.extent, **improps)
@@ -120,11 +141,13 @@ class kTool(QtWidgets.QMainWindow):
         self.ax0.set_ylabel(self.dim_y)
         self.ax1.set_xlabel(self.dim_kx)
         self.ax1.set_ylabel(self.dim_ky)
+        self.ax1.axline((0,0), (-np.pi/np.sqrt(3)/3.54,  np.pi/3.54), ls='--', lw=0.75, c="k")
+        self.ax1.axline((0,0), (-np.pi/np.sqrt(3)/3.54,  -np.pi/3.54), ls='--', lw=0.75, c="k")
 
         self.offsetpanel = QtWidgets.QWidget()
         offsetpanelcontent = QtWidgets.QHBoxLayout()
-        
-        self.offsetcoords = ['theta','phi','beta','psi','chi']
+
+        self.offsetcoords = ["theta", "phi", "beta", "psi", "chi"]
 
         spin0label = QtWidgets.QLabel(self.offsetcoords[0])
         spin1label = QtWidgets.QLabel(self.offsetcoords[1])
@@ -162,7 +185,6 @@ class kTool(QtWidgets.QMainWindow):
         self.spin2.valueChanged.connect(lambda v: self._spinchanged(2, v))
         self.spin3.valueChanged.connect(lambda v: self._spinchanged(3, v))
         self.spin4.valueChanged.connect(lambda v: self._spinchanged(4, v))
-        
 
         offsetpanelcontent.addWidget(spin0label)
         offsetpanelcontent.addWidget(self.spin0)
@@ -179,7 +201,7 @@ class kTool(QtWidgets.QMainWindow):
 
         self.colorstab = QtWidgets.QWidget()
         colorstabcontent = QtWidgets.QHBoxLayout()
-        gammalabel = QtWidgets.QLabel('g')
+        gammalabel = QtWidgets.QLabel("g")
         gammaspin = QtWidgets.QDoubleSpinBox()
         gammaspin.setToolTip("Colormap Gamma")
         gammaspin.setSingleStep(0.05)
@@ -238,35 +260,40 @@ class kTool(QtWidgets.QMainWindow):
         self.kxmaxspin.setSingleStep(0.05)
         self.kyminspin.setSingleStep(0.05)
         self.kymaxspin.setSingleStep(0.05)
-        self.kxminspin.setRange(-50,50)
-        self.kxmaxspin.setRange(-50,50)
-        self.kyminspin.setRange(-50,50)
-        self.kymaxspin.setRange(-50,50)
-        self.kxminspin.setValue(self.bounds['kx'][0])
-        self.kxmaxspin.setValue(self.bounds['kx'][1])
-        self.kyminspin.setValue(self.bounds['ky'][0])
-        self.kymaxspin.setValue(self.bounds['ky'][1])
-        self.kxminspin.valueChanged.connect(lambda v: self._set_bounds('kx', 0, v))
-        self.kxmaxspin.valueChanged.connect(lambda v: self._set_bounds('kx', 1, v))
-        self.kyminspin.valueChanged.connect(lambda v: self._set_bounds('ky', 0, v))
-        self.kymaxspin.valueChanged.connect(lambda v: self._set_bounds('ky', 1, v))
-        self.kxresspin.setValue(self.resolution['kx'])
-        self.kyresspin.setValue(self.resolution['ky'])
+        self.kxminspin.setRange(-50, 50)
+        self.kxmaxspin.setRange(-50, 50)
+        self.kyminspin.setRange(-50, 50)
+        self.kymaxspin.setRange(-50, 50)
+        self.kxminspin.setValue(self.bounds["kx"][0])
+        self.kxmaxspin.setValue(self.bounds["kx"][1])
+        self.kyminspin.setValue(self.bounds["ky"][0])
+        self.kymaxspin.setValue(self.bounds["ky"][1])
+        self.kxminspin.valueChanged.connect(lambda v: self._set_bounds("kx", 0, v))
+        self.kxmaxspin.valueChanged.connect(lambda v: self._set_bounds("kx", 1, v))
+        self.kyminspin.valueChanged.connect(lambda v: self._set_bounds("ky", 0, v))
+        self.kymaxspin.valueChanged.connect(lambda v: self._set_bounds("ky", 1, v))
+        self.kxresspin.setValue(self.resolution["kx"])
+        self.kyresspin.setValue(self.resolution["ky"])
         self.kxresspin.setSingleStep(0.001)
         self.kyresspin.setSingleStep(0.001)
         self.kxresspin.setMinimum(0.001)
         self.kyresspin.setMinimum(0.001)
-        self.kxresspin.valueChanged.connect(lambda v: self._set_resolution('kx', v))
-        self.kyresspin.valueChanged.connect(lambda v: self._set_resolution('ky', v))
+        self.kxresspin.valueChanged.connect(lambda v: self._set_resolution("kx", v))
+        self.kyresspin.valueChanged.connect(lambda v: self._set_resolution("ky", v))
         self.kxresspin.setDecimals(3)
         self.kyresspin.setDecimals(3)
-
-        
 
         self.tabwidget = QtWidgets.QTabWidget()
         self.tabwidget.addTab(self.offsetpanel, "Offsets")
         self.tabwidget.addTab(self.boundstab, "Bounds")
         self.tabwidget.addTab(self.colorstab, "Colors")
+        self.tabwidget.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
+        )
+        self.canvas.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Expanding
+        )
+
         self.layout.addWidget(self.tabwidget)
         if self.show_eV:
             zvaluepanel = QtWidgets.QWidget()
@@ -280,17 +307,17 @@ class kTool(QtWidgets.QMainWindow):
             self.zslider.setSingleStep(1)
             self.zslider.setPageStep(10)
             self.zslider.setMinimum(0)
-            self.zslider.setMaximum(len(self.coord_z)-1)
+            self.zslider.setMaximum(len(self.coord_z) - 1)
             self.zslider.setValue(self.ind_z)
             self.zslider.valueChanged.connect(self._zsliderchanged)
             zvaluecontent.addWidget(self.zspin)
             zvaluecontent.addWidget(self.zslider)
             self.layout.addWidget(zvaluepanel)
-        
+
         self.layout.addWidget(self.canvas)
         # self.canvas.mpl_connect('draw_event', self.clear)
-
-        plot_bz_tise2(ax=self.ax1, pockets=True)
+        if plot_bz:
+            plot_bz_tise2(a=a, ax=self.ax1, rotate=rotate, pockets=False)
         self.canvas.draw()
         self.spin4.setValue(np.rad2deg(data.chi))
         # self.im_r.set_visible(self.visible)
@@ -303,10 +330,10 @@ class kTool(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         # do stuff
-        print('ktool closed with offsets')
-        print('in radians:')
+        print("ktool closed with offsets")
+        print("in radians:")
         print(self.new_offsets_rad)
-        print('in degrees:')
+        print("in degrees:")
         print(self.new_offsets_deg)
         event.accept()
 
@@ -314,7 +341,7 @@ class kTool(QtWidgets.QMainWindow):
         self.im_r.set_visible(self.visible)
         self.im_k.set_visible(self.visible)
         # if self.background is not None:
-            # self.canvas.restore_region(self.background)
+        # self.canvas.restore_region(self.background)
         self.ax0.draw_artist(self.im_r)
         self.ax1.draw_artist(self.im_k)
         # self.canvas.blit()
@@ -329,17 +356,17 @@ class kTool(QtWidgets.QMainWindow):
         self.bounds[ax][ind] = value
         self._update_kxy()
         self._update_plots()
-        if (ax == 'kx') & (ind == 0):
+        if (ax == "kx") & (ind == 0):
             self.kxmaxspin.setMinimum(value)
-        elif (ax == 'kx') & (ind == 1):
+        elif (ax == "kx") & (ind == 1):
             self.kxminspin.setMaximum(value)
-        elif (ax == 'ky') & (ind == 0):
+        elif (ax == "ky") & (ind == 0):
             self.kymaxspin.setMinimum(value)
-        elif (ax == 'ky') & (ind == 1):
+        elif (ax == "ky") & (ind == 1):
             self.kyminspin.setMaximum(value)
 
     def _zspinchanged(self, value):
-        self.ind_z = np.rint((value-self.lims_z[0])/self.inc_z).astype(int)
+        self.ind_z = np.rint((value - self.lims_z[0]) / self.inc_z).astype(int)
         self.zslider.blockSignals(True)
         self.zslider.setValue(self.ind_z)
         self.zslider.blockSignals(False)
@@ -362,7 +389,7 @@ class kTool(QtWidgets.QMainWindow):
         self.vals = self.data.values
         self.im_r.set_data(self.vals)
         self.im_r.set_norm(colors.PowerNorm(self.gamma))
-    
+
     def _set_gamma(self, gamma):
         self.gamma = gamma
         self.im_r.set_norm(colors.PowerNorm(self.gamma))
@@ -386,8 +413,9 @@ class kTool(QtWidgets.QMainWindow):
         self._update_plots()
 
     def _update_kxy(self):
-        self.kxy = convert_to_kspace(self.data,
-            bounds=self.bounds, resolution=self.resolution).T
+        self.kxy = convert_to_kspace(
+            self.data, bounds=self.bounds, resolution=self.resolution
+        ).T
         self.im_k.set_data(self.kxy.values)
         self._update_extent()
         self.im_k.set_extent(self.extent)
@@ -406,19 +434,33 @@ class kTool(QtWidgets.QMainWindow):
         self.extent = (*self.lims_kx, *self.lims_ky)
 
 
-def ktool(data, *args, **kwargs):
+def ktool(data, execute=None, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    with plt.rc_context({
-        'text.usetex':False,
-    #     #  'mathtext.fontset':'stixsans',
-        'font.size':7,
-        'font.family':'sans',
-    }):
-        app = kTool(data, *args, **kwargs)
-    qapp.setStyle('Fusion')
-    app.show()
-    app.activateWindow()
-    app.raise_()
-    qapp.exec()
+    with plt.rc_context(
+        {
+            "text.usetex": False,
+            #     #  'mathtext.fontset':'stixsans',
+            "font.size": 7,
+            "font.family": "sans",
+        }
+    ):
+        win = kTool(data, *args, **kwargs)
+        win.show()
+        win.activateWindow()
+        win.raise_()
+    if execute is None:
+        execute = True
+        try:
+            shell = get_ipython().__class__.__name__  # type: ignore
+            if shell == "ZMQInteractiveShell":
+                execute = False
+            elif shell == "TerminalInteractiveShell":
+                execute = False
+        except NameError:
+            pass
+    if execute:
+        qapp.exec()
+    qapp.setStyle("Fusion")
+    return win

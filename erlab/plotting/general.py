@@ -6,20 +6,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from arpes.plotting.utils import fancy_labels
+from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
+import matplotlib.projections
 
 from .annotations import label_subplot_properties
 from .colors import get_mappable, image_is_light, proportional_colorbar
 
 __all__ = [
-    "proportional_colorbar",
     "LabeledCursor",
+    "place_inset",
     "plot_array",
     "plot_slices",
     "figwh",
     "fermiline",
 ]
-
 
 figure_width_ref = dict(
     aps=[3.4, 7.0],
@@ -63,16 +64,14 @@ class LabeledCursor(AxesWidget):
         See also `~.Axes.axhline`.
     """
 
-    def __init__(
-        self,
-        ax,
-        horizOn=True,
-        vertOn=True,
-        textOn=True,
-        useblit=True,
-        textprops={},
-        **lineprops
-    ):
+    def __init__(self,
+                 ax,
+                 horizOn=True,
+                 vertOn=True,
+                 textOn=True,
+                 useblit=True,
+                 textprops={},
+                 **lineprops):
         super().__init__(ax)
 
         self.connect_event("motion_notify_event", self.onmove)
@@ -101,8 +100,7 @@ class LabeledCursor(AxesWidget):
                 horizontalalignment="right",
                 verticalalignment="top",
                 transform=ax.transAxes,
-            )
-        )
+            ))
 
         self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
         self.linev = ax.axvline(ax.get_xbound()[0], **lineprops)
@@ -161,19 +159,106 @@ class LabeledCursor(AxesWidget):
         return False
 
 
-def plot_array(
-    arr: xr.DataArray,
-    ax=None,
-    colorbar_kw=dict(),
-    cursor=False,
-    cursor_kw=dict(),
-    xlim=None,
-    ylim=None,
-    **improps
-):
+def place_inset(parent_axes,
+                width,
+                height,
+                pad=0.1,
+                loc="upper right",
+                polar=False,
+                **kwargs):
+    """Place inset axes, top right of parent
+
+    Parameters
+    ----------
+    parent_axes : matplotlib.axes.Axes
+        Axes to place the inset axes.
+    width, height : float or str
+        Size of the inset axes to create. If a float is provided, it is
+        the size in inches, e.g. `width=1.3`. If a string is provided, it is
+        the size in relative units, e.g. `width='40%'` to the parent_axes.
+    pad : float or 2-tuple of floats, optional
+        Pad between parent axes and inset in inches, by default 0.1
+    loc : str, default: 'upper right'
+        Location to place the inset axes. Valid locations are
+        'upper left', 'upper center', 'upper right',
+        'center left', 'center', 'center right',
+        'lower left', 'lower center, 'lower right'.
+    """
+
+    fig = parent_axes.get_figure()
+    sizes = [width, height]
+
+    ax_sizes = (parent_axes.get_window_extent().transformed(
+        fig.dpi_scale_trans.inverted()).bounds[2:])
+    from numbers import Number
+
+    for i, size in enumerate(sizes):
+        if isinstance(size, Number):
+            sizes[i] = size / ax_sizes[i]
+        elif isinstance(size, str):
+            if size[-1] == "%":
+                sizes[i] = float(size[:-1]) / 100
+        else:
+            raise ValueError("Unknown format")
+
+    bounds = [1 - sizes[0], 1 - sizes[1]]
+    pad_num = False
+    if isinstance(pad, Number):
+        pad_num = True
+        pad = [pad, pad]
+    pads = [-pad[0], -pad[1]]
+
+    if "center" in loc:
+        bounds[0] /= 2
+        bounds[1] /= 2
+        pads[0] *= -1
+        pads[1] *= -1
+        if "upper" in loc or "lower" in loc:
+            if pad_num:
+                pads[0] = 0
+            pads[1] *= -1
+            bounds[1] *= 2
+        elif "left" in loc or "right" in loc:
+            if pad_num:
+                pads[1] = 0
+            pads[0] *= -1
+            bounds[0] *= 2
+    if "left" in loc:
+        bounds[0] = 0
+        pads[0] *= -1
+    if "lower" in loc:
+        bounds[1] = 0
+        pads[1] *= -1
+
+    tform = parent_axes.transAxes + ScaledTranslation(*pads,
+                                                      fig.dpi_scale_trans)
+
+    if not polar:
+        return parent_axes.inset_axes(bounds + sizes,
+                                      transform=tform,
+                                      **kwargs)
+    else:
+        prect = (fig.transFigure.inverted() +
+                 parent_axes.transAxes).transform(bounds + sizes)
+        print(prect)
+        return fig.add_axes(prect, projection="polar", **kwargs)
+
+
+def plot_array(arr: xr.DataArray,
+               ax=None,
+               colorbar_kw=dict(),
+               cursor=False,
+               cursor_kw=dict(),
+               xlim=None,
+               ylim=None,
+               func=None,
+               func_args=dict(),
+               **improps):
     """Plots a 2D `xr.DataArray` using imshow, which is much faster."""
     if isinstance(arr, xr.Dataset):
         arr = arr.spectrum
+    elif isinstance(arr, np.ndarray):
+        arr = xr.DataArray(arr)
     if ax is None:
         ax = plt.gca()
     if xlim is not None and not np.iterable(xlim):
@@ -219,7 +304,10 @@ def plot_array(
     for k, v in improps_default.items():
         improps.setdefault(k, v)
 
-    img = ax.imshow(arr.values, **improps)
+    if func is not None:
+        img = ax.imshow(func(arr.values, **func_args), **improps)
+    else:
+        img = ax.imshow(arr.values, **improps)
     ax.set_xlabel(arr.dims[1])
     ax.set_ylabel(arr.dims[0])
     if xlim is not None:
@@ -235,25 +323,23 @@ def plot_array(
         return img
 
 
-def plot_slices(
-    maps,
-    figsize=None,
-    transpose=False,
-    xlim=None,
-    ylim=None,
-    axis="auto",
-    show_all_labels=False,
-    colorbar="none",
-    hide_colorbar_ticks=True,
-    annotate=True,
-    order="C",
-    cmap_order="C",
-    norm_order=None,
-    subplot_kw=dict(),
-    annotate_kw=dict(),
-    colorbar_kw=dict(),
-    **values
-):
+def plot_slices(maps,
+                figsize=None,
+                transpose=False,
+                xlim=None,
+                ylim=None,
+                axis="auto",
+                show_all_labels=False,
+                colorbar="none",
+                hide_colorbar_ticks=True,
+                annotate=True,
+                order="C",
+                cmap_order="C",
+                norm_order=None,
+                subplot_kw=dict(),
+                annotate_kw=dict(),
+                colorbar_kw=dict(),
+                **values):
     r"""Automated comparison plot of slices.
 
     Parameters
@@ -402,13 +488,11 @@ def plot_slices(
             #         **kwargs
             #     )
             # else:
-            plot_array(
-                maps[j].S.fat_sel(**fatsel_kw),
-                ax=ax,
-                norm=norm,
-                cmap=cmap,
-                **kwargs
-            )
+            plot_array(maps[j].S.fat_sel(**fatsel_kw),
+                       ax=ax,
+                       norm=norm,
+                       cmap=cmap,
+                       **kwargs)
 
     for ax in axes.flatten():
         if not show_all_labels:
@@ -432,12 +516,10 @@ def plot_slices(
     if annotate:
         if slice_dim == "eV":
             slice_dim = "Eb"
-        label_subplot_properties(
-            axes,
-            values={slice_dim: slice_levels * len(maps)},
-            order=order,
-            **annotate_kw
-        )
+        label_subplot_properties(axes,
+                                 values={slice_dim: slice_levels * len(maps)},
+                                 order=order,
+                                 **annotate_kw)
     return fig, axes
 
 
@@ -447,7 +529,8 @@ def fermiline(ax=None, **kwargs):
     default_color = "k"
     mappable = get_mappable(ax, error=False)
     if mappable is not None:
-        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+        if isinstance(mappable,
+                      (mpl.image._ImageBase, mpl.collections.QuadMesh)):
             if not image_is_light(mappable):
                 default_color = "w"
     c = kwargs.pop("color", kwargs.pop("c", default_color))
