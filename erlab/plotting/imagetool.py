@@ -4,7 +4,6 @@ import weakref
 from itertools import chain, compress
 from time import perf_counter
 
-import bottleneck as bn
 import darkdetect
 import matplotlib.mathtext
 import numba
@@ -21,7 +20,6 @@ from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from PySide6 import QtSvg, QtSvgWidgets
-from superqt import QDoubleSlider
 
 if __name__ != "__main__":
     from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
@@ -35,7 +33,6 @@ else:
     from erlab.plotting.interactive import parse_data, xImageItem
 
 
-# pg.setConfigOption("imageAxisOrder", "row-major")
 # pg.setConfigOption('useNumba', True)
 # pg.setConfigOption('background', 'w')
 # pg.setConfigOption('foreground', 'k')
@@ -259,43 +256,6 @@ def qt_style_names():
 
 def change_style(style_name):
     QtWidgets.QApplication.setStyle(QtWidgets.QStyleFactory.create(style_name))
-
-
-def move_mean_centered(a, window, min_count=None, axis=-1):
-    w = (window - 1) // 2
-    shift = w + 1
-    if min_count is None:
-        min_count = w + 1
-    pad_width = [(0, 0)] * a.ndim
-    pad_width[axis] = (0, shift)
-    a = np.pad(a, pad_width, constant_values=np.nan)
-    val = bn.move_mean(a, window, min_count=min_count, axis=axis)
-    return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
-
-
-def move_mean_centered_multiaxis(a, window_list, min_count_list=None):
-    w_list = [(window - 1) // 2 for window in window_list]
-    pad_width = [(0, 0)] * a.ndim
-    slicer = [
-        slice(None),
-    ] * a.ndim
-    if min_count_list is None:
-        min_count_list = [w + 1 for w in w_list]
-    for axis in range(a.ndim):
-        pad_width[axis] = (0, w_list[axis] + 1)
-        slicer[axis] = slice(w_list[axis], -1)
-    a = np.pad(a, pad_width, constant_values=np.nan)
-    val = move_mean(a, numba.typed.List(window_list), numba.typed.List(min_count_list))
-    return val[tuple(slicer)]
-
-
-def move_mean(a, window, min_count):
-    if a.ndim == 3:
-        return move_mean3d(a, window, min_count)
-    elif a.ndim == 2:
-        return move_mean2d(a, window, min_count)
-    else:
-        raise NotImplementedError
 
 
 # @numba.njit(nogil=True, cache=True, fastmath={'nnan','ninf', 'nsz', 'contract', 'reassoc', 'afn', 'arcp'})
@@ -935,6 +895,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.cmap = cmap
         self.reverse = reverse
         self.bench = bench
+        if self.bench:
+            self._fpsLastUpdate = perf_counter()
+            self._avg_fps = 0.0
         self.colorbar = None
         self.plot_kw = plot_kw
         self.cursor_kw = cursor_kw
@@ -1050,11 +1013,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
             self.ci.layout.setRowStretchFactor(i, row_factor[i])
         for j in range(self.ci.layout.columnCount()):
+            col_index = (-j - 1) % len(col_factor)
             self.ci.layout.setColumnPreferredWidth(
                 j,
-                self.ci.width() * col_factor[-j - 1] / np.sum(col_factor),
+                self.ci.width() * col_factor[col_index] / np.sum(col_factor),
             )
-            self.ci.layout.setColumnStretchFactor(j, col_factor[-j - 1])
+            self.ci.layout.setColumnStretchFactor(j, col_factor[col_index])
         #         self.ci.layout.setColumnMinimumWidth(j, 0)
         #         self.ci.layout.setColumnMaximumWidth(j, self.ci.width())
 
@@ -1316,7 +1280,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return self.maps + self.hists + self.cursors
 
     def toggle_axes(self, axis):
-
         target = self.axes[axis]
         toggle = False if target in self.ci.items.keys() else True
 
@@ -1349,7 +1312,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
             top_left = (1, 4)
             bottom_right = (5, 2)
-            top_right = (6, 3)
+            top_right = (3, 6)
 
         if axis in top_left:
             group = top_left
@@ -1369,18 +1332,31 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return
 
         anchors = tuple(ref_dims[i][:2] for i in group)
-        other = self.axes[group[group.index(axis) - 1]]
-        unique = False if other in self.ci.items.keys() else True
+        other_index = [x for x in group if x != axis and self.axes[x] in self.ci.items.keys()]
+        other = [self.axes[i] for i in other_index]
+        unique = True if len(other) == 0 else False
         if not toggle:
             self.removeItem(target)
             if not unique:
-                self.removeItem(other)
-                self.addItem(other, *anchors[0], *totalspan)
+                for o in other:
+                    self.removeItem(o)
+                    self.addItem(o, *anchors[0], *totalspan)
         else:
             if unique:
                 self.addItem(target, *anchors[0], *totalspan)
             else:
-                self.removeItem(other)
+                # for i, o, oi in enumerate(zip(other, other_index)):
+                    # self.removeItem(o)
+                # for o, oi in zip(other, other_index):
+                #     self.removeItem(o)
+                # self.addItem(self.axes[group[0]], *ref_dims[axis])
+                # for o, oi in zip(other, other_index):
+                #     self.addItem(o, *ref_dims[oi])
+                # for a in group:
+                #     ax = self.axes[a]
+                #     if ax in self.ci.items.keys():
+                #         self.removeItem(ax)
+                #     self.addItem(ax, *ref_dims[a])
                 self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
                 self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
@@ -1524,15 +1500,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         )
         self.scene().sigMouseClicked.connect(self.onMouseDrag)
 
-        if self.bench:
-            from collections import deque
-
-            self._elapsed = deque(maxlen=100)
-            timer = QtCore.QTimer()
-            # timer.timeout.connect(self._apply_change)
-            timer.start(0)
-            self._fpsLastUpdate = perf_counter()
-
     def _get_curr_axes_index(self, pos):
         for i, ax in enumerate(self.axes):
             if ax.vb.sceneBoundingRect().contains(pos):
@@ -1542,18 +1509,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return -1, self._get_mouse_datapos(self.colorbar, pos)
         return None, None
 
-    def reset_timer(self, *args):
-        self._elapsed.clear()
-
     def _measure_fps(self):
-        self.qapp.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents)
-        self._t_end = perf_counter()
-        self._elapsed.append(self._t_end - self._t_start)
-        if self._t_end - self._fpsLastUpdate > 0.2:
-            self._fpsLastUpdate = self._t_end
-            average = np.mean(self._elapsed)
-            fps = 1 / average
-            self.axes[1].setTitle("%0.2f fps - %0.1f ms avg" % (fps, average * 1_000))
+        now = perf_counter()
+        fps = 1.0 / (now - self._fpsLastUpdate)
+        self._fpsLastUpdate = now
+        w = 0.8
+        self._avg_fps = self._avg_fps * (1 - w) + fps * w
+        self.axes[1].setTitle("%0.2f fps" % self._avg_fps)
 
     def labelify(self, text):
         """Prettify some frequently used axis labels."""
@@ -1774,12 +1736,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return mouse_point.x(), mouse_point.y()
 
     def onMouseDrag(self, evt):
-        if self.bench:
-            self._t_start = perf_counter()
         try:
             axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
         except AttributeError:
-            axis_ind, datapos = self._get_curr_axes_index(evt.scenePosition())
+            try:
+                axis_ind, datapos = self._get_curr_axes_index(evt.scenePosition())
+            except AttributeError:
+                axis_ind, datapos = self._get_curr_axes_index(evt[0])
 
         if hasattr(evt, "_buttonDownScenePos"):
             axis_start, _ = self._get_curr_axes_index(evt.buttonDownScenePos())
@@ -1827,8 +1790,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if not self.snap:
             self.cursor_pos = V
         self._apply_change(D)
-        if self.bench:
-            self._measure_fps()
 
     def _apply_change(self, cond=None):
         if cond is None:
@@ -1881,6 +1842,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
             raise ValueError
         for i in get_true_indices(update):
             self._refresh_data(i)
+        if self.bench:
+            self._measure_fps()
 
     @suppressnanwarning
     def _refresh_data(self, i):
@@ -2409,7 +2372,7 @@ class betterIsocurve(pg.IsocurveItem):
         super().setData(data, level)
 
 
-class ItoolColorBar(pg.PlotItem):
+class ItoolColorBar(ItoolPlotItem):
     def __init__(
         self,
         itool,
@@ -2423,8 +2386,7 @@ class ItoolColorBar(pg.PlotItem):
         *args,
         **kwargs,
     ):
-        super(ItoolColorBar, self).__init__(*args, **kwargs)
-        self.itool = itool
+        super(ItoolColorBar, self).__init__(itool, *args, **kwargs)
         self.setDefaultPadding(0)
         self.cbar = ItoolImageItem(self.itool, axisOrder="row-major")
         self.npts = 4096
@@ -3095,10 +3057,6 @@ class itoolBinningControls(QtWidgets.QWidget):
         # bin_layout.addStretch()
         # self.layout.addWidget(self._bin_group)
 
-    def initialize_functions(self):
-        # numba overhead
-        move_mean_centered_multiaxis(np.zeros((2, 2, 2), dtype=np.float64), [1, 1, 1])
-
     def _navg_reset(self):
         for i in range(self.ndim):
             self._spin[i].blockSignals(True)
@@ -3197,7 +3155,7 @@ class ImageTool(QtWidgets.QMainWindow):
 
 def itool(data, execute=None, *args, **kwargs):
 
-    # TODO: implement multiple windows, add transpose, equal aspect settings
+    # TODO: implement multiple windows, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -3237,14 +3195,16 @@ if __name__ == "__main__":
     # from arpes.io import load_data
     # from guppy import hpy
     # h=hpy()
-    import sys
+    # import sys
 
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
-        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    )  # .sel(eV=-0.15, method="nearest")
-    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc')
+        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+    ) # .sel(eV=-0.15, method="nearest")
+    # dat = xr.open_dataarray(
+        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
+    # )
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
     # location='BL1001-ERLab').spectrum
@@ -3252,7 +3212,7 @@ if __name__ == "__main__":
     # location='BL1001-ERLab').spectrum
     # print(sys.getsizeof(dat.values))
     print(dat.nbytes * 2**-20)
-    itool(dat)
+    itool(dat, bench=False)
     # print(h.heap())
     # from erlab.plotting.imagetool_mpl import itoolmpl
     # itoolmpl(dat)
