@@ -2,7 +2,7 @@ name: erlab
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python>=3.10
   - ipython
   - pip>=19.3
   - setuptools
@@ -11,12 +11,17 @@ dependencies:
   - libcblas=*=*accelerate
   - liblapack=*=*accelerate
   - liblapacke=*=*accelerate
+  - h5netcdf
+  - varname
+  - cmocean
+  - cmasher
   - numpy=1.21.*
   - scipy>=1.7.3
   - matplotlib>=3.5.0
   - h5py>=3.2.1
   - netCDF4>=1.5.0
   - astropy
+  - superqt>=0.3.1
   - dill
   - llvm-openmp>=13.0.0
   - llvmlite
