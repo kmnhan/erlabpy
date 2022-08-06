@@ -15,11 +15,21 @@ from pathlib import Path
 import arpes
 import arpes.endstations
 import h5netcdf
+import igor.igorpy
+
 import numpy as np
 import xarray as xr
+from arpes import load_pxt
 from astropy.io import fits
 
-__all__ = ["showfitsinfo", "save_as_netcdf", "load_ssrl"]
+__all__ = [
+    "showfitsinfo",
+    "save_as_netcdf",
+    "load_igor_pxp",
+    "load_igor_ibw",
+    "load_igor_h5",
+    "load_ssrl",
+]
 
 
 def showfitsinfo(path: str):
@@ -92,9 +102,101 @@ def save_as_fits():
     pass
 
 
-def load_ssrl(filename):
+def parse_livepolar(wave, normalize=False):
+    wave = wave.rename({"W": "eV", "X": "phi", "Y": "theta"})
+    new_coords = {}
+    new_coords["alpha"] = np.pi / 2
+    new_coords["beta"] = np.deg2rad(wave.attrs["tilt"])
+    new_coords["phi"] = np.deg2rad(wave["phi"])
+    new_coords["theta"] = np.deg2rad(wave["theta"])
+    new_coords["chi"] = np.deg2rad(wave.attrs["azimuth"])
+    new_coords["hv"] = wave.attrs["hv"]
+    new_coords["psi"] = 0.0
+    new_coords["eV"] = wave["eV"] - wave.attrs["hv"]
+    wave = wave.assign_coords(new_coords)
+    wave /= wave.attrs["mesh_current"]
+    if normalize:
+        wave = arpes.preparation.normalize_dim(wave, "theta")
+    return wave
+
+
+def parse_livexy(wave):
+    wave = wave.rename({"W": "eV", "X": "y", "Y": "x"})
+    new_coords = {}
+    new_coords["alpha"] = np.pi / 2
+    new_coords["beta"] = np.deg2rad(wave.attrs["tilt"])
+    # new_coords["phi"] = np.deg2rad(wave["phi"])
+    new_coords["theta"] = np.deg2rad(wave.attrs["polar"])
+    new_coords["chi"] = np.deg2rad(wave.attrs["azimuth"])
+    new_coords["hv"] = wave.attrs["hv"]
+    new_coords["psi"] = 0.0
+    new_coords["eV"] = wave["eV"] - wave.attrs["hv"]
+    wave = wave.assign_coords(new_coords)
+    wave /= wave.attrs["mesh_current"]
+    return wave
+
+
+def process_wave(arr):
+    arr = arr.where(arr != 0)
+    for d in arr.dims:
+        arr = arr.sortby(d)
+    return arr
+
+
+def load_igor_pxp(filename, recursive=False, **kwargs):
+    expt = load_pxt.read_experiment(filename, **kwargs)
+    waves = dict()
+
+    def unpack_folders(expt):
+        for e in expt:
+            try:
+                arr = process_wave(load_pxt.wave_to_xarray(e))
+                if "xy" in arr.name or "XY" in arr.name:
+                    arr = parse_livexy(arr)
+                elif "lp" in arr.name or "LP" in arr.name:
+                    arr = parse_livepolar(arr)
+                waves[arr.name] = arr
+                print(arr.name)
+            except AttributeError:
+                pass
+            if recursive and isinstance(e, igor.igorpy.Folder):
+                unpack_folders(e)
+
+    unpack_folders(expt)
+    return waves
+
+
+def load_igor_h5(filename):
+    ncf = h5netcdf.File(filename, mode="r", phony_dims="sort")
+    ds = xr.open_dataset(xr.backends.H5NetCDFStore(ncf))
+    for dv in ds.data_vars:
+        wavescale = ds[dv].attrs["IGORWaveScaling"]
+        ds = ds.assign_coords(
+            {
+                dim: wavescale[i + 1, 1]
+                + wavescale[i + 1, 0] * np.arange(ds[dv].shape[i])
+                for i, dim in enumerate(ds[dv].dims)
+            }
+        )
+    return ds
+
+
+def load_igor_ibw(filename, data_dir=None):
     try:
-        filename = find_first_file(filename)
+        filename = find_first_file(filename, data_dir=data_dir)
+    except ValueError:
+        pass
+
+    class ibwfile_wave(object):
+        def __init__(self, fname):
+            self.wave = load_pxt.read_single_ibw(fname)
+
+    return load_pxt.wave_to_xarray(igor.igorpy.Wave(ibwfile_wave(filename)))
+
+
+def load_ssrl(filename, data_dir=None):
+    try:
+        filename = find_first_file(filename, data_dir=data_dir)
     except ValueError:
         pass
     ncf = h5netcdf.File(filename, mode="r", phony_dims="sort")
@@ -172,10 +274,13 @@ def load_ssrl(filename):
     return data
 
 
-def find_first_file(file, allow_soft_match=False):
+def find_first_file(file, data_dir=None, allow_soft_match=False):
     workspace = arpes.config.CONFIG["WORKSPACE"]
-    workspace_path = os.path.join(workspace["path"], "data")
+    if data_dir is None:
+        data_dir = "data"
+    workspace_path = os.path.join(workspace["path"], data_dir)
     workspace = workspace["name"]
+
     endbase = arpes.endstations.EndstationBase
     try:
         file = int(str(file))
