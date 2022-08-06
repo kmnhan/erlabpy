@@ -1,82 +1,108 @@
 """Macros for correlation analysis."""
 
+from itertools import chain, product
+
 import numpy as np
 import xarray as xr
 from joblib import Parallel, delayed
 from scipy.fft import fft2, fftshift, ifft2
 from scipy.signal import correlate, correlation_lags
 
-__all__ = ["xacf2", "match_dims", "xcorr1d"]
+__all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
 
 
-def acf2rect(IMG: np.ndarray):
-    """Autocorrelation of rectangular image."""
-    [M, N] = np.shape(IMG)
-    IMG_p = np.zeros(shape=(2 * M - 1, 2 * N - 1))
-    IMG_p[:M, :N] = IMG
-    ACF = np.abs(fftshift(ifft2(np.abs(fft2(IMG_p)) ** 2)))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ACF = ACF / ACF[M, N]
-    return ACF
+def autocorrelate(arr, *args, **kwargs):
+    acf = correlate(arr, arr, *args, **kwargs)
+    m, n = [s // 2 for s in acf.shape]
+    return acf / acf[m, n]
 
 
-def acf2_arr(IMG: np.ndarray):
-    """Autocorrelation of masked image."""
-    ACF = acf2rect(~np.isnan(IMG))
-    ACF[ACF <= 1e-10] = np.nan
-    with np.errstate(invalid="ignore"):
-        ACF = acf2rect(np.nan_to_num(IMG)) / ACF
-    return ACF
+def autocorrelation_lags(l, *args, **kwargs):
+    return correlation_lags(l, l, *args, **kwargs)
 
 
-def xacf2(da: xr.DataArray, parallel=True, n_jobs=-1, verbose=0) -> xr.DataArray:
-    """
-    Slicewise autocorrelation function of constant energy maps in volumetric data.
-    """
-    # TODO: incorporate backend scipy.signal.correlate
-    if isinstance(da, xr.Dataset):
-        da = da.spectrum
-    ndims = len(da.dims)
-    if ndims == 3:
-        da = da.transpose("ky", "eV", "kx")
-        ny, nE, nx = da.shape
-    elif ndims == 2:
-        da = da.transpose("ky", "kx")
-        ny, nx = da.shape
+def nanacf(arr, *args, **kwargs):
+    acf = autocorrelate(np.nan_to_num(arr), *args, **kwargs)
+    if np.isnan(arr).any():
+        nan_mask = ~np.isnan(arr)
+        acf_nan = autocorrelate(nan_mask.astype(float), *args, **kwargs)
+        acf_nan[acf_nan < 1e7 * np.finfo(float).eps] = np.nan
+        return acf / acf_nan
     else:
-        raise ValueError("The input to acf2 must be 2D or 3D.")
-    vol = da.values
-    dx, dy = (da.kx[1] - da.kx[0]).values, (da.ky[1] - da.ky[0]).values
-    qx = np.linspace(0, 2 * (nx - 1) * dx, 2 * nx - 1) - (nx - 1) * dx
-    qy = np.linspace(0, 2 * (ny - 1) * dy, 2 * ny - 1) - (ny - 1) * dy
-    if ndims == 3:
-        if parallel is True:
-            sub_arrays = Parallel(n_jobs=n_jobs, prefer="threads", verbose=verbose)(
-                delayed(acf2_arr)(vol[:, i, :]) for i in range(vol.shape[1])
+        return acf
+
+
+def acf2(arr, mode: str = "full", method: str = "fft"):
+    out = arr.copy(deep=True)
+    acf = nanacf(out.values, mode=mode, method=method)
+    coords = [out[d].values for d in out.dims]
+    steps = [c[1] - c[0] for c in coords]
+    out = xr.DataArray(
+        acf,
+        {
+            d: autocorrelation_lags(l, mode) * s
+            for s, l, d in zip(steps, arr.shape, out.dims)
+        },
+        attrs=out.attrs,
+    )
+    if all(i in out.dims for i in ["kx", "ky"]):
+        out = out.rename(dict(kx="qx", ky="qy"))
+    return out
+
+
+def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
+    if arr.ndim == 2:
+        return acf2(arr, mode, method)
+    elif arr.ndim >= 3:
+        if arr.ndim - len(stack_dims) != 2:
+            raise ValueError(
+                "The number of dimensions excluding the stacking dimensions must be 2"
             )
-            acf = np.stack(sub_arrays, axis=1)
-        else:
-            acf = np.full(
-                shape=(2 * ny - 1, nE, 2 * nx - 1), fill_value=np.nan, dtype=np.float64
+
+        stack_coords = tuple(arr[d] for d in stack_dims)
+        stack_shape = tuple(len(x) for x in stack_coords)
+        stack_iter = tuple(range(l) for l in stack_shape)
+        stack_axis = arr.get_axis_num(stack_dims)
+        out_list = Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
+            delayed(nanacf)(
+                np.squeeze(arr.isel({s: v for s, v in zip(stack_dims, vals)}).values),
+                mode,
+                method,
             )
-            for i in range(acf.shape[1]):
-                acf[:, i, :] = acf2_arr(vol[:, i, :])
-        acfarray = xr.DataArray(
-            acf, dims=["qy", "eV", "qx"], coords={"qy": qy, "eV": da.eV, "qx": qx}
+            for vals in product(*stack_iter)
         )
-        try:
-            acfarray.eV.attrs["units"] = da.eV.units
-        except AttributeError:
-            pass
-    else:
-        acf = acf2_arr(vol)
-        acfarray = xr.DataArray(acf, dims=["qy", "qx"], coords={"qy": qy, "qx": qx})
-    try:
-        acfarray.qx.attrs["units"] = da.kx.units
-        acfarray.qy.attrs["units"] = da.ky.units
-    except AttributeError:
-        pass
-    return acfarray
+        acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
+        acf_shape = out_list[0].shape
+        acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
+
+        if mode == "same":
+            out = arr.copy(deep=True)
+        else:
+            out = xr.DataArray(
+                np.empty(stack_shape + acf_shape),
+                dims=[d for d in chain(stack_dims, acf_dims)],
+                attrs=arr.attrs,
+            )
+            out = out.assign_coords({d: arr[d] for d in stack_dims})
+        for i, cut in enumerate(out_list):
+            index = np.unravel_index(i, stack_shape)
+            out[
+                tuple(
+                    slice(index[stack_axis.index(d)], index[stack_axis.index(d)] + 1)
+                    if d in stack_axis
+                    else slice(None)
+                    for d in range(out.ndim)
+                )
+            ] = cut
+        out = out.assign_coords(
+            {
+                d: autocorrelation_lags(len(arr[d]), mode) * s
+                for s, d in zip(acf_steps, acf_dims)
+            }
+        )
+        if all(i in out.dims for i in ["kx", "ky"]):
+            out = out.rename(dict(kx="qx", ky="qy"))
+    return out
 
 
 def match_dims(da1: xr.DataArray, da2: xr.DataArray):
@@ -86,7 +112,7 @@ def match_dims(da1: xr.DataArray, da2: xr.DataArray):
     return da2.interp({dim: da1[dim] for dim in da2.dims})
 
 
-def xcorr1d(in1: xr.DataArray, in2: xr.DataArray):
+def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
     """
     Performs 1-dimensional correlation analysis on `xarray.DataArray`s.
     """
@@ -95,7 +121,7 @@ def xcorr1d(in1: xr.DataArray, in2: xr.DataArray):
     xind = correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]
     out.values = correlate(
-        in1.fillna(0).values, in2.fillna(0).values, mode="same", method="direct"
+        in1.fillna(0).values, in2.fillna(0).values, mode="same", method=method
     )
     out[in1.dims[0]] = out[in1.dims[0]] - out[in1.dims[0]][xzero]
     return out
