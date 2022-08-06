@@ -38,7 +38,7 @@ load_igor_ct("Blue-White.txt", "BlWh")
 
 
 class TwoSlopePowerNorm(colors.Normalize):
-    def __init__(self, gamma, vcenter=0, vmin=None, vmax=None):
+    def __init__(self, gamma, vcenter=None, vmin=None, vmax=None):
         """
         Normalize data with a set center.
 
@@ -50,8 +50,9 @@ class TwoSlopePowerNorm(colors.Normalize):
         ----------
         gamma : float
             Power law exponent
-        vcenter : float, default: 0
+        vcenter : float, optional
             The data value that defines ``0.5`` in the normalization.
+            Defaults to the average between `vmin` and `vmax`.
         vmin : float, optional
             The data value that defines ``0.0`` in the normalization.
             Defaults to the min value of the dataset.
@@ -121,6 +122,8 @@ class TwoSlopePowerNorm(colors.Normalize):
         Get vmin and vmax, and then clip at vcenter
         """
         super().autoscale_None(A)
+        if self.vcenter is None:
+            self.vcenter = (self.vmin + self.vmax) / 2
         if self.vmin > self.vcenter:
             self.vmin = self.vcenter
         if self.vmax < self.vcenter:
@@ -222,6 +225,8 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         proportional_colorbar()
 
     """
+    # !TODO: set colorbar pad and width to absolute values for consistency
+    
     # if cax is None:
     if ax is None:
         ax = plt.gca()
@@ -242,6 +247,9 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     kwargs.setdefault("ticks", ticks)
     kwargs.setdefault("cmap", mappable.cmap)
     kwargs.setdefault("norm", mappable.norm)
+    kwargs.setdefault("pad", 0.05)
+    kwargs.setdefault("fraction", 0.05)
+    kwargs.setdefault("aspect", 25)
     cbar = plt.colorbar(
         mappable=mappable,
         cax=cax,

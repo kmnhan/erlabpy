@@ -7,11 +7,17 @@ import xarray as xr
 
 from ..plotting import plot_array, proportional_colorbar
 
-__all__ = ['correct_with_edge']
+__all__ = ["correct_with_edge"]
 
 
-def correct_with_edge(fmap: xr.DataArray, modelresult,
-                      plot=False, zero_nans=False, shift_coords=True, **improps):
+def correct_with_edge(
+    fmap: xr.DataArray,
+    modelresult,
+    plot=False,
+    zero_nans=False,
+    shift_coords=True,
+    **improps
+):
 
     if isinstance(fmap, xr.Dataset):
         fmap = fmap.spectrum
@@ -25,21 +31,25 @@ def correct_with_edge(fmap: xr.DataArray, modelresult,
         else:
             edge_quad = modelresult
     else:
-        raise ValueError("modelresult must be one of "
-                         "lmfit.model.ModelResult, "
-                         "and np.ndarray or a callable")
-        
-    corrected = fmap.G.shift_by(edge_quad, "eV", zero_nans=zero_nans, shift_coords=shift_coords)
+        raise ValueError(
+            "modelresult must be one of "
+            "lmfit.model.ModelResult, "
+            "and np.ndarray or a callable"
+        )
+
+    corrected = fmap.G.shift_by(
+        edge_quad, "eV", zero_nans=zero_nans, shift_coords=shift_coords
+    )
 
     if plot is True:
-        _, axes = plt.subplots(1, 2, layout='constrained', figsize=(10, 5))
+        _, axes = plt.subplots(1, 2, layout="constrained", figsize=(10, 5))
 
-        improps.setdefault('cmap', 'copper')
+        improps.setdefault("cmap", "copper")
 
         if fmap.ndim > 2:
             avg_dims = list(fmap.dims)[:]
-            avg_dims.remove('phi')
-            avg_dims.remove('eV')
+            avg_dims.remove("phi")
+            avg_dims.remove("eV")
             plot_array(fmap.mean(avg_dims), ax=axes[0], **improps)
             plot_array(corrected.mean(avg_dims), ax=axes[1], **improps)
             # fmap.mean(avg_dims).S.plot(ax=axes[0], **improps)
@@ -49,10 +59,10 @@ def correct_with_edge(fmap: xr.DataArray, modelresult,
             plot_array(corrected, ax=axes[1], **improps)
             # fmap.S.plot(ax=axes[0], **improps)
             # corrected.S.plot(ax=axes[1], **improps)
-        edge_quad.plot(ax=axes[0], ls='--', color='0.35')
+        edge_quad.plot(ax=axes[0], ls="--", color="0.35")
 
         proportional_colorbar(ax=axes[0])
         proportional_colorbar(ax=axes[1])
-        axes[0].set_title('Data')
-        axes[1].set_title('Edge Corrected')
+        axes[0].set_title("Data")
+        axes[1].set_title("Edge Corrected")
     return corrected
