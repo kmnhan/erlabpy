@@ -17,6 +17,7 @@ __all__ = [
     "annotate_cuts_erlab",
     "label_subplot_properties",
     "mark_points",
+    "mark_points_y",
     "get_si_str",
     "sizebar",
 ]
@@ -91,10 +92,11 @@ def annotate_cuts_erlab(
     plotted_dims,
     ax=None,
     include_text_labels=False,
-    color="k",
+    color=None,
     textoffset=[0, 0],
     plot_kw={},
     text_kw={},
+    factor=1,
     **kwargs,
 ):
     r"""Annotates a cut location onto a plot.
@@ -154,6 +156,14 @@ def annotate_cuts_erlab(
     converted_coordinates = convert_coordinates_to_kspace_forward(data)
     text_kw.setdefault("horizontalalignment", "left")
     text_kw.setdefault("verticalalignment", "top")
+
+    mappable = get_mappable(ax, image_only=True, error=False)
+    if color is None:
+        color = "k"
+        if mappable is not None:
+            if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+                if not image_is_light(mappable):
+                    color = "w"
     plot_kw.setdefault("color", color)
     for k, v in kwargs.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
@@ -161,6 +171,7 @@ def annotate_cuts_erlab(
         selected = converted_coordinates.sel(**dict([[k, v]]), method="nearest")
         for coords_dict, obj in selected.G.iterate_axis(k):
             plt_css = [np.mean(obj[d].values, axis=1) for d in plotted_dims]
+            plt_css[-1] *= factor
             with plt.rc_context({"lines.linestyle": "--", "lines.linewidth": 0.85}):
                 ax.plot(*plt_css, **plot_kw)
             if include_text_labels:
@@ -341,7 +352,7 @@ def name_for_dim(dim_name, escaped=True):
             "kx": "Kx",
             "ky": "Ky",
             "kz": "Kz",
-            "kp": "Kp", 
+            "kp": "Kp",
             "hv": "Photon Energy",
         }.get(dim_name)
 
@@ -567,19 +578,28 @@ def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs):
     )
 
 
-def parse_point_labels(name: str, bar=False):
+def parse_point_labels(name: str, roman=True, bar=False):
     special_points = {"G": r"\Gamma", "D": r"\Delta"}
     try:
         name = special_points[name]
     except KeyError:
-        name = r"\mathrm{{{}}}".format(name)
+        if name.endswith("*"):
+            if roman:
+                name = r"\mathrm{{{}}}^*".format(name[:-1])
+            else:
+                name = r"{}^*".format(name[:-1])
+        else:
+            if roman:
+                name = r"\mathrm{{{}}}".format(name)
+            else:
+                name = r"{}".format(name)
     if bar:
         return r"$\overline{{{}}}$".format(name)
     else:
         return r"${}$".format(name)
 
 
-def mark_points(pts, labels, bar=False, ax=None):
+def mark_points(pts, labels, roman=True, bar=False, ax=None):
     if ax is None:
         ax = plt.gca()
     if not isinstance(ax, (tuple, list, np.ndarray)):
@@ -589,4 +609,17 @@ def mark_points(pts, labels, bar=False, ax=None):
         label_ax.set_xlim(a.get_xlim())
         label_ax.set_xticks(pts)
         # label_ax.set_xlabel('')
-        label_ax.set_xticklabels([parse_point_labels(l, bar) for l in labels])
+        label_ax.set_xticklabels([parse_point_labels(l, roman, bar) for l in labels])
+
+
+def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
+    if ax is None:
+        ax = plt.gca()
+    if not isinstance(ax, (tuple, list, np.ndarray)):
+        ax = [ax]
+    for a in np.array(ax, dtype=object).flatten():
+        label_ax = a.twinx()
+        label_ax.set_ylim(a.get_ylim())
+        label_ax.set_yticks(pts)
+        # label_ax.set_xlabel('')
+        label_ax.set_yticklabels([parse_point_labels(l, roman, bar) for l in labels])
