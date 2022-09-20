@@ -22,15 +22,15 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from PySide6 import QtSvg, QtSvgWidgets
 
 if __name__ != "__main__":
-    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
-    from .interactive import parse_data, xImageItem
+    from ..colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
+    from ..interactive.utilities import parse_data, xImageItem
 else:
     from erlab.plotting.colors import (
         pg_colormap_names,
         pg_colormap_powernorm,
         pg_colormap_to_QPixmap,
     )
-    from erlab.plotting.interactive import parse_data, xImageItem
+    from erlab.plotting.interactive.utilities import parse_data, xImageItem
 
 
 # pg.setConfigOption('useNumba', True)
@@ -860,6 +860,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     """
 
+    # !TODO: ctrl + A to view all
+    # !TODO: auto adjust limits on transpose
+
     sigDataChanged = QtCore.Signal(object)
     sigIndexChanged = QtCore.Signal(list, list)
 
@@ -883,6 +886,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         span_kw={},
         fermi_kw={},
         zero_centered=False,
+        rad2deg=False,
         *args,
         **kwargs,
     ):
@@ -911,10 +915,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.cmap = "bwr"
         # cursor_c = pg.mkColor(0.5)
         cursor_c, cursor_c_hover, span_c, span_c_edge = [
-            pg.mkColor("cyan") for _ in range(4)
+            pg.mkColor("gray") for _ in range(4)
         ]
         cursor_c.setAlphaF(0.75)
-        cursor_c_hover.setAlphaF(0.9)
+        cursor_c_hover.setAlphaF(0.95)
         span_c.setAlphaF(0.15)
         span_c_edge.setAlphaF(0.35)
         # span_c_hover = pg.mkColor(0.75)
@@ -922,8 +926,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
         self.cursor_kw.update(
             dict(
-                pen=pg.mkPen(cursor_c),
-                hoverPen=pg.mkPen(cursor_c_hover),
+                pen=pg.mkPen(cursor_c, width=2.25),
+                hoverPen=pg.mkPen(cursor_c_hover, width=2.5),
             )
         )
         self.plot_kw.update(dict(defaultPadding=0.0, clipToView=False))
@@ -954,7 +958,22 @@ class pg_itool(pg.GraphicsLayoutWidget):
         )
         # self.cursor_pos = None
         self.data = None
-        self.set_data(data, update_all=True, reset_cursor=True)
+        if rad2deg is not False:
+            if np.iterable(rad2deg):
+                conv_dims = rad2deg
+            else:
+                conv_dims = [
+                    d
+                    for d in ["phi", "theta", "beta", "alpha", "chi"]
+                    if d in data.dims
+                ]
+            self.set_data(
+                data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims}),
+                update_all=True,
+                reset_cursor=True,
+            )
+        else:
+            self.set_data(data, update_all=True, reset_cursor=True)
         self.set_cmap()
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.setFocus()
@@ -963,7 +982,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def _update_stretch(self, row=None, col=None):
         if row is None:
             if self.data_ndim == 2:
-                row_factor = (25000, 75000)
+                row_factor = (250000, 750000)
             elif self.data_ndim >= 3:
                 row_factor = (100000, 150000, 300000)
         else:
@@ -1279,6 +1298,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def all(self):
         return self.maps + self.hists + self.cursors
 
+    def autoRange(self, padding=None):
+        for ax in self.axes:
+            if not all(ax.autoRangeEnabled()):
+                ax.autoRange(padding=padding)
+
     def toggle_axes(self, axis):
         target = self.axes[axis]
         toggle = False if target in self.ci.items.keys() else True
@@ -1332,7 +1356,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return
 
         anchors = tuple(ref_dims[i][:2] for i in group)
-        other_index = [x for x in group if x != axis and self.axes[x] in self.ci.items.keys()]
+        other_index = [
+            x for x in group if x != axis and self.axes[x] in self.ci.items.keys()
+        ]
         other = [self.axes[i] for i in other_index]
         unique = True if len(other) == 0 else False
         if not toggle:
@@ -1346,7 +1372,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 self.addItem(target, *anchors[0], *totalspan)
             else:
                 # for i, o, oi in enumerate(zip(other, other_index)):
-                    # self.removeItem(o)
+                # self.removeItem(o)
                 # for o, oi in zip(other, other_index):
                 #     self.removeItem(o)
                 # self.addItem(self.axes[group[0]], *ref_dims[axis])
@@ -1468,6 +1494,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.reset_cursor()
         self.set_labels()
         self._apply_change()
+        # self.autoRange()
+        # for ax in self.axes:
+        #     ax.enableAutoRange(enable=True)
 
         self.sigDataChanged.emit(self)
 
@@ -1976,13 +2005,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
-                    self._binned_profile((3, 2)),
+                    self._binned_profile((2, 3)),
                     levels=self.clim_list[i],
                     rect=self._lims_to_rect(0, 1),
                 )
             else:
                 self.all[i].setImage(
-                    self._binned_profile((3, 2)),
+                    self._binned_profile((2, 3)),
                     rect=self._lims_to_rect(0, 1),
                 )
                 if self.zero_centered:
@@ -2580,13 +2609,22 @@ class itoolCursorControls(QtWidgets.QWidget):
         )
         self._spin = tuple(
             QtWidgets.QSpinBox(
-                self._spingroups[i], singleStep=1, wrapping=False, minimumWidth=60
+                self._spingroups[i],
+                singleStep=1,
+                wrapping=False,
+                minimumWidth=60,
+                keyboardTracking=False,
             )
             for i in range(self.ndim)
         )
         self._dblspin = tuple(
             QtWidgets.QDoubleSpinBox(
-                self._spingroups[i], decimals=3, wrapping=False, minimumWidth=70
+                self._spingroups[i],
+                decimals=3,
+                wrapping=False,
+                minimumWidth=70,
+                # correctionMode=QtWidgets.QAbstractSpinBox.CorrectToNearestValue,
+                keyboardTracking=False,
             )
             for i in range(self.ndim)
         )
@@ -2762,7 +2800,10 @@ class itoolCursorControls(QtWidgets.QWidget):
         if col is None:
             col = 0
         if self.ndim == 2:
-            raise NotImplementedError
+            r0, r1 = self.itool._stretch_factors[0]
+            c0, c1 = self.itool._stretch_factors[1]
+            row_factor = (r0 - row, r1 + row)
+            col_factor = (c0 - col, c1 + col)
         elif self.ndim >= 3:
             r0, r1, r2 = self.itool._stretch_factors[0]
             c0, c1, c2 = self.itool._stretch_factors[1]
@@ -2810,10 +2851,13 @@ class itoolColorControls(QtWidgets.QWidget):
         # cmap_layout.setContentsMargins(0, 0, 0, 0)
 
         self._gamma_spin = QtWidgets.QDoubleSpinBox(
-            toolTip="Colormap gamma", singleStep=0.01, value=self.itool.gamma
+            toolTip="Colormap gamma",
+            singleStep=0.01,
+            value=self.itool.gamma,
+            stepType=QtWidgets.QAbstractSpinBox.AdaptiveDecimalStepType,
         )
 
-        self._gamma_spin.setRange(0.03, 30.0)
+        self._gamma_spin.setRange(0.01, 100.0)
         self._gamma_spin.valueChanged.connect(self.set_cmap)
         gamma_label = QtWidgets.QLabel("γ", buddy=self._gamma_spin)
 
@@ -3083,6 +3127,7 @@ class itoolBinningControls(QtWidgets.QWidget):
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, title=None, *args, **kwargs):
         super().__init__()
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.qapp = QtCore.QCoreApplication.instance()
         self._main = QtWidgets.QWidget(self)
         self.data = parse_data(data)
@@ -3133,6 +3178,7 @@ class ImageTool(QtWidgets.QMainWindow):
             "L": ("Lock color levels", self.tab2._cmap_lock_button.click),
             "S": ("Toggle cursor snap", self.tab1._snap_button.click),
             "T": ("Transpose main image", self.tab1._transpose_button[1].click),
+            "Ctrl+A": ("View All", lambda: self.itool.autoRange()),
         }
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
@@ -3178,16 +3224,15 @@ def itool(data, execute=None, *args, **kwargs):
         execute = True
         try:
             shell = get_ipython().__class__.__name__  # type: ignore
-            if shell == "ZMQInteractiveShell":
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
-            elif shell == "TerminalInteractiveShell":
-                execute = False
+                from IPython.lib.guisupport import start_event_loop_qt4
+                start_event_loop_qt4(qapp)
         except NameError:
             pass
     if execute:
         qapp.exec()
     return win
-
 
 if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
@@ -3199,11 +3244,12 @@ if __name__ == "__main__":
 
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        '/Users/khan/Documents/ERLab/TiSe2/kxy10.nc'
+        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    ) # .sel(eV=-0.15, method="nearest")
+    )#.sel(eV=-0.15, method="nearest")
     # dat = xr.open_dataarray(
-        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
+    # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
     # )
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
     # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',

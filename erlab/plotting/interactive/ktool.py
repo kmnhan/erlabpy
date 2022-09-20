@@ -10,8 +10,8 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Ellipse
 from matplotlib.transforms import Affine2D
 from arpes.utilities.conversion import convert_to_kspace
-from .bz import plot_hex_bz
-from .interactive import parse_data
+from ..bz import plot_hex_bz
+from ..interactive.utilities import parse_data
 import copy
 
 
@@ -58,7 +58,7 @@ class kTool(QtWidgets.QMainWindow):
     def __init__(
         self,
         data,
-        bounds={"kx": [-1.5, 1.5], "ky": [-1.5, 1.5]},
+        bounds={"kx": [-1.5, 1.5], "ky": [-1.5, 1.5], "kp": [-1.5, 1.5]},
         resolution={"kx": 0.02, "ky": 0.02},
         gamma=0.5,
         cmap="twilight",
@@ -354,6 +354,7 @@ class kTool(QtWidgets.QMainWindow):
 
     def _set_bounds(self, ax, ind, value):
         self.bounds[ax][ind] = value
+        self.bounds["kp"][ind] = value
         self._update_kxy()
         self._update_plots()
         if (ax == "kx") & (ind == 0):

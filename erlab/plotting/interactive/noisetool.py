@@ -14,17 +14,49 @@ import qtawesome as qta
 import xarray as xr
 from arpes.analysis.derivative import curvature, d1_along_axis, minimum_gradient
 if __name__ != "__main__":
-    from .imagetool import move_mean_centered_multiaxis
-    from .interactive import parse_data, xImageItem, AnalysisWidgetBase
+    from ..interactive.utilities import parse_data, xImageItem, AnalysisWidgetBase
 else:
-    from erlab.plotting.imagetool import (
-        move_mean_centered_multiaxis,
-    )
-    from erlab.plotting.interactive import parse_data, xImageItem, AnalysisWidgetBase
+    from erlab.plotting.interactive.utilities import parse_data, xImageItem, AnalysisWidgetBase
 
 from matplotlib import colors
 from PySide6 import QtCore, QtGui, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
+
+def move_mean_centered(a, window, min_count=None, axis=-1):
+    w = (window - 1) // 2
+    shift = w + 1
+    if min_count is None:
+        min_count = w + 1
+    pad_width = [(0, 0)] * a.ndim
+    pad_width[axis] = (0, shift)
+    a = np.pad(a, pad_width, constant_values=np.nan)
+    val = bn.move_mean(a, window, min_count=min_count, axis=axis)
+    return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
+
+
+def move_mean_centered_multiaxis(a, window_list, min_count_list=None):
+    w_list = [(window - 1) // 2 for window in window_list]
+    pad_width = [(0, 0)] * a.ndim
+    slicer = [
+        slice(None),
+    ] * a.ndim
+    if min_count_list is None:
+        min_count_list = [w + 1 for w in w_list]
+    for axis in range(a.ndim):
+        pad_width[axis] = (0, w_list[axis] + 1)
+        slicer[axis] = slice(w_list[axis], -1)
+    a = np.pad(a, pad_width, constant_values=np.nan)
+    val = move_mean(a, numba.typed.List(window_list), numba.typed.List(min_count_list))
+    return val[tuple(slicer)]
+
+
+def move_mean(a, window, min_count):
+    if a.ndim == 3:
+        return move_mean3d(a, window, min_count)
+    elif a.ndim == 2:
+        return move_mean2d(a, window, min_count)
+    else:
+        raise NotImplementedError
 
 
 
