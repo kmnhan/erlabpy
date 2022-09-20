@@ -5,7 +5,6 @@ import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from arpes.plotting.utils import fancy_labels
 from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
 import matplotlib.projections
@@ -29,9 +28,12 @@ figure_width_ref = dict(
 )
 
 
-def figwh(ratio=0.75, wide=0, wscale=1, style="aps"):
+def figwh(ratio=0.75, wide=0, wscale=1, style="aps", fixed_height=True):
     w = figure_width_ref[style][wide]
-    h = w * wscale * ratio
+    if fixed_height:
+        h = w * ratio
+    else:
+        h = w * wscale * ratio
     return w * wscale, h
 
 
@@ -242,7 +244,15 @@ def place_inset(parent_axes,
                  parent_axes.transAxes).transform(bounds + sizes)
         print(prect)
         return fig.add_axes(prect, projection="polar", **kwargs)
+    
 
+def array_extent(data):
+    data_coords = tuple(data[dim].values for dim in data.dims)
+    data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
+    data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
+    y0, x0 = data_lims[0][0] - 0.5 *  data_incs[0], data_lims[1][0] - 0.5 *  data_incs[1]
+    y1, x1 = data_lims[0][-1] + 0.5 * data_incs[0], data_lims[1][-1] + 0.5 * data_incs[1]
+    return x0, x1, y0, y1
 
 def plot_array(arr: xr.DataArray,
                ax=None,
@@ -252,6 +262,7 @@ def plot_array(arr: xr.DataArray,
                xlim=None,
                ylim=None,
                func=None,
+               rad2deg=False,
                func_args=dict(),
                **improps):
     """Plots a 2D `xr.DataArray` using imshow, which is much faster."""
@@ -265,38 +276,43 @@ def plot_array(arr: xr.DataArray,
         xlim = (-xlim, xlim)
     if ylim is not None and not np.iterable(ylim):
         ylim = (-ylim, ylim)
-    coords = [arr[d] for d in arr.dims]
-    coords.reverse()
-    extent = tuple(m for c in coords for m in (c[0], c[-1]))
+    if rad2deg is not False:
+        if np.iterable(rad2deg):
+            conv_dims = rad2deg
+        else:
+            conv_dims = [
+                d
+                for d in ["phi", "theta", "beta", "alpha", "chi"]
+                if d in arr.dims
+            ]
+        arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
-    improps.setdefault("cmap", "twilight")
+    improps.setdefault("cmap", "magma")
     colorbar = improps.pop("colorbar", False)
-    gamma = improps.pop("gamma", 0.5)
+    gamma = improps.pop("gamma", 1.0)
     try:
         if improps["norm"] is None:
             improps.pop("norm")
     except KeyError:
         pass
     norm_kw = dict()
-    try:
+    
+    if "vmin" in improps.keys():
         norm_kw["vmin"] = improps.pop("vmin")
-        colorbar_kw.setdefault("extend", "min")
-    except KeyError:
-        pass
-    try:
-        norm_kw["vmax"] = improps.pop("vmax")
-        try:
-            norm_kw["vmin"]
+        if "vmax" in improps.keys():
+            norm_kw["vmax"] = improps.pop("vmax")
             colorbar_kw.setdefault("extend", "both")
-        except KeyError:
+        else:
+            colorbar_kw.setdefault("extend", "min")
+    elif "vmax" in improps.keys():
+            norm_kw["vmax"] = improps.pop("vmax")
             colorbar_kw.setdefault("extend", "max")
-    except KeyError:
-        pass
+        
     improps["norm"] = improps.pop("norm", colors.PowerNorm(gamma, **norm_kw))
 
     improps_default = dict(
         interpolation="none",
-        extent=extent,
+        extent=array_extent(arr),
         aspect="auto",
         origin="lower",
         rasterized=True,
@@ -523,7 +539,7 @@ def plot_slices(maps,
     return fig, axes
 
 
-def fermiline(ax=None, **kwargs):
+def fermiline(ax=None, y=0, **kwargs):
     if ax is None:
         ax = plt.gca()
     default_color = "k"
@@ -536,4 +552,4 @@ def fermiline(ax=None, **kwargs):
     c = kwargs.pop("color", kwargs.pop("c", default_color))
     lw = kwargs.pop("lw", kwargs.pop("linewidth", 0.25))
     ls = kwargs.pop("ls", kwargs.pop("linestyle", "-"))
-    return ax.axhline(0, ls=ls, lw=lw, c=c)
+    return ax.axhline(y, ls=ls, lw=lw, c=c)
