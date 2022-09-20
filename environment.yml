@@ -56,6 +56,7 @@ dependencies:
     - csaps
     - numba_progress
     - darkdetect
+    - pyclip
     - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
     - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
     - -e git+https://github.com/kmnhan/arpes.git#egg=arpes

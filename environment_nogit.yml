@@ -56,3 +56,4 @@ dependencies:
     - csaps
     - numba_progress
     - darkdetect
+    - pyclip
