@@ -13,6 +13,7 @@ __all__ = [
     "TwoSlopePowerNorm",
     "get_mappable",
     "proportional_colorbar",
+    "nice_colorbar",
     "color_distance",
     "close_to_white",
     "prominent_color",
@@ -225,8 +226,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         proportional_colorbar()
 
     """
-    # !TODO: set colorbar pad and width to absolute values for consistency
-    
+
     # if cax is None:
     if ax is None:
         ax = plt.gca()
@@ -258,6 +258,71 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         boundaries=kwargs["norm"].inverse(np.linspace(0, 1, kwargs["cmap"].N)),
         **kwargs,
     )
+    return cbar
+
+
+def nice_colorbar(
+    ax, mappable=None, width=7.5, aspect=5, minmax=False, *args, **kwargs
+):
+    r"""
+    Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
+
+    Parameters
+    ----------
+    ax : `matplotlib.axes.Axes`
+        The `matplotlib.axes.Axes` instance in which the colorbar is drawn.
+
+    mappable : `.ScalarMappable`, optional
+        The mappable whose colormap and norm will be used.
+
+    width : float, default: 7.5
+        The width of the colorbar in points.
+
+    aspect : float, default: 5
+        aspect ratio of the colorbar.
+
+    minmax : bool
+        If *False* the ticks and the ticklabels will be determined from the keyword
+        arguments (the default). If *True* the minimum and maximum of the colorbar will
+        be labeled.
+
+    **kwargs
+        Keyword arguments are passed to `erlab.plotting.proportional_colorbar`.
+
+    Returns
+    -------
+    colorbar : matplotlib.colorbar.Colorbar
+
+    """
+    if isinstance(ax, np.ndarray):
+        parents = list(ax.flat)
+    elif not isinstance(ax, list):
+        parents = [ax]
+    fig = parents[0].get_figure()
+
+    # bbox = matplotlib.transforms.Bbox.union(
+    #     [p.get_position(original=True).frozen() for p in parents]
+    # ).transformed(fig.transFigure + fig.dpi_scale_trans.inverted())
+    bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    fraction = width / (72 * bbox.width)
+    shrink = width * aspect / (72 * bbox.height)
+
+    cbar = proportional_colorbar(
+        mappable=mappable,
+        ax=ax,
+        ticks=[],
+        fraction=fraction,
+        pad=0.5 * fraction,
+        shrink=shrink,
+        anchor=(0, 1),
+        panchor=(0, 1),
+        *args,
+        **kwargs,
+    )
+    if minmax:
+        cbar.set_ticks(cbar.ax.get_ylim())
+        cbar.set_ticklabels(("Min", "Max"))
+        cbar.ax.tick_params(labelsize="small")
     return cbar
 
 
@@ -333,10 +398,10 @@ def pg_colormap_from_name(name: str, skipCache=True):
 
 
 def pg_colormap_powernorm(
-    cmap, gamma, reverse=False, skipCache=True, highContrast=False, zeroCentered=False
+    cmap, gamma, reverse=False, highContrast=False, zeroCentered=False
 ):
     if isinstance(cmap, str):
-        cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
+        cmap = pg_colormap_from_name(cmap, skipCache=True)
     if reverse:
         cmap.reverse()
     N = 4096
@@ -352,7 +417,7 @@ def pg_colormap_powernorm(
             mapping = 1 - np.power(np.linspace(1, 0, N), 1.0 / gamma)
     else:
         if gamma < 1:
-            N = 65536
+            N = 65536  # maximum uint16
         if zeroCentered:
             map_half = np.power(np.linspace(0, 1, int(N / 2)), gamma) * 0.5 + 0.5
             mapping = np.concatenate((-np.flip(map_half) + 1, map_half))
@@ -360,6 +425,7 @@ def pg_colormap_powernorm(
             mapping = np.power(np.linspace(0, 1, N), gamma)
     cmap.color = cmap.mapToFloat(mapping)
     cmap.pos = np.linspace(0, 1, N)
+    pg.colormap._mapCache = {}  # disable cache to reduce memory usage
     return cmap
 
 
