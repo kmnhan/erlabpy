@@ -1,13 +1,31 @@
 """Plotting utilities."""
 
-from .annotations import *
-from .bz import *
-from .colors import *
-from .general import *
-from .imagetool import *
-from .ktool import *
-from .noisetool import *
-
-import colorcet
-import cmocean
 import cmasher
+import cmocean
+import colorcet
+
+import matplotlib.backends.backend_pdf
+import matplotlib.backends.backend_svg
+
+from .annotations import (
+    annotate_cuts_erlab,
+    copy_mathtext,
+    fancy_labels,
+    get_si_str,
+    label_subplot_properties,
+    label_subplots,
+    mark_points,
+    mark_points_y,
+    plot_hv_text,
+    refresh_fonts,
+    sizebar,
+)
+from .bz import plot_hex_bz
+from .colors import TwoSlopePowerNorm, proportional_colorbar, nice_colorbar
+from .general import fermiline, figwh, place_inset, plot_array, plot_slices
+from .interactive.goldtool import goldtool
+from .interactive.imagetool import itool
+from .interactive.ktool import ktool
+from .interactive.noisetool import noisetool
+
+refresh_fonts()
