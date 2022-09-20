@@ -143,7 +143,7 @@ def process_wave(arr):
     return arr
 
 
-def load_igor_pxp(filename, recursive=False, **kwargs):
+def load_igor_pxp(filename, recursive=False, silent=False, **kwargs):
     expt = load_pxt.read_experiment(filename, **kwargs)
     waves = dict()
 
@@ -156,7 +156,8 @@ def load_igor_pxp(filename, recursive=False, **kwargs):
                 elif "lp" in arr.name or "LP" in arr.name:
                     arr = parse_livepolar(arr)
                 waves[arr.name] = arr
-                print(arr.name)
+                if not silent:
+                    print(arr.name)
             except AttributeError:
                 pass
             if recursive and isinstance(e, igor.igorpy.Folder):
