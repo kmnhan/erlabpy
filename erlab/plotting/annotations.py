@@ -1,12 +1,12 @@
 """Plot annotations."""
+import io
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+import pyclip
 import xarray as xr
 from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
-from matplotlib.figure import Figure
-from matplotlib.offsetbox import AnchoredText
-from matplotlib.transforms import Affine2D
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from .colors import get_mappable, image_is_light
@@ -16,10 +16,13 @@ __all__ = [
     "label_subplots",
     "annotate_cuts_erlab",
     "label_subplot_properties",
+    "fancy_labels",
     "mark_points",
     "mark_points_y",
     "get_si_str",
     "sizebar",
+    "refresh_fonts",
+    "copy_mathtext",
 ]
 
 
@@ -275,9 +278,13 @@ def label_subplots(
         `matplotlib` documentation for a list of all possible arguments.
 
     """
+
+    kwargs["fontweight"] = fontweight
     if plt.rcParams["text.usetex"] & (fontweight == "bold"):
         prefix = "\\textbf{" + prefix
         suffix = suffix + "}"
+        kwargs.pop("fontweight")
+
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if values is None:
         values = np.array([i + startfrom for i in range(len(axlist))], dtype=np.int64)
@@ -291,13 +298,13 @@ def label_subplots(
     for i in range(len(axlist)):
         bbox_to_anchor = axlist[i].bbox
         if fontsize is None:
-            if isinstance(axlist[i], Figure):
+            if isinstance(axlist[i], mpl.figure.Figure):
                 fs = "large"
             else:
                 fs = "medium"
         else:
             fs = fontsize
-        bbox_transform = Affine2D().translate(*offset)
+        bbox_transform = mpl.transforms.Affine2D().translate(*offset)
         label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
         mappable = get_mappable(axlist[i], image_only=True, error=False)
         clr = "k"
@@ -306,7 +313,7 @@ def label_subplots(
                 if not image_is_light(mappable):
                     clr = "w"
         with plt.rc_context({"text.color": clr}):
-            at = AnchoredText(
+            at = mpl.offsetbox.AnchoredText(
                 label_str,
                 loc=loc,
                 frameon=False,
@@ -320,92 +327,79 @@ def label_subplots(
 
 
 def name_for_dim(dim_name, escaped=True):
-    if plt.rcParams["text.usetex"]:
-        name = {
-            "temperature": "Temperature",
-            "T": "T",
-            "beta": r"\ensuremath{\beta}",
-            "theta": r"\ensuremath{\theta}",
-            "chi": r"\ensuremath{\chi}",
-            "alpha": r"\ensuremath{\alpha}",
-            "psi": r"\ensuremath{\psi}",
-            "phi": r"\ensuremath{\phi}",
-            "Eb": r"\ensuremath{E-E_F}",
-            "eV": r"\ensuremath{E}",
-            "kx": r"\ensuremath{k_{x}}",
-            "ky": r"\ensuremath{k_{y}}",
-            "kz": r"\ensuremath{k_{z}}",
-            "kp": r"\ensuremath{k_{\parallel}}",
-            "hv": r"\ensuremath{h\nu}",
-        }.get(dim_name)
-    else:
-        name = {
-            "temperature": "Temperature",
-            "beta": "β",
-            "theta": "θ",
-            "chi": "χ",
-            "alpha": "α",
-            "psi": "ψ",
-            "phi": "φ",
-            "Eb": "E-E_F",
-            "eV": "E",
-            "kx": "Kx",
-            "ky": "Ky",
-            "kz": "Kz",
-            "kp": "Kp",
-            "hv": "Photon Energy",
-        }.get(dim_name)
+    name = {
+        "temperature": ("Temperature", "Temperature"),
+        "T": (r"\ensuremath{T}", r"$T$"),
+        "beta": (r"\ensuremath{\beta}", r"$\beta$"),
+        "theta": (r"\ensuremath{\theta}", r"$\theta$"),
+        "chi": (r"\ensuremath{\chi}", r"$\chi$"),
+        "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
+        "psi": (r"\ensuremath{\psi}", r"$\psi$"),
+        "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+        "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
+        "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
+        "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
+        "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
+        "kp": (r"\ensuremath{k_{\parallel}}", r"$k_\parallel$"),
+        "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
+    }.get(dim_name)
 
     if name is None:
         name = dim_name
+    else:
+        name = name[0] if plt.rcParams["text.usetex"] else name[1]
+
     if not escaped:
         name = name.replace("$", "")
     return name
 
 
-def unit_for_dim(dim_name, escaped=True):
-    if plt.rcParams["text.usetex"]:
-        unit = {
-            "temperature": r"K",
-            "T": r"K",
-            "theta": r"rad",
-            "beta": r"rad",
-            "psi": r"rad",
-            "chi": r"rad",
-            "alpha": r"rad",
-            "phi": r"rad",
-            "Eb": r"eV",
-            "eV": r"eV",
-            "hv": r"eV",
-            "kx": r"Å\ensuremath{{}^{-1}}",
-            "ky": r"Å\ensuremath{{}^{-1}}",
-            "kz": r"Å\ensuremath{{}^{-1}}",
-            "kp": r"Å\ensuremath{{}^{-1}}",
-        }.get(dim_name)
-    else:
-        unit = {
-            "temperature": r"K",
-            "T": r"K",
-            "theta": r"rad",
-            "beta": r"rad",
-            "psi": r"rad",
-            "chi": r"rad",
-            "alpha": r"rad",
-            "phi": r"rad",
-            "Eb": r"eV",
-            "eV": r"eV",
-            "hv": r"eV",
-            "kx": r"1/Å",
-            "ky": r"1/Å",
-            "kz": r"1/Å",
-            "kp": r"1/Å",
-        }.get(dim_name)
+def unit_for_dim(dim_name, rad2deg=False):
+    unit = {
+        "temperature": (r"K", r"K"),
+        "T": (r"K", r"K"),
+        "theta": (r"rad", r"rad"),
+        "beta": (r"rad", r"rad"),
+        "psi": (r"rad", r"rad"),
+        "chi": (r"rad", r"rad"),
+        "alpha": (r"rad", r"rad"),
+        "phi": (r"rad", r"rad"),
+        "Eb": (r"eV", r"eV"),
+        "eV": (r"eV", r"eV"),
+        "hv": (r"eV", r"eV"),
+        "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+        "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+        "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+        "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    }.get(dim_name)
+
     if unit is None:
         unit = ""
-    if not escaped:
-        unit = unit.replace("$", "")
-
+    else:
+        unit = unit[0] if plt.rcParams["text.usetex"] else unit[1]
+    if rad2deg:
+        unit.replace("rad", "deg")
     return unit
+
+
+def label_for_dim(dim_name, rad2deg=False, escaped=True):
+    name = name_for_dim(dim_name, escaped=escaped)
+    unit = unit_for_dim(dim_name, rad2deg=rad2deg)
+    if unit == "":
+        return name
+    else:
+        return f"{name} ({unit})"
+
+
+def fancy_labels(ax_or_ax_set):
+    if isinstance(ax_or_ax_set, (list, tuple, set, np.ndarray)):
+        for ax in ax_or_ax_set:
+            fancy_labels(ax)
+        return
+
+    ax = ax_or_ax_set
+    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel()))
+    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel()))
 
 
 def property_label(key, value, decimals=0, si=0, name=None, unit=None):
@@ -414,7 +408,7 @@ def property_label(key, value, decimals=0, si=0, name=None, unit=None):
     else:
         delim = " = "
     if name is None:
-        name = name_for_dim(key)
+        name = name_for_dim(key, escaped=False)
         if name is None:
             name = ""
     if unit is None:
@@ -452,7 +446,7 @@ def label_subplot_properties(
     Parameters
     ----------
 
-    axes : `matplotlib.axes.Axes`, list of Axes
+    axes : `matplotlib..axes.Axes`, list of Axes
         Axes to label. If an array is given, the order will be
         determined by the flattening method given by `order`.
     values : dict
@@ -585,12 +579,12 @@ def parse_point_labels(name: str, roman=True, bar=False):
     except KeyError:
         if name.endswith("*"):
             if roman:
-                name = r"\mathrm{{{}}}^*".format(name[:-1])
+                name = r"\mathdefault{{{}}}^*".format(name[:-1])
             else:
                 name = r"{}^*".format(name[:-1])
         else:
             if roman:
-                name = r"\mathrm{{{}}}".format(name)
+                name = r"\mathdefault{{{}}}".format(name)
             else:
                 name = r"{}".format(name)
     if bar:
@@ -623,3 +617,64 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_yticks(pts)
         # label_ax.set_xlabel('')
         label_ax.set_yticklabels([parse_point_labels(l, roman, bar) for l in labels])
+
+
+def refresh_fonts(silent=True):
+    for path in mpl.font_manager.findSystemFonts():
+        try:
+            mpl.font_manager.fontManager.addfont(path)
+        except OSError as exc:
+            if silent:
+                pass
+            else:
+                print("Failed to open font file %s: %s", path, exc)
+        except Exception as exc:
+            if silent:
+                pass
+            else:
+                print("Failed to extract font properties from %s: %s", path, exc)
+
+
+def copy_mathtext(
+    s: str,
+    fontsize=None,
+    fontproperties=None,
+    outline=False,
+    svg=False,
+    rcparams=dict(),
+    **mathtext_rc,
+):
+
+    if fontproperties is None:
+        fontproperties = mpl.font_manager.FontProperties(size=fontsize)
+    else:
+        fontproperties.set_size(fontsize)
+    parser = mpl.mathtext.MathTextParser("path")
+    width, height, depth, _, _ = parser.parse(s, dpi=72, prop=fontproperties)
+    fig = mpl.figure.Figure(figsize=(width / 72, height / 72))
+    fig.patch.set_facecolor("none")
+    fig.text(0, depth / height, s, fontproperties=fontproperties)
+
+    if svg:
+        mpl.backends.backend_svg.FigureCanvasSVG(fig)
+    else:
+        mpl.backends.backend_pdf.FigureCanvasPdf(fig)
+
+    for k, v in mathtext_rc.items():
+        if k in ["bf", "cal", "it", "rm", "sf", "tt"] and isinstance(
+            v, mpl.font_manager.FontProperties
+        ):
+            v = v.get_fontconfig_pattern()
+        rcparams[f"mathtext.{k}"] = v
+
+    with io.BytesIO() as buffer:
+        if svg:
+            rcparams.setdefault("svg.fonttype", "path" if outline else "none")
+            rcparams.setdefault("svg.image_inline", True)
+            with plt.rc_context(rcparams):
+                fig.canvas.print_svg(buffer)
+        else:
+            rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
+            with plt.rc_context(rcparams):
+                fig.canvas.print_pdf(buffer)
+        pyclip.copy(buffer.getvalue())
