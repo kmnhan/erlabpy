@@ -9,8 +9,8 @@ from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
 import matplotlib.projections
 
-from .annotations import label_subplot_properties
-from .colors import get_mappable, image_is_light, proportional_colorbar
+from .annotations import label_subplot_properties, fancy_labels
+from .colors import get_mappable, image_is_light, proportional_colorbar, nice_colorbar
 
 __all__ = [
     "LabeledCursor",
@@ -66,14 +66,16 @@ class LabeledCursor(AxesWidget):
         See also `~.Axes.axhline`.
     """
 
-    def __init__(self,
-                 ax,
-                 horizOn=True,
-                 vertOn=True,
-                 textOn=True,
-                 useblit=True,
-                 textprops={},
-                 **lineprops):
+    def __init__(
+        self,
+        ax,
+        horizOn=True,
+        vertOn=True,
+        textOn=True,
+        useblit=True,
+        textprops={},
+        **lineprops
+    ):
         super().__init__(ax)
 
         self.connect_event("motion_notify_event", self.onmove)
@@ -102,7 +104,8 @@ class LabeledCursor(AxesWidget):
                 horizontalalignment="right",
                 verticalalignment="top",
                 transform=ax.transAxes,
-            ))
+            )
+        )
 
         self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
         self.linev = ax.axvline(ax.get_xbound()[0], **lineprops)
@@ -161,13 +164,9 @@ class LabeledCursor(AxesWidget):
         return False
 
 
-def place_inset(parent_axes,
-                width,
-                height,
-                pad=0.1,
-                loc="upper right",
-                polar=False,
-                **kwargs):
+def place_inset(
+    parent_axes, width, height, pad=0.1, loc="upper right", polar=False, **kwargs
+):
     """Place inset axes, top right of parent
 
     Parameters
@@ -190,8 +189,11 @@ def place_inset(parent_axes,
     fig = parent_axes.get_figure()
     sizes = [width, height]
 
-    ax_sizes = (parent_axes.get_window_extent().transformed(
-        fig.dpi_scale_trans.inverted()).bounds[2:])
+    ax_sizes = (
+        parent_axes.get_window_extent()
+        .transformed(fig.dpi_scale_trans.inverted())
+        .bounds[2:]
+    )
     from numbers import Number
 
     for i, size in enumerate(sizes):
@@ -232,39 +234,43 @@ def place_inset(parent_axes,
         bounds[1] = 0
         pads[1] *= -1
 
-    tform = parent_axes.transAxes + ScaledTranslation(*pads,
-                                                      fig.dpi_scale_trans)
+    tform = parent_axes.transAxes + ScaledTranslation(*pads, fig.dpi_scale_trans)
 
     if not polar:
-        return parent_axes.inset_axes(bounds + sizes,
-                                      transform=tform,
-                                      **kwargs)
+        return parent_axes.inset_axes(bounds + sizes, transform=tform, **kwargs)
     else:
-        prect = (fig.transFigure.inverted() +
-                 parent_axes.transAxes).transform(bounds + sizes)
+        prect = (fig.transFigure.inverted() + parent_axes.transAxes).transform(
+            bounds + sizes
+        )
         print(prect)
         return fig.add_axes(prect, projection="polar", **kwargs)
-    
+
 
 def array_extent(data):
     data_coords = tuple(data[dim].values for dim in data.dims)
     data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
     data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
-    y0, x0 = data_lims[0][0] - 0.5 *  data_incs[0], data_lims[1][0] - 0.5 *  data_incs[1]
-    y1, x1 = data_lims[0][-1] + 0.5 * data_incs[0], data_lims[1][-1] + 0.5 * data_incs[1]
+    y0, x0 = data_lims[0][0] - 0.5 * data_incs[0], data_lims[1][0] - 0.5 * data_incs[1]
+    y1, x1 = (
+        data_lims[0][-1] + 0.5 * data_incs[0],
+        data_lims[1][-1] + 0.5 * data_incs[1],
+    )
     return x0, x1, y0, y1
 
-def plot_array(arr: xr.DataArray,
-               ax=None,
-               colorbar_kw=dict(),
-               cursor=False,
-               cursor_kw=dict(),
-               xlim=None,
-               ylim=None,
-               func=None,
-               rad2deg=False,
-               func_args=dict(),
-               **improps):
+
+def plot_array(
+    arr: xr.DataArray,
+    ax=None,
+    colorbar_kw=dict(),
+    cursor=False,
+    cursor_kw=dict(),
+    xlim=None,
+    ylim=None,
+    func=None,
+    rad2deg=False,
+    func_args=dict(),
+    **improps
+):
     """Plots a 2D `xr.DataArray` using imshow, which is much faster."""
     if isinstance(arr, xr.Dataset):
         arr = arr.spectrum
@@ -281,9 +287,7 @@ def plot_array(arr: xr.DataArray,
             conv_dims = rad2deg
         else:
             conv_dims = [
-                d
-                for d in ["phi", "theta", "beta", "alpha", "chi"]
-                if d in arr.dims
+                d for d in ["phi", "theta", "beta", "alpha", "chi"] if d in arr.dims
             ]
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
@@ -296,7 +300,7 @@ def plot_array(arr: xr.DataArray,
     except KeyError:
         pass
     norm_kw = dict()
-    
+
     if "vmin" in improps.keys():
         norm_kw["vmin"] = improps.pop("vmin")
         if "vmax" in improps.keys():
@@ -305,9 +309,9 @@ def plot_array(arr: xr.DataArray,
         else:
             colorbar_kw.setdefault("extend", "min")
     elif "vmax" in improps.keys():
-            norm_kw["vmax"] = improps.pop("vmax")
-            colorbar_kw.setdefault("extend", "max")
-        
+        norm_kw["vmax"] = improps.pop("vmax")
+        colorbar_kw.setdefault("extend", "max")
+
     improps["norm"] = improps.pop("norm", colors.PowerNorm(gamma, **norm_kw))
 
     improps_default = dict(
@@ -331,7 +335,7 @@ def plot_array(arr: xr.DataArray,
     if ylim is not None:
         ax.set_ylim(*ylim)
     if colorbar:
-        proportional_colorbar(ax=ax, **colorbar_kw)
+        nice_colorbar(ax=ax, **colorbar_kw)
     if cursor:
         c = LabeledCursor(ax, **cursor_kw)
         return img, c
@@ -339,23 +343,25 @@ def plot_array(arr: xr.DataArray,
         return img
 
 
-def plot_slices(maps,
-                figsize=None,
-                transpose=False,
-                xlim=None,
-                ylim=None,
-                axis="auto",
-                show_all_labels=False,
-                colorbar="none",
-                hide_colorbar_ticks=True,
-                annotate=True,
-                order="C",
-                cmap_order="C",
-                norm_order=None,
-                subplot_kw=dict(),
-                annotate_kw=dict(),
-                colorbar_kw=dict(),
-                **values):
+def plot_slices(
+    maps,
+    figsize=None,
+    transpose=False,
+    xlim=None,
+    ylim=None,
+    axis="auto",
+    show_all_labels=False,
+    colorbar="none",
+    hide_colorbar_ticks=True,
+    annotate=True,
+    order="C",
+    cmap_order="C",
+    norm_order=None,
+    subplot_kw=dict(),
+    annotate_kw=dict(),
+    colorbar_kw=dict(),
+    **values
+):
     r"""Automated comparison plot of slices.
 
     Parameters
@@ -504,11 +510,9 @@ def plot_slices(maps,
             #         **kwargs
             #     )
             # else:
-            plot_array(maps[j].S.fat_sel(**fatsel_kw),
-                       ax=ax,
-                       norm=norm,
-                       cmap=cmap,
-                       **kwargs)
+            plot_array(
+                maps[j].S.fat_sel(**fatsel_kw), ax=ax, norm=norm, cmap=cmap, **kwargs
+            )
 
     for ax in axes.flatten():
         if not show_all_labels:
@@ -523,19 +527,19 @@ def plot_slices(maps,
             ax.set_ylim(*ylim)
         if colorbar not in ["none", "rightspan"]:
             if colorbar == "all" or ax in axes[:, -1]:
-                proportional_colorbar(ax.images[0], ax=ax, **colorbar_kw)
+                nice_colorbar(mappable=ax.images[0], ax=ax, **colorbar_kw)
     if colorbar == "rightspan":
-        colorbar_kw.setdefault("shrink", 1.0 / float(nrow))
-        colorbar_kw.setdefault("pad", 0.1 / float(ncol))
-        proportional_colorbar(ax=axes, **colorbar_kw)
+        nice_colorbar(ax=axes, **colorbar_kw)
     fancy_labels(axes)
     if annotate:
         if slice_dim == "eV":
             slice_dim = "Eb"
-        label_subplot_properties(axes,
-                                 values={slice_dim: slice_levels * len(maps)},
-                                 order=order,
-                                 **annotate_kw)
+        label_subplot_properties(
+            axes,
+            values={slice_dim: slice_levels * len(maps)},
+            order=order,
+            **annotate_kw
+        )
     return fig, axes
 
 
@@ -545,8 +549,7 @@ def fermiline(ax=None, y=0, **kwargs):
     default_color = "k"
     mappable = get_mappable(ax, error=False)
     if mappable is not None:
-        if isinstance(mappable,
-                      (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
             if not image_is_light(mappable):
                 default_color = "w"
     c = kwargs.pop("color", kwargs.pop("c", default_color))
