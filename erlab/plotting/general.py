@@ -546,6 +546,8 @@ def plot_slices(
 def fermiline(ax=None, y=0, **kwargs):
     if ax is None:
         ax = plt.gca()
+    if np.iterable(ax):
+        return [fermiline(a, y, **kwargs) for a in np.asarray(ax).flat]
     default_color = "k"
     mappable = get_mappable(ax, error=False)
     if mappable is not None:
