@@ -1,6 +1,6 @@
 import pkgutil
 from io import StringIO
-
+import matplotlib as mpl
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -262,7 +262,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
 
 
 def nice_colorbar(
-    ax, mappable=None, width=7.5, aspect=5, minmax=False, *args, **kwargs
+    ax, mappable=None, width=5, aspect=5, minmax=False, *args, **kwargs
 ):
     r"""
     Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
@@ -275,7 +275,7 @@ def nice_colorbar(
     mappable : `.ScalarMappable`, optional
         The mappable whose colormap and norm will be used.
 
-    width : float, default: 7.5
+    width : float, default: 5
         The width of the colorbar in points.
 
     aspect : float, default: 5
@@ -300,20 +300,20 @@ def nice_colorbar(
         parents = [ax]
     fig = parents[0].get_figure()
 
-    # bbox = matplotlib.transforms.Bbox.union(
-    #     [p.get_position(original=True).frozen() for p in parents]
-    # ).transformed(fig.transFigure + fig.dpi_scale_trans.inverted())
-    bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    bbox = mpl.transforms.Bbox.union(
+        [p.get_position(original=True).frozen() for p in parents]
+    ).transformed(fig.transFigure + fig.dpi_scale_trans.inverted())
+    # bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
     fraction = width / (72 * bbox.width)
     shrink = width * aspect / (72 * bbox.height)
 
     cbar = proportional_colorbar(
         mappable=mappable,
         ax=ax,
-        ticks=[],
         fraction=fraction,
         pad=0.5 * fraction,
         shrink=shrink,
+        aspect=aspect,
         anchor=(0, 1),
         panchor=(0, 1),
         *args,
@@ -369,21 +369,21 @@ def pg_colormap_names(source="all"):
     if source == "local":
         return local
     else:
-        mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
-        for cmap in mpl:
+        _mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
+        for cmap in _mpl:
             if cmap.startswith("cet_"):
-                mpl = list(filter((cmap).__ne__, mpl))
+                _mpl = list(filter((cmap).__ne__, _mpl))
             elif cmap.endswith("_r"):
-                # mpl_r.append(cmap)
-                mpl = list(filter((cmap).__ne__, mpl))
+                # _mpl_r.append(cmap)
+                _mpl = list(filter((cmap).__ne__, _mpl))
         if source == "all":
             cet = sorted(pg.colormap.listMaps(source="colorcet"))
-            # if (mpl != []) and (cet != []):
+            # if (_mpl != []) and (cet != []):
             # local = []
-            # mpl_r = []
-            all_cmaps = local + cet + mpl  # + mpl_r
+            # _mpl_r = []
+            all_cmaps = local + cet + _mpl  # + _mpl_r
         else:
-            all_cmaps = local + mpl
+            all_cmaps = local + _mpl
     return list({value: None for value in all_cmaps})
 
 
