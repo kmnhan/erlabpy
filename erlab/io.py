@@ -114,7 +114,7 @@ def parse_livepolar(wave, normalize=False):
     new_coords["psi"] = 0.0
     new_coords["eV"] = wave["eV"] - wave.attrs["hv"]
     wave = wave.assign_coords(new_coords)
-    wave /= wave.attrs["mesh_current"]
+    wave = wave / wave.attrs["mesh_current"]
     if normalize:
         wave = arpes.preparation.normalize_dim(wave, "theta")
     return wave
@@ -132,9 +132,9 @@ def parse_livexy(wave):
     new_coords["psi"] = 0.0
     new_coords["eV"] = wave["eV"] - wave.attrs["hv"]
     wave = wave.assign_coords(new_coords)
-    wave /= wave.attrs["mesh_current"]
+    wave = wave / wave.attrs["mesh_current"]
     return wave
-
+    
 
 def process_wave(arr):
     arr = arr.where(arr != 0)
@@ -194,6 +194,10 @@ def load_igor_ibw(filename, data_dir=None):
 
     return load_pxt.wave_to_xarray(igor.igorpy.Wave(ibwfile_wave(filename)))
 
+def load_livexy(filename, data_dir=None):
+    dat = load_igor_ibw(filename, data_dir)
+    return parse_livexy(dat)
+    
 
 def load_ssrl(filename, data_dir=None):
     try:
