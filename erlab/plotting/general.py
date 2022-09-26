@@ -360,6 +360,8 @@ def plot_slices(
     subplot_kw=dict(),
     annotate_kw=dict(),
     colorbar_kw=dict(),
+    fig=None,
+    axes=None,
     **values
 ):
     r"""Automated comparison plot of slices.
@@ -460,7 +462,8 @@ def plot_slices(
 
     cmap_name = kwargs.pop("cmap", None)
     cmap_norm = kwargs.pop("norm", None)
-    fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
+    if fig is None:
+        fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
     if nrow == 1:
         axes = axes[:, np.newaxis].reshape(1, -1)
     if ncol == 1:
