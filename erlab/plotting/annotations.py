@@ -274,7 +274,7 @@ def label_subplots(
         Set the font size. The default is `'medium'` for axes, and
         `'large'` for figures.
     **kwargs : dict, optional
-        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the
+        Extra arguments to `matplotlib.text.Text`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
 
     """
@@ -336,6 +336,7 @@ def name_for_dim(dim_name, escaped=True):
         "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
         "psi": (r"\ensuremath{\psi}", r"$\psi$"),
         "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+        "Eb": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
         "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
         "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
         "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
@@ -391,13 +392,14 @@ def label_for_dim(dim_name, rad2deg=False, escaped=True):
         return f"{name} ({unit})"
 
 
-def fancy_labels(ax_or_ax_set):
-    if isinstance(ax_or_ax_set, (list, tuple, set, np.ndarray)):
-        for ax in ax_or_ax_set:
+def fancy_labels(ax=None):
+    if ax is None:
+        ax = plt.gca()
+    if np.iterable(ax):
+        for ax in ax:
             fancy_labels(ax)
         return
-
-    ax = ax_or_ax_set
+    
     ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel()))
     ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel()))
 
@@ -422,7 +424,7 @@ def property_label(key, value, decimals=0, si=0, name=None, unit=None):
         value = np.around(value, decimals=decimals)
     if int(value) == value:
         value = int(value)
-
+    
     if key == "Eb":
         if value == 0:
             if delim == "":
@@ -474,7 +476,7 @@ def label_subplot_properties(
     short : bool, default=False
 
     """
-    kwargs.setdefault("fontweight", "medium")
+    kwargs.setdefault("fontweight", plt.rcParams["font.weight"])
     kwargs.setdefault("prefix", "")
     kwargs.setdefault("suffix", "")
     kwargs.setdefault("loc", "upper right")
@@ -572,25 +574,42 @@ def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs):
     )
 
 
-def parse_point_labels(name: str, roman=True, bar=False):
+def parse_special_point(name):
     special_points = {"G": r"\Gamma", "D": r"\Delta"}
     try:
-        name = special_points[name]
+        return special_points[name]
     except KeyError:
-        if name.endswith("*"):
-            if roman:
-                name = r"\mathdefault{{{}}}^*".format(name[:-1])
-            else:
-                name = r"{}^*".format(name[:-1])
+        return name
+
+def parse_point_labels(name: str, roman=True, bar=False):
+    name = parse_special_point(name)
+    
+    if name.endswith("*"):
+        name = name[:-1]
+        if roman:
+            format_str = r"\mathdefault{{{}}}^*"
         else:
-            if roman:
-                name = r"\mathdefault{{{}}}".format(name)
-            else:
-                name = r"{}".format(name)
-    if bar:
-        return r"$\overline{{{}}}$".format(name)
+            format_str = r"{}^*"
+    elif name.endswith("'"):
+        name = name[:-1]
+        if roman:
+            format_str = r"\mathdefault{{{}}}\prime"
+        else:
+            format_str = r"{}\prime"
     else:
-        return r"${}$".format(name)
+        if roman:
+            format_str = r"\mathdefault{{{}}}"
+        else:
+            format_str = r"{}"
+            
+    name = format_str.format(parse_special_point(name))
+    
+    if bar:
+        name = r"$\overline{{{}}}$".format(name)
+    else:
+        name = r"${}$".format(name)
+        
+    return name
 
 
 def mark_points(pts, labels, roman=True, bar=False, ax=None):
