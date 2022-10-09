@@ -21,7 +21,6 @@ __all__ = [
     "mark_points_y",
     "get_si_str",
     "sizebar",
-    "refresh_fonts",
     "copy_mathtext",
 ]
 
@@ -399,7 +398,7 @@ def fancy_labels(ax=None):
         for ax in ax:
             fancy_labels(ax)
         return
-    
+
     ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel()))
     ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel()))
 
@@ -424,7 +423,7 @@ def property_label(key, value, decimals=0, si=0, name=None, unit=None):
         value = np.around(value, decimals=decimals)
     if int(value) == value:
         value = int(value)
-    
+
     if key == "Eb":
         if value == 0:
             if delim == "":
@@ -581,9 +580,10 @@ def parse_special_point(name):
     except KeyError:
         return name
 
+
 def parse_point_labels(name: str, roman=True, bar=False):
     name = parse_special_point(name)
-    
+
     if name.endswith("*"):
         name = name[:-1]
         if roman:
@@ -601,14 +601,14 @@ def parse_point_labels(name: str, roman=True, bar=False):
             format_str = r"\mathdefault{{{}}}"
         else:
             format_str = r"{}"
-            
+
     name = format_str.format(parse_special_point(name))
-    
+
     if bar:
         name = r"$\overline{{{}}}$".format(name)
     else:
         name = r"${}$".format(name)
-        
+
     return name
 
 
@@ -636,22 +636,6 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_yticks(pts)
         # label_ax.set_xlabel('')
         label_ax.set_yticklabels([parse_point_labels(l, roman, bar) for l in labels])
-
-
-def refresh_fonts(silent=True):
-    for path in mpl.font_manager.findSystemFonts():
-        try:
-            mpl.font_manager.fontManager.addfont(path)
-        except OSError as exc:
-            if silent:
-                pass
-            else:
-                print("Failed to open font file %s: %s", path, exc)
-        except Exception as exc:
-            if silent:
-                pass
-            else:
-                print("Failed to extract font properties from %s: %s", path, exc)
 
 
 def copy_mathtext(

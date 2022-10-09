@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from ..plotting import plot_array, proportional_colorbar
+from ..plotting.colors import proportional_colorbar
+from ..plotting.general import plot_array
 
 __all__ = ["correct_with_edge"]
 

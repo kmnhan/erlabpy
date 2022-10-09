@@ -21,18 +21,6 @@ __all__ = [
 ]
 
 
-def load_igor_ct(file, name):
-    file = pkgutil.get_data(__package__, "IgorCT/" + file)
-    cmap = LinearSegmentedColormap.from_list(
-        name, np.genfromtxt(StringIO(file.decode())) / 65535
-    )
-    plt.colormaps.register(cmap)
-    plt.colormaps.register(cmap.reversed())
-
-
-load_igor_ct("Blue-White.txt", "BlWh")
-
-
 class TwoSlopePowerNorm(colors.Normalize):
     def __init__(self, gamma, vcenter=None, vmin=None, vmax=None):
         """

@@ -1983,3 +1983,12 @@ class ItoolBinningControls(ItoolControlsBase):
     def reset(self):
         for spin in self.spins:
             spin.setValue(1)
+
+
+if __name__ == "__main__":
+    data = xr.open_dataarray(
+        # "/Users/khan/Documents/ERLab/TiSe2/kxy10.nc"
+        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+    )
+    itool_(data)
