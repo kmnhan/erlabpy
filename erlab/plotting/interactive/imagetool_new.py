@@ -11,8 +11,7 @@ from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .colors import (pg_colormap_names, pg_colormap_powernorm,
-                     pg_colormap_to_QPixmap)
+from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
 from .slicer import SlicerArray
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -120,8 +119,6 @@ class ImageTool(QtWidgets.QMainWindow):
 class ImageSlicerArea(DockArea):
 
     sigDataChanged = QtCore.Signal()
-    # sigIndexChanged = QtCore.Signal(int, tuple)
-    # sigCursorCountChanged = QtCore.Signal(int)
     sigCurrentCursorChanged = QtCore.Signal(int)
 
     def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5):
@@ -136,9 +133,6 @@ class ImageSlicerArea(DockArea):
             highContrast=False,
             zeroCentered=False,
         )
-        # self.colormap_properties["cmap"] = cmap
-        # self.gamma = gamma
-        # self.colormap_properties["reversed"] = False
 
         self._data = None
         self.current_cursor = 0
@@ -186,40 +180,9 @@ class ImageSlicerArea(DockArea):
         self.addPlotDock(
             name="6", position="top", relativeTo="3", size=(0, 0), display_axis=(3,)
         )
-        # for c in self.findAll()[0]:
-        # c.setChildrenCollapsible(False)
 
         self._container_bottom = self.getLargeContainer(self.get_dock(0))
         self._container_top = self.getLargeContainer(self.get_dock(1))
-
-        # self.controls = []
-
-        # self.controls.append(
-        #     self.addControlDock(
-        #         name="controls0",
-        #         position="top",
-        #         relativeTo=self._container_top,
-        #         autoOrientation=False,
-        #     )
-        # )
-
-        # self.controls.append(
-        #     self.addControlDock(
-        #         name="controls1",
-        #         position="below",
-        #         relativeTo=self.controls[-1],
-        #         autoOrientation=False,
-        #     )
-        # )
-
-        # self.controls.append(
-        #     self.addControlDock(
-        #         name="controls2",
-        #         position="below",
-        #         relativeTo=self.controls[-1],
-        #         autoOrientation=False,
-        #     )
-        # )
 
         self._container_bottom.splitterMoved.connect(
             lambda: self.sync_splitters(self._container_top, self._container_bottom)
@@ -238,15 +201,15 @@ class ImageSlicerArea(DockArea):
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
 
     @property
-    def sigCursorCountChanged(self):
+    def sigCursorCountChanged(self) -> type[QtCore.Signal]:
         return self.data_slicer.sigCursorCountChanged
 
     @property
-    def sigIndexChanged(self):
+    def sigIndexChanged(self) -> type[QtCore.Signal]:
         return self.data_slicer.sigIndexChanged
 
     @property
-    def sigBinChanged(self):
+    def sigBinChanged(self) -> type[QtCore.Signal]:
         return self.data_slicer.sigBinChanged
 
     @property
@@ -285,23 +248,23 @@ class ImageSlicerArea(DockArea):
         return self.images + self.profiles
 
     @property
-    def data_slicer(self):
+    def data_slicer(self) -> SlicerArray:
         return self._data_slicer
 
     @property
-    def n_cursors(self):
+    def n_cursors(self) -> int:
         return self.data_slicer.n_cursors
 
     @property
-    def current_indices(self):
+    def current_indices(self) -> list[int]:
         return self.data_slicer.get_indices(self.current_cursor)
 
     @property
-    def current_values(self):
+    def current_values(self) -> list[float]:
         return self.data_slicer.get_values(self.current_cursor)
 
     @property
-    def data(self):
+    def data(self) -> xr.DataArray:
         return self.data_slicer._obj
 
     def get_dock(self, index):
@@ -315,8 +278,6 @@ class ImageSlicerArea(DockArea):
     @QtCore.Slot(tuple)
     def refresh(self, axes: tuple = None):
         self.sigIndexChanged.emit(self.current_cursor, axes)
-        pass
-        # self.set_colormap(update=True)
 
     def refresh_plots(self, *args, **kwargs):
         for ax in self.axes:
@@ -330,10 +291,9 @@ class ImageSlicerArea(DockArea):
         self.current_cursor = cursor
         if update:
             self.refresh()
-        # self.data_slicer.current_cursor = self.current_cursor
         self.sigCurrentCursorChanged.emit(cursor)
 
-    def set_data(self, data):
+    def set_data(self, data: xr.DataArray):
         self._data = data
         self._data_slicer = SlicerArray(self._data)
 
@@ -349,36 +309,28 @@ class ImageSlicerArea(DockArea):
         self.set_colormap(update=True)
 
     @QtCore.Slot(int, int)
-    def swap_axes(self, ax1, ax2):
+    def swap_axes(self, ax1: int, ax2: int):
         self.data_slicer.swap_axes(ax1, ax2)
         self.sigDataChanged.emit()
-
-    # def add_controls(self):
-    #     tab0 = QtWidgets.QWidget()
-    #     tab0_layout = QtWidgets.QVBoxLayout(tab0)
-    #     tab0_layout.addWidget(ItoolMultiCursorControls(self))
-    #     tab0_layout.addWidget(ItoolCrosshairControls(self))
-    #     self.controls[0].addWidget(tab0)
-    #     self.controls[1].addWidget(ItoolColormapControls(self))
-    #     self.controls[-1].addWidget(ItoolBinningControls(self))
 
     def _ax_display(self, axis):
         axes = list(range(self.data.ndim))
         axes.remove(axis)
         return axes
 
-    def set_index(self, axis, ind, update=True):
-        self.data_slicer.set_index(self.current_cursor, axis, ind, update)
+    @QtCore.Slot(int, int, bool)
+    def set_index(self, axis: int, value: int, update: bool = True):
+        self.data_slicer.set_index(self.current_cursor, axis, value, update)
 
-    def set_value(self, axis, val, update=True):
-        self.data_slicer.set_value(self.current_cursor, axis, val, update)
+    @QtCore.Slot(int, float, bool)
+    def set_value(self, axis: int, value: float, update: bool = True):
+        self.data_slicer.set_value(self.current_cursor, axis, value, update)
 
-    def set_bin(self, axis, val, update=True):
+    @QtCore.Slot(int, int, bool)
+    def set_bin(self, axis: int, value: int, update: bool = True):
         new_bins = [None] * self.data.ndim
-        new_bins[axis] = val
+        new_bins[axis] = value
         self.data_slicer.set_bins(self.current_cursor, new_bins, update)
-        # if update:
-        # self.refresh((axis,))
 
     @QtCore.Slot()
     def add_cursor(self):
@@ -403,7 +355,7 @@ class ImageSlicerArea(DockArea):
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
-    def cursor_color(self, index):
+    def cursor_color(self, index: int):
         colors = [
             pg.mkColor(0.8),
             pg.mkColor("y"),
@@ -614,7 +566,6 @@ class ItoolDisplayObject(object):
 
     def refresh_data(self):
         pass
-        # self.data_slicer.current_cursor = self.cursor_index
 
 
 class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
@@ -778,7 +729,6 @@ class ItoolControlDock(Dock):
             self.label.sigCloseClicked.connect(self.close)
         self.topLayout.addWidget(self.label, 0, 1)
         self.topLayout.setContentsMargins(0, 0, 0, 0)
-        # self.layout.setContentsMargins(5, 5, 5, 5)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
         )
@@ -790,8 +740,6 @@ class ItoolControlDock(Dock):
 
 
 class ItoolPlotDock(Dock):
-    # sigResized = QtCore.Signal(QtCore.QSize)
-
     def __init__(
         self,
         slicer_area,
@@ -840,10 +788,6 @@ class ItoolPlotDock(Dock):
         if evt.type() == QtCore.QEvent.PaletteChange:
             self.label.updateStyle()
         super().changeEvent(evt)
-
-    # def resizeEvent(self, ev):
-    #     super().resizeEvent(ev)
-    #     self.sigResized.emit(ev.size())
 
 
 class ItoolPlotItem(pg.PlotItem):
@@ -1077,7 +1021,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         # self.ci.layout.setContentsMargins(0, 0, 0, 0)
         # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
         # self.addItem(self.plotItem)
-        
+
         super().__init__(
             parent=parent,
             plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
@@ -1401,122 +1345,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def _updateHeight(self):
         if self._is_compact:
             self.setMaximumHeight(QtGui.QFontMetrics(self.font()).height() + 3)
-
-
-class FlowLayout(QtWidgets.QLayout):
-    def __init__(self, parent=None, margin=0):
-        super().__init__(parent)
-
-        # if parent is not None:
-        # self.setContentsMargins(QtCore.QMargins(margin, margin, margin, margin))
-
-        self._item_list = []
-        self.setHorizontalSpacing(self.spacing())
-        self.setVerticalSpacing(self.spacing())
-        # self.setVerticalSpacing(0)
-
-    def __del__(self):
-        item = self.takeAt(0)
-        while item:
-            item = self.takeAt(0)
-
-    def horizontalSpacing(self):
-        return self._spacing_horizontal
-
-    def verticalSpacing(self):
-        return self._spacing_vertical
-
-    def setHorizontalSpacing(self, spacing: int):
-        self._spacing_horizontal = spacing
-
-    def setVerticalSpacing(self, spacing: int):
-        self._spacing_vertical = spacing
-
-    def setSpacing(self, spacing: int):
-        super().setSpacing(spacing)
-        self.setHorizontalSpacing(spacing)
-        self.setVerticalSpacing(spacing)
-
-    def addItem(self, item):
-        self._item_list.append(item)
-
-    def count(self):
-        return len(self._item_list)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._item_list):
-            return self._item_list[index]
-
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._item_list):
-            return self._item_list.pop(index)
-
-        return None
-
-    def expandingDirections(self):
-        return QtCore.Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        height = self._do_layout(QtCore.QRect(0, 0, width, 0), True)
-        return height
-
-    def setGeometry(self, rect):
-        super(FlowLayout, self).setGeometry(rect)
-        self._do_layout(rect, False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QtCore.QSize()
-
-        for item in self._item_list:
-            size = size.expandedTo(item.minimumSize())
-
-        size += QtCore.QSize(
-            2 * self.contentsMargins().top(), 2 * self.contentsMargins().top()
-        )
-        return size
-
-    def _do_layout(self, rect, test_only):
-
-        x = rect.x()
-        y = rect.y()
-        line_height = 0
-
-        for item in self._item_list:
-            style = item.widget().style()
-            layout_spacing_x = style.layoutSpacing(
-                QtWidgets.QSizePolicy.PushButton,
-                QtWidgets.QSizePolicy.PushButton,
-                QtCore.Qt.Horizontal,
-            )
-            layout_spacing_y = style.layoutSpacing(
-                QtWidgets.QSizePolicy.PushButton,
-                QtWidgets.QSizePolicy.PushButton,
-                QtCore.Qt.Vertical,
-            )
-            space_x = self.horizontalSpacing() + layout_spacing_x
-            space_y = self.verticalSpacing() + layout_spacing_y
-            next_x = x + item.sizeHint().width() + space_x
-            if next_x - space_x > rect.right() and line_height > 0:
-                x = rect.x()
-                y = y + line_height + space_y
-                next_x = x + item.sizeHint().width() + space_x
-                line_height = 0
-
-            if not test_only:
-                item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), item.sizeHint()))
-
-            x = next_x
-            line_height = max(line_height, item.sizeHint().height())
-
-        return y + line_height - rect.y()
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
@@ -1953,11 +1781,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
 
             self.layout.addWidget(self.values_groups[i + 1])
-        # self.spin_dat.setMinimumWidth(80)
-        # if self.orientation == QtCore.Qt.Vertical:
-        # self.values_layouts[-1].addWidget(self.spin_dat, 2, 2, 1, 1)
-        # else:
-        # self.values_layouts[-1].addWidget(self.spin_dat, 0, 4, 1, 1)
 
     def connect_signals(self):
         super().connect_signals()
@@ -1983,9 +1806,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
-
             self.label_dim[i].setText(self.data.dims[i])
-            # self.label_dim[i].setChecked()
 
             label_width = max(
                 label_width,
@@ -2013,6 +1834,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             l.setMaximumWidth(label_width)
 
     def update_spins(self, *args, **kwargs):
+        # !TODO: modify to update only when necessary
         for i in range(self.data.ndim):
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
