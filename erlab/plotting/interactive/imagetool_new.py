@@ -6,16 +6,14 @@ import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
 import xarray as xr
-from erlab.plotting.colors import (
-    pg_colormap_names,
-    pg_colormap_powernorm,
-    pg_colormap_to_QPixmap,
-)
-from erlab.plotting.interactive.slicer import SlicerArray
 from matplotlib import colors as mcolors
 from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
 from PySide6 import QtCore, QtGui, QtWidgets
+
+from .colors import (pg_colormap_names, pg_colormap_powernorm,
+                     pg_colormap_to_QPixmap)
+from .slicer import SlicerArray
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -80,7 +78,6 @@ class ImageTool(QtWidgets.QMainWindow):
         self.add_group()  # title="Color")
         self.add_group()  # title="Bin")
 
-        # self.add_widget(0, ItoolMultiCursorControls(self.slicer_area))
         self.add_widget(0, ItoolCrosshairControls(self.slicer_area))
 
         self.add_widget(1, ItoolColormapControls(self.slicer_area))
@@ -90,25 +87,6 @@ class ImageTool(QtWidgets.QMainWindow):
         dock.setWidget(self.controls)
         dock.setTitleBarWidget(QtWidgets.QWidget())
         self.addDockWidget(QtCore.Qt.TopDockWidgetArea, dock)
-        # self.controls = []
-        # for i in range(3):
-        #     self.controls.append(QtWidgets.QDockWidget(f"Control {i}", self))
-
-        # tab0 = QtWidgets.QWidget()
-        # tab0_layout = QtWidgets.QVBoxLayout(tab0)
-        # tab0_layout.setContentsMargins(0,0,0,0)
-        # tab0_layout.setSpacing(3)
-        # tab0_layout.addWidget(ItoolMultiCursorControls(self.slicer_area))
-        # tab0_layout.addWidget(ItoolCrosshairControls(self.slicer_area))
-        # self.controls[0].setWidget(tab0)
-        # self.controls[1].setWidget(ItoolColormapControls(self.slicer_area))
-        # self.controls[2].setWidget(ItoolBinningControls(self.slicer_area))
-        # for ctrl in self.controls:
-        #     ctrl.setTitleBarWidget(QtWidgets.QWidget())
-        #     self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, ctrl)
-        # for i in range(len(self.controls) - 1):
-        #     self.tabifyDockWidget(self.controls[i], self.controls[i+1])
-
         self.resize(720, 720)
 
         self.keyboard_shortcuts = {
@@ -119,7 +97,6 @@ class ImageTool(QtWidgets.QMainWindow):
             # "L": ("Lock color levels", self.group_widgets[idx]._cmap_lock_button.click),
             "S": ("Toggle cursor snap", self.group_widgets[0].btn_snap.click),
             "T": ("Transpose main image", self.group_widgets[0].btn_transpose[0].click),
-            # "Ctrl+A": ("View All", lambda: self.itool.autoRange()),
         }
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
@@ -1082,7 +1059,11 @@ class ItoolPlotItem(pg.PlotItem):
         return self.slicer_area.data_slicer
 
 
-class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
+# Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
+# Will need to run some benchmarks in the future
+
+# class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
+class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     def __init__(
         self,
         slicer_area: ImageSlicerArea,
@@ -1091,17 +1072,16 @@ class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
         parent=None,
         **item_kw,
     ):
-        super().__init__(parent=parent)
-        self.ci.layout.setSpacing(0)
-        self.ci.layout.setContentsMargins(0, 0, 0, 0)
-
-        self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
-        self.addItem(self.plotItem)
-        # super().__init__(
-        #     parent=parent,
-        #     background=background,
-        #     plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
-        # )
+        # super().__init__(parent=parent)
+        # self.ci.layout.setSpacing(0)
+        # self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
+        # self.addItem(self.plotItem)
+        
+        super().__init__(
+            parent=parent,
+            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
+        )
 
         self.scene().sigMouseClicked.connect(self.plotItem.handle_mouse)
 
@@ -2181,31 +2161,3 @@ class ItoolBinningControls(ItoolControlsBase):
     def reset(self):
         for spin in self.spins:
             spin.setValue(1)
-
-
-if __name__ == "__main__":
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
-    data = xr.open_dataarray(
-        # "/Users/khan/Documents/ERLab/TiSe2/kxy10.nc"
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    )
-    # import erlab.io
-
-    # data = erlab.io.load_igor_pxp(
-    #     "/Users/khan/Documents/ERLab/TiSe2/220221_KRISS/220221_KRISS_TiSe2.pxp",
-    #     silent=True,
-    # )["f043"]
-    # demo = ImageSlicerArea()
-    # demo.set_data(data)
-    demo = ImageTool(data=data)
-    demo.show()
-    demo.raise_()
-    qapp.exec()
-    # demo.profiles[0].refresh_data(0,None)
-    # demo.mainimage.refresh_image()
-
-    # sys.exit(app.exec_())

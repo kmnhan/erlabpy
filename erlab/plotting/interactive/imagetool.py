@@ -22,10 +22,10 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from PySide6 import QtSvg, QtSvgWidgets
 
 if __name__ != "__main__":
-    from ..colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
+    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
     from ..interactive.utilities import parse_data, xImageItem
 else:
-    from erlab.plotting.colors import (
+    from erlab.plotting.interactive.colors import (
         pg_colormap_names,
         pg_colormap_powernorm,
         pg_colormap_to_QPixmap,
