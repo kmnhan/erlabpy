@@ -54,12 +54,10 @@ def transposed_jit(arr):
 
 
 class SlicerArray(QtCore.QObject):
-    # class SlicerArray:
 
     sigIndexChanged = QtCore.Signal(int, tuple)
     sigBinChanged = QtCore.Signal(int, tuple)
     sigCursorCountChanged = QtCore.Signal(int)
-    # sigCurrentCursorChanged = QtCore.Signal(int)
     sigShapeChanged = QtCore.Signal()
 
     def __init__(self, xarray_obj: xr.DataArray):
@@ -68,7 +66,6 @@ class SlicerArray(QtCore.QObject):
         self._bins = [[1] * self._obj.ndim]
         self._indices = [[s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]]
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
-        # self._current_cursor = 0
         self._snap_to_data = False
 
     def add_cursor(self, like_cursor: int = -1, update=True):
@@ -82,10 +79,6 @@ class SlicerArray(QtCore.QObject):
     def remove_cursor(self, index, update=True):
         if self.n_cursors == 1:
             raise ValueError("There must be at least one cursor.")
-        # if self.current_cursor == i:
-        # if i == 0:
-        # self.current_cursor = 1
-        # self.current_cursor -= 1
         self._bins.pop(index)
         self._indices.pop(index)
         self._values.pop(index)
@@ -111,25 +104,22 @@ class SlicerArray(QtCore.QObject):
     def set_bins(self, cursor, value, update: bool = True):
         if not len(value) == self._obj.ndim:
             raise ValueError("length of bin array must match the number of dimensions.")
+        axes = []
         for i, x in enumerate(value):
-            self.set_bin(cursor, i, x, update=False)
-            # if x is None:
-            #     continue
-            # if int(x) != x:
-            #     raise TypeError("bins must have integer type")
-            # self._bins[cursor][i] = int(x)
+            axes += self.set_bin(cursor, i, x, update=False)
         if update:
-            self.sigBinChanged.emit(cursor, self.get_bins(cursor))
+            self.sigBinChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, int, bool)
-    def set_bin(self, cursor, axis, value, update: bool = True):
+    @QtCore.Slot(int, int, int, bool, result=list[int | None])
+    def set_bin(self, cursor, axis, value, update: bool = True) -> list[int | None]:
         if value is None:
-            return
+            return []
         if int(value) != value:
             raise TypeError("bins must have integer type")
         self._bins[cursor][axis] = int(value)
         if update:
             self.sigBinChanged.emit(cursor, self.get_bins(cursor))
+        return [axis]
 
     @QtCore.Slot(int, result=tuple[bool])
     def get_binned(self, cursor) -> tuple[bool]:
@@ -144,27 +134,23 @@ class SlicerArray(QtCore.QObject):
             raise ValueError(
                 "length of index array must match the number of dimensions"
             )
+        axes = []
         for i, x in enumerate(value):
-            self.set_index(cursor, i, x, update=False)
-            # if x is None:
-            #     continue
-            # if int(x) != x:
-            #     raise TypeError("indices must have integer type")
-            # self._indices[cursor][i] = int(x)
-            # self._values[cursor][i] = self.coords[i][int(x)]
+            axes += self.set_index(cursor, i, x, update=False)
         if update:
-            self.sigIndexChanged.emit(cursor, self.get_indices(cursor))
+            self.sigIndexChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, int, bool)
-    def set_index(self, cursor, axis, value, update: bool = True):
+    @QtCore.Slot(int, int, int, bool, result=list[int | None])
+    def set_index(self, cursor, axis, value, update: bool = True) -> list[int | None]:
         if value is None:
-            return
+            return []
         if int(value) != value:
             raise TypeError("indices must have integer type")
         self._indices[cursor][axis] = int(value)
         self._values[cursor][axis] = self.coords[axis][int(value)]
         if update:
-            self.sigIndexChanged.emit(cursor, self.get_indices(cursor))
+            self.sigIndexChanged.emit(cursor, (axis,))
+        return [axis]
 
     @QtCore.Slot(int, result=list[float])
     def get_values(self, cursor) -> list[float]:
@@ -175,29 +161,24 @@ class SlicerArray(QtCore.QObject):
             raise ValueError(
                 "length of value array must match the number of dimensions"
             )
+        axes = []
         for i, x in enumerate(value):
-            # self.set_value(cursor, i, x, update=False)
-            if x is None:
-                continue
-            self._indices[cursor][i] = self.index_of_value(i, x)
-            if self.snap_to_data:
-                self._values[cursor][i] = self.coords[i][self._indices[cursor][i]]
-            else:
-                self._values[cursor][i] = float(x)
+            axes += self.set_value(cursor, i, x, update=False)
         if update:
-            self.sigIndexChanged.emit(cursor, self.get_indices(cursor))
+            self.sigIndexChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, float, bool)
-    def set_value(self, cursor, axis, value, update: bool = True):
+    @QtCore.Slot(int, int, float, bool, result=list[int | None])
+    def set_value(self, cursor, axis, value, update: bool = True) -> list[int | None]:
         if value is None:
-            return
+            return []
         self._indices[cursor][axis] = self.index_of_value(axis, value)
         if self.snap_to_data:
             self._values[cursor][axis] = self.coords[axis][self._indices[cursor][axis]]
         else:
             self._values[cursor][axis] = float(value)
         if update:
-            self.sigIndexChanged.emit(cursor, self.get_indices(cursor))
+            self.sigIndexChanged.emit(cursor, (axis,))
+        return [axis]
 
     @property
     def coords(self) -> tuple[npt.NDArray[np.float64]]:
