@@ -121,7 +121,7 @@ class ImageSlicerArea(DockArea):
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
 
-    def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5):
+    def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, rad2deg=False):
         super().__init__(parent)
 
         self.qapp = QtCore.QCoreApplication.instance()
@@ -192,7 +192,7 @@ class ImageSlicerArea(DockArea):
         )
 
         if data is not None:
-            self.set_data(data)
+            self.set_data(data, rad2deg=rad2deg)
 
     def connect_signals(self):
         self.sigIndexChanged.connect(self.refresh_plots)
@@ -293,8 +293,15 @@ class ImageSlicerArea(DockArea):
             self.refresh()
         self.sigCurrentCursorChanged.emit(cursor)
 
-    def set_data(self, data: xr.DataArray):
-        self._data = data
+    def set_data(self, data: xr.DataArray, rad2deg=None):
+        if not rad2deg:
+            self._data = data
+        else:
+            if np.iterable(rad2deg):
+                conv_dims = rad2deg
+            else:
+                conv_dims = [d for d in ("phi", "theta", "beta", "alpha", "chi") if d in data.dims]
+            self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
         self._data_slicer = SlicerArray(self._data)
 
         self.connect_signals()
