@@ -1,4 +1,5 @@
 """Plotting utilities."""
+import os
 import pkgutil
 from io import StringIO
 
@@ -6,6 +7,7 @@ import cmasher
 import cmocean
 import colorcet
 import matplotlib
+import matplotlib.style
 import matplotlib.colors
 import matplotlib.font_manager
 import numpy as np
@@ -41,4 +43,9 @@ def load_igor_ct(file, name):
 
 
 refresh_fonts()
-load_igor_ct("Blue-White.txt", "Igor_BlueWhite")
+load_igor_ct("Blue-White.txt", "BuWh")
+
+matplotlib.style.core.USER_LIBRARY_PATHS.append(
+    os.path.join(os.path.dirname(__file__), "stylelib")
+)
+matplotlib.style.core.reload_library()
