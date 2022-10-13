@@ -378,7 +378,7 @@ def unit_for_dim(dim_name, rad2deg=False):
     else:
         unit = unit[0] if plt.rcParams["text.usetex"] else unit[1]
     if rad2deg:
-        unit.replace("rad", "deg")
+        unit = unit.replace("rad", "deg")
     return unit
 
 
@@ -391,7 +391,7 @@ def label_for_dim(dim_name, rad2deg=False, escaped=True):
         return f"{name} ({unit})"
 
 
-def fancy_labels(ax=None):
+def fancy_labels(ax=None, rad2deg=False):
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
@@ -399,8 +399,8 @@ def fancy_labels(ax=None):
             fancy_labels(ax)
         return
 
-    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel()))
-    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel()))
+    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), rad2deg=rad2deg))
+    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), rad2deg=rad2deg))
 
 
 def property_label(key, value, decimals=0, si=0, name=None, unit=None):
