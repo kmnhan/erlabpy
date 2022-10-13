@@ -44,7 +44,6 @@ def itool_(data, execute=None, *args, **kwargs):
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
-
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
@@ -193,7 +192,19 @@ class ImageSlicerArea(DockArea):
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
-
+        self.set_keyboard_shortcuts()
+        
+    def set_keyboard_shortcuts(self):
+        self.keyboard_shortcuts = {
+            "Ctrl+A": (
+                "View all",
+                self.view_all,
+            ),
+        }
+        for k, v in self.keyboard_shortcuts.items():
+            sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
+            sc.activated.connect(v[-1])
+        
     def connect_signals(self):
         self.sigIndexChanged.connect(self.refresh_plots)
         self.sigBinChanged.connect(lambda c, _: self.refresh_plots(c))
@@ -283,6 +294,12 @@ class ImageSlicerArea(DockArea):
         for ax in self.axes:
             ax.plotItem.refresh_items_data(*args, **kwargs)
             # TODO: autorange smarter
+            ax.plotItem.vb.updateAutoRange()
+            
+    def view_all(self):
+        print("viewall")
+        for ax in self.axes:
+            ax.plotItem.vb.enableAutoRange()
             ax.plotItem.vb.updateAutoRange()
 
     def set_current_cursor(self, cursor: int, update=True):
