@@ -74,17 +74,20 @@ class goldtool(AnalysisWindow):
             **kwargs,
         )
         self._argnames = dict()
-        self._argnames["data"] = varname.argname(
-            "data", func=self.__init__, vars_only=False
-        )
-        print(self._argnames["data"])
-        if data_corr is not None:
-            self._argnames["data_corr"] = varname.argname(
-                "data_corr", func=self.__init__, vars_only=False
+        try:
+            self._argnames["data"] = varname.argname(
+                "data", func=self.__init__, vars_only=False
             )
-
-        # for arg in ["data", "data_corr"]:
-        # self._argnames[arg] = varname.argname(arg, vars_only=False)
+        except varname.VarnameRetrievingError:
+            self._argnames["data"] = "gold"
+        
+        if data_corr is not None:
+            try:
+                self._argnames["data_corr"] = varname.argname(
+                    "data_corr", func=self.__init__, vars_only=False
+                )
+            except varname.VarnameRetrievingError:
+                self._argnames["data_corr"] = "data_corr"
 
         self.data_corr = data_corr
 
