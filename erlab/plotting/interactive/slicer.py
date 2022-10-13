@@ -118,7 +118,8 @@ class SlicerArray(QtCore.QObject):
             raise TypeError("bins must have integer type")
         self._bins[cursor][axis] = int(value)
         if update:
-            self.sigBinChanged.emit(cursor, self.get_bins(cursor))
+            self.sigBinChanged.emit(cursor, (axis, ))
+            return []
         return [axis]
 
     @QtCore.Slot(int, result=tuple[bool])
@@ -150,6 +151,7 @@ class SlicerArray(QtCore.QObject):
         self._values[cursor][axis] = self.coords[axis][int(value)]
         if update:
             self.sigIndexChanged.emit(cursor, (axis,))
+            return []
         return [axis]
 
     @QtCore.Slot(int, result=list[float])
@@ -173,11 +175,15 @@ class SlicerArray(QtCore.QObject):
             return []
         self._indices[cursor][axis] = self.index_of_value(axis, value)
         if self.snap_to_data:
-            self._values[cursor][axis] = self.coords[axis][self._indices[cursor][axis]]
+            new = self.coords[axis][self._indices[cursor][axis]]
+            if self._values[cursor][axis] == new:
+                return []
+            self._values[cursor][axis] = new
         else:
             self._values[cursor][axis] = float(value)
         if update:
             self.sigIndexChanged.emit(cursor, (axis,))
+            return []
         return [axis]
 
     @property

@@ -297,7 +297,6 @@ class ImageSlicerArea(DockArea):
             ax.plotItem.vb.updateAutoRange()
             
     def view_all(self):
-        print("viewall")
         for ax in self.axes:
             ax.plotItem.vb.enableAutoRange()
             ax.plotItem.vb.updateAutoRange()
