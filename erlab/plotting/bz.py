@@ -3,11 +3,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import RegularPolygon
+from .colors import axes_textcolor
 
 __all__ = ["plot_hex_bz"]
 
 abbrv_kws = dict(
-    edgecolor=["ec", "k"],
     facecolor=["fc", "none"],
     linestyle=["ls", "--"],
     linewidth=["lw", 0.5],
@@ -25,6 +25,8 @@ def plot_hex_bz(a=3.54, rotate=0.0, offset=(0.0, 0.0), ax=None, **kwargs):
         ax = plt.gca()
     if np.iterable(ax):
         return [plot_hex_bz(a=a, rotate=rotate, offset=offset, ax=x, **kwargs) for x in ax]
+    else:
+        kwargs["edgecolor"] = kwargs.pop("edgecolor", kwargs.pop("ec", axes_textcolor(ax)))
 
     poly = RegularPolygon(
         offset, 6, radius=4 * np.pi / a / 3, orientation=np.deg2rad(rotate), **kwargs

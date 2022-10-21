@@ -18,6 +18,7 @@ __all__ = [
     "close_to_white",
     "prominent_color",
     "image_is_light",
+    "axes_textcolor",
 ]
 
 
@@ -340,3 +341,13 @@ def prominent_color(im):
 
 def image_is_light(im):
     return close_to_white(prominent_color(im))
+
+def axes_textcolor(ax, light="k", dark="w"):
+    c = light
+    mappable = get_mappable(ax, error=False)
+    if mappable is not None:
+        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+            if not image_is_light(mappable):
+                c = dark
+    return c
+    

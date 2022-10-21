@@ -9,7 +9,7 @@ import xarray as xr
 from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
-from .colors import get_mappable, image_is_light
+from .colors import axes_textcolor
 
 __all__ = [
     "plot_hv_text",
@@ -159,13 +159,8 @@ def annotate_cuts_erlab(
     text_kw.setdefault("horizontalalignment", "left")
     text_kw.setdefault("verticalalignment", "top")
 
-    mappable = get_mappable(ax, image_only=True, error=False)
     if color is None:
-        color = "k"
-        if mappable is not None:
-            if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
-                if not image_is_light(mappable):
-                    color = "w"
+        color = axes_textcolor(ax)
     plot_kw.setdefault("color", color)
     for k, v in kwargs.items():
         if not isinstance(v, (tuple, list, np.ndarray)):
@@ -305,13 +300,7 @@ def label_subplots(
             fs = fontsize
         bbox_transform = mpl.transforms.Affine2D().translate(*offset)
         label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
-        mappable = get_mappable(axlist[i], image_only=True, error=False)
-        clr = "k"
-        if mappable is not None:
-            if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
-                if not image_is_light(mappable):
-                    clr = "w"
-        with plt.rc_context({"text.color": clr}):
+        with plt.rc_context({"text.color": axes_textcolor(axlist[i])}):
             at = mpl.offsetbox.AnchoredText(
                 label_str,
                 loc=loc,
@@ -521,13 +510,7 @@ def sizebar(
     if label is None:
         label = f"{value} {unit}"
 
-    mappable = get_mappable(ax, image_only=True, error=False)
-    clr = "k"
-    if mappable is not None:
-        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
-            if not image_is_light(mappable):
-                clr = "w"
-    kwargs.setdefault("color", clr)
+    kwargs.setdefault("color", axes_textcolor(ax))
 
     asb = AnchoredSizeBar(
         ax.transData,
@@ -623,6 +606,8 @@ def mark_points(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_xticks(pts)
         # label_ax.set_xlabel('')
         label_ax.set_xticklabels([parse_point_labels(l, roman, bar) for l in labels])
+        # label_ax.set_zorder(a.get_zorder())
+        label_ax.set_frame_on(False)
 
 
 def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
@@ -636,6 +621,8 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_yticks(pts)
         # label_ax.set_xlabel('')
         label_ax.set_yticklabels([parse_point_labels(l, roman, bar) for l in labels])
+        # label_ax.set_zorder(a.get_zorder())
+        label_ax.set_frame_on(False)
 
 
 def copy_mathtext(

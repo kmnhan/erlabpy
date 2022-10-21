@@ -10,7 +10,7 @@ from matplotlib.widgets import AxesWidget
 import matplotlib.projections
 
 from .annotations import label_subplot_properties, fancy_labels
-from .colors import get_mappable, image_is_light, proportional_colorbar, nice_colorbar
+from .colors import get_mappable, axes_textcolor, proportional_colorbar, nice_colorbar
 
 __all__ = [
     "LabeledCursor",
@@ -93,7 +93,7 @@ class LabeledCursor(AxesWidget):
 
         lcolor = lineprops.pop("color", lineprops.pop("c", "0.35"))
         ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
-        lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.8))
+        lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.5))
         lineprops.update(dict(color=lcolor, ls=ls, lw=lw, visible=False))
 
         tcolor = textprops.pop("color", textprops.pop("c", lcolor))
@@ -551,13 +551,8 @@ def fermiline(ax=None, y=0, **kwargs):
         ax = plt.gca()
     if np.iterable(ax):
         return [fermiline(a, y, **kwargs) for a in np.asarray(ax).flat]
-    default_color = "k"
-    mappable = get_mappable(ax, error=False)
-    if mappable is not None:
-        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
-            if not image_is_light(mappable):
-                default_color = "w"
-    c = kwargs.pop("color", kwargs.pop("c", default_color))
+
+    c = kwargs.pop("color", kwargs.pop("c", axes_textcolor(ax)))
     lw = kwargs.pop("lw", kwargs.pop("linewidth", 0.25))
     ls = kwargs.pop("ls", kwargs.pop("linestyle", "-"))
     return ax.axhline(y, ls=ls, lw=lw, c=c)
