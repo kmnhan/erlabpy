@@ -44,6 +44,7 @@ def itool_(data, execute=None, *args, **kwargs):
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
+
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
@@ -193,7 +194,7 @@ class ImageSlicerArea(DockArea):
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
         self.set_keyboard_shortcuts()
-        
+
     def set_keyboard_shortcuts(self):
         self.keyboard_shortcuts = {
             "Ctrl+A": (
@@ -204,7 +205,7 @@ class ImageSlicerArea(DockArea):
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
             sc.activated.connect(v[-1])
-        
+
     def connect_signals(self):
         self.sigIndexChanged.connect(self.refresh_plots)
         self.sigBinChanged.connect(lambda c, _: self.refresh_plots(c))
@@ -295,7 +296,7 @@ class ImageSlicerArea(DockArea):
             ax.plotItem.refresh_items_data(*args, **kwargs)
             # TODO: autorange smarter
             ax.plotItem.vb.updateAutoRange()
-            
+
     def view_all(self):
         for ax in self.axes:
             ax.plotItem.vb.enableAutoRange()
@@ -316,7 +317,11 @@ class ImageSlicerArea(DockArea):
             if np.iterable(rad2deg):
                 conv_dims = rad2deg
             else:
-                conv_dims = [d for d in ("phi", "theta", "beta", "alpha", "chi") if d in data.dims]
+                conv_dims = [
+                    d
+                    for d in ("phi", "theta", "beta", "alpha", "chi")
+                    if d in data.dims
+                ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
         self._data_slicer = SlicerArray(self._data)
 
@@ -424,14 +429,6 @@ class ImageSlicerArea(DockArea):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
-        invalid = []
-        if self.data.ndim == 2:
-            invalid = [3, 4, 5, 6]
-        elif self.data.ndim == 3:
-            invalid = [6]
-        for i in range(7):
-            self.get_dock(i).setVisible(i not in invalid)
-
         # parameters for layout: stretch and axis on/off
         stretch = [
             (30, 30),
@@ -443,7 +440,13 @@ class ImageSlicerArea(DockArea):
             (25, 10) if self.data.ndim == 4 else (0, 0),
         ]
         if self.data.ndim == 2:
+            stretch[0] = (30, 30)
+            stretch[1] = (30, 10)
+            stretch[2] = (10, 30)
             stretch[3] = (10, 10)
+            stretch[4] = (0, 0)
+            stretch[5] = (0, 0)
+            stretch[6] = (0, 0)
 
         valid_axis = (
             (1, 0, 0, 1),
@@ -454,8 +457,17 @@ class ImageSlicerArea(DockArea):
             (0, 0, 0, 1),
             (0, 1, 1, 0),
         )
+
+        invalid = []
+        if self.data.ndim == 2:
+            invalid = [4, 5, 6]
+        elif self.data.ndim == 3:
+            invalid = [6]
+
         for i, sel in enumerate(valid_axis):
             dock = self.get_dock(i)
+            dock.setVisible(i not in invalid)
+
             dock.axes.plotItem.setDefaultPadding(0)
             dock.setStretch(*stretch[i])
             for axis in ["left", "bottom", "right", "top"]:
@@ -468,6 +480,9 @@ class ImageSlicerArea(DockArea):
                 dock.axes.plotItem.setXLink(self.get_dock(0).axes.plotItem)
             elif i in [2, 5]:
                 dock.axes.plotItem.setYLink(self.get_dock(0).axes.plotItem)
+        
+        if self.data.ndim == 2:
+            self.get_dock(3).axes.plotItem.setVisible(False)
 
     def toggle_snap(self, value: bool = None):
         if value is None:
