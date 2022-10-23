@@ -57,7 +57,7 @@
 font.family: Fira Sans, sans-serif
 font.style: normal
 font.variant: normal
-font.weight: regular
+font.weight: 300
 font.stretch: normal
 
 font.serif: DejaVu Serif, Bitstream Vera Serif, Computer Modern Roman, New Century Schoolbook, Century Schoolbook L, Utopia, ITC Bookman, Bookman, Nimbus Roman No9 L, Times New Roman, Times, Palatino, Charter, serif
@@ -88,11 +88,11 @@ text.latex.preamble:
 
 # The following settings allow you to select the fonts in math mode.
 mathtext.fontset: custom
-mathtext.bf: "Fira Sans:style=normal:variant=normal:weight=bold:stretch=normal"
+mathtext.bf: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=normal"
 mathtext.cal: cursive
-mathtext.it: "Fira Sans:style=italic:variant=normal:weight=regular:stretch=normal"
-mathtext.rm: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=normal"
-mathtext.sf: "Fira Sans:style=normal:variant=normal:weight=regular:stretch=normal"
+mathtext.it: "Fira Sans:style=italic:variant=normal:weight=300:stretch=normal"
+mathtext.rm: "Fira Sans:style=normal:variant=normal:weight=300:stretch=normal"
+mathtext.sf: "Fira Sans:style=normal:variant=normal:weight=300:stretch=normal"
 mathtext.tt: monospace
 mathtext.fallback: stixsans
 mathtext.default: it
@@ -103,16 +103,16 @@ mathtext.default: it
 # Following are default face and edge colors, default tick sizes,
 # default font sizes for tick labels, and so on.  See
 # https://matplotlib.org/api/axes_api.html#module-matplotlib.axes
-axes.titleweight: regular
-axes.labelweight: regular
+axes.titleweight: 300
+axes.labelweight: 300
 axes.unicode_minus: True
 
 # ***************************************************************************
 # * FIGURE                                                                  *
 # ***************************************************************************
 # See https://matplotlib.org/api/figure_api.html#matplotlib.figure.Figure
-figure.titleweight: regular
-figure.labelweight: regular
+figure.titleweight: 300
+figure.labelweight: 300
 
 # ***************************************************************************
 # * SAVING FIGURES                                                          *
@@ -127,5 +127,5 @@ pdf.fonttype: 42
 ## pgf parameter
 # See https://matplotlib.org/tutorials/text/pgf.html for more information.
 pgf.rcfonts: False
-pgf.preamble: "\\usepackage[silent]{fontspec}\n\\usepackage{unicode-math}\n\\usepackage{newcomputermodern}\n\\usepackage[sfdefault,lf]{FiraSans}\n\\setmathfont{Fira Math}\n\\setmathfont[range=up/{greek,Greek,latin,Latin,num}]{Fira Sans}\n\\setmathfont[range=it/{greek,Greek,latin,Latin}]{Fira Sans Italic}\n\\setmathfont[range=bfup/{greek,Greek,latin,Latin,num}]{Fira Sans Bold}\n\\setmathfont[range=bfit/{greek,Greek,latin,Latin}]{Fira Sans Bold Italic}\n\\renewcommand{\\rmfamily}{\\fontseries{l}}"
+pgf.preamble: "\\usepackage[silent]{fontspec}\n\\usepackage{unicode-math}\n\\usepackage{newcomputermodern}\n\\usepackage[sfdefault,light,lf]{FiraSans}\n\\setmathfont{Fira Math}\n\\setmathfont[range=up/{greek,Greek,latin,Latin,num}]{Fira Sans Light}\n\\setmathfont[range=it/{greek,Greek,latin,Latin}]{Fira Sans Light Italic}\n\\setmathfont[range=bfup/{greek,Greek,latin,Latin,num}]{Fira Sans Regular}\n\\setmathfont[range=bfit/{greek,Greek,latin,Latin}]{Fira Sans Italic}\n\\renewcommand{\\rmfamily}{\\fontseries{l}}"
 pgf.texsystem: lualatex
