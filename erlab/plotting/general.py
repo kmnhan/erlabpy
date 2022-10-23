@@ -337,6 +337,7 @@ def plot_array(
     if colorbar:
         nice_colorbar(ax=ax, **colorbar_kw)
     if cursor:
+        cursor_kw.setdefault("textOn", False)
         c = LabeledCursor(ax, **cursor_kw)
         return img, c
     else:

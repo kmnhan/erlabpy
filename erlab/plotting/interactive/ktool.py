@@ -435,7 +435,7 @@ class kTool(QtWidgets.QMainWindow):
         self.extent = (*self.lims_kx, *self.lims_ky)
 
 
-def ktool(data, execute=None, *args, **kwargs):
+def ktool(data, execute=True, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)

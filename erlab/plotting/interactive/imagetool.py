@@ -493,7 +493,7 @@ class ItoolDock(Dock):
             fontSize=fontSize,
         )
         self.label.setVisible(False)
-        self.label = ItoolDockLabel(name, self, closable, fontSize, color=color)
+        self.label = ItoolDockLabel(name, closable, fontSize, color=color)
         if closable:
             self.label.sigCloseClicked.connect(self.close)
         self.topLayout.addWidget(self.label, 0, 1)

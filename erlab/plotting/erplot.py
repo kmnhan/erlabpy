@@ -21,3 +21,11 @@ from .interactive.imagetool import itool
 from .interactive.imagetool_new import itool_
 from .interactive.ktool import ktool
 from .interactive.noisetool import noisetool
+
+
+def clean_labels(axes, *args, **kwargs):
+    for ax in axes[:-1,:].flat:
+        ax.set_xlabel("")
+    for ax in axes[:,1:].flat:
+        ax.set_ylabel("")    
+    fancy_labels(axes, *args, **kwargs)

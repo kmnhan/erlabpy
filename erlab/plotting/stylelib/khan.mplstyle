@@ -305,7 +305,7 @@ legend.columnspacing: 1.0
 figure.titlesize: medium
 figure.labelsize: medium
 figure.figsize: 3.4, 2.55
-figure.dpi: 200
+figure.dpi: 135
 figure.facecolor: white
 figure.edgecolor: white
 figure.frameon: True
