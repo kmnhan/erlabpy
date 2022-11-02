@@ -29,3 +29,9 @@ def clean_labels(axes, *args, **kwargs):
     for ax in axes[:,1:].flat:
         ax.set_ylabel("")    
     fancy_labels(axes, *args, **kwargs)
+    
+def autoscale_to(arr, margin=0.2):
+    mn, mx = min(arr), max(arr)
+    diff = margin * (mx - mn)
+    return mn - diff, mx + diff
+    
