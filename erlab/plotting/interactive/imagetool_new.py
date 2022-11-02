@@ -516,10 +516,6 @@ class ImageSlicerArea(DockArea):
             container = self.getContainer(container)
         return container_prev
 
-    def addControlDock(self, position="bottom", relativeTo=None, **kwds):
-        dock = ItoolControlDock(**kwds)
-        return super().addDock(dock, position, relativeTo, **kwds)
-
     def addPlotDock(self, position="bottom", relativeTo=None, **kwds):
         dock = ItoolPlotDock(slicer_area=self, **kwds)
         return super().addDock(dock, position, relativeTo, **kwds)
@@ -736,46 +732,6 @@ class ItoolDockLabel(DockLabel):
                 font-size: {self.fontSize};
             }}"""
             self.setStyleSheet(self.hStyle)
-
-
-class ItoolControlDock(Dock):
-    def __init__(
-        self,
-        name,
-        area=None,
-        size=(10, 0),
-        widget=None,
-        hideTitle=False,
-        autoOrientation=True,
-        closable=False,
-        fontSize="13px",
-        color="#591e71",
-    ):
-        super().__init__(
-            name,
-            area=area,
-            size=size,
-            widget=widget,
-            hideTitle=hideTitle,
-            autoOrientation=autoOrientation,
-            closable=closable,
-            fontSize=fontSize,
-        )
-        self.label.setVisible(False)
-        self.label = ItoolDockLabel(name, closable, fontSize, color=color)
-        if closable:
-            self.label.sigCloseClicked.connect(self.close)
-        self.topLayout.addWidget(self.label, 0, 1)
-        self.topLayout.setContentsMargins(0, 0, 0, 0)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
-        )
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            self.label.updateStyle()
-        super().changeEvent(evt)
-
 
 class ItoolPlotDock(Dock):
     def __init__(
