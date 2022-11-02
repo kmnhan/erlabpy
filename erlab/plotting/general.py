@@ -1,16 +1,14 @@
 """General plotting utilities."""
 
-import matplotlib as mpl
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
-import matplotlib.projections
 
 from .annotations import label_subplot_properties, fancy_labels
-from .colors import get_mappable, axes_textcolor, proportional_colorbar, nice_colorbar
+from .colors import axes_textcolor, nice_colorbar
 
 __all__ = [
     "LabeledCursor",
