@@ -22,7 +22,7 @@ def itool_(data, execute=None, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
+    # qapp.setStyle("Fusion")
 
     if isinstance(data, (list, tuple)):
         win = tuple()
@@ -231,7 +231,7 @@ class ImageSlicerArea(DockArea):
     @property
     def main_image(self):
         """returns the PlotItem of main dock"""
-        return self.get_dock(0).axes
+        return self.get_axes(0)
 
     @property
     def slices(self):
@@ -239,7 +239,7 @@ class ImageSlicerArea(DockArea):
             return tuple()
         else:
             slice_axes = [4, 5]
-        return tuple(self.get_dock(ax).axes for ax in slice_axes)
+        return tuple(self.get_axes(ax) for ax in slice_axes)
 
     @property
     def images(self):
@@ -253,7 +253,7 @@ class ImageSlicerArea(DockArea):
             profile_axes = [1, 2, 3]
         elif self.data.ndim == 4:
             profile_axes = [1, 2, 3, 6]
-        return tuple(self.get_dock(ax).axes for ax in profile_axes)
+        return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
     def axes(self):
@@ -281,6 +281,9 @@ class ImageSlicerArea(DockArea):
 
     def get_dock(self, index):
         return self.docks[str(index)]
+    
+    def get_axes(self, index):
+        return self.get_dock(index).axes
 
     @QtCore.Slot()
     def refresh_all(self):
@@ -452,7 +455,7 @@ class ImageSlicerArea(DockArea):
             (1, 0, 0, 1),
             (1, 1, 0, 0),
             (0, 0, 1, 1),
-            (0, 0, 1, 0) if self.data.ndim == 4 else (0, 1, 1, 0),
+            (0, 0, 1, 1),
             (1, 0, 0, 0),
             (0, 0, 0, 1),
             (0, 1, 1, 0),
@@ -467,22 +470,23 @@ class ImageSlicerArea(DockArea):
         for i, sel in enumerate(valid_axis):
             dock = self.get_dock(i)
             dock.setVisible(i not in invalid)
-
-            dock.axes.plotItem.setDefaultPadding(0)
             dock.setStretch(*stretch[i])
+
+            axes = self.get_axes(i)
+            axes.plotItem.setDefaultPadding(0)
             for axis in ["left", "bottom", "right", "top"]:
-                dock.axes.plotItem.getAxis(axis).setTickFont(font)
-                dock.axes.plotItem.getAxis(axis).setStyle(
+                axes.plotItem.getAxis(axis).setTickFont(font)
+                axes.plotItem.getAxis(axis).setStyle(
                     autoExpandTextSpace=True, autoReduceTextSpace=True
                 )
-            dock.axes.plotItem.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
+            axes.plotItem.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
             if i in [1, 4]:
-                dock.axes.plotItem.setXLink(self.get_dock(0).axes.plotItem)
+                axes.plotItem.setXLink(self.get_axes(0).plotItem)
             elif i in [2, 5]:
-                dock.axes.plotItem.setYLink(self.get_dock(0).axes.plotItem)
+                axes.plotItem.setYLink(self.get_axes(0).plotItem)
         
         if self.data.ndim == 2:
-            self.get_dock(3).axes.plotItem.setVisible(False)
+            self.get_axes(3).plotItem.setVisible(False)
 
     def toggle_snap(self, value: bool = None):
         if value is None:
@@ -490,8 +494,8 @@ class ImageSlicerArea(DockArea):
         self.data_slicer.snap_to_data = value
 
     def sync_splitters(self, c0, c1):
-        self.get_dock(0).blockSignals(True)
-        self.get_dock(1).blockSignals(True)
+        self._container_top.blockSignals(True)
+        self._container_bottom.blockSignals(True)
 
         sizes = c0.sizes()
         total = sum(sizes)
@@ -506,8 +510,8 @@ class ImageSlicerArea(DockArea):
             sizes[k] *= factor
         c0.setSizes(sizes)
 
-        self.get_dock(0).blockSignals(False)
-        self.get_dock(1).blockSignals(False)
+        self._container_top.blockSignals(False)
+        self._container_bottom.blockSignals(False)
 
     def getLargeContainer(self, obj):
         container = obj
@@ -733,6 +737,13 @@ class ItoolDockLabel(DockLabel):
             }}"""
             self.setStyleSheet(self.hStyle)
 
+# class ItoolPartition(QtWidgets.QWidget):
+#     def __init__(self, slicer_area, size=(10,10), **plot_kw):
+#         self.slicer_area = slicer_area
+#         self.axes = ItoolGraphicsLayoutWidget(
+#             slicer_area, display_axis, image=image, **plot_kw
+#         )
+
 class ItoolPlotDock(Dock):
     def __init__(
         self,
@@ -809,10 +820,8 @@ class ItoolPlotItem(pg.PlotItem):
             self.vb.menu.ctrl[i].label.setVisible(False)
         self.vb.setCursor(QtGui.QCursor(QtCore.Qt.CrossCursor))
 
-        self._slicer_area = None
-        self._display_axis = None
-        self.slicer_area = slicer_area
-        self.display_axis = display_axis
+        self._slicer_area = slicer_area
+        self._display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
@@ -1983,7 +1992,7 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.open_dataarray(
         # "/Users/khan/Documents/ERLab/TiSe2/kxy10.nc"
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
     )
     itool_(data)
