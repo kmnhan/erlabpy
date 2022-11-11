@@ -22,7 +22,7 @@ def itool_(data, execute=None, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    # qapp.setStyle("Fusion")
+    qapp.setStyle("Fusion")
 
     if isinstance(data, (list, tuple)):
         win = tuple()
@@ -59,8 +59,6 @@ class ImageTool(QtWidgets.QMainWindow):
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
         self.setAttribute(QtCore.Qt.WA_AcceptTouchEvents, True)
         self.setCentralWidget(self.slicer_area)
-
-        self.setDockOptions(self.AnimatedDocks | self.AllowTabbedDocks)
 
         dock = QtWidgets.QDockWidget("Controls", self)
 
@@ -281,7 +279,7 @@ class ImageSlicerArea(DockArea):
 
     def get_dock(self, index):
         return self.docks[str(index)]
-    
+
     def get_axes(self, index):
         return self.get_dock(index).axes
 
@@ -484,7 +482,7 @@ class ImageSlicerArea(DockArea):
                 axes.plotItem.setXLink(self.get_axes(0).plotItem)
             elif i in [2, 5]:
                 axes.plotItem.setYLink(self.get_axes(0).plotItem)
-        
+
         if self.data.ndim == 2:
             self.get_axes(3).plotItem.setVisible(False)
 
@@ -736,6 +734,7 @@ class ItoolDockLabel(DockLabel):
                 font-size: {self.fontSize};
             }}"""
             self.setStyleSheet(self.hStyle)
+
 
 # class ItoolPartition(QtWidgets.QWidget):
 #     def __init__(self, slicer_area, size=(10,10), **plot_kw):
@@ -1156,7 +1155,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._updateHeight()
         if self.isReadOnly():
             self.lineEdit().setReadOnly(True)
-            self.setButtonSymbols(self.NoButtons)
+            self.setButtonSymbols(self.ButtonSymbols.NoButtons)
 
     def setDecimals(self, decimals):
         self._decimals = decimals
@@ -1274,18 +1273,24 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def stepEnabled(self):
         if self.isReadOnly():
-            return self.StepNone
+            return self.StepEnabledFlag.StepNone
         if self.wrapping():
-            return self.StepDownEnabled | self.StepUpEnabled
+            return (
+                self.StepEnabledFlag.StepDownEnabled
+                | self.StepEnabledFlag.StepUpEnabled
+            )
         if self.value() < self.maximum():
             if self.value() > self.minimum():
-                return self.StepDownEnabled | self.StepUpEnabled
+                return (
+                    self.StepEnabledFlag.StepDownEnabled
+                    | self.StepEnabledFlag.StepUpEnabled
+                )
             else:
-                return self.StepUpEnabled
+                return self.StepEnabledFlag.StepUpEnabled
         elif self.value() > self.minimum():
-            return self.StepDownEnabled
+            return self.StepEnabledFlag.StepDownEnabled
         else:
-            return self.StepNone
+            return self.StepEnabledFlag.StepNone
 
     def setValue(self, val):
         if np.isnan(val):
