@@ -1,14 +1,9 @@
-import colorsys
 import sys
 
-import darkdetect
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
 import xarray as xr
-from matplotlib import colors as mcolors
-from pyqtgraph.dockarea.Dock import Dock, DockLabel
-from pyqtgraph.dockarea.DockArea import DockArea
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
@@ -16,6 +11,34 @@ from .slicer import SlicerArray
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
+
+
+def _sync_splitters(s0, s1, reverse=False):
+    s0.blockSignals(True)
+    s1.blockSignals(True)
+
+    sizes = s0.sizes()
+    total = sum(sizes)
+
+    if reverse:
+        sizes = list(reversed(sizes))
+        sizes[0] = s1.sizes()[-1]
+    else:
+        sizes[0] = s1.sizes()[0]
+    if all([x == 0 for x in sizes[1:]]) and sizes[0] != total:
+        sizes[1:] = [1] * len(sizes[1:])
+    try:
+        factor = (total - sizes[0]) / sum(sizes[1:])
+    except ZeroDivisionError:
+        factor = 0
+    for k in range(1, len(sizes)):
+        sizes[k] *= factor
+    if reverse:
+        sizes = list(reversed(sizes))
+    s0.setSizes(sizes)
+
+    s0.blockSignals(False)
+    s1.blockSignals(False)
 
 
 def itool_(data, execute=None, *args, **kwargs):
@@ -44,7 +67,6 @@ def itool_(data, execute=None, *args, **kwargs):
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
-
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
@@ -114,13 +136,56 @@ class ImageTool(QtWidgets.QMainWindow):
         self.group_layouts.append(group_layout)
 
 
-class ImageSlicerArea(DockArea):
+class ImageSlicerArea(QtWidgets.QWidget):
 
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
 
     def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, rad2deg=False):
         super().__init__(parent)
+
+        self.setLayout(QtWidgets.QStackedLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+
+        self._splitters = (
+            QtWidgets.QSplitter(QtCore.Qt.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
+        )
+        self.layout().addWidget(self._splitters[0])
+        self._splitters[0].addWidget(self._splitters[1])
+        self._splitters[1].addWidget(self._splitters[2])
+        self._splitters[1].addWidget(self._splitters[3])
+        self._splitters[0].addWidget(self._splitters[4])
+        self._splitters[4].addWidget(self._splitters[5])
+        self._splitters[4].addWidget(self._splitters[6])
+        self._splitters[1].splitterMoved.connect(
+            lambda: _sync_splitters(self._splitters[4], self._splitters[1])
+        )
+        self._splitters[4].splitterMoved.connect(
+            lambda: _sync_splitters(self._splitters[1], self._splitters[4])
+        )
+
+        self._plots = (
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True),
+            ItoolGraphicsLayoutWidget(self, display_axis=(2,)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(3,)),
+        )
+        for i in [1, 4]:
+            self._splitters[2].addWidget(self._plots[i])
+        for i in [6, 3]:
+            self._splitters[3].addWidget(self._plots[i])
+        self._splitters[5].addWidget(self._plots[0])
+        for i in [5, 2]:
+            self._splitters[6].addWidget(self._plots[i])
 
         self.qapp = QtCore.QCoreApplication.instance()
 
@@ -134,60 +199,6 @@ class ImageSlicerArea(DockArea):
 
         self._data = None
         self.current_cursor = 0
-
-        self.addPlotDock(
-            name="0",
-            size=(30, 30),
-            image=True,
-            display_axis=(0, 1),
-        )
-        self.addPlotDock(
-            name="1", position="top", relativeTo="0", size=(30, 10), display_axis=(0,)
-        )
-        self.addPlotDock(
-            name="2",
-            position="right",
-            relativeTo="0",
-            size=(10, 30),
-            display_axis=(1,),
-            is_vertical=True,
-        )
-        self.addPlotDock(
-            name="3",
-            position="right",
-            relativeTo="1",
-            size=(25, 25),
-            display_axis=(2,),
-        )
-        self.addPlotDock(
-            name="4",
-            position="bottom",
-            relativeTo="1",
-            size=(30, 15),
-            image=True,
-            display_axis=(0, 2),
-        )
-        self.addPlotDock(
-            name="5",
-            position="left",
-            relativeTo="2",
-            size=(15, 30),
-            image=True,
-            display_axis=(2, 1),
-        )
-        self.addPlotDock(
-            name="6", position="top", relativeTo="3", size=(0, 0), display_axis=(3,)
-        )
-
-        self._container_bottom = self.getLargeContainer(self.get_dock(0))
-        self._container_top = self.getLargeContainer(self.get_dock(1))
-
-        self._container_bottom.splitterMoved.connect(
-            lambda: self.sync_splitters(self._container_top, self._container_bottom)
-        )
-        self._container_top.splitterMoved.connect(
-            lambda: self.sync_splitters(self._container_bottom, self._container_top)
-        )
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -228,7 +239,7 @@ class ImageSlicerArea(DockArea):
 
     @property
     def main_image(self):
-        """returns the PlotItem of main dock"""
+        """returns the main PlotItem"""
         return self.get_axes(0)
 
     @property
@@ -255,6 +266,7 @@ class ImageSlicerArea(DockArea):
 
     @property
     def axes(self):
+        """Currently valid subset of self._plots"""
         return self.images + self.profiles
 
     @property
@@ -277,11 +289,8 @@ class ImageSlicerArea(DockArea):
     def data(self) -> xr.DataArray:
         return self.data_slicer._obj
 
-    def get_dock(self, index):
-        return self.docks[str(index)]
-
     def get_axes(self, index):
-        return self.get_dock(index).axes
+        return self._plots[index]
 
     @QtCore.Slot()
     def refresh_all(self):
@@ -341,11 +350,6 @@ class ImageSlicerArea(DockArea):
     def swap_axes(self, ax1: int, ax2: int):
         self.data_slicer.swap_axes(ax1, ax2)
         self.sigDataChanged.emit()
-
-    def _ax_display(self, axis):
-        axes = list(range(self.data.ndim))
-        axes.remove(axis)
-        return axes
 
     @QtCore.Slot(int, int, bool)
     def set_index(self, axis: int, value: int, update: bool = True):
@@ -431,29 +435,43 @@ class ImageSlicerArea(DockArea):
         font.setPointSizeF(float(font_size))
 
         # parameters for layout: stretch and axis on/off
-        stretch = [
-            (30, 30),
-            (30, 10),
-            (10, 30),
-            (25, 15) if self.data.ndim == 4 else (25, 25),
-            (30, 15),
-            (15, 30),
-            (25, 10) if self.data.ndim == 4 else (0, 0),
+        """
+             ┌───────────┬───────────┐
+        r[0] │     1     │     6     │
+             │───────────┤           │
+             │           ├───────────┤
+        r[1] │     4     │     3     │
+             │           │           │
+             │───────────┼───────┬───┤
+             │           │       │   │
+        r[2] │     0     │   5   │ 2 │
+             │           │       │   │
+             └───────────┴───────┴───┘
+              r[3] * r[2]
+        """
+        r = (1.2, 1.5, 3.0, 1.0)
+
+        r01 = r[0] / r[1]
+        scale = 100
+        d = 4 / scale
+        sizes = [
+            [r[0] + r[1], r[2]],
+            [r[3] * r[2], r[3] * (r[0] + r[1])],
+            [(r[0] + r[1] - d) * r01, (r[0] + r[1] - d) / r01],
+            [(r[0] + r[1] - d) / 2, (r[0] + r[1] - d) / 2],
+            [r[3] * r[2], r[3] * (r[0] + r[1])],
+            [r[2]],
+            [(r[3] * (r[0] + r[1]) - d) / r01, (r[3] * (r[0] + r[1]) - d) * r01],
         ]
-        if self.data.ndim == 2:
-            stretch[0] = (30, 30)
-            stretch[1] = (30, 10)
-            stretch[2] = (10, 30)
-            stretch[3] = (10, 10)
-            stretch[4] = (0, 0)
-            stretch[5] = (0, 0)
-            stretch[6] = (0, 0)
+
+        for split, sz in zip(self._splitters, sizes):
+            split.setSizes([int(s * scale) for s in sz])
 
         valid_axis = (
             (1, 0, 0, 1),
             (1, 1, 0, 0),
             (0, 0, 1, 1),
-            (0, 0, 1, 1),
+            (0, 1, 1, 0),
             (1, 0, 0, 0),
             (0, 0, 0, 1),
             (0, 1, 1, 0),
@@ -466,11 +484,8 @@ class ImageSlicerArea(DockArea):
             invalid = [6]
 
         for i, sel in enumerate(valid_axis):
-            dock = self.get_dock(i)
-            dock.setVisible(i not in invalid)
-            dock.setStretch(*stretch[i])
-
             axes = self.get_axes(i)
+            axes.setVisible(i not in invalid)
             axes.plotItem.setDefaultPadding(0)
             for axis in ["left", "bottom", "right", "top"]:
                 axes.plotItem.getAxis(axis).setTickFont(font)
@@ -484,43 +499,13 @@ class ImageSlicerArea(DockArea):
                 axes.plotItem.setYLink(self.get_axes(0).plotItem)
 
         if self.data.ndim == 2:
+            # reserve space, only hide plotItem
             self.get_axes(3).plotItem.setVisible(False)
 
     def toggle_snap(self, value: bool = None):
         if value is None:
             value = ~self.data_slicer.snap_to_data
         self.data_slicer.snap_to_data = value
-
-    def sync_splitters(self, c0, c1):
-        self._container_top.blockSignals(True)
-        self._container_bottom.blockSignals(True)
-
-        sizes = c0.sizes()
-        total = sum(sizes)
-        sizes[0] = c1.sizes()[0]
-        if all([x == 0 for x in sizes[1:]]) and sizes[0] != total:
-            sizes[1:] = [1] * len(sizes[1:])
-        try:
-            factor = (total - sizes[0]) / sum(sizes[1:])
-        except ZeroDivisionError:
-            factor = 0
-        for k in range(1, len(sizes)):
-            sizes[k] *= factor
-        c0.setSizes(sizes)
-
-        self._container_top.blockSignals(False)
-        self._container_bottom.blockSignals(False)
-
-    def getLargeContainer(self, obj):
-        container = obj
-        while container is not self.topContainer:
-            container_prev = container
-            container = self.getContainer(container)
-        return container_prev
-
-    def addPlotDock(self, position="bottom", relativeTo=None, **kwds):
-        dock = ItoolPlotDock(slicer_area=self, **kwds)
-        return super().addDock(dock, position, relativeTo, **kwds)
 
     def changeEvent(self, evt):
         if evt.type() == QtCore.QEvent.PaletteChange:
@@ -668,130 +653,6 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
     def set_pg_colormap(self, cmap: pg.ColorMap, update=True):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
-
-
-class ItoolDockLabel(DockLabel):
-    def __init__(self, *args, color="#591e71", **kwargs):
-        self.bg_color = mcolors.to_hex(color)
-        super().__init__(*args, **kwargs)
-
-    def dim_color(self, color, l_factor=1.0, s_factor=1.0):
-        h, l, s = colorsys.rgb_to_hls(*mcolors.to_rgb(color))
-        return QtGui.QColor.fromRgbF(
-            *colorsys.hls_to_rgb(h, min(1, l * l_factor), min(1, s * s_factor))
-        ).name()
-
-    def set_fg_color(self):
-        rgb = list(mcolors.to_rgb(self.bg_color))
-        L = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
-        if L > 0.729:
-            self.fg_color = "#000000"
-        else:
-            self.fg_color = "#ffffff"
-
-    def updateStyle(self):
-        r = "3px"
-        self.set_fg_color()
-        if self.dim:
-            if darkdetect.isDark():
-                self.dim_l_factor = 0.8
-            else:
-                self.dim_l_factor = 1.25
-            fg = self.dim_color(self.fg_color, self.dim_l_factor, 0.8)
-            bg = self.dim_color(self.bg_color, self.dim_l_factor, 0.8)
-        else:
-            fg = self.fg_color
-            bg = self.bg_color
-        border = self.dim_color(bg, 0.9)
-
-        if self.orientation == "vertical":
-            self.vStyle = f"""DockLabel {{
-                background-color : {bg};
-                color : {fg};
-                border-top-right-radius: 0px;
-                border-top-left-radius: {r};
-                border-bottom-right-radius: 0px;
-                border-bottom-left-radius: {r};
-                border-width: 0px;
-                border-right: 2px solid {border};
-                padding-top: 3px;
-                padding-bottom: 3px;
-                font-size: {self.fontSize};
-            }}"""
-            self.setStyleSheet(self.vStyle)
-        else:
-            self.hStyle = f"""DockLabel {{
-                background-color : {bg};
-                color : {fg};
-                border-top-right-radius: {r};
-                border-top-left-radius: {r};
-                border-bottom-right-radius: 0px;
-                border-bottom-left-radius: 0px;
-                border-width: 0px;
-                border-bottom: 2px solid {border};
-                padding-left: 3px;
-                padding-right: 3px;
-                font-size: {self.fontSize};
-            }}"""
-            self.setStyleSheet(self.hStyle)
-
-
-# class ItoolPartition(QtWidgets.QWidget):
-#     def __init__(self, slicer_area, size=(10,10), **plot_kw):
-#         self.slicer_area = slicer_area
-#         self.axes = ItoolGraphicsLayoutWidget(
-#             slicer_area, display_axis, image=image, **plot_kw
-#         )
-
-class ItoolPlotDock(Dock):
-    def __init__(
-        self,
-        slicer_area,
-        name,
-        display_axis,
-        area=None,
-        size=(10, 10),
-        image=False,
-        hideTitle=True,
-        autoOrientation=False,
-        closable=False,
-        fontSize="13px",
-        color="#591e71",
-        **plot_kw,
-    ):
-        self.slicer_area = slicer_area
-        self.axes = ItoolGraphicsLayoutWidget(
-            slicer_area, display_axis, image=image, **plot_kw
-        )
-
-        super().__init__(
-            str(name),
-            area=area,
-            size=size,
-            widget=self.axes,
-            hideTitle=hideTitle,
-            autoOrientation=autoOrientation,
-            closable=closable,
-            fontSize=fontSize,
-        )
-        self.label = ItoolDockLabel(str(name), closable, fontSize, color=color)
-        if closable:
-            self.label.sigCloseClicked.connect(self.close)
-        self.topLayout.addWidget(self.label, 0, 1)
-        self.topLayout.setContentsMargins(0, 0, 0, 0)
-        if hideTitle:
-            self.hideTitleBar()
-
-    def startDrag(self):
-        pass
-
-    def float(self):
-        pass
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            self.label.updateStyle()
-        super().changeEvent(evt)
 
 
 class ItoolPlotItem(pg.PlotItem):
@@ -1997,7 +1858,7 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.open_dataarray(
         # "/Users/khan/Documents/ERLab/TiSe2/kxy10.nc"
-        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
     )
     itool_(data)
