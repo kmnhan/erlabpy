@@ -67,6 +67,7 @@ def itool_(data, execute=None, *args, **kwargs):
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
+
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
@@ -364,6 +365,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         new_bins = [None] * self.data.ndim
         new_bins[axis] = value
         self.data_slicer.set_bins(self.current_cursor, new_bins, update)
+
+    @QtCore.Slot(int, int, bool)
+    def set_bin_all(self, axis: int, value: int, update: bool = True):
+        new_bins = [None] * self.data.ndim
+        new_bins[axis] = value
+        for c in range(self.n_cursors):
+            self.data_slicer.set_bins(c, new_bins, update)
 
     @QtCore.Slot()
     def add_cursor(self):
@@ -895,7 +903,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
 class IconButton(QtWidgets.QPushButton):
 
-    ICON_NAME = dict(
+    ICON_ALIASES = dict(
         invert="mdi6.invert-colors",
         invert_off="mdi6.invert-colors-off",
         contrast="mdi6.contrast-box",
@@ -916,6 +924,8 @@ class IconButton(QtWidgets.QPushButton):
         plus="mdi6.plus",
         minus="mdi6.minus",
         reset="mdi6.backup-restore",
+        # all_cursors="mdi6.checkbox-multiple-outline",
+        all_cursors="mdi6.select-multiple",
     )
 
     def __init__(self, on: str = None, off: str = None, **kwargs):
@@ -938,7 +948,7 @@ class IconButton(QtWidgets.QPushButton):
 
     def get_icon(self, icon: str):
         try:
-            return qta.icon(self.ICON_NAME[icon])
+            return qta.icon(self.ICON_ALIASES[icon])
         except KeyError:
             return qta.icon(icon)
 
@@ -1011,7 +1021,9 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._step = 1 if self._only_int else 0.01
         super().__init__(*args, **kwargs)
         # self.editingFinished.disconnect()
-        # self.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+        )
         self.editingFinished.connect(self.editingFinishedEvent)
         self._updateHeight()
         if self.isReadOnly():
@@ -1029,13 +1041,12 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.setMaximum(max(mn, mx))
 
     def widthFromText(self, text):
-        return QtGui.QFontMetrics(self.lineEdit().font()).boundingRect(text).width()
+        return QtGui.QFontMetrics(self.font()).boundingRect(text).width()
 
     def widthFromValue(self, value):
         return self.widthFromText(self.textFromValue(value))
 
     def sizeHint(self):
-        # !TODO: incorporate width of margin and buttons
         return QtCore.QSize(
             max(
                 self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
@@ -1213,7 +1224,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def _updateHeight(self):
         if self._is_compact:
-            self.setMaximumHeight(QtGui.QFontMetrics(self.font()).height() + 3)
+            self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
@@ -1807,24 +1818,52 @@ class ItoolBinningControls(ItoolControlsBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def initialize_layout(self):
+        self.layout = QtWidgets.QGridLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(3)
+
     def initialize_widgets(self):
         super().initialize_widgets()
         self.label = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
-            QtWidgets.QSpinBox(value=1, singleStep=2) for _ in range(self.data.ndim)
+            BetterSpinBox(
+                self,
+                integer=True,
+                singleStep=2,
+                # minimumWidth=60,
+                value=1,
+                minimum=1,
+                maximum=self.data.shape[i],
+                keyboardTracking=False,
+            )
+            for i in range(self.data.ndim)
         )
         for i, spin in enumerate(self.spins):
-            spin.valueChanged.connect(
-                lambda n, axis=i: self.slicer_area.set_bin(axis, n)
-            )
+            spin.valueChanged.connect(lambda n, axis=i: self._update_bin(axis, n))
 
         self.reset_btn = IconButton("reset")
         self.reset_btn.clicked.connect(self.reset)
 
+        self.all_btn = IconButton(
+            on="all_cursors",
+            checkable=True,
+            toolTip="Apply changes for all cursors",
+        )
+
         for i in range(self.data.ndim):
-            self.layout.addWidget(self.label[i])
-            self.layout.addWidget(self.spins[i])
-        self.layout.addWidget(self.reset_btn)
+            self.layout.addWidget(self.label[i], 0, i, 1, 1)
+            self.layout.addWidget(self.spins[i], 1, i, 1, 1)
+        self.layout.addWidget(self.reset_btn, 2, 0, 1, 1)
+        self.layout.addWidget(self.all_btn, 2, 1, 1, 1)
+        # for spin in self.spins:
+        # spin.setMinimumWidth(60)
+
+    def _update_bin(self, axis, n):
+        if self.all_btn.isChecked():
+            self.slicer_area.set_bin_all(axis, n)
+        else:
+            self.slicer_area.set_bin(axis, n)
 
     def connect_signals(self):
         super().connect_signals()
