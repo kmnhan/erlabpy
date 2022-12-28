@@ -127,7 +127,7 @@ class goldtool(AnalysisWindow):
 
         self.params_poly = ParameterGroup(
             **{
-                "Degree": dict(qwtype="spin", value=4, range=(1, 9)),
+                "Degree": dict(qwtype="spin", value=4, range=(1, 12)),
                 "Residuals": dict(qwtype="chkbox", checked=False),
                 "Corrected": dict(qwtype="chkbox", checked=False),
                 "Shift coords": dict(qwtype="chkbox", checked=True),
