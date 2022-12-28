@@ -25,6 +25,8 @@ def gold_edge(
     method="leastsq",
     progress=True,
     parallel_kw=dict(),
+    return_full=False,
+    fixed_center=None,
 ):
     if fast:
         params = {}
@@ -35,6 +37,8 @@ def gold_edge(
         }
         model = arpes.fits.ExtendedAffineBroadenedFD
 
+    if fixed_center is not None:
+        params["center"] = dict(value=fixed_center, vary=False)
     weights = None
 
     if any([b != 1 for b in bin_size]):
@@ -56,6 +60,8 @@ def gold_edge(
         progress=progress,
         parallel_kw=parallel_kw,
     )
+    if return_full:
+        return fitresults
 
     center_arr, center_stderr = fitresults.F.p("center"), fitresults.F.s("center")
     center_arr = center_arr.where(~center_stderr.isnull(), drop=True)
