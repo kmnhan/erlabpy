@@ -134,7 +134,7 @@ def parse_livexy(wave):
     wave = wave.assign_coords(new_coords)
     wave = wave / wave.attrs["mesh_current"]
     return wave
-    
+
 
 def process_wave(arr):
     arr = arr.where(arr != 0)
@@ -194,16 +194,18 @@ def load_igor_ibw(filename, data_dir=None):
 
     return load_pxt.wave_to_xarray(igor.igorpy.Wave(ibwfile_wave(filename)))
 
+
 def load_livexy(filename, data_dir=None):
     dat = load_igor_ibw(filename, data_dir)
     return parse_livexy(dat)
-    
 
-def load_ssrl(filename, data_dir=None):
+
+def load_ssrl(filename, data_dir=None, contains=None):
     try:
-        filename = find_first_file(filename, data_dir=data_dir)
+        filename = find_first_file(filename, data_dir=data_dir, contains=contains)
     except ValueError:
         pass
+
     ncf = h5netcdf.File(filename, mode="r", phony_dims="sort")
     attrs = dict(ncf.attrs)
     attr_keys_mapping = {
@@ -213,13 +215,15 @@ def load_ssrl(filename, data_dir=None):
         "Z": "z",
         "A": "chi",  # azi
         "T": "beta",  # polar
+        "TA": "temperature_cryotip",  # cold head temp
+        "TB": "temperature",  # sample temp
         "CreationTime": "creation_time",
         "HDF5Version": "HDF5_Version",
         "H5pyVersion": "h5py_version",
         "Notes": "description",
         "Sample": "sample",
         "User": "user",
-        "Model": "model",
+        "Model": "analyzer_name",
         "SerialNumber": "serial_number",
         "Version": "version",
         "StartTime": "start_time",
@@ -230,12 +234,24 @@ def load_ssrl(filename, data_dir=None):
         "CameraMode": "camera_mode",
         "AcquisitionTime": "acquisition_time",
         "WorkFunction": "sample_workfunction",
+        "MeasurementMode": "acquisition_mode",
+        "PassEnergy": "pass_energy",
+        "MCP": "mcp_voltage",
+        "BL_pexit": "exit_slit",
+        "BL_I0": "photon_flux",  # 이거 맞나..?
+        "BL_spear": "beam_current",  # 이거 맞나..?
+        "YDeflection": "theta_DA",
     }
     coords_keys_mapping = {
         "Kinetic Energy": "eV",
         "ThetaX": "phi",
         "ThetaY": "theta",
     }
+    fixed_attrs = {"analyzer_type": "hemispherical"}
+    attr_to_coords = ["hv"]
+
+    for k, v in fixed_attrs.items():
+        attrs[k] = v
 
     for k, v in ncf.groups.items():
         ds = xr.open_dataset(xr.backends.H5NetCDFStore(v))
@@ -248,13 +264,21 @@ def load_ssrl(filename, data_dir=None):
             data = ds.rename_dims(
                 {f"phony_dim_{i}": ax["Label"] for i, ax in enumerate(axes)}
             )
-            data = data.assign_coords(
-                {
-                    ax["Label"]: np.linspace(ax["Minimum"], ax["Maximum"], ax["Count"])
-                    for ax in axes
-                }
-            )
-            data = data.rename_vars(Count="spectrum", Time="time")
+            for ax in axes:
+                # try:
+                #     mn, mx = ax["Minimum"], ax["Maximum"]
+                # except KeyError:
+                mn, mx = (
+                    ax["Offset"],
+                    ax["Offset"] + (ax["Count"] - 1) * ax["Delta"],
+                )
+                data = data.assign_coords(
+                    {ax["Label"]: np.linspace(mn, mx, ax["Count"])}
+                )
+            if "Time" in data.variables:
+                data = data.rename_vars(Count="spectrum", Time="time")
+            else:
+                data = data.rename_vars(Count="spectrum")
 
     for k in list(attrs.keys()):
         if k in attr_keys_mapping.keys():
@@ -268,23 +292,57 @@ def load_ssrl(filename, data_dir=None):
     attrs["alpha"] = 90.0
     attrs["psi"] = 0.0
 
-    for a in ["alpha", "beta", "theta", "chi", "phi", "psi"]:
+    for a in ["alpha", "beta", "theta", "theta_DA", "chi", "phi", "psi"]:
         try:
             data = data.assign_coords({a: np.deg2rad(data[a])})
         except KeyError:
-            data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
-    data.attrs = attrs
-    data.spectrum.attrs = attrs
-    data.time.attrs = attrs
-    return data
+            try:
+                data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
+            except KeyError:
+                continue
+
+    for c in attr_to_coords:
+        data = data.assign_coords({c: attrs.pop(c)})
+
+    # data.attrs = attrs
+    # data.spectrum.attrs = attrs
+    if "time" in data.variables:
+        out = data.spectrum / data.time
+    else:
+        out = data.spectrum
+    out.attrs = attrs
+    return out
 
 
-def find_first_file(file, data_dir=None, allow_soft_match=False):
+def files_for_search(directory, contains=None):
+    """Filters files in a directory for candidate scans.
+
+    Here, this just means collecting the ones with extensions acceptable to the loader.
+    """
+    endbase = arpes.endstations.EndstationBase
+    if contains is not None:
+        return [
+            f
+            for f in os.listdir(directory)
+            if os.path.splitext(f)[1] in endbase._TOLERATED_EXTENSIONS and contains in f
+        ]
+    return [
+        f
+        for f in os.listdir(directory)
+        if os.path.splitext(f)[1] in endbase._TOLERATED_EXTENSIONS and "zap" not in f
+    ]
+
+
+def find_first_file(file, data_dir=None, contains=None, allow_soft_match=False):
     workspace = arpes.config.CONFIG["WORKSPACE"]
     if data_dir is None:
         data_dir = "data"
-    workspace_path = os.path.join(workspace["path"], data_dir)
-    workspace = workspace["name"]
+    try:
+        workspace_path = os.path.join(workspace["path"], data_dir)
+        workspace = workspace["name"]
+    except KeyError:
+        workspace_path = os.path.join(str(os.getcwd()), data_dir)
+        workspace = "default"
 
     endbase = arpes.endstations.EndstationBase
     try:
@@ -303,7 +361,7 @@ def find_first_file(file, data_dir=None, allow_soft_match=False):
 
     for dir in dir_options:
         try:
-            files = endbase.files_for_search(dir)
+            files = files_for_search(dir, contains=contains)
 
             if endbase._USE_REGEX:
                 for p in patterns:
