@@ -488,21 +488,57 @@ def label_subplot_properties(
 
 def sizebar(
     ax,
-    resolution,
     value,
     unit,
     si=0,
+    resolution=1.0,
     decimals=0,
     label=None,
     loc="lower right",
     pad=0.1,
     borderpad=0.5,
-    sep=5,
+    sep=3,
     frameon=False,
     **kwargs,
 ):
+    """
 
-    pixels = value / resolution
+    Parameters
+    ----------
+    
+    ax : `matplotlib.axes.Axes`
+        The `matplotlib.axes.Axes` instance to place the size bar in.
+    value : float
+        Length of the size bar in terms of `unit`.
+    unit : str
+        An SI unit string without prefixes.
+    si : int, default=0
+        Exponents that have a corresponding SI prefix
+    resolution : float, default=1
+        Value to scale the data coordinates in terms of `unit`.
+    decimals : int, decimals=0
+        Number of decimals on the size bar label.
+    label : str, optional
+        When provided, overrides the automatically generated label string.
+    loc : str, default='lower right'
+        Location of the size bar.  Valid locations are
+        'upper left', 'upper center', 'upper right',
+        'center left', 'center', 'center right',
+        'lower left', 'lower center, 'lower right'.
+    pad : float, default=0.1
+        Padding around the label and size bar, in fraction of the font size.
+    borderpad : float, default=0.5
+        Border padding, in fraction of the font size.
+    sep : float, default=3
+        Separation between the label and the size bar, in points.
+    frameon : bool, default=False
+        If True, draw a box around the horizontal bar and label.
+    **kwargs : dict, optional
+        Keyword arguments forwarded to `AnchoredSizeBar`.
+
+    """
+
+    size = value / resolution
     unit = get_si_str(si) + unit
     value = np.around(value / 10**si, decimals=decimals)
     if int(value) == value:
@@ -514,7 +550,7 @@ def sizebar(
 
     asb = AnchoredSizeBar(
         ax.transData,
-        pixels,
+        size,
         label,
         loc=loc,
         pad=pad,
