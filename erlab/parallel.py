@@ -2,7 +2,8 @@
 import contextlib
 import joblib
 import joblib._parallel_backends
-from tqdm import tqdm, tqdm_notebook
+# from tqdm import tqdm, tqdm_notebook
+import tqdm
 import time
 import sys
 import pyqtgraph as pg
@@ -31,9 +32,9 @@ def joblib_progress(file=None, notebook=None, dynamic_ncols=True, **kwargs):
         notebook = is_notebook()
         
     if notebook:
-        tqdm_object = tqdm_notebook(iterable=None, dynamic_ncols=dynamic_ncols, file=file)
+        tqdm_object = tqdm.notebook.tqdm(iterable=None, dynamic_ncols=dynamic_ncols, file=file)
     else:
-        tqdm_object = tqdm(iterable=None, dynamic_ncols=dynamic_ncols, file=file, **kwargs)
+        tqdm_object = tqdm.tqdm(iterable=None, dynamic_ncols=dynamic_ncols, file=file, **kwargs)
 
     def tqdm_print_progress(self):
         if self.n_completed_tasks > tqdm_object.n:

@@ -52,8 +52,8 @@ def copy_to_clipboard(content: str):
         content = "\n".join(content)
 
     cb = QtWidgets.QApplication.instance().clipboard()
-    cb.clear(mode=cb.Clipboard)
-    cb.setText(content, mode=cb.Clipboard)
+    cb.clear(mode=cb.Mode.Clipboard)
+    cb.setText(content, mode=cb.Mode.Clipboard)
     return content
 
 
@@ -479,9 +479,9 @@ class ROIControls(ParameterGroup):
 
         def mouseDragEventCustom(ev, axis=None):
             ev.accept()
-            pos = ev.scenePos()
-            dif = pos - ev.lastScenePos()
-            dif = dif * -1
+            pos = ev.pos()
+            lastPos = ev.lastPos()
+            dif = pos - lastPos
 
             mouseEnabled = np.array(vb.state["mouseEnabled"], dtype=np.float64)
             mask = mouseEnabled.copy()
@@ -493,12 +493,12 @@ class ROIControls(ParameterGroup):
                     if ev.isFinish():
                         vb.rbScaleBox.hide()
                         ax = QtCore.QRectF(
-                            pg.Point(ev.buttonDownScenePos(ev.button())), pg.Point(pos)
+                            pg.Point(ev.buttonDownPos(ev.button())), pg.Point(pos)
                         )
-                        ax = vb.childGroup.mapRectFromScene(ax)
+                        ax = vb.childGroup.mapRectFromParent(ax)
                         self.modify_roi(*ax.getCoords())
                     else:
-                        vb.updateScaleBox(ev.buttonDownScenePos(), ev.scenePos())
+                        vb.updateScaleBox(ev.buttonDownPos(), ev.pos())
             elif ev.button() & QtCore.Qt.MouseButton.MiddleButton:
                 tr = vb.childGroup.transform()
                 tr = pg.invertQTransform(tr)

@@ -26,7 +26,9 @@ figure_width_ref = dict(
 )
 
 
-def figwh(ratio=0.75, wide=0, wscale=1, style="aps", fixed_height=True):
+def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=True):
+    if isinstance(ratio, str):
+        ratio = float(ratio) * 2 / (1 + np.sqrt(5))
     w = figure_width_ref[style][wide]
     if fixed_height:
         h = w * ratio
@@ -289,7 +291,7 @@ def plot_array(
             ]
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
-    improps.setdefault("cmap", "magma")
+    improps.setdefault("cmap", "BuWh_r")
     colorbar = improps.pop("colorbar", False)
     gamma = improps.pop("gamma", 1.0)
     try:

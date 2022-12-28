@@ -24,6 +24,8 @@ from .interactive.noisetool import noisetool
 
 
 def clean_labels(axes, *args, **kwargs):
+    if axes.ndim == 1:
+        axes = axes[None]
     for ax in axes[:-1,:].flat:
         ax.set_xlabel("")
     for ax in axes[:,1:].flat:
