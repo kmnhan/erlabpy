@@ -438,7 +438,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             for im in ax.plotItem.slicer_data_items:
                 im.set_pg_colormap(cmap, update=update)
 
-    def adjust_layout(self, horiz_pad=45, vert_pad=30, font_size=11.0):
+    def adjust_layout(
+        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
+    ):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
@@ -457,10 +459,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
              └───────────┴───────┴───┘
               r[3] * r[2]
         """
-        r = (1.2, 1.5, 3.0, 1.0)
 
         r01 = r[0] / r[1]
         scale = 100
+
+        # padding due to splitters
+        # there must be a smarter way to get this from QStyle
         d = 4 / scale
         sizes = [
             [r[0] + r[1], r[2]],
