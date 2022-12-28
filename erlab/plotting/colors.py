@@ -244,9 +244,9 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     )
     return cbar
 
-
+# TODO: fix colorbar size properly
 def nice_colorbar(
-    ax, mappable=None, width=5, aspect=5, minmax=False, *args, **kwargs
+    ax, mappable=None, width=5, aspect=5, minmax=False, ticklabels=None, *args, **kwargs
 ):
     r"""
     Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
@@ -307,6 +307,8 @@ def nice_colorbar(
         cbar.set_ticks(cbar.ax.get_ylim())
         cbar.set_ticklabels(("Min", "Max"))
         cbar.ax.tick_params(labelsize="small")
+    if ticklabels is not None:
+        cbar.set_ticklabels(ticklabels)
     return cbar
 
 
