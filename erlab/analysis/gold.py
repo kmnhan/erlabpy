@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
+from ..plotting.general import figwh
 
 from .utilities import correct_with_edge
 
@@ -87,7 +88,7 @@ def gold_poly(
     method="leastsq",
     parallel_kw=dict(),
     plot=True,
-    ax=None,
+    fig=None,
 ):
     center_arr, center_stderr = gold_edge(
         gold,
@@ -103,9 +104,16 @@ def gold_poly(
         center_arr, weights=1 / center_stderr, method=method
     )
     if plot:
-        if ax is None:
-            ax = plt.gca()
-        gold.S.plot(ax=ax, cmap="copper", gamma=0.5)
+        if not isinstance(fig, plt.Figure):
+            fig = plt.figure(figsize=figwh(0.75, wscale=1.75))
+
+        gs = fig.add_gridspec(2, 2, height_ratios=[1, 3])
+        ax0 = fig.add_subplot(gs[:, 0])
+        ax1 = fig.add_subplot(gs[0, 1])
+        plt.tick_params("x", labelbottom=False)
+        ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
+
+        gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
         rect = Rectangle(
             (phi_range[0], eV_range[0]),
             np.diff(phi_range)[0],
@@ -115,17 +123,29 @@ def gold_poly(
             lw=0.75,
             fc="none",
         )
-        ax.add_patch(rect)
-        ax.errorbar(center_arr.phi, center_arr, center_stderr, fmt="o", lw=0.75, ms=2)
-        ax.plot(
-            gold.phi, modelresult.eval(modelresult.params, x=gold.phi), "r-", lw=0.5
+        ax0.add_patch(rect)
+        ax0.errorbar(
+            center_arr.phi,
+            center_arr,
+            center_stderr,
+            fmt="o",
+            lw=0.5,
+            mfc="w",
+            zorder=0,
+            ms=2,
         )
-        ax.set_ylim(gold.eV[[0, -1]])
+        ax0.plot(
+            gold.phi, modelresult.eval(modelresult.params, x=gold.phi), "r-", lw=0.75
+        )
+        ax0.set_ylim(gold.eV[[0, -1]])
 
-        modelresult.plot(
-            data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
-            fit_kws=dict(c="r", lw=1.5),
-        )
+        data_kws = dict(lw=0.5, ms=2, mfc="w", zorder=0, c="0.4", capsize=0)
+        fit_kws = dict(c="r", lw=0.75)
+        modelresult.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
+        modelresult.plot_fit(ax=ax2, data_kws=data_kws, fit_kws=fit_kws)
+        ax1.set_title("")
+        ax2.set_title("")
+
     if correct:
         return modelresult, correct_with_edge(gold, modelresult, plot=False)
     else:
