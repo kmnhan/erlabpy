@@ -810,7 +810,11 @@ class ItoolPlotItem(pg.PlotItem):
     def line_drag(self, value, cursor, axis):
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
-        self.data_slicer.set_value(cursor, axis, value, update=True)
+        if self.slicer_area.qapp.queryKeyboardModifiers() != QtCore.Qt.AltModifier:
+            self.data_slicer.set_value(cursor, axis, value, update=True)
+        else:
+            for i in range(self.data_slicer.n_cursors):
+                self.data_slicer.set_value(i, axis, value, update=True)
 
     def remove_cursor(self, index: int):
         self.removeItem(self.slicer_data_items.pop(index))
