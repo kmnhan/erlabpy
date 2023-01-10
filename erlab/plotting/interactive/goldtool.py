@@ -1,34 +1,21 @@
+import os
 import sys
 
 import arpes.xarray_extensions
 import numpy as np
-import os
-import varname
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+import varname
+from PySide6 import QtCore, QtGui, QtWidgets
 
-# if __name__ != "__main__":
-#     from ..analysis.gold import gold_edge, gold_poly_from_edge
-#     from ..analysis.utilities import correct_with_edge
-#     from ..parallel import joblib_qt, joblib_pg
-#     from .imagetool import ImageTool
-#     from .interactive.utilities import (
-#         AnalysisWindow,
-#         ParameterGroup,
-#         ROIControls,
-#         gen_function_code,
-#     )
-# else:
 import erlab.analysis
-from erlab.parallel import joblib_qt, joblib_pg
-from erlab.plotting.interactive.imagetool import ImageTool
+from erlab.parallel import joblib_progress_qt
+from erlab.plotting.interactive.imagetool_new import ImageTool
 from erlab.plotting.interactive.utilities import (
     AnalysisWindow,
     ParameterGroup,
     ROIControls,
     gen_function_code,
 )
-
 
 __all__ = ["goldtool"]
 
@@ -59,6 +46,53 @@ LMFIT_METHODS = [
 ]
 
 
+class EdgeFitterSignals(QtCore.QObject):
+    sigIterated = QtCore.Signal(int)
+    sigFinished = QtCore.Signal()
+
+
+class EdgeFitter(QtCore.QRunnable):
+    def __init__(self, data, x0, y0, x1, y1, params, proxy=None):
+        super().__init__()
+
+        self.signals = EdgeFitterSignals()
+
+        self.data = data
+        self.x_range = (x0, x1)
+        self.y_range = (y0, y1)
+        self.params = params
+
+        self.proxy = proxy
+        if self.proxy is not None:
+            self.proxy.setCancelButton(None)
+            self.proxy.setAutoReset(False)
+            self.sigIterated.connect(self.proxy.setValue)
+            self.sigFinished.connect(self.proxy.reset)
+
+    @property
+    def sigIterated(self):
+        return self.signals.sigIterated
+
+    @property
+    def sigFinished(self):
+        return self.signals.sigFinished
+
+    @QtCore.Slot()
+    def run(self):
+        self.sigIterated.emit(0)
+        with joblib_progress_qt(self.sigIterated) as _:
+            self.edge_center, self.edge_stderr = erlab.analysis.gold_edge(
+                gold=self.data,
+                phi_range=self.x_range,
+                eV_range=self.y_range,
+                bin_size=(self.params["Bin x"], self.params["Bin y"]),
+                method=self.params["Method"],
+                progress=False,
+                parallel_kw=dict(n_jobs=self.params["# CPU"]),
+            )
+        self.sigFinished.emit()
+
+
 class goldtool(AnalysisWindow):
 
     sigProgressUpdated = QtCore.Signal(int)
@@ -80,7 +114,7 @@ class goldtool(AnalysisWindow):
             )
         except varname.VarnameRetrievingError:
             self._argnames["data"] = "gold"
-        
+
         if data_corr is not None:
             try:
                 self._argnames["data_corr"] = varname.argname(
@@ -91,7 +125,6 @@ class goldtool(AnalysisWindow):
 
         self.data_corr = data_corr
 
-        
         self.axes[1].setVisible(False)
         self.hists[1].setVisible(False)
         self.axes[2].setVisible(False)
@@ -172,51 +205,41 @@ class goldtool(AnalysisWindow):
             self.axes[i].addItem(self.polycurves[i])
         self.params_poly.sigParameterChanged.connect(self.perform_function_fit)
 
-        # self.progress = QtWidgets.QProgressDialog("Performing fits", None, 0, 10, parent=self)
-        # self.progress.setWindowModality(QtCore.Qt.WindowModal)
-        # self.sigProgressUpdated.connect(self.progress.setValue)
-        # self.progress.setAutoClose(True)
-        # self.progress.reset()
-        # self.progress.setValue(0)
-        # self.axes[0].disableAutoRange(axis=self.axes[0].vb.YAxis)
         self.axes[0].disableAutoRange()
         self.__post_init__(execute=True)
 
     def perform_edge_fit(self):
         self.params_roi.draw_button.setChecked(False)
-        # self.proxy = pg.SignalProxy(
-        #     self.sigProgressUpdated,
-        #     rateLimit=60,
-        #     slot=lambda x: self.progress.setValue(x[0]),
-        # )
-        x0, y0, x1, y1 = self.params_roi.roi_limits
-        # self.progress.setMaximum(len(self.data.phi.sel(phi=slice(x0, x1))))
 
+        x0, y0, x1, y1 = self.params_roi.roi_limits
         params = self.params_edge.values
 
-        # self.progress = joblib_pg("Fitting...", 0, len(self.data.phi.coarsen(phi=params["Bin x"],boundary="trim").mean().sel(phi=slice(x0, x1))), None)
-        # def pg_print_progress(self):
-        #     if self.n_completed_tasks > self.progress.value():
-        #         print(self.n_completed_tasks)
-        #         self.progress.sigProgressUpdated.emit(self.n_completed_tasks)
-        # with joblib_pg(
-        #     "Fitting...",
-        #     0,
-        #     len(
-        #         self.data.phi.coarsen(phi=params["Bin x"], boundary="trim")
-        #         .mean()
-        #         .sel(phi=slice(x0, x1))
-        #     ),
-        #     None,
-        # ) as self.asdfasfd:
-        self.edge_center, self.edge_stderr = erlab.analysis.gold_edge(
-            gold=self.data,
-            phi_range=(x0, x1),
-            eV_range=(y0, y1),
-            bin_size=(params["Bin x"], params["Bin y"]),
-            method=params["Method"],
-            progress=True,
-            parallel_kw=dict(n_jobs=params["# CPU"]),
+        n_total = len(
+            self.data.phi.coarsen(phi=params["Bin x"], boundary="trim")
+            .mean()
+            .sel(phi=slice(x0, x1))
+        )
+
+        self.progress = QtWidgets.QProgressDialog(
+            labelText="Fitting...",
+            minimum=0,
+            maximum=n_total,
+            parent=self,
+            minimumDuration=0,
+            windowModality=QtCore.Qt.WindowModal,
+        )
+        self.progress.setFixedSize(self.progress.size())
+
+        self.fitter = EdgeFitter(self.data, x0, y0, x1, y1, params, self.progress)
+        self.fitter.sigFinished.connect(self.post_fit)
+
+        QtCore.QThreadPool.globalInstance().start(self.fitter)
+
+    @QtCore.Slot()
+    def post_fit(self):
+        self.edge_center, self.edge_stderr = (
+            self.fitter.edge_center,
+            self.fitter.edge_stderr,
         )
 
         xval = self.edge_center.phi.values
@@ -317,16 +340,8 @@ class goldtool(AnalysisWindow):
 if __name__ == "__main__":
     import arpes.io
 
-    # qapp = QtWidgets.QApplication.instance()
-    # if not qapp:
-    # qapp = QtWidgets.QApplication(sys.argv)
-    # qapp.setStyle("Fusion")
     dat = arpes.io.load_data(
         "/Users/khan/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt",
         location="BL4",
     )
     dt = goldtool(dat, dat)
-    # dt.show()
-    # dt.activateWindow()
-    # dt.raise_()
-    # qapp.exec()
