@@ -188,7 +188,7 @@ class SlicerArray(QtCore.QObject):
 
     @property
     def coords(self) -> tuple[npt.NDArray[np.float64]]:
-        return tuple(self._obj[dim].values for dim in self._obj.dims)
+        return tuple(self._obj[dim].values.astype(np.float64) for dim in self._obj.dims)
 
     @property
     def incs(self) -> tuple[float]:
