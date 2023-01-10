@@ -210,6 +210,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         proportional_colorbar()
 
     """
+    fontsize = kwargs.pop("fontsize", None)
 
     # if cax is None:
     if ax is None:
@@ -234,6 +235,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     kwargs.setdefault("pad", 0.05)
     kwargs.setdefault("fraction", 0.05)
     kwargs.setdefault("aspect", 25)
+    
     cbar = plt.colorbar(
         mappable=mappable,
         cax=cax,
@@ -242,6 +244,8 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         boundaries=kwargs["norm"].inverse(np.linspace(0, 1, kwargs["cmap"].N)),
         **kwargs,
     )
+    if fontsize is not None:
+        cbar.ax.tick_params(labelsize=fontsize)
     return cbar
 
 # TODO: fix colorbar size properly
