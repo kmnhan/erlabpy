@@ -547,13 +547,20 @@ def plot_slices(
     return fig, axes
 
 
-def fermiline(ax=None, y=0, **kwargs):
+def fermiline(ax=None, value=0, orientation="h", **kwargs):
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
-        return [fermiline(a, y, **kwargs) for a in np.asarray(ax).flat]
+        return [fermiline(a, value, orientation, **kwargs) for a in np.asarray(ax).flat]
 
     c = kwargs.pop("color", kwargs.pop("c", axes_textcolor(ax)))
     lw = kwargs.pop("lw", kwargs.pop("linewidth", 0.25))
     ls = kwargs.pop("ls", kwargs.pop("linestyle", "-"))
-    return ax.axhline(y, ls=ls, lw=lw, c=c)
+    match orientation:
+        case "h":
+            return ax.axhline(value, ls=ls, lw=lw, c=c)
+        case "v":
+            return ax.axvline(value, ls=ls, lw=lw, c=c)
+        case _:
+            raise ValueError("`orientation` must be either 'v' or 'h'")
+            
