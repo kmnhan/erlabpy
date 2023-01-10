@@ -8,6 +8,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
 from .slicer import SlicerArray
+from .utilities import BetterSpinBox
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -842,6 +843,27 @@ class ItoolPlotItem(pg.PlotItem):
             self.set_active_cursor(cursor)
             item.refresh_data()
 
+        if self.is_image:
+            label_kw = {
+                a: self.slicer_area.data.dims[self.display_axis[i]]
+                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
+                if self.getAxis(a).isVisible()
+            }
+        else:
+            if self.slicer_data_items[-1].is_vertical:
+                label_kw = {
+                    a: self.slicer_area.data.dims[self.display_axis[0]]
+                    for a in ("left", "right")
+                    if self.getAxis(a).isVisible()
+                }
+            else:
+                label_kw = {
+                    a: self.slicer_area.data.dims[self.display_axis[0]]
+                    for a in ("top", "bottom")
+                    if self.getAxis(a).isVisible()
+                }
+        self.setLabels(**label_kw)
+
     def set_active_cursor(self, index):
         if self.is_image:
             for i, (item, cursors) in enumerate(
@@ -968,267 +990,6 @@ class IconButton(QtWidgets.QPushButton):
             qta.reset_cache()
             self.refresh_icons()
         super().changeEvent(evt)
-
-
-class BetterSpinBox(QtWidgets.QAbstractSpinBox):
-    valueChanged = QtCore.Signal(object)
-    textChanged = QtCore.Signal(object)
-
-    def __init__(
-        self,
-        *args,
-        integer=False,
-        compact=True,
-        discrete=False,
-        decimals=3,
-        significant=False,
-        scientific=False,
-        value=0.0,
-        **kwargs,
-    ):
-        """
-        Parameters
-        ----------
-        integer : boolean, optional
-            If `True`, the spinbox will only display integer values.
-        compact : boolean, optional
-            Whether to reduce the height of the spinbox.
-        discrete : boolean, optional
-            If `True` the spinbox will only step to pre-determined discrete values.
-            If `False`, the spinbox will just add or subtract the predetermined
-            increment when increasing or decreasing the step.
-        scientific : boolean, optional
-            Whether to print in scientific notation.
-        decimals : int, optional
-            The precision of the spinbox. See the `significant` argument for the
-            meaning. When `int` is `True`, this argument is ignored.
-        significant : boolean, optional
-            If `True`, `decimals` will specify the total number of significant digits,
-            before or after the decimal point, ignoring leading zeros.
-            If `False`, `decimals` will specify the total number of digits after the
-            decimal point, including leading zeros.
-            When `int` or `scientific` is `True`, this argument is ignored.
-        value : float, optional
-            Initial value of the spinbox.
-        """
-
-        self._only_int = integer
-        self._is_compact = compact
-        self._is_discrete = discrete
-        self._is_scientific = scientific
-        self._decimal_significant = significant
-        self.setDecimals(decimals)
-
-        self._value = value
-        self._min = -np.inf
-        self._max = np.inf
-        self._step = 1 if self._only_int else 0.01
-        super().__init__(*args, **kwargs)
-        # self.editingFinished.disconnect()
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
-        )
-        self.editingFinished.connect(self.editingFinishedEvent)
-        self._updateHeight()
-        if self.isReadOnly():
-            self.lineEdit().setReadOnly(True)
-            self.setButtonSymbols(self.ButtonSymbols.NoButtons)
-
-    def setDecimals(self, decimals):
-        self._decimals = decimals
-
-    def decimals(self):
-        return self._decimals
-
-    def setRange(self, mn, mx):
-        self.setMinimum(min(mn, mx))
-        self.setMaximum(max(mn, mx))
-
-    def widthFromText(self, text):
-        return QtGui.QFontMetrics(self.font()).boundingRect(text).width()
-
-    def widthFromValue(self, value):
-        return self.widthFromText(self.textFromValue(value))
-
-    def sizeHint(self):
-        return QtCore.QSize(
-            max(
-                self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
-            ),
-            0,
-        )
-
-    def setMaximum(self, mx):
-        if self._only_int and np.isfinite(mx):
-            mx = round(mx)
-        elif np.isnan(mx):
-            mx = np.inf
-        self._max = mx
-
-    def setMinimum(self, mn):
-        if self._only_int and np.isfinite(mn):
-            mn = round(mn)
-        elif np.isnan(mn):
-            mn = -np.inf
-        self._min = mn
-
-    def setSingleStep(self, step):
-        if self._only_int:
-            step = round(step)
-        self._step = abs(step)
-
-    def singleStep(self):
-        return self._step
-
-    def maximum(self):
-        return self._max
-
-    def minimum(self):
-        return self._min
-
-    def value(self):
-        if self._only_int:
-            return int(self._value)
-        else:
-            return self._value
-
-    def text(self):
-        return self.textFromValue(self.value())
-
-    def textFromValue(self, value):
-        if (not self._only_int) or (not np.isfinite(value)):
-            if self._is_scientific:
-                return np.format_float_scientific(
-                    value,
-                    precision=self.decimals(),
-                    unique=False,
-                    trim="k",
-                    exp_digits=1,
-                )
-            else:
-                return np.format_float_positional(
-                    value,
-                    precision=self.decimals(),
-                    unique=False,
-                    fractional=not self._decimal_significant,
-                    trim="k",
-                )
-        else:
-            return str(int(value))
-
-    def valueFromText(self, text):
-        if text == "":
-            return np.nan
-        if self._only_int:
-            return int(text)
-        else:
-            return float(text)
-
-    def stepBy(self, steps):
-        inc = self.singleStep()
-        if (
-            all(np.isfinite([self.maximum(), self.minimum(), self.value()]))
-            and self._is_discrete
-        ):
-            self.setValue(
-                self.minimum()
-                + inc
-                * max(
-                    min(
-                        round((self.value() + steps * inc - self.minimum()) / inc),
-                        int((self.maximum() - self.minimum()) / inc),
-                    ),
-                    0,
-                )
-            )
-        else:
-            if steps > 0:
-                self.setValue(min(inc * steps + self.value(), self.maximum()))
-            else:
-                self.setValue(max(inc * steps + self.value(), self.minimum()))
-
-    def stepEnabled(self):
-        if self.isReadOnly():
-            return self.StepEnabledFlag.StepNone
-        if self.wrapping():
-            return (
-                self.StepEnabledFlag.StepDownEnabled
-                | self.StepEnabledFlag.StepUpEnabled
-            )
-        if self.value() < self.maximum():
-            if self.value() > self.minimum():
-                return (
-                    self.StepEnabledFlag.StepDownEnabled
-                    | self.StepEnabledFlag.StepUpEnabled
-                )
-            else:
-                return self.StepEnabledFlag.StepUpEnabled
-        elif self.value() > self.minimum():
-            return self.StepEnabledFlag.StepDownEnabled
-        else:
-            return self.StepEnabledFlag.StepNone
-
-    def setValue(self, val):
-        if np.isnan(val):
-            self._value = np.nan
-        else:
-            self._value = max(self.minimum(), min(val, self.maximum()))
-
-        if self._only_int and np.isfinite(self._value):
-            self._value = round(self._value)
-
-        self.valueChanged.emit(self.value())
-        self.lineEdit().setText(self.text())
-        self.textChanged.emit(self.text())
-
-    # def fixup(self, input):
-    #     # fixup is called when the spinbox loses focus with an invalid or intermediate string
-    #     self.lineEdit().setText(self.text())
-
-    #     # support both PyQt APIs (for Python 2 and 3 respectively)
-    #     # http://pyqt.sourceforge.net/Docs/PyQt4/python_v3.html#qvalidator
-
-    #     print(input)
-    #     try:
-    #         input.clear()
-    #         input.append(self.lineEdit().text())
-    #     except AttributeError:
-    #         return self.lineEdit().text()
-
-    # # def hasAcceptableInput(self) -> bool:
-    # #     return True
-
-    def validate(self, strn, pos):
-        # if self.skipValidate:
-        if False:
-            ret = QtGui.QValidator.State.Acceptable
-        else:
-            ret = QtGui.QValidator.State.Intermediate
-            try:
-                val = float(self.value())
-                if val < self.maximum() and val > self.minimum():
-                    ret = QtGui.QValidator.State.Acceptable
-            except ValueError:
-                pass
-
-        ## note: if text is invalid, we don't change the textValid flag
-        ## since the text will be forced to its previous state anyway
-        self.update()
-
-        ## support 2 different pyqt APIs. Bleh.
-
-        # print(strn, pos, ret)
-        if hasattr(QtCore, "QString"):
-            return (ret, pos)
-        else:
-            return (ret, strn, pos)
-
-    def editingFinishedEvent(self):
-        self.setValue(self.valueFromText(self.lineEdit().text()))
-
-    def _updateHeight(self):
-        if self._is_compact:
-            self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
@@ -1900,8 +1661,8 @@ class ItoolBinningControls(ItoolControlsBase):
 
 if __name__ == "__main__":
     data = xr.open_dataarray(
-        # "/Users/khan/Documents/ERLab/TiSe2/kxy10.nc"
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        # "~/Documents/ERLab/TiSe2/kxy10.nc"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
     )
     itool_(data)
