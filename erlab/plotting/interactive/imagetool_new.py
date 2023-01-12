@@ -143,6 +143,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
 
+    COLORS = [
+        pg.mkColor(0.8),
+        pg.mkColor("y"),
+        pg.mkColor("m"),
+        pg.mkColor("c"),
+        pg.mkColor("g"),
+        pg.mkColor("r"),
+    ]
+
     def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, rad2deg=False):
         super().__init__(parent)
 
@@ -158,6 +167,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             QtWidgets.QSplitter(QtCore.Qt.Vertical),
             QtWidgets.QSplitter(QtCore.Qt.Horizontal),
         )
+        for s in self._splitters:
+            s.setHandleWidth(4)
+            s.setStyleSheet("QSplitter::handle{background: #222222;}")
+            # palette = s.palette()
+            # palette.setColor(QtGui.QPalette.ColorRole.Light, QtGui.QColor("yellow"))
+            # s.setPalette(palette)
+            # print(s.handleWidth())
+            # pass
+        
         self.layout().addWidget(self._splitters[0])
         self._splitters[0].addWidget(self._splitters[1])
         self._splitters[1].addWidget(self._splitters[2])
@@ -171,6 +189,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._splitters[4].splitterMoved.connect(
             lambda: _sync_splitters(self._splitters[1], self._splitters[4])
         )
+
+        self.cursor_colors = [self.COLORS[0]]
 
         self._plots = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
@@ -377,6 +397,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def add_cursor(self):
         self.data_slicer.add_cursor(self.current_cursor, update=False)
+        self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
@@ -387,6 +408,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot(int)
     def remove_cursor(self, index: int):
         self.data_slicer.remove_cursor(index, update=False)
+        self.cursor_colors.pop(index)
         if self.current_cursor == index:
             if index == 0:
                 self.current_cursor = 1
@@ -397,16 +419,27 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
-    def cursor_color(self, index: int):
-        colors = [
-            pg.mkColor(0.8),
-            pg.mkColor("y"),
-            pg.mkColor("m"),
-            pg.mkColor("c"),
-            pg.mkColor("g"),
-            pg.mkColor("r"),
-        ]
-        return colors[index % len(colors)]
+    def gen_cursor_color(self, index):
+        clr = self.COLORS[index % len(self.COLORS)]
+        while clr in self.cursor_colors:
+            clr = self.COLORS[index % len(self.COLORS)]
+            index += 1
+        return clr
+
+    def gen_cursor_colors(self, index: int):
+        clr = self.cursor_colors[index]
+
+        clr_cursor = pg.mkColor(clr)
+        clr_cursor_hover = pg.mkColor(clr)
+        clr_span = pg.mkColor(clr)
+        clr_span_edge = pg.mkColor(clr)
+
+        clr_cursor.setAlphaF(0.75)
+        clr_cursor_hover.setAlphaF(0.95)
+        clr_span.setAlphaF(0.15)
+        clr_span_edge.setAlphaF(0.35)
+
+        return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
 
     def set_colormap(
         self,
@@ -465,8 +498,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         scale = 100
 
         # padding due to splitters
-        # there must be a smarter way to get this from QStyle
-        d = 4 / scale
+        d = self._splitters[0].handleWidth() / scale
         sizes = [
             [r[0] + r[1], r[2]],
             [r[3] * r[2], r[3] * (r[0] + r[1])],
@@ -730,16 +762,14 @@ class ItoolPlotItem(pg.PlotItem):
     def add_cursor(self, update=True):
         new_cursor = len(self.slicer_data_items)
         line_angles = (90, 0)
-        clr = self.slicer_area.cursor_color(new_cursor)
-        clr_cursor = pg.mkColor(clr)
-        clr_cursor_hover = pg.mkColor(clr)
-        clr_span = pg.mkColor(clr)
-        clr_span_edge = pg.mkColor(clr)
 
-        clr_cursor.setAlphaF(0.75)
-        clr_cursor_hover.setAlphaF(0.95)
-        clr_span.setAlphaF(0.15)
-        clr_span_edge.setAlphaF(0.35)
+        (
+            clr,
+            clr_cursor,
+            clr_cursor_hover,
+            clr_span,
+            clr_span_edge,
+        ) = self.slicer_area.gen_cursor_colors(new_cursor)
 
         if self.is_image:
             item = ItoolImageItem(
@@ -756,7 +786,7 @@ class ItoolPlotItem(pg.PlotItem):
                 pen=pg.mkPen(pg.mkColor(clr)),
                 defaultPadding=0.0,
                 clipToView=False,
-                connect="finite",
+                connect="auto",
                 **self._item_kw,
             )
             if item.is_vertical:
@@ -794,20 +824,28 @@ class ItoolPlotItem(pg.PlotItem):
             self.addItem(s)
             s.setZValue(9)
             c.sigDragged.connect(
-                lambda v, cursor=new_cursor, axis=ax: self.line_drag(
-                    v.value(), cursor, axis
+                lambda v, line=c, axis=ax: self.line_drag(
+                    line, v.value(), axis
                 )
             )
-            c.sigClicked.connect(lambda *_, cursor=new_cursor: self.line_click(cursor))
+            c.sigClicked.connect(lambda *_, line=c: self.line_click(line))
 
         if update:
             self.refresh_cursor(new_cursor)
+            
+    def index_of_line(self, line):
+        for i, line_dict in enumerate(self.cursor_lines):
+            for _, v in line_dict.items():
+                if v == line:
+                    return i
 
-    def line_click(self, cursor):
+    def line_click(self, line):
+        cursor = self.index_of_line(line)
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
 
-    def line_drag(self, value, cursor, axis):
+    def line_drag(self, line, value, axis):
+        cursor = self.index_of_line(line)
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
         if self.slicer_area.qapp.queryKeyboardModifiers() != QtCore.Qt.AltModifier:
@@ -1339,7 +1377,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.cb_cursors.setMaximumHeight(
             QtGui.QFontMetrics(self.cb_cursors.font()).height() + 3
         )
-        self.cb_cursors.addItems([self._cursor_name(i) for i in range(self.n_cursors)])
+        self.cb_cursors.setIconSize(QtCore.QSize(10, 10))
+        for i in range(self.n_cursors):
+            self.cb_cursors.addItem(
+                QtGui.QIcon(self._cursor_icon(i)), self._cursor_name(i)
+            )
         if self.n_cursors == 1:
             # can't remove more cursors
             self.cb_cursors.setDisabled(True)
@@ -1496,12 +1538,29 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     def _cursor_name(self, i):
         # for cursor combobox content
-        return f"Cursor {int(i)}"
+        return f" Cursor {int(i)}"
+
+    def _cursor_icon(self, i):
+        img = QtGui.QImage(32, 32, QtGui.QImage.Format_ARGB32)
+        img.fill(QtCore.Qt.transparent)
+
+        painter = QtGui.QPainter(img)
+        painter.setRenderHints(QtGui.QPainter.Antialiasing, True)
+
+        clr = self.slicer_area.cursor_colors[i]
+        painter.setBrush(pg.mkColor(clr))
+        painter.drawEllipse(img.rect())
+        painter.end()
+        return QtGui.QPixmap.fromImage(img)
 
     def addCursor(self):
         self.cb_cursors.setDisabled(False)
-        self.cb_cursors.addItem(self._cursor_name(self.n_cursors))
         self.slicer_area.add_cursor()
+        self.cb_cursors.addItem(
+            QtGui.QIcon(self._cursor_icon(self.current_cursor)),
+            self._cursor_name(self.current_cursor),
+        )
+        self.cb_cursors.setCurrentIndex(self.current_cursor)
         self.btn_rem.setDisabled(False)
 
     def remCursor(self):
@@ -1509,6 +1568,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
         for i in range(self.cb_cursors.count()):
             self.cb_cursors.setItemText(i, self._cursor_name(i))
+            self.cb_cursors.setItemIcon(i, self._cursor_icon(i))
         self.cb_cursors.setCurrentText(self._cursor_name(self.current_cursor))
         if i == 0:
             self.cb_cursors.setDisabled(True)
