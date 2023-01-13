@@ -60,7 +60,7 @@ def itool_(data, execute=None, *args, **kwargs):
         win = ImageTool(data, *args, **kwargs)
         win.show()
         win.activateWindow()
-        win.raise_()
+        # win.raise_()
     if execute is None:
         execute = True
         try:
@@ -110,18 +110,87 @@ class ImageTool(QtWidgets.QMainWindow):
         self.addDockWidget(QtCore.Qt.TopDockWidgetArea, dock)
         self.resize(720, 720)
 
-        self.keyboard_shortcuts = {
-            "R": (
-                "Reverse colormap",
-                self.group_widgets[1].misc_controls.btn_reverse.click,
-            ),
-            # "L": ("Lock color levels", self.group_widgets[idx]._cmap_lock_button.click),
-            "S": ("Toggle cursor snap", self.group_widgets[0].btn_snap.click),
-            "T": ("Transpose main image", self.group_widgets[0].btn_transpose[0].click),
-        }
-        for k, v in self.keyboard_shortcuts.items():
-            sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
-            sc.activated.connect(v[-1])
+        self._createMenuBar()
+        self._refreshMenu()
+        self.slicer_area.sigViewOptionChanged.connect(self._refreshMenu)
+
+    def _createMenuBar(self):
+        self._menu_bar = QtWidgets.QMenuBar(self)
+        # self._menu_bar.setNativeMenuBar(False)
+
+        # File menu
+        self._file_menu = QtWidgets.QMenu("&File", self)
+        self._export_action = self._file_menu.addAction("&Export (WIP)")
+        self._menu_bar.addMenu(self._file_menu)
+
+        # View menu
+        self._view_menu = QtWidgets.QMenu("&View", self)
+        self._view_menu.addSeparator()
+
+        # data options
+        self._viewall_action = self._view_menu.addAction(
+            "View &All", QtGui.QKeySequence("Ctrl+A")
+        )
+        self._viewall_action.triggered.connect(self.slicer_area.view_all)
+        self._transpose_action = self._view_menu.addAction(
+            "&Transpose Main Image", QtGui.QKeySequence("T")
+        )
+        self._transpose_action.triggered.connect(
+            lambda: self.slicer_area.swap_axes(0, 1)
+        )
+        self._snap_action = self._view_menu.addAction(
+            "&Snap to Data", QtGui.QKeySequence("S")
+        )
+        self._snap_action.setCheckable(True)
+        self._snap_action.toggled.connect(self.slicer_area.toggle_snap)
+
+        self._view_menu.addSeparator()
+
+        # colormap options
+        self._color_actions = (
+            self._view_menu.addAction("Invert", QtGui.QKeySequence("R")),
+            self._view_menu.addAction("High Contrast"),
+            self._view_menu.addAction("Center At Zero"),
+        )
+        for ca in self._color_actions:
+            ca.setCheckable(True)
+            ca.toggled.connect(self._set_colormap_options)
+            # ca.setShortcutContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+
+        self._view_menu.addSeparator()
+        self._menu_bar.addMenu(self._view_menu)
+
+        self._help_menu = QtWidgets.QMenu("&Help", self)
+        self._help_action = self._help_menu.addAction("DataSlicer Help (WIP)")
+        self._help_menu.addSeparator()
+        self._shortcut_action = self._help_menu.addAction("Keyboard Shortcuts Reference (WIP)")
+        
+
+        self._menu_bar.addMenu(self._help_menu)
+
+    def _set_colormap_options(self):
+        self.slicer_area.set_colormap(
+            reversed=self._color_actions[0].isChecked(),
+            highContrast=self._color_actions[1].isChecked(),
+            zeroCentered=self._color_actions[2].isChecked(),
+        )
+
+    def _refreshMenu(self):
+        self._snap_action.blockSignals(True)
+        self._snap_action.setChecked(self.data_slicer.snap_to_data)
+        self._snap_action.blockSignals(False)
+
+        cmap_props = self.slicer_area.colormap_properties
+        for ca, k in zip(
+            self._color_actions, ["reversed", "highContrast", "zeroCentered"]
+        ):
+            ca.blockSignals(True)
+            ca.setChecked(cmap_props[k])
+            ca.blockSignals(False)
+
+    @property
+    def data_slicer(self) -> SlicerArray:
+        return self.slicer_area.data_slicer
 
     def add_widget(self, idx: int, widget: QtWidgets.QWidget):
         self.group_layouts[idx].addWidget(widget)
@@ -142,6 +211,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
+    sigViewOptionChanged = QtCore.Signal()
 
     COLORS = [
         pg.mkColor(0.8),
@@ -175,7 +245,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # s.setPalette(palette)
             # print(s.handleWidth())
             # pass
-        
+ 
         self.layout().addWidget(self._splitters[0])
         self._splitters[0].addWidget(self._splitters[1])
         self._splitters[1].addWidget(self._splitters[2])
@@ -221,21 +291,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._data = None
         self.current_cursor = 0
+        
+        # self.rad2deg = rad2deg
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
-        self.set_keyboard_shortcuts()
-
-    def set_keyboard_shortcuts(self):
-        self.keyboard_shortcuts = {
-            "Ctrl+A": (
-                "View all",
-                self.view_all,
-            ),
-        }
-        for k, v in self.keyboard_shortcuts.items():
-            sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
-            sc.activated.connect(v[-1])
 
     def connect_signals(self):
         self.sigIndexChanged.connect(self.refresh_plots)
@@ -471,6 +531,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.images:
             for im in ax.plotItem.slicer_data_items:
                 im.set_pg_colormap(cmap, update=update)
+        self.sigViewOptionChanged.emit()
 
     def adjust_layout(
         self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
@@ -550,7 +611,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def toggle_snap(self, value: bool = None):
         if value is None:
             value = ~self.data_slicer.snap_to_data
+        elif value == self.data_slicer.snap_to_data:
+            return
         self.data_slicer.snap_to_data = value
+        self.sigViewOptionChanged.emit()
 
     def changeEvent(self, evt):
         if evt.type() == QtCore.QEvent.PaletteChange:
@@ -619,7 +683,7 @@ class ItoolDisplayObject(object):
         return self.axes.display_axis
 
     @property
-    def data_slicer(self):
+    def data_slicer(self) -> SlicerArray:
         return self.axes.data_slicer
 
     @property
@@ -824,15 +888,13 @@ class ItoolPlotItem(pg.PlotItem):
             self.addItem(s)
             s.setZValue(9)
             c.sigDragged.connect(
-                lambda v, line=c, axis=ax: self.line_drag(
-                    line, v.value(), axis
-                )
+                lambda v, line=c, axis=ax: self.line_drag(line, v.value(), axis)
             )
             c.sigClicked.connect(lambda *_, line=c: self.line_click(line))
 
         if update:
             self.refresh_cursor(new_cursor)
-            
+
     def index_of_line(self, line):
         for i, line_dict in enumerate(self.cursor_lines):
             for _, v in line_dict.items():
@@ -930,7 +992,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._display_axis = value
 
     @property
-    def slicer_area(self):
+    def slicer_area(self) -> ImageSlicerArea:
         return self._slicer_area
 
     @slicer_area.setter
@@ -938,7 +1000,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area = value
 
     @property
-    def data_slicer(self):
+    def data_slicer(self) -> SlicerArray:
         return self.slicer_area.data_slicer
 
 
@@ -1192,7 +1254,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         return self.slicer_area.data
 
     @property
-    def data_slicer(self):
+    def data_slicer(self) -> SlicerArray:
         return self.slicer_area.data_slicer
 
     @property
@@ -1236,7 +1298,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         return isinstance(self._slicer_area, ItoolControlsBase)
 
     @property
-    def slicer_area(self):
+    def slicer_area(self) -> ImageSlicerArea:
         if self.is_nested:
             return self._slicer_area.slicer_area
         else:
@@ -1311,6 +1373,14 @@ class ColorControls(ItoolControlsBase):
             highContrast=self.btn_contrast.isChecked(),
             zeroCentered=self.btn_zero.isChecked(),
         )
+
+    def connect_signals(self):
+        super().connect_signals()
+        self.slicer_area.sigViewOptionChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
 
 
 # class ItoolAAAAAControls(ItoolControlsBase):
@@ -1476,12 +1546,14 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def connect_signals(self):
         super().connect_signals()
         self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
+        self.slicer_area.sigViewOptionChanged.connect(self.update_options)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigDataChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigDataChanged.disconnect(self.update)
 
@@ -1535,6 +1607,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
         self.spin_dat.setValue(self.data_slicer.current_value(self.current_cursor))
+
+    def update_options(self):
+        self.btn_snap.blockSignals(True)
+        self.btn_snap.setChecked(self.data_slicer.snap_to_data)
+        self.btn_snap.blockSignals(False)
 
     def _cursor_name(self, i):
         # for cursor combobox content
