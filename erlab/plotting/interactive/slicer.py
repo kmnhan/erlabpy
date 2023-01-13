@@ -10,8 +10,8 @@ from PySide6 import QtCore  # , QtGui, QtWidgets
 
 @numba.njit(fastmath=True, cache=True)
 def array_rect_jit(
-    i: int, j: int, lims: tuple[tuple[float]], incs: tuple[float]
-) -> tuple[float]:
+    i: int, j: int, lims: tuple[tuple[float, float]], incs: tuple[float]
+) -> tuple[float, float, float, float]:
     x = lims[i][0] - incs[i]
     y = lims[j][0] - incs[j]
     w = lims[i][-1] - x
@@ -39,12 +39,12 @@ def index_of_value_jit(
 
 
 @numba.njit(fastmath=True, cache=True)
-def index_of_value_regular_jit(arr, val) -> int:
+def index_of_value_regular_jit(arr, val) -> np.intp:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
 @numba.njit(fastmath=True, cache=True)
-def transposed_jit(arr):
+def transposed_jit(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     if arr.ndim == 2:
         return arr.T
     elif arr.ndim == 3:
@@ -68,7 +68,7 @@ class SlicerArray(QtCore.QObject):
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
         self._snap_to_data = False
 
-    def add_cursor(self, like_cursor: int = -1, update=True):
+    def add_cursor(self, like_cursor: int = -1, update: bool = True):
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)
         self._indices.append(list(new_ind))
@@ -76,7 +76,7 @@ class SlicerArray(QtCore.QObject):
         if update:
             self.sigCursorCountChanged.emit(self.n_cursors)
 
-    def remove_cursor(self, index, update=True):
+    def remove_cursor(self, index: int, update: bool = True):
         if self.n_cursors == 1:
             raise ValueError("There must be at least one cursor.")
         self._bins.pop(index)
@@ -98,10 +98,10 @@ class SlicerArray(QtCore.QObject):
         return len(self._bins)
 
     @QtCore.Slot(int, result=list[int])
-    def get_bins(self, cursor) -> list[int]:
+    def get_bins(self, cursor: int) -> list[int]:
         return self._bins[cursor]
 
-    def set_bins(self, cursor, value, update: bool = True):
+    def set_bins(self, cursor: int, value: list[int], update: bool = True):
         if not len(value) == self._obj.ndim:
             raise ValueError("length of bin array must match the number of dimensions.")
         axes = []
@@ -111,26 +111,28 @@ class SlicerArray(QtCore.QObject):
             self.sigBinChanged.emit(cursor, tuple(axes))
 
     @QtCore.Slot(int, int, int, bool, result=list[int | None])
-    def set_bin(self, cursor, axis, value, update: bool = True) -> list[int | None]:
+    def set_bin(
+        self, cursor: int, axis: int, value: int, update: bool = True
+    ) -> list[int | None]:
         if value is None:
             return []
         if int(value) != value:
             raise TypeError("bins must have integer type")
         self._bins[cursor][axis] = int(value)
         if update:
-            self.sigBinChanged.emit(cursor, (axis, ))
+            self.sigBinChanged.emit(cursor, (axis,))
             return []
         return [axis]
 
     @QtCore.Slot(int, result=tuple[bool])
-    def get_binned(self, cursor) -> tuple[bool]:
+    def get_binned(self, cursor: int) -> tuple[bool]:
         return tuple(b != 1 for b in self.get_bins(cursor))
 
     @QtCore.Slot(int, result=list[int])
-    def get_indices(self, cursor) -> list[int]:
+    def get_indices(self, cursor: int) -> list[int]:
         return self._indices[cursor]
 
-    def set_indices(self, cursor, value, update: bool = True):
+    def set_indices(self, cursor: int, value: list[int], update: bool = True):
         if not len(value) == self._obj.ndim:
             raise ValueError(
                 "length of index array must match the number of dimensions"
@@ -142,7 +144,9 @@ class SlicerArray(QtCore.QObject):
             self.sigIndexChanged.emit(cursor, tuple(axes))
 
     @QtCore.Slot(int, int, int, bool, result=list[int | None])
-    def set_index(self, cursor, axis, value, update: bool = True) -> list[int | None]:
+    def set_index(
+        self, cursor: int, axis: int, value: int, update: bool = True
+    ) -> list[int | None]:
         if value is None:
             return []
         if int(value) != value:
@@ -158,7 +162,7 @@ class SlicerArray(QtCore.QObject):
     def get_values(self, cursor) -> list[float]:
         return self._values[cursor]
 
-    def set_values(self, cursor, value, update: bool = True):
+    def set_values(self, cursor: int, value: list[float], update: bool = True):
         if not len(value) == self._obj.ndim:
             raise ValueError(
                 "length of value array must match the number of dimensions"
@@ -170,7 +174,9 @@ class SlicerArray(QtCore.QObject):
             self.sigIndexChanged.emit(cursor, tuple(axes))
 
     @QtCore.Slot(int, int, float, bool, result=list[int | None])
-    def set_value(self, cursor, axis, value, update: bool = True) -> list[int | None]:
+    def set_value(
+        self, cursor: int, axis: int, value: float, update: bool = True
+    ) -> list[int | None]:
         if value is None:
             return []
         self._indices[cursor][axis] = self.index_of_value(axis, value)
@@ -195,11 +201,11 @@ class SlicerArray(QtCore.QObject):
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
     @property
-    def lims(self) -> tuple[tuple[float]]:
+    def lims(self) -> tuple[tuple[float, float]]:
         return tuple((coord[0], coord[-1]) for coord in self.coords)
 
     @property
-    def data_vals_T(self):
+    def data_vals_T(self) -> npt.NDArray[np.float64]:
         return transposed_jit(self._obj.values)
 
     def absnanmax(self, *args, **kwargs):
@@ -214,10 +220,12 @@ class SlicerArray(QtCore.QObject):
     def nanmin(self, *args, **kwargs):
         return numbagg.nanmin(self._obj.values, *args, **kwargs)
 
-    def current_value(self, cursor):
+    @QtCore.Slot(int, result=float)
+    def current_value(self, cursor: int) -> float:
         return self._obj.values[tuple(self.get_indices(cursor))]
 
-    def swap_axes(self, ax1, ax2):
+    @QtCore.Slot(int, int)
+    def swap_axes(self, ax1: int, ax2: int):
         for i in range(self.n_cursors):
             self._bins[i][ax1], self._bins[i][ax2] = (
                 self._bins[i][ax2],
@@ -237,36 +245,38 @@ class SlicerArray(QtCore.QObject):
 
         self.sigShapeChanged.emit()
 
-    def array_rect(self, i=None, j=None):
+    def array_rect(
+        self, i: int | None = None, j: int | None = None
+    ) -> tuple[float, float, float, float]:
         if i is None:
             i = 0
         if j is None:
             return self.coords[i]
         return array_rect_jit(i, j, self.lims, self.incs)
 
-    def index_of_value(self, axis, val):
+    def index_of_value(self, axis: int, val: float) -> int:
         return index_of_value_jit(axis, val, self.lims, self.incs, self._obj.shape)
 
     @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
-    def slice_with_coord(self, cursor: int, axis: tuple):
+    def slice_with_coord(self, cursor: int, axis: tuple) -> npt.NDArray[np.float64]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
         return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
 
-    def extract_avg_slice(self, cursor, axis=None):
+    def extract_avg_slice(self, cursor: int, axis: int = None):
         if axis is None:
             return self.data_vals_T
         if not np.iterable(axis):
             return self._bin_along_axis(cursor, axis)
         return self._bin_along_multiaxis(cursor, axis)
 
-    def span_bounds(self, cursor, axis):
+    def span_bounds(self, cursor: int, axis: int):
         slc = self._bin_slice(cursor, axis)
         lb = max(0, slc.start)
         ub = min(self._obj.shape[axis] - 1, slc.stop - 1)
         # ub = min(len(self.coords[axis]) - 1, slc.stop - 1)
         return self.coords[axis][[lb, ub]]
 
-    def _bin_slice(self, cursor, axis):
+    def _bin_slice(self, cursor: int, axis: int):
         center = self.get_indices(cursor)[axis]
         if self.get_binned(cursor)[axis]:
             window = self.get_bins(cursor)[axis]
@@ -274,7 +284,7 @@ class SlicerArray(QtCore.QObject):
         else:
             return slice(center, center + 1)
 
-    def _bin_along_axis(self, cursor, axis):
+    def _bin_along_axis(self, cursor: int, axis: int):
         axis -= 1
         if not self.get_binned(cursor)[axis + 1]:
             return self.data_vals_T[
