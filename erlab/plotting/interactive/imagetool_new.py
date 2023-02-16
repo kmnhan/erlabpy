@@ -118,16 +118,16 @@ class ImageTool(QtWidgets.QMainWindow):
         self._menu_bar = QtWidgets.QMenuBar(self)
         # self._menu_bar.setNativeMenuBar(False)
 
-        # File menu
+        ### FILE MENU
         self._file_menu = QtWidgets.QMenu("&File", self)
         self._export_action = self._file_menu.addAction("&Export (WIP)")
         self._menu_bar.addMenu(self._file_menu)
 
-        # View menu
+        ### VIEW MENU
         self._view_menu = QtWidgets.QMenu("&View", self)
         self._view_menu.addSeparator()
 
-        # data options
+        ### misc. view options
         self._viewall_action = self._view_menu.addAction(
             "View &All", QtGui.QKeySequence("Ctrl+A")
         )
@@ -138,15 +138,82 @@ class ImageTool(QtWidgets.QMainWindow):
         self._transpose_action.triggered.connect(
             lambda: self.slicer_area.swap_axes(0, 1)
         )
+
+        ### cursor options
+        self._view_menu.addSeparator()
+        self._add_action = self._view_menu.addAction(
+            "&Add New Cursor", QtGui.QKeySequence("Shift+A")
+        )
+        self._add_action.triggered.connect(self.slicer_area.add_cursor)
+        self._rem_action = self._view_menu.addAction(
+            "&Remove Current Cursor", QtGui.QKeySequence("Shift+R")
+        )
+        self._rem_action.triggered.connect(self.slicer_area.remove_current_cursor)
         self._snap_action = self._view_menu.addAction(
-            "&Snap to Data", QtGui.QKeySequence("S")
+            "&Snap to Pixels", QtGui.QKeySequence("S")
         )
         self._snap_action.setCheckable(True)
         self._snap_action.toggled.connect(self.slicer_area.toggle_snap)
 
-        self._view_menu.addSeparator()
+        ## cursor movement
+        # single cursor
+        self._cursor_move_menu = self._view_menu.addMenu("Cursor Control")
+        self._center_action = self._cursor_move_menu.addAction(
+            "&Center Current Cursor", QtGui.QKeySequence("Shift+C")
+        )
+        self._center_action.triggered.connect(self.slicer_area.center_cursor)
+        self._cursor_step_actions = (
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Up", QtGui.QKeySequence("Shift+Up")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Down", QtGui.QKeySequence("Shift+Down")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Right", QtGui.QKeySequence("Shift+Right")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Left", QtGui.QKeySequence("Shift+Left")
+            ),
+        )
+        for action, i, d in zip(
+            self._cursor_step_actions, (1, 1, 0, 0), (1, -1, 1, -1)
+        ):
+            ax = self.slicer_area.main_image.plotItem.display_axis[i]
+            action.triggered.connect(
+                lambda *_, ax=ax, d=d: self.slicer_area.step_index(ax, d)
+            )
 
-        # colormap options
+        # multiple cursors
+        self._cursor_move_menu.addSeparator()
+        self._center_all_action = self._cursor_move_menu.addAction(
+            "&Center All Cursors", QtGui.QKeySequence("Alt+Shift+C")
+        )
+        self._center_all_action.triggered.connect(self.slicer_area.center_all_cursors)
+        self._cursor_step_all_actions = (
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Up", QtGui.QKeySequence("Alt+Shift+Up")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Down", QtGui.QKeySequence("Alt+Shift+Down")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Right", QtGui.QKeySequence("Alt+Shift+Right")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Left", QtGui.QKeySequence("Alt+Shift+Left")
+            ),
+        )
+        for action, i, d in zip(
+            self._cursor_step_all_actions, (1, 1, 0, 0), (1, -1, 1, -1)
+        ):
+            ax = self.slicer_area.main_image.plotItem.display_axis[i]
+            action.triggered.connect(
+                lambda *_, ax=ax, d=d: self.slicer_area.step_index_all(ax, d)
+            )
+
+        ### colormap options
+        self._view_menu.addSeparator()
         self._color_actions = (
             self._view_menu.addAction("Invert", QtGui.QKeySequence("R")),
             self._view_menu.addAction("High Contrast"),
@@ -160,11 +227,13 @@ class ImageTool(QtWidgets.QMainWindow):
         self._view_menu.addSeparator()
         self._menu_bar.addMenu(self._view_menu)
 
+        ### HELP MENU
         self._help_menu = QtWidgets.QMenu("&Help", self)
         self._help_action = self._help_menu.addAction("DataSlicer Help (WIP)")
         self._help_menu.addSeparator()
-        self._shortcut_action = self._help_menu.addAction("Keyboard Shortcuts Reference (WIP)")
-        
+        self._shortcut_action = self._help_menu.addAction(
+            "Keyboard Shortcuts Reference (WIP)"
+        )
 
         self._menu_bar.addMenu(self._help_menu)
 
@@ -207,8 +276,33 @@ class ImageTool(QtWidgets.QMainWindow):
         self.group_layouts.append(group_layout)
 
 
-class ImageSlicerArea(QtWidgets.QWidget):
+# class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
+class ItoolGraphicsLayoutWidget(pg.PlotWidget):
+    # Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
+    # Will need to run some benchmarks in the future
+    def __init__(
+        self,
+        slicer_area,
+        display_axis: tuple,
+        image: bool = False,
+        parent=None,
+        **item_kw,
+    ):
+        # super().__init__(parent=parent)
+        # self.ci.layout.setSpacing(0)
+        # self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
+        # self.addItem(self.plotItem)
 
+        super().__init__(
+            parent=parent,
+            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
+        )
+
+        self.scene().sigMouseClicked.connect(self.plotItem.handle_mouse)
+
+
+class ImageSlicerArea(QtWidgets.QWidget):
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
     sigViewOptionChanged = QtCore.Signal()
@@ -245,7 +339,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # s.setPalette(palette)
             # print(s.handleWidth())
             # pass
- 
+
         self.layout().addWidget(self._splitters[0])
         self._splitters[0].addWidget(self._splitters[1])
         self._splitters[1].addWidget(self._splitters[2])
@@ -291,7 +385,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._data = None
         self.current_cursor = 0
-        
+
         # self.rad2deg = rad2deg
 
         if data is not None:
@@ -320,12 +414,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.colormap_properties["cmap"]
 
     @property
-    def main_image(self):
+    def main_image(self) -> ItoolGraphicsLayoutWidget:
         """returns the main PlotItem"""
         return self.get_axes(0)
 
     @property
-    def slices(self):
+    def slices(self) -> tuple:
         if self.data.ndim == 2:
             return tuple()
         else:
@@ -333,11 +427,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(self.get_axes(ax) for ax in slice_axes)
 
     @property
-    def images(self):
+    def images(self) -> tuple:
         return (self.main_image,) + self.slices
 
     @property
-    def profiles(self):
+    def profiles(self) -> tuple:
         if self.data.ndim == 2:
             profile_axes = [1, 2]
         elif self.data.ndim == 3:
@@ -347,7 +441,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
-    def axes(self):
+    def axes(self) -> tuple:
         """Currently valid subset of self._plots"""
         return self.images + self.profiles
 
@@ -371,7 +465,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.data_slicer._obj
 
-    def get_axes(self, index):
+    def get_axes(self, index) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
 
     @QtCore.Slot()
@@ -393,6 +487,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.axes:
             ax.plotItem.vb.enableAutoRange()
             ax.plotItem.vb.updateAutoRange()
+
+    def center_all_cursors(self):
+        for i in range(self.n_cursors):
+            self.data_slicer.center_cursor(i)
+
+    def center_cursor(self):
+        self.data_slicer.center_cursor(self.current_cursor)
 
     def set_current_cursor(self, cursor: int, update=True):
         if cursor > self.n_cursors - 1:
@@ -437,6 +538,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def set_index(self, axis: int, value: int, update: bool = True):
         self.data_slicer.set_index(self.current_cursor, axis, value, update)
 
+    @QtCore.Slot(int, int, bool)
+    def step_index(self, axis: int, amount: int, update: bool = True):
+        self.data_slicer.step_index(self.current_cursor, axis, amount, update)
+
+    @QtCore.Slot(int, int, bool)
+    def step_index_all(self, axis: int, amount: int, update: bool = True):
+        for i in range(self.n_cursors):
+            self.data_slicer.step_index(i, axis, amount, update)
+
     @QtCore.Slot(int, float, bool)
     def set_value(self, axis: int, value: float, update: bool = True):
         self.data_slicer.set_value(self.current_cursor, axis, value, update)
@@ -478,6 +588,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.refresh()
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
+
+    @QtCore.Slot()
+    def remove_current_cursor(self):
+        self.remove_cursor(self.current_cursor)
 
     def gen_cursor_color(self, index):
         clr = self.COLORS[index % len(self.COLORS)]
@@ -1004,35 +1118,7 @@ class ItoolPlotItem(pg.PlotItem):
         return self.slicer_area.data_slicer
 
 
-# Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
-# Will need to run some benchmarks in the future
-
-# class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
-class ItoolGraphicsLayoutWidget(pg.PlotWidget):
-    def __init__(
-        self,
-        slicer_area: ImageSlicerArea,
-        display_axis: tuple,
-        image: bool = False,
-        parent=None,
-        **item_kw,
-    ):
-        # super().__init__(parent=parent)
-        # self.ci.layout.setSpacing(0)
-        # self.ci.layout.setContentsMargins(0, 0, 0, 0)
-        # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
-        # self.addItem(self.plotItem)
-
-        super().__init__(
-            parent=parent,
-            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
-        )
-
-        self.scene().sigMouseClicked.connect(self.plotItem.handle_mouse)
-
-
 class IconButton(QtWidgets.QPushButton):
-
     ICON_ALIASES = dict(
         invert="mdi6.invert-colors",
         invert_off="mdi6.invert-colors-off",
@@ -1076,6 +1162,10 @@ class IconButton(QtWidgets.QPushButton):
         if self.isCheckable() and off is not None:
             self.toggled.connect(self.refresh_icons)
 
+    def setChecked(self, bool):
+        super().setChecked(bool)
+        self.refresh_icons()
+
     def get_icon(self, icon: str):
         try:
             return qta.icon(self.ICON_ALIASES[icon])
@@ -1097,7 +1187,6 @@ class IconButton(QtWidgets.QPushButton):
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
-
     LOAD_ALL_TEXT = "Load all..."
 
     def __init__(self, *args, **kwargs):
@@ -1106,8 +1195,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.setToolTip("Colormap")
         w, h = 64, 16
         self.setIconSize(QtCore.QSize(w, h))
+        # for name in pg_colormap_names("local"):
         for name in pg_colormap_names("mpl"):
-            # for name in pg_colormap_names("local"):
             self.addItem(name)
         self.insertItem(0, self.LOAD_ALL_TEXT)
         self.thumbnails_loaded = False
@@ -1166,7 +1255,6 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
-
     valueChanged = QtCore.Signal(float)
 
     def __init__(self, value=1.0):
@@ -1548,6 +1636,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
         self.slicer_area.sigViewOptionChanged.connect(self.update_options)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
+        self.slicer_area.sigBinChanged.connect(self.update_spins)
         self.slicer_area.sigDataChanged.connect(self.update)
 
     def disconnect_signals(self):
@@ -1555,6 +1644,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
         self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
+        self.slicer_area.sigBinChanged.disconnect(self.update_spins)
         self.slicer_area.sigDataChanged.disconnect(self.update)
 
     def update(self):
@@ -1606,11 +1696,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setValue(self.slicer_area.current_values[i])
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
-        self.spin_dat.setValue(self.data_slicer.current_value(self.current_cursor))
+        # self.spin_dat.setValue(self.data_slicer.current_value(self.current_cursor))
+        self.spin_dat.setValue(
+            self.data_slicer.current_value_binned(self.current_cursor)
+        )
 
     def update_options(self):
         self.btn_snap.blockSignals(True)
         self.btn_snap.setChecked(self.data_slicer.snap_to_data)
+        # self.btn_snap.refresh_icons()
         self.btn_snap.blockSignals(False)
 
     def _cursor_name(self, i):
