@@ -10,13 +10,13 @@ which can be opened in Igor as `hdf5` files.
 import itertools
 import os
 import re
+import warnings
 from pathlib import Path
 
 import arpes
 import arpes.endstations
 import h5netcdf
 import igor.igorpy
-
 import numpy as np
 import xarray as xr
 from arpes import load_pxt
@@ -72,8 +72,14 @@ def fix_attr_format(da: xr.DataArray):
         if not isValid:
             try:
                 da = da.assign_attrs({key: str(da.attrs[key])})
+                warnings.warn(
+                    f"The attribute {key} with invalid type {dt} will be converted to string"
+                )
             except:
                 da = da.assign_attrs({key: ""})
+                warnings.warn(
+                    f"The attribute {key} with invalid type {dt} will be removed"
+                )
     return da
 
 
@@ -99,7 +105,7 @@ def save_as_netcdf(data: xr.DataArray, filename: str, **kwargs):
 
 def save_as_fits():
     # TODO
-    pass
+    raise NotImplementedError()
 
 
 def parse_livepolar(wave, normalize=False):
