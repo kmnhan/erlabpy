@@ -227,12 +227,12 @@ xtick.major.size: 2.5
 xtick.minor.size: 1.5
 xtick.major.width: 0.5
 xtick.minor.width: 0.5
-xtick.major.pad: 1.0
+xtick.major.pad: 2.5
 xtick.minor.pad: 1.0
 xtick.color: black
 xtick.labelcolor: inherit
 xtick.labelsize: medium
-xtick.direction: out
+xtick.direction: in
 xtick.minor.visible: False
 xtick.major.top: True
 xtick.major.bottom: True
@@ -248,12 +248,12 @@ ytick.major.size: 2.5
 ytick.minor.size: 1.5
 ytick.major.width: 0.5
 ytick.minor.width: 0.5
-ytick.major.pad: 1.0
+ytick.major.pad: 2.5
 ytick.minor.pad: 1.0
 ytick.color: black
 ytick.labelcolor: inherit
 ytick.labelsize: medium
-ytick.direction: out
+ytick.direction: in
 ytick.minor.visible: False
 ytick.major.left: True
 ytick.major.right: True
@@ -394,7 +394,7 @@ savefig.facecolor: auto
 savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight
-savefig.pad_inches: 0.1
+savefig.pad_inches: 0.02
 savefig.transparent: False
 savefig.orientation: portrait
 
