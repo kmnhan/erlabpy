@@ -9,7 +9,7 @@ from PySide6 import QtCore  # , QtGui, QtWidgets
 
 
 @numba.njit(fastmath=True, cache=True)
-def array_rect_jit(
+def _array_rect(
     i: int, j: int, lims: tuple[tuple[float, float]], incs: tuple[float]
 ) -> tuple[float, float, float, float]:
     x = lims[i][0] - incs[i]
@@ -22,7 +22,7 @@ def array_rect_jit(
 
 
 @numba.njit(fastmath=True, cache=True)
-def index_of_value_jit(
+def _index_of_value(
     axis: int,
     val: float,
     lims: tuple[tuple[float]],
@@ -39,12 +39,18 @@ def index_of_value_jit(
 
 
 @numba.njit(fastmath=True, cache=True)
-def index_of_value_regular_jit(arr, val) -> np.intp:
+def _index_of_value_nonuniform(arr, val) -> np.intp:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
 @numba.njit(fastmath=True, cache=True)
-def transposed_jit(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def _is_uniform(arr):
+    dif = np.diff(arr)
+    return np.all(dif == dif[0])
+
+
+@numba.njit(fastmath=True, cache=True)
+def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     if arr.ndim == 2:
         return arr.T
     elif arr.ndim == 3:
@@ -100,6 +106,13 @@ class SlicerArray(QtCore.QObject):
     @QtCore.Slot(int, result=list[int])
     def get_bins(self, cursor: int) -> list[int]:
         return self._bins[cursor]
+
+    def center_cursor(self, cursor: int, update: bool = True):
+        self.set_indices(
+            cursor,
+            [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape],
+            update=update,
+        )
 
     def set_bins(self, cursor: int, value: list[int], update: bool = True):
         if not len(value) == self._obj.ndim:
@@ -158,6 +171,19 @@ class SlicerArray(QtCore.QObject):
             return []
         return [axis]
 
+    @QtCore.Slot(int, int, int, bool)
+    def step_index(self, cursor: int, axis: int, amount=int, update: bool = True):
+        self._indices[cursor][axis] += amount
+        if (
+            self._indices[cursor][axis] >= self._obj.shape[axis]
+            or self._indices[cursor][axis] < 0
+        ):
+            self._indices[cursor][axis] -= amount
+            return
+        self._values[cursor][axis] = self.coords[axis][self._indices[cursor][axis]]
+        if update:
+            self.sigIndexChanged.emit(cursor, (axis,))
+
     @QtCore.Slot(int, result=list[float])
     def get_values(self, cursor) -> list[float]:
         return self._values[cursor]
@@ -198,15 +224,17 @@ class SlicerArray(QtCore.QObject):
 
     @property
     def incs(self) -> tuple[float]:
+        # return tuple(coord[1] - coord[0] if _is_uniform(coord) else 1.0 for coord in self.coords)
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
     @property
     def lims(self) -> tuple[tuple[float, float]]:
+        # return tuple((coord[0], coord[-1]) if _is_uniform(coord) else (0.0, float(len(coord)-1)) for coord in self.coords)
         return tuple((coord[0], coord[-1]) for coord in self.coords)
 
     @property
     def data_vals_T(self) -> npt.NDArray[np.float64]:
-        return transposed_jit(self._obj.values)
+        return _transposed(self._obj.values)
 
     def absnanmax(self, *args, **kwargs):
         return numbagg.nanmax(np.abs(self._obj.values), *args, **kwargs)
@@ -223,6 +251,11 @@ class SlicerArray(QtCore.QObject):
     @QtCore.Slot(int, result=float)
     def current_value(self, cursor: int) -> float:
         return self._obj.values[tuple(self.get_indices(cursor))]
+
+    @QtCore.Slot(int, result=float)
+    def current_value_binned(self, cursor: int) -> float:
+        return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
+        # return self._obj.values[tuple(self.get_indices(cursor))]
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int):
@@ -252,17 +285,32 @@ class SlicerArray(QtCore.QObject):
             i = 0
         if j is None:
             return self.coords[i]
-        return array_rect_jit(i, j, self.lims, self.incs)
+            # x = self.coords[i]
+            # if _is_uniform(x):
+            # return x
+            # else:
+            # return np.arange(len(x), dtype=np.float64)
+        return _array_rect(i, j, self.lims, self.incs)
 
     def index_of_value(self, axis: int, val: float) -> int:
-        return index_of_value_jit(axis, val, self.lims, self.incs, self._obj.shape)
+        return _index_of_value(axis, val, self.lims, self.incs, self._obj.shape)
+        # return _index_of_value_nonuniform(self.coords[axis], val)
 
     @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
     def slice_with_coord(self, cursor: int, axis: tuple) -> npt.NDArray[np.float64]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
         return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
 
-    def extract_avg_slice(self, cursor: int, axis: int = None):
+    # @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
+    def slice_with_coord_nonuniform(
+        self, cursor: int, axis: tuple
+    ) -> npt.NDArray[np.float64]:
+        domain = sorted(set(range(self._obj.ndim)) - set(axis))
+        return tuple(self.coords[i] for i in axis) + (
+            self.extract_avg_slice(cursor, domain),
+        )
+
+    def extract_avg_slice(self, cursor: int, axis: int | tuple | None = None):
         if axis is None:
             return self.data_vals_T
         if not np.iterable(axis):

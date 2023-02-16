@@ -8,9 +8,6 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 
-from erlab.analysis.gold import gold_edge, gold_poly_from_edge
-from erlab.analysis.utilities import correct_with_edge
-from erlab.parallel import joblib_qt, joblib_pg
 from erlab.plotting.interactive.imagetool import ImageTool
 from erlab.plotting.interactive.utilities import (
     AnalysisWindow,
@@ -51,7 +48,6 @@ class masktool(AnalysisWindow):
                 "Transpose" : dict(qwtype="chkbox"),
             }
         )
-        pg.ProgressDialog
         self.images[0].setDataArray(self.data[:,:,0])
         self.cursor.sigParameterChanged.connect(self.update_cursor)
         

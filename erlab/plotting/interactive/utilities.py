@@ -5,7 +5,7 @@ import sys
 import pyqtgraph as pg
 import varname
 import xarray as xr
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
 
 __all__ = [
@@ -190,7 +190,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         super().__init__(*args, **kwargs)
         # self.editingFinished.disconnect()
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
         self.editingFinished.connect(self.editingFinishedEvent)
         self._updateHeight()
@@ -215,13 +216,13 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def widthFromValue(self, value):
         return self.widthFromText(self.textFromValue(value))
 
-    def sizeHint(self):
-        return QtCore.QSize(
-            max(
-                self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
-            ),
-            0,
-        )
+    # def sizeHint(self):
+    #     return QtCore.QSize(
+    #         max(
+    #             self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
+    #         ),
+    #         0,
+    #     )
 
     def setMaximum(self, mx):
         if self._only_int and np.isfinite(mx):
@@ -391,9 +392,122 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def editingFinishedEvent(self):
         self.setValue(self.valueFromText(self.lineEdit().text()))
 
+    # def keyPressEvent(self, evt):
+    #     if evt.key() == QtGui.QKeySequence("Escape") or evt.key() == QtGui.QKeySequence("Return"):
+    #         self.focusOutEvent(QtGui.QFocusEvent(QtCore.QEvent.FocusIn, QtCore.Qt.MouseFocusReason))
+    #         self.editingFinishedEvent()
+    #         print("hey")
+    #     else:
+    #         super().keyPressEvent(evt)
+
     def _updateHeight(self):
         if self._is_compact:
             self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
+
+
+class FittingParameterWidget(QtWidgets.QWidget):
+
+    sigParamChanged = QtCore.Signal(dict)
+
+    def __init__(
+        self,
+        name: str,
+        spin_kw=dict(),
+        checkable: bool = True,
+        fixed:bool=False,
+        label: str | None = None,
+        show_label: bool = True,
+    ):
+        super().__init__()
+        self.layout = QtWidgets.QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        self.param_name = name
+        self._prefix = ""
+        if label is None:
+            label = self.param_name
+        self.label = QtWidgets.QLabel(label)
+        self.spin_value = BetterSpinBox(**spin_kw)
+        self.spin_lb = BetterSpinBox(
+            value=-np.inf, minimumWidth=60, toolTip="Lower Bound"
+        )
+        self.spin_ub = BetterSpinBox(
+            value=np.inf, minimumWidth=60, toolTip="Upper Bound"
+        )
+        self.check = QtWidgets.QCheckBox(toolTip="Fixed")
+
+        if show_label:
+            self.layout.addWidget(self.label)
+        self.layout.addWidget(self.spin_value)
+        self.layout.addWidget(self.spin_lb)
+        self.layout.addWidget(self.spin_ub)
+        self.layout.addWidget(self.check)
+
+        for spin in (self.spin_value, self.spin_lb, self.spin_ub):
+            spin.valueChanged.connect(
+                lambda: self.sigParamChanged.emit(self.param_dict())
+            )
+        self.check.stateChanged.connect(self.setFixed)
+
+        self.setCheckable(checkable)
+        self.setFixed(fixed)
+        
+    def setValue(self, value):
+        self.spin_value.setValue(value)
+
+    def checkable(self):
+        return self._checkable
+
+    def setCheckable(self, value: bool):
+        self._checkable = value
+        self.check.setVisible(value)
+
+    def fixed(self):
+        if self.checkable():
+            return self.check.isChecked()
+        else:
+            return False
+
+    def setFixed(self, value: bool):
+        if isinstance(value, QtCore.Qt.CheckState):
+            if value == QtCore.Qt.CheckState.Unchecked:
+                value = False
+            elif value == QtCore.Qt.CheckState.Checked:
+                value = True
+        else:
+            self.check.setChecked(value)
+        if value:
+            self.spin_lb.setDisabled(True)
+            self.spin_ub.setDisabled(True)
+        else:
+            self.spin_lb.setEnabled(True)
+            self.spin_ub.setEnabled(True)
+
+    def value(self):
+        return self.spin_value.value()
+
+    def prefix(self):
+        return self._prefix
+
+    def set_prefix(self, prefix):
+        self._prefix = prefix
+
+    def minimum(self):
+        return self.spin_lb.value()
+
+    def maximum(self):
+        return self.spin_ub.value()
+
+    def param_dict(self):
+        param_info = dict(value=self.value())
+        if self.checkable():
+            param_info["vary"] = ~self.fixed()
+        if np.isfinite(self.minimum()):
+            param_info["min"] = float(self.minimum())
+        if np.isfinite(self.maximum()):
+            param_info["max"] = float(self.maximum())
+
+        return {self.prefix() + self.param_name: param_info}
 
 
 class xImageItem(pg.ImageItem):
@@ -449,12 +563,14 @@ class ParameterGroup(QtWidgets.QGroupBox):
     VALID_QWTYPE = {
         "spin": QtWidgets.QSpinBox,
         "dblspin": QtWidgets.QDoubleSpinBox,
+        "btspin": BetterSpinBox,
         "slider": QtWidgets.QSlider,
         "dblslider": QDoubleSlider,
         "chkbox": QtWidgets.QCheckBox,
         "pushbtn": QtWidgets.QPushButton,
         "chkpushbtn": QtWidgets.QPushButton,
         "combobox": QtWidgets.QComboBox,
+        "fitparam": FittingParameterWidget,
     }
     VALID_QLTYPE = {
         "hbox": QtWidgets.QHBoxLayout,
@@ -499,6 +615,10 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         valueChanged = kwargs.pop("valueChanged", None)
         textChanged = kwargs.pop("textChanged", None)
+
+        if qwtype == "fitparam":
+            show_param_label = kwargs.pop("show_param_label", False)
+            kwargs["show_label"] = show_param_label
 
         widget = widget_class(**kwargs)
 
@@ -558,18 +678,20 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.widgets = dict()
         for i, (k, v) in enumerate(kwargs.items()):
             if isinstance(v, dict):
-                showlabel = v.pop("showlabel", True)
+                showlabel = v.pop("showlabel", k)
                 if v.pop("notrack", False):
                     self.untracked.append(k)
                 self.widgets[k] = self.getParameterWidget(**v)
+
             elif isinstance(v, QtWidgets.QWidget):
+                showlabel = k
                 self.widgets[k] = v
             else:
                 raise ValueError(
                     "Each value must be a QtWidgets.QWidget instance"
                     "or a dictionary of keyword arguments to getParameterWidget."
                 )
-            self.labels.append(QtWidgets.QLabel(k))
+            self.labels.append(QtWidgets.QLabel(str(showlabel)))
             self.labels[i].setBuddy(self.widgets[k])
             if showlabel:
                 self.layout.addWidget(self.labels[i], i, 0)
@@ -580,7 +702,15 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.global_connect()
 
     def widget_value(self, widget):
-        if isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+        if isinstance(
+            widget,
+            (
+                QtWidgets.QSpinBox,
+                QtWidgets.QDoubleSpinBox,
+                BetterSpinBox,
+                FittingParameterWidget,
+            ),
+        ):
             return widget.value()
         elif isinstance(widget, QtWidgets.QAbstractSpinBox):
             return widget.text()
@@ -600,8 +730,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
             return widget.currentText()
 
     def widget_change_signal(self, widget):
-        if isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+        if isinstance(
+            widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox, BetterSpinBox)
+        ):
             return widget.valueChanged
+        elif isinstance(widget, FittingParameterWidget):
+            return widget.sigParamChanged
         elif isinstance(widget, QtWidgets.QAbstractSpinBox):
             return widget.editingFinished
         elif isinstance(widget, QtWidgets.QAbstractSlider):
@@ -622,6 +756,11 @@ class ParameterGroup(QtWidgets.QGroupBox):
                 self.widget_change_signal(v).connect(
                     lambda x: self.sigParameterChanged.emit([k, x])
                 )
+
+    def widgets_of_type(self, widgetclass):
+        if isinstance(widgetclass, str):
+            widgetclass = self.VALID_QWTYPE[widgetclass]
+        return [w for w in self.widgets.values() if isinstance(w, widgetclass)]
 
     @property
     def values(self):

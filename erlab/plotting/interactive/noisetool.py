@@ -22,41 +22,41 @@ from matplotlib import colors
 from PySide6 import QtCore, QtGui, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
-def move_mean_centered(a, window, min_count=None, axis=-1):
-    w = (window - 1) // 2
-    shift = w + 1
-    if min_count is None:
-        min_count = w + 1
-    pad_width = [(0, 0)] * a.ndim
-    pad_width[axis] = (0, shift)
-    a = np.pad(a, pad_width, constant_values=np.nan)
-    val = bn.move_mean(a, window, min_count=min_count, axis=axis)
-    return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
+# def move_mean_centered(a, window, min_count=None, axis=-1):
+#     w = (window - 1) // 2
+#     shift = w + 1
+#     if min_count is None:
+#         min_count = w + 1
+#     pad_width = [(0, 0)] * a.ndim
+#     pad_width[axis] = (0, shift)
+#     a = np.pad(a, pad_width, constant_values=np.nan)
+#     val = bn.move_mean(a, window, min_count=min_count, axis=axis)
+#     return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
 
 
-def move_mean_centered_multiaxis(a, window_list, min_count_list=None):
-    w_list = [(window - 1) // 2 for window in window_list]
-    pad_width = [(0, 0)] * a.ndim
-    slicer = [
-        slice(None),
-    ] * a.ndim
-    if min_count_list is None:
-        min_count_list = [w + 1 for w in w_list]
-    for axis in range(a.ndim):
-        pad_width[axis] = (0, w_list[axis] + 1)
-        slicer[axis] = slice(w_list[axis], -1)
-    a = np.pad(a, pad_width, constant_values=np.nan)
-    val = move_mean(a, numba.typed.List(window_list), numba.typed.List(min_count_list))
-    return val[tuple(slicer)]
+# def move_mean_centered_multiaxis(a, window_list, min_count_list=None):
+#     w_list = [(window - 1) // 2 for window in window_list]
+#     pad_width = [(0, 0)] * a.ndim
+#     slicer = [
+#         slice(None),
+#     ] * a.ndim
+#     if min_count_list is None:
+#         min_count_list = [w + 1 for w in w_list]
+#     for axis in range(a.ndim):
+#         pad_width[axis] = (0, w_list[axis] + 1)
+#         slicer[axis] = slice(w_list[axis], -1)
+#     a = np.pad(a, pad_width, constant_values=np.nan)
+#     val = move_mean(a, numba.typed.List(window_list), numba.typed.List(min_count_list))
+#     return val[tuple(slicer)]
 
 
-def move_mean(a, window, min_count):
-    if a.ndim == 3:
-        return move_mean3d(a, window, min_count)
-    elif a.ndim == 2:
-        return move_mean2d(a, window, min_count)
-    else:
-        raise NotImplementedError
+# def move_mean(a, window, min_count):
+#     if a.ndim == 3:
+#         return move_mean3d(a, window, min_count)
+#     elif a.ndim == 2:
+#         return move_mean2d(a, window, min_count)
+#     else:
+#         raise NotImplementedError
 
 
 
@@ -69,8 +69,8 @@ def move_mean(a, window, min_count):
 __all__ = ["noisetool"]
 
 
-def boxcarfilt2(array, window_list, min_count_list=None):
-    return move_mean_centered_multiaxis(array, window_list, min_count_list)
+# def boxcarfilt2(array, window_list, min_count_list=None):
+#     return move_mean_centered_multiaxis(array, window_list, min_count_list)
 
 
 def laplacian_O3(f, *varargs):
@@ -447,7 +447,7 @@ class NoiseTool(QtWidgets.QMainWindow):
         else:
             sigma = [(amount[0] - 1) / 3, (amount[1] - 1) / 3]
             for _ in range(num):
-                data = gaussian_filter(data, sigma=sigma)
+                data = gaussian_filter(data, sigma=sigma, truncate=5)
         return data
 
     def smooth_data(self, axis=None, amount=None):
@@ -499,7 +499,6 @@ class NoiseTool(QtWidgets.QMainWindow):
 
 
 def noisetool(data, *args, **kwargs):
-    # TODO: implement multiple windows, add transpose, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)

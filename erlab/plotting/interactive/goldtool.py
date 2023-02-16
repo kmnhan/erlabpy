@@ -5,7 +5,7 @@ import arpes.xarray_extensions
 import numpy as np
 import pyqtgraph as pg
 import varname
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 import erlab.analysis
 from erlab.parallel import joblib_progress_qt
@@ -341,7 +341,7 @@ if __name__ == "__main__":
     import arpes.io
 
     dat = arpes.io.load_data(
-        "/Users/khan/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt",
+        "~/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt",
         location="BL4",
     )
     dt = goldtool(dat, dat)
