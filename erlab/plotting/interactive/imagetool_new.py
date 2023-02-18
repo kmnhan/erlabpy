@@ -1,6 +1,7 @@
 import sys
 
 import numpy as np
+import numpy.typing as npt
 import pyqtgraph as pg
 import qtawesome as qta
 import xarray as xr
@@ -503,7 +504,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh()
         self.sigCurrentCursorChanged.emit(cursor)
 
-    def set_data(self, data: xr.DataArray, rad2deg=None):
+    def set_data(self, data: xr.DataArray | npt.ArrayLike, rad2deg=None):
+        if not isinstance(data, xr.DataArray):
+            data = xr.DataArray(np.asarray(data))
+        if data.dims == ("eV", "kx", "ky"):
+            data = data.transpose("kx", "ky", "eV").astype(np.float64, order="C")
+
         if not rad2deg:
             self._data = data
         else:
