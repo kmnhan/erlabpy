@@ -653,6 +653,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
+    def lock_limits(self, value):
+        # print(value)
+        for ax in self.images:
+            for im in ax.plotItem.slicer_data_items:
+                im.lock_limits(value)
+        self.sigViewOptionChanged.emit()
+
     def adjust_layout(
         self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
     ):
@@ -730,7 +737,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def toggle_snap(self, value: bool = None):
         if value is None:
-            value = ~self.data_slicer.snap_to_data
+            value = not self.data_slicer.snap_to_data
         elif value == self.data_slicer.snap_to_data:
             return
         self.data_slicer.snap_to_data = value
@@ -758,7 +765,26 @@ class ItoolCursorLine(pg.InfiniteLine):
 
     def mouseDragEvent(self, ev):
         if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            super().mouseDragEvent(ev)
+            if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+                if ev.isStart():
+                    self.moving = True
+                    self.cursorOffset = self.pos() - self.mapToParent(ev.buttonDownPos())
+                    self.startPosition = self.pos()
+                ev.accept()
+
+                if not self.moving:
+                    return
+
+                new_position = self.cursorOffset + self.mapToParent(ev.pos())
+                if self.angle%180 == 0:
+                    self.temp_value = new_position.y()
+                elif self.angle%180 == 90:
+                    self.temp_value = new_position.x()
+                
+                self.sigDragged.emit(self)
+                if ev.isFinish():
+                    self.moving = False
+                    self.sigPositionChangeFinished.emit(self)
         else:
             self.setMouseHover(False)
             ev.ignore()
@@ -852,6 +878,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
     ):
         pg.ImageItem.__init__(self, *args, **kargs)
         ItoolDisplayObject.__init__(self, axes, cursor)
+        self.auto_limits = True
 
     @suppressnanwarning
     def refresh_data(self, **kwargs):
@@ -859,7 +886,12 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         rect, img = self.data_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
+        kwargs["autoLevels"] = self.auto_limits
         self.setImage(image=img, rect=rect, **kwargs)
+
+    def lock_limits(self, value):
+        self.auto_limits = not value
+        self.refresh_data()
 
     def set_colormap(
         self,
@@ -1008,7 +1040,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.addItem(s)
             s.setZValue(9)
             c.sigDragged.connect(
-                lambda v, line=c, axis=ax: self.line_drag(line, v.value(), axis)
+                lambda v, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *_, line=c: self.line_click(line))
 
@@ -1094,14 +1126,13 @@ class ItoolPlotItem(pg.PlotItem):
                 zip(self.slicer_data_items, self.cursor_lines)
             ):
                 item.setVisible(i == index)
-                for line in cursors.values():
-                    # line.setMovable(i == index)
-                    pass
+                # for line in cursors.values():
+                # line.setMovable(i == index)
         else:
-            for i, cursors in enumerate(self.cursor_lines):
-                for line in cursors.values():
-                    # line.setMovable(i == index)
-                    pass
+            pass
+            # for i, cursors in enumerate(self.cursor_lines):
+            # for line in cursors.values():
+            # line.setMovable(i == index)
 
     @property
     def display_axis(self):
@@ -1430,16 +1461,15 @@ class ColorControls(ItoolControlsBase):
             checkable=True,
             toolTip="Center colormap at zero",
         )
-        self.btn_reverse.toggled.connect(self.update_colormap)
-        self.btn_contrast.toggled.connect(self.update_colormap)
-        self.btn_zero.toggled.connect(self.update_colormap)
-
         self.btn_lock = IconButton(
             on="unlock",
             off="lock",
             checkable=True,
-            toolTip="Lock colors",
+            toolTip="Lock color limits",
         )
+        self.btn_reverse.toggled.connect(self.update_colormap)
+        self.btn_contrast.toggled.connect(self.update_colormap)
+        self.btn_zero.toggled.connect(self.update_colormap)
 
         self.layout.addWidget(self.btn_reverse)
         self.layout.addWidget(self.btn_contrast)
@@ -1450,16 +1480,21 @@ class ColorControls(ItoolControlsBase):
         self.btn_reverse.blockSignals(True)
         self.btn_contrast.blockSignals(True)
         self.btn_zero.blockSignals(True)
+        self.btn_lock.blockSignals(True)
 
         self.btn_reverse.setChecked(self.slicer_area.colormap_properties["reversed"])
         self.btn_contrast.setChecked(
             self.slicer_area.colormap_properties["highContrast"]
         )
         self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
+        self.btn_lock.setChecked(
+            not self.slicer_area.images[0].plotItem.slicer_data_items[0].auto_limits
+        )
 
         self.btn_reverse.blockSignals(False)
         self.btn_contrast.blockSignals(False)
         self.btn_zero.blockSignals(False)
+        self.btn_lock.blockSignals(False)
 
     def update_colormap(self):
         self.slicer_area.set_colormap(
@@ -1470,10 +1505,12 @@ class ColorControls(ItoolControlsBase):
 
     def connect_signals(self):
         super().connect_signals()
+        self.btn_lock.toggled.connect(self.slicer_area.lock_limits)
         self.slicer_area.sigViewOptionChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
+        self.btn_lock.toggled.disconnect(self.slicer_area.lock_limits)
         self.slicer_area.sigViewOptionChanged.disconnect(self.update)
 
 
