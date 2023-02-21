@@ -764,11 +764,16 @@ class ItoolCursorLine(pg.InfiniteLine):
         self.setValue(value)
 
     def mouseDragEvent(self, ev):
-        if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+        if (
+            self.qapp.queryKeyboardModifiers()
+            != QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
             if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
                 if ev.isStart():
                     self.moving = True
-                    self.cursorOffset = self.pos() - self.mapToParent(ev.buttonDownPos())
+                    self.cursorOffset = self.pos() - self.mapToParent(
+                        ev.buttonDownPos()
+                    )
                     self.startPosition = self.pos()
                 ev.accept()
 
@@ -776,11 +781,11 @@ class ItoolCursorLine(pg.InfiniteLine):
                     return
 
                 new_position = self.cursorOffset + self.mapToParent(ev.pos())
-                if self.angle%180 == 0:
+                if self.angle % 180 == 0:
                     self.temp_value = new_position.y()
-                elif self.angle%180 == 90:
+                elif self.angle % 180 == 90:
                     self.temp_value = new_position.x()
-                
+
                 self.sigDragged.emit(self)
                 if ev.isFinish():
                     self.moving = False
@@ -790,14 +795,20 @@ class ItoolCursorLine(pg.InfiniteLine):
             ev.ignore()
 
     def mouseClickEvent(self, ev):
-        if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+        if (
+            self.qapp.queryKeyboardModifiers()
+            != QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
             super().mouseClickEvent(ev)
         else:
             self.setMouseHover(False)
             ev.ignore()
 
     def hoverEvent(self, ev):
-        if self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+        if (
+            self.qapp.queryKeyboardModifiers()
+            != QtCore.Qt.KeyboardModifier.ControlModifier
+        ):
             super().hoverEvent(ev)
         else:
             self.setMouseHover(False)
@@ -953,7 +964,8 @@ class ItoolPlotItem(pg.PlotItem):
 
     def mouseDragEvent(self, evt):
         if (
-            self.slicer_area.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in self.slicer_area.qapp.queryKeyboardModifiers()
             and evt.button() == QtCore.Qt.MouseButton.LeftButton
         ):
             evt.accept()
@@ -962,7 +974,8 @@ class ItoolPlotItem(pg.PlotItem):
             evt.ignore()
 
     def handle_mouse(self, evt):
-        if self.slicer_area.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
+        modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
+        if QtCore.Qt.KeyboardModifier.ControlModifier not in modifiers:
             evt.ignore()
             return
         data_pos = self.vb.mapSceneToView(evt.scenePos())
@@ -971,9 +984,15 @@ class ItoolPlotItem(pg.PlotItem):
             if self.slicer_data_items[-1].is_vertical:
                 data_pos_coords = (data_pos.y(), data_pos.x())
 
-        for i, ax in enumerate(self.display_axis):
-            self.slicer_area.set_value(ax, data_pos_coords[i], update=False)
-        self.slicer_area.refresh(self.display_axis)
+        if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
+            for c in range(self.slicer_area.n_cursors):
+                for i, ax in enumerate(self.display_axis):
+                    self.data_slicer.set_value(c, ax, data_pos_coords[i], update=False)
+            self.slicer_area.refresh_all()
+        else:
+            for i, ax in enumerate(self.display_axis):
+                self.slicer_area.set_value(ax, data_pos_coords[i], update=False)
+            self.slicer_area.refresh(self.display_axis)
 
     def add_cursor(self, update=True):
         new_cursor = len(self.slicer_data_items)
@@ -1062,7 +1081,10 @@ class ItoolPlotItem(pg.PlotItem):
         cursor = self.index_of_line(line)
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
-        if self.slicer_area.qapp.queryKeyboardModifiers() != QtCore.Qt.AltModifier:
+        if (
+            self.slicer_area.qapp.queryKeyboardModifiers()
+            != QtCore.Qt.KeyboardModifier.AltModifier
+        ):
             self.data_slicer.set_value(cursor, axis, value, update=True)
         else:
             for i in range(self.data_slicer.n_cursors):
