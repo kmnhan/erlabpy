@@ -6,7 +6,7 @@ EQUAL = 0
 LARGER = 1
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def comp_x(p0, p1):
     if np.float32(p0[0]) < np.float32(p1[0]):
         return SMALLER
@@ -16,7 +16,7 @@ def comp_x(p0, p1):
         return LARGER
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def comp_y(p0, p1):
     if np.float32(p0[1]) < np.float32(p1[1]):
         return SMALLER

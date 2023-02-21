@@ -501,7 +501,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
     def param_dict(self):
         param_info = dict(value=self.value())
         if self.checkable():
-            param_info["vary"] = ~self.fixed()
+            param_info["vary"] = not self.fixed()
         if np.isfinite(self.minimum()):
             param_info["min"] = float(self.minimum())
         if np.isfinite(self.maximum()):

@@ -9,17 +9,17 @@ ON_BOUNDARY = 0
 ON_BOUNDED_SIDE = 1
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def get_argmin_all(arr):
     return np.nonzero(arr == arr.min())[0]
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def get_argmax_all(arr):
     return np.nonzero(arr == arr.max())[0]
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def left_vertex(points):
     """left_vertex returns the index of the leftmost point of a polygon.
 
@@ -39,7 +39,7 @@ def left_vertex(points):
     return ind[np.argmin(points[ind][:, 1])]
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def right_vertex(points):
     """right_vertex returns the index of the rightmost point of a polygon.
 
@@ -59,19 +59,19 @@ def right_vertex(points):
     return ind[np.argmax(points[ind][:, 1])]
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def polygon_orientation(points):
     ind = left_vertex(points)
-    return orientation(points[ind-1], points[ind], points[ind+1])
+    return orientation(points[ind - 1], points[ind], points[ind + 1])
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def orientation(p0, p1, p2):
     p10, p20 = p1 - p0, p2 - p0
     return np.sign(p10[0] * p20[1] - p20[0] * p10[1])
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def which_side_in_slab(point, low, high, points):
     point = np.asarray(point)
     low_x_comp_res = comparison.comp_x(point, points[low])
@@ -137,7 +137,7 @@ def bounded_side(points, point):
                     case comparison.EQUAL:
                         match comparison.comp_x(point, points[i + 1]):
                             case comparison.SMALLER:
-                                is_inside = ~is_inside
+                                is_inside = not is_inside
                             case comparison.EQUAL:
                                 return ON_BOUNDARY
                             case comparison.LARGER:
@@ -146,7 +146,7 @@ def bounded_side(points, point):
                     case comparison.LARGER:
                         match which_side_in_slab(point, i, i + 1, points):
                             case -1:
-                                is_inside = ~is_inside
+                                is_inside = not is_inside
                             case 0:
                                 return ON_BOUNDARY
 
@@ -155,7 +155,7 @@ def bounded_side(points, point):
                     case comparison.SMALLER:
                         match comparison.comp_x(point, points[i]):
                             case comparison.SMALLER:
-                                is_inside = ~is_inside
+                                is_inside = not is_inside
                             case comparison.EQUAL:
                                 return ON_BOUNDARY
                             case comparison.LARGER:
@@ -187,7 +187,7 @@ def bounded_side(points, point):
                     case comparison.SMALLER:
                         match which_side_in_slab(point, i + 1, i, points):
                             case -1:
-                                is_inside = ~is_inside
+                                is_inside = not is_inside
                             case 0:
                                 return ON_BOUNDARY
                     case comparison.EQUAL:
