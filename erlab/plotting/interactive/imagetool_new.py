@@ -7,6 +7,7 @@ import qtawesome as qta
 import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 
+import erlab.io
 from erlab.plotting.interactive.colors import (
     pg_colormap_names,
     pg_colormap_powernorm,
@@ -125,6 +126,13 @@ class ImageTool(QtWidgets.QMainWindow):
 
         ### FILE MENU
         self._file_menu = QtWidgets.QMenu("&File", self)
+        self._file_menu.addSeparator()
+
+        ### i/o
+        self._open_action = self._file_menu.addAction(
+            "&Open...", QtGui.QKeySequence("Ctrl+O")
+        )
+        self._open_action.triggered.connect(self._open_file)
         self._export_action = self._file_menu.addAction("&Export (WIP)")
         self._menu_bar.addMenu(self._file_menu)
 
@@ -265,6 +273,35 @@ class ImageTool(QtWidgets.QMainWindow):
     @property
     def data_slicer(self) -> SlicerArray:
         return self.slicer_area.data_slicer
+
+    def _open_file(self):
+        filters = (
+            "NetCDF Files (*.nc *.nc4 *.cdf)",
+            "HDF5 Files (*.h5)",
+            "SSRL Raw Data (*.h5)",
+        )
+
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setNameFilters(filters)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setViewMode(QtWidgets.QFileDialog.ViewMode.Detail)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            match filters.index(dialog.selectedNameFilter()):
+                case 0:
+                    dat = xr.load_dataarray(files[0])
+                case 1:
+                    dat = xr.load_dataarray(files[0], engine="h5netcdf")
+                case 2:
+                    dat = erlab.io.load_ssrl(files[0])
+            self.slicer_area.set_data(dat)
+
+            for w in self.group_widgets:
+                if isinstance(w, ItoolControlsBase):
+                    w.slicer_area = self.slicer_area
 
     def add_widget(self, idx: int, widget: QtWidgets.QWidget):
         self.group_layouts[idx].addWidget(widget)
@@ -514,6 +551,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if data.dims == ("eV", "kx", "ky"):
             data = data.transpose("kx", "ky", "eV").astype(np.float64, order="C")
 
+        if isinstance(self._data, xr.DataArray):
+            self._data.close()
+
         if not rad2deg:
             self._data = data
         else:
@@ -665,7 +705,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigViewOptionChanged.emit()
 
     def adjust_layout(
-        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=[1.2, 1.5, 3.0, 1.0]
+        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
     ):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
@@ -697,23 +737,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         invalid = []
+        r0, r1, r2, r3 = r
         if self.data.ndim == 2:
             invalid = [4, 5, 6]
-            r[1] = 0.2
+            r1 = r0 / 6
         elif self.data.ndim == 3:
             invalid = [6]
 
-        r01 = r[0] / r[1]
+        r01 = r0 / r1
         scale = 100
         d = self._splitters[0].handleWidth() / scale  # padding due to splitters
         sizes = [
-            [r[0] + r[1], r[2]],
-            [r[3] * r[2], r[3] * (r[0] + r[1])],
-            [(r[0] + r[1] - d) * r01, (r[0] + r[1] - d) / r01],
-            [(r[0] + r[1] - d) / 2, (r[0] + r[1] - d) / 2],
-            [r[3] * r[2], r[3] * (r[0] + r[1])],
-            [r[2]],
-            [(r[3] * (r[0] + r[1]) - d) / r01, (r[3] * (r[0] + r[1]) - d) * r01],
+            [r0 + r1, r2],
+            [r3 * r2, r3 * (r0 + r1)],
+            [(r0 + r1 - d) * r01, (r0 + r1 - d) / r01],
+            [(r0 + r1 - d) / 2, (r0 + r1 - d) / 2],
+            [r3 * r2, r3 * (r0 + r1)],
+            [r2],
+            [(r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01],
         ]
         for split, sz in zip(self._splitters, sizes):
             split.setSizes([int(s * scale) for s in sz])
@@ -733,9 +774,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             elif i in [2, 5]:
                 axes.plotItem.setYLink(self.get_axes(0).plotItem)
 
-        if self.data.ndim == 2:
-            # reserve space, only hide plotItem
-            self.get_axes(3).plotItem.setVisible(False)
+        # reserve space, only hide plotItem
+        self.get_axes(3).plotItem.setVisible(not self.data.ndim == 2)
 
     def toggle_snap(self, value: bool = None):
         if value is None:
@@ -1448,6 +1488,9 @@ class ItoolControlsBase(QtWidgets.QWidget):
                 ctrl.connect_signals()
 
     def disconnect_signals(self):
+        # Multiple inheritance disconnection is broken
+        # https://bugreports.qt.io/browse/PYSIDE-229
+        # Will not work correctly until it is fixed
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.disconnect_signals()
@@ -1473,7 +1516,11 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea):
-        self.disconnect_signals()
+        # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
+        try:
+            self.disconnect_signals()
+        except RuntimeError:
+            pass
         self._slicer_area = value
         clear_layout(self.layout)
         self.sub_controls = []
@@ -1982,10 +2029,10 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
         engine="h5netcdf",
-    )
+    ).sum("eV")
     itool_(data)
