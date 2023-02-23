@@ -300,7 +300,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
             plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
         )
 
-        self.scene().sigMouseClicked.connect(self.plotItem.handle_mouse)
+        self.scene().sigMouseClicked.connect(self.plotItem.mouseDragEvent)
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -765,8 +765,8 @@ class ItoolCursorLine(pg.InfiniteLine):
 
     def mouseDragEvent(self, ev):
         if (
-            self.qapp.queryKeyboardModifiers()
-            != QtCore.Qt.KeyboardModifier.ControlModifier
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
         ):
             if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
                 if ev.isStart():
@@ -792,12 +792,12 @@ class ItoolCursorLine(pg.InfiniteLine):
                     self.sigPositionChangeFinished.emit(self)
         else:
             self.setMouseHover(False)
-            ev.ignore()
+            self.parentItem().parentItem().parentItem().mouseDragEvent(ev)
 
     def mouseClickEvent(self, ev):
         if (
-            self.qapp.queryKeyboardModifiers()
-            != QtCore.Qt.KeyboardModifier.ControlModifier
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
         ):
             super().mouseClickEvent(ev)
         else:
@@ -806,8 +806,8 @@ class ItoolCursorLine(pg.InfiniteLine):
 
     def hoverEvent(self, ev):
         if (
-            self.qapp.queryKeyboardModifiers()
-            != QtCore.Qt.KeyboardModifier.ControlModifier
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
         ):
             super().hoverEvent(ev)
         else:
@@ -816,6 +816,7 @@ class ItoolCursorLine(pg.InfiniteLine):
 
 class ItoolCursorSpan(pg.LinearRegionItem):
     def __init__(self, *args, **kargs):
+        kargs.setdefault("movable", False)
         super().__init__(*args, **kargs)
 
     def setSpan(self, rgn):
@@ -834,6 +835,7 @@ class ItoolDisplayObject(object):
         if cursor is None:
             cursor = 0
         self._cursor_index = int(cursor)
+        self.qapp = QtCore.QCoreApplication.instance()
 
     @property
     def display_axis(self):
@@ -926,6 +928,23 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
 
+    def mouseDragEvent(self, ev):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in self.qapp.queryKeyboardModifiers()
+        ):
+            ev.ignore()
+        else:
+            super().mouseDragEvent(ev)
+
+    def mouseClickEvent(self, ev):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in self.qapp.queryKeyboardModifiers()
+        ):
+            ev.ignore()
+        else:
+            super().mouseClickEvent(ev)
 
 class ItoolPlotItem(pg.PlotItem):
     def __init__(
@@ -963,36 +982,31 @@ class ItoolPlotItem(pg.PlotItem):
         self.add_cursor(update=False)
 
     def mouseDragEvent(self, evt):
+        modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
         if (
-            QtCore.Qt.KeyboardModifier.ControlModifier
-            in self.slicer_area.qapp.queryKeyboardModifiers()
+            QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and evt.button() == QtCore.Qt.MouseButton.LeftButton
         ):
             evt.accept()
-            self.handle_mouse(evt)
-        else:
-            evt.ignore()
+            data_pos = self.vb.mapSceneToView(evt.scenePos())
+            data_pos_coords = (data_pos.x(), data_pos.y())
+            if not self.is_image:
+                if self.slicer_data_items[-1].is_vertical:
+                    data_pos_coords = (data_pos.y(), data_pos.x())
 
-    def handle_mouse(self, evt):
-        modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
-        if QtCore.Qt.KeyboardModifier.ControlModifier not in modifiers:
-            evt.ignore()
-            return
-        data_pos = self.vb.mapSceneToView(evt.scenePos())
-        data_pos_coords = (data_pos.x(), data_pos.y())
-        if not self.is_image:
-            if self.slicer_data_items[-1].is_vertical:
-                data_pos_coords = (data_pos.y(), data_pos.x())
-
-        if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
-            for c in range(self.slicer_area.n_cursors):
+            if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
+                for c in range(self.slicer_area.n_cursors):
+                    for i, ax in enumerate(self.display_axis):
+                        self.data_slicer.set_value(
+                            c, ax, data_pos_coords[i], update=False
+                        )
+                self.slicer_area.refresh_all()
+            else:
                 for i, ax in enumerate(self.display_axis):
-                    self.data_slicer.set_value(c, ax, data_pos_coords[i], update=False)
-            self.slicer_area.refresh_all()
+                    self.slicer_area.set_value(ax, data_pos_coords[i], update=False)
+                self.slicer_area.refresh(self.display_axis)
         else:
-            for i, ax in enumerate(self.display_axis):
-                self.slicer_area.set_value(ax, data_pos_coords[i], update=False)
-            self.slicer_area.refresh(self.display_axis)
+            evt.ignore()
 
     def add_cursor(self, update=True):
         new_cursor = len(self.slicer_data_items)
@@ -1359,9 +1373,12 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.spin)
         self.layout.addWidget(self.slider)
 
+    def value(self):
+        return self.spin.value()
+
     def setValue(self, value):
         self.spin.setValue(value)
-        self.slider.setValue(value)
+        self.slider.setValue(self.gamma_scale(value))
 
     def spin_changed(self, value):
         self.slider.blockSignals(True)
@@ -1962,7 +1979,8 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.open_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv.nc"
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
     )
     itool_(data)
