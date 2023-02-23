@@ -1,25 +1,11 @@
 import sys
-import weakref
-from itertools import compress
-from time import perf_counter
-
-import bottleneck as bn
-import darkdetect
-import numba
 import numpy as np
 import pyqtgraph as pg
-import qtawesome as qta
 
-# import numbagg
-import xarray as xr
-from arpes.analysis.derivative import curvature, d1_along_axis, minimum_gradient
-if __name__ != "__main__":
-    from ..interactive.utilities import parse_data, xImageItem, AnalysisWidgetBase
-else:
-    from erlab.plotting.interactive.utilities import parse_data, xImageItem, AnalysisWidgetBase
+from arpes.analysis.derivative import curvature, minimum_gradient
+from erlab.plotting.interactive.utilities import parse_data, AnalysisWidgetBase
 
-from matplotlib import colors
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
 # def move_mean_centered(a, window, min_count=None, axis=-1):
@@ -59,12 +45,7 @@ from scipy.ndimage import gaussian_filter, uniform_filter
 #         raise NotImplementedError
 
 
-
 # pg.setConfigOption('useNumba', True)
-# pg.setConfigOption('background', 'w')
-# pg.setConfigOption('foreground', 'k')
-
-# from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 __all__ = ["noisetool"]
 
@@ -154,13 +135,12 @@ def laplacian_O3(f, *varargs):
     else:
         return outvals
 
+
 class NoiseToolNew(AnalysisWidgetBase):
     def __init__(self, data, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.set_input(data)
-        
-        
-    
+
     # def get_smoothfunc(self, amount, num, method="boxcar"):
     #     if method == "boxcar":
     #         def func(data):
@@ -506,7 +486,7 @@ def noisetool(data, *args, **kwargs):
     # if darkdetect.isDark():
     # pass
     app = NoiseTool(data, *args, **kwargs)
-    qapp.setStyle('Fusion')
+    qapp.setStyle("Fusion")
     app.show()
     app.activateWindow()
     app.raise_()
@@ -535,9 +515,7 @@ if __name__ == "__main__":
     # eV_new = np.linspace(gkmk_cs1.eV[0], gkmk_cs1.eV[-1], 2000)
     # gkmk_cs1 = gkmk_cs1.interp(phi=phi_new, eV=eV_new)
     # gkmk_cs1 = gkmk_cs1.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
-    
-    
-    
+
     # noisetool(gkmk_cs1, bench=False)
     # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
     # noisetool(dat.sel(eV=0,method='nearest'), bench=False)

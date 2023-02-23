@@ -7,8 +7,8 @@ import xarray as xr
 from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
 
-from .annotations import label_subplot_properties, fancy_labels
-from .colors import axes_textcolor, nice_colorbar
+from erlab.plotting.annotations import label_subplot_properties, fancy_labels
+from erlab.plotting.colors import axes_textcolor, nice_colorbar
 
 __all__ = [
     "LabeledCursor",

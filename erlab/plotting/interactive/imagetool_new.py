@@ -7,9 +7,13 @@ import qtawesome as qta
 import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
-from .slicer import SlicerArray
-from .utilities import BetterSpinBox
+from erlab.plotting.interactive.colors import (
+    pg_colormap_names,
+    pg_colormap_powernorm,
+    pg_colormap_to_QPixmap,
+)
+from erlab.plotting.interactive.slicer import SlicerArray
+from erlab.plotting.interactive.utilities import BetterSpinBox
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -682,7 +686,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
               r[3] * r[2]
         """
 
-
         valid_axis = (
             (1, 0, 0, 1),
             (1, 1, 0, 0),
@@ -702,7 +705,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         r01 = r[0] / r[1]
         scale = 100
-        d = self._splitters[0].handleWidth() / scale # padding due to splitters
+        d = self._splitters[0].handleWidth() / scale  # padding due to splitters
         sizes = [
             [r[0] + r[1], r[2]],
             [r[3] * r[2], r[3] * (r[0] + r[1])],
@@ -714,7 +717,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ]
         for split, sz in zip(self._splitters, sizes):
             split.setSizes([int(s * scale) for s in sz])
-        
+
         for i, sel in enumerate(valid_axis):
             axes = self.get_axes(i)
             axes.setVisible(i not in invalid)

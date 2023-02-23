@@ -6,7 +6,7 @@ import pyqtgraph as pg
 import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .utilities import ParameterGroup, FittingParameterWidget
+from erlab.plotting.interactive.utilities import ParameterGroup, FittingParameterWidget
 
 # EDCmultiFitting Igor procedure - 2D wave EDC fit along momentum range
 

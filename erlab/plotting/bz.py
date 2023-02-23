@@ -3,7 +3,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import RegularPolygon
-from .colors import axes_textcolor
+from erlab.plotting.colors import axes_textcolor
 
 __all__ = ["plot_hex_bz"]
 

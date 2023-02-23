@@ -9,7 +9,7 @@ import xarray as xr
 from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
-from .colors import axes_textcolor
+from erlab.plotting.colors import axes_textcolor
 
 __all__ = [
     "plot_hv_text",

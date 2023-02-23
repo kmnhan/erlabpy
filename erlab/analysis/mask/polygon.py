@@ -1,8 +1,9 @@
 """Polygon mask generation code adapted from the CGAL C++ library."""
 
 import numba
-from . import comparison
 import numpy as np
+
+from erlab.analysis.mask import comparison
 
 ON_UNBOUNDED_SIDE = -1
 ON_BOUNDARY = 0

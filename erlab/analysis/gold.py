@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
-from ..plotting.general import figwh
 
-from .utilities import correct_with_edge
+from erlab.analysis.utilities import correct_with_edge
+from erlab.plotting.general import figwh
 
 __all__ = [
     "gold_edge",
