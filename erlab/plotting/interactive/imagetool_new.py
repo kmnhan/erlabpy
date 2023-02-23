@@ -661,7 +661,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigViewOptionChanged.emit()
 
     def adjust_layout(
-        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
+        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=[1.2, 1.5, 3.0, 1.0]
     ):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
@@ -682,23 +682,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
               r[3] * r[2]
         """
 
-        r01 = r[0] / r[1]
-        scale = 100
-
-        # padding due to splitters
-        d = self._splitters[0].handleWidth() / scale
-        sizes = [
-            [r[0] + r[1], r[2]],
-            [r[3] * r[2], r[3] * (r[0] + r[1])],
-            [(r[0] + r[1] - d) * r01, (r[0] + r[1] - d) / r01],
-            [(r[0] + r[1] - d) / 2, (r[0] + r[1] - d) / 2],
-            [r[3] * r[2], r[3] * (r[0] + r[1])],
-            [r[2]],
-            [(r[3] * (r[0] + r[1]) - d) / r01, (r[3] * (r[0] + r[1]) - d) * r01],
-        ]
-
-        for split, sz in zip(self._splitters, sizes):
-            split.setSizes([int(s * scale) for s in sz])
 
         valid_axis = (
             (1, 0, 0, 1),
@@ -713,9 +696,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         invalid = []
         if self.data.ndim == 2:
             invalid = [4, 5, 6]
+            r[1] = 0.2
         elif self.data.ndim == 3:
             invalid = [6]
 
+        r01 = r[0] / r[1]
+        scale = 100
+        d = self._splitters[0].handleWidth() / scale # padding due to splitters
+        sizes = [
+            [r[0] + r[1], r[2]],
+            [r[3] * r[2], r[3] * (r[0] + r[1])],
+            [(r[0] + r[1] - d) * r01, (r[0] + r[1] - d) / r01],
+            [(r[0] + r[1] - d) / 2, (r[0] + r[1] - d) / 2],
+            [r[3] * r[2], r[3] * (r[0] + r[1])],
+            [r[2]],
+            [(r[3] * (r[0] + r[1]) - d) / r01, (r[3] * (r[0] + r[1]) - d) * r01],
+        ]
+        for split, sz in zip(self._splitters, sizes):
+            split.setSizes([int(s * scale) for s in sz])
+        
         for i, sel in enumerate(valid_axis):
             axes = self.get_axes(i)
             axes.setVisible(i not in invalid)
@@ -945,6 +944,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
             ev.ignore()
         else:
             super().mouseClickEvent(ev)
+
 
 class ItoolPlotItem(pg.PlotItem):
     def __init__(
@@ -1977,10 +1977,12 @@ class ItoolBinningControls(ItoolControlsBase):
 
 
 if __name__ == "__main__":
-    data = xr.open_dataarray(
+    data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv.nc"
+        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
         # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        ,
+        engine="h5netcdf",
     )
     itool_(data)
