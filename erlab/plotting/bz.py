@@ -16,31 +16,36 @@ abbrv_kws = dict(
 )
 
 
-def get_bz_edge(avec):
+def get_bz_edge(basis, reciprocal=True):
     """
-    Calculates the edge of the first Brillouin zone (BZ) from the real
-    space lattice vectors.
+    Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
 
     Parameters
     ----------
-    avec : np.ndarray
-        2 x 2 or 3 x 3 numpy array with each row containing the real space lattice
+    basis : np.ndarray
+        2 x 2 or 3 x 3 numpy array with each row containing the lattice
         vectors.
+        
+    reciprocal : bool, default=True
+        If False, the `basis` are given in real space lattice vectors.
 
     Returns
     -------
     lines
         numpy array containing the endpoints of the lines that make up the BZ edge.
+        
     vertices
         numpy array containing the vertices of the BZ.
 
     """
-    if not (avec.shape == (2, 2) or avec.shape == (3, 3)):
-        raise ValueError("Shape of `avec` must be (2, 2) or (3, 3).")
-
-    ndim = avec.shape[-1]
+    if not (basis.shape == (2, 2) or basis.shape == (3, 3)):
+        raise ValueError("Shape of `basis` must be (2, 2) or (3, 3).")
+    if not reciprocal:
+        basis = 2 * np.pi * np.linalg.inv(basis).T
+    
+    ndim = basis.shape[-1]
     points = (
-        np.tensordot(avec, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=[0, 0])
+        np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=[0, 0])
         .reshape((ndim, 3**ndim))
         .T
     )
