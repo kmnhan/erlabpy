@@ -59,7 +59,7 @@ def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return arr.transpose(1, 2, 3, 0)
 
 
-class SlicerArray(QtCore.QObject):
+class ArraySlicer(QtCore.QObject):
 
     sigIndexChanged = QtCore.Signal(int, tuple)
     sigBinChanged = QtCore.Signal(int, tuple)
@@ -68,11 +68,17 @@ class SlicerArray(QtCore.QObject):
 
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
-        self._obj = xarray_obj
+        self._obj = self._validate_array(xarray_obj)
         self._bins = [[1] * self._obj.ndim]
         self._indices = [[s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]]
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
         self._snap_to_data = False
+    
+    @staticmethod
+    def _validate_array(data: xr.DataArray):
+        if data.dims == ("eV", "kx", "ky"):
+            data = data.transpose("kx", "ky", "eV").astype(np.float64, order="C")
+        return data
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True):
         self._bins.append(list(self.get_bins(like_cursor)))

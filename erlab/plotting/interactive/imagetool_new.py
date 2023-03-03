@@ -13,7 +13,7 @@ from erlab.plotting.interactive.colors import (
     pg_colormap_powernorm,
     pg_colormap_to_QPixmap,
 )
-from erlab.plotting.interactive.slicer import SlicerArray
+from erlab.plotting.interactive.slicer import ArraySlicer
 from erlab.plotting.interactive.utilities import BetterSpinBox
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -119,6 +119,29 @@ class ImageTool(QtWidgets.QMainWindow):
         self._createMenuBar()
         self._refreshMenu()
         self.slicer_area.sigViewOptionChanged.connect(self._refreshMenu)
+        self.slicer_area.sigDataChanged.connect(
+            lambda: self.setWindowTitle(self.slicer_area._data.name)
+        )
+        if self.slicer_area._data is not None:
+            self.setWindowTitle(self.slicer_area._data.name)
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+    def add_widget(self, idx: int, widget: QtWidgets.QWidget):
+        self.group_layouts[idx].addWidget(widget)
+        self.group_widgets[idx] = widget
+
+    def add_group(self, **kwargs):
+        group = QtWidgets.QGroupBox(**kwargs)
+        group_layout = QtWidgets.QVBoxLayout(group)
+        group_layout.setContentsMargins(3, 3, 3, 3)
+        group_layout.setSpacing(3)
+        self.controls_layout.addWidget(group)
+        self.groups.append(group)
+        self.group_widgets.append(None)
+        self.group_layouts.append(group_layout)
 
     def _createMenuBar(self):
         self._menu_bar = QtWidgets.QMenuBar(self)
@@ -126,6 +149,7 @@ class ImageTool(QtWidgets.QMainWindow):
 
         ### FILE MENU
         self._file_menu = QtWidgets.QMenu("&File", self)
+        self._menu_bar.addMenu(self._file_menu)
         self._file_menu.addSeparator()
 
         ### i/o
@@ -133,11 +157,14 @@ class ImageTool(QtWidgets.QMainWindow):
             "&Open...", QtGui.QKeySequence("Ctrl+O")
         )
         self._open_action.triggered.connect(self._open_file)
-        self._export_action = self._file_menu.addAction("&Export (WIP)")
-        self._menu_bar.addMenu(self._file_menu)
+        self._export_action = self._file_menu.addAction(
+            "&Save As...", QtGui.QKeySequence("Ctrl+Shift+S")
+        )
+        self._export_action.triggered.connect(self._export_file)
 
         ### VIEW MENU
         self._view_menu = QtWidgets.QMenu("&View", self)
+        self._menu_bar.addMenu(self._view_menu)
         self._view_menu.addSeparator()
 
         ### misc. view options
@@ -238,28 +265,19 @@ class ImageTool(QtWidgets.QMainWindow):
             # ca.setShortcutContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
 
         self._view_menu.addSeparator()
-        self._menu_bar.addMenu(self._view_menu)
 
         ### HELP MENU
         self._help_menu = QtWidgets.QMenu("&Help", self)
+        self._menu_bar.addMenu(self._help_menu)
         self._help_action = self._help_menu.addAction("DataSlicer Help (WIP)")
         self._help_menu.addSeparator()
         self._shortcut_action = self._help_menu.addAction(
             "Keyboard Shortcuts Reference (WIP)"
         )
 
-        self._menu_bar.addMenu(self._help_menu)
-
-    def _set_colormap_options(self):
-        self.slicer_area.set_colormap(
-            reversed=self._color_actions[0].isChecked(),
-            highContrast=self._color_actions[1].isChecked(),
-            zeroCentered=self._color_actions[2].isChecked(),
-        )
-
     def _refreshMenu(self):
         self._snap_action.blockSignals(True)
-        self._snap_action.setChecked(self.data_slicer.snap_to_data)
+        self._snap_action.setChecked(self.array_slicer.snap_to_data)
         self._snap_action.blockSignals(False)
 
         cmap_props = self.slicer_area.colormap_properties
@@ -270,22 +288,24 @@ class ImageTool(QtWidgets.QMainWindow):
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
 
-    @property
-    def data_slicer(self) -> SlicerArray:
-        return self.slicer_area.data_slicer
+    def _set_colormap_options(self):
+        self.slicer_area.set_colormap(
+            reversed=self._color_actions[0].isChecked(),
+            highContrast=self._color_actions[1].isChecked(),
+            zeroCentered=self._color_actions[2].isChecked(),
+        )
 
     def _open_file(self):
         filters = (
-            "NetCDF Files (*.nc *.nc4 *.cdf)",
-            "HDF5 Files (*.h5)",
+            "xarray HDF5 Files (*.h5)",
             "SSRL Raw Data (*.h5)",
+            "NetCDF Files (*.nc *.nc4 *.cdf)",
         )
 
         dialog = QtWidgets.QFileDialog(self)
-        dialog.setNameFilters(filters)
-        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setViewMode(QtWidgets.QFileDialog.ViewMode.Detail)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilters(filters)
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
@@ -303,19 +323,18 @@ class ImageTool(QtWidgets.QMainWindow):
                 if isinstance(w, ItoolControlsBase):
                     w.slicer_area = self.slicer_area
 
-    def add_widget(self, idx: int, widget: QtWidgets.QWidget):
-        self.group_layouts[idx].addWidget(widget)
-        self.group_widgets[idx] = widget
-
-    def add_group(self, **kwargs):
-        group = QtWidgets.QGroupBox(**kwargs)
-        group_layout = QtWidgets.QVBoxLayout(group)
-        group_layout.setContentsMargins(3, 3, 3, 3)
-        group_layout.setSpacing(3)
-        self.controls_layout.addWidget(group)
-        self.groups.append(group)
-        self.group_widgets.append(None)
-        self.group_layouts.append(group_layout)
+    def _export_file(self):
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter(
+            "xarray HDF5 Files (*.h5)",
+        )
+        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
+        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
 
 
 # class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
@@ -358,7 +377,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("r"),
     ]
 
-    def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, rad2deg=False):
+    def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, zeroCentered=False, rad2deg=False):
         super().__init__(parent)
 
         self.setLayout(QtWidgets.QStackedLayout())
@@ -422,7 +441,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             gamma=gamma,
             reversed=False,
             highContrast=False,
-            zeroCentered=False,
+            zeroCentered=zeroCentered,
         )
 
         self._data = None
@@ -441,15 +460,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def sigCursorCountChanged(self) -> type[QtCore.Signal]:
-        return self.data_slicer.sigCursorCountChanged
+        return self.array_slicer.sigCursorCountChanged
 
     @property
     def sigIndexChanged(self) -> type[QtCore.Signal]:
-        return self.data_slicer.sigIndexChanged
+        return self.array_slicer.sigIndexChanged
 
     @property
     def sigBinChanged(self) -> type[QtCore.Signal]:
-        return self.data_slicer.sigBinChanged
+        return self.array_slicer.sigBinChanged
 
     @property
     def colormap(self):
@@ -488,24 +507,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.images + self.profiles
 
     @property
-    def data_slicer(self) -> SlicerArray:
-        return self._data_slicer
+    def array_slicer(self) -> ArraySlicer:
+        return self._array_slicer
 
     @property
     def n_cursors(self) -> int:
-        return self.data_slicer.n_cursors
+        return self.array_slicer.n_cursors
 
     @property
     def current_indices(self) -> list[int]:
-        return self.data_slicer.get_indices(self.current_cursor)
+        return self.array_slicer.get_indices(self.current_cursor)
 
     @property
     def current_values(self) -> list[float]:
-        return self.data_slicer.get_values(self.current_cursor)
+        return self.array_slicer.get_values(self.current_cursor)
 
     @property
     def data(self) -> xr.DataArray:
-        return self.data_slicer._obj
+        return self.array_slicer._obj
 
     def get_axes(self, index) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
@@ -532,10 +551,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def center_all_cursors(self):
         for i in range(self.n_cursors):
-            self.data_slicer.center_cursor(i)
+            self.array_slicer.center_cursor(i)
 
     def center_cursor(self):
-        self.data_slicer.center_cursor(self.current_cursor)
+        self.array_slicer.center_cursor(self.current_cursor)
 
     def set_current_cursor(self, cursor: int, update=True):
         if cursor > self.n_cursors - 1:
@@ -546,13 +565,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCurrentCursorChanged.emit(cursor)
 
     def set_data(self, data: xr.DataArray | npt.ArrayLike, rad2deg=None):
-        if not isinstance(data, xr.DataArray):
-            data = xr.DataArray(np.asarray(data))
-        if data.dims == ("eV", "kx", "ky"):
-            data = data.transpose("kx", "ky", "eV").astype(np.float64, order="C")
-
         if isinstance(self._data, xr.DataArray):
             self._data.close()
+        else:
+            del self._data
+            
+        if not isinstance(data, xr.DataArray):
+            data = xr.DataArray(np.asarray(data))
 
         if not rad2deg:
             self._data = data
@@ -566,7 +585,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     if d in data.dims
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
-        self._data_slicer = SlicerArray(self._data)
+        self._array_slicer = ArraySlicer(self._data)
 
         self.connect_signals()
 
@@ -581,42 +600,42 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int):
-        self.data_slicer.swap_axes(ax1, ax2)
+        self.array_slicer.swap_axes(ax1, ax2)
         self.sigDataChanged.emit()
 
     @QtCore.Slot(int, int, bool)
     def set_index(self, axis: int, value: int, update: bool = True):
-        self.data_slicer.set_index(self.current_cursor, axis, value, update)
+        self.array_slicer.set_index(self.current_cursor, axis, value, update)
 
     @QtCore.Slot(int, int, bool)
     def step_index(self, axis: int, amount: int, update: bool = True):
-        self.data_slicer.step_index(self.current_cursor, axis, amount, update)
+        self.array_slicer.step_index(self.current_cursor, axis, amount, update)
 
     @QtCore.Slot(int, int, bool)
     def step_index_all(self, axis: int, amount: int, update: bool = True):
         for i in range(self.n_cursors):
-            self.data_slicer.step_index(i, axis, amount, update)
+            self.array_slicer.step_index(i, axis, amount, update)
 
     @QtCore.Slot(int, float, bool)
     def set_value(self, axis: int, value: float, update: bool = True):
-        self.data_slicer.set_value(self.current_cursor, axis, value, update)
+        self.array_slicer.set_value(self.current_cursor, axis, value, update)
 
     @QtCore.Slot(int, int, bool)
     def set_bin(self, axis: int, value: int, update: bool = True):
         new_bins = [None] * self.data.ndim
         new_bins[axis] = value
-        self.data_slicer.set_bins(self.current_cursor, new_bins, update)
+        self.array_slicer.set_bins(self.current_cursor, new_bins, update)
 
     @QtCore.Slot(int, int, bool)
     def set_bin_all(self, axis: int, value: int, update: bool = True):
         new_bins = [None] * self.data.ndim
         new_bins[axis] = value
         for c in range(self.n_cursors):
-            self.data_slicer.set_bins(c, new_bins, update)
+            self.array_slicer.set_bins(c, new_bins, update)
 
     @QtCore.Slot()
     def add_cursor(self):
-        self.data_slicer.add_cursor(self.current_cursor, update=False)
+        self.array_slicer.add_cursor(self.current_cursor, update=False)
         self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
@@ -627,7 +646,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int)
     def remove_cursor(self, index: int):
-        self.data_slicer.remove_cursor(index, update=False)
+        self.array_slicer.remove_cursor(index, update=False)
         self.cursor_colors.pop(index)
         if self.current_cursor == index:
             if index == 0:
@@ -779,10 +798,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def toggle_snap(self, value: bool = None):
         if value is None:
-            value = not self.data_slicer.snap_to_data
-        elif value == self.data_slicer.snap_to_data:
+            value = not self.array_slicer.snap_to_data
+        elif value == self.array_slicer.snap_to_data:
             return
-        self.data_slicer.snap_to_data = value
+        self.array_slicer.snap_to_data = value
         self.sigViewOptionChanged.emit()
 
     def changeEvent(self, evt):
@@ -884,8 +903,8 @@ class ItoolDisplayObject(object):
         return self.axes.display_axis
 
     @property
-    def data_slicer(self) -> SlicerArray:
-        return self.axes.data_slicer
+    def array_slicer(self) -> ArraySlicer:
+        return self.axes.array_slicer
 
     @property
     def cursor_index(self):
@@ -914,7 +933,7 @@ class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
 
     def refresh_data(self, **kwargs):
         ItoolDisplayObject.refresh_data(self)
-        coord, vals = self.data_slicer.slice_with_coord(
+        coord, vals = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
         if self.is_vertical:
@@ -938,7 +957,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
     @suppressnanwarning
     def refresh_data(self, **kwargs):
         ItoolDisplayObject.refresh_data(self)
-        rect, img = self.data_slicer.slice_with_coord(
+        rect, img = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
         kwargs["autoLevels"] = self.auto_limits
@@ -1040,7 +1059,7 @@ class ItoolPlotItem(pg.PlotItem):
             if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
                 for c in range(self.slicer_area.n_cursors):
                     for i, ax in enumerate(self.display_axis):
-                        self.data_slicer.set_value(
+                        self.array_slicer.set_value(
                             c, ax, data_pos_coords[i], update=False
                         )
                 self.slicer_area.refresh_all()
@@ -1142,10 +1161,10 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.qapp.queryKeyboardModifiers()
             != QtCore.Qt.KeyboardModifier.AltModifier
         ):
-            self.data_slicer.set_value(cursor, axis, value, update=True)
+            self.array_slicer.set_value(cursor, axis, value, update=True)
         else:
-            for i in range(self.data_slicer.n_cursors):
-                self.data_slicer.set_value(i, axis, value, update=True)
+            for i in range(self.array_slicer.n_cursors):
+                self.array_slicer.set_value(i, axis, value, update=True)
 
     def remove_cursor(self, index: int):
         self.removeItem(self.slicer_data_items.pop(index))
@@ -1160,10 +1179,10 @@ class ItoolPlotItem(pg.PlotItem):
     def refresh_cursor(self, cursor):
         for ax, line in self.cursor_lines[cursor].items():
             line.setBounds(
-                self.data_slicer.lims[ax], self.data_slicer.get_values(cursor)[ax]
+                self.array_slicer.lims[ax], self.array_slicer.get_values(cursor)[ax]
             )
             self.cursor_spans[cursor][ax].setSpan(
-                self.data_slicer.span_bounds(cursor, ax)
+                self.array_slicer.span_bounds(cursor, ax)
             )
 
     def refresh_items_data(self, cursor, axes=None):
@@ -1230,8 +1249,8 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area = value
 
     @property
-    def data_slicer(self) -> SlicerArray:
-        return self.slicer_area.data_slicer
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
 
 
 class IconButton(QtWidgets.QPushButton):
@@ -1461,8 +1480,8 @@ class ItoolControlsBase(QtWidgets.QWidget):
         return self.slicer_area.data
 
     @property
-    def data_slicer(self) -> SlicerArray:
-        return self.slicer_area.data_slicer
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
 
     @property
     def n_cursors(self):
@@ -1682,7 +1701,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
         self.spin_dat.setDecimals(
-            round(abs(np.log10(self.data_slicer.absnanmax())) + 1)
+            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
         )
 
         # add multicursor widgets
@@ -1806,8 +1825,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
             self.spin_idx[i].setValue(self.slicer_area.current_indices[i])
 
-            self.spin_val[i].setRange(*self.data_slicer.lims[i])
-            self.spin_val[i].setSingleStep(self.data_slicer.incs[i])
+            self.spin_val[i].setRange(*self.array_slicer.lims[i])
+            self.spin_val[i].setSingleStep(self.array_slicer.incs[i])
             self.spin_val[i].setValue(self.slicer_area.current_values[i])
 
             self.label_dim[i].blockSignals(False)
@@ -1828,14 +1847,14 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setValue(self.slicer_area.current_values[i])
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
-        # self.spin_dat.setValue(self.data_slicer.current_value(self.current_cursor))
+        # self.spin_dat.setValue(self.array_slicer.current_value(self.current_cursor))
         self.spin_dat.setValue(
-            self.data_slicer.current_value_binned(self.current_cursor)
+            self.array_slicer.current_value_binned(self.current_cursor)
         )
 
     def update_options(self):
         self.btn_snap.blockSignals(True)
-        self.btn_snap.setChecked(self.data_slicer.snap_to_data)
+        self.btn_snap.setChecked(self.array_slicer.snap_to_data)
         # self.btn_snap.refresh_icons()
         self.btn_snap.blockSignals(False)
 
@@ -2018,7 +2037,7 @@ class ItoolBinningControls(ItoolControlsBase):
             self.spins[i].blockSignals(True)
             self.label[i].setText(self.data.dims[i])
             self.spins[i].setRange(1, self.data.shape[i] - 1)
-            self.spins[i].setValue(self.data_slicer.get_bins(self.current_cursor)[i])
+            self.spins[i].setValue(self.array_slicer.get_bins(self.current_cursor)[i])
             self.spins[i].blockSignals(False)
 
     def reset(self):
@@ -2034,5 +2053,5 @@ if __name__ == "__main__":
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
         engine="h5netcdf",
-    ).sum("eV")
+    )
     itool_(data)
