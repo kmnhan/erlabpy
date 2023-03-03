@@ -14,7 +14,7 @@ from erlab.plotting.annotations import (
     plot_hv_text,
     sizebar,
 )
-from erlab.plotting.bz import plot_hex_bz
+from erlab.plotting.bz import get_bz_edge, plot_hex_bz
 from erlab.plotting.colors import (
     InversePowerNorm,
     TwoSlopePowerNorm,
