@@ -464,7 +464,10 @@ def plot_slices(
     cmap_name = kwargs.pop("cmap", None)
     cmap_norm = kwargs.pop("norm", None)
     if fig is None:
-        fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
+        if axes is None:
+            fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
+        else:
+            fig = axes.flat[0].get_figure()
     if nrow == 1:
         axes = axes[:, np.newaxis].reshape(1, -1)
     if ncol == 1:
