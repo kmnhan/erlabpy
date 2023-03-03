@@ -1,7 +1,7 @@
 import pkgutil
 from io import StringIO
 import matplotlib as mpl
-import matplotlib.colors as colors
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -10,6 +10,7 @@ from matplotlib.colors import LinearSegmentedColormap
 
 
 __all__ = [
+    "InversePowerNorm",
     "TwoSlopePowerNorm",
     "get_mappable",
     "proportional_colorbar",
@@ -22,7 +23,70 @@ __all__ = [
 ]
 
 
-class TwoSlopePowerNorm(colors.Normalize):
+class InversePowerNorm(mcolors.PowerNorm):
+    """
+    For image values :math:`X`, `matplotlib.colors.PowerNorm` calculates
+    :math:`X^\gamma`, whereas `InversePowerNorm` calculates :math:`1-X^{1/\gamma}` for
+    :math:`\gamma<1`. This provides higher contrast in values closer to `vmin.
+    """
+
+    def __init__(self, gamma, vmin=None, vmax=None, clip=False):
+        super().__init__(gamma, vmin, vmax, clip)
+
+    def __call__(self, value, clip=None):
+        if clip is None:
+            clip = self.clip
+
+        result, is_scalar = self.process_value(value)
+
+        self.autoscale_None(result)
+        gamma = self.gamma
+        vmin, vmax = self.vmin, self.vmax
+        if vmin > vmax:
+            raise ValueError("minvalue must be less than or equal to maxvalue")
+        elif vmin == vmax:
+            result.fill(0)
+        else:
+            if clip:
+                mask = np.ma.getmask(result)
+                result = np.ma.array(
+                    np.clip(result.filled(vmax), vmin, vmax), mask=mask
+                )
+
+            if gamma >= 1:
+                return super().__call__(value, clip)
+
+            resdat = result.data
+
+            resdat *= -1
+            resdat += vmax
+            resdat /= vmax - vmin  # ** (1.0 / gamma)
+            resdat[resdat < 0] = 0
+            np.power(resdat, 1.0 / gamma, resdat)
+            resdat *= -1
+            resdat += 1
+
+            result = np.ma.array(resdat, mask=result.mask, copy=False)
+        if is_scalar:
+            result = result[0]
+        return result
+
+    def inverse(self, value):
+        if not self.scaled():
+            raise ValueError("Not invertible until scaled")
+        gamma = self.gamma
+        vmin, vmax = self.vmin, self.vmax
+        if gamma >= 1:
+            return super().inverse(value)
+
+        if np.iterable(value):
+            val = np.ma.asarray(value)
+            return np.ma.power(1 - val, gamma) * (vmin - vmax) + vmax
+        else:
+            return pow(1 - value, gamma) * (vmin - vmax) + vmax
+
+
+class TwoSlopePowerNorm(mcolors.Normalize):
     def __init__(self, gamma, vcenter=None, vmin=None, vmax=None):
         """
         Normalize data with a set center.
@@ -44,7 +108,6 @@ class TwoSlopePowerNorm(colors.Normalize):
         vmax : float, optional
             The data value that defines ``1.0`` in the normalization.
             Defaults to the max value of the dataset.
-
         """
 
         super().__init__(vmin=vmin, vmax=vmax)
@@ -203,7 +266,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
         # Create example data and plot
         X, Y = np.mgrid[0:3:complex(0, 100), 0:2:complex(0, 100)]
         pcm = plt.pcolormesh(X, Y, (1 + np.sin(Y * 10.)) * X**2,
-                             norm=colors.PowerNorm(gamma=0.5),
+                             norm=mcolors.PowerNorm(gamma=0.5),
                              cmap='Blues_r', shading='auto')
 
         # Plot evenly spaced colorbar
@@ -235,7 +298,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     kwargs.setdefault("pad", 0.05)
     kwargs.setdefault("fraction", 0.05)
     kwargs.setdefault("aspect", 25)
-    
+
     cbar = plt.colorbar(
         mappable=mappable,
         cax=cax,
@@ -247,6 +310,7 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     if fontsize is not None:
         cbar.ax.tick_params(labelsize=fontsize)
     return cbar
+
 
 # TODO: fix colorbar size properly
 def nice_colorbar(
@@ -318,8 +382,8 @@ def nice_colorbar(
 
 def color_distance(c1, c2):
     # https://www.compuphase.com/cmetric.htm
-    R1, G1, B1 = (np.array(colors.to_rgb(c1)) * 255).astype(int)
-    R2, G2, B2 = (np.array(colors.to_rgb(c2)) * 255).astype(int)
+    R1, G1, B1 = (np.array(mcolors.to_rgb(c1)) * 255).astype(int)
+    R2, G2, B2 = (np.array(mcolors.to_rgb(c2)) * 255).astype(int)
     dR2 = (R2 - R1) ** 2
     dG2 = (G2 - G1) ** 2
     dB2 = (B2 - B1) ** 2
@@ -339,7 +403,7 @@ def close_to_white(c):
 def prominent_color(im):
     im_array = im.get_array()
     if im_array is None:
-        return colors.to_rgba("w")
+        return mcolors.to_rgba("w")
     hist, edges = np.histogram(np.nan_to_num(im_array), "auto")
     mx = hist.argmax()
     return im.to_rgba(edges[mx : mx + 2].mean())
@@ -347,6 +411,7 @@ def prominent_color(im):
 
 def image_is_light(im):
     return close_to_white(prominent_color(im))
+
 
 def axes_textcolor(ax, light="k", dark="w"):
     c = light
@@ -356,4 +421,3 @@ def axes_textcolor(ax, light="k", dark="w"):
             if not image_is_light(mappable):
                 c = dark
     return c
-    

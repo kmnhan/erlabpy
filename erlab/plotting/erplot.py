@@ -8,6 +8,7 @@ from erlab.plotting.annotations import (
     get_si_str,
     label_subplot_properties,
     label_subplots,
+    set_titles,
     mark_points,
     mark_points_y,
     plot_hv_text,
@@ -15,7 +16,9 @@ from erlab.plotting.annotations import (
 )
 from erlab.plotting.bz import plot_hex_bz
 from erlab.plotting.colors import (
+    InversePowerNorm,
     TwoSlopePowerNorm,
+    get_mappable,
     image_is_light,
     nice_colorbar,
     proportional_colorbar,
@@ -40,12 +43,15 @@ __all__ = [
     "get_si_str",
     "label_subplot_properties",
     "label_subplots",
+    "set_titles",
     "mark_points",
     "mark_points_y",
     "plot_hv_text",
     "sizebar",
     "plot_hex_bz",
+    "InversePowerNorm",
     "TwoSlopePowerNorm",
+    "get_mappable",
     "image_is_light",
     "nice_colorbar",
     "proportional_colorbar",

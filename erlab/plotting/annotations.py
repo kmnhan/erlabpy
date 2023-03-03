@@ -14,8 +14,9 @@ from erlab.plotting.colors import axes_textcolor
 __all__ = [
     "plot_hv_text",
     "label_subplots",
-    "annotate_cuts_erlab",
     "label_subplot_properties",
+    "set_titles",
+    "annotate_cuts_erlab",
     "fancy_labels",
     "mark_points",
     "mark_points_y",
@@ -314,6 +315,13 @@ def label_subplots(
         axlist[i].add_artist(at)
 
 
+def set_titles(axes, labels, order="C", **kwargs):
+    axlist = np.array(axes, dtype=object).flatten(order=order)
+    labels = np.asarray(labels)
+    for ax, l in zip(axlist.flat, labels.flat):
+        ax.set_title(l, **kwargs)
+
+
 def name_for_dim(dim_name, escaped=True):
     name = {
         "temperature": ("Temperature", "Temperature"),
@@ -505,7 +513,7 @@ def sizebar(
 
     Parameters
     ----------
-    
+
     ax : `matplotlib.axes.Axes`
         The `matplotlib.axes.Axes` instance to place the size bar in.
     value : float
@@ -670,7 +678,6 @@ def copy_mathtext(
     rcparams=dict(),
     **mathtext_rc,
 ):
-
     if fontproperties is None:
         fontproperties = mpl.font_manager.FontProperties(size=fontsize)
     else:
