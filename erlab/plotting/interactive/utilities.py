@@ -1,9 +1,10 @@
 """Various helper functions and extensions to pyqtgraph."""
 
-import numpy as np
 import sys
+
+import numpy as np
+import pyclip
 import pyqtgraph as pg
-import varname
 import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
@@ -406,7 +407,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
 
 class FittingParameterWidget(QtWidgets.QWidget):
-
     sigParamChanged = QtCore.Signal(dict)
 
     def __init__(
@@ -414,7 +414,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         name: str,
         spin_kw=dict(),
         checkable: bool = True,
-        fixed:bool=False,
+        fixed: bool = False,
         label: str | None = None,
         show_label: bool = True,
     ):
@@ -451,7 +451,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
 
         self.setCheckable(checkable)
         self.setFixed(fixed)
-        
+
     def setValue(self, value):
         self.spin_value.setValue(value)
 
@@ -511,7 +511,6 @@ class FittingParameterWidget(QtWidgets.QWidget):
 
 
 class xImageItem(pg.ImageItem):
-
     sigToleranceChanged = QtCore.Signal(float, float)
 
     def __init__(self, *args, **kargs):
@@ -559,7 +558,6 @@ class xImageItem(pg.ImageItem):
 
 
 class ParameterGroup(QtWidgets.QGroupBox):
-
     VALID_QWTYPE = {
         "spin": QtWidgets.QSpinBox,
         "dblspin": QtWidgets.QDoubleSpinBox,
@@ -859,7 +857,6 @@ class ROIControls(ParameterGroup):
         self.roi.setSize((x1 - x0, y1 - y0), update=update)
 
     def draw_mode(self, toggle):
-
         vb = self.roi.parentItem().getViewBox()
 
         if not toggle:
@@ -1015,6 +1012,12 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         group = ParameterGroup(*args, **kwargs)
         self.controls.addWidget(group)
         return group
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        cb = QtWidgets.QApplication.instance().clipboard()
+        if cb.text(cb.Mode.Clipboard) is not "":
+            pyclip.copy(cb.text(cb.Mode.Clipboard))
+        return super().closeEvent(event)
 
 
 class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
