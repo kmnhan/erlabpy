@@ -43,10 +43,9 @@ def _index_of_value_nonuniform(arr, val) -> np.intp:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
-@numba.njit(fastmath=True, cache=True)
 def _is_uniform(arr):
     dif = np.diff(arr)
-    return np.all(dif == dif[0])
+    return np.allclose(dif, dif[0])
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -60,7 +59,6 @@ def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
 
 
 class ArraySlicer(QtCore.QObject):
-
     sigIndexChanged = QtCore.Signal(int, tuple)
     sigBinChanged = QtCore.Signal(int, tuple)
     sigCursorCountChanged = QtCore.Signal(int)
@@ -73,12 +71,24 @@ class ArraySlicer(QtCore.QObject):
         self._indices = [[s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]]
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
         self._snap_to_data = False
-    
+
     @staticmethod
     def _validate_array(data: xr.DataArray):
-        if data.dims == ("eV", "kx", "ky"):
-            data = data.transpose("kx", "ky", "eV").astype(np.float64, order="C")
-        return data
+        new_dims = ("kx", "ky")
+        if all(d in data.dims for d in new_dims):
+        # if data has kx and ky axis, transpose 
+            if "eV" in data.dims:
+                new_dims += ("eV",)
+            new_dims += tuple(d for d in data.dims if d not in new_dims)
+            data = data.transpose(*new_dims)
+
+        nonuniform_dims = [d for d in data.dims if not _is_uniform(data[d].values)]
+        for d in nonuniform_dims:
+            data = data.assign_coords(
+                {d + "_ind": (d, list(np.arange(len(data[d]), dtype=np.float64)))}
+            ).swap_dims({d: d + "_ind"})
+        
+        return data.astype(np.float64, order="C")
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True):
         self._bins.append(list(self.get_bins(like_cursor)))
