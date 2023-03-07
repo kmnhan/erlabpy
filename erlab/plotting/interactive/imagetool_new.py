@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import sys
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
+import pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu
 import qtawesome as qta
 import xarray as xr
+from pyqtgraph.GraphicsScene import mouseEvents
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import erlab.io
@@ -20,13 +25,13 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
-def _sync_splitters(s0, s1, reverse=False):
+def _link_splitters(
+    s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter, reverse: bool = False
+):
     s0.blockSignals(True)
     s1.blockSignals(True)
-
     sizes = s0.sizes()
     total = sum(sizes)
-
     if reverse:
         sizes = list(reversed(sizes))
         sizes[0] = s1.sizes()[-1]
@@ -37,19 +42,23 @@ def _sync_splitters(s0, s1, reverse=False):
     try:
         factor = (total - sizes[0]) / sum(sizes[1:])
     except ZeroDivisionError:
-        factor = 0
+        factor = 0.0
     for k in range(1, len(sizes)):
-        sizes[k] *= factor
+        sizes[k] = round(sizes[k] * factor)
     if reverse:
         sizes = list(reversed(sizes))
     s0.setSizes(sizes)
-
     s0.blockSignals(False)
     s1.blockSignals(False)
 
 
+def _sync_splitters(s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter):
+    s0.splitterMoved.connect(lambda: _link_splitters(s1, s0))
+    s1.splitterMoved.connect(lambda: _link_splitters(s0, s1))
+
+
 def itool_(data, execute=None, *args, **kwargs):
-    qapp = QtWidgets.QApplication.instance()
+    qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
@@ -87,7 +96,7 @@ class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data=None, **kwargs):
         super().__init__()
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
-        self.setAttribute(QtCore.Qt.WA_AcceptTouchEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setCentralWidget(self.slicer_area)
 
         dock = QtWidgets.QDockWidget("Controls", self)
@@ -97,41 +106,41 @@ class ImageTool(QtWidgets.QMainWindow):
         self.controls_layout.setContentsMargins(3, 3, 3, 3)
         self.controls_layout.setSpacing(3)
 
-        self.groups = []
-        self.group_layouts = []
-        self.group_widgets = []
+        self.groups: list[QtWidgets.QGroupBox] = []
+        self.group_layouts: list[QtWidgets.QVBoxLayout] = []
+        self.group_widgets: list[list[QtWidgets.QWidget]] = []
 
         self.add_group()  # title="Info")
         self.add_group()  # title="Color")
         self.add_group()  # title="Bin")
 
         self.add_widget(0, ItoolCrosshairControls(self.slicer_area))
-
         self.add_widget(1, ItoolColormapControls(self.slicer_area))
-
         self.add_widget(2, ItoolBinningControls(self.slicer_area))
 
         dock.setWidget(self.controls)
         dock.setTitleBarWidget(QtWidgets.QWidget())
-        self.addDockWidget(QtCore.Qt.TopDockWidgetArea, dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, dock)
         self.resize(720, 720)
 
         self._createMenuBar()
         self._refreshMenu()
         self.slicer_area.sigViewOptionChanged.connect(self._refreshMenu)
-        self.slicer_area.sigDataChanged.connect(
-            lambda: self.setWindowTitle(self.slicer_area._data.name)
-        )
-        if self.slicer_area._data is not None:
-            self.setWindowTitle(self.slicer_area._data.name)
+        self.slicer_area.sigDataChanged.connect(self.update_title)
+        self.update_title()
 
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
+    def update_title(self):
+        if self.slicer_area._data is not None:
+            if self.slicer_area._data.name:
+                self.setWindowTitle(str(self.slicer_area._data.name))
+
     def add_widget(self, idx: int, widget: QtWidgets.QWidget):
         self.group_layouts[idx].addWidget(widget)
-        self.group_widgets[idx] = widget
+        self.group_widgets[idx].append(widget)
 
     def add_group(self, **kwargs):
         group = QtWidgets.QGroupBox(**kwargs)
@@ -140,7 +149,7 @@ class ImageTool(QtWidgets.QMainWindow):
         group_layout.setSpacing(3)
         self.controls_layout.addWidget(group)
         self.groups.append(group)
-        self.group_widgets.append(None)
+        self.group_widgets.append([])
         self.group_layouts.append(group_layout)
 
     def _createMenuBar(self):
@@ -219,7 +228,7 @@ class ImageTool(QtWidgets.QMainWindow):
         for action, i, d in zip(
             self._cursor_step_actions, (1, 1, 0, 0), (1, -1, 1, -1)
         ):
-            ax = self.slicer_area.main_image.plotItem.display_axis[i]
+            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
             action.triggered.connect(
                 lambda *_, ax=ax, d=d: self.slicer_area.step_index(ax, d)
             )
@@ -247,7 +256,7 @@ class ImageTool(QtWidgets.QMainWindow):
         for action, i, d in zip(
             self._cursor_step_all_actions, (1, 1, 0, 0), (1, -1, 1, -1)
         ):
-            ax = self.slicer_area.main_image.plotItem.display_axis[i]
+            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
             action.triggered.connect(
                 lambda *_, ax=ax, d=d: self.slicer_area.step_index_all(ax, d)
             )
@@ -317,13 +326,18 @@ class ImageTool(QtWidgets.QMainWindow):
                     dat = xr.load_dataarray(files[0], engine="h5netcdf")
                 case 2:
                     dat = erlab.io.load_ssrl(files[0])
+                case _:
+                    raise ValueError
             self.slicer_area.set_data(dat)
 
-            for w in self.group_widgets:
-                if isinstance(w, ItoolControlsBase):
-                    w.slicer_area = self.slicer_area
+            for group in self.group_widgets:
+                for w in group:
+                    if isinstance(w, ItoolControlsBase):
+                        w.slicer_area = self.slicer_area
 
     def _export_file(self):
+        if not self.slicer_area._data:
+            raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
@@ -343,24 +357,27 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     # Will need to run some benchmarks in the future
     def __init__(
         self,
-        slicer_area,
-        display_axis: tuple,
+        slicer_area: ImageSlicerArea,
+        display_axis: tuple[int, ...],
         image: bool = False,
-        parent=None,
         **item_kw,
     ):
-        # super().__init__(parent=parent)
+        # super().__init__()
         # self.ci.layout.setSpacing(0)
         # self.ci.layout.setContentsMargins(0, 0, 0, 0)
         # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
         # self.addItem(self.plotItem)
 
         super().__init__(
-            parent=parent,
             plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
         )
+        self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
 
-        self.scene().sigMouseClicked.connect(self.plotItem.mouseDragEvent)
+    def getPlotItem(self) -> ItoolPlotItem:
+        return self.plotItem
+
+    def getPlotItemViewBox(self) -> pg.ViewBox:
+        return self.getPlotItem().vb
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -368,7 +385,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigCurrentCursorChanged = QtCore.Signal(int)
     sigViewOptionChanged = QtCore.Signal()
 
-    COLORS = [
+    COLORS: list[QtGui.QColor] = [
         pg.mkColor(0.8),
         pg.mkColor("y"),
         pg.mkColor("m"),
@@ -377,20 +394,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("r"),
     ]
 
-    def __init__(self, parent=None, data=None, cmap="magma", gamma=0.5, zeroCentered=False, rad2deg=False):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        data: xr.DataArray | npt.ArrayLike | None = None,
+        cmap: str | pg.ColorMap = "magma",
+        gamma: float = 0.5,
+        zeroCentered: bool = False,
+        rad2deg: bool = False,
+    ):
         super().__init__(parent)
 
         self.setLayout(QtWidgets.QStackedLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
 
         self._splitters = (
-            QtWidgets.QSplitter(QtCore.Qt.Vertical),
-            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
-            QtWidgets.QSplitter(QtCore.Qt.Vertical),
-            QtWidgets.QSplitter(QtCore.Qt.Vertical),
-            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
-            QtWidgets.QSplitter(QtCore.Qt.Vertical),
-            QtWidgets.QSplitter(QtCore.Qt.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
         )
         for s in self._splitters:
             s.setHandleWidth(4)
@@ -400,24 +425,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # s.setPalette(palette)
             # print(s.handleWidth())
             # pass
-
         self.layout().addWidget(self._splitters[0])
-        self._splitters[0].addWidget(self._splitters[1])
-        self._splitters[1].addWidget(self._splitters[2])
-        self._splitters[1].addWidget(self._splitters[3])
-        self._splitters[0].addWidget(self._splitters[4])
-        self._splitters[4].addWidget(self._splitters[5])
-        self._splitters[4].addWidget(self._splitters[6])
-        self._splitters[1].splitterMoved.connect(
-            lambda: _sync_splitters(self._splitters[4], self._splitters[1])
-        )
-        self._splitters[4].splitterMoved.connect(
-            lambda: _sync_splitters(self._splitters[1], self._splitters[4])
-        )
+        for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):
+            self._splitters[i].addWidget(self._splitters[j])
+        _sync_splitters(self._splitters[1], self._splitters[4])
 
-        self.cursor_colors = [self.COLORS[0]]
+        self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
 
-        self._plots = (
+        self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
             ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True),
@@ -426,17 +441,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1)),
             ItoolGraphicsLayoutWidget(self, display_axis=(3,)),
         )
-        for i in [1, 4]:
+        for i in (1, 4):
             self._splitters[2].addWidget(self._plots[i])
-        for i in [6, 3]:
+        for i in (6, 3):
             self._splitters[3].addWidget(self._plots[i])
         self._splitters[5].addWidget(self._plots[0])
-        for i in [5, 2]:
+        for i in (5, 2):
             self._splitters[6].addWidget(self._plots[i])
 
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
 
-        self.colormap_properties = dict(
+        self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = dict(
             cmap=cmap,
             gamma=gamma,
             reversed=False,
@@ -444,7 +459,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             zeroCentered=zeroCentered,
         )
 
-        self._data = None
+        self._data: xr.DataArray | None = None
         self.current_cursor = 0
 
         # self.rad2deg = rad2deg
@@ -459,19 +474,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
 
     @property
-    def sigCursorCountChanged(self) -> type[QtCore.Signal]:
+    def sigCursorCountChanged(self) -> QtCore.SignalInstance:
         return self.array_slicer.sigCursorCountChanged
 
     @property
-    def sigIndexChanged(self) -> type[QtCore.Signal]:
+    def sigIndexChanged(self) -> QtCore.SignalInstance:
         return self.array_slicer.sigIndexChanged
 
     @property
-    def sigBinChanged(self) -> type[QtCore.Signal]:
+    def sigBinChanged(self) -> QtCore.SignalInstance:
         return self.array_slicer.sigBinChanged
 
     @property
-    def colormap(self):
+    def colormap(self) -> str | pg.ColorMap:
         return self.colormap_properties["cmap"]
 
     @property
@@ -480,7 +495,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.get_axes(0)
 
     @property
-    def slices(self) -> tuple:
+    def slices(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         if self.data.ndim == 2:
             return tuple()
         else:
@@ -488,21 +503,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(self.get_axes(ax) for ax in slice_axes)
 
     @property
-    def images(self) -> tuple:
+    def images(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         return (self.main_image,) + self.slices
 
     @property
-    def profiles(self) -> tuple:
+    def profiles(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         if self.data.ndim == 2:
             profile_axes = [1, 2]
         elif self.data.ndim == 3:
             profile_axes = [1, 2, 3]
-        elif self.data.ndim == 4:
+        else:
             profile_axes = [1, 2, 3, 6]
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
-    def axes(self) -> tuple:
+    def axes(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         """Currently valid subset of self._plots"""
         return self.images + self.profiles
 
@@ -517,7 +532,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def current_indices(self) -> list[int]:
         return self.array_slicer.get_indices(self.current_cursor)
-    
+
     @property
     def current_values(self) -> list[float]:
         return self.array_slicer.get_values(self.current_cursor, uniform=False)
@@ -530,13 +545,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
 
-    def get_current_index(self, axis:int):
+    def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
 
-    def get_current_value(self, axis:int, uniform:bool=False):
+    def get_current_value(self, axis: int, uniform: bool = False) -> float:
         return self.array_slicer.get_value(self.current_cursor, axis, uniform=uniform)
 
-    def get_axes(self, index) -> ItoolGraphicsLayoutWidget:
+    def get_axes(self, index: int) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
 
     @QtCore.Slot()
@@ -545,19 +560,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_plots(c)
 
     @QtCore.Slot(tuple)
-    def refresh(self, axes: tuple = None):
+    def refresh(self, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(self.current_cursor, axes)
 
     def refresh_plots(self, *args, **kwargs):
         for ax in self.axes:
-            ax.plotItem.refresh_items_data(*args, **kwargs)
+            ax.getPlotItem().refresh_items_data(*args, **kwargs)
             # TODO: autorange smarter
-            ax.plotItem.vb.updateAutoRange()
+            ax.getPlotItemViewBox().updateAutoRange()
 
     def view_all(self):
         for ax in self.axes:
-            ax.plotItem.vb.enableAutoRange()
-            ax.plotItem.vb.updateAutoRange()
+            ax.getPlotItemViewBox().enableAutoRange()
+            ax.getPlotItemViewBox().updateAutoRange()
 
     def center_all_cursors(self):
         for i in range(self.n_cursors):
@@ -579,7 +594,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data.close()
         else:
             del self._data
-            
+
         if not isinstance(data, xr.DataArray):
             data = xr.DataArray(np.asarray(data))
 
@@ -627,18 +642,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.array_slicer.step_index(i, axis, amount, update)
 
     @QtCore.Slot(int, float, bool, bool)
-    def set_value(self, axis: int, value: float, update: bool = True, uniform: bool = False):
+    def set_value(
+        self, axis: int, value: float, update: bool = True, uniform: bool = False
+    ):
         self.array_slicer.set_value(self.current_cursor, axis, value, update, uniform)
 
     @QtCore.Slot(int, int, bool)
     def set_bin(self, axis: int, value: int, update: bool = True):
-        new_bins = [None] * self.data.ndim
+        new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
         self.array_slicer.set_bins(self.current_cursor, new_bins, update)
 
     @QtCore.Slot(int, int, bool)
     def set_bin_all(self, axis: int, value: int, update: bool = True):
-        new_bins = [None] * self.data.ndim
+        new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
@@ -672,14 +689,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def remove_current_cursor(self):
         self.remove_cursor(self.current_cursor)
 
-    def gen_cursor_color(self, index):
+    def gen_cursor_color(self, index: int) -> QtGui.QColor:
         clr = self.COLORS[index % len(self.COLORS)]
         while clr in self.cursor_colors:
             clr = self.COLORS[index % len(self.COLORS)]
             index += 1
         return clr
 
-    def gen_cursor_colors(self, index: int):
+    def gen_cursor_colors(
+        self, index: int
+    ) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:
         clr = self.cursor_colors[index]
 
         clr_cursor = pg.mkColor(clr)
@@ -696,11 +715,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def set_colormap(
         self,
-        cmap=None,
-        gamma: float = None,
-        reversed: bool = None,
-        highContrast: bool = None,
-        zeroCentered: bool = None,
+        cmap: str | pg.ColorMap | None = None,
+        gamma: float | None = None,
+        reversed: bool | None = None,
+        highContrast: bool | None = None,
+        zeroCentered: bool | None = None,
         update: bool = True,
     ):
         if cmap is not None:
@@ -722,19 +741,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
             zeroCentered=self.colormap_properties["zeroCentered"],
         )
         for ax in self.images:
-            for im in ax.plotItem.slicer_data_items:
+            for im in ax.getPlotItem().slicer_data_items:
                 im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
-    def lock_limits(self, value):
-        # print(value)
+    def lock_limits(self, value: bool):
         for ax in self.images:
-            for im in ax.plotItem.slicer_data_items:
+            for im in ax.getPlotItem().slicer_data_items:
                 im.lock_limits(value)
         self.sigViewOptionChanged.emit()
 
     def adjust_layout(
-        self, horiz_pad=45, vert_pad=30, font_size=11.0, r=(1.2, 1.5, 3.0, 1.0)
+        self,
+        horiz_pad: float = 45.0,
+        vert_pad: float = 30.0,
+        font_size: float = 11.0,
+        r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
     ):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
@@ -765,7 +787,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             (0, 1, 1, 0),
         )
 
-        invalid = []
+        invalid: list[int] = []
         r0, r1, r2, r3 = r
         if self.data.ndim == 2:
             invalid = [4, 5, 6]
@@ -776,37 +798,37 @@ class ImageSlicerArea(QtWidgets.QWidget):
         r01 = r0 / r1
         scale = 100
         d = self._splitters[0].handleWidth() / scale  # padding due to splitters
-        sizes = [
-            [r0 + r1, r2],
-            [r3 * r2, r3 * (r0 + r1)],
-            [(r0 + r1 - d) * r01, (r0 + r1 - d) / r01],
-            [(r0 + r1 - d) / 2, (r0 + r1 - d) / 2],
-            [r3 * r2, r3 * (r0 + r1)],
-            [r2],
-            [(r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01],
-        ]
+        sizes: tuple[tuple[float, ...], ...] = (
+            (r0 + r1, r2),
+            (r3 * r2, r3 * (r0 + r1)),
+            ((r0 + r1 - d) * r01, (r0 + r1 - d) / r01),
+            ((r0 + r1 - d) / 2, (r0 + r1 - d) / 2),
+            (r3 * r2, r3 * (r0 + r1)),
+            (r2,),
+            ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
+        )
         for split, sz in zip(self._splitters, sizes):
-            split.setSizes([int(s * scale) for s in sz])
+            split.setSizes(tuple(map(lambda s: round(s * scale), sz)))
 
         for i, sel in enumerate(valid_axis):
             axes = self.get_axes(i)
             axes.setVisible(i not in invalid)
-            axes.plotItem.setDefaultPadding(0)
-            for axis in ["left", "bottom", "right", "top"]:
-                axes.plotItem.getAxis(axis).setTickFont(font)
-                axes.plotItem.getAxis(axis).setStyle(
+            axes.getPlotItem().setDefaultPadding(0)
+            for axis in ("left", "bottom", "right", "top"):
+                axes.getPlotItem().getAxis(axis).setTickFont(font)
+                axes.getPlotItem().getAxis(axis).setStyle(
                     autoExpandTextSpace=True, autoReduceTextSpace=True
                 )
-            axes.plotItem.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
-            if i in [1, 4]:
-                axes.plotItem.setXLink(self.get_axes(0).plotItem)
-            elif i in [2, 5]:
-                axes.plotItem.setYLink(self.get_axes(0).plotItem)
+            axes.getPlotItem().showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
+            if i in (1, 4):
+                axes.getPlotItem().setXLink(self.get_axes(0).getPlotItem())
+            elif i in (2, 5):
+                axes.getPlotItem().setYLink(self.get_axes(0).getPlotItem())
 
         # reserve space, only hide plotItem
-        self.get_axes(3).plotItem.setVisible(not self.data.ndim == 2)
+        self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
 
-    def toggle_snap(self, value: bool = None):
+    def toggle_snap(self, value: bool | None = None):
         if value is None:
             value = not self.array_slicer.snap_to_data
         elif value == self.array_slicer.snap_to_data:
@@ -814,8 +836,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.array_slicer.snap_to_data = value
         self.sigViewOptionChanged.emit()
 
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
+    def changeEvent(self, evt: QtCore.QEvent):
+        if evt.type() == QtCore.QEvent.Type.PaletteChange:
             self.qapp.setStyle(self.qapp.style().name())
         super().changeEvent(evt)
 
@@ -823,9 +845,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 class ItoolCursorLine(pg.InfiniteLine):
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
 
-    def setBounds(self, bounds, value: float = None):
+    def setBounds(self, bounds: Sequence[float], value: float | None = None):
         if bounds[0] > bounds[1]:
             bounds = list(bounds)
             bounds.reverse()
@@ -834,7 +856,10 @@ class ItoolCursorLine(pg.InfiniteLine):
             value = self.value()
         self.setValue(value)
 
-    def mouseDragEvent(self, ev):
+    def value(self) -> float:
+        return float(super().value())
+
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
             not in self.qapp.queryKeyboardModifiers()
@@ -865,7 +890,7 @@ class ItoolCursorLine(pg.InfiniteLine):
             self.setMouseHover(False)
             self.parentItem().parentItem().parentItem().mouseDragEvent(ev)
 
-    def mouseClickEvent(self, ev):
+    def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
             not in self.qapp.queryKeyboardModifiers()
@@ -900,13 +925,13 @@ class ItoolCursorSpan(pg.LinearRegionItem):
 
 
 class ItoolDisplayObject(object):
-    def __init__(self, axes, cursor: int = None):
+    def __init__(self, axes, cursor: int | None = None):
         super().__init__()
         self.axes = axes
         if cursor is None:
             cursor = 0
         self._cursor_index = int(cursor)
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp: QtGui.QGuiApplication = QtGui.QGuiApplication.instance()
 
     @property
     def display_axis(self):
@@ -932,7 +957,7 @@ class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
     def __init__(
         self,
         axes,
-        cursor: int = None,
+        cursor: int | None = None,
         is_vertical: bool = False,
         *args,
         **kargs,
@@ -956,7 +981,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
     def __init__(
         self,
         axes,
-        cursor: int = None,
+        cursor: int | None = None,
         *args,
         **kargs,
     ):
@@ -973,7 +998,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         kwargs["autoLevels"] = self.auto_limits
         self.setImage(image=img, rect=rect, **kwargs)
 
-    def lock_limits(self, value):
+    def lock_limits(self, value: bool):
         self.auto_limits = not value
         self.refresh_data()
 
@@ -999,7 +1024,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
             in self.qapp.queryKeyboardModifiers()
@@ -1008,7 +1033,7 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         else:
             super().mouseDragEvent(ev)
 
-    def mouseClickEvent(self, ev):
+    def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
             in self.qapp.queryKeyboardModifiers()
@@ -1022,13 +1047,13 @@ class ItoolPlotItem(pg.PlotItem):
     def __init__(
         self,
         slicer_area: ImageSlicerArea,
-        display_axis: tuple,
+        display_axis: tuple[int, ...],
         image: bool = False,
         **item_kw,
     ):
         super().__init__()
 
-        for action in self.ctrlMenu.actions():
+        for action in self.getMenu().actions():
             if action.text() in [
                 "Transforms",
                 "Downsample",
@@ -1039,28 +1064,37 @@ class ItoolPlotItem(pg.PlotItem):
                 action.setVisible(False)
 
         for i in (0, 1):
-            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
-            self.vb.menu.ctrl[i].label.setVisible(False)
-        self.vb.setCursor(QtGui.QCursor(QtCore.Qt.CrossCursor))
+            self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
+            self.getViewBoxMenu().ctrl[i].label.setVisible(False)
+        self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
         self._slicer_area = slicer_area
         self._display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
-        self.slicer_data_items = []
-        self.cursor_lines = []
-        self.cursor_spans = []
+        self.slicer_data_items: list[ItoolImageItem | ItoolPlotDataItem] = []
+        self.cursor_lines: list[dict[int, ItoolCursorLine]] = []
+        self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
         self.add_cursor(update=False)
 
-    def mouseDragEvent(self, evt):
+    def getMenu(self) -> QtWidgets.QMenu:
+        return self.ctrlMenu
+
+    def getViewBox(self) -> pg.ViewBox:
+        return self.vb
+
+    def getViewBoxMenu(self) -> pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu.ViewBoxMenu:
+        return self.getViewBox().menu
+
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
-            and evt.button() == QtCore.Qt.MouseButton.LeftButton
+            and ev.button() == QtCore.Qt.MouseButton.LeftButton
         ):
-            evt.accept()
-            data_pos = self.vb.mapSceneToView(evt.scenePos())
+            ev.accept()
+            data_pos = self.getViewBox().mapSceneToView(ev.scenePos())
             data_pos_coords = (data_pos.x(), data_pos.y())
             if not self.is_image:
                 if self.slicer_data_items[-1].is_vertical:
@@ -1075,10 +1109,12 @@ class ItoolPlotItem(pg.PlotItem):
                 self.slicer_area.refresh_all()
             else:
                 for i, ax in enumerate(self.display_axis):
-                    self.slicer_area.set_value(ax, data_pos_coords[i], update=False, uniform=True)
+                    self.slicer_area.set_value(
+                        ax, data_pos_coords[i], update=False, uniform=True
+                    )
                 self.slicer_area.refresh(self.display_axis)
         else:
-            evt.ignore()
+            ev.ignore()
 
     def add_cursor(self, update=True):
         new_cursor = len(self.slicer_data_items)
@@ -1152,18 +1188,19 @@ class ItoolPlotItem(pg.PlotItem):
         if update:
             self.refresh_cursor(new_cursor)
 
-    def index_of_line(self, line):
+    def index_of_line(self, line: ItoolCursorLine) -> int:
         for i, line_dict in enumerate(self.cursor_lines):
             for _, v in line_dict.items():
                 if v == line:
                     return i
+        raise ValueError("`line` is not a valid cursor.")
 
-    def line_click(self, line):
+    def line_click(self, line: ItoolCursorLine):
         cursor = self.index_of_line(line)
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
 
-    def line_drag(self, line, value, axis):
+    def line_drag(self, line: ItoolCursorLine, value: float, axis: int):
         cursor = self.index_of_line(line)
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
@@ -1186,16 +1223,18 @@ class ItoolPlotItem(pg.PlotItem):
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
 
-    def refresh_cursor(self, cursor):
+    def refresh_cursor(self, cursor: int):
         for ax, line in self.cursor_lines[cursor].items():
             line.setBounds(
-                self.array_slicer.lims_uniform[ax], self.array_slicer.get_value(cursor, ax, uniform=True)
+                self.array_slicer.lims_uniform[ax],
+                self.array_slicer.get_value(cursor, ax, uniform=True),
             )
             self.cursor_spans[cursor][ax].setSpan(
                 self.array_slicer.span_bounds(cursor, ax)
             )
 
-    def refresh_items_data(self, cursor, axes=None):
+    @QtCore.Slot(int, list)
+    def refresh_items_data(self, cursor: int, axes: list[int] | None = None):
         self.refresh_cursor(cursor)
         if axes is not None:
             # display_axis는 축 dim 표시하는거임. 즉 해당 축만 바뀌면 데이터 변화 없음
@@ -1228,7 +1267,7 @@ class ItoolPlotItem(pg.PlotItem):
                 }
         self.setLabels(**label_kw)
 
-    def set_active_cursor(self, index):
+    def set_active_cursor(self, index: int):
         if self.is_image:
             for i, (item, cursors) in enumerate(
                 zip(self.slicer_data_items, self.cursor_lines)
@@ -1243,11 +1282,11 @@ class ItoolPlotItem(pg.PlotItem):
             # line.setMovable(i == index)
 
     @property
-    def display_axis(self):
+    def display_axis(self) -> tuple[int, ...]:
         return self._display_axis
 
     @display_axis.setter
-    def display_axis(self, value: tuple):
+    def display_axis(self, value: tuple[int, ...]):
         self._display_axis = value
 
     @property
@@ -1289,7 +1328,7 @@ class IconButton(QtWidgets.QPushButton):
         all_cursors="mdi6.select-multiple",
     )
 
-    def __init__(self, on: str = None, off: str = None, **kwargs):
+    def __init__(self, on: str | None = None, off: str | None = None, **kwargs):
         self.icon_key_on = None
         self.icon_key_off = None
 
@@ -1307,8 +1346,8 @@ class IconButton(QtWidgets.QPushButton):
         if self.isCheckable() and off is not None:
             self.toggled.connect(self.refresh_icons)
 
-    def setChecked(self, bool):
-        super().setChecked(bool)
+    def setChecked(self, value: bool):
+        super().setChecked(value)
         self.refresh_icons()
 
     def get_icon(self, icon: str):
@@ -1322,10 +1361,11 @@ class IconButton(QtWidgets.QPushButton):
             if self.isChecked():
                 self.setIcon(self.get_icon(self.icon_key_off))
                 return
-        self.setIcon(self.get_icon(self.icon_key_on))
+        if self.icon_key_on is not None:
+            self.setIcon(self.get_icon(self.icon_key_on))
 
-    def changeEvent(self, evt):  # handles dark mode
-        if evt.type() == QtCore.QEvent.PaletteChange:
+    def changeEvent(self, evt: QtCore.QEvent):  # handles dark mode
+        if evt.type() == QtCore.QEvent.Type.PaletteChange:
             qta.reset_cache()
             self.refresh_icons()
         super().changeEvent(evt)
@@ -1348,7 +1388,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.currentIndexChanged.connect(self.load_thumbnail)
         self.default_cmap = None
 
-    def load_thumbnail(self, index):
+    def load_thumbnail(self, index: int):
         if not self.thumbnails_loaded:
             text = self.itemText(index)
             try:
@@ -1377,7 +1417,9 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def setPopupMinimumWidthForItems(self):
         view = self.view()
         fm = self.fontMetrics()
-        maxWidth = max([fm.width(self.itemText(i)) for i in range(self.count())])
+        maxWidth = max(
+            [fm.boundingRect(self.itemText(i)).width() for i in range(self.count())]
+        )
         if maxWidth:
             view.setMinimumWidth(maxWidth)
 
@@ -1402,11 +1444,11 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 class ColorMapGammaWidget(QtWidgets.QWidget):
     valueChanged = QtCore.Signal(float)
 
-    def __init__(self, value=1.0):
+    def __init__(self, value: float = 1.0):
         super().__init__()
-        self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(3)
+        self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(3)
 
         self.spin = BetterSpinBox(
             self,
@@ -1418,19 +1460,19 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         )
         self.spin.setRange(0.01, 99.99)
         self.spin.setValue(value)
-        self.label = QtWidgets.QLabel("γ", buddy=self.spin)
+        self.label = QtWidgets.QLabel(self, text="γ", buddy=self.spin)
         # self.label.setIndent(0)
         self.label.setSizePolicy(
-            QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
         )
         self.slider = QtWidgets.QSlider(
             self,
             toolTip="Colormap gamma",
             value=self.gamma_scale(value),
-            orientation=QtCore.Qt.Horizontal,
+            orientation=QtCore.Qt.Orientation.Horizontal,
         )
         self.slider.setSizePolicy(
-            QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Fixed
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
         )
         self.slider.setMinimumWidth(30)
         self.spin.valueChanged.connect(self.spin_changed)
@@ -1441,30 +1483,30 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         )
         self.slider.valueChanged.connect(self.slider_changed)
 
-        self.layout.addWidget(self.label)
-        self.layout.addWidget(self.spin)
-        self.layout.addWidget(self.slider)
+        self.layout().addWidget(self.label)
+        self.layout().addWidget(self.spin)
+        self.layout().addWidget(self.slider)
 
-    def value(self):
+    def value(self) -> float:
         return self.spin.value()
 
-    def setValue(self, value):
+    def setValue(self, value: float):
         self.spin.setValue(value)
         self.slider.setValue(self.gamma_scale(value))
 
-    def spin_changed(self, value):
+    def spin_changed(self, value: float):
         self.slider.blockSignals(True)
         self.slider.setValue(self.gamma_scale(value))
         self.slider.blockSignals(False)
         self.valueChanged.emit(value)
 
-    def slider_changed(self, value):
+    def slider_changed(self, value: float):
         self.spin.setValue(self.gamma_scale_inv(value))
 
-    def gamma_scale(self, y):
+    def gamma_scale(self, y: float) -> float:
         return 1e3 * np.log10(y)
 
-    def gamma_scale_inv(self, x):
+    def gamma_scale_inv(self, x: float) -> float:
         return np.power(10, x * 1e-3)
 
 
@@ -1476,7 +1518,9 @@ def clear_layout(layout: QtWidgets.QLayout):
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
-    def __init__(self, slicer_area: ImageSlicerArea, *args, **kwargs):
+    def __init__(
+        self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self._slicer_area = slicer_area
         self.sub_controls = []
@@ -1486,7 +1530,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         self.update()
 
     @property
-    def data(self):
+    def data(self) -> xr.DataArray:
         return self.slicer_area.data
 
     @property
@@ -1494,17 +1538,17 @@ class ItoolControlsBase(QtWidgets.QWidget):
         return self.slicer_area.array_slicer
 
     @property
-    def n_cursors(self):
+    def n_cursors(self) -> int:
         return self.slicer_area.n_cursors
 
     @property
-    def current_cursor(self):
+    def current_cursor(self) -> int:
         return self.slicer_area.current_cursor
 
     def initialize_layout(self):
-        self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(3)
+        self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(3)
 
     def initialize_widgets(self):
         for ctrl in self.sub_controls:
@@ -1528,17 +1572,17 @@ class ItoolControlsBase(QtWidgets.QWidget):
         for ctrl in self.sub_controls:
             ctrl.update()
 
-    def add_control(self, widget):
+    def add_control(self, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
         self.sub_controls.append(widget)
         return widget
 
     @property
-    def is_nested(self):
+    def is_nested(self) -> bool:
         return isinstance(self._slicer_area, ItoolControlsBase)
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        if self.is_nested:
+        if isinstance(self._slicer_area, ItoolControlsBase):
             return self._slicer_area.slicer_area
         else:
             return self._slicer_area
@@ -1551,7 +1595,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         except RuntimeError:
             pass
         self._slicer_area = value
-        clear_layout(self.layout)
+        clear_layout(self.layout())
         self.sub_controls = []
         self.initialize_widgets()
         self.update()
@@ -1589,10 +1633,10 @@ class ColorControls(ItoolControlsBase):
         self.btn_contrast.toggled.connect(self.update_colormap)
         self.btn_zero.toggled.connect(self.update_colormap)
 
-        self.layout.addWidget(self.btn_reverse)
-        self.layout.addWidget(self.btn_contrast)
-        self.layout.addWidget(self.btn_zero)
-        self.layout.addWidget(self.btn_lock)
+        self.layout().addWidget(self.btn_reverse)
+        self.layout().addWidget(self.btn_contrast)
+        self.layout().addWidget(self.btn_zero)
+        self.layout().addWidget(self.btn_lock)
 
     def update(self):
         self.btn_reverse.blockSignals(True)
@@ -1606,7 +1650,10 @@ class ColorControls(ItoolControlsBase):
         )
         self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
         self.btn_lock.setChecked(
-            not self.slicer_area.images[0].plotItem.slicer_data_items[0].auto_limits
+            not self.slicer_area.images[0]
+            .getPlotItem()
+            .slicer_data_items[0]
+            .auto_limits
         )
 
         self.btn_reverse.blockSignals(False)
@@ -1654,16 +1701,16 @@ class ColorControls(ItoolControlsBase):
 
 
 class ItoolCrosshairControls(ItoolControlsBase):
-    def __init__(self, *args, orientation=QtCore.Qt.Vertical, **kwargs):
+    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
         if isinstance(orientation, QtCore.Qt.Orientation):
             self.orientation = orientation
         elif orientation == "vertical":
-            self.orientation = QtCore.Qt.Vertical
+            self.orientation = QtCore.Qt.Orientation.Vertical
         elif orientation == "horizontal":
-            self.orientation = QtCore.Qt.Horizontal
+            self.orientation = QtCore.Qt.Orientation.Horizontal
         super().__init__(*args, **kwargs)
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
         )
 
     def initialize_widgets(self):
@@ -1715,7 +1762,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
 
         # add multicursor widgets
-        if self.orientation == QtCore.Qt.Vertical:
+        if self.orientation == QtCore.Qt.Orientation.Vertical:
             self.values_layouts[0].addWidget(self.btn_add, 0, 1, 1, 1)
             self.values_layouts[0].addWidget(self.btn_rem, 0, 2, 1, 1)
             self.values_layouts[0].addWidget(self.btn_snap, 0, 0, 1, 1)
@@ -1727,7 +1774,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_layouts[0].addWidget(self.btn_snap, 0, 3, 1, 1)
             self.values_layouts[0].addWidget(self.cb_cursors, 0, 0, 1, 1)
             self.values_layouts[0].addWidget(self.spin_dat, 0, 4, 1, 1)
-        self.layout.addWidget(self.values_groups[0])
+        self.layout().addWidget(self.values_groups[0])
 
         # info widgets
         self.label_dim = tuple(
@@ -1779,7 +1826,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                     ax1, ax2
                 )
             )
-            if self.orientation == QtCore.Qt.Vertical:
+            if self.orientation == QtCore.Qt.Orientation.Vertical:
                 self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.btn_transpose[i], 0, 1, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.spin_idx[i], 1, 0, 1, 2)
@@ -1790,7 +1837,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.values_layouts[i + 1].addWidget(self.spin_idx[i], 0, 2, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
 
-            self.layout.addWidget(self.values_groups[i + 1])
+            self.layout().addWidget(self.values_groups[i + 1])
 
     def connect_signals(self):
         super().connect_signals()
@@ -1812,7 +1859,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         super().update()
         if len(self.label_dim) != self.data.ndim:
             # number of required cursors changed, resetting
-            clear_layout(self.layout)
+            clear_layout(self.layout())
             self.initialize_widgets()
 
         label_width = 0
@@ -1820,14 +1867,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
-            
-            # dim_idx = False
-            dimname = self.data.dims[i]
-            if dimname.endswith("_idx"):
-                # dim_idx = True
-                dimname = dimname[:-4]
-            
-            self.label_dim[i].setText(dimname)
+
+            if i in self.array_slicer._nonuniform_axes:
+                self.label_dim[i].setText(str(self.data.dims[i])[:-4])
+            else:
+                self.label_dim[i].setText(str(self.data.dims[i]))
 
             label_width = max(
                 label_width,
@@ -1875,16 +1919,16 @@ class ItoolCrosshairControls(ItoolControlsBase):
         # self.btn_snap.refresh_icons()
         self.btn_snap.blockSignals(False)
 
-    def _cursor_name(self, i):
+    def _cursor_name(self, i: int) -> str:
         # for cursor combobox content
         return f" Cursor {int(i)}"
 
-    def _cursor_icon(self, i):
-        img = QtGui.QImage(32, 32, QtGui.QImage.Format_ARGB32)
-        img.fill(QtCore.Qt.transparent)
+    def _cursor_icon(self, i: int) -> QtGui.QPixmap:
+        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_ARGB32)
+        img.fill(QtCore.Qt.GlobalColor.transparent)
 
         painter = QtGui.QPainter(img)
-        painter.setRenderHints(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
 
         clr = self.slicer_area.cursor_colors[i]
         painter.setBrush(pg.mkColor(clr))
@@ -1913,31 +1957,31 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.cb_cursors.setDisabled(True)
             self.btn_rem.setDisabled(True)
 
-    def cursorChangeEvent(self, idx):
+    def cursorChangeEvent(self, idx: int):
         self.cb_cursors.setCurrentIndex(idx)
         self.update_spins()
 
-    def setActiveCursor(self, value):
+    def setActiveCursor(self, value: str):
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
 
 
 class ItoolColormapControls(ItoolControlsBase):
-    def __init__(self, *args, orientation=QtCore.Qt.Vertical, **kwargs):
+    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
         if isinstance(orientation, QtCore.Qt.Orientation):
             self.orientation = orientation
         elif orientation == "vertical":
-            self.orientation = QtCore.Qt.Vertical
+            self.orientation = QtCore.Qt.Orientation.Vertical
         elif orientation == "horizontal":
-            self.orientation = QtCore.Qt.Horizontal
+            self.orientation = QtCore.Qt.Orientation.Horizontal
         super().__init__(*args, **kwargs)
 
     def initialize_layout(self):
-        if self.orientation == QtCore.Qt.Vertical:
-            self.layout = QtWidgets.QVBoxLayout(self)
+        if self.orientation == QtCore.Qt.Orientation.Vertical:
+            self.setLayout(QtWidgets.QVBoxLayout(self))
         else:
-            self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(3)
+            self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(3)
 
     def initialize_widgets(self):
         super().initialize_widgets()
@@ -1951,9 +1995,9 @@ class ItoolColormapControls(ItoolControlsBase):
 
         self.misc_controls = self.add_control(ColorControls(self))
 
-        self.layout.addWidget(self.cb_colormap)
-        self.layout.addWidget(self.gamma_widget)
-        self.layout.addWidget(self.misc_controls)
+        self.layout().addWidget(self.cb_colormap)
+        self.layout().addWidget(self.gamma_widget)
+        self.layout().addWidget(self.misc_controls)
 
     def update(self):
         super().update()
@@ -1975,9 +2019,9 @@ class ItoolBinningControls(ItoolControlsBase):
         super().__init__(*args, **kwargs)
 
     def initialize_layout(self):
-        self.layout = QtWidgets.QGridLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(3)
+        self.setLayout(QtWidgets.QGridLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(3)
 
     def initialize_widgets(self):
         super().initialize_widgets()
@@ -2008,10 +2052,10 @@ class ItoolBinningControls(ItoolControlsBase):
         )
 
         for i in range(self.data.ndim):
-            self.layout.addWidget(self.label[i], 0, i, 1, 1)
-            self.layout.addWidget(self.spins[i], 1, i, 1, 1)
-        self.layout.addWidget(self.reset_btn, 2, 0, 1, 1)
-        self.layout.addWidget(self.all_btn, 2, 1, 1, 1)
+            self.layout().addWidget(self.label[i], 0, i, 1, 1)
+            self.layout().addWidget(self.spins[i], 1, i, 1, 1)
+        self.layout().addWidget(self.reset_btn, 2, 0, 1, 1)
+        self.layout().addWidget(self.all_btn, 2, 1, 1, 1)
         # for spin in self.spins:
         # spin.setMinimumWidth(60)
 
@@ -2035,12 +2079,12 @@ class ItoolBinningControls(ItoolControlsBase):
         super().update()
 
         if len(self.label) != self.data.ndim:
-            clear_layout(self.layout)
+            clear_layout(self.layout())
             self.initialize_widgets()
 
         for i in range(self.data.ndim):
             self.spins[i].blockSignals(True)
-            self.label[i].setText(self.data.dims[i])
+            self.label[i].setText(str(self.data.dims[i]))
             self.spins[i].setRange(1, self.data.shape[i] - 1)
             self.spins[i].setValue(self.array_slicer.get_bins(self.current_cursor)[i])
             self.spins[i].blockSignals(False)
@@ -2054,9 +2098,9 @@ if __name__ == "__main__":
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
         # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
-        engine="h5netcdf",
+        # engine="h5netcdf",
     )
     itool_(data)
