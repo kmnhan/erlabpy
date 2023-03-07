@@ -66,17 +66,26 @@ class ArraySlicer(QtCore.QObject):
 
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
-        self._obj = self._validate_array(xarray_obj)
+        self.set_array(xarray_obj)
         self._bins = [[1] * self._obj.ndim]
         self._indices = [[s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]]
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
         self._snap_to_data = False
 
+    def set_array(self, xarray_obj: xr.DataArray, validate=True):
+        if validate:
+            self._obj = self._validate_array(xarray_obj)
+        else:
+            self._obj = xarray_obj
+        self._nonuniform_axes = [
+            i for i, d in enumerate(self._obj.dims) if d.endswith("_idx")
+        ]
+
     @staticmethod
     def _validate_array(data: xr.DataArray):
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
-        # if data has kx and ky axis, transpose 
+            # if data has kx and ky axis, transpose
             if "eV" in data.dims:
                 new_dims += ("eV",)
             new_dims += tuple(d for d in data.dims if d not in new_dims)
@@ -85,9 +94,9 @@ class ArraySlicer(QtCore.QObject):
         nonuniform_dims = [d for d in data.dims if not _is_uniform(data[d].values)]
         for d in nonuniform_dims:
             data = data.assign_coords(
-                {d + "_ind": (d, list(np.arange(len(data[d]), dtype=np.float64)))}
-            ).swap_dims({d: d + "_ind"})
-        
+                {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float64)))}
+            ).swap_dims({d: d + "_idx"})
+
         return data.astype(np.float64, order="C")
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True):
@@ -161,6 +170,10 @@ class ArraySlicer(QtCore.QObject):
     def get_indices(self, cursor: int) -> list[int]:
         return self._indices[cursor]
 
+    @QtCore.Slot(int, int, result=int)
+    def get_index(self, cursor: int, axis: int) -> int:
+        return self._indices[cursor][axis]
+
     def set_indices(self, cursor: int, value: list[int], update: bool = True):
         if not len(value) == self._obj.ndim:
             raise ValueError(
@@ -200,9 +213,22 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigIndexChanged.emit(cursor, (axis,))
 
-    @QtCore.Slot(int, result=list[float])
-    def get_values(self, cursor) -> list[float]:
-        return self._values[cursor]
+    @QtCore.Slot(int, bool, result=list[float])
+    def get_values(self, cursor: int, uniform: bool = False) -> list[float]:
+        if uniform and self._nonuniform_axes:
+            val = list(self._values[cursor])
+            for ax in self._nonuniform_axes:
+                val[ax] = float(self._indices[cursor][ax])
+            return val
+        else:
+            return self._values[cursor]
+
+    @QtCore.Slot(int, int, bool, result=float)
+    def get_value(self, cursor: int, axis: int, uniform: bool = False) -> float:
+        if uniform and axis in self._nonuniform_axes:
+            return float(self._indices[cursor][axis])
+        else:
+            return self._values[cursor][axis]
 
     def set_values(self, cursor: int, value: list[float], update: bool = True):
         if not len(value) == self._obj.ndim:
@@ -215,14 +241,19 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigIndexChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, float, bool, result=list[int | None])
+    @QtCore.Slot(int, int, float, bool, bool, result=list[int | None])
     def set_value(
-        self, cursor: int, axis: int, value: float, update: bool = True
+        self,
+        cursor: int,
+        axis: int,
+        value: float,
+        update: bool = True,
+        uniform: bool = False,
     ) -> list[int | None]:
         if value is None:
             return []
-        self._indices[cursor][axis] = self.index_of_value(axis, value)
-        if self.snap_to_data:
+        self._indices[cursor][axis] = self.index_of_value(axis, value, uniform=uniform)
+        if self.snap_to_data or (axis in self._nonuniform_axes):
             new = self.coords[axis][self._indices[cursor][axis]]
             if self._values[cursor][axis] == new:
                 return []
@@ -236,17 +267,35 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def coords(self) -> tuple[npt.NDArray[np.float64]]:
+        if self._nonuniform_axes:
+            return tuple(
+                self._obj[dim[:-4]].values.astype(np.float64)
+                if i in self._nonuniform_axes
+                else self._obj[dim].values.astype(np.float64)
+                for i, dim in enumerate(self._obj.dims)
+            )
+        else:
+            return self.coords_uniform
+
+    @property
+    def coords_uniform(self) -> tuple[npt.NDArray[np.float64]]:
         return tuple(self._obj[dim].values.astype(np.float64) for dim in self._obj.dims)
 
     @property
     def incs(self) -> tuple[float]:
-        # return tuple(coord[1] - coord[0] if _is_uniform(coord) else 1.0 for coord in self.coords)
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
     @property
+    def incs_uniform(self) -> tuple[float]:
+        return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
+
+    @property
     def lims(self) -> tuple[tuple[float, float]]:
-        # return tuple((coord[0], coord[-1]) if _is_uniform(coord) else (0.0, float(len(coord)-1)) for coord in self.coords)
         return tuple((coord[0], coord[-1]) for coord in self.coords)
+
+    @property
+    def lims_uniform(self) -> tuple[tuple[float, float]]:
+        return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
 
     @property
     def data_vals_T(self) -> npt.NDArray[np.float64]:
@@ -264,14 +313,12 @@ class ArraySlicer(QtCore.QObject):
     def nanmin(self, *args, **kwargs):
         return numbagg.nanmin(self._obj.values, *args, **kwargs)
 
-    @QtCore.Slot(int, result=float)
-    def current_value(self, cursor: int) -> float:
-        return self._obj.values[tuple(self.get_indices(cursor))]
-
-    @QtCore.Slot(int, result=float)
-    def current_value_binned(self, cursor: int) -> float:
-        return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
-        # return self._obj.values[tuple(self.get_indices(cursor))]
+    @QtCore.Slot(int, bool, result=float)
+    def point_value(self, cursor: int, binned: bool = True) -> float:
+        if binned:
+            return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
+        else:
+            return self._obj.values[tuple(self.get_indices(cursor))]
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int):
@@ -290,7 +337,8 @@ class ArraySlicer(QtCore.QObject):
             )
         dims_new = list(self._obj.dims)
         dims_new[ax1], dims_new[ax2] = dims_new[ax2], dims_new[ax1]
-        self._obj = self._obj.transpose(*dims_new)
+
+        self.set_array(self._obj.transpose(*dims_new), validate=False)
 
         self.sigShapeChanged.emit()
 
@@ -300,31 +348,21 @@ class ArraySlicer(QtCore.QObject):
         if i is None:
             i = 0
         if j is None:
-            return self.coords[i]
-            # x = self.coords[i]
-            # if _is_uniform(x):
-            # return x
-            # else:
-            # return np.arange(len(x), dtype=np.float64)
-        return _array_rect(i, j, self.lims, self.incs)
+            return self.coords_uniform[i]
+        return _array_rect(i, j, self.lims_uniform, self.incs_uniform)
 
-    def index_of_value(self, axis: int, val: float) -> int:
-        return _index_of_value(axis, val, self.lims, self.incs, self._obj.shape)
-        # return _index_of_value_nonuniform(self.coords[axis], val)
+    def index_of_value(self, axis: int, val: float, uniform: bool = False) -> int:
+        if uniform or (axis not in self._nonuniform_axes):
+            return _index_of_value(
+                axis, val, self.lims_uniform, self.incs_uniform, self._obj.shape
+            )
+        else:
+            return _index_of_value_nonuniform(self.coords[axis], val)
 
     @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
     def slice_with_coord(self, cursor: int, axis: tuple) -> npt.NDArray[np.float64]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
         return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
-
-    # @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
-    def slice_with_coord_nonuniform(
-        self, cursor: int, axis: tuple
-    ) -> npt.NDArray[np.float64]:
-        domain = sorted(set(range(self._obj.ndim)) - set(axis))
-        return tuple(self.coords[i] for i in axis) + (
-            self.extract_avg_slice(cursor, domain),
-        )
 
     def extract_avg_slice(self, cursor: int, axis: int | tuple | None = None):
         if axis is None:
@@ -337,8 +375,7 @@ class ArraySlicer(QtCore.QObject):
         slc = self._bin_slice(cursor, axis)
         lb = max(0, slc.start)
         ub = min(self._obj.shape[axis] - 1, slc.stop - 1)
-        # ub = min(len(self.coords[axis]) - 1, slc.stop - 1)
-        return self.coords[axis][[lb, ub]]
+        return self.coords_uniform[axis][[lb, ub]]
 
     def _bin_slice(self, cursor: int, axis: int):
         center = self.get_indices(cursor)[axis]

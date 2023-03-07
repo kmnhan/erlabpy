@@ -517,14 +517,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def current_indices(self) -> list[int]:
         return self.array_slicer.get_indices(self.current_cursor)
-
+    
     @property
     def current_values(self) -> list[float]:
-        return self.array_slicer.get_values(self.current_cursor)
+        return self.array_slicer.get_values(self.current_cursor, uniform=False)
+
+    @property
+    def current_values_uniform(self) -> list[float]:
+        return self.array_slicer.get_values(self.current_cursor, uniform=True)
 
     @property
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
+
+    def get_current_index(self, axis:int):
+        return self.array_slicer.get_index(self.current_cursor, axis)
+
+    def get_current_value(self, axis:int, uniform:bool=False):
+        return self.array_slicer.get_value(self.current_cursor, axis, uniform=uniform)
 
     def get_axes(self, index) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
@@ -616,9 +626,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for i in range(self.n_cursors):
             self.array_slicer.step_index(i, axis, amount, update)
 
-    @QtCore.Slot(int, float, bool)
-    def set_value(self, axis: int, value: float, update: bool = True):
-        self.array_slicer.set_value(self.current_cursor, axis, value, update)
+    @QtCore.Slot(int, float, bool, bool)
+    def set_value(self, axis: int, value: float, update: bool = True, uniform: bool = False):
+        self.array_slicer.set_value(self.current_cursor, axis, value, update, uniform)
 
     @QtCore.Slot(int, int, bool)
     def set_bin(self, axis: int, value: int, update: bool = True):
@@ -1060,12 +1070,12 @@ class ItoolPlotItem(pg.PlotItem):
                 for c in range(self.slicer_area.n_cursors):
                     for i, ax in enumerate(self.display_axis):
                         self.array_slicer.set_value(
-                            c, ax, data_pos_coords[i], update=False
+                            c, ax, data_pos_coords[i], update=False, uniform=True
                         )
                 self.slicer_area.refresh_all()
             else:
                 for i, ax in enumerate(self.display_axis):
-                    self.slicer_area.set_value(ax, data_pos_coords[i], update=False)
+                    self.slicer_area.set_value(ax, data_pos_coords[i], update=False, uniform=True)
                 self.slicer_area.refresh(self.display_axis)
         else:
             evt.ignore()
@@ -1161,10 +1171,10 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.qapp.queryKeyboardModifiers()
             != QtCore.Qt.KeyboardModifier.AltModifier
         ):
-            self.array_slicer.set_value(cursor, axis, value, update=True)
+            self.array_slicer.set_value(cursor, axis, value, update=True, uniform=True)
         else:
             for i in range(self.array_slicer.n_cursors):
-                self.array_slicer.set_value(i, axis, value, update=True)
+                self.array_slicer.set_value(i, axis, value, update=True, uniform=True)
 
     def remove_cursor(self, index: int):
         self.removeItem(self.slicer_data_items.pop(index))
@@ -1179,7 +1189,7 @@ class ItoolPlotItem(pg.PlotItem):
     def refresh_cursor(self, cursor):
         for ax, line in self.cursor_lines[cursor].items():
             line.setBounds(
-                self.array_slicer.lims[ax], self.array_slicer.get_values(cursor)[ax]
+                self.array_slicer.lims_uniform[ax], self.array_slicer.get_value(cursor, ax, uniform=True)
             )
             self.cursor_spans[cursor][ax].setSpan(
                 self.array_slicer.span_bounds(cursor, ax)
@@ -1762,7 +1772,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 lambda ind, axis=i: self.slicer_area.set_index(axis, ind)
             )
             self.spin_val[i].valueChanged.connect(
-                lambda val, axis=i: self.slicer_area.set_value(axis, val)
+                lambda val, axis=i: self.slicer_area.set_value(axis, val, uniform=False)
             )
             self.btn_transpose[i].clicked.connect(
                 lambda ax1=i, ax2=(i + 1) % self.data.ndim: self.slicer_area.swap_axes(
@@ -1810,7 +1820,14 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
-            self.label_dim[i].setText(self.data.dims[i])
+            
+            # dim_idx = False
+            dimname = self.data.dims[i]
+            if dimname.endswith("_idx"):
+                # dim_idx = True
+                dimname = dimname[:-4]
+            
+            self.label_dim[i].setText(dimname)
 
             label_width = max(
                 label_width,
@@ -1823,11 +1840,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
-            self.spin_idx[i].setValue(self.slicer_area.current_indices[i])
+            self.spin_idx[i].setValue(self.slicer_area.get_current_index(i))
 
             self.spin_val[i].setRange(*self.array_slicer.lims[i])
             self.spin_val[i].setSingleStep(self.array_slicer.incs[i])
-            self.spin_val[i].setValue(self.slicer_area.current_values[i])
+            self.spin_val[i].setValue(self.slicer_area.get_current_value(i))
 
             self.label_dim[i].blockSignals(False)
             self.spin_idx[i].blockSignals(False)
@@ -1847,9 +1864,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setValue(self.slicer_area.current_values[i])
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
-        # self.spin_dat.setValue(self.array_slicer.current_value(self.current_cursor))
+
         self.spin_dat.setValue(
-            self.array_slicer.current_value_binned(self.current_cursor)
+            self.array_slicer.point_value(self.current_cursor, binned=True)
         )
 
     def update_options(self):
@@ -1902,18 +1919,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     def setActiveCursor(self, value):
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
-
-    # def index_changed(self, axis, index):
-    #     self.spin_val[axis].blockSignals(True)
-    #     self.slicer_area.set_index(axis, index)
-    #     self.spin_val[axis].setValue(self.slicer_area.current_values[axis])
-    #     self.spin_val[axis].blockSignals(False)
-
-    # def value_changed(self, axis, index):
-    #     self.spin_idx[axis].blockSignals(True)
-    #     self.slicer_area.set_value(axis, index)
-    #     self.spin_idx[axis].setValue(self.slicer_area.current_indices[axis])
-    #     self.spin_idx[axis].blockSignals(False)
 
 
 class ItoolColormapControls(ItoolControlsBase):
