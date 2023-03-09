@@ -19,6 +19,7 @@ __all__ = [
     "gen_function_code",
     "BetterSpinBox",
     "BetterImageItem",
+    "BetterAxisItem",
     "BetterColorBarItem",
     "xImageItem",
     "ParameterGroup",
@@ -464,6 +465,43 @@ class BetterImageItem(pg.ImageItem):
         self.sigColorChanged.emit()
 
 
+class BetterAxisItem(pg.AxisItem):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def labelString(self):
+        if self.labelUnits == "":
+            if not self.autoSIPrefix or self.autoSIPrefixScale == 1.0:
+                units = ""
+            else:
+                units = "(×%G)" % (1.0 / self.autoSIPrefixScale)
+        else:
+            units = "(%s%s)" % (self.labelUnitPrefix, self.labelUnits)
+
+        if self.labelText == "":
+            s = units
+        else:
+            s = "%s %s" % (self.labelText, units)
+
+        style = ";".join(["%s: %s" % (k, self.labelStyle[k]) for k in self.labelStyle])
+
+        return "<span style='%s'>%s</span>" % (style, s)
+    
+    def setLabel(self, text=None, units=None, unitPrefix=None, **args):
+        # `None` input is kept for backward compatibility!
+        self.labelText = text or ""
+        self.labelUnits = units or ""
+        self.labelUnitPrefix = unitPrefix or ""
+        if len(args) > 0:
+            self.labelStyle = args
+        # Account empty string and `None` for units and text
+        visible = True if (text or units) else False
+        if text == units == "":
+            visible = True
+        self.showLabel(visible)
+        self._updateLabel()
+
+
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
         self,
@@ -475,7 +513,13 @@ class BetterColorBarItem(pg.PlotItem):
         hoverBrush: QtGui.QBrush | str = "#FFFFFF33",
         **kargs,
     ):
-        super().__init__(parent, **kargs)
+        super().__init__(
+            parent,
+            axisItems={
+                a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")
+            },
+            **kargs,
+        )
 
         self.setDefaultPadding(0)
         self.hideButtons()

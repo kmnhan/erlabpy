@@ -22,6 +22,7 @@ from erlab.plotting.interactive.slicer import ArraySlicer
 from erlab.plotting.interactive.utilities import (
     BetterSpinBox,
     BetterImageItem,
+    BetterAxisItem,
     BetterColorBarItem,
 )
 
@@ -65,7 +66,7 @@ def itool_(data, execute=None, *args, **kwargs):
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
+    # qapp.setStyle("Fusion")
 
     if isinstance(data, (list, tuple)):
         win = tuple()
@@ -515,8 +516,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.set_data(data, rad2deg=rad2deg)
 
     def connect_signals(self):
-        self.sigIndexChanged.connect(self.refresh_plots)
-        self.sigBinChanged.connect(lambda c, _: self.refresh_plots(c))
+        for ax in self.axes:
+            ax.getPlotItem().connect_signals()
         self.sigDataChanged.connect(self.refresh_all)
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
 
@@ -601,20 +602,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def get_axes(self, index: int) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
 
-    @QtCore.Slot()
-    def refresh_all(self):
+    @QtCore.Slot(tuple, bool, bool)
+    def refresh_all(
+        self, axes: tuple[int, ...] | None = None, only_plots: bool = False
+    ):
         for c in range(self.n_cursors):
-            self.refresh_plots(c)
+            self.sigIndexChanged.emit(c, axes)
+        if not only_plots:
+            for ax in self.axes:
+                ax.getPlotItem().refresh_labels()
 
     @QtCore.Slot(tuple)
-    def refresh(self, axes: tuple[int, ...] | None = None):
+    def refresh_current(self, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(self.current_cursor, axes)
 
-    def refresh_plots(self, *args, **kwargs):
-        for ax in self.axes:
-            ax.getPlotItem().refresh_items_data(*args, **kwargs)
-            # TODO: autorange smarter
-            ax.getPlotItemViewBox().updateAutoRange()
+    @QtCore.Slot(int, list)
+    def refresh(self, cursor: int, axes: tuple[int, ...] | None = None):
+        self.sigIndexChanged.emit(cursor, axes)
 
     def view_all(self):
         for ax in self.axes:
@@ -633,7 +637,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             raise IndexError("Cursor index out of range")
         self.current_cursor = cursor
         if update:
-            self.refresh()
+            self.refresh_current()
         self.sigCurrentCursorChanged.emit(cursor)
 
     def set_data(self, data: xr.DataArray | npt.ArrayLike, rad2deg=None):
@@ -667,7 +671,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.set_current_cursor(self.n_cursors - 1, update=False)
         self.sigDataChanged.emit()
 
-        self.refresh()
+        # self.refresh_current()
         self.set_colormap(update=True)
         self._colorbar.cb.setImageItem(
             tuple(im for ax in self.images for im in ax.getPlotItem().slicer_data_items)
@@ -718,7 +722,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
-        self.refresh()
+        self.refresh_current()
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
@@ -732,7 +736,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.current_cursor -= 1
         for ax in self.axes:
             ax.remove_cursor(index)
-        self.refresh()
+        self.refresh_current()
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
@@ -1033,15 +1037,15 @@ class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
         ItoolDisplayObject.__init__(self, axes, cursor)
         self.is_vertical = is_vertical
 
-    def refresh_data(self, **kwargs):
+    def refresh_data(self):
         ItoolDisplayObject.refresh_data(self)
         coord, vals = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
         if self.is_vertical:
-            self.setData(vals, coord, **kwargs)
+            self.setData(vals, coord)
         else:
-            self.setData(coord, vals, **kwargs)
+            self.setData(coord, vals)
 
 
 class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
@@ -1056,12 +1060,12 @@ class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
         ItoolDisplayObject.__init__(self, axes, cursor)
 
     @suppressnanwarning
-    def refresh_data(self, **kwargs):
+    def refresh_data(self):
         ItoolDisplayObject.refresh_data(self)
         rect, img = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
-        self.setImage(image=img, rect=rect, **kwargs)
+        self.setImage(image=img, rect=rect)
 
     # def lock_levels(self, lock: bool, levels: tuple[float, float] | None = None):
     #     self.auto_levels = not lock
@@ -1096,7 +1100,9 @@ class ItoolPlotItem(pg.PlotItem):
         image: bool = False,
         **item_kw,
     ):
-        super().__init__()
+        super().__init__(
+            axisItems={a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")}
+        )
 
         for action in self.getMenu().actions():
             if action.text() in [
@@ -1113,7 +1119,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.getViewBoxMenu().ctrl[i].label.setVisible(False)
         self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
-        self._slicer_area = slicer_area
+        self.slicer_area = slicer_area
         self._display_axis = display_axis
 
         self.is_image = image
@@ -1140,10 +1146,10 @@ class ItoolPlotItem(pg.PlotItem):
         ):
             ev.accept()
             data_pos = self.getViewBox().mapSceneToView(ev.scenePos())
-            data_pos_coords = (data_pos.x(), data_pos.y())
-            if not self.is_image:
-                if self.slicer_data_items[-1].is_vertical:
-                    data_pos_coords = (data_pos.y(), data_pos.x())
+            if (not self.is_image) and self.slicer_data_items[-1].is_vertical:
+                data_pos_coords = (data_pos.y(), data_pos.x())
+            else:
+                data_pos_coords = (data_pos.x(), data_pos.y())
 
             if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
                 for c in range(self.slicer_area.n_cursors):
@@ -1151,13 +1157,13 @@ class ItoolPlotItem(pg.PlotItem):
                         self.array_slicer.set_value(
                             c, ax, data_pos_coords[i], update=False, uniform=True
                         )
-                self.slicer_area.refresh_all()
+                    self.slicer_area.refresh(c, self.display_axis)
             else:
                 for i, ax in enumerate(self.display_axis):
                     self.slicer_area.set_value(
                         ax, data_pos_coords[i], update=False, uniform=True
                     )
-                self.slicer_area.refresh(self.display_axis)
+                self.slicer_area.refresh_current(self.display_axis)
         else:
             ev.ignore()
 
@@ -1278,8 +1284,12 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.span_bounds(cursor, ax)
             )
 
-    @QtCore.Slot(int, list)
-    def refresh_items_data(self, cursor: int, axes: list[int] | None = None):
+    def connect_signals(self):
+        self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
+        self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
+
+    @QtCore.Slot(int, tuple)
+    def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None):
         self.refresh_cursor(cursor)
         if axes is not None:
             # display_axis는 축 dim 표시하는거임. 즉 해당 축만 바뀌면 데이터 변화 없음
@@ -1290,7 +1300,11 @@ class ItoolPlotItem(pg.PlotItem):
                 continue
             self.set_active_cursor(cursor)
             item.refresh_data()
+        # TODO: autorange smarter
+        self.vb.updateAutoRange()
 
+    @QtCore.Slot()
+    def refresh_labels(self):
         if self.is_image:
             label_kw = {
                 a: self._get_label_unit(i)
@@ -1308,7 +1322,6 @@ class ItoolPlotItem(pg.PlotItem):
             for a in ("top", "bottom", "left", "right"):
                 if self.getAxis(a).isVisible():
                     label_kw[a] = self._get_label_unit(0 if a in valid_ax else None)
-
         self.setLabels(**label_kw)
 
     def _get_label_unit(self, index: int | None = None):
@@ -1317,7 +1330,7 @@ class ItoolPlotItem(pg.PlotItem):
         else:
             dim = self.slicer_area.data.dims[self.display_axis[index]]
         if dim == "eV":
-            return dim, dim
+            return dim, "eV"
         return dim, ""
 
     def set_active_cursor(self, index: int):
