@@ -520,7 +520,9 @@ class BetterColorBarItem(pg.PlotItem):
         vert_pad: int = 35,
         font_size: float = 11.0,
     ):
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding
+        )
         # self.layout.setContentsMargins(0,vert_pad,0,vert_pad)
         self.showAxes(
             (True, True, True, True),

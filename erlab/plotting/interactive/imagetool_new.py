@@ -366,7 +366,9 @@ class ItoolColorBar(pg.PlotWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None, **cbar_kw):
         super().__init__(parent=parent, plotItem=BetterColorBarItem(**cbar_kw))
         self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Expanding
+        )
 
     @property
     def cb(self) -> BetterColorBarItem:
@@ -889,7 +891,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # reserve space, only hide plotItem
         self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
 
-        self._colorbar.cb.set_dimensions(width=30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size)
+        self._colorbar.cb.set_dimensions(
+            width=30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
+        )
 
     def toggle_snap(self, value: bool | None = None):
         if value is None:
@@ -1287,27 +1291,27 @@ class ItoolPlotItem(pg.PlotItem):
             self.set_active_cursor(cursor)
             item.refresh_data()
 
-        
         if self.is_image:
             label_kw = {
-                a: self._get_label_unit(i) for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1)) if self.getAxis(a).isVisible()
+                a: self._get_label_unit(i)
+                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
+                if self.getAxis(a).isVisible()
             }
         else:
-
             label_kw = dict()
-            
+
             if self.slicer_data_items[-1].is_vertical:
                 valid_ax = ("left", "right")
             else:
                 valid_ax = ("top", "bottom")
-                
+
             for a in ("top", "bottom", "left", "right"):
                 if self.getAxis(a).isVisible():
                     label_kw[a] = self._get_label_unit(0 if a in valid_ax else None)
-                    
+
         self.setLabels(**label_kw)
-        
-    def _get_label_unit(self, index:int|None=None):
+
+    def _get_label_unit(self, index: int | None = None):
         if index is None:
             dim = ""
         else:
@@ -1315,7 +1319,6 @@ class ItoolPlotItem(pg.PlotItem):
         if dim == "eV":
             return dim, dim
         return dim, ""
-        
 
     def set_active_cursor(self, index: int):
         if self.is_image:
