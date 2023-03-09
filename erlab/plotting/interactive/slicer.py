@@ -332,6 +332,10 @@ class ArraySlicer(QtCore.QObject):
     @property
     def data_vals_T(self) -> npt.NDArray[np.float64]:
         return _transposed(self._obj.values)
+    
+    @property
+    def limits(self) -> tuple[float, float]:
+        return self.nanmin(), self.nanmax()
 
     def absnanmax(self, *args, **kwargs) -> float:
         return numbagg.nanmax(np.abs(self._obj.values), *args, **kwargs)
@@ -344,7 +348,7 @@ class ArraySlicer(QtCore.QObject):
 
     def nanmin(self, *args, **kwargs) -> float:
         return numbagg.nanmin(self._obj.values, *args, **kwargs)
-
+    
     @QtCore.Slot(int, bool, result=float)
     def point_value(
         self, cursor: int, binned: bool = True

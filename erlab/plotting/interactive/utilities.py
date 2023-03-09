@@ -1,6 +1,8 @@
 """Various helper functions and extensions to pyqtgraph."""
 
 import sys
+import weakref
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 import pyclip
@@ -8,12 +10,16 @@ import pyqtgraph as pg
 import xarray as xr
 from PySide6 import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
+from erlab.plotting.interactive.colors import pg_colormap_powernorm
 
 __all__ = [
     "parse_data",
     "copy_to_clipboard",
     "gen_single_function_code",
     "gen_function_code",
+    "BetterSpinBox",
+    "BetterImageItem",
+    "BetterColorBarItem",
     "xImageItem",
     "ParameterGroup",
     "AnalysisWidgetBase",
@@ -406,6 +412,270 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
 
+class BetterImageItem(pg.ImageItem):
+    sigColorChanged = QtCore.Signal()
+    sigLimitChanged = QtCore.Signal(float, float)
+
+    def __init__(self, image=None, **kargs):
+        self.auto_levels: bool = True
+        super().__init__(image, **kargs)
+
+    def setImage(self, image=None, autoLevels: bool | None = None, **kargs):
+        if autoLevels is None:
+            if "levels" in kargs:
+                self.setAutoLevels(False)
+        else:
+            self.setAutoLevels(autoLevels)
+
+        super().setImage(image=image, autoLevels=self.auto_levels, **kargs)
+
+        if image is not None:
+            if self.auto_levels:
+                self.sigLimitChanged.emit(*self.levels)
+
+    def setAutoLevels(self, autoLevels: bool):
+        self.auto_levels = autoLevels
+
+    def setLevels(self, levels, update: bool = True):
+        super().setLevels(levels, update)
+        self.sigLimitChanged.emit(*self.levels)
+
+    def set_colormap(
+        self,
+        cmap: pg.ColorMap | str,
+        gamma: float,
+        reverse: bool = False,
+        highContrast: bool = False,
+        zeroCentered: bool = False,
+        update: bool = True,
+    ):
+        cmap = pg_colormap_powernorm(
+            cmap,
+            gamma,
+            reverse,
+            highContrast=highContrast,
+            zeroCentered=zeroCentered,
+        )
+        self.set_pg_colormap(cmap, update=update)
+
+    def set_pg_colormap(self, cmap: pg.ColorMap, update: bool = True):
+        self._colorMap = cmap
+        self.setLookupTable(cmap.getStops()[1], update=update)
+        self.sigColorChanged.emit()
+
+
+class BetterColorBarItem(pg.PlotItem):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        image: Sequence[BetterImageItem] | BetterImageItem | None = None,
+        limits: tuple[float, float] | None = None,
+        pen: QtGui.QPen | str = "c",
+        hoverPen: QtGui.QPen | str = "m",
+        hoverBrush: QtGui.QBrush | str = "#FFFFFF33",
+        **kargs,
+    ):
+        super().__init__(parent, **kargs)
+
+        self.setDefaultPadding(0)
+        self.hideButtons()
+        self.setMenuEnabled(False)
+        self.vb.setMouseEnabled(x=False, y=True)
+
+        self._colorbar = pg.ImageItem(
+            np.linspace(0, 1, 4096).reshape((-1, 1)), axisOrder="row-major"
+        )
+        self.addItem(self._colorbar)
+
+        self._span = pg.LinearRegionItem(
+            (0, 1),
+            "horizontal",
+            swapMode="block",
+            pen=pen,
+            brush=pg.mkBrush(None),
+            hoverPen=hoverPen,
+            hoverBrush=hoverBrush,
+        )
+        self._span.setZValue(1000)
+        self._span.lines[0].addMarker("<|>", size=6)
+        self._span.lines[1].addMarker("<|>", size=6)
+
+        self.addItem(self._span)
+
+        self._fixedlimits: tuple[float, float] | None = None
+
+        self._images: list[weakref.ref[BetterImageItem]] = []
+        self._primary_image: weakref.ref[BetterImageItem] | None = None
+        if image is not None:
+            self.setImageItem(image)
+        if limits is not None:
+            self.setLimits(limits)
+
+        self.set_dimensions()
+
+    def set_dimensions(
+        self,
+        width: int = 30,
+        horiz_pad: int | None = None,
+        vert_pad: int = 35,
+        font_size: float = 11.0,
+    ):
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
+        # self.layout.setContentsMargins(0,vert_pad,0,vert_pad)
+        self.showAxes(
+            (True, True, True, True),
+            showValues=(False, False, True, False),
+            size=(None, vert_pad),
+        )
+        self.layout.setColumnFixedWidth(1, width)
+        # self.setMaximumWidth(width)
+
+        # self.getAxis("left").setWidth(None)
+        # self.getAxis("top").setHeight(vert_pad)
+        # self.getAxis("bottom").setHeight(vert_pad)
+        self.getAxis("right").setWidth(horiz_pad)
+
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+        for axis in ("left", "bottom", "right", "top"):
+            self.getAxis(axis).setTickFont(font)
+        # self.setFixedWidth(width+horiz_pad)
+        # self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
+
+    def _level_change(self):
+        if not self.isVisible():
+            return
+        for img_ref in self._images:
+            if not img_ref().auto_levels:
+                img_ref().setLevels(self._span.getRegion())
+        self.limit_changed()
+
+    def _level_change_fin(self):
+        pass
+
+    @property
+    def levels(self) -> Sequence[float]:
+        return self._primary_image().getLevels()
+
+    @property
+    def limits(self) -> tuple[float, float]:
+        if self._fixedlimits is not None:
+            return self._fixedlimits
+        else:
+            return self._primary_image().quickMinMax(targetSize=2**16)
+
+    def setLimits(self, limits: tuple[float, float] | None):
+        self._fixedlimits = limits
+        self.limit_changed()
+
+    def setImageItem(
+        self,
+        image: Sequence[BetterImageItem] | BetterImageItem,
+        insert_in: pg.PlotItem | None = None,
+    ):
+        if isinstance(image, BetterImageItem):
+            self._images.append(weakref.ref(image))
+        else:
+            for img in image:
+                self._images.append(weakref.ref(img))
+
+        for img_ref in self._images:
+            img = img_ref()
+            if img is not None:
+                if img.getColorMap() is not None:
+                    self._primary_image = img_ref
+                    break
+
+        if self._primary_image is None:
+            raise ValueError("ImageItem with a colormap was not found")
+        self._primary_image().sigLimitChanged.connect(self.limit_changed)
+        # self._primary_image().sigImageChanged.connect(self.limit_changed)
+        # self._primary_image().sigColorChanged.connect(self.color_changed)
+        self._primary_image().sigColorChanged.connect(self.limit_changed)
+        # else:
+        # print("hello")
+
+        if insert_in is not None:
+            insert_in.layout.addItem(self, 2, 5)
+            insert_in.layout.setColumnFixedWidth(4, 5)
+
+        self._span.blockSignals(True)
+        self._span.setRegion(self.limits)
+        self._span.blockSignals(False)
+        self._span.sigRegionChanged.connect(self._level_change)
+        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
+        self.color_changed()
+        self.limit_changed()
+        # self.isocurve.setParentItem(image)
+
+    # def hideEvent(self, event: QtGui.QHideEvent):
+    #     super().hideEvent(event)
+    #     print("hide")
+
+    # def showEvent(self, event: QtGui.QShowEvent):
+    #     super().showEvent(event)
+    #     # self._level_change()
+    #     print("show")
+    #     self.color_changed()
+    #     self.limit_changed()
+
+    # def setVisible(self, visible:bool, *args, **kwargs):
+    # super().setVisible(visible, *args, **kwargs)
+    # if visible:
+    # self._level_change()
+    # print('e')
+    # self.isocurve.setVisible(visible, *args, **kwargs)
+
+    def color_changed(self):
+        if not self.isVisible():
+            return
+        cmap = self._primary_image()._colorMap
+        lut = cmap.getStops()[1]
+        # lut = self._primary_image().lut
+        # lut = cmap.getLookupTable(nPts=4096)
+        if not self._colorbar.image.shape[0] == lut.shape[0]:
+            self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
+        self._colorbar._colorMap = cmap
+        self._colorbar.setLookupTable(lut)
+
+    # def limit_changed(self, mn: float | None = None, mx: float | None = None):
+    def limit_changed(self):
+        if not self.isVisible():
+            return
+        self.color_changed()
+        # if (self._fixedlimits is not None) or (mn is None):
+        mn, mx = self.limits
+        self._colorbar.setRect(0.0, mn, 1.0, mx - mn)
+        if self.levels is not None:
+            self._colorbar.setLevels(self.levels / (mx - mn) - mn)
+        self._span.setBounds((mn, mx))
+
+        # self.isoline.setBounds(self.levels)
+        # self.update_isodata()
+
+    # def cmap_changed(self):
+    #     cmap = self.imageItem()._colorMap
+    #     # lut = self.imageItem().lut
+    #     # lut = cmap.getLookupTable(nPts=4096)
+    #     # lut = self._eff_lut_for_image(self.imageItem())
+    #     # if lut is None:
+    #         # lut = self.imageItem()._effectiveLut
+    #     # if lut is not None:
+    #         # print(lut)
+    #     # if lut is None:
+    #     lut = cmap.getStops()[1]
+    #     # if not self.npts == lut.shape[0]:
+    #     # self.npts = lut.shape[0]
+    #     if not self._colorbar.image.shape[0] == lut.shape[0]:
+    #         self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
+    #     self._colorbar._colorMap = cmap
+    #     self._colorbar.setLookupTable(lut)
+    #     # self._colorbar.setColorMap(cmap)
+
+    def mouseDragEvent(self, ev):
+        ev.ignore()
+
+
 class FittingParameterWidget(QtWidgets.QWidget):
     sigParamChanged = QtCore.Signal(dict)
 
@@ -447,10 +717,15 @@ class FittingParameterWidget(QtWidgets.QWidget):
             spin.valueChanged.connect(
                 lambda: self.sigParamChanged.emit(self.param_dict())
             )
+        self.spin_lb.valueChanged.connect(self._refresh_bounds)
+        self.spin_ub.valueChanged.connect(self._refresh_bounds)
         self.check.stateChanged.connect(self.setFixed)
 
         self.setCheckable(checkable)
         self.setFixed(fixed)
+
+    def _refresh_bounds(self):
+        self.spin_value.setRange(self.spin_lb.value(), self.spin_ub.value())
 
     def setValue(self, value):
         self.spin_value.setValue(value)
@@ -1015,7 +1290,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         cb = QtWidgets.QApplication.instance().clipboard()
-        if cb.text(cb.Mode.Clipboard) is not "":
+        if cb.text(cb.Mode.Clipboard) != "":
             pyclip.copy(cb.text(cb.Mode.Clipboard))
         return super().closeEvent(event)
 

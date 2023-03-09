@@ -19,7 +19,11 @@ from erlab.plotting.interactive.colors import (
     pg_colormap_to_QPixmap,
 )
 from erlab.plotting.interactive.slicer import ArraySlicer
-from erlab.plotting.interactive.utilities import BetterSpinBox
+from erlab.plotting.interactive.utilities import (
+    BetterSpinBox,
+    BetterImageItem,
+    BetterColorBarItem,
+)
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -104,8 +108,8 @@ class ImageTool(QtWidgets.QMainWindow):
         self.controls = QtWidgets.QWidget()
         self.controls_layout = QtWidgets.QHBoxLayout(self.controls)
         self.controls_layout.setContentsMargins(3, 3, 3, 3)
-        self.controls_layout.setSpacing(3)
 
+        self.controls_layout.setSpacing(3)
         self.groups: list[QtWidgets.QGroupBox] = []
         self.group_layouts: list[QtWidgets.QVBoxLayout] = []
         self.group_widgets: list[list[QtWidgets.QWidget]] = []
@@ -146,8 +150,8 @@ class ImageTool(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox(**kwargs)
         group_layout = QtWidgets.QVBoxLayout(group)
         group_layout.setContentsMargins(3, 3, 3, 3)
-        group_layout.setSpacing(3)
         self.controls_layout.addWidget(group)
+        group_layout.setSpacing(3)
         self.groups.append(group)
         self.group_widgets.append([])
         self.group_layouts.append(group_layout)
@@ -321,11 +325,11 @@ class ImageTool(QtWidgets.QMainWindow):
             files = dialog.selectedFiles()
             match filters.index(dialog.selectedNameFilter()):
                 case 0:
-                    dat = xr.load_dataarray(files[0])
-                case 1:
                     dat = xr.load_dataarray(files[0], engine="h5netcdf")
-                case 2:
+                case 1:
                     dat = erlab.io.load_ssrl(files[0])
+                case 2:
+                    dat = xr.load_dataarray(files[0])
                 case _:
                     raise ValueError
             self.slicer_area.set_data(dat)
@@ -351,6 +355,42 @@ class ImageTool(QtWidgets.QMainWindow):
             erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
 
 
+# for m in ['addItem', 'removeItem', 'autoRange', 'clear', 'setAxisItems', 'setXRange',
+#   'setYRange', 'setRange', 'setAspectLocked', 'setMouseEnabled',
+#   'setXLink', 'setYLink', 'enableAutoRange', 'disableAutoRange',
+#   'setLimits', 'register', 'unregister', 'viewRect']:
+# setattr(self, m, getattr(self.plotItem, m))
+
+
+class ItoolColorBar(pg.PlotWidget):
+    def __init__(self, parent: QtWidgets.QWidget | None = None, **cbar_kw):
+        super().__init__(parent=parent, plotItem=BetterColorBarItem(**cbar_kw))
+        self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Expanding)
+
+    @property
+    def cb(self) -> BetterColorBarItem:
+        return self.plotItem
+
+    def getPlotItemViewBox(self) -> pg.ViewBox:
+        return self.getPlotItem().vb
+
+    def setVisible(self, visible: bool):
+        super().setVisible(visible)
+        self.cb.setVisible(visible)
+        self.cb._span.blockSignals(not visible)
+
+        if visible:
+            self.cb._span.setRegion(self.cb.limits)
+        #     self.cb._level_change()
+        # self.cb._primary_image().sigImageChanged.connect(self.cb.image_changed)
+        # self.cb._primary_image().sigColorChanged.connect(self.cb.color_changed)
+        # else:
+        # self.cb._primary_image().sigImageChanged.disconnect(self.cb.image_changed)
+        # self.cb._primary_image().sigColorChanged.disconnect(self.cb.color_changed)
+        #
+
+
 # class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
 class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     # Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
@@ -363,8 +403,8 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         **item_kw,
     ):
         # super().__init__()
-        # self.ci.layout.setSpacing(0)
         # self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        # self.ci.layout.setSpacing(3)
         # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
         # self.addItem(self.plotItem)
 
@@ -405,8 +445,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ):
         super().__init__(parent)
 
-        self.setLayout(QtWidgets.QStackedLayout())
+        self.setLayout(QtWidgets.QHBoxLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(0)
 
         self._splitters = (
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
@@ -463,6 +504,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.current_cursor = 0
 
         # self.rad2deg = rad2deg
+
+        # self._colorbar = pg.PlotWidget(self, plotItem=BetterColorBarItem())
+        self._colorbar = ItoolColorBar(self)
+        self.layout().addWidget(self._colorbar)
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -622,6 +667,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.refresh()
         self.set_colormap(update=True)
+        self._colorbar.cb.setImageItem(
+            tuple(im for ax in self.images for im in ax.getPlotItem().slicer_data_items)
+        )
+        self.lock_levels(False)
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int):
@@ -745,16 +794,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
-    def lock_limits(self, value: bool):
+    @QtCore.Slot(bool)
+    def lock_levels(self, lock: bool):
+        if lock:
+            levels = self.array_slicer.limits
+            self._colorbar.cb.setLimits(levels)
         for ax in self.images:
             for im in ax.getPlotItem().slicer_data_items:
-                im.lock_limits(value)
+                if lock:
+                    im.setAutoLevels(False)
+                    im.setLevels(levels, update=False)
+                else:
+                    im.setAutoLevels(True)
+
+                im.refresh_data()
+
+        self._colorbar.setVisible(lock)
         self.sigViewOptionChanged.emit()
 
     def adjust_layout(
         self,
-        horiz_pad: float = 45.0,
-        vert_pad: float = 30.0,
+        horiz_pad: int = 45,
+        vert_pad: int = 30,
         font_size: float = 11.0,
         r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
     ):
@@ -827,6 +888,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # reserve space, only hide plotItem
         self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
+
+        self._colorbar.cb.set_dimensions(width=30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size)
 
     def toggle_snap(self, value: bool | None = None):
         if value is None:
@@ -977,7 +1040,7 @@ class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
             self.setData(coord, vals, **kwargs)
 
 
-class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
+class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
     def __init__(
         self,
         axes,
@@ -985,9 +1048,8 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         *args,
         **kargs,
     ):
-        pg.ImageItem.__init__(self, *args, **kargs)
+        BetterImageItem.__init__(self, *args, **kargs)
         ItoolDisplayObject.__init__(self, axes, cursor)
-        self.auto_limits = True
 
     @suppressnanwarning
     def refresh_data(self, **kwargs):
@@ -995,34 +1057,13 @@ class ItoolImageItem(pg.ImageItem, ItoolDisplayObject):
         rect, img = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
-        kwargs["autoLevels"] = self.auto_limits
         self.setImage(image=img, rect=rect, **kwargs)
 
-    def lock_limits(self, value: bool):
-        self.auto_limits = not value
-        self.refresh_data()
-
-    def set_colormap(
-        self,
-        cmap,
-        gamma,
-        reverse=False,
-        highContrast=False,
-        zeroCentered=False,
-        update=True,
-    ):
-        cmap = pg_colormap_powernorm(
-            cmap,
-            gamma,
-            reverse,
-            highContrast=highContrast,
-            zeroCentered=zeroCentered,
-        )
-        self.set_pg_colormap(cmap, update=update)
-
-    def set_pg_colormap(self, cmap: pg.ColorMap, update=True):
-        self._colorMap = cmap
-        self.setLookupTable(cmap.getStops()[1], update=update)
+    # def lock_levels(self, lock: bool, levels: tuple[float, float] | None = None):
+    #     self.auto_levels = not lock
+    #     if lock and levels:
+    #         self.setLevels(levels, update=False)
+    #     self.refresh_data()
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
@@ -1246,26 +1287,35 @@ class ItoolPlotItem(pg.PlotItem):
             self.set_active_cursor(cursor)
             item.refresh_data()
 
+        
         if self.is_image:
             label_kw = {
-                a: self.slicer_area.data.dims[self.display_axis[i]]
-                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
-                if self.getAxis(a).isVisible()
+                a: self._get_label_unit(i) for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1)) if self.getAxis(a).isVisible()
             }
         else:
+
+            label_kw = dict()
+            
             if self.slicer_data_items[-1].is_vertical:
-                label_kw = {
-                    a: self.slicer_area.data.dims[self.display_axis[0]]
-                    for a in ("left", "right")
-                    if self.getAxis(a).isVisible()
-                }
+                valid_ax = ("left", "right")
             else:
-                label_kw = {
-                    a: self.slicer_area.data.dims[self.display_axis[0]]
-                    for a in ("top", "bottom")
-                    if self.getAxis(a).isVisible()
-                }
+                valid_ax = ("top", "bottom")
+                
+            for a in ("top", "bottom", "left", "right"):
+                if self.getAxis(a).isVisible():
+                    label_kw[a] = self._get_label_unit(0 if a in valid_ax else None)
+                    
         self.setLabels(**label_kw)
+        
+    def _get_label_unit(self, index:int|None=None):
+        if index is None:
+            dim = ""
+        else:
+            dim = self.slicer_area.data.dims[self.display_axis[index]]
+        if dim == "eV":
+            return dim, dim
+        return dim, ""
+        
 
     def set_active_cursor(self, index: int):
         if self.is_image:
@@ -1309,6 +1359,8 @@ class IconButton(QtWidgets.QPushButton):
         contrast="mdi6.contrast-box",
         lock="mdi6.lock",
         unlock="mdi6.lock-open-variant",
+        bright_auto="mdi6.brightness-auto",
+        bright_percent="mdi6.brightness-percent",
         colorbar="mdi6.gradient-vertical",
         transpose_0="mdi6.arrow-top-left-bottom-right",
         transpose_1="mdi6.arrow-up-down",
@@ -1448,8 +1500,8 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         super().__init__()
         self.setLayout(QtWidgets.QHBoxLayout(self))
         self.layout().setContentsMargins(0, 0, 0, 0)
-        self.layout().setSpacing(3)
 
+        self.layout().setSpacing(3)
         self.spin = BetterSpinBox(
             self,
             toolTip="Colormap gamma",
@@ -1548,6 +1600,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def initialize_layout(self):
         self.setLayout(QtWidgets.QHBoxLayout(self))
         self.layout().setContentsMargins(0, 0, 0, 0)
+
         self.layout().setSpacing(3)
 
     def initialize_widgets(self):
@@ -1624,8 +1677,9 @@ class ColorControls(ItoolControlsBase):
             toolTip="Center colormap at zero",
         )
         self.btn_lock = IconButton(
-            on="unlock",
-            off="lock",
+            # on="unlock", off="lock",
+            on="bright_auto",
+            off="bright_percent",
             checkable=True,
             toolTip="Lock color limits",
         )
@@ -1649,12 +1703,7 @@ class ColorControls(ItoolControlsBase):
             self.slicer_area.colormap_properties["highContrast"]
         )
         self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
-        self.btn_lock.setChecked(
-            not self.slicer_area.images[0]
-            .getPlotItem()
-            .slicer_data_items[0]
-            .auto_limits
-        )
+        self.btn_lock.setChecked(self.slicer_area._colorbar.isVisible())
 
         self.btn_reverse.blockSignals(False)
         self.btn_contrast.blockSignals(False)
@@ -1670,12 +1719,12 @@ class ColorControls(ItoolControlsBase):
 
     def connect_signals(self):
         super().connect_signals()
-        self.btn_lock.toggled.connect(self.slicer_area.lock_limits)
+        self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
         self.slicer_area.sigViewOptionChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
-        self.btn_lock.toggled.disconnect(self.slicer_area.lock_limits)
+        self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
         self.slicer_area.sigViewOptionChanged.disconnect(self.update)
 
 
@@ -1723,8 +1772,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         for s in self.values_layouts:
             s.setContentsMargins(0, 0, 0, 0)
-            s.setSpacing(3)
 
+            s.setSpacing(3)
         # buttons for multicursor control
         self.btn_add = IconButton("plus", toolTip="Add cursor")
         self.btn_add.clicked.connect(self.addCursor)
@@ -1981,6 +2030,7 @@ class ItoolColormapControls(ItoolControlsBase):
         else:
             self.setLayout(QtWidgets.QHBoxLayout(self))
         self.layout().setContentsMargins(0, 0, 0, 0)
+
         self.layout().setSpacing(3)
 
     def initialize_widgets(self):
@@ -2021,6 +2071,7 @@ class ItoolBinningControls(ItoolControlsBase):
     def initialize_layout(self):
         self.setLayout(QtWidgets.QGridLayout(self))
         self.layout().setContentsMargins(0, 0, 0, 0)
+
         self.layout().setSpacing(3)
 
     def initialize_widgets(self):
@@ -2098,8 +2149,8 @@ if __name__ == "__main__":
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
         # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
         # engine="h5netcdf",
     )
