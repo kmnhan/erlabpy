@@ -66,7 +66,7 @@ def itool_(data, execute=None, *args, **kwargs):
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    # qapp.setStyle("Fusion")
+    qapp.setStyle("Fusion")
 
     if isinstance(data, (list, tuple)):
         win = tuple()
@@ -201,6 +201,9 @@ class ImageTool(QtWidgets.QMainWindow):
         self._add_action.triggered.connect(self.slicer_area.add_cursor)
         self._rem_action = self._view_menu.addAction(
             "&Remove Current Cursor", QtGui.QKeySequence("Shift+R")
+        )
+        self._view_menu.aboutToShow.connect(
+            lambda: self._rem_action.setDisabled(self.slicer_area.n_cursors == 1)
         )
         self._rem_action.triggered.connect(self.slicer_area.remove_current_cursor)
         self._snap_action = self._view_menu.addAction(
@@ -356,24 +359,24 @@ class ImageTool(QtWidgets.QMainWindow):
             erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
 
 
-# for m in ['addItem', 'removeItem', 'autoRange', 'clear', 'setAxisItems', 'setXRange',
-#   'setYRange', 'setRange', 'setAspectLocked', 'setMouseEnabled',
-#   'setXLink', 'setYLink', 'enableAutoRange', 'disableAutoRange',
-#   'setLimits', 'register', 'unregister', 'viewRect']:
-# setattr(self, m, getattr(self.plotItem, m))
-
-
 class ItoolColorBar(pg.PlotWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None, **cbar_kw):
         super().__init__(parent=parent, plotItem=BetterColorBarItem(**cbar_kw))
         self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Expanding
-        )
 
     @property
     def cb(self) -> BetterColorBarItem:
         return self.plotItem
+
+    def set_dimensions(
+        self,
+        width: int = 30,
+        horiz_pad: int | None = None,
+        vert_pad: int | None = None,
+        font_size: float = 11.0,
+    ):
+        self.cb.set_dimensions(horiz_pad, vert_pad, font_size)
+        self.setFixedWidth(width)
 
     def getPlotItemViewBox(self) -> pg.ViewBox:
         return self.getPlotItem().vb
@@ -385,13 +388,6 @@ class ItoolColorBar(pg.PlotWidget):
 
         if visible:
             self.cb._span.setRegion(self.cb.limits)
-        #     self.cb._level_change()
-        # self.cb._primary_image().sigImageChanged.connect(self.cb.image_changed)
-        # self.cb._primary_image().sigColorChanged.connect(self.cb.color_changed)
-        # else:
-        # self.cb._primary_image().sigImageChanged.disconnect(self.cb.image_changed)
-        # self.cb._primary_image().sigColorChanged.disconnect(self.cb.color_changed)
-        #
 
 
 # class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
@@ -728,6 +724,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int)
     def remove_cursor(self, index: int):
+        if self.n_cursors == 1:
+            return
         self.array_slicer.remove_cursor(index, update=False)
         self.cursor_colors.pop(index)
         if self.current_cursor == index:
@@ -895,8 +893,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # reserve space, only hide plotItem
         self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
 
-        self._colorbar.cb.set_dimensions(
-            width=30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
+        self._colorbar.set_dimensions(
+            width=horiz_pad + 20, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
         )
 
     def toggle_snap(self, value: bool | None = None):
@@ -986,13 +984,13 @@ class ItoolCursorSpan(pg.LinearRegionItem):
         kargs.setdefault("movable", False)
         super().__init__(*args, **kargs)
 
-    def setSpan(self, rgn):
-        # setRegion but hides when region width is 0
+    def setRegion(self, rgn):
+        # hides when region width is 0
         if rgn[1] == rgn[0]:
             self.setVisible(False)
         else:
             self.setVisible(True)
-            self.setRegion(rgn)
+            super().setRegion(rgn)
 
 
 class ItoolDisplayObject(object):
@@ -1066,12 +1064,6 @@ class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
             self.cursor_index, self.display_axis
         )
         self.setImage(image=img, rect=rect)
-
-    # def lock_levels(self, lock: bool, levels: tuple[float, float] | None = None):
-    #     self.auto_levels = not lock
-    #     if lock and levels:
-    #         self.setLevels(levels, update=False)
-    #     self.refresh_data()
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
@@ -1280,7 +1272,7 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.lims_uniform[ax],
                 self.array_slicer.get_value(cursor, ax, uniform=True),
             )
-            self.cursor_spans[cursor][ax].setSpan(
+            self.cursor_spans[cursor][ax].setRegion(
                 self.array_slicer.span_bounds(cursor, ax)
             )
 
@@ -1792,10 +1784,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
             s.setSpacing(3)
         # buttons for multicursor control
         self.btn_add = IconButton("plus", toolTip="Add cursor")
-        self.btn_add.clicked.connect(self.addCursor)
+        self.btn_add.clicked.connect(self.slicer_area.add_cursor)
 
         self.btn_rem = IconButton("minus", toolTip="Remove cursor")
-        self.btn_rem.clicked.connect(self.remCursor)
+        self.btn_rem.clicked.connect(
+            lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
+        )
 
         self.btn_snap = IconButton(
             on="snap", off="snap_off", toolTip="Snap cursor to data points"
@@ -1907,6 +1901,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def connect_signals(self):
         super().connect_signals()
         self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
+        self.slicer_area.sigCursorCountChanged.connect(self.update_cursor_count)
         self.slicer_area.sigViewOptionChanged.connect(self.update_options)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
@@ -1915,6 +1910,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def disconnect_signals(self):
         super().disconnect_signals()
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
+        self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
         self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
@@ -2001,9 +1997,18 @@ class ItoolCrosshairControls(ItoolControlsBase):
         painter.end()
         return QtGui.QPixmap.fromImage(img)
 
+    def update_cursor_count(self, count: int):
+        if count == self.cb_cursors.count():
+            print("wtf?")
+            return
+        elif count > self.cb_cursors.count():
+            self.addCursor()
+        else:
+            self.remCursor()
+
     def addCursor(self):
         self.cb_cursors.setDisabled(False)
-        self.slicer_area.add_cursor()
+        # self.slicer_area.add_cursor()
         self.cb_cursors.addItem(
             QtGui.QIcon(self._cursor_icon(self.current_cursor)),
             self._cursor_name(self.current_cursor),
@@ -2012,7 +2017,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.btn_rem.setDisabled(False)
 
     def remCursor(self):
-        self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
+        # self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
         for i in range(self.cb_cursors.count()):
             self.cb_cursors.setItemText(i, self._cursor_name(i))
@@ -2092,7 +2097,7 @@ class ItoolBinningControls(ItoolControlsBase):
 
     def initialize_widgets(self):
         super().initialize_widgets()
-        self.label = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
+        self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
             BetterSpinBox(
                 self,
@@ -2119,7 +2124,7 @@ class ItoolBinningControls(ItoolControlsBase):
         )
 
         for i in range(self.data.ndim):
-            self.layout().addWidget(self.label[i], 0, i, 1, 1)
+            self.layout().addWidget(self.labels[i], 0, i, 1, 1)
             self.layout().addWidget(self.spins[i], 1, i, 1, 1)
         self.layout().addWidget(self.reset_btn, 2, 0, 1, 1)
         self.layout().addWidget(self.all_btn, 2, 1, 1, 1)
@@ -2145,13 +2150,13 @@ class ItoolBinningControls(ItoolControlsBase):
     def update(self):
         super().update()
 
-        if len(self.label) != self.data.ndim:
+        if len(self.labels) != self.data.ndim:
             clear_layout(self.layout())
             self.initialize_widgets()
 
         for i in range(self.data.ndim):
             self.spins[i].blockSignals(True)
-            self.label[i].setText(str(self.data.dims[i]))
+            self.labels[i].setText(str(self.data.dims[i]))
             self.spins[i].setRange(1, self.data.shape[i] - 1)
             self.spins[i].setValue(self.array_slicer.get_bins(self.current_cursor)[i])
             self.spins[i].blockSignals(False)

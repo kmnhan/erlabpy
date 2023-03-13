@@ -198,11 +198,15 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         super().__init__(*args, **kwargs)
         # self.editingFinished.disconnect()
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
+            # QtWidgets.QSizePolicy.Policy.Expanding,
+            # QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+            QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.editingFinished.connect(self.editingFinishedEvent)
         self._updateHeight()
+        self._updateWidth()
+
         if self.isReadOnly():
             self.lineEdit().setReadOnly(True)
             self.setButtonSymbols(self.ButtonSymbols.NoButtons)
@@ -238,6 +242,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         elif np.isnan(mx):
             mx = np.inf
         self._max = mx
+        self._updateWidth()
 
     def setMinimum(self, mn):
         if self._only_int and np.isfinite(mn):
@@ -245,6 +250,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         elif np.isnan(mn):
             mn = -np.inf
         self._min = mn
+        self._updateWidth()
 
     def setSingleStep(self, step):
         if self._only_int:
@@ -412,6 +418,27 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         if self._is_compact:
             self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
+    def _get_offset(self):
+        spin = QtWidgets.QDoubleSpinBox(self, minimum=0, maximum=0)
+        w = (
+            spin.minimumSizeHint().width()
+            - QtGui.QFontMetrics(spin.font())
+            .boundingRect(spin.textFromValue(0.0))
+            .width()
+        )
+        spin.setDisabled(True)
+        spin.setVisible(False)
+        del spin
+        return w
+
+    def _updateWidth(self):
+        self.setMinimumWidth(
+            max(
+                self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
+            )
+            + self._get_offset()
+        )
+
 
 class BetterImageItem(pg.ImageItem):
     sigColorChanged = QtCore.Signal()
@@ -486,7 +513,7 @@ class BetterAxisItem(pg.AxisItem):
         style = ";".join(["%s: %s" % (k, self.labelStyle[k]) for k in self.labelStyle])
 
         return "<span style='%s'>%s</span>" % (style, s)
-    
+
     def setLabel(self, text=None, units=None, unitPrefix=None, **args):
         # `None` input is kept for backward compatibility!
         self.labelText = text or ""
@@ -559,34 +586,23 @@ class BetterColorBarItem(pg.PlotItem):
 
     def set_dimensions(
         self,
-        width: int = 30,
         horiz_pad: int | None = None,
-        vert_pad: int = 35,
+        vert_pad: int | None = None,
         font_size: float = 11.0,
     ):
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding
         )
-        # self.layout.setContentsMargins(0,vert_pad,0,vert_pad)
-        self.showAxes(
-            (True, True, True, True),
-            showValues=(False, False, True, False),
-            size=(None, vert_pad),
-        )
-        self.layout.setColumnFixedWidth(1, width)
-        # self.setMaximumWidth(width)
-
-        # self.getAxis("left").setWidth(None)
-        # self.getAxis("top").setHeight(vert_pad)
-        # self.getAxis("bottom").setHeight(vert_pad)
+        self.showAxes((True, True, True, True), showValues=(False, False, True, False))
+        self.getAxis("top").setHeight(vert_pad)
+        self.getAxis("bottom").setHeight(vert_pad)
         self.getAxis("right").setWidth(horiz_pad)
+        self.getAxis("left").setWidth(None)
 
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
         for axis in ("left", "bottom", "right", "top"):
             self.getAxis(axis).setTickFont(font)
-        # self.setFixedWidth(width+horiz_pad)
-        # self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding)
 
     def _level_change(self):
         if not self.isVisible():
@@ -1108,7 +1124,7 @@ class ROIControls(ParameterGroup):
 
         super(ROIControls, self).__init__(
             x0=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 value=x0,
                 valueChanged=lambda x: self.modify_roi(x0=x),
                 minimum=xm,
@@ -1116,7 +1132,7 @@ class ROIControls(ParameterGroup):
                 **spinbox_kw,
             ),
             x1=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 value=x1,
                 valueChanged=lambda x: self.modify_roi(x1=x),
                 minimum=xm,
@@ -1124,7 +1140,7 @@ class ROIControls(ParameterGroup):
                 **spinbox_kw,
             ),
             y0=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 value=y0,
                 valueChanged=lambda x: self.modify_roi(y0=x),
                 minimum=ym,
@@ -1132,7 +1148,7 @@ class ROIControls(ParameterGroup):
                 **spinbox_kw,
             ),
             y1=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 value=y1,
                 valueChanged=lambda x: self.modify_roi(y1=x),
                 minimum=ym,
@@ -1262,7 +1278,14 @@ class PostInitCaller(type(QtWidgets.QMainWindow)):
 
 class AnalysisWindow(QtWidgets.QMainWindow):
     def __init__(
-        self, data, title=None, layout="horizontal", data_is_input=True, *args, **kwargs
+        self,
+        data,
+        title=None,
+        layout="horizontal",
+        data_is_input=True,
+        analysisWidget=None,
+        *args,
+        **kwargs,
     ):
         self.qapp = QtCore.QCoreApplication.instance()
         if not self.qapp:
@@ -1289,7 +1312,13 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         else:
             raise ValueError("Layout must be 'vertical' or 'horizontal'.")
 
-        self.aw = AnalysisWidgetBase(*args, **kwargs)
+        if analysisWidget is None:
+            self.aw = AnalysisWidgetBase(*args, **kwargs)
+        elif isinstance(analysisWidget, type):
+            self.aw = analysisWidget(*args, **kwargs)
+        else:
+            self.aw = analysisWidget
+
         for n in [
             "set_input",
             "add_roi",
@@ -1447,7 +1476,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
 
 class ComparisonWidget(AnalysisWidgetBase):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, nax=2, **kwargs)
+        super().__init__(*args, num_ax=2, **kwargs)
         self.prefunc = lambda x: x
         self.mainfunc = lambda x: x
         self.prefunc_only_values = False
@@ -1537,28 +1566,28 @@ if __name__ == "__main__":
         .sel(eV=-0.15, method="nearest")
         .fillna(0)
     )
-    win = AnalysisWindow(dat, orientation="vertical")
+    win = AnalysisWindow(dat, analysisWidget=ComparisonWidget, orientation="vertical")
 
     # win.set_pre_function(gaussian_filter, sigma=[1, 1], only_values=True)
     # win.set_pre_function(gaussian_filter, sigma=(0.1, 0.1))
 
     gaussfilt_2d = lambda dat, sx, sy: gaussian_filter(dat, sigma=(sx, sy))
-    # win.set_main_function(gaussfilt_2d, sx=0.1, sy=1)
+    win.aw.set_main_function(gaussfilt_2d, sx=0.1, sy=1, only_values=True)
 
     layout.addWidget(win)
     layout.addWidget(
         ParameterGroup(
             sigma_x=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 minimum=0,
                 maximum=10,
-                valueChanged=lambda x: win.set_main_function_args(sx=x),
+                valueChanged=lambda x: win.aw.set_main_function_args(sx=x),
             ),
             sigma_y=dict(
-                qwtype="dblspin",
+                qwtype="btspin",
                 minimum=0,
                 maximum=10,
-                valueChanged=lambda x: win.set_main_function_args(sy=x),
+                valueChanged=lambda x: win.aw.set_main_function_args(sy=x),
             ),
             b=dict(qwtype="combobox", items=["item1", "item2", "item3"]),
         )
