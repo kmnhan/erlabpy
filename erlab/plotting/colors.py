@@ -1,17 +1,16 @@
-import pkgutil
-from io import StringIO
 import matplotlib as mpl
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 
 from matplotlib import pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-
 
 __all__ = [
     "InversePowerNorm",
     "TwoSlopePowerNorm",
+    "CenteredPowerNorm",
+    "TwoSlopeInversePowerNorm",
+    "CenteredInversePowerNorm",
     "get_mappable",
     "proportional_colorbar",
     "nice_colorbar",
@@ -53,14 +52,11 @@ class InversePowerNorm(mcolors.PowerNorm):
                     np.clip(result.filled(vmax), vmin, vmax), mask=mask
                 )
 
-            if gamma >= 1:
-                return super().__call__(value, clip)
-
             resdat = result.data
 
             resdat *= -1
             resdat += vmax
-            resdat /= vmax - vmin  # ** (1.0 / gamma)
+            resdat /= vmax - vmin
             resdat[resdat < 0] = 0
             np.power(resdat, 1.0 / gamma, resdat)
             resdat *= -1
@@ -76,9 +72,6 @@ class InversePowerNorm(mcolors.PowerNorm):
             raise ValueError("Not invertible until scaled")
         gamma = self.gamma
         vmin, vmax = self.vmin, self.vmax
-        if gamma >= 1:
-            return super().inverse(value)
-
         if np.iterable(value):
             val = np.ma.asarray(value)
             return np.ma.power(1 - val, gamma) * (vmin - vmax) + vmax
@@ -86,8 +79,97 @@ class InversePowerNorm(mcolors.PowerNorm):
             return pow(1 - value, gamma) * (vmin - vmax) + vmax
 
 
-class TwoSlopePowerNorm(mcolors.Normalize):
-    def __init__(self, gamma, vcenter=None, vmin=None, vmax=None):
+def _diverging_powernorm(result, gamma, vmin, vmax, vcenter):
+    resdat = result.data
+    resdat_ = resdat.copy()
+
+    resdat_l = resdat[resdat_ < vcenter]
+    resdat_l -= vcenter
+    resdat_l[resdat_l >= 0] = 0
+    np.power(-resdat_l, gamma, resdat_l)
+    resdat_l /= (vcenter - vmin) ** gamma
+    resdat_l *= -0.5
+    resdat_l += 0.5
+    resdat[resdat_ < vcenter] = resdat_l
+
+    resdat_u = resdat[resdat_ >= vcenter]
+    resdat_u -= vcenter
+    resdat_u[resdat_u < 0] = 0
+    np.power(resdat_u, gamma, resdat_u)
+    resdat_u /= (vmax - vcenter) ** gamma
+    resdat_u *= 0.5
+    resdat_u += 0.5
+    resdat[resdat_ >= vcenter] = resdat_u
+
+    result = np.ma.array(resdat, mask=result.mask, copy=False)
+    return result
+
+
+def _diverging_powernorm_inv(value, gamma, vmin, vmax, vcenter):
+    if np.iterable(value):
+        val = np.ma.asarray(value)
+        val_ = val.copy()
+        val_l = val_[val < 0.5]
+        val_u = val_[val >= 0.5]
+        val_[val < 0.5] = (
+            np.ma.power(1 - 2 * val_l, 1.0 / gamma) * (vmin - vcenter) + vcenter
+        )
+        val_[val >= 0.5] = (
+            np.ma.power(2 * val_u - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+        )
+        return np.ma.asarray(val_)
+    else:
+        if value < 0.5:
+            return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
+        else:
+            return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+
+
+def _diverging_inversepowernorm(result, gamma, vmin, vmax, vcenter):
+    resdat = result.data
+    resdat_ = resdat.copy()
+
+    resdat_l = resdat[resdat_ < vcenter]
+    resdat_l *= -1
+    resdat_l += vmin
+    resdat_l /= vmin - vcenter
+    resdat_l[resdat_l < 0] = 0
+    np.power(-resdat_l, 1.0 / gamma, resdat_l)
+    resdat_l *= 0.5
+    resdat[resdat_ < vcenter] = resdat_l
+
+    resdat_u = resdat[resdat_ >= vcenter]
+    resdat_u *= -1
+    resdat_u += vmax
+    resdat_u /= vmax - vcenter
+    resdat_u[resdat_u < 0] = 0
+    np.power(resdat_u, 1.0 / gamma, resdat_u)
+    resdat_u *= -0.5
+    resdat_u += 1
+    resdat[resdat_ >= vcenter] = resdat_u
+
+    result = np.ma.array(resdat, mask=result.mask, copy=False)
+    return result
+
+
+def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
+    if np.iterable(value):
+        val = np.ma.asarray(value)
+        val_ = val.copy()
+        val_l = val_[val < 0.5]
+        val_u = val_[val >= 0.5]
+        val_[val < 0.5] = np.ma.power(2 * val_l, gamma) * (vcenter - vmin) + vmin
+        val_[val >= 0.5] = np.ma.power(2 - 2 * val_u, gamma) * (vcenter - vmax) + vmax
+        return np.ma.asarray(val_)
+    else:
+        if value < 0.5:
+            return pow(2 * value, gamma) * (vcenter - vcenter) + vmin
+        else:
+            return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
+
+
+class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
+    def __init__(self, gamma, vcenter=0, vmin=None, vmax=None):
         """
         Normalize data with a set center.
 
@@ -99,9 +181,8 @@ class TwoSlopePowerNorm(mcolors.Normalize):
         ----------
         gamma : float
             Power law exponent
-        vcenter : float, optional
+        vcenter : float, default: 0
             The data value that defines ``0.5`` in the normalization.
-            Defaults to the average between `vmin` and `vmax`.
         vmin : float, optional
             The data value that defines ``0.0`` in the normalization.
             Defaults to the min value of the dataset.
@@ -110,13 +191,10 @@ class TwoSlopePowerNorm(mcolors.Normalize):
             Defaults to the max value of the dataset.
         """
 
-        super().__init__(vmin=vmin, vmax=vmax)
-        self._vcenter = vcenter
-        if vcenter is not None and vmax is not None and vcenter >= vmax:
-            raise ValueError("vmin, vcenter, and vmax must be in " "ascending order")
-        if vcenter is not None and vmin is not None and vcenter <= vmin:
-            raise ValueError("vmin, vcenter, and vmax must be in " "ascending order")
+        super().__init__(vcenter=vcenter, vmin=vmin, vmax=vmax)
         self.gamma = gamma
+        self._func = _diverging_powernorm
+        self._func_i = _diverging_powernorm_inv
 
     def __call__(self, value, clip=None):
         """
@@ -132,50 +210,10 @@ class TwoSlopePowerNorm(mcolors.Normalize):
         if vmin == vmax:
             result.fill(0)
         else:
-            resdat = result.data
-            resdat_ = resdat.copy()
-            resdat_l = resdat[resdat_ < vcenter]
-            resdat_u = resdat[resdat_ >= vcenter]
-            resdat_l -= vcenter
-            resdat_u -= vcenter
-            resdat_l[resdat_l >= 0] = 0
-            resdat_u[resdat_u < 0] = 0
-            np.power(resdat_u, gamma, resdat_u)
-            np.power(-resdat_l, gamma, resdat_l)
-            resdat_u /= (vmax - vcenter) ** gamma
-            resdat_l /= (vcenter - vmin) ** gamma
-            resdat_u *= 0.5
-            resdat_u += 0.5
-            resdat_l *= -0.5
-            resdat_l += 0.5
-            resdat[resdat_ < vcenter] = resdat_l
-            resdat[resdat_ >= vcenter] = resdat_u
-            result = np.ma.array(resdat, mask=result.mask, copy=False)
+            result = self._func(result, gamma, vmin, vmax, vcenter)
         if is_scalar:
             result = np.atleast_1d(result)[0]
         return result
-
-    @property
-    def vcenter(self):
-        return self._vcenter
-
-    @vcenter.setter
-    def vcenter(self, value):
-        if value != self._vcenter:
-            self._vcenter = value
-            self._changed()
-
-    def autoscale_None(self, A):
-        """
-        Get vmin and vmax, and then clip at vcenter
-        """
-        super().autoscale_None(A)
-        if self.vcenter is None:
-            self.vcenter = (self.vmin + self.vmax) / 2
-        if self.vmin > self.vcenter:
-            self.vmin = self.vcenter
-        if self.vmax < self.vcenter:
-            self.vmax = self.vcenter
 
     def inverse(self, value):
         if not self.scaled():
@@ -184,23 +222,87 @@ class TwoSlopePowerNorm(mcolors.Normalize):
         (vmin,), _ = self.process_value(self.vmin)
         (vmax,), _ = self.process_value(self.vmax)
         (vcenter,), _ = self.process_value(self.vcenter)
-        if np.iterable(value):
-            val = np.ma.asarray(value)
-            val_ = val.copy()
-            val_l = val[val_ < 0.5]
-            val_u = val[val_ >= 0.5]
-            val[val_ < 0.5] = (
-                np.ma.power(1 - 2 * val_l, 1.0 / gamma) * (vmin - vcenter) + vcenter
-            )
-            val[val_ >= 0.5] = (
-                np.ma.power(2 * val_u - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
-            )
-            return np.ma.asarray(val)
+        return self._func_i(value, gamma, vmin, vmax, vcenter)
+
+
+class CenteredPowerNorm(mcolors.CenteredNorm):
+    def __init__(self, gamma, vcenter=0, halfrange=None, clip=False):
+        """
+        Normalize symmetrical data around a center (0 by default).
+
+        Unlike `TwoSlopePowerNorm`, `CenteredPowerNorm` applies an equal rate of change
+        around the center.
+
+        Useful when mapping symmetrical data around a conceptual center e.g., data that
+        range from -2 to 4, with 0 as the midpoint, and with equal rates of change
+        around that midpoint.
+
+        Parameters
+        ----------
+        vcenter : float, default: 0
+            The data value that defines ``0.5`` in the normalization.
+        halfrange : float, optional
+            The range of data values that defines a range of ``0.5`` in the
+            normalization, so that *vcenter* - *halfrange* is ``0.0`` and *vcenter* +
+            *halfrange* is ``1.0`` in the normalization. Defaults to the largest
+            absolute difference to *vcenter* for the values in the dataset.
+
+        """
+
+        super().__init__(vcenter=vcenter, halfrange=halfrange, clip=clip)
+        self.gamma = gamma
+        self._func = _diverging_powernorm
+        self._func_i = _diverging_powernorm_inv
+
+    def __call__(self, value, clip=None):
+        """
+        Map value to the interval [0, 1].
+        """
+        if clip is None:
+            clip = self.clip
+
+        result, is_scalar = self.process_value(value)
+
+        self.autoscale_None(result)
+        gamma = self.gamma
+        vmin, vcenter, vmax = self.vmin, self.vcenter, self.vmax
+        if not vmin <= vcenter <= vmax:
+            raise ValueError("vmin, vcenter, vmax must increase monotonically")
+        if vmin == vmax:
+            result.fill(0)
         else:
-            if value < 0.5:
-                return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
-            else:
-                return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+            if clip:
+                mask = np.ma.getmask(result)
+                result = np.ma.array(
+                    np.clip(result.filled(vmax), vmin, vmax), mask=mask
+                )
+            result = self._func(result, gamma, vmin, vmax, vcenter)
+        if is_scalar:
+            result = np.atleast_1d(result)[0]
+        return result
+
+    def inverse(self, value):
+        if not self.scaled():
+            raise ValueError("Not invertible until scaled")
+        gamma = self.gamma
+        (vmin,), _ = self.process_value(self.vmin)
+        (vmax,), _ = self.process_value(self.vmax)
+        (vcenter,), _ = self.process_value(self.vcenter)
+        return self._func_i(value, gamma, vmin, vmax, vcenter)
+
+
+class TwoSlopeInversePowerNorm(TwoSlopePowerNorm):
+    def __init__(self, gamma, vcenter=0, vmin=None, vmax=None):
+        super().__init__(gamma, vcenter, vmin, vmax)
+        self._func = _diverging_inversepowernorm
+        self._func_i = _diverging_inversepowernorm_inv
+
+
+class CenteredInversePowerNorm(CenteredPowerNorm):
+    def __init__(self, gamma, vcenter=0, halfrange=None, clip=False):
+        super().__init__(gamma, vcenter, halfrange, clip)
+        self._func = _diverging_inversepowernorm
+        self._func_i = _diverging_inversepowernorm_inv
 
 
 def get_mappable(ax, image_only=False, error=True):
@@ -275,10 +377,10 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     """
     fontsize = kwargs.pop("fontsize", None)
 
-    # if cax is None:
     if ax is None:
-        ax = plt.gca()
-        ax_ref = ax
+        if cax is None:
+            ax = plt.gca()
+            ax_ref = ax
     else:
         try:
             ax_ref = ax.flatten()[0]
@@ -291,7 +393,8 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
     ticks = mappable.colorbar.get_ticks()
-    mappable.colorbar.remove()
+    if cax is None:
+        mappable.colorbar.remove()
     kwargs.setdefault("ticks", ticks)
     kwargs.setdefault("cmap", mappable.cmap)
     kwargs.setdefault("norm", mappable.norm)
