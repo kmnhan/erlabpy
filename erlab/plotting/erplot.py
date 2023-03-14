@@ -18,6 +18,9 @@ from erlab.plotting.bz import get_bz_edge, plot_hex_bz
 from erlab.plotting.colors import (
     InversePowerNorm,
     TwoSlopePowerNorm,
+    CenteredPowerNorm,
+    TwoSlopeInversePowerNorm,
+    CenteredInversePowerNorm,
     get_mappable,
     image_is_light,
     nice_colorbar,

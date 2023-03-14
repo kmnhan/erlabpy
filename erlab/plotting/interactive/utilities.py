@@ -1,6 +1,7 @@
 """Various helper functions and extensions to pyqtgraph."""
 
 import sys
+import re
 import weakref
 from collections.abc import Iterable, Sequence
 
@@ -429,7 +430,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         spin.setDisabled(True)
         spin.setVisible(False)
         del spin
-        return w
+        return w + 10
 
     def _updateWidth(self):
         self.setMinimumWidth(
@@ -496,23 +497,79 @@ class BetterAxisItem(pg.AxisItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def updateAutoSIPrefix(self):
+        if self.label.isVisible():
+            if self.logMode:
+                _range = 10 ** np.array(self.range)
+            else:
+                _range = self.range
+            (scale, prefix) = pg.siScale(
+                max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
+            )
+            # if self.labelUnits == '' and prefix in ['k', 'm']:  ## If we are not showing units, wait until 1e6 before scaling.
+            #     scale = 1.0
+            #     prefix = ''
+            self.autoSIPrefixScale = scale
+            self.labelUnitPrefix = prefix
+        else:
+            self.autoSIPrefixScale = 1.0
+
+        self._updateLabel()
+
+    def tickStrings(self, values, scale, spacing):
+        if self.logMode:
+            return self.logTickStrings(values, scale, spacing)
+
+        places = max(0, np.ceil(-np.log10(spacing * scale)))
+        strings = []
+        for v in values:
+            vs = v * scale
+            if abs(vs) < 0.001 or abs(vs) >= 10000:
+                vstr = "%g" % vs
+            else:
+                vstr = ("%%0.%df" % places) % vs
+            strings.append(vstr.replace("-", "−"))
+        return strings
+
     def labelString(self):
         if self.labelUnits == "":
             if not self.autoSIPrefix or self.autoSIPrefixScale == 1.0:
                 units = ""
             else:
-                units = "(×%G)" % (1.0 / self.autoSIPrefixScale)
+                # units = re.sub(
+                #     r"1E\+?(\-?)0?(\d?\d)",
+                #     r"10<sup>\1\2</sup>",
+                #     f"(×{1.0 / self.autoSIPrefixScale:.3G})",
+                # )#.replace("-", "−")
+
+                try:
+                    units = "".join(
+                        re.search(
+                            r"1E\+?(\-?)0?(\d?\d)",
+                            f"{1.0 / self.autoSIPrefixScale:.3G}",
+                        ).groups()
+                    )
+                    for k, v in zip(
+                        ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-"),
+                        ("⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁻"),
+                    ):
+                        units = units.replace(k, v)
+                    units = f"10{units}"
+                except AttributeError:
+                    units = f"{1.0 / self.autoSIPrefixScale:.3G}"
+                units = f"(×{units})"
+
         else:
-            units = "(%s%s)" % (self.labelUnitPrefix, self.labelUnits)
+            units = f"({self.labelUnitPrefix}{self.labelUnits})"
 
         if self.labelText == "":
             s = units
         else:
-            s = "%s %s" % (self.labelText, units)
+            s = f"{self.labelText} {units}"
 
-        style = ";".join(["%s: %s" % (k, self.labelStyle[k]) for k in self.labelStyle])
+        style = ";".join([f"{k}: {v}" for k, v in self.labelStyle.items()])
 
-        return "<span style='%s'>%s</span>" % (style, s)
+        return f"<span style='{style}'>{s}</span>"
 
     def setLabel(self, text=None, units=None, unitPrefix=None, **args):
         # `None` input is kept for backward compatibility!
@@ -549,7 +606,7 @@ class BetterColorBarItem(pg.PlotItem):
         )
 
         self.setDefaultPadding(0)
-        self.hideButtons()
+        # self.hideButtons()
         self.setMenuEnabled(False)
         self.vb.setMouseEnabled(x=False, y=True)
 
@@ -581,7 +638,7 @@ class BetterColorBarItem(pg.PlotItem):
             self.setImageItem(image)
         if limits is not None:
             self.setLimits(limits)
-
+        self.setLabels(right=("",""))
         self.set_dimensions()
 
     def set_dimensions(
@@ -693,12 +750,10 @@ class BetterColorBarItem(pg.PlotItem):
             return
         cmap = self._primary_image()._colorMap
         lut = cmap.getStops()[1]
-        # lut = self._primary_image().lut
-        # lut = cmap.getLookupTable(nPts=4096)
         if not self._colorbar.image.shape[0] == lut.shape[0]:
             self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
         self._colorbar._colorMap = cmap
-        self._colorbar.setLookupTable(lut)
+        self._colorbar.setLookupTable(lut, update=True)
 
     # def limit_changed(self, mn: float | None = None, mx: float | None = None):
     def limit_changed(self):
@@ -709,11 +764,8 @@ class BetterColorBarItem(pg.PlotItem):
         mn, mx = self.limits
         self._colorbar.setRect(0.0, mn, 1.0, mx - mn)
         if self.levels is not None:
-            self._colorbar.setLevels(self.levels / (mx - mn) - mn)
+            self._colorbar.setLevels((self.levels - mn) / (mx - mn))
         self._span.setBounds((mn, mx))
-
-        # self.isoline.setBounds(self.levels)
-        # self.update_isodata()
 
     # def cmap_changed(self):
     #     cmap = self.imageItem()._colorMap
@@ -914,19 +966,25 @@ class ParameterGroup(QtWidgets.QGroupBox):
     # !TODO: reimplement everything, add label by keyword argument. Apply more flexible
     # placements by adding layout support
 
-    sigParameterChanged = QtCore.Signal(list)
+    sigParameterChanged = QtCore.Signal(dict)
+    
 
     @staticmethod
-    def getParameterWidget(qwtype, **kwargs):
+    def getParameterWidget(qwtype=None, **kwargs):
         """
 
         Parameters
         ----------
-        qwtype : {'spin', 'dblspin', 'slider', 'dblslider', 'chkbox', 'pushbtn', 'chkpushbtn', 'combobox'}
+        qwtype : {'spin', 'dblspin', 'btspin', 'slider', 'dblslider', 'chkbox',
+        'pushbtn', 'chkpushbtn', 'combobox', 'fitparam'}
 
         """
-
-        if qwtype not in ParameterGroup.VALID_QWTYPE.keys():
+        if qwtype is None:
+            widget = kwargs.pop("widget")
+            if not isinstance(widget, QtWidgets.QWidget):
+                raise ValueError("widget is not a valid QWidget")
+            return widget
+        elif qwtype not in ParameterGroup.VALID_QWTYPE.keys():
             raise ValueError(
                 f"qwtype must be one of {list(ParameterGroup.VALID_QWTYPE.keys())}"
             )
@@ -985,7 +1043,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         return widget
 
-    def __init__(self, groupbox_kw=dict(), **kwargs):
+    def __init__(self, ncols: int = 1, groupbox_kw=dict(),  **kwargs):
         """Easy creation of groupboxes with multiple varying parameters.
 
         Parameters
@@ -1006,37 +1064,57 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         """
         super(ParameterGroup, self).__init__(**groupbox_kw)
-        self.layout = QtWidgets.QGridLayout(self)
+        self.setLayout(QtWidgets.QGridLayout(self))
 
         self.labels = []
         self.untracked = []
-        self.widgets = dict()
+        self.widgets: dict[str, QtWidgets.QWidget] = dict()
+        j = 0
         for i, (k, v) in enumerate(kwargs.items()):
             if isinstance(v, dict):
                 showlabel = v.pop("showlabel", k)
+                ind_eff = v.pop("colspan", 1)
+                if ind_eff == "ncols":
+                    ind_eff = ncols
                 if v.pop("notrack", False):
                     self.untracked.append(k)
                 self.widgets[k] = self.getParameterWidget(**v)
 
             elif isinstance(v, QtWidgets.QWidget):
                 showlabel = k
+                ind_eff = 1
                 self.widgets[k] = v
             else:
                 raise ValueError(
                     "Each value must be a QtWidgets.QWidget instance"
                     "or a dictionary of keyword arguments to getParameterWidget."
                 )
+            
             self.labels.append(QtWidgets.QLabel(str(showlabel)))
             self.labels[i].setBuddy(self.widgets[k])
             if showlabel:
-                self.layout.addWidget(self.labels[i], i, 0)
-                self.layout.addWidget(self.widgets[k], i, 1)
+                self.layout().addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
+                self.layout().addWidget(self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1)
             else:
-                self.layout.addWidget(self.widgets[k], i, 0, 1, 2)
+                self.layout().addWidget(
+                    self.widgets[k], j // ncols, 2 * (j % ncols), 1, 2 * ind_eff
+                )
+            j += ind_eff
+            
 
         self.global_connect()
+    
+    def set_values(self, **kwargs):
+        for k, v in kwargs.items():
+            self.widgets[k].blockSignals(True)
+            self.widgets[k].setValue(v)
+            self.widgets[k].blockSignals(False)
+        self.sigParameterChanged.emit(kwargs)
+            
 
-    def widget_value(self, widget):
+    def widget_value(self, widget:str|QtWidgets.QWidget):
+        if isinstance(widget, str):
+            widget = self.widgets[widget]
         if isinstance(
             widget,
             (
@@ -1089,7 +1167,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         for k, v in self.widgets.items():
             if k not in self.untracked:
                 self.widget_change_signal(v).connect(
-                    lambda x: self.sigParameterChanged.emit([k, x])
+                    lambda x: self.sigParameterChanged.emit({k: x})
                 )
 
     def widgets_of_type(self, widgetclass):
@@ -1098,7 +1176,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         return [w for w in self.widgets.values() if isinstance(w, widgetclass)]
 
     @property
-    def values(self):
+    def values(self) -> dict[str, float|int|bool]:
         return {k: self.widget_value(v) for k, v in self.widgets.items()}
 
     # "spin": QtWidgets.QSpinBox,
