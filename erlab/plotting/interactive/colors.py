@@ -40,7 +40,7 @@ def pg_colormap_names(source="all"):
     return list({value: None for value in all_cmaps})
 
 
-def pg_colormap_from_name(name: str, skipCache=True):
+def pg_colormap_from_name(name: str, skipCache=True) -> pg.ColorMap:
     try:
         return pg.colormap.get(name, skipCache=skipCache)
     except FileNotFoundError:
@@ -52,32 +52,39 @@ def pg_colormap_from_name(name: str, skipCache=True):
 
 def pg_colormap_powernorm(
     cmap, gamma, reverse=False, highContrast=False, zeroCentered=False
-):
+) -> pg.ColorMap:
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
-    if reverse:
-        cmap.reverse()
     N = 4096
+
     if gamma == 1:
-        mapping = np.linspace(0, 1, N)
-    elif highContrast and (gamma < 1):
-        if zeroCentered:
-            map_half = (
-                1 - np.power(np.linspace(1, 0, int(N / 2)), 1.0 / gamma)
-            ) * 0.5 + 0.5
-            mapping = np.concatenate((-np.flip(map_half) + 1, map_half))
-        else:
-            mapping = 1 - np.power(np.linspace(1, 0, N), 1.0 / gamma)
+        mapping_fn = lambda x: x
+    elif highContrast:
+        mapping_fn = lambda x: 1 - np.power(np.flip(x), 1.0 / gamma)
     else:
         if gamma < 1:
             N = 65536  # maximum uint16
-        if zeroCentered:
-            map_half = np.power(np.linspace(0, 1, int(N / 2)), gamma) * 0.5 + 0.5
-            mapping = np.concatenate((-np.flip(map_half) + 1, map_half))
-        else:
-            mapping = np.power(np.linspace(0, 1, N), gamma)
+        mapping_fn = lambda x: np.power(x, gamma)
+
+    x = np.linspace(0, 1, N)
+    if zeroCentered:
+        mapping = np.piecewise(
+            x,
+            [x < 0.5, x >= 0.5],
+            [
+                lambda x: 0.5 - 0.5 * mapping_fn(-2 * x + 1),
+                lambda x: 0.5 + 0.5 * mapping_fn(2 * x - 1),
+            ],
+        )
+    else:
+        mapping = mapping_fn(x)
+    mapping[mapping > 1] = 1
+    mapping[mapping < 0] = 0
+
     cmap.color = cmap.mapToFloat(mapping)
     cmap.pos = np.linspace(0, 1, N)
+    if reverse:
+        cmap.reverse()
     pg.colormap._mapCache = {}  # disable cache to reduce memory usage
     return cmap
 
