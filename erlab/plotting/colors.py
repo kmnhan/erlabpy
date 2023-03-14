@@ -134,7 +134,7 @@ def _diverging_inversepowernorm(result, gamma, vmin, vmax, vcenter):
     resdat_l += vmin
     resdat_l /= vmin - vcenter
     resdat_l[resdat_l < 0] = 0
-    np.power(-resdat_l, 1.0 / gamma, resdat_l)
+    np.power(resdat_l, 1.0 / gamma, resdat_l)
     resdat_l *= 0.5
     resdat[resdat_ < vcenter] = resdat_l
 
