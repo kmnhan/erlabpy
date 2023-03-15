@@ -810,7 +810,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     im.setLevels(levels, update=False)
                 else:
                     im.setAutoLevels(True)
-
                 im.refresh_data()
 
         self._colorbar.setVisible(lock)
@@ -1516,10 +1515,9 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             decimals=2,
             wrapping=False,
             keyboardTracking=False,
-            singleStep=0.01,
+            singleStep=0.1,
+            minimum=0.01, maximum=99.99, value=value
         )
-        self.spin.setRange(0.01, 99.99)
-        self.spin.setValue(value)
         self.label = QtWidgets.QLabel(self, text="γ", buddy=self.spin)
         # self.label.setIndent(0)
         self.label.setSizePolicy(
@@ -1529,6 +1527,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             self,
             toolTip="Colormap gamma",
             value=self.gamma_scale(value),
+            singleStep=1,
             orientation=QtCore.Qt.Orientation.Horizontal,
         )
         self.slider.setSizePolicy(
@@ -1564,10 +1563,10 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.spin.setValue(self.gamma_scale_inv(value))
 
     def gamma_scale(self, y: float) -> float:
-        return 1e3 * np.log10(y)
+        return 1e+4 * np.log10(y)
 
     def gamma_scale_inv(self, x: float) -> float:
-        return np.power(10, x * 1e-3)
+        return np.power(10, x * 1e-4)
 
 
 def clear_layout(layout: QtWidgets.QLayout):
@@ -1624,7 +1623,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def disconnect_signals(self):
         # Multiple inheritance disconnection is broken
         # https://bugreports.qt.io/browse/PYSIDE-229
-        # Will not work correctly until it is fixed
+        # Will not work correctly until this is fixed
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.disconnect_signals()
@@ -2169,10 +2168,10 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
-        # engine="h5netcdf",
+        engine="h5netcdf",
     )
     itool_(data)
