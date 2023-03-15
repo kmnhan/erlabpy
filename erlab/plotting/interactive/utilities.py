@@ -465,6 +465,10 @@ class BetterImageItem(pg.ImageItem):
     def setAutoLevels(self, autoLevels: bool):
         self.auto_levels = autoLevels
 
+    def updateImage(self, *args, **kargs):
+        kargs.setdefault("autoLevels", self.auto_levels)
+        return self.setImage(*args, **kargs)
+
     def setLevels(self, levels, update: bool = True):
         super().setLevels(levels, update)
         self.sigLimitChanged.emit(*self.levels)
@@ -632,13 +636,13 @@ class BetterColorBarItem(pg.PlotItem):
 
         self._fixedlimits: tuple[float, float] | None = None
 
-        self._images: list[weakref.ref[BetterImageItem]] = []
+        self._images: set[weakref.ref[BetterImageItem]] = set()
         self._primary_image: weakref.ref[BetterImageItem] | None = None
         if image is not None:
             self.setImageItem(image)
         if limits is not None:
             self.setLimits(limits)
-        self.setLabels(right=("",""))
+        self.setLabels(right=("", ""))
         self.set_dimensions()
 
     def set_dimensions(
@@ -686,18 +690,28 @@ class BetterColorBarItem(pg.PlotItem):
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
         self.limit_changed()
+    
+    def addImage(self, image:Sequence[BetterImageItem]| BetterImageItem):
+        if isinstance(image, BetterImageItem):
+            self._images.add(weakref.ref(image))
+        else:
+            for img in image:
+                self._images.add(weakref.ref(img))
+    
+    def removeImage(self, image:Sequence[BetterImageItem] | BetterImageItem):
+        if isinstance(image, BetterImageItem):
+            self._images.remove(weakref.ref(image))
+        else:
+            for img in image:
+                self._images.remove(weakref.ref(img))
+        
 
     def setImageItem(
         self,
         image: Sequence[BetterImageItem] | BetterImageItem,
         insert_in: pg.PlotItem | None = None,
-    ):
-        if isinstance(image, BetterImageItem):
-            self._images.append(weakref.ref(image))
-        else:
-            for img in image:
-                self._images.append(weakref.ref(img))
-
+    ):  
+        self.addImage(image)
         for img_ref in self._images:
             img = img_ref()
             if img is not None:
@@ -967,7 +981,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
     # placements by adding layout support
 
     sigParameterChanged = QtCore.Signal(dict)
-    
 
     @staticmethod
     def getParameterWidget(qwtype=None, **kwargs):
@@ -1043,7 +1056,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         return widget
 
-    def __init__(self, ncols: int = 1, groupbox_kw=dict(),  **kwargs):
+    def __init__(self, ncols: int = 1, groupbox_kw=dict(), **kwargs):
         """Easy creation of groupboxes with multiple varying parameters.
 
         Parameters
@@ -1089,30 +1102,30 @@ class ParameterGroup(QtWidgets.QGroupBox):
                     "Each value must be a QtWidgets.QWidget instance"
                     "or a dictionary of keyword arguments to getParameterWidget."
                 )
-            
+
             self.labels.append(QtWidgets.QLabel(str(showlabel)))
             self.labels[i].setBuddy(self.widgets[k])
             if showlabel:
                 self.layout().addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
-                self.layout().addWidget(self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1)
+                self.layout().addWidget(
+                    self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1
+                )
             else:
                 self.layout().addWidget(
                     self.widgets[k], j // ncols, 2 * (j % ncols), 1, 2 * ind_eff
                 )
             j += ind_eff
-            
 
         self.global_connect()
-    
+
     def set_values(self, **kwargs):
         for k, v in kwargs.items():
             self.widgets[k].blockSignals(True)
             self.widgets[k].setValue(v)
             self.widgets[k].blockSignals(False)
         self.sigParameterChanged.emit(kwargs)
-            
 
-    def widget_value(self, widget:str|QtWidgets.QWidget):
+    def widget_value(self, widget: str | QtWidgets.QWidget):
         if isinstance(widget, str):
             widget = self.widgets[widget]
         if isinstance(
@@ -1176,7 +1189,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         return [w for w in self.widgets.values() if isinstance(w, widgetclass)]
 
     @property
-    def values(self) -> dict[str, float|int|bool]:
+    def values(self) -> dict[str, float | int | bool]:
         return {k: self.widget_value(v) for k, v in self.widgets.items()}
 
     # "spin": QtWidgets.QSpinBox,

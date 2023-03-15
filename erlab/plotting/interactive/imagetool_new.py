@@ -20,10 +20,10 @@ from erlab.plotting.interactive.colors import (
 )
 from erlab.plotting.interactive.slicer import ArraySlicer
 from erlab.plotting.interactive.utilities import (
-    BetterSpinBox,
-    BetterImageItem,
     BetterAxisItem,
     BetterColorBarItem,
+    BetterImageItem,
+    BetterSpinBox,
 )
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -440,7 +440,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
         zeroCentered: bool = False,
-        rad2deg: bool = False,
+        rad2deg: bool | Iterable[str] = False,
     ):
         super().__init__(parent)
 
@@ -472,6 +472,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
 
+        self._colorbar = ItoolColorBar(self)
+        self.layout().addWidget(self._colorbar)
+        self._colorbar.setVisible(False)
+
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
@@ -501,12 +505,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._data: xr.DataArray | None = None
         self.current_cursor = 0
-
-        # self.rad2deg = rad2deg
-
-        # self._colorbar = pg.PlotWidget(self, plotItem=BetterColorBarItem())
-        self._colorbar = ItoolColorBar(self)
-        self.layout().addWidget(self._colorbar)
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -636,7 +634,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_current()
         self.sigCurrentCursorChanged.emit(cursor)
 
-    def set_data(self, data: xr.DataArray | npt.ArrayLike, rad2deg=None):
+    def set_data(
+        self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
+    ):
         if isinstance(self._data, xr.DataArray):
             self._data.close()
         else:
@@ -1178,6 +1178,7 @@ class ItoolPlotItem(pg.PlotItem):
                 axisOrder="row-major",
                 **self._item_kw,
             )
+            self.slicer_area._colorbar.cb.addImage(item)
         else:
             item = ItoolPlotDataItem(
                 self,
@@ -1256,7 +1257,10 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.set_value(i, axis, value, update=True, uniform=True)
 
     def remove_cursor(self, index: int):
-        self.removeItem(self.slicer_data_items.pop(index))
+        item = self.slicer_data_items.pop(index)
+        if self.is_image:
+            self.slicer_area._colorbar.cb.removeImage(item)
+        self.removeItem(item)
         for line, span in zip(
             self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
         ):
@@ -1516,7 +1520,9 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             wrapping=False,
             keyboardTracking=False,
             singleStep=0.1,
-            minimum=0.01, maximum=99.99, value=value
+            minimum=0.01,
+            maximum=99.99,
+            value=value,
         )
         self.label = QtWidgets.QLabel(self, text="γ", buddy=self.spin)
         # self.label.setIndent(0)
@@ -1563,7 +1569,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.spin.setValue(self.gamma_scale_inv(value))
 
     def gamma_scale(self, y: float) -> float:
-        return 1e+4 * np.log10(y)
+        return 1e4 * np.log10(y)
 
     def gamma_scale_inv(self, x: float) -> float:
         return np.power(10, x * 1e-4)
@@ -1954,6 +1960,13 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
 
+        self.spin_dat.setDecimals(
+            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
+        )
+        self.spin_dat.setValue(
+            self.array_slicer.point_value(self.current_cursor, binned=True)
+        )
+
         for l in self.label_dim:
             # resize buttons to match dimension label length
             l.setMaximumWidth(label_width)
@@ -1998,7 +2011,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     def update_cursor_count(self, count: int):
         if count == self.cb_cursors.count():
-            print("wtf?")
             return
         elif count > self.cb_cursors.count():
             self.addCursor()
@@ -2168,8 +2180,8 @@ class ItoolBinningControls(ItoolControlsBase):
 if __name__ == "__main__":
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
         ,
         engine="h5netcdf",
