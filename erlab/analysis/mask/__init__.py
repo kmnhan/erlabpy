@@ -1,4 +1,6 @@
-"""Functions related to masking."""
+"""Functions related to masking.
+
+"""
 import numba
 import numpy as np
 import xarray as xr
@@ -28,11 +30,11 @@ def polygon_mask(vertices, x, y, invert=False):
     for i in numba.prange(shape[0]):
         for j in range(shape[1]):
             match polygon.bounded_side(vertices, (x[i], y[j])):
-                case polygon.ON_UNBOUNDED_SIDE:
+                case polygon.Side.ON_UNBOUNDED_SIDE:
                     mask[i, j] = False
-                case polygon.ON_BOUNDED_SIDE:
+                case polygon.Side.ON_BOUNDED_SIDE:
                     mask[i, j] = True
-                case polygon.ON_BOUNDARY:
+                case polygon.Side.ON_BOUNDARY:
                     mask[i, j] = True
     if invert:
         return ~mask
@@ -41,8 +43,8 @@ def polygon_mask(vertices, x, y, invert=False):
 
 
 def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
-    """
-    Returns array masked with a hexagonal BZ.
+    """Returns array masked with a hexagonal BZ.
+    
     """
     if isinstance(kxymap, xr.Dataset):
         kxymap = kxymap.spectrum

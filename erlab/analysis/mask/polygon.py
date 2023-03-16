@@ -1,13 +1,40 @@
 """Polygon mask generation code adapted from the CGAL C++ library."""
 
+import enum
 import numba
 import numpy as np
 
-from erlab.analysis.mask import comparison
 
-ON_UNBOUNDED_SIDE = -1
-ON_BOUNDARY = 0
-ON_BOUNDED_SIDE = 1
+class Comparison(enum.Enum):
+    SMALLER = -1
+    EQUAL = 0
+    LARGER = 1
+
+
+class Side(enum.Enum):
+    ON_UNBOUNDED_SIDE = -1
+    ON_BOUNDARY = 0
+    ON_BOUNDED_SIDE = 1
+
+
+@numba.njit(nogil=True, cache=True)
+def comp_x(p0, p1):
+    if np.float32(p0[0]) < np.float32(p1[0]):
+        return Comparison.SMALLER
+    elif np.float32(p0[0]) == np.float32(p1[0]):
+        return Comparison.EQUAL
+    else:
+        return Comparison.LARGER
+
+
+@numba.njit(nogil=True, cache=True)
+def comp_y(p0, p1):
+    if np.float32(p0[1]) < np.float32(p1[1]):
+        return Comparison.SMALLER
+    elif np.float32(p0[1]) == np.float32(p1[1]):
+        return Comparison.EQUAL
+    else:
+        return Comparison.LARGER
 
 
 @numba.njit(nogil=True, cache=True)
@@ -75,20 +102,20 @@ def orientation(p0, p1, p2):
 @numba.njit(nogil=True, cache=True)
 def which_side_in_slab(point, low, high, points):
     point = np.asarray(point)
-    low_x_comp_res = comparison.comp_x(point, points[low])
-    high_x_comp_res = comparison.comp_x(point, points[high])
+    low_x_comp_res = comp_x(point, points[low])
+    high_x_comp_res = comp_x(point, points[high])
 
-    if low_x_comp_res == comparison.SMALLER:
-        if high_x_comp_res == comparison.SMALLER:
+    if low_x_comp_res == Comparison.SMALLER:
+        if high_x_comp_res == Comparison.SMALLER:
             return -1
     else:
         match high_x_comp_res:
-            case comparison.LARGER:
+            case Comparison.LARGER:
                 return 1
-            case comparison.SMALLER:
+            case Comparison.SMALLER:
                 pass
-            case comparison.EQUAL:
-                return int(low_x_comp_res != comparison.EQUAL)
+            case Comparison.EQUAL:
+                return int(low_x_comp_res != Comparison.EQUAL)
 
     return orientation(points[low], point, points[high])
 
@@ -121,85 +148,79 @@ def bounded_side(points, point):
 
     last = len(points) - 1
     if last < 2:
-        return ON_UNBOUNDED_SIDE
+        return Side.ON_UNBOUNDED_SIDE
 
     is_inside = False
 
-    cur_y_comp_res = comparison.comp_y(points[0], point)
+    cur_y_comp_res = comp_y(points[0], point)
     for i in range(len(points) - 1):
-        next_y_comp_res = comparison.comp_y(points[i + 1], point)
+        next_y_comp_res = comp_y(points[i + 1], point)
 
         match cur_y_comp_res:
-            case comparison.SMALLER:
+            case Comparison.SMALLER:
                 match next_y_comp_res:
-                    case comparison.SMALLER:
+                    case Comparison.SMALLER:
                         pass
 
-                    case comparison.EQUAL:
-                        match comparison.comp_x(point, points[i + 1]):
-                            case comparison.SMALLER:
+                    case Comparison.EQUAL:
+                        match comp_x(point, points[i + 1]):
+                            case Comparison.SMALLER:
                                 is_inside = not is_inside
-                            case comparison.EQUAL:
-                                return ON_BOUNDARY
-                            case comparison.LARGER:
+                            case Comparison.EQUAL:
+                                return Side.ON_BOUNDARY
+                            case Comparison.LARGER:
                                 pass
 
-                    case comparison.LARGER:
+                    case Comparison.LARGER:
                         match which_side_in_slab(point, i, i + 1, points):
                             case -1:
                                 is_inside = not is_inside
                             case 0:
-                                return ON_BOUNDARY
+                                return Side.ON_BOUNDARY
 
-            case comparison.EQUAL:
+            case Comparison.EQUAL:
                 match next_y_comp_res:
-                    case comparison.SMALLER:
-                        match comparison.comp_x(point, points[i]):
-                            case comparison.SMALLER:
+                    case Comparison.SMALLER:
+                        match comp_x(point, points[i]):
+                            case Comparison.SMALLER:
                                 is_inside = not is_inside
-                            case comparison.EQUAL:
-                                return ON_BOUNDARY
-                            case comparison.LARGER:
+                            case Comparison.EQUAL:
+                                return Side.ON_BOUNDARY
+                            case Comparison.LARGER:
                                 pass
 
-                    case comparison.EQUAL:
-                        match comparison.comp_x(point, points[i]):
-                            case comparison.SMALLER:
-                                if (
-                                    comparison.comp_x(point, points[i + 1])
-                                    != comparison.SMALLER
-                                ):
-                                    return ON_BOUNDARY
-                            case comparison.EQUAL:
-                                return ON_BOUNDARY
-                            case comparison.LARGER:
-                                if (
-                                    comparison.comp_x(point, points[i + 1])
-                                    != comparison.LARGER
-                                ):
-                                    return ON_BOUNDARY
+                    case Comparison.EQUAL:
+                        match comp_x(point, points[i]):
+                            case Comparison.SMALLER:
+                                if comp_x(point, points[i + 1]) != Comparison.SMALLER:
+                                    return Side.ON_BOUNDARY
+                            case Comparison.EQUAL:
+                                return Side.ON_BOUNDARY
+                            case Comparison.LARGER:
+                                if comp_x(point, points[i + 1]) != Comparison.LARGER:
+                                    return Side.ON_BOUNDARY
 
-                    case comparison.LARGER:
-                        if comparison.comp_x(point, points[i]) == comparison.EQUAL:
-                            return ON_BOUNDARY
+                    case Comparison.LARGER:
+                        if comp_x(point, points[i]) == Comparison.EQUAL:
+                            return Side.ON_BOUNDARY
 
-            case comparison.LARGER:
+            case Comparison.LARGER:
                 match next_y_comp_res:
-                    case comparison.SMALLER:
+                    case Comparison.SMALLER:
                         match which_side_in_slab(point, i + 1, i, points):
                             case -1:
                                 is_inside = not is_inside
                             case 0:
-                                return ON_BOUNDARY
-                    case comparison.EQUAL:
-                        if comparison.comp_x(point, points[i + 1]) == comparison.EQUAL:
-                            return ON_BOUNDARY
-                    case comparison.LARGER:
+                                return Side.ON_BOUNDARY
+                    case Comparison.EQUAL:
+                        if comp_x(point, points[i + 1]) == Comparison.EQUAL:
+                            return Side.ON_BOUNDARY
+                    case Comparison.LARGER:
                         pass
 
         cur_y_comp_res = next_y_comp_res
 
     if is_inside:
-        return ON_BOUNDED_SIDE
+        return Side.ON_BOUNDED_SIDE
     else:
-        return ON_UNBOUNDED_SIDE
+        return Side.ON_UNBOUNDED_SIDE
