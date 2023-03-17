@@ -1,9 +1,13 @@
-"""Various helper functions and extensions to pyqtgraph."""
+"""Various helper functions and extensions to pyqtgraph.
+
+"""
+from __future__ import annotations
 
 import sys
 import re
 import weakref
 from collections.abc import Iterable, Sequence
+from typing import Literal
 
 import numpy as np
 import pyclip
@@ -75,25 +79,26 @@ def process_arg(arg):
     return arg
 
 
-def gen_single_function_code(funcname: str, *args, **kwargs):
-    """gen_single_function_code generates the string for a Python function call.
+def gen_single_function_code(funcname: str, *args: tuple, **kwargs: dict):
+    """Generates the string for a Python function call.
 
     The first argument is the name of the function, and subsequent arguments are
     passed as positional arguments. Keyword arguments are also supported.
 
     Parameters
     ----------
-    funcname : str
+    funcname
         Name of the function.
-    *args : list
+    *args
         Mandatory arguments passed onto the function.
-    **kwargs : dict
+    **kwargs
         Keyword arguments passed onto the function.
 
     Returns
     -------
     code : str
         generated code.
+
     """
     tab = "    "
     code = f"{funcname}(\n"
@@ -112,18 +117,17 @@ def gen_single_function_code(funcname: str, *args, **kwargs):
     return code
 
 
-def gen_function_code(copy=True, **kwargs):
+def gen_function_code(copy: bool = True, **kwargs: dict):
     r"""Copies the Python code for function calls to the clipboard.
 
-    The result is
-    copied to your clipboard in a form that can be pasted into an interactive Python
-    session or Jupyter notebook cell.
+    The result can be copied to your clipboard in a form that can be pasted into an
+    interactive Python session or Jupyter notebook cell.
 
     Parameters
     ----------
-    copy : bool, default=True
-
-    **kwargs : dict
+    copy
+        If `True`, the code string is copied.
+    **kwargs
         Dictionary where the keys are the string of the function call and the values are
         a list of function arguments. The last item, if a dictionary, is interpreted as
         keyword arguments.
@@ -144,47 +148,60 @@ def gen_function_code(copy=True, **kwargs):
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):
+    """An improved spinbox.
+
+    Signals
+    ----------
+    valueChanged
+        Emitted when the value is changed.
+    textChanged
+        Emitted when the text is changed.
+
+
+    Parameters
+    ----------
+    integer
+        If `True`, the spinbox will only display integer values.
+    compact
+        Whether to reduce the height of the spinbox.
+    discrete
+        If `True` the spinbox will only step to pre-determined discrete values.
+
+        If `False`, the spinbox will just add or subtract the predetermined
+        increment when increasing or decreasing the step.
+    decimals
+        The precision of the spinbox. See the `significant` argument for the
+        meaning. When `integer` is `True`, this argument is ignored.
+    significant
+        If `True`, `decimals` will specify the total number of significant digits,
+        before or after the decimal point, ignoring leading zeros.
+
+        If `False`, `decimals` will specify the total number of digits after the
+        decimal point, including leading zeros.
+
+        When `integer` or `scientific` is `True`, this argument is ignored.
+    scientific
+        Whether to print in scientific notation.
+    value
+        Initial value of the spinbox.
+
+    """
+
     valueChanged = QtCore.Signal(object)
     textChanged = QtCore.Signal(object)
 
     def __init__(
         self,
         *args,
-        integer=False,
-        compact=True,
-        discrete=False,
-        decimals=3,
-        significant=False,
-        scientific=False,
-        value=0.0,
-        **kwargs,
+        integer: bool = False,
+        compact: bool = True,
+        discrete: bool = False,
+        decimals: int = 3,
+        significant: bool = False,
+        scientific: bool = False,
+        value: float = 0.0,
+        **kwargs: dict,
     ):
-        """
-        Parameters
-        ----------
-        integer : boolean, optional
-            If `True`, the spinbox will only display integer values.
-        compact : boolean, optional
-            Whether to reduce the height of the spinbox.
-        discrete : boolean, optional
-            If `True` the spinbox will only step to pre-determined discrete values.
-            If `False`, the spinbox will just add or subtract the predetermined
-            increment when increasing or decreasing the step.
-        scientific : boolean, optional
-            Whether to print in scientific notation.
-        decimals : int, optional
-            The precision of the spinbox. See the `significant` argument for the
-            meaning. When `int` is `True`, this argument is ignored.
-        significant : boolean, optional
-            If `True`, `decimals` will specify the total number of significant digits,
-            before or after the decimal point, ignoring leading zeros.
-            If `False`, `decimals` will specify the total number of digits after the
-            decimal point, including leading zeros.
-            When `int` or `scientific` is `True`, this argument is ignored.
-        value : float, optional
-            Initial value of the spinbox.
-        """
-
         self._only_int = integer
         self._is_compact = compact
         self._is_discrete = discrete
@@ -690,27 +707,27 @@ class BetterColorBarItem(pg.PlotItem):
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
         self.limit_changed()
-    
-    def addImage(self, image:Sequence[BetterImageItem]| BetterImageItem):
-        if isinstance(image, BetterImageItem):
+
+    def addImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
+        # if isinstance(image, BetterImageItem):
+        if not np.iterable(image):
             self._images.add(weakref.ref(image))
         else:
             for img in image:
                 self._images.add(weakref.ref(img))
-    
-    def removeImage(self, image:Sequence[BetterImageItem] | BetterImageItem):
+
+    def removeImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
         if isinstance(image, BetterImageItem):
             self._images.remove(weakref.ref(image))
         else:
             for img in image:
                 self._images.remove(weakref.ref(img))
-        
 
     def setImageItem(
         self,
         image: Sequence[BetterImageItem] | BetterImageItem,
         insert_in: pg.PlotItem | None = None,
-    ):  
+    ):
         self.addImage(image)
         for img_ref in self._images:
             img = img_ref()
@@ -961,7 +978,33 @@ class xImageItem(pg.ImageItem):
 
 
 class ParameterGroup(QtWidgets.QGroupBox):
-    VALID_QWTYPE = {
+    """Easy creation of groupboxes with multiple varying parameters.
+
+    Can be used in many different interactive tools for dynamic data analysis.
+
+    Parameters
+    ----------
+    ncols
+        Number of columns in the layout.
+    groupbox_kw
+        Keyword arguments passed onto :class:`PySide6.QtWidgets.QGroupBox`.
+    params
+        See Examples.
+
+    Examples
+    --------
+
+    >>> ParameterGroup(
+        {
+            "a": QtWidgets.QDoubleSpinBox(range=(0, 1), singleStep=0.01, value=0.2),
+            "b": dict(qwtype="dblspin", range=(0, 2), singleStep=0.04),
+            "c": QtWidgets.QSlider(range=(0, 10000))
+        }
+    )
+
+    """
+
+    VALID_QWTYPE: dict[str, QtWidgets.QWidget] = {
         "spin": QtWidgets.QSpinBox,
         "dblspin": QtWidgets.QDoubleSpinBox,
         "btspin": BetterSpinBox,
@@ -972,24 +1015,76 @@ class ParameterGroup(QtWidgets.QGroupBox):
         "chkpushbtn": QtWidgets.QPushButton,
         "combobox": QtWidgets.QComboBox,
         "fitparam": FittingParameterWidget,
-    }
-    VALID_QLTYPE = {
-        "hbox": QtWidgets.QHBoxLayout,
-        "vbox": QtWidgets.QVBoxLayout,
-    }
-    # !TODO: reimplement everything, add label by keyword argument. Apply more flexible
-    # placements by adding layout support
+    }  # : Dictionary of valid widgets that can be added.
 
-    sigParameterChanged = QtCore.Signal(dict)
+    sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)
+
+    def __init__(self, ncols: int = 1, groupbox_kw:dict=dict(), **kwargs:dict):
+        super(ParameterGroup, self).__init__(**groupbox_kw)
+        self.setLayout(QtWidgets.QGridLayout(self))
+
+        self.labels = []
+        self.untracked = []
+        self.widgets: dict[str, QtWidgets.QWidget] = dict()
+        
+        j = 0
+        for i, (k, v) in enumerate(kwargs.items()):
+            if isinstance(v, dict):
+                showlabel = v.pop("showlabel", k)
+                ind_eff = v.pop("colspan", 1)
+                if ind_eff == "ncols":
+                    ind_eff = ncols
+                if v.pop("notrack", False):
+                    self.untracked.append(k)
+                self.widgets[k] = self.getParameterWidget(**v)
+            elif isinstance(v, QtWidgets.QWidget):
+                showlabel = k
+                ind_eff = 1
+                self.widgets[k] = v
+            else:
+                raise ValueError(
+                    "Each value must be a QtWidgets.QWidget instance"
+                    "or a dictionary of keyword arguments to getParameterWidget."
+                )
+
+            self.labels.append(QtWidgets.QLabel(str(showlabel)))
+            self.labels[i].setBuddy(self.widgets[k])
+            if showlabel:
+                self.layout().addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
+                self.layout().addWidget(
+                    self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1
+                )
+            else:
+                self.layout().addWidget(
+                    self.widgets[k], j // ncols, 2 * (j % ncols), 1, 2 * ind_eff
+                )
+            j += ind_eff
+
+        self.global_connect()
 
     @staticmethod
-    def getParameterWidget(qwtype=None, **kwargs):
-        """
+    def getParameterWidget(
+        qwtype: Literal[
+            "spin",
+            "dblspin",
+            "btspin",
+            "slider",
+            "dblslider",
+            "chkbox",
+            "pushbtn",
+            "chkpushbtn",
+            "combobox",
+            "fitparam",
+        ]
+        | None = None,
+        **kwargs:dict,
+    ):
+        """Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
 
         Parameters
         ----------
-        qwtype : {'spin', 'dblspin', 'btspin', 'slider', 'dblslider', 'chkbox',
-        'pushbtn', 'chkpushbtn', 'combobox', 'fitparam'}
+        qwtype
+            Type of the widget, must a key of :obj:`ParameterGroup.VALID_QWTYPE`.
 
         """
         if qwtype is None:
@@ -1055,68 +1150,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.textChanged.connect(textChanged)
 
         return widget
-
-    def __init__(self, ncols: int = 1, groupbox_kw=dict(), **kwargs):
-        """Easy creation of groupboxes with multiple varying parameters.
-
-        Parameters
-        ----------
-        params : dict
-            see Examples
-
-        Examples
-        --------
-
-        >>> ParameterGroup(
-            {
-                "a": QtWidgets.QDoubleSpinBox(range=(0, 1), singleStep=0.01, value=0.2),
-                "b": dict(qwtype="dblspin", range=(0, 2), singleStep=0.04),
-                "c": QtWidgets.QSlider(range=(0, 10000))
-            }
-        )
-
-        """
-        super(ParameterGroup, self).__init__(**groupbox_kw)
-        self.setLayout(QtWidgets.QGridLayout(self))
-
-        self.labels = []
-        self.untracked = []
-        self.widgets: dict[str, QtWidgets.QWidget] = dict()
-        j = 0
-        for i, (k, v) in enumerate(kwargs.items()):
-            if isinstance(v, dict):
-                showlabel = v.pop("showlabel", k)
-                ind_eff = v.pop("colspan", 1)
-                if ind_eff == "ncols":
-                    ind_eff = ncols
-                if v.pop("notrack", False):
-                    self.untracked.append(k)
-                self.widgets[k] = self.getParameterWidget(**v)
-
-            elif isinstance(v, QtWidgets.QWidget):
-                showlabel = k
-                ind_eff = 1
-                self.widgets[k] = v
-            else:
-                raise ValueError(
-                    "Each value must be a QtWidgets.QWidget instance"
-                    "or a dictionary of keyword arguments to getParameterWidget."
-                )
-
-            self.labels.append(QtWidgets.QLabel(str(showlabel)))
-            self.labels[i].setBuddy(self.widgets[k])
-            if showlabel:
-                self.layout().addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
-                self.layout().addWidget(
-                    self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1
-                )
-            else:
-                self.layout().addWidget(
-                    self.widgets[k], j // ncols, 2 * (j % ncols), 1, 2 * ind_eff
-                )
-            j += ind_eff
-
-        self.global_connect()
 
     def set_values(self, **kwargs):
         for k, v in kwargs.items():
@@ -1462,31 +1495,29 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
 
 class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
+    """AnalysisWidgetBase
+
+    Parameters
+    ----------
+    orientation
+        Sets the orientation of the plots, by default "vertical"
+    num_ax
+        Sets the number of axes.
+    link
+        Link axes, by default "both"
+    cut_to_data
+        Whether to remove outliers by adjusting color levels, by default "none"
+
+    """
+
     def __init__(
         self,
-        orientation="vertical",
-        num_ax=2,
-        link="both",
-        cut_to_data="none",
+        orientation: Literal["vertical", "horizontal"] = "vertical",
+        num_ax: int = 2,
+        link: Literal["x", "y", "both", "none"] = "both",
+        cut_to_data: Literal["in", "out", "both", "none"] = "none",
         **kwargs,
     ):
-        """__init__ summ
-
-        Parameters
-        ----------
-        orientation : {"vertical", "horizontal"}, optional
-            Sets the orientation of the plots, by default "vertical"
-        link : {"x", "y", "both", "none"}, optional
-            Link axes, by default "both"
-        cut_to_data : {"in", "out", "both", "none"}, optional
-            Whether to remove outliers by adjusting color levels, by default "none"
-
-        Raises
-        ------
-        ValueError
-            _description_
-        """
-
         super().__init__(**kwargs)
         if orientation == "horizontal":
             self.is_vertical = False

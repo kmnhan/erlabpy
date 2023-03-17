@@ -1,8 +1,9 @@
 """Functions related to masking.
 
 """
-import numba
 import numpy as np
+import numpy.typing as npt
+import numba
 import xarray as xr
 
 from erlab.analysis.mask import polygon

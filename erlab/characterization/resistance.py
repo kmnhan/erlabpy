@@ -1,6 +1,6 @@
 """Functions related to analyzing temperature-dependent resistance data.
 
-Currently only supports loading raw data from `.dat` files output by
+Currently only supports loading raw data from ``.dat`` files output by
 physics lab III equipment.
 
 """
@@ -10,24 +10,26 @@ from io import StringIO
 import numpy as np
 import xarray as xr
 
-__all__ = ['load_resistance_physlab']
+__all__ = ["load_resistance_physlab"]
 
-def load_resistance_physlab(path:str, encoding='windows-1252', **kwargs):
+
+def load_resistance_physlab(
+    path: str, encoding: str = "windows-1252", **kwargs
+) -> xr.Dataset:
     """Loads resistance measurement acquired with physics lab III
     equipment.
 
     Parameters
     ----------
-    path : str
-        Local path to `.dat` file.
-    encoding : str, optional
-        Open file with given encoding, default `'windows-1252'` when
-        optional.
+    path
+        Local path to ``.dat`` file.
+    encoding
+        Encoding passed onto `open`, defaults to ``'windows-1252'``.
 
     Returns
     -------
-    ds : xarray.Dataset object
-        Dataset object containing resistance data from the file.
+    ds : xarray.Dataset
+        Dataset containing resistance data from the file.
 
     Examples
     --------
@@ -45,22 +47,23 @@ def load_resistance_physlab(path:str, encoding='windows-1252', **kwargs):
         curr     (temp) float64 0.0001 0.0001 ... 0.0001 0.0001
         temperr  (temp) float64 0.098 0.11 ... 0.066 0.046
         reserr   (temp) float64 0.001551 0.001202 ... 0.001027 0.001125
-    
+
     Plot resistance versus temperature:
 
     >>> data.res.plot()
 
     """
-    with open(path, 'r', encoding=encoding) as file:
-        content = re.sub(r"(e[-+]\d{3}) {2,3}(-?)",
-                     "\\g<1>\\t \\g<2>", file.read(), 0, re.MULTILINE)
+    with open(path, "r", encoding=encoding) as file:
+        content = re.sub(
+            r"(e[-+]\d{3}) {2,3}(-?)", "\\g<1>\\t \\g<2>", file.read(), 0, re.MULTILINE
+        )
     data = np.genfromtxt(
         StringIO(content),
         delimiter="\t",
         skip_header=3,
-        usecols=[2,3,4,5,6,7],
+        usecols=[2, 3, 4, 5, 6, 7],
         **kwargs
     )
-    head = ['time','temp','res','curr','temperr','reserr']
-    ds = xr.Dataset({head[i]:([head[1]],data[:,i]) for i in range(len(head))})
+    head = ["time", "temp", "res", "curr", "temperr", "reserr"]
+    ds = xr.Dataset({head[i]: ([head[1]], data[:, i]) for i in range(len(head))})
     return ds

@@ -1,12 +1,14 @@
 """Helper functions for fast slicing xarray.DataArray objects."""
 from collections.abc import Iterable, Sequence
 
-import numba
-import numbagg
 import numpy as np
 import numpy.typing as npt
+import numba
+import numbagg
 import xarray as xr
 from PySide6 import QtCore
+
+__all__ = ["ArraySlicer"]
 
 VALID_NDIM = (2, 3, 4)
 
@@ -87,7 +89,7 @@ def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return arr.transpose(1, 2, 3, 0)
 
 
-@numba.njit(numba.boolean(numba.float64[::1]), fastmath=True, cache=True)
+@numba.njit([numba.boolean(numba.float64[::1]),numba.boolean(numba.int64[::1])], fastmath=True, cache=True)
 def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
     dif = np.diff(arr)
     return np.allclose(dif, dif[0], rtol=1e-05, atol=1e-08, equal_nan=False)

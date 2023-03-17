@@ -1,7 +1,6 @@
-"""Functions related to analyzing x ray diffraction spectra. 
+"""Functions related to analyzing x-ray diffraction spectra. 
 
-Currently only supports loading raw data from igor `.itx` files, but
-this is enough for only plotting with `matplotlib`.
+Currently only supports loading raw data from igor ``.itx`` files.
 
 """
 import ast
@@ -13,26 +12,25 @@ import xarray as xr
 __all__ = ["load_xrd_itx"]
 
 
-def load_xrd_itx(path: str, **kwargs):
-    r"""Load x-ray diffraction spectra from .itx file for Igor pro.
+def load_xrd_itx(path: str, **kwargs: dict):
+    r"""Load x-ray diffraction spectra from ``.itx`` file for Igor pro.
 
     Parameters
     ----------
-    path : str
-        Local path to `.itx` file.
-    **kwargs : dict, optional
-        Extra arguments to `open`: refer to the official Python
-        documentation for a list of all possible arguments.
+    path
+        Local path to ``.itx`` file.
+    **kwargs
+        Extra arguments to `open`.
 
     Returns
     -------
-    ds : xarray.Dataset object
+    xarray.Dataset
         Dataset object containing data from the file.
 
     Notes
     -----
-    By default, the file is read with the `windows-1252` encoding. This
-    behavior can be customized with `**kwargs`.
+    By default, the file is read with the ``'windows-1252'`` encoding. This
+    behavior can be customized by supplying keyword arguments.
 
     Examples
     --------

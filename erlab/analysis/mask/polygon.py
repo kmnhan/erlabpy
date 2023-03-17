@@ -1,8 +1,13 @@
 """Polygon mask generation code adapted from the CGAL C++ library."""
+from __future__ import annotations
+
+from typing import Annotated, Literal
 
 import enum
-import numba
+
 import numpy as np
+import numpy.typing as npt
+import numba
 
 
 class Comparison(enum.Enum):
@@ -18,7 +23,7 @@ class Side(enum.Enum):
 
 
 @numba.njit(nogil=True, cache=True)
-def comp_x(p0, p1):
+def _comp_x(p0, p1):
     if np.float32(p0[0]) < np.float32(p1[0]):
         return Comparison.SMALLER
     elif np.float32(p0[0]) == np.float32(p1[0]):
@@ -28,7 +33,7 @@ def comp_x(p0, p1):
 
 
 @numba.njit(nogil=True, cache=True)
-def comp_y(p0, p1):
+def _comp_y(p0, p1):
     if np.float32(p0[1]) < np.float32(p1[1]):
         return Comparison.SMALLER
     elif np.float32(p0[1]) == np.float32(p1[1]):
@@ -38,24 +43,24 @@ def comp_y(p0, p1):
 
 
 @numba.njit(nogil=True, cache=True)
-def get_argmin_all(arr):
+def _get_argmin_all(arr):
     return np.nonzero(arr == arr.min())[0]
 
 
 @numba.njit(nogil=True, cache=True)
-def get_argmax_all(arr):
+def _get_argmax_all(arr):
     return np.nonzero(arr == arr.max())[0]
 
 
 @numba.njit(nogil=True, cache=True)
-def left_vertex(points):
-    """left_vertex returns the index of the leftmost point of a polygon.
+def left_vertex(points:Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int:
+    """Returns the index of the leftmost point of a polygon.
 
     In case of a tie, the point with the smallest y-coordinate is taken.
 
     Parameters
     ----------
-    points : (M, 2) array_like
+    points
         Input array of polygon vertices.
 
     Returns
@@ -63,19 +68,19 @@ def left_vertex(points):
     int
 
     """
-    ind = get_argmin_all(points[:, 0].astype(np.float32))
+    ind = _get_argmin_all(points[:, 0].astype(np.float32))
     return ind[np.argmin(points[ind][:, 1])]
 
 
 @numba.njit(nogil=True, cache=True)
-def right_vertex(points):
-    """right_vertex returns the index of the rightmost point of a polygon.
+def right_vertex(points:Annotated[npt.NDArray[np.float64], Literal[1, 2]]):
+    """rReturns the index of the rightmost point of a polygon.
 
     In case of a tie, the point with the largest y-coordinate is taken.
 
     Parameters
     ----------
-    points : (M, 2) array_like
+    points
         Input array of polygon vertices.
 
     Returns
@@ -83,18 +88,18 @@ def right_vertex(points):
     int
 
     """
-    ind = get_argmax_all(points[:, 0].astype(np.float32))
+    ind = _get_argmax_all(points[:, 0].astype(np.float32))
     return ind[np.argmax(points[ind][:, 1])]
 
 
 @numba.njit(nogil=True, cache=True)
 def polygon_orientation(points):
     ind = left_vertex(points)
-    return orientation(points[ind - 1], points[ind], points[ind + 1])
+    return _orientation(points[ind - 1], points[ind], points[ind + 1])
 
 
 @numba.njit(nogil=True, cache=True)
-def orientation(p0, p1, p2):
+def _orientation(p0, p1, p2):
     p10, p20 = p1 - p0, p2 - p0
     return np.sign(p10[0] * p20[1] - p20[0] * p10[1])
 
@@ -102,8 +107,8 @@ def orientation(p0, p1, p2):
 @numba.njit(nogil=True, cache=True)
 def which_side_in_slab(point, low, high, points):
     point = np.asarray(point)
-    low_x_comp_res = comp_x(point, points[low])
-    high_x_comp_res = comp_x(point, points[high])
+    low_x_comp_res = _comp_x(point, points[low])
+    high_x_comp_res = _comp_x(point, points[high])
 
     if low_x_comp_res == Comparison.SMALLER:
         if high_x_comp_res == Comparison.SMALLER:
@@ -117,11 +122,14 @@ def which_side_in_slab(point, low, high, points):
             case Comparison.EQUAL:
                 return int(low_x_comp_res != Comparison.EQUAL)
 
-    return orientation(points[low], point, points[high])
+    return _orientation(points[low], point, points[high])
 
 
 @numba.njit(nogil=True, cache=True)
-def bounded_side(points, point):
+def bounded_side(
+    points: Annotated[npt.NDArray[np.float64], Literal["N", 2]],
+    point: Annotated[npt.NDArray[np.float64], Literal[1, 2]],
+):
     """Computes if a point lies inside a polygon.
 
     The polygon is defined by the sequence of points [first,last). Being inside is
@@ -131,13 +139,13 @@ def bounded_side(points, point):
 
     Parameters
     ----------
-    points : (M, 2) array_like
+    points
         Input array of polygon vertices.
-    point : (1, 2) array_like
+    point
         Point of interest
 
-    Note
-    ----
+    Notes
+    -----
     We shoot a horizontal ray from the point to the right and count the number of
     intersections with polygon segments. If the number of intersections is odd, the
     point is inside. We don't count intersections with horizontal segments. With
@@ -152,9 +160,9 @@ def bounded_side(points, point):
 
     is_inside = False
 
-    cur_y_comp_res = comp_y(points[0], point)
+    cur_y_comp_res = _comp_y(points[0], point)
     for i in range(len(points) - 1):
-        next_y_comp_res = comp_y(points[i + 1], point)
+        next_y_comp_res = _comp_y(points[i + 1], point)
 
         match cur_y_comp_res:
             case Comparison.SMALLER:
@@ -163,7 +171,7 @@ def bounded_side(points, point):
                         pass
 
                     case Comparison.EQUAL:
-                        match comp_x(point, points[i + 1]):
+                        match _comp_x(point, points[i + 1]):
                             case Comparison.SMALLER:
                                 is_inside = not is_inside
                             case Comparison.EQUAL:
@@ -181,7 +189,7 @@ def bounded_side(points, point):
             case Comparison.EQUAL:
                 match next_y_comp_res:
                     case Comparison.SMALLER:
-                        match comp_x(point, points[i]):
+                        match _comp_x(point, points[i]):
                             case Comparison.SMALLER:
                                 is_inside = not is_inside
                             case Comparison.EQUAL:
@@ -190,18 +198,18 @@ def bounded_side(points, point):
                                 pass
 
                     case Comparison.EQUAL:
-                        match comp_x(point, points[i]):
+                        match _comp_x(point, points[i]):
                             case Comparison.SMALLER:
-                                if comp_x(point, points[i + 1]) != Comparison.SMALLER:
+                                if _comp_x(point, points[i + 1]) != Comparison.SMALLER:
                                     return Side.ON_BOUNDARY
                             case Comparison.EQUAL:
                                 return Side.ON_BOUNDARY
                             case Comparison.LARGER:
-                                if comp_x(point, points[i + 1]) != Comparison.LARGER:
+                                if _comp_x(point, points[i + 1]) != Comparison.LARGER:
                                     return Side.ON_BOUNDARY
 
                     case Comparison.LARGER:
-                        if comp_x(point, points[i]) == Comparison.EQUAL:
+                        if _comp_x(point, points[i]) == Comparison.EQUAL:
                             return Side.ON_BOUNDARY
 
             case Comparison.LARGER:
@@ -213,7 +221,7 @@ def bounded_side(points, point):
                             case 0:
                                 return Side.ON_BOUNDARY
                     case Comparison.EQUAL:
-                        if comp_x(point, points[i + 1]) == Comparison.EQUAL:
+                        if _comp_x(point, points[i + 1]) == Comparison.EQUAL:
                             return Side.ON_BOUNDARY
                     case Comparison.LARGER:
                         pass

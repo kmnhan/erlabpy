@@ -18,8 +18,7 @@ from matplotlib.backends import backend_agg, backend_svg
 from matplotlib.font_manager import FontProperties
 from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
-from PySide6 import QtSvg, QtSvgWidgets
+from PySide6 import QtCore, QtGui, QtWidgets, QtSvg, QtSvgWidgets
 
 if __name__ != "__main__":
     from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
@@ -38,7 +37,7 @@ else:
 # pg.setConfigOption('foreground', 'k')
 
 
-__all__ = ["itool"]
+__all__ = ["itool", "pg_itool"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -181,7 +180,6 @@ class FlowLayout(QtWidgets.QLayout):
         return size
 
     def _do_layout(self, rect, test_only):
-
         x = rect.x()
         y = rect.y()
         line_height = 0
@@ -491,12 +489,13 @@ class ItoolDock(Dock):
             autoOrientation=autoOrientation,
             closable=closable,
             fontSize=fontSize,
+            label=ItoolDockLabel(name, closable, fontSize, color=color),
         )
-        self.label.setVisible(False)
-        self.label = ItoolDockLabel(name, closable, fontSize, color=color)
-        if closable:
-            self.label.sigCloseClicked.connect(self.close)
-        self.topLayout.addWidget(self.label, 0, 1)
+        # self.label.setVisible(False)
+        # self.label.dock = self
+        # if closable:
+        # self.label.sigCloseClicked.connect(self.close)
+        # self.topLayout.addWidget(self.label, 0, 1)
         self.topLayout.setContentsMargins(0, 0, 0, 0)
 
     def changeEvent(self, evt):
@@ -585,24 +584,34 @@ def get_svg_label(
     return outfile.fileName()
 
 
-class ItoolAxisItem(pg.AxisItem):
-    def __init__(self, *args, **kwargs):
-        self.label_mode = 0
-        super().__init__(*args, **kwargs)
-        self.set_label_mode(0)
+import enum
 
-    def set_label_mode(self, i):
-        self.label_mode = i
-        if i == 0:
-            if not isinstance(self.label, QtWidgets.QGraphicsTextItem):
-                self.label = QtWidgets.QGraphicsTextItem(self)
-        elif i == 1:
-            if not isinstance(self.label, QtSvgWidgets.QGraphicsSvgItem):
-                self.label = QtSvgWidgets.QGraphicsSvgItem(self)
-        elif i == 2:
-            if not isinstance(self.label, QtWidgets.QGraphicsPixmapItem):
-                self.label = QtWidgets.QGraphicsPixmapItem(self)
-                self.label.setTransformationMode(QtCore.Qt.SmoothTransformation)
+
+class ItoolAxisItem(pg.AxisItem):
+    class LabelType(enum.Flag):
+        TextLabel = 0
+        SvgLabel = 1
+        PixmapLabel = 2
+
+    def __init__(self, *args, **kwargs):
+        self.label_mode = self.LabelType.TextLabel
+        super().__init__(*args, **kwargs)
+        self.set_label_mode(self.LabelType.TextLabel)
+
+    def set_label_mode(self, labelmode: LabelType):
+        self.label_mode = labelmode
+        match self.label_mode:
+            case self.LabelType.TextLabel:
+                if not isinstance(self.label, QtWidgets.QGraphicsTextItem):
+                    self.label = QtWidgets.QGraphicsTextItem(self)
+            case self.LabelType.SvgLabel:
+                if not isinstance(self.label, QtSvgWidgets.QGraphicsSvgItem):
+                    self.label = QtSvgWidgets.QGraphicsSvgItem(self)
+            case self.LabelType.PixmapLabel:
+                if not isinstance(self.label, QtWidgets.QGraphicsPixmapItem):
+                    self.label = QtWidgets.QGraphicsPixmapItem(self)
+                    self.label.setTransformationMode(QtCore.Qt.SmoothTransformation)
+
         if self.orientation in ["left", "right"]:
             self.label.setRotation(-90)
 
@@ -617,20 +626,22 @@ class ItoolAxisItem(pg.AxisItem):
 
         s = "%s %s" % (self.labelText, units)
 
-        if self.label_mode == 1:
-            return get_svg_label(s, file, **self.labelStyle)
-        elif self.label_mode == 2:
-            return get_pixmap_label(s, **self.labelStyle)
+        match self.label_mode:
+            case self.LabelType.SvgLabel:
+                return get_svg_label(s, file, **self.labelStyle)
+            case self.LabelType.PixmapLabel:
+                return get_pixmap_label(s, **self.labelStyle)
 
     def _updateLabel(self):
-        if self.label_mode == 0:
-            self.label.setHtml(self.labelString())
-        elif self.label_mode == 1:
-            file = QtCore.QTemporaryFile()
-            self.svg_renderer = QtSvg.QSvgRenderer(self.mathtextLabelPixmap(file))
-            self.label.setSharedRenderer(self.svg_renderer)
-        elif self.label_mode == 2:
-            self.label.setPixmap(self.mathtextLabelPixmap())
+        match self.label_mode:
+            case self.LabelType.TextLabel:
+                self.label.setHtml(self.labelString())
+            case self.LabelType.SvgLabel:
+                file = QtCore.QTemporaryFile()
+                self.svg_renderer = QtSvg.QSvgRenderer(self.mathtextLabelPixmap(file))
+                self.label.setSharedRenderer(self.svg_renderer)
+            case self.LabelType.PixmapLabel:
+                self.label.setPixmap(self.mathtextLabelPixmap())
 
         self._adjustSize()
         self.picture = None
@@ -640,12 +651,20 @@ class ItoolAxisItem(pg.AxisItem):
         # s = self.size()
 
         ## Set the position of the label
-        if self.label_mode == 0:
+        # match self.label_mode:
+        #     case self.LabelType.TextLabel:
+        #         nudge = 5
+        #     case self.LabelType.SvgLabel:
+        #         nudge = -3
+        #     case self.LabelType.PixmapLabel:
+        #         nudge = 0
+        if self.label_mode == self.LabelType.TextLabel:
             nudge = 5
-        elif self.label_mode == 1:
+        elif self.label_mode == self.LabelType.SvgLabel:
             nudge = -3
-        if self.label_mode == 2:
+        if self.label_mode == self.LabelType.PixmapLabel:
             nudge = 0
+
         if (
             self.label is None
         ):  # self.label is set to None on close, but resize events can still occur.
@@ -705,7 +724,9 @@ class ItoolPlotItem(pg.PlotItem):
         else:
             ev.ignore()
 
-    def setLabels(self, mode=0, **kwds):
+    def setLabels(
+        self, mode: ItoolAxisItem.LabelType = ItoolAxisItem.LabelType.TextLabel, **kwds
+    ):
         for k in kwds.keys():
             if k != "title":
                 self.getAxis(k).set_label_mode(mode)
@@ -890,7 +911,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         *args,
         **kwargs,
     ):
-
         super().__init__(show=True, *args, **kwargs)
         self.qapp = QtCore.QCoreApplication.instance()
         self.screen = self.qapp.primaryScreen()
@@ -1391,8 +1411,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if labels is None:
             labels = self.data_dims
         # 0: default, 1: svg, 2: pixmap
-        labelmode = 0
-        if not labelmode:
+        labelmode = ItoolAxisItem.LabelType.TextLabel
+        if labelmode is ItoolAxisItem.LabelType.TextLabel:
             labels_ = labels
         else:
             with rc_context({"text.usetex": True}):
@@ -2076,12 +2096,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def changeEvent(self, evt):
         if evt.type() == QtCore.QEvent.PaletteChange:
-            if darkdetect.isDark():
-                pg.setConfigOption("background", "k")
-                pg.setConfigOption("foreground", "gray")
-            else:
-                pg.setConfigOption("background", "w")
-                pg.setConfigOption("foreground", "k")
+            # if darkdetect.isDark():
+            #     pg.setConfigOption("background", "k")
+            #     pg.setConfigOption("foreground", "gray")
+            # else:
+            #     pg.setConfigOption("background", "w")
+            #     pg.setConfigOption("foreground", "k")
             self.update()
         super().changeEvent(evt)
 
@@ -2551,34 +2571,6 @@ class itoolJoystick(pg.JoystickButton):
         self.state = xy
         self.sigStateChanged.emit(self, self.state)
 
-    def paintEvent(self, ev):
-        super().paintEvent(ev)
-        p = QtGui.QPainter(self)
-        p.setRenderHints(p.SmoothPixmapTransform, True)
-        p.setRenderHints(p.Antialiasing, True)
-        p.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0)))
-        p.drawEllipse(self.spotPos, self.marker_r, self.marker_r)
-        return
-        super(pg.JoystickButton, self).paintEvent(ev)
-        painter = QtWidgets.QStylePainter(self)
-
-        option = QtWidgets.QStyleOptionButton()
-        # option.initFrom(self)
-        # option.backgroundColor = palette().color(QPalette.Background)
-
-        painter.drawControl(QtWidgets.QStyle.CE_PushButton, option)
-
-    #     # self.setState(0.575, 0.575)
-    #     self.sigDragged.emit(self, self.state)
-
-    # def setState(self, *xy):
-    # super().setState(*xy)
-    # self.sigDragged.emit(self, self.state)
-
-    # def mouseDragEvent(self, ev):
-    #     self.sigDragged.emit(self, self.state)
-    #     ev.accept()
-
 
 class itoolCursorControls(QtWidgets.QWidget):
     def __init__(self, itool, *args, **kwargs):
@@ -3005,7 +2997,6 @@ class itoolColorControls(QtWidgets.QWidget):
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
-
     LOAD_ALL_TEXT = "Load all..."
 
     def __init__(self, *args, **kwargs):
@@ -3200,7 +3191,6 @@ class ImageTool(QtWidgets.QMainWindow):
 
 
 def itool(data, execute=None, *args, **kwargs):
-
     # TODO: implement multiple windows, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
@@ -3227,12 +3217,14 @@ def itool(data, execute=None, *args, **kwargs):
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
+
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
     if execute:
         qapp.exec()
     return win
+
 
 if __name__ == "__main__":
     # from pyimagetool import RegularDataArray, imagetool
@@ -3242,27 +3234,28 @@ if __name__ == "__main__":
     # h=hpy()
     # import sys
 
-    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/TiSe2/kxy10.nc')
+    # dat = xr.open_dataarray('~/Documents/ERLab/TiSe2/kxy10.nc')
     dat = xr.open_dataarray(
-        '/Users/khan/Documents/ERLab/TiSe2/kxy10.nc'
-        # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "/Users/khan/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    )#.sel(eV=-0.15, method="nearest")
+        # "~/Documents/ERLab/TiSe2/kxy10.nc"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+    )  # .sel(eV=-0.15, method="nearest")
     # dat = xr.open_dataarray(
-    # "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
+    # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
     # )
     # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
-    # dat10 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00010.fits',
+    # dat10 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00010.fits',
     # location='BL1001-ERLab').spectrum
-    # dat16 = load_data('/Users/khan/Documents/ERLab/TiSe2/data/20211212_00016.fits',
+    # dat16 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00016.fits',
     # location='BL1001-ERLab').spectrum
     # print(sys.getsizeof(dat.values))
     print(dat.nbytes * 2**-20)
+    # print(round(sys.getsizeof(dat) / 1024 / 1024, 2))
     itool(dat, bench=False)
     # print(h.heap())
     # from erlab.plotting.imagetool_mpl import itoolmpl
     # itoolmpl(dat)
-    # gkmk_cvs = load_data('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
+    # gkmk_cvs = load_data('~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
     # itool([gkmk_cvs, dat])
     # itool([dat10, dat16])
     # itool(dat, bench=False)

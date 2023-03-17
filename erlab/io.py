@@ -2,8 +2,8 @@
 
 PyARPES stores files using `pickle`, which can only be opened in the
 environment it was saved in.
-The function `save_as_netcdf` saves an array in the `netCDF4` format,
-which can be opened in Igor as `hdf5` files. 
+The function `save_as_netcdf` saves an array in the ``netCDF4`` format,
+which can be opened in Igor as ``hdf5`` files. 
 
 """
 
@@ -33,12 +33,12 @@ __all__ = [
 
 
 def showfitsinfo(path: str):
-    """Prints raw metadata from FITS file.
+    """Prints raw metadata from a ``.fits`` file.
 
     Parameters
     ----------
-    path : str
-        Local path to `.fits` file.
+    path
+        Local path to ``.fits`` file.
 
     """
     with fits.open(path, ignore_missing_end=True) as hdul:
@@ -50,7 +50,7 @@ def showfitsinfo(path: str):
 
 
 def fix_attr_format(da: xr.DataArray):
-    """Discards attributes that are incompatible with the `netCDF4` file
+    """Discards attributes that are incompatible with the ``netCDF4`` file
     format.
 
     Parameters
@@ -83,6 +83,32 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
+def save_as_hdf5(data: xr.DataArray | xr.Dataset, filename: str, **kwargs:dict):
+    """Saves data in ``netCDF4`` format.
+
+    Parameters
+    ----------
+    data
+        DataArray object to save.
+    filename
+        Target file name.
+    **kwargs
+        Extra arguments to `xarray.DataArray.to_netcdf`: refer to the xarray
+        documentation for a list of all possible arguments.
+
+    """
+    # data = data.assign_attrs(provenance="")
+    kwargs.setdefault("engine", "h5netcdf")
+    kwargs.setdefault("invalid_netcdf", True)
+    data.to_netcdf(
+        filename,
+        encoding={
+            var: dict(compression="gzip", compression_opts=9) for var in data.coords
+        },
+        **kwargs,
+    )
+
+
 def save_as_netcdf(data: xr.DataArray, filename: str, **kwargs):
     """Saves data in 'netCDF4' format.
 
@@ -95,7 +121,8 @@ def save_as_netcdf(data: xr.DataArray, filename: str, **kwargs):
         documentation for a list of all possible arguments.
 
     """
-    data = data.assign_attrs(provenance="")
+    # data = data.assign_attrs(provenance="")
+    kwargs.setdefault("engine", "h5netcdf")
     fix_attr_format(data).to_netcdf(
         filename,
         encoding={var: dict(zlib=True, complevel=5) for var in data.coords},

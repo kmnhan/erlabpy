@@ -1,11 +1,12 @@
-"""Macros for correlation analysis."""
+"""Macros for correlation analysis.
+
+"""
 
 from itertools import chain, product
 
 import numpy as np
 import xarray as xr
 from joblib import Parallel, delayed
-from scipy.fft import fft2, fftshift, ifft2
 from scipy.signal import correlate, correlation_lags
 
 __all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]

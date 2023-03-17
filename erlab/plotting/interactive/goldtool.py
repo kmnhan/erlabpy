@@ -1,10 +1,12 @@
 import os
 import sys
 
-import arpes.xarray_extensions
 import numpy as np
+import numpy.typing as npt
+import xarray as xr
 import pyqtgraph as pg
 import varname
+import arpes.xarray_extensions
 from PySide6 import QtCore, QtWidgets
 
 import erlab.analysis
@@ -55,7 +57,7 @@ class EdgeFitter(QtCore.QRunnable):
     def __init__(self, data, x0, y0, x1, y1, params, proxy=None):
         super().__init__()
 
-        self.signals = EdgeFitterSignals()
+        self._signals = EdgeFitterSignals()
 
         self.data = data
         self.x_range = (x0, x1)
@@ -71,11 +73,11 @@ class EdgeFitter(QtCore.QRunnable):
 
     @property
     def sigIterated(self):
-        return self.signals.sigIterated
+        return self._signals.sigIterated
 
     @property
     def sigFinished(self):
-        return self.signals.sigFinished
+        return self._signals.sigFinished
 
     @QtCore.Slot()
     def run(self):
@@ -94,13 +96,26 @@ class EdgeFitter(QtCore.QRunnable):
 
 
 class goldtool(AnalysisWindow):
+    """Interactive gold edge fitting.
+
+    Parameters
+    ----------
+    data
+        The data to perform Fermi edge fitting on.
+    data_corr
+        The data to correct with the edge. Defaults to `data`.
+    *kwargs
+        Arguments passed onto `erlab.plotting.interactive.utilities.AnalysisWindow`.
+
+    """
 
     sigProgressUpdated = QtCore.Signal(int)
 
-    def __init__(self, data, data_corr=None, *args, **kwargs):
+    def __init__(
+        self, data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict
+    ):
         super().__init__(
             data,
-            *args,
             link="x",
             layout="horizontal",
             orientation="vertical",
@@ -341,7 +356,7 @@ if __name__ == "__main__":
     import arpes.io
 
     dat = arpes.io.load_data(
-        "~/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt",
+        "/Users/khan/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt",
         location="BL4",
     )
     dt = goldtool(dat, dat)

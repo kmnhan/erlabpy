@@ -6,9 +6,9 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu
 import qtawesome as qta
 import xarray as xr
+from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
 from pyqtgraph.GraphicsScene import mouseEvents
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -25,6 +25,8 @@ from erlab.plotting.interactive.utilities import (
     BetterImageItem,
     BetterSpinBox,
 )
+
+__all__ = ["itool_", "ImageTool", "ImageSlicerArea"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -107,10 +109,10 @@ class ImageTool(QtWidgets.QMainWindow):
         dock = QtWidgets.QDockWidget("Controls", self)
 
         self.controls = QtWidgets.QWidget()
-        self.controls_layout = QtWidgets.QHBoxLayout(self.controls)
-        self.controls_layout.setContentsMargins(3, 3, 3, 3)
+        self.controls.setLayout(QtWidgets.QHBoxLayout(self.controls))
+        self.controls.layout().setContentsMargins(3, 3, 3, 3)
 
-        self.controls_layout.setSpacing(3)
+        self.controls.layout().setSpacing(3)
         self.groups: list[QtWidgets.QGroupBox] = []
         self.group_layouts: list[QtWidgets.QVBoxLayout] = []
         self.group_widgets: list[list[QtWidgets.QWidget]] = []
@@ -119,12 +121,17 @@ class ImageTool(QtWidgets.QMainWindow):
         self.add_group()  # title="Color")
         self.add_group()  # title="Bin")
 
-        self.add_widget(0, ItoolCrosshairControls(self.slicer_area))
+        self.add_widget(
+            0,
+            ItoolCrosshairControls(
+                self.slicer_area, orientation=QtCore.Qt.Orientation.Vertical
+            ),
+        )
         self.add_widget(1, ItoolColormapControls(self.slicer_area))
         self.add_widget(2, ItoolBinningControls(self.slicer_area))
 
         dock.setWidget(self.controls)
-        dock.setTitleBarWidget(QtWidgets.QWidget())
+        # dock.setTitleBarWidget(QtWidgets.QWidget())
         self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, dock)
         self.resize(720, 720)
 
@@ -151,7 +158,7 @@ class ImageTool(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox(**kwargs)
         group_layout = QtWidgets.QVBoxLayout(group)
         group_layout.setContentsMargins(3, 3, 3, 3)
-        self.controls_layout.addWidget(group)
+        self.controls.layout().addWidget(group)
         group_layout.setSpacing(3)
         self.groups.append(group)
         self.group_widgets.append([])
@@ -420,6 +427,39 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
+    """A interactive tool based on `pyqtgraph` for exploring 3D data.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    data
+        Data to display. The data must have 2 to 4 dimensions.
+    cmap
+        Default colormap of the data.
+    gamma
+        Default power law normalization of the colormap.
+    zeroCentered
+        If `True`, the normalization is applied symmetrically from the midpoint of
+        the colormap.
+    rad2deg
+        If `True` and `data` is not `None`, converts some known angle coordinates to
+        degrees. If an iterable of strings is given, only the coordinates that
+        correspond to the given strings are converted.
+
+    Signals
+    -------
+    sigDataChanged()
+    sigCurrentCursorChanged(index)
+    sigViewOptionChanged()
+
+    The following signals are inherited from ArraySlicer.
+    sigCursorCountChanged(n_cursors)
+    sigIndexChanged(cursor, axes)
+    sigBinChanged(cursor, axes)
+
+    """
+
     sigDataChanged = QtCore.Signal()
     sigCurrentCursorChanged = QtCore.Signal(int)
     sigViewOptionChanged = QtCore.Signal()
@@ -1126,7 +1166,7 @@ class ItoolPlotItem(pg.PlotItem):
     def getViewBox(self) -> pg.ViewBox:
         return self.vb
 
-    def getViewBoxMenu(self) -> pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu.ViewBoxMenu:
+    def getViewBoxMenu(self) -> ViewBoxMenu:
         return self.getViewBox().menu
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):

@@ -189,7 +189,7 @@ class mpl_itool(Widget):
     canvas : `matplotlib.backend_bases.FigureCanvasBase`
         The FigureCanvas that contains all the axes.
     axes : list of `matplotlib.axes.Axes`
-        The `~.axes.Axes` to attach the cursor to. See Notes for the
+        The `matplotlib.axes.Axes` to attach the cursor to. See Notes for the
         order of axes.
     data : `xarray.DataArray`
         The data to explore. Must have three coordinate axes.
@@ -204,8 +204,8 @@ class mpl_itool(Widget):
     Other Parameters
     ----------------
     **self.cursorprops
-        `.Line2D` properties that control the appearance of the lines.
-        See also `~.Axes.axhline`.
+        `matplotlib.lines.Line2D` properties that control the appearance of the lines.
+        See also `matplotlib.axes.Axes.axhline`.
 
     Notes
     -----

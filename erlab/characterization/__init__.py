@@ -1,5 +1,7 @@
-"""Data import and analysis for characterization experiments not directly related to
-ARPES."""
+"""Data import and analysis for characterization experiments.
+
+"""
+
 from erlab.characterization.resistance import load_resistance_physlab
 from erlab.characterization.xrd import load_xrd_itx
 

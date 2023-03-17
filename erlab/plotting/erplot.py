@@ -1,3 +1,6 @@
+"""Convenient access to various plotting functions.
+
+"""
 import matplotlib.backends.backend_pdf
 import matplotlib.backends.backend_svg
 
@@ -5,12 +8,10 @@ from erlab.plotting.annotations import (
     annotate_cuts_erlab,
     copy_mathtext,
     fancy_labels,
-    get_si_str,
     label_subplot_properties,
     label_subplots,
     set_titles,
     mark_points,
-    mark_points_y,
     plot_hv_text,
     sizebar,
 )
@@ -43,17 +44,19 @@ __all__ = [
     "annotate_cuts_erlab",
     "copy_mathtext",
     "fancy_labels",
-    "get_si_str",
     "label_subplot_properties",
     "label_subplots",
     "set_titles",
     "mark_points",
-    "mark_points_y",
     "plot_hv_text",
     "sizebar",
+    "get_bz_edge",
     "plot_hex_bz",
     "InversePowerNorm",
     "TwoSlopePowerNorm",
+    "CenteredPowerNorm",
+    "TwoSlopeInversePowerNorm",
+    "CenteredInversePowerNorm",
     "get_mappable",
     "image_is_light",
     "nice_colorbar",

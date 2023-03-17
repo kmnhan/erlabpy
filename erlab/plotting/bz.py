@@ -1,8 +1,12 @@
-"""Utilities for plotting Brillouin zones."""
+"""Utilities for plotting Brillouin zones.
 
-import matplotlib.pyplot as plt
+"""
+
 import numpy as np
+import numpy.typing as npt
 import scipy.spatial
+import matplotlib.pyplot as plt
+
 from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
@@ -16,33 +20,32 @@ abbrv_kws = dict(
 )
 
 
-def get_bz_edge(basis, reciprocal=True):
-    """
-    Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
+def get_bz_edge(
+    basis: npt.NDArray[np.float64], reciprocal: bool = True
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
 
     Parameters
     ----------
-    basis : np.ndarray
+    basis
         2 x 2 or 3 x 3 numpy array with each row containing the lattice
         vectors.
-        
-    reciprocal : bool, default=True
+    reciprocal
         If False, the `basis` are given in real space lattice vectors.
 
     Returns
     -------
-    lines
-        numpy array containing the endpoints of the lines that make up the BZ edge.
-        
-    vertices
-        numpy array containing the vertices of the BZ.
+    lines : array-like
+        Endpoints of the lines that make up the BZ edge.
+    vertices : array-like
+        Vertices of the BZ.
 
     """
     if not (basis.shape == (2, 2) or basis.shape == (3, 3)):
         raise ValueError("Shape of `basis` must be (2, 2) or (3, 3).")
     if not reciprocal:
         basis = 2 * np.pi * np.linalg.inv(basis).T
-    
+
     ndim = basis.shape[-1]
     points = (
         np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=[0, 0])

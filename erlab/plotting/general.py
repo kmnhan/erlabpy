@@ -1,9 +1,17 @@
-"""General plotting utilities."""
+"""General plotting utilities.
 
+"""
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence, Iterable
+from typing import Literal
+
+import numpy as np
+import numpy.typing as npt
+import xarray as xr
+import matplotlib
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
-import numpy as np
-import xarray as xr
 from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
 
@@ -38,43 +46,44 @@ def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=
 
 
 class LabeledCursor(AxesWidget):
-    """
-    A crosshair cursor that spans the axes and moves with mouse cursor.
+    r"""A crosshair cursor that spans the axes and moves with mouse cursor.
+
     For the cursor to remain responsive you must keep a reference to it.
     Unlike `matplotlib.widgets.Cursor`, this also shows the current
     cursor location.
 
     Parameters
     ----------
-    ax : `matplotlib.axes.Axes`
-        The `~.axes.Axes` to attach the cursor to.
-    horizOn : bool, default: True
+    ax
+        The `matplotlib.axes.Axes` to attach the cursor to.
+    horizOn
         Whether to draw the horizontal line.
-    vertOn : bool, default: True
+    vertOn
         Whether to draw the vertical line.
-    textOn : bool, default: True
+    textOn
         Whether to show current cursor location.
-    useblit : bool, default: False
+    useblit
         Use blitting for faster drawing if supported by the backend.
-    textprops : dict, default: {}
+    textprops
         Keyword arguments to pass onto the text object.
 
     Other Parameters
     ----------------
     **lineprops
-        `.Line2D` properties that control the appearance of the lines.
-        See also `~.Axes.axhline`.
+        `matplotlib.lines.Line2D` properties that control the appearance of the
+        lines. See also `matplotlib.axes.Axes.axhline`.
+
     """
 
     def __init__(
         self,
-        ax,
-        horizOn=True,
-        vertOn=True,
-        textOn=True,
-        useblit=True,
-        textprops={},
-        **lineprops
+        ax: matplotlib.axes.Axes,
+        horizOn: bool = True,
+        vertOn: bool = True,
+        textOn: bool = True,
+        useblit: bool = True,
+        textprops: dict = {},
+        **lineprops: dict,
     ):
         super().__init__(ax)
 
@@ -165,25 +174,48 @@ class LabeledCursor(AxesWidget):
 
 
 def place_inset(
-    parent_axes, width, height, pad=0.1, loc="upper right", polar=False, **kwargs
-):
-    """Place inset axes, top right of parent
+    parent_axes: matplotlib.axes.Axes,
+    width: float | str,
+    height: float | str,
+    pad: float | tuple[float, float] = 0.1,
+    loc: Literal[
+        "upper left",
+        "upper center",
+        "upper right",
+        "center left",
+        "center",
+        "center right",
+        "lower left",
+        "lower center",
+        "lower right",
+    ] = "upper right",
+    polar: bool = False,
+    **kwargs: dict,
+) -> matplotlib.axes.Axes:
+    """Easy placement of inset axes.
 
     Parameters
     ----------
-    parent_axes : matplotlib.axes.Axes
-        Axes to place the inset axes.
-    width, height : float or str
-        Size of the inset axes to create. If a float is provided, it is
-        the size in inches, e.g. `width=1.3`. If a string is provided, it is
-        the size in relative units, e.g. `width='40%'` to the parent_axes.
-    pad : float or 2-tuple of floats, optional
-        Pad between parent axes and inset in inches, by default 0.1
-    loc : str, default: 'upper right'
-        Location to place the inset axes. Valid locations are
-        'upper left', 'upper center', 'upper right',
-        'center left', 'center', 'center right',
-        'lower left', 'lower center, 'lower right'.
+    parent_axes
+        `matplotlib.axes.Axes` to place the inset axes.
+    width, height
+        Size of the inset axes to create. If `float`, specifies the size in inches, e.g.
+        ``1.3``. If `str`, specifies the size in relative units, e.g. ``'40%'`` of
+        `parent_axes`.
+    pad
+        Padding between `parent_axes` and inset in inches.
+    loc
+        Location to place the inset axes.
+    polar
+        If `True`, the inset axes will have polar coordinates.
+    **kwargs
+        Keyword arguments are passed onto `matplotlib.axes.Axes.inset_axes`.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+
+
     """
 
     fig = parent_axes.get_figure()
@@ -242,11 +274,24 @@ def place_inset(
         prect = (fig.transFigure.inverted() + parent_axes.transAxes).transform(
             bounds + sizes
         )
-        print(prect)
         return fig.add_axes(prect, projection="polar", **kwargs)
 
 
-def array_extent(data):
+def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
+    """
+    Gets the extent of a `xarray.DataArray` to be used in `matplotlib.pyplot.imshow`.
+
+    Parameters
+    ----------
+    data
+        A two-dimensional `xarray.DataArray`.
+
+    Returns
+    -------
+    tuple of float
+
+    """
+
     data_coords = tuple(data[dim].values for dim in data.dims)
     data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
     data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
@@ -260,18 +305,54 @@ def array_extent(data):
 
 def plot_array(
     arr: xr.DataArray,
-    ax=None,
-    colorbar_kw=dict(),
-    cursor=False,
-    cursor_kw=dict(),
-    xlim=None,
-    ylim=None,
-    func=None,
-    rad2deg=False,
-    func_args=dict(),
+    ax: matplotlib.axes.Axes | None = None,
+    colorbar_kw: dict = dict(),
+    cursor: bool = False,
+    cursor_kw: dict = dict(),
+    xlim: float | tuple[float, float] | None = None,
+    ylim: float | tuple[float, float] | None = None,
+    rad2deg: bool | Iterable[str] = False,
+    func: Callable = None,
+    func_args: dict = dict(),
+    **improps: dict,
+) -> tuple[matplotlib.image.AxesImage, LabeledCursor] | matplotlib.image.AxesImage:
+    """Plots a 2D `xarray.DataArray` using `matplotlib.pyplot.imshow`.
+
+    Parameters
+    ----------
+    arr
+        A two-dimensional `xarray.DataArray` to be plotted.
+    ax
+        The target `matplotlib.axes.Axes`.
+    colorbar_kw
+        Keyword arguments passed onto `erlab.plotting.colors.nice_colorbar`.
+    cursor
+        Whether to display a dynamic cursor.
+    cursor_kw
+        Arguments passed onto `erlab.plotting.general.LabeledCursor`. Ignored if `cursor` is `False`.
+    xlim, ylim
+        If given a sequence of length 2, those values are set as the lower and upper
+        limits of each axis. If given a single `float`, the limits are set as ``(-lim,
+        lim)``.  If `None`, automatically determines the limits from the data.
+    func
+        A callable that processes the values prior to displaying. Its output must have
+        the same shape as the input.
+    func_args
+        Keyword arguments passed onto `func`.
+    rad2deg
+        If `True`, converts some known angle coordinates to degrees. If an iterable of
+        `str` is given, only the coordinates that correspond to the given strings are
+        converted.
     **improps
-):
-    """Plots a 2D `xr.DataArray` using imshow, which is much faster."""
+        Keyword arguments passed onto `matplotlib.axes.Axes.imshow`.
+
+    Returns
+    -------
+    img : matplotlib.image.AxesImage
+
+    c : erlab.plotting.general.LabeledCursor
+
+    """
     if isinstance(arr, xr.Dataset):
         arr = arr.spectrum
     elif isinstance(arr, np.ndarray):
@@ -345,74 +426,125 @@ def plot_array(
 
 
 def plot_slices(
-    maps,
-    figsize=None,
-    transpose=False,
-    xlim=None,
-    ylim=None,
-    axis="auto",
-    show_all_labels=False,
-    colorbar="none",
-    hide_colorbar_ticks=True,
-    annotate=True,
-    order="C",
-    cmap_order="C",
-    norm_order=None,
-    subplot_kw=dict(),
-    annotate_kw=dict(),
-    colorbar_kw=dict(),
-    fig=None,
-    axes=None,
-    **values
-):
-    r"""Automated comparison plot of slices.
+    maps: xr.DataArray | Sequence[xr.DataArray],
+    figsize: tuple[float, float] | None = None,
+    transpose: bool = False,
+    xlim: float | tuple[float, float] | None = None,
+    ylim: float | tuple[float, float] | None = None,
+    axis: Literal[
+        "on", "off", "equal", "scaled", "tight", "auto", "image", "scaled", "square"
+    ] = "auto",
+    show_all_labels: bool = False,
+    colorbar: Literal["none", "right", "rightspan", "all"] = "none",
+    hide_colorbar_ticks: bool = True,
+    annotate: bool = True,
+    cmap: Iterable[matplotlib.colors.colormap | str]
+    | matplotlib.colors.colormap
+    | str
+    | None = None,
+    norm: Iterable[matplotlib.colors.Normalize] | None = None,
+    order: Literal["C", "F"] = "C",
+    cmap_order: Literal["C", "F"] = "C",
+    norm_order: Literal["C", "F"] | None = None,
+    subplot_kw: dict = dict(),
+    annotate_kw: dict = dict(),
+    colorbar_kw: dict = dict(),
+    axes: npt.NDArray[matplotlib.axes.Axes] | None = None,
+    **values: dict,
+) -> tuple[matplotlib.figure.Figure, npt.NDArray[matplotlib.axes.Axes]]:
+    """Automated comparison plot of slices.
 
     Parameters
     ----------
-
-    maps : `xarray.DataArray`, list of DataArray
-        Arrays to compare.
-
-    figsize : 2-tuple of floats, default: plt.rcParams["figure.figsize"]
-
-    transpose : bool, default=False
+    maps
+        Arrays to plot.
+    figsize
+        Figure size.
+    transpose
         Transpose each map before plotting.
+    xlim, ylim
+        If given a sequence of length 2, those values are set as the lower and upper
+        limits of each axis. If given a single `float`, the limits are set as ``(-lim,
+        lim)``.  If `None`, automatically determines the limits from the data.
+    axis
+        Passed onto `matplotlib.axes.Axes.axis`. Possible values are:
 
-    xlim : float or (float, float)
+        ======== ============================================================
+        Value    Description
+        ======== ============================================================
+        'on'     Turn on axis lines and labels.
+        'off'    Turn off axis lines and labels.
+        'equal'  Set equal scaling (i.e., make circles circular) by
+                 changing axis limits. This is the same as ``ax.set_aspect('equal',
+                 adjustable='datalim')``. Explicit data limits may not be respected in
+                 this case.
+        'scaled' Set equal scaling (i.e., make circles circular) by changing dimensions
+                 of the plot box. This is the same as ``ax.set_aspect('equal',
+                 adjustable='box', anchor='C')``. Additionally, further autoscaling will
+                 be disabled.
+        'tight'  Set limits just large enough to show all data, then
+                 disable further autoscaling.
+        'auto'   Automatic scaling (fill plot box with data).
+        'image'  'scaled' with axis limits equal to data limits.
+        'square' Square plot; similar to 'scaled', but initially forcing
+                 ``xmax-xmin == ymax-ymin``.
+        ======== ============================================================
+    show_all_labels
+        If `True`, shows every xlabel and ylabel. If `False`, labels on shared axes are
+        minimized.
+    colorbar
+        Controls colorbar behavior. Possible values are:
 
-    ylim : float or (float, float)
-
-    axis : {'equal', 'tight', 'scaled', 'auto', 'image', 'square'}
-
-    show_all_labels : bool, default=False
-
-    colorbar : {'right', 'rightspan', 'all', 'none'}, optional
-
-    hide_colorbar_ticks : bool, default=True
-
-    annotate : bool, default=True
-
-    order : {'C', 'F'}, optional
-    cmap_order : {'C', 'F'}, optional
-    norm_order : {'C', 'F'}, optional
-        Same as `cmap_order` by default.
-
-    subplot_kw : dict, optional
+        =========== =========================================================
+        Value       Description
+        =========== =========================================================
+        'none'      Do not show colorbars.
+        'right'     Creates a colorbar on the right for each row.
+        'rightspan' Create a single colorbar that spans all axes.
+        'all'       Plot a colorbar for every axes.
+        =========== =========================================================
+    hide_colorbar_ticks
+        If `True`, hides colorbar ticks.
+    annotate
+        If `False`, turn off automatic annotation.
+    cmap
+        If supplied a single `str` or `matplotlib.colors.Colormap`, the colormap is
+        applied to all axes. Otherwise, a nested sequence with the same shape as the
+        resulting axes can be provided to use different colormaps for different axes.
+    norm
+        If supplied a single `matplotlib.colors.Normalize`, the norm is applied to all
+        axes. Otherwise, a nested sequence with the same shape as the resulting axes can
+        be provided to use different norms for different axes.
+    order
+        Order to display the data. Effectively, this determines if each map is displayed
+        along the same row or the same column. 'C' means to flatten in row-major
+        (C-style) order, and 'F' means to flatten in column-major (Fortran-style) order.
+    cmap_order
+        The order to flatten when given a nested sequence for `cmap`,
+        Defaults to `order`.
+    norm_order
+        The order to flatten when given a nested sequence for `norm`,
+        Defaults to `cmap_order`.
+    subplot_kw
         Extra arguments to `matplotlib.pyplot.subplots`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
+    annotate_kw
+        Extra arguments to `erlab.plotting.annotations.label_subplot_properties`. Only
+        applied when `annotate` is `True`.
+    colorbar_kw
+        Extra arguments to `erlab.plotting.colors.proportional_colorbar`.
+    axes
+        A nested sequence of `matplotlib.axes.Axes`. If supplied, the returned
+        `matplotlib.figure.Figure` is inferred from the first axes.
+    **values
+        Key-value pair of cut location and bin widths. See examples.
+        Remaining arguments are passed onto `plot_array`.
 
-    annotate_kw : dict, optional
-        Extra arguments to
-        `erlab.plotting.annotations.label_subplot_properties`.
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
 
-    colorbar_kw : dict, optional
-        Extra arguments to
-        `erlab.plotting.general.proportional_colorbar`.
-
-    **values : dict
-        key-value pair of cut location and bin widths. See examples.
-        Remaining arguments are passed onto
-        `erlab.plotting.general.plot_array`.
+    axes : numpy.ndarray of matplotlib.axes.Axes
 
     Examples
     --------
@@ -461,13 +593,12 @@ def plot_slices(
     elif order == "C":
         nrow, ncol = len(maps), len(slice_levels)
 
-    cmap_name = kwargs.pop("cmap", None)
-    cmap_norm = kwargs.pop("norm", None)
-    if fig is None:
-        if axes is None:
-            fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-        else:
-            fig = axes.flat[0].get_figure()
+    cmap_name = cmap
+    cmap_norm = norm
+    if axes is None:
+        fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
+    else:
+        fig = axes.flat[0].get_figure()
     if nrow == 1:
         axes = axes[:, np.newaxis].reshape(1, -1)
     if ncol == 1:
@@ -545,12 +676,35 @@ def plot_slices(
             axes,
             values={slice_dim: slice_levels * len(maps)},
             order=order,
-            **annotate_kw
+            **annotate_kw,
         )
     return fig, axes
 
 
-def fermiline(ax=None, value=0, orientation="h", **kwargs):
+def fermiline(
+    ax: matplotlib.axes.Axes | None = None,
+    value: float = 0.0,
+    orientation: Literal["h", "v"] = "h",
+    **kwargs: dict,
+) -> matplotlib.lines.Line2D:
+    """Plots a constant energy line to denote the Fermi level.
+
+    Parameters
+    ----------
+    ax
+        The `matplotlib.axes.Axes` to annotate.
+    value
+        The coordinate of the line. Defaults to 0, assuming binding energy.
+    orientation
+        If 'h', a horizontal line is plotted. If 'v', a vertical line is plotted.
+    **kwargs
+        Keyword arguments passed onto `matplotlib.lines.Line2D`.
+
+    Returns
+    -------
+    matplotlib.lines.Line2D
+
+    """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
@@ -561,9 +715,8 @@ def fermiline(ax=None, value=0, orientation="h", **kwargs):
     ls = kwargs.pop("ls", kwargs.pop("linestyle", "-"))
     match orientation:
         case "h":
-            return ax.axhline(value, ls=ls, lw=lw, c=c)
+            return ax.axhline(value, ls=ls, lw=lw, c=c, **kwargs)
         case "v":
-            return ax.axvline(value, ls=ls, lw=lw, c=c)
+            return ax.axvline(value, ls=ls, lw=lw, c=c, **kwargs)
         case _:
             raise ValueError("`orientation` must be either 'v' or 'h'")
-            

@@ -1,4 +1,6 @@
-"""Various functions for data analysis."""
+"""Various functions for data analysis.
+
+"""
 from erlab.analysis.correlation import acf2, acf2stack, match_dims, xcorr1d
 from erlab.analysis.gold import (
     gold_edge,

@@ -1,4 +1,6 @@
-"""Plotting utilities."""
+"""Plotting utilities.
+
+"""
 import os
 import pkgutil
 from io import StringIO

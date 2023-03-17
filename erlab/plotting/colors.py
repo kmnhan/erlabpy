@@ -1,4 +1,9 @@
-import matplotlib as mpl
+"""Utilities related to manipulating colors.
+
+"""
+from collections.abc import Iterable, Sequence
+
+import matplotlib
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,13 +28,40 @@ __all__ = [
 
 
 class InversePowerNorm(mcolors.PowerNorm):
-    """
-    For image values :math:`X`, `matplotlib.colors.PowerNorm` calculates
-    :math:`X^\gamma`, whereas `InversePowerNorm` calculates :math:`1-X^{1/\gamma}` for
-    :math:`\gamma<1`. This provides higher contrast in values closer to `vmin.
+    r"""
+    Linearly map a given value to the 0-1 range and then apply an inverse power-law
+    normalization over that range.
+
+    For values :math:`x`, `matplotlib.colors.PowerNorm` calculates
+    :math:`x^\gamma`, whereas `InversePowerNorm` calculates :math:`1-x^{1/\gamma}`.
+    This provides higher contrast for values closer to ``vmin``.
+
+    Parameters
+    ----------
+    gamma
+        Power law normalization parameter. If equal to 1, the colormap is linear.
+    vmin, vmax
+        If ``vmin`` and/or ``vmax`` is not given, they are initialized from the
+        minimum and maximum value, respectively, of the first input
+        processed; i.e., ``__call__(A)`` calls ``autoscale_None(A)``
+    clip
+        If ``True`` values falling outside the range ``[vmin, vmax]``,
+        are mapped to 0 or 1, whichever is closer, and masked values are
+        set to 1.  If ``False`` masked values remain masked.
+
+        Clipping silently defeats the purpose of setting the over, under,
+        and masked colors in a colormap, so it is likely to lead to
+        surprises; therefore the default is ``clip=False``.
+
     """
 
-    def __init__(self, gamma, vmin=None, vmax=None, clip=False):
+    def __init__(
+        self,
+        gamma: float,
+        vmin: float | None = None,
+        vmax: float | None = None,
+        clip: bool = False,
+    ):
         super().__init__(gamma, vmin, vmax, clip)
 
     def __call__(self, value, clip=None):
@@ -169,28 +201,35 @@ def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
 
 
 class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
-    def __init__(self, gamma, vcenter=0, vmin=None, vmax=None):
-        """
-        Normalize data with a set center.
+    r"""Power-law normalization of data with a set center.
 
-        Useful when mapping data with an unequal rates of change around a
-        conceptual center, e.g., data that range from -2 to 4, with 0 as
-        the midpoint.
+    Useful when mapping data with an unequal rates of change around a
+    conceptual center, e.g., data that range from -2 to 4, with 0 as
+    the midpoint.
 
-        Parameters
-        ----------
-        gamma : float
-            Power law exponent
-        vcenter : float, default: 0
-            The data value that defines ``0.5`` in the normalization.
-        vmin : float, optional
-            The data value that defines ``0.0`` in the normalization.
-            Defaults to the min value of the dataset.
-        vmax : float, optional
-            The data value that defines ``1.0`` in the normalization.
-            Defaults to the max value of the dataset.
-        """
+    Parameters
+    ----------
+    gamma
+        Power law exponent.
+    vcenter
+        The data value that defines ``0.5`` in the normalization.
+        Defaults to ``0``.
+    vmin
+        The data value that defines ``0.0`` in the normalization.
+        Defaults to the min value of the dataset.
+    vmax
+        The data value that defines ``1.0`` in the normalization.
+        Defaults to the max value of the dataset.
 
+    """
+
+    def __init__(
+        self,
+        gamma: float,
+        vcenter: float = 0.0,
+        vmin: float | None = None,
+        vmax: float | None = None,
+    ):
         super().__init__(vcenter=vcenter, vmin=vmin, vmax=vmax)
         self.gamma = gamma
         self._func = _diverging_powernorm
@@ -226,29 +265,44 @@ class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
 
 
 class CenteredPowerNorm(mcolors.CenteredNorm):
-    def __init__(self, gamma, vcenter=0, halfrange=None, clip=False):
-        """
-        Normalize symmetrical data around a center (0 by default).
+    r"""Power-law normalization of symmetrical data around a center.
 
-        Unlike `TwoSlopePowerNorm`, `CenteredPowerNorm` applies an equal rate of change
-        around the center.
+    Unlike `TwoSlopePowerNorm`, `CenteredPowerNorm` applies an equal rate of
+    change around the center.
 
-        Useful when mapping symmetrical data around a conceptual center e.g., data that
-        range from -2 to 4, with 0 as the midpoint, and with equal rates of change
-        around that midpoint.
+    Useful when mapping symmetrical data around a conceptual center e.g., data that
+    range from -2 to 4, with 0 as the midpoint, and with equal rates of change
+    around that midpoint.
 
-        Parameters
-        ----------
-        vcenter : float, default: 0
-            The data value that defines ``0.5`` in the normalization.
-        halfrange : float, optional
-            The range of data values that defines a range of ``0.5`` in the
-            normalization, so that *vcenter* - *halfrange* is ``0.0`` and *vcenter* +
-            *halfrange* is ``1.0`` in the normalization. Defaults to the largest
-            absolute difference to *vcenter* for the values in the dataset.
+    Parameters
+    ----------
+    gamma
+        Power law exponent.
+    vcenter
+        The data value that defines ``0.5`` in the normalization. Defaults to ``0``.
+    halfrange
+        The range of data values that defines a range of ``0.5`` in the
+        normalization, so that `vcenter` - `halfrange` is ``0.0`` and `vcenter` +
+        `halfrange` is ``1.0`` in the normalization. Defaults to the largest
+        absolute difference to `vcenter` for the values in the dataset.
+    clip
+        If ``True`` values falling outside the range ``[vmin, vmax]``,
+        are mapped to 0 or 1, whichever is closer, and masked values are
+        set to 1.  If ``False`` masked values remain masked.
 
-        """
+        Clipping silently defeats the purpose of setting the over, under,
+        and masked colors in a colormap, so it is likely to lead to
+        surprises; therefore the default is ``clip=False``.
 
+    """
+
+    def __init__(
+        self,
+        gamma: float,
+        vcenter: float = 0,
+        halfrange: float | None = None,
+        clip: bool = False,
+    ):
         super().__init__(vcenter=vcenter, halfrange=halfrange, clip=clip)
         self.gamma = gamma
         self._func = _diverging_powernorm
@@ -292,14 +346,79 @@ class CenteredPowerNorm(mcolors.CenteredNorm):
 
 
 class TwoSlopeInversePowerNorm(TwoSlopePowerNorm):
-    def __init__(self, gamma, vcenter=0, vmin=None, vmax=None):
+    r"""Inverse power-law normalization of data with a set center.
+
+    Useful when mapping data with an unequal rates of change around a
+    conceptual center, e.g., data that range from -2 to 4, with 0 as
+    the midpoint.
+
+    Parameters
+    ----------
+    gamma
+        Power law exponent.
+    vcenter
+        The data value that defines ``0.5`` in the normalization.
+        Defaults to ``0``.
+    vmin
+        The data value that defines ``0.0`` in the normalization.
+        Defaults to the min value of the dataset.
+    vmax
+        The data value that defines ``1.0`` in the normalization.
+        Defaults to the max value of the dataset.
+
+    """
+
+    def __init__(
+        self,
+        gamma: float,
+        vcenter: float = 0.0,
+        vmin: float | None = None,
+        vmax: float | None = None,
+    ):
         super().__init__(gamma, vcenter, vmin, vmax)
         self._func = _diverging_inversepowernorm
         self._func_i = _diverging_inversepowernorm_inv
 
 
 class CenteredInversePowerNorm(CenteredPowerNorm):
-    def __init__(self, gamma, vcenter=0, halfrange=None, clip=False):
+    r"""Inverse power-law normalization of symmetrical data around a center.
+
+    Unlike `TwoSlopeInversePowerNorm`, `CenteredInversePowerNorm` applies an
+    equal rate of change around the center.
+
+    Useful when mapping symmetrical data around a conceptual center e.g., data that
+    range from -2 to 4, with 0 as the midpoint, and with equal rates of change
+    around that midpoint.
+
+    Parameters
+    ----------
+    gamma
+        Power law exponent.
+    vcenter
+        The data value that defines ``0.5`` in the normalization. Defaults to ``0``.
+    halfrange
+        The range of data values that defines a range of ``0.5`` in the
+        normalization, so that `vcenter` - `halfrange` is ``0.0`` and `vcenter` +
+        `halfrange` is ``1.0`` in the normalization. Defaults to the largest
+        absolute difference to `vcenter` for the values in the dataset.
+    clip
+        If ``True`` values falling outside the range ``[vmin, vmax]``,
+        are mapped to 0 or 1, whichever is closer, and masked values are
+        set to 1.  If ``False`` masked values remain masked.
+
+        Clipping silently defeats the purpose of setting the over, under,
+        and masked colors in a colormap, so it is likely to lead to
+        surprises; therefore the default is ``clip=False``.
+
+    """
+
+    def __init__(
+        self,
+        gamma: float,
+        vcenter: float = 0,
+        halfrange: float | None = None,
+        clip: bool = False,
+    ):
         super().__init__(gamma, vcenter, halfrange, clip)
         self._func = _diverging_inversepowernorm
         self._func_i = _diverging_inversepowernorm_inv
@@ -326,36 +445,36 @@ def get_mappable(ax, image_only=False, error=True):
     return mappable
 
 
-def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
-    r"""Replaces the current colorbar or creates a new colorbar with
-    proportional spacing.
+def proportional_colorbar(
+    mappable: matplotlib.cm.ScalarMappable | None = None,
+    cax: matplotlib.axes.Axes | None = None,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    **kwargs: dict
+) -> matplotlib.colorbar.Colorbar:
+    r"""Replaces the current colorbar or creates a new colorbar with proportional spacing.
 
-    The default behavior of colorbars in `matplotlib` does not support
-    colors proportional to data in different norms. This function
-    circumvents this behavior.
+    The default behavior of colorbars in `matplotlib` does not support colors
+    proportional to data in different norms. This function circumvents this behavior.
 
     Parameters
     ----------
-    mappable : `matplotlib.cm.ScalarMappable`, optional
+    mappable
         The `matplotlib.cm.ScalarMappable` described by this colorbar.
-
-    cax : `matplotlib.axes.Axes`, optional
+    cax
         Axes into which the colorbar will be drawn.
-
-    ax : `matplotlib.axes.Axes`, list of Axes, optional
+    ax
         One or more parent axes from which space for a new colorbar axes
-        will be stolen, if `cax` is None.  This has no effect if `cax`
-        is set. If `mappable` is None and `ax` is given with more than
-        one Axes, the function will try to get the mappable from the
+        will be stolen, if `cax` is `None`.  This has no effect if `cax`
+        is set. If `mappable` is `None` and `ax` is given with more than
+        one Axes, the function will try to infer the mappable from the
         first one.
-
-    **kwargs : dict, optional
-        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
+    **kwargs
+        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the `matplotlib` documentation for a list of all possible arguments.
 
     Returns
     -------
-    cbar : `matplotlib.colorbar.Colorbar`
+    cbar : matplotlib.colorbar.Colorbar
+        The created colorbar.
 
     Examples
     --------
@@ -417,36 +536,31 @@ def proportional_colorbar(mappable=None, cax=None, ax=None, **kwargs):
 
 # TODO: fix colorbar size properly
 def nice_colorbar(
-    ax, mappable=None, width=5, aspect=5, minmax=False, ticklabels=None, *args, **kwargs
+    ax:matplotlib.axes.Axes, mappable:matplotlib.cm.ScalarMappable|None=None, width:float=5.0, aspect:float=5.0, minmax:bool=False, ticklabels:Sequence[str]|None=None, *args, **kwargs:dict
 ):
-    r"""
-    Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
+    r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
 
     Parameters
     ----------
-    ax : `matplotlib.axes.Axes`
+    ax
         The `matplotlib.axes.Axes` instance in which the colorbar is drawn.
-
-    mappable : `.ScalarMappable`, optional
+    mappable
         The mappable whose colormap and norm will be used.
-
-    width : float, default: 5
+    width
         The width of the colorbar in points.
-
-    aspect : float, default: 5
+    aspect
         aspect ratio of the colorbar.
-
-    minmax : bool
-        If *False* the ticks and the ticklabels will be determined from the keyword
-        arguments (the default). If *True* the minimum and maximum of the colorbar will
+    minmax
+        If `False`, the ticks and the ticklabels will be determined from the keyword
+        arguments (the default). If `True`, the minimum and maximum of the colorbar will
         be labeled.
-
     **kwargs
-        Keyword arguments are passed to `erlab.plotting.proportional_colorbar`.
+        Keyword arguments are passed to `proportional_colorbar`.
 
     Returns
     -------
-    colorbar : matplotlib.colorbar.Colorbar
+    cbar : matplotlib.colorbar.Colorbar
+        The created colorbar.
 
     """
     if isinstance(ax, np.ndarray):
@@ -455,7 +569,7 @@ def nice_colorbar(
         parents = [ax]
     fig = parents[0].get_figure()
 
-    bbox = mpl.transforms.Bbox.union(
+    bbox = matplotlib.transforms.Bbox.union(
         [p.get_position(original=True).frozen() for p in parents]
     ).transformed(fig.transFigure + fig.dpi_scale_trans.inverted())
     # bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
@@ -520,7 +634,9 @@ def axes_textcolor(ax, light="k", dark="w"):
     c = light
     mappable = get_mappable(ax, error=False)
     if mappable is not None:
-        if isinstance(mappable, (mpl.image._ImageBase, mpl.collections.QuadMesh)):
+        if isinstance(
+            mappable, (matplotlib.image._ImageBase, matplotlib.collections.QuadMesh)
+        ):
             if not image_is_light(mappable):
                 c = dark
     return c

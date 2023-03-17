@@ -1,7 +1,20 @@
-"""Plot annotations."""
+"""Plot annotations.
+
+Attributes
+----------
+SI_PREFIXES : dict
+    Maps powers of 10 to valid SI prefix strings.
+SI_PREFIX_NAMES : tuple of str
+    Names of the SI prefixes.
+
+"""
+from __future__ import annotations
 import io
 
-import matplotlib as mpl
+from collections.abc import Iterable, Sequence
+from typing import Literal
+
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pyclip
@@ -19,14 +32,12 @@ __all__ = [
     "annotate_cuts_erlab",
     "fancy_labels",
     "mark_points",
-    "mark_points_y",
-    "get_si_str",
     "sizebar",
     "copy_mathtext",
 ]
 
 
-SI_PREFIXES = {
+SI_PREFIXES: dict[int, str] = {
     24: "Y",
     21: "Z",
     18: "E",
@@ -50,7 +61,7 @@ SI_PREFIXES = {
     -24: "y",
 }
 
-SI_PREFIX_NAMES = [
+SI_PREFIX_NAMES: tuple[str, ...] = (
     "yotta",
     "zetta",
     "exa",
@@ -72,15 +83,23 @@ SI_PREFIX_NAMES = [
     "atto",
     "zepto",
     "yocto",
-]
-
-# SI_FACTORS = [24, 21, 18, 15, 12, 9, 6, 3, 2, 1, 0,
-#   -1, -2, -3, -6, -9, -12, -15, -18, -21, -24]
-# SI_PREFIXES = ['Y', 'Z', 'E', 'P', 'T', 'G', 'M', 'k', 'h', 'da', '',
-#                'd', 'c', 'm', 'μ', 'n', 'p', 'f', 'a', 'z', 'y']
+)
 
 
-def get_si_str(si: int):
+def get_si_str(si: int) -> str:
+    """Returns the SI prefix string to be plotted by :mod:`matplotlib`.
+
+    Parameters
+    ----------
+    si : int
+        Exponent of 10.
+
+    Returns
+    -------
+    str
+        SI prefix corresponding to ``si``.
+
+    """
     if plt.rcParams["text.usetex"] and si == -6:
         return "\\ensuremath{\\mu}"
     else:
@@ -92,15 +111,15 @@ def get_si_str(si: int):
 
 def annotate_cuts_erlab(
     data: xr.DataArray,
-    plotted_dims,
-    ax=None,
-    include_text_labels=False,
-    color=None,
-    textoffset=[0, 0],
-    plot_kw={},
-    text_kw={},
-    factor=1,
-    **kwargs,
+    plotted_dims: Sequence[str],
+    ax: matplotlib.axes.Axes | None = None,
+    include_text_labels: bool = False,
+    color: str | None = None,
+    textoffset: Sequence[float] = [0, 0],
+    plot_kw: dict = {},
+    text_kw: dict = {},
+    factor: float = 1.0,
+    **kwargs: dict,
 ):
     r"""Annotates a cut location onto a plot.
 
@@ -109,37 +128,29 @@ def annotate_cuts_erlab(
 
     Parameters
     ----------
-    data : xarray.DataArray
+    data
         The data before momentum space conversion.
-
-    plotted_dims: list of str
+    plotted_dims
         The dimension names currently plotted on the target axes.
-
-    ax : `matplotlib.axes.Axes`, optional
+    ax
         The `matplotlib.axes.Axes` instance in which the annotation is
         placed, defaults to the current axes when optional.
-
-    include_text_labels: bool, default=False
+    include_text_labels
         Whether to include text labels.
-
-    color : color. optional
+    color
         Color of both the line and label text. Each color can be
         overridden by `plot_kw` and `text_kw`.
-
-    plot_kw : dict, optional
+    plot_kw
         Extra arguments to `matplotlib.pyplot.plot`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
-
-    text_kw : dict, optional
+    text_kw
         Extra arguments to `matplotlib.pyplot.text`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
         Has no effect if `include_text_labels` is False.
-
-    textoffset : list of float or tuple of float
+    textoffset
         Horizontal and vertical offset of text labels. Has no effect if
         `include_text_labels` is False.
-
-    **kwargs : dict
+    **kwargs
         Defines the coordinates of the cut location.
 
     Examples
@@ -204,73 +215,88 @@ def _alph_label(val, prefix, suffix, numeric, capital):
 
 
 def label_subplots(
-    axes,
-    values=None,
-    startfrom=1,
-    order="C",
-    loc="upper left",
-    offset=(0.0, 0.0),
-    prefix="(",
-    suffix=")",
-    numeric=False,
-    capital=False,
-    fontweight="normal",
-    fontsize=None,
+    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
+    values: Sequence[int | str] | None = None,
+    startfrom: int = 1,
+    order: Literal["C", "F", "A", "K"] = "C",
+    loc: Literal[
+        "upper left",
+        "upper center",
+        "upper right",
+        "center left",
+        "center",
+        "center right",
+        "lower left",
+        "lower center",
+        "lower right",
+    ] = "upper left",
+    offset: tuple[float, float] = (0.0, 0.0),
+    prefix: str = "",
+    suffix: str = "",
+    numeric: bool = False,
+    capital: bool = False,
+    fontweight: Literal[
+        "ultralight",
+        "light",
+        "normal",
+        "regular",
+        "book",
+        "medium",
+        "roman",
+        "semibold",
+        "demibold",
+        "demi",
+        "bold",
+        "heavy",
+        "extra bold",
+        "black",
+    ] = "normal",
+    fontsize: float
+    | Literal["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"]
+    | None = None,
     **kwargs,
 ):
     r"""Labels subplots with automatically generated labels.
 
     Parameters
     ----------
-
-    axes : `matplotlib.axes.Axes`, list of Axes
-        Axes to label. If an array is given, the order will be
+    axes
+        `matplotlib.axes.Axes` to label. If an array is given, the order will be
         determined by the flattening method given by `order`.
-
-    values : list of int or list of str, optional
+    values
         Integer or string labels corresponding to each Axes in `axes` for
         manual labels.
-
-    startfrom : int, optional
+    startfrom
         Start from this number when creating automatic labels. Has no
         effect when `values` is not `None`.
-
-    order : {'C', 'F', 'A', 'K'}, optional
+    order
         Order in which to flatten `ax`. 'C' means to flatten in
         row-major (C-style) order. 'F' means to flatten in column-major
         (Fortran- style) order. 'A' means to flatten in column-major
         order if a is Fortran contiguous in memory, row-major order
         otherwise. 'K' means to flatten a in the order the elements
         occur in memory. The default is 'C'.
-
-    loc : {'upper left', 'upper center', 'upper right', 'center left',
-    'center', 'center right', 'lower left', 'lower center, 'lower
-    right'}, optional
-        The box location. The default is 'upper left'.
-    offset : 2-tuple of floats, optional
+    loc
+        The box location. The default is ``'upper left'``.
+    offset
         Values that are used to position the legend in conjunction with
         `loc`, given in display units.
-
-    prefix : str, optional
-        String to prepend to the alphabet label. The default is '('.
-    suffix : str, optional
-        String to append to the alphabet label. The default is ')'.
-    numeric: bool, default=False
+    prefix
+        String to prepend to the alphabet label.
+    suffix
+        String to append to the alphabet label.
+    numeric
         Use integer labels instead of alphabets.
-    capital: bool, default=False
+    capital
         Capitalize automatically generated alphabetical labels.
-
-    fontweight : {'ultralight', 'light', 'normal', 'regular', 'book',
-    'medium', 'roman', 'semibold', 'demibold', 'demi', 'bold', 'heavy',
-    'extra bold', 'black'}, optional
-        Set the font weight. The default is `'normal'`.
-    fontsize :  float or {'xx-small', 'x-small', 'small', 'medium',
-    'large', 'x-large', 'xx-large'}, optional
-        Set the font size. The default is `'medium'` for axes, and
-        `'large'` for figures.
-    **kwargs : dict, optional
-        Extra arguments to `matplotlib.text.Text`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
+    fontweight
+        Set the font weight. The default is ``'normal'``.
+    fontsize
+        Set the font size. The default is ``'medium'`` for axes, and ``'large'`` for
+        figures.
+    **kwargs
+        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
 
     """
 
@@ -293,16 +319,16 @@ def label_subplots(
     for i in range(len(axlist)):
         bbox_to_anchor = axlist[i].bbox
         if fontsize is None:
-            if isinstance(axlist[i], mpl.figure.Figure):
+            if isinstance(axlist[i], matplotlib.figure.Figure):
                 fs = "large"
             else:
                 fs = "medium"
         else:
             fs = fontsize
-        bbox_transform = mpl.transforms.Affine2D().translate(*offset)
+        bbox_transform = matplotlib.transforms.Affine2D().translate(*offset)
         label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
         with plt.rc_context({"text.color": axes_textcolor(axlist[i])}):
-            at = mpl.offsetbox.AnchoredText(
+            at = matplotlib.offsetbox.AnchoredText(
                 label_str,
                 loc=loc,
                 frameon=False,
@@ -437,39 +463,41 @@ def property_label(key, value, decimals=0, si=0, name=None, unit=None):
 
 
 def label_subplot_properties(
-    axes, values, decimals=None, si=0, name=None, unit=None, order="C", **kwargs
+    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
+    values: dict,
+    decimals: int | None = None,
+    si: int = 0,
+    name: str | None = None,
+    unit: str | None = None,
+    order: Literal["C", "F", "A", "K"] = "C",
+    **kwargs,
 ):
     r"""Labels subplots with automatically generated labels.
 
     Parameters
     ----------
-
-    axes : `matplotlib..axes.Axes`, list of Axes
-        Axes to label. If an array is given, the order will be
+    axes
+        `matplotlib.axes.Axes` to label. If an array is given, the order will be
         determined by the flattening method given by `order`.
-    values : dict
+    values
         key-value pair of annotations.
-    decimals : None or int, optional
+    decimals
         Number of decimal places to round to. If decimals is None, no
         rounding is performed. If decimals is negative, it specifies the
         number of positions to the left of the decimal point.
-    si : int, optional
+    si
         Powers of 10 for automatic SI prefix setting.
-    name : str, optional
+    name
         When set, overrides automatic dimension name setting.
-    unit : str, optional
+    unit
         When set, overrides automatic unit setting.
-    short: bool, default=False
-        Whether to omit
-    order : {'C', 'F', 'A', 'K'}, optional
+    order
         Order in which to flatten `ax`. 'C' means to flatten in
         row-major (C-style) order. 'F' means to flatten in column-major
         (Fortran- style) order. 'A' means to flatten in column-major
         order if a is Fortran contiguous in memory, row-major order
         otherwise. 'K' means to flatten a in the order the elements
         occur in memory. The default is 'C'.
-
-    short : bool, default=False
 
     """
     kwargs.setdefault("fontweight", plt.rcParams["font.weight"])
@@ -495,54 +523,60 @@ def label_subplot_properties(
 
 
 def sizebar(
-    ax,
-    value,
-    unit,
-    si=0,
-    resolution=1.0,
-    decimals=0,
-    label=None,
-    loc="lower right",
-    pad=0.1,
-    borderpad=0.5,
-    sep=3,
-    frameon=False,
+    ax: matplotlib.axes.Axes,
+    value: float,
+    unit: str,
+    si: int = 0,
+    resolution: float = 1.0,
+    decimals: int = 0,
+    label: str | None = None,
+    loc: Literal[
+        "upper left",
+        "upper center",
+        "upper right",
+        "center left",
+        "center",
+        "center right",
+        "lower left",
+        "lower center",
+        "lower right",
+    ] = "lower right",
+    pad: float = 0.1,
+    borderpad: float = 0.5,
+    sep: float = 3.0,
+    frameon: bool = False,
     **kwargs,
 ):
     """
 
     Parameters
     ----------
-
-    ax : `matplotlib.axes.Axes`
+    ax
         The `matplotlib.axes.Axes` instance to place the size bar in.
-    value : float
+    value
         Length of the size bar in terms of `unit`.
-    unit : str
+    unit
         An SI unit string without prefixes.
-    si : int, default=0
+    si
         Exponents that have a corresponding SI prefix
-    resolution : float, default=1
+    resolution
         Value to scale the data coordinates in terms of `unit`.
-    decimals : int, decimals=0
+    decimals
         Number of decimals on the size bar label.
-    label : str, optional
+    label
         When provided, overrides the automatically generated label string.
-    loc : str, default='lower right'
-        Location of the size bar.  Valid locations are
-        'upper left', 'upper center', 'upper right',
-        'center left', 'center', 'center right',
-        'lower left', 'lower center, 'lower right'.
-    pad : float, default=0.1
+    loc
+        Location of the size bar.
+    pad
         Padding around the label and size bar, in fraction of the font size.
-    borderpad : float, default=0.5
+    borderpad
         Border padding, in fraction of the font size.
-    sep : float, default=3
+    sep
         Separation between the label and the size bar, in points.
-    frameon : bool, default=False
+    frameon
         If True, draw a box around the horizontal bar and label.
-    **kwargs : dict, optional
-        Keyword arguments forwarded to `AnchoredSizeBar`.
+    **kwargs
+        Keyword arguments forwarded to `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
 
     """
 
@@ -639,18 +673,56 @@ def parse_point_labels(name: str, roman=True, bar=False):
     return name
 
 
-def mark_points(pts, labels, roman=True, bar=False, ax=None):
+def mark_points(
+    points: Sequence[float],
+    labels: Sequence[str],
+    axis: Literal["x", "y"],
+    roman: bool = True,
+    bar: bool = False,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
+):
+    """Mark points above the horizontal axis.
+
+    Useful when annotating high symmetry points along a cut.
+
+    Parameters
+    ----------
+    points
+        Floats indicating the position of each label.
+    labels
+        Sequence of label strings indicating a high symmetry point. Must be the same
+        length as `points`.
+    axis
+        If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points along
+        the vertical axis.
+    roman
+        If ``False``, *True*, itallic fonts are used.
+    bar
+        If ``True``, prints a bar over the label.
+    ax
+        `matplotlib.axes.Axes` to annotate.
+
+    """
     if ax is None:
         ax = plt.gca()
-    if not isinstance(ax, (tuple, list, np.ndarray)):
-        ax = [ax]
-    for a in np.array(ax, dtype=object).flatten():
-        label_ax = a.twiny()
-        label_ax.set_xlim(a.get_xlim())
-        label_ax.set_xticks(pts)
-        # label_ax.set_xlabel('')
-        label_ax.set_xticklabels([parse_point_labels(l, roman, bar) for l in labels])
-        # label_ax.set_zorder(a.get_zorder())
+    if np.iterable(ax):
+        for a in np.asarray(ax, dtype=object).flatten():
+            mark_points(points, labels, axis, roman, bar, a)
+    else:
+        if axis == "x":
+            label_ax = ax.twiny()
+            label_ax.set_xlim(ax.get_xlim())
+            label_ax.set_xticks(points)
+            label_ax.set_xticklabels(
+                [parse_point_labels(l, roman, bar) for l in labels]
+            )
+        else:
+            label_ax = ax.twinx()
+            label_ax.set_ylim(ax.get_ylim())
+            label_ax.set_yticks(points)
+            label_ax.set_yticklabels(
+                [parse_point_labels(l, roman, bar) for l in labels]
+            )
         label_ax.set_frame_on(False)
 
 
@@ -679,23 +751,23 @@ def copy_mathtext(
     **mathtext_rc,
 ):
     if fontproperties is None:
-        fontproperties = mpl.font_manager.FontProperties(size=fontsize)
+        fontproperties = matplotlib.font_manager.FontProperties(size=fontsize)
     else:
         fontproperties.set_size(fontsize)
-    parser = mpl.mathtext.MathTextParser("path")
+    parser = matplotlib.mathtext.MathTextParser("path")
     width, height, depth, _, _ = parser.parse(s, dpi=72, prop=fontproperties)
-    fig = mpl.figure.Figure(figsize=(width / 72, height / 72))
+    fig = matplotlib.figure.Figure(figsize=(width / 72, height / 72))
     fig.patch.set_facecolor("none")
     fig.text(0, depth / height, s, fontproperties=fontproperties)
 
     if svg:
-        mpl.backends.backend_svg.FigureCanvasSVG(fig)
+        matplotlib.backends.backend_svg.FigureCanvasSVG(fig)
     else:
-        mpl.backends.backend_pdf.FigureCanvasPdf(fig)
+        matplotlib.backends.backend_pdf.FigureCanvasPdf(fig)
 
     for k, v in mathtext_rc.items():
         if k in ["bf", "cal", "it", "rm", "sf", "tt"] and isinstance(
-            v, mpl.font_manager.FontProperties
+            v, matplotlib.font_manager.FontProperties
         ):
             v = v.get_fontconfig_pattern()
         rcparams[f"mathtext.{k}"] = v
