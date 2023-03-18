@@ -51,8 +51,8 @@ nitpick_ignore = [("py:class", "numpy.float64")]
 # autodoc_typehints_description_target = "all"
 
 # autodoc_type_aliases = {
-    # "numpy.float64": "float",
-    # "float64": "float",
+# "numpy.float64": "float",
+# "float64": "float",
 # }
 
 # Napoleon settings
@@ -69,7 +69,7 @@ napoleon_use_param = True
 napoleon_use_rtype = True
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
-    "array-like":"ndarray <numpy.ndarray>",
+    "array-like": "ndarray <numpy.ndarray>",
     "numpy.float64": "float",
     "float64": "float",
 }
@@ -100,3 +100,13 @@ plot_html_show_formats = False
 
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
+
+# -- LaTeX options -----------------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options
+
+latex_engine = "lualatex"
+latex_table_style = ["booktabs"]
+latex_elements = dict(
+    fontpkg=r"""\usepackage{fontspec,unicode-math}
+\setsansfont{Helvetica Neue}""",
+)

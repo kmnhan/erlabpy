@@ -108,7 +108,9 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
 
 def match_dims(da1: xr.DataArray, da2: xr.DataArray):
     """
-    Returns the second array interpolated with the coordinates of the first array, making them the same size.
+    Returns the second array interpolated with the coordinates of the first array,
+    making them the same size. 
+    
     """
     return da2.interp({dim: da1[dim] for dim in da2.dims})
 

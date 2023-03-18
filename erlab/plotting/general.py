@@ -438,11 +438,13 @@ def plot_slices(
     colorbar: Literal["none", "right", "rightspan", "all"] = "none",
     hide_colorbar_ticks: bool = True,
     annotate: bool = True,
-    cmap: Iterable[matplotlib.colors.colormap | str]
-    | matplotlib.colors.colormap
-    | str
+    cmap: str
+    | matplotlib.colors.Colormap
+    | Iterable[matplotlib.colors.Colormap | str]
     | None = None,
-    norm: Iterable[matplotlib.colors.Normalize] | None = None,
+    norm: matplotlib.colors.Normalize
+    | Iterable[matplotlib.colors.Normalize]
+    | None = None,
     order: Literal["C", "F"] = "C",
     cmap_order: Literal["C", "F"] = "C",
     norm_order: Literal["C", "F"] | None = None,
@@ -544,7 +546,7 @@ def plot_slices(
     -------
     fig : matplotlib.figure.Figure
 
-    axes : numpy.ndarray of matplotlib.axes.Axes
+    axes : array-like of matplotlib.axes.Axes
 
     Examples
     --------

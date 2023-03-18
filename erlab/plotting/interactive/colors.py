@@ -1,10 +1,17 @@
-import matplotlib.colors as colors
+"""Functions for manipulating colors in Qt.
+
+"""
+from __future__ import annotations
+from typing import Literal
+
+import matplotlib
+import matplotlib.colors as mcolors
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtGui
+from PySide6 import QtGui
 
 __all__ = [
-    "mpl_color_to_QColor",
+    "color_to_QColor",
     "pg_colormap_names",
     "pg_colormap_from_name",
     "pg_colormap_powernorm",
@@ -12,12 +19,43 @@ __all__ = [
 ]
 
 
-def mpl_color_to_QColor(c, alpha=None):
-    """Convert matplotlib color to QtGui.Qcolor."""
-    return QtGui.QColor.fromRgbF(*colors.to_rgba(c, alpha=alpha))
+def color_to_QColor(
+    c: str | tuple[float, ...], alpha: float | None = None
+) -> QtGui.QColor:
+    """Convert a matplotlib color to a :class:`PySide6.QtGui.QColor`.
+
+    Parameters
+    ----------
+    c
+        A valid matplotlib color. See the `matplotlib documentation
+        <https://matplotlib.org/stable/tutorials/colors/colors.html>` for more
+        information.
+    alpha
+        If supplied, applies transparency to the color.
+
+    Returns
+    -------
+    PySide6.QtGui.QColor
+
+    """
+    return QtGui.QColor.fromRgbF(*mcolors.to_rgba(c, alpha=alpha))
 
 
-def pg_colormap_names(source="all"):
+def pg_colormap_names(
+    source: Literal["local", "all", "matplotlib"] = "all"
+) -> list[str]:
+    """Get all valid `pyqtgraph` colormap names.
+
+    Parameters
+    ----------
+    source
+        If ``'all'``, includes all colorcet colormaps.
+
+    Returns
+    -------
+    list of str
+
+    """
     local = sorted(pg.colormap.listMaps())
     if source == "local":
         return local
@@ -40,7 +78,22 @@ def pg_colormap_names(source="all"):
     return list({value: None for value in all_cmaps})
 
 
-def pg_colormap_from_name(name: str, skipCache=True) -> pg.ColorMap:
+def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
+    """Gets a :class:`pyqtgraph.ColorMap` from its name.
+
+    Parameters
+    ----------
+    name
+        A valid colormap name.
+    skipCache
+        Whether to skip cache, by default `True`. Passed onto
+        :func:`pyqtgraph.colormap.get`.
+
+    Returns
+    -------
+    pyqtgraph.ColorMap
+
+    """
     try:
         return pg.colormap.get(name, skipCache=skipCache)
     except FileNotFoundError:
@@ -51,7 +104,11 @@ def pg_colormap_from_name(name: str, skipCache=True) -> pg.ColorMap:
 
 
 def pg_colormap_powernorm(
-    cmap, gamma, reverse=False, highContrast=False, zeroCentered=False
+    cmap: str | pg.ColorMap,
+    gamma: float,
+    reverse: bool = False,
+    highContrast: bool = False,
+    zeroCentered: bool = False,
 ) -> pg.ColorMap:
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
@@ -89,8 +146,27 @@ def pg_colormap_powernorm(
     return cmap
 
 
-def pg_colormap_to_QPixmap(cmap, w=64, h=16, skipCache=True):
-    """Convert pyqtgraph colormap to a `w`-by-`h` QPixmap thumbnail."""
+def pg_colormap_to_QPixmap(
+    cmap: str | pg.ColorMap, w: int = 64, h: int = 16, skipCache: bool = True
+) -> QtGui.QPixmap:
+    """Converts a :class:`pyqtgraph.ColorMap` to a ``w``-by-``h`` QPixmap thumbnail.
+
+    Parameters
+    ----------
+    cmap
+        The colormap.
+    w, h
+        Specifies the dimension of the pixmap.
+    skipCache : bool, optional
+        Whether to skip cache, by default `True`. Passed onto
+        :func:`pg_colormap_from_name`.
+
+    Returns
+    -------
+    PySide6.QtGui.QPixmap
+
+    """
+
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
     # cmap_arr = np.reshape(cmap.getColors()[:, None], (1, -1, 4), order='C')
