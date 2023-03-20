@@ -1,3198 +1,71 @@
-import colorsys
-import sys
-import weakref
-from itertools import chain, compress
-from time import perf_counter
+from __future__ import annotations
 
-import darkdetect
-import matplotlib.mathtext
-import numba
-import numbagg
+import sys
+from collections.abc import Iterable, Sequence
+
 import numpy as np
-import pyqtgraph as pg
+import numpy.typing as npt
 import qtawesome as qta
 import xarray as xr
-from matplotlib import colors as mcolors
-from matplotlib import figure, rc_context
-from matplotlib.backends import backend_agg, backend_svg
-from matplotlib.font_manager import FontProperties
-from pyqtgraph.dockarea.Dock import Dock, DockLabel
-from pyqtgraph.dockarea.DockArea import DockArea
-from qtpy import QtCore, QtGui, QtWidgets, QtSvg, QtSvgWidgets
+from qtpy import QtCore, QtGui, QtWidgets
+import pyqtgraph as pg
+from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
+from pyqtgraph.GraphicsScene import mouseEvents
 
-if __name__ != "__main__":
-    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
-    from ..interactive.utilities import parse_data, xImageItem
-else:
-    from erlab.plotting.interactive.colors import (
-        pg_colormap_names,
-        pg_colormap_powernorm,
-        pg_colormap_to_QPixmap,
-    )
-    from erlab.plotting.interactive.utilities import parse_data, xImageItem
+import erlab.io
+from erlab.plotting.interactive.colors import (
+    pg_colormap_names,
+    pg_colormap_powernorm,
+    pg_colormap_to_QPixmap,
+)
+from erlab.plotting.interactive.slicer import ArraySlicer
+from erlab.plotting.interactive.utilities import (
+    BetterAxisItem,
+    BetterColorBarItem,
+    BetterImageItem,
+    BetterSpinBox,
+)
 
-
-# pg.setConfigOption('useNumba', True)
-# pg.setConfigOption('background', 'w')
-# pg.setConfigOption('foreground', 'k')
-
-
-__all__ = ["itool", "pg_itool"]
+__all__ = ["itool", "ImageTool", "ImageSlicerArea"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
-ICON_NAME = dict(
-    invert="mdi6.invert-colors",
-    invert_off="mdi6.invert-colors-off",
-    contrast="mdi6.contrast-box",
-    lock="mdi6.lock",
-    unlock="mdi6.lock-open-variant",
-    colorbar="mdi6.gradient-vertical",
-    transpose_0="mdi6.arrow-left-right",
-    transpose_1="mdi6.arrow-top-left-bottom-right",
-    transpose_2="mdi6.arrow-up-down",
-    transpose_3="mdi6.arrow-up-down",
-    snap="mdi6.grid",
-    snap_off="mdi6.grid-off",
-    palette="mdi6.palette-advanced",
-    styles="mdi6.palette-swatch",
-    layout="mdi6.page-layout-body",
-    zero_center="mdi6.format-vertical-align-center",
-    table_eye="mdi6.table-eye",
-)
-
-
-class IconButton(QtWidgets.QPushButton):
-    def __init__(self, *args, on: str = None, off: str = None, **kwargs):
-        self.icon_key_on = None
-        self.icon_key_off = None
-        if on is not None:
-            self.icon_key_on = on
-            kwargs["icon"] = qta.icon(ICON_NAME[self.icon_key_on])
-        if off is not None:
-            if on is None and kwargs["icon"] is None:
-                raise ValueError("Icon for `on` state was not supplied.")
-            self.icon_key_off = off
-            kwargs.setdefault("checkable", True)
-        super().__init__(*args, **kwargs)
-        if self.isCheckable() and off is not None:
-            self.toggled.connect(self.refresh_icons)
-
-    def refresh_icons(self):
-        if self.icon_key_off is not None:
-            if self.isChecked():
-                self.setIcon(qta.icon(ICON_NAME[self.icon_key_off]))
-                return
-        self.setIcon(qta.icon(ICON_NAME[self.icon_key_on]))
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            qta.reset_cache()
-            self.refresh_icons()
-        super().changeEvent(evt)
-
-
-# class FlowLayout(QtGui.QVBoxLayout):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-
-
-class FlowLayout(QtWidgets.QLayout):
-    def __init__(self, parent=None, margin=0):
-        super().__init__(parent)
-
-        # if parent is not None:
-        # self.setContentsMargins(QtCore.QMargins(margin, margin, margin, margin))
-
-        self._item_list = []
-        self.setHorizontalSpacing(self.spacing())
-        self.setVerticalSpacing(self.spacing())
-        # self.setVerticalSpacing(0)
-
-    def __del__(self):
-        item = self.takeAt(0)
-        while item:
-            item = self.takeAt(0)
-
-    def horizontalSpacing(self):
-        return self._spacing_horizontal
-
-    def verticalSpacing(self):
-        return self._spacing_vertical
-
-    def setHorizontalSpacing(self, spacing: int):
-        self._spacing_horizontal = spacing
-
-    def setVerticalSpacing(self, spacing: int):
-        self._spacing_vertical = spacing
-
-    def setSpacing(self, spacing: int):
-        super().setSpacing(spacing)
-        self.setHorizontalSpacing(spacing)
-        self.setVerticalSpacing(spacing)
-
-    def addItem(self, item):
-        self._item_list.append(item)
-
-    def count(self):
-        return len(self._item_list)
-
-    def itemAt(self, index):
-        if 0 <= index < len(self._item_list):
-            return self._item_list[index]
-
-        return None
-
-    def takeAt(self, index):
-        if 0 <= index < len(self._item_list):
-            return self._item_list.pop(index)
-
-        return None
-
-    def expandingDirections(self):
-        return QtCore.Qt.Orientation(0)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, width):
-        height = self._do_layout(QtCore.QRect(0, 0, width, 0), True)
-        return height
-
-    def setGeometry(self, rect):
-        super(FlowLayout, self).setGeometry(rect)
-        self._do_layout(rect, False)
-
-    def sizeHint(self):
-        return self.minimumSize()
-
-    def minimumSize(self):
-        size = QtCore.QSize()
-
-        for item in self._item_list:
-            size = size.expandedTo(item.minimumSize())
-
-        size += QtCore.QSize(
-            2 * self.contentsMargins().top(), 2 * self.contentsMargins().top()
-        )
-        return size
-
-    def _do_layout(self, rect, test_only):
-        x = rect.x()
-        y = rect.y()
-        line_height = 0
-
-        for item in self._item_list:
-            style = item.widget().style()
-            layout_spacing_x = style.layoutSpacing(
-                QtWidgets.QSizePolicy.PushButton,
-                QtWidgets.QSizePolicy.PushButton,
-                QtCore.Qt.Horizontal,
-            )
-            layout_spacing_y = style.layoutSpacing(
-                QtWidgets.QSizePolicy.PushButton,
-                QtWidgets.QSizePolicy.PushButton,
-                QtCore.Qt.Vertical,
-            )
-            space_x = self.horizontalSpacing() + layout_spacing_x
-            space_y = self.verticalSpacing() + layout_spacing_y
-            next_x = x + item.sizeHint().width() + space_x
-            if next_x - space_x > rect.right() and line_height > 0:
-                x = rect.x()
-                y = y + line_height + space_y
-                next_x = x + item.sizeHint().width() + space_x
-                line_height = 0
-
-            if not test_only:
-                item.setGeometry(QtCore.QRect(QtCore.QPoint(x, y), item.sizeHint()))
-
-            x = next_x
-            line_height = max(line_height, item.sizeHint().height())
-
-        return y + line_height - rect.y()
-
-
-class InnerQHBoxLayout(QtWidgets.QHBoxLayout):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setContentsMargins(0, 0, 0, 0)
-
-
-class InnerQGridLayout(QtWidgets.QGridLayout):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setContentsMargins(0, 0, 0, 0)
-        # self.setSpacing(1)
-
-
-class BorderlessGroupBox(QtWidgets.QWidget):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        name = self.objectName()
-        if name == "":
-            raise ValueError(
-                "GroupBox has no objectName. Supply an "
-                "`objectName` argument to set a new name."
-            )
-        # self.setStyleSheet("QGroupBox#" + name + " {border:0;}")
-        self.setContentsMargins(0, 0, 0, 0)
-
-
-def qt_style_names():
-    """Return a list of styles, default platform style first"""
-    default_style_name = QtWidgets.QApplication.style().objectName().lower()
-    result = []
-    for style in QtWidgets.QStyleFactory.keys():
-        if style.lower() == default_style_name:
-            result.insert(0, style)
-        else:
-            result.append(style)
-    return result
-
-
-def change_style(style_name):
-    QtWidgets.QApplication.setStyle(QtWidgets.QStyleFactory.create(style_name))
-
-
-# @numba.njit(nogil=True, cache=True, fastmath={'nnan','ninf', 'nsz', 'contract', 'reassoc', 'afn', 'arcp'})
-@numba.njit(
-    nogil=True,
-    cache=True,
-    fastmath={"ninf", "nsz", "contract", "reassoc", "afn", "arcp"},
-)
-# @numba.njit(nogil=True, cache=True)
-def move_mean1d(a, window, min_count):
-    out = np.empty_like(a)
-    asum = 0.0
-    count = 0
-
-    for i in range(min_count - 1):
-        ai = a[i]
-        if not np.isnan(ai):
-            asum += ai
-            count += 1
-        out[i] = np.nan
-
-    for i in range(min_count - 1, window):
-        ai = a[i]
-        if not np.isnan(ai):
-            asum += ai
-            count += 1
-        out[i] = asum / count if count >= min_count else np.nan
-
-    count_inv = 1 / count if count >= min_count else np.nan
-    for i in range(window, len(a)):
-        ai = a[i]
-        aold = a[i - window]
-
-        ai_valid = not np.isnan(ai)
-        aold_valid = not np.isnan(aold)
-
-        if ai_valid and aold_valid:
-            asum += ai - aold
-        elif ai_valid:
-            asum += ai
-            count += 1
-            count_inv = 1 / count if count >= min_count else np.nan
-        elif aold_valid:
-            asum -= aold
-            count -= 1
-            count_inv = 1 / count if count >= min_count else np.nan
-
-        out[i] = asum * count_inv
-    return out
-
-
-@numba.njit(nogil=True, parallel=True, cache=True)
-def move_mean2d(a, window_list, min_count_list):
-    ii, jj = a.shape
-    for i in numba.prange(ii):
-        a[i, :] = move_mean1d(a[i, :], window_list[0], min_count_list[0])
-    for j in numba.prange(jj):
-        a[:, j] = move_mean1d(a[:, j], window_list[1], min_count_list[1])
-    return a
-
-
-@numba.njit(nogil=True, parallel=True, cache=True)
-def move_mean3d(a, window_list, min_count_list):
-    ii, jj, kk = a.shape
-    for i in numba.prange(ii):
-        for k in numba.prange(kk):
-            a[i, :, k] = move_mean1d(a[i, :, k], window_list[1], min_count_list[1])
-    for i in numba.prange(ii):
-        for j in numba.prange(jj):
-            a[i, j, :] = move_mean1d(a[i, j, :], window_list[2], min_count_list[2])
-    for j in numba.prange(jj):
-        for k in numba.prange(kk):
-            a[:, j, k] = move_mean1d(a[:, j, k], window_list[0], min_count_list[0])
-    return a
-
-
-def get_true_indices(a):
-    return list(compress(range(len(a)), a))
-
-
-# https://www.pythonguis.com/widgets/qcolorbutton-a-color-selector-tool-for-pyqt/
-class ColorButton(QtWidgets.QPushButton):
-    """
-    Custom Qt Widget to show a chosen color.
-
-    Left-clicking the button shows the color-chooser, while
-    right-clicking resets the color to None (no-color).
-    """
-
-    colorChanged = QtCore.Signal(object)
-
-    def __init__(self, *args, color=None, **kwargs):
-        super(ColorButton, self).__init__(*args, **kwargs)
-
-        self._color = None
-        self._default = color
-        self.pressed.connect(self.onColorPicker)
-
-        # Set the initial/default state.
-        self.setColor(self._default)
-
-    def setColor(self, color):
-        self._color = color
-        self.colorChanged.emit(color.getRgbF())
-        if self._color:
-            self.setStyleSheet(
-                "QWidget { background-color: %s; border: 0; }"
-                % self._color.name(QtGui.QColor.HexArgb)
-            )
-        else:
-            self.setStyleSheet("")
-
-    def color(self):
-        return self._color
-
-    def onColorPicker(self):
-        """
-        Show color-picker dialog to select color.
-
-        Qt will use the native dialog by default.
-
-        """
-        dlg = QtWidgets.QColorDialog(self)
-        if self._color:
-            dlg.setCurrentColor(QtGui.QColor(self._color))
-        if dlg.exec_():
-            self.setColor(dlg.currentColor())
-
-    def mousePressEvent(self, e):
-        if e.button() == QtCore.Qt.RightButton:
-            self.setColor(self._default)
-        return super(ColorButton, self).mousePressEvent(e)
-
-
-class ItoolImageItem(xImageItem):
-    def __init__(self, itool, *args, **kargs):
-        self.itool = itool
-        super().__init__(*args, **kargs)
-
-
-class ItoolDockLabel(DockLabel):
-    def __init__(self, *args, color="#591e71", **kwargs):
-        self.bg_color = mcolors.to_hex(color)
-        super().__init__(*args, **kwargs)
-
-    def dim_color(self, color, l_factor=1.0, s_factor=1.0):
-        h, l, s = colorsys.rgb_to_hls(*mcolors.to_rgb(color))
-        return QtGui.QColor.fromRgbF(
-            *colorsys.hls_to_rgb(h, min(1, l * l_factor), min(1, s * s_factor))
-        ).name()
-
-    def set_fg_color(self):
-        rgb = list(mcolors.to_rgb(self.bg_color))
-        # for i in range(3):
-        #     if rgb[i] <= 0.04045:
-        #         rgb[i] /= 12.92
-        #     else:
-        #         rgb[i] = ((rgb[i] + 0.055) / 1.055) ** 2.4
-        # L = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-        L = rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114
-        # if L > 0.179:
-        if L > 0.729:
-            self.fg_color = "#000000"
-        else:
-            self.fg_color = "#ffffff"
-
-    def updateStyle(self):
-        r = "3px"
-        self.set_fg_color()
-        if self.dim:
-            if darkdetect.isDark():
-                self.dim_l_factor = 0.8
-            else:
-                self.dim_l_factor = 1.25
-            fg = self.dim_color(self.fg_color, self.dim_l_factor, 0.8)
-            bg = self.dim_color(self.bg_color, self.dim_l_factor, 0.8)
-        else:
-            fg = self.fg_color
-            bg = self.bg_color
-        border = self.dim_color(bg, 0.9)
-
-        if self.orientation == "vertical":
-            self.vStyle = f"""DockLabel {{
-                background-color : {bg};
-                color : {fg};
-                border-top-right-radius: 0px;
-                border-top-left-radius: {r};
-                border-bottom-right-radius: 0px;
-                border-bottom-left-radius: {r};
-                border-width: 0px;
-                border-right: 2px solid {border};
-                padding-top: 3px;
-                padding-bottom: 3px;
-                font-size: {self.fontSize};
-            }}"""
-            self.setStyleSheet(self.vStyle)
-        else:
-            self.hStyle = f"""DockLabel {{
-                background-color : {bg};
-                color : {fg};
-                border-top-right-radius: {r};
-                border-top-left-radius: {r};
-                border-bottom-right-radius: 0px;
-                border-bottom-left-radius: 0px;
-                border-width: 0px;
-                border-bottom: 2px solid {border};
-                padding-left: 3px;
-                padding-right: 3px;
-                font-size: {self.fontSize};
-            }}"""
-            self.setStyleSheet(self.hStyle)
-
-
-class ItoolDock(Dock):
-    def __init__(
-        self,
-        name,
-        area=None,
-        size=(10, 10),
-        widget=None,
-        hideTitle=False,
-        autoOrientation=True,
-        closable=False,
-        fontSize="13px",
-        color="#591e71",
-    ):
-        super().__init__(
-            name,
-            area=area,
-            size=size,
-            widget=widget,
-            hideTitle=hideTitle,
-            autoOrientation=autoOrientation,
-            closable=closable,
-            fontSize=fontSize,
-            label=ItoolDockLabel(name, closable, fontSize, color=color),
-        )
-        # self.label.setVisible(False)
-        # self.label.dock = self
-        # if closable:
-        # self.label.sigCloseClicked.connect(self.close)
-        # self.topLayout.addWidget(self.label, 0, 1)
-        self.topLayout.setContentsMargins(0, 0, 0, 0)
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            self.label.updateStyle()
-        super().changeEvent(evt)
-
-
-def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
-    """Creates a QtGui.QPixmap from a mathtext string.
-
-    Parameters
-    ----------
-    s : str
-        Mathtext string to be rendered.
-    prop : matplotlib.font_manager.FontProperties
-        Font properties.
-    dpi : float, optional (default=300)
-        Dots per inch of the created pixmap.
-    **text_kw : dict, optional
-        Extra arguments to `matplotlib.figure.Figure.text`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
-
-    Returns
-    -------
-
-    A QtGui.QPixmap object.
-
-    """
-
-    parser = matplotlib.mathtext.MathTextParser("path")
-    if prop is None:
-        prop = FontProperties(size=9)
-    width, height, depth, _, _ = parser.parse(s, dpi=72, prop=prop)
-    fig = figure.Figure(figsize=(width / 72.0, height / 72.0), dpi=dpi)
-    fig.patch.set_facecolor("none")
-    text_kw["fontproperties"] = prop
-    fig.text(0, depth / height, s, **text_kw)
-
-    backend_agg.FigureCanvasAgg(fig)
-    buf, size = fig.canvas.print_to_buffer()
-    img = QtGui.QImage(buf, size[0], size[1], QtGui.QImage.Format_ARGB32)
-    img.setDevicePixelRatio(fig._dpi / 100.0)
-    pixmap = QtGui.QPixmap(img.rgbSwapped())
-    return pixmap
-
-
-def get_svg_label(
-    s: str, outfile: QtCore.QTemporaryFile, prop=None, dpi=300, **text_kw
+def _link_splitters(
+    s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter, reverse: bool = False
 ):
-    """Creates an SVG image from a mathtext string.
-
-    Parameters
-    ----------
-    s : str
-        Mathtext string to be rendered.
-    outfile : QtCore.QTemporaryFile
-        Output temp file to store the SVG.
-    prop : matplotlib.font_manager.FontProperties
-        Font properties.
-    dpi = 300
-        dpi : float, optional (default=300)
-    **text_kw : dict, optional
-        Extra arguments to `matplotlib.figure.Figure.text`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
-
-    Returns
-    -------
-    filename : str
-        Name of the output file containing the rendered SVG.
-
-    """
-
-    parser = matplotlib.mathtext.MathTextParser("path")
-    if prop is None:
-        prop = FontProperties(size=12)
-    width, height, depth, _, _ = parser.parse(s, dpi=1000, prop=prop)
-    fig = figure.Figure(figsize=(width / 1000.0, height / 1000.0), dpi=dpi)
-    fig.patch.set_facecolor("none")
-    text_kw["fontproperties"] = prop
-    fig.text(0, depth / height, s, **text_kw)
-
-    backend_svg.FigureCanvasSVG(fig)
-    if outfile.open():
-        fig.canvas.print_svg(outfile.fileName())
-    return outfile.fileName()
-
-
-import enum
-
-
-class ItoolAxisItem(pg.AxisItem):
-    class LabelType(enum.Flag):
-        TextLabel = 0
-        SvgLabel = 1
-        PixmapLabel = 2
-
-    def __init__(self, *args, **kwargs):
-        self.label_mode = self.LabelType.TextLabel
-        super().__init__(*args, **kwargs)
-        self.set_label_mode(self.LabelType.TextLabel)
-
-    def set_label_mode(self, labelmode: LabelType):
-        self.label_mode = labelmode
-        match self.label_mode:
-            case self.LabelType.TextLabel:
-                if not isinstance(self.label, QtWidgets.QGraphicsTextItem):
-                    self.label = QtWidgets.QGraphicsTextItem(self)
-            case self.LabelType.SvgLabel:
-                if not isinstance(self.label, QtSvgWidgets.QGraphicsSvgItem):
-                    self.label = QtSvgWidgets.QGraphicsSvgItem(self)
-            case self.LabelType.PixmapLabel:
-                if not isinstance(self.label, QtWidgets.QGraphicsPixmapItem):
-                    self.label = QtWidgets.QGraphicsPixmapItem(self)
-                    self.label.setTransformationMode(QtCore.Qt.SmoothTransformation)
-
-        if self.orientation in ["left", "right"]:
-            self.label.setRotation(-90)
-
-    def mathtextLabelPixmap(self, file=None):
-        if self.labelUnits == "":
-            if not self.autoSIPrefix or self.autoSIPrefixScale == 1.0:
-                units = ""
-            else:
-                units = "(x%g)" % (1.0 / self.autoSIPrefixScale)
-        else:
-            units = "(%s%s)" % (self.labelUnitPrefix, self.labelUnits)
-
-        s = "%s %s" % (self.labelText, units)
-
-        match self.label_mode:
-            case self.LabelType.SvgLabel:
-                return get_svg_label(s, file, **self.labelStyle)
-            case self.LabelType.PixmapLabel:
-                return get_pixmap_label(s, **self.labelStyle)
-
-    def _updateLabel(self):
-        match self.label_mode:
-            case self.LabelType.TextLabel:
-                self.label.setHtml(self.labelString())
-            case self.LabelType.SvgLabel:
-                file = QtCore.QTemporaryFile()
-                self.svg_renderer = QtSvg.QSvgRenderer(self.mathtextLabelPixmap(file))
-                self.label.setSharedRenderer(self.svg_renderer)
-            case self.LabelType.PixmapLabel:
-                self.label.setPixmap(self.mathtextLabelPixmap())
-
-        self._adjustSize()
-        self.picture = None
-        self.update()
-
-    def resizeEvent(self, ev=None):
-        # s = self.size()
-
-        ## Set the position of the label
-        # match self.label_mode:
-        #     case self.LabelType.TextLabel:
-        #         nudge = 5
-        #     case self.LabelType.SvgLabel:
-        #         nudge = -3
-        #     case self.LabelType.PixmapLabel:
-        #         nudge = 0
-        if self.label_mode == self.LabelType.TextLabel:
-            nudge = 5
-        elif self.label_mode == self.LabelType.SvgLabel:
-            nudge = -3
-        if self.label_mode == self.LabelType.PixmapLabel:
-            nudge = 0
-
-        if (
-            self.label is None
-        ):  # self.label is set to None on close, but resize events can still occur.
-            self.picture = None
-            return
-
-        br = self.label.boundingRect()
-        p = QtCore.QPointF(0, 0)
-        if self.orientation == "left":
-            p.setY(int(self.size().height() / 2 + br.width() / 2))
-            p.setX(-nudge)
-        elif self.orientation == "right":
-            p.setY(int(self.size().height() / 2 + br.width() / 2))
-            p.setX(int(self.size().width() - br.height() + nudge))
-        elif self.orientation == "top":
-            p.setY(-nudge)
-            p.setX(int(self.size().width() / 2.0 - br.width() / 2.0))
-        elif self.orientation == "bottom":
-            p.setX(int(self.size().width() / 2.0 - br.width() / 2.0))
-            p.setY(int(self.size().height() - br.height() + nudge))
-        self.label.setPos(p)
-        self.picture = None
-
-
-class ItoolPlotItem(pg.PlotItem):
-    def __init__(self, itool, *args, **kargs):
-        self.itool = itool
-        super().__init__(*args, **kargs)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
-        )
-        # self.ctrl.transformGroup.setVisible(False)
-        for action in self.ctrlMenu.actions():
-            if action.text() in [
-                "Transforms",
-                "Downsample",
-                "Average",
-                "Alpha",
-                "Points",
-            ]:
-                action.setVisible(False)
-
-        for i in (0, 1):
-            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
-            self.vb.menu.ctrl[i].label.setVisible(False)
-        # self.ctrlMenu.menuAction().setVisible(False)
-        # self.setMenuEnabled(False, enableViewBoxMenu=None)
-
-    def mouseDragEvent(self, ev):
-        if (
-            self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier
-            and ev.button() == QtCore.Qt.MouseButton.LeftButton
-        ):
-            ev.accept()
-            self.itool.onMouseDrag(ev)
-        else:
-            ev.ignore()
-
-    def setLabels(
-        self, mode: ItoolAxisItem.LabelType = ItoolAxisItem.LabelType.TextLabel, **kwds
-    ):
-        for k in kwds.keys():
-            if k != "title":
-                self.getAxis(k).set_label_mode(mode)
-        super().setLabels(**kwds)
-
-    def setAxisItems(self, axisItems=None):
-        if axisItems is None:
-            axisItems = {}
-
-        visibleAxes = ["left", "bottom"]
-        visibleAxes.extend(axisItems.keys())
-
-        for k, pos in (
-            ("top", (1, 1)),
-            ("bottom", (3, 1)),
-            ("left", (2, 0)),
-            ("right", (2, 2)),
-        ):
-            if k in self.axes:
-                if k not in axisItems:
-                    continue
-
-                oldAxis = self.axes[k]["item"]
-                self.layout.removeItem(oldAxis)
-                oldAxis.scene().removeItem(oldAxis)
-                oldAxis.unlinkFromView()
-
-            if k in axisItems:
-                axis = axisItems[k]
-                if axis.scene() is not None:
-                    if k not in self.axes or axis != self.axes[k]["item"]:
-                        raise RuntimeError(
-                            "Can't add an axis to multiple plots. Shared axes"
-                            " can be achieved with multiple AxisItem instances"
-                            " and set[X/Y]Link."
-                        )
-            else:
-                axis = ItoolAxisItem(orientation=k, parent=self)
-
-            axis.linkToView(self.vb)
-            self.axes[k] = {"item": axis, "pos": pos}
-            self.layout.addItem(axis, *pos)
-
-            axis.setZValue(0.5)
-            axis.setFlag(axis.GraphicsItemFlag.ItemNegativeZStacksBehindParent)
-            axisVisible = k in visibleAxes
-            self.showAxis(k, axisVisible)
-
-
-class ItoolCursorLine(pg.InfiniteLine):
-    def __init__(self, itool, *args, **kargs):
-        self.itool = itool
-        super().__init__(*args, **kargs)
-
-    def mouseDragEvent(self, ev):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            self.setMovable(True)
-            super().mouseDragEvent(ev)
-        else:
-            self.setMovable(False)
-            self.setMouseHover(False)
-            ev.ignore()
-
-    def mouseClickEvent(self, ev):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            self.setMovable(True)
-            super().mouseClickEvent(ev)
-        else:
-            self.setMovable(False)
-            self.setMouseHover(False)
-            ev.ignore()
-
-    def hoverEvent(self, ev):
-        if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            self.setMovable(True)
-            super().hoverEvent(ev)
-        else:
-            self.setMovable(False)
-            self.setMouseHover(False)
-
-
-class pg_itool(pg.GraphicsLayoutWidget):
-    """A interactive tool based on `pyqtgraph` for exploring 3D data.
-
-    For the tool to remain responsive you must
-    keep a reference to it.
-
-    Parameters
-    ----------
-    data : `xarray.DataArray`
-        The data to explore. Must have three coordinate axes.
-
-    snap :  bool, default: True
-        Wheter to snap the cursor to data pixels.
-
-    gamma : float, default: 0.5
-        Colormap default gamma.
-    cmap : str or `pyqtgraph.colorMap`, default: 'magma'
-        Default colormap.
-
-    bench : bool, default: False
-        Whether to print frames per second.
-
-    plot_kw : dict, optional
-        Extra arguments to `matplotlib.pyplot.plot`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
-    cursor_kw : dict, optional
-        Extra arguments to `pyqtgraph.InfiniteLine`: refer to the
-        `pyqtgraph` documentation for a list of all possible arguments.
-    image_kw : dict, optional
-        Extra arguments to `pyqtgraph.ImageItem`: refer to the
-        `pyqtgraph` documentation for a list of all possible arguments.
-    profile_kw : dict, optional
-        Extra arguments to `PlotDataItem.__init__`: refer to the
-        `pyqtgraph` documentation for a list of all possible arguments.
-    span_kw : dict, optional
-        Extra arguments to `pyqtgraph.LinearRegionItem`: refer to the
-        `pyqtgraph` documentation for a list of all possible arguments.
-    fermi_kw : dict, optional
-        Extra arguments to `pyqtgraph.InfiniteLine`: refer to the
-        `pyqtgraph` documentation for a list of all possible arguments.
-
-    Notes
-    -----
-    Axes indices for 2D data:
-        ┌───┬───┐
-        │ 1 │   │
-        │───┼───│
-        │ 0 │ 2 │
-        └───┴───┘
-    Axes indices for 3D data:
-        ┌───┬─────┐
-        │ 1 │     │
-        │───┤  3  │
-        │ 4 │     │
-        │───┼───┬─│
-        │ 0 │ 5 │2│
-        └───┴───┴─┘
-    Axes indices for 4D data:
-        ┌───┬─────┐
-        │ 1 │  6  │
-        │───┼─────│
-        │ 4 │  3  │
-        │───┼───┬─│
-        │ 0 │ 5 │2│
-        └───┴───┴─┘
-
-    Signals
-    -------
-    sigDataChanged(self)
-    sigIndexChanged(indices, values)
-
-    """
-
-    # !TODO: ctrl + A to view all
-    # !TODO: auto adjust limits on transpose
-
-    sigDataChanged = QtCore.Signal(object)
-    sigIndexChanged = QtCore.Signal(list, list)
-
-    _only_axis = ("x", "y", "z", "t")
-    _only_maps = "maps"
-
-    _get_middle_index = lambda _, x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
-
-    def __init__(
-        self,
-        data,
-        snap=False,
-        gamma=1.0,
-        cmap="magma",
-        reverse=False,
-        bench=False,
-        plot_kw={},
-        cursor_kw={},
-        image_kw={},
-        profile_kw={},
-        span_kw={},
-        fermi_kw={},
-        zero_centered=False,
-        rad2deg=False,
-        *args,
-        **kwargs,
-    ):
-        super().__init__(show=True, *args, **kwargs)
-        self.qapp = QtCore.QCoreApplication.instance()
-        self.screen = self.qapp.primaryScreen()
-        self.snap = snap
-        self.gamma = gamma
-        self.cmap = cmap
-        self.reverse = reverse
-        self.bench = bench
-        if self.bench:
-            self._fpsLastUpdate = perf_counter()
-            self._avg_fps = 0.0
-        self.colorbar = None
-        self.plot_kw = plot_kw
-        self.cursor_kw = cursor_kw
-        self.image_kw = image_kw
-        self.profile_kw = profile_kw
-        self.span_kw = span_kw
-        self.fermi_kw = fermi_kw
-        self.zero_centered = zero_centered
-        if self.zero_centered:
-            self.gamma = 1.0
-            self.cmap = "bwr"
-        # cursor_c = pg.mkColor(0.5)
-        cursor_c, cursor_c_hover, span_c, span_c_edge = [
-            pg.mkColor("gray") for _ in range(4)
-        ]
-        cursor_c.setAlphaF(0.75)
-        cursor_c_hover.setAlphaF(0.95)
-        span_c.setAlphaF(0.15)
-        span_c_edge.setAlphaF(0.35)
-        # span_c_hover = pg.mkColor(0.75)
-        # span_c_hover.setAlphaF(0.5)
-
-        self.cursor_kw.update(
-            dict(
-                pen=pg.mkPen(cursor_c, width=2.25),
-                hoverPen=pg.mkPen(cursor_c_hover, width=2.5),
-            )
-        )
-        self.plot_kw.update(dict(defaultPadding=0.0, clipToView=False))
-        # self.profile_kw.update(dict(
-        #     linestyle='-', linewidth=.8,
-        #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
-        #                          alpha=1),
-        #     animated=self.useblit, visible=True,
-        # ))
-        # self.fermi_kw.update(dict(
-        #     linestyle='--', linewidth=.8,
-        #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
-        #                          alpha=1),
-        #     animated=False,
-        # ))
-        self.image_kw.update(
-            dict(
-                autoDownsample=False,
-                axisOrder="row-major",
-            )
-        )
-        self.span_kw.update(
-            dict(
-                movable=False,
-                pen=pg.mkPen(span_c_edge, width=1),
-                brush=pg.mkBrush(span_c),
-            )
-        )
-        # self.cursor_pos = None
-        self.data = None
-        if rad2deg is not False:
-            if np.iterable(rad2deg):
-                conv_dims = rad2deg
-            else:
-                conv_dims = [
-                    d
-                    for d in ["phi", "theta", "beta", "alpha", "chi"]
-                    if d in data.dims
-                ]
-            self.set_data(
-                data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims}),
-                update_all=True,
-                reset_cursor=True,
-            )
-        else:
-            self.set_data(data, update_all=True, reset_cursor=True)
-        self.set_cmap()
-        self.setFocusPolicy(QtCore.Qt.ClickFocus)
-        self.setFocus()
-        self.connect_signals()
-
-    def _update_stretch(self, row=None, col=None):
-        if row is None:
-            if self.data_ndim == 2:
-                row_factor = (250000, 750000)
-            elif self.data_ndim >= 3:
-                row_factor = (100000, 150000, 300000)
-        else:
-            row_factor = row
-        if col is None:
-            col_factor = row_factor
-        else:
-            col_factor = col
-
-        self._stretch_factors = (row_factor, col_factor)
-
-        # for i in range(self.ci.layout.rowCount()):
-        #     for j in range(self.ci.layout.columnCount()):
-        #         item = self.ci.getItem(i, j)
-        #         if item is not None:
-        #             item.setSizePolicy(
-        #                 QtWidgets.QSizePolicy(
-        #                     QtWidgets.QSizePolicy.Policy.Expanding,
-        #                     QtWidgets.QSizePolicy.Policy.Expanding,
-        #                 )
-        #             )
-
-        # for i, p in enumerate(self.axes):
-        # if i in
-        # self.axes[1].setSizePolicy(
-        #     QtWidgets.QSizePolicy.Policy.Ignored,
-        #     QtWidgets.QSizePolicy.Policy.Ignored,
-        # )
-        # self.axes[2].setSizePolicy(
-        #     QtWidgets.QSizePolicy.Policy.Preferred,
-        #     QtWidgets.QSizePolicy.Policy.Preferred,
-        # )
-        #     for axis in ["left", "bottom", "right", "top"]:
-        #             ax = p.getAxis(axis)
-        #     p.setMinimumSize(1e-4, 1e-4)
-        #     p.setMaximumSize(self.ci.width(), self.ci.height())
-        # p.setSizePolicy(
-        #     QtWidgets.QSizePolicy(
-        #         QtWidgets.QSizePolicy.Policy.Ignored,
-        #         QtWidgets.QSizePolicy.Policy.Ignored,
-        #     )
-        # )
-        for i in range(self.ci.layout.rowCount()):
-            self.ci.layout.setRowPreferredHeight(
-                i,
-                self.ci.height() * row_factor[i] / np.sum(row_factor),
-            )
-            self.ci.layout.setRowStretchFactor(i, row_factor[i])
-        for j in range(self.ci.layout.columnCount()):
-            col_index = (-j - 1) % len(col_factor)
-            self.ci.layout.setColumnPreferredWidth(
-                j,
-                self.ci.width() * col_factor[col_index] / np.sum(col_factor),
-            )
-            self.ci.layout.setColumnStretchFactor(j, col_factor[col_index])
-        #         self.ci.layout.setColumnMinimumWidth(j, 0)
-        #         self.ci.layout.setColumnMaximumWidth(j, self.ci.width())
-
-        #     # item.setMinimumSize(1, 1)
-        #     item.setMaximumSize(self.ci.width(), self.ci.height())
-
-        # elif factor == 0:
-        # for i in range(self.ci.layout.columnCount()):
-        # self.ci.layout.setColumnStretchFactor(i, 0)
-        # self.ci.layout.setColumnAlignment(i, QtCore.Qt.AlignCenter)
-        # for i in range(self.ci.layout.rowCount()):
-        # self.ci.layout.setRowAlignment(i, QtCore.Qt.AlignCenter)
-        # self.ci.layout.setRowStretchFactor(i, 0)
-        #     return
-        # self.ci.setSizePolicy(
-        #     QtWidgets.QSizePolicy(
-        #         QtWidgets.QSizePolicy.Policy.Ignored,
-        #         QtWidgets.QSizePolicy.Policy.Ignored,
-        #     )
-        # )
-        # for i in range(self.ci.layout.columnCount()):
-
-        # self.ci.layout.setColumnMaximumWidth(i, self.ci.width())
-        # self.ci.layout.setColumnPreferredWidth(i, -10)
-        # for i in range(self.ci.layout.rowCount()):
-        # self.ci.layout.setRowMaximumHeight(i, self.ci.height())
-        # self.ci.layout.setRowPreferredHeight(i, -10)
-
-    def _initialize_layout(
-        self, horiz_pad=45, vert_pad=30, inner_pad=15, font_size=11.0
-    ):
-        font = QtGui.QFont()
-        font.setPointSizeF(float(font_size))
-        self.ci.layout.setSpacing(inner_pad)
-        self.ci.layout.setContentsMargins(0, 0, 0, 0)
-        if self.data_ndim == 2:
-            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(3)]
-            self.addItem(self.axes[0], 1, 0, 1, 1)
-            self.addItem(self.axes[1], 0, 0, 1, 1)
-            self.addItem(self.axes[2], 1, 1, 1, 1)
-            valid_selection = ((1, 0, 0, 1), (1, 1, 0, 0), (0, 0, 1, 1))
-        elif self.data_ndim == 3:
-            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(6)]
-            self.addItem(self.axes[0], 2, 0, 1, 1)
-            self.addItem(self.axes[1], 0, 0, 1, 1)
-            self.addItem(self.axes[2], 2, 2, 1, 1)
-            self.addItem(self.axes[3], 0, 1, 2, 2)
-            self.addItem(self.axes[4], 1, 0, 1, 1)
-            self.addItem(self.axes[5], 2, 1, 1, 1)
-            valid_selection = (
-                (1, 0, 0, 1),
-                (1, 1, 0, 0),
-                (0, 0, 1, 1),
-                (0, 1, 1, 0),
-                (1, 0, 0, 0),
-                (0, 0, 0, 1),
-            )
-        elif self.data_ndim == 4:
-            self.axes = [ItoolPlotItem(self, **self.plot_kw) for _ in range(7)]
-            self.addItem(self.axes[0], 2, 0, 1, 1)
-            self.addItem(self.axes[1], 0, 0, 1, 1)
-            self.addItem(self.axes[2], 2, 2, 1, 1)
-            self.addItem(self.axes[3], 1, 1, 1, 2)
-            self.addItem(self.axes[4], 1, 0, 1, 1)
-            self.addItem(self.axes[5], 2, 1, 1, 1)
-            self.addItem(self.axes[6], 0, 1, 1, 2)
-            valid_selection = (
-                (1, 0, 0, 1),
-                (1, 1, 0, 0),
-                (0, 0, 1, 1),
-                (0, 0, 1, 0),
-                (1, 0, 0, 0),
-                (0, 0, 0, 1),
-                (0, 1, 1, 0),
-            )
-        else:
-            raise NotImplementedError("Only supports 2D, 3D, and 4D arrays.")
-        for i, (p, sel) in enumerate(zip(self.axes, valid_selection)):
-            p.setDefaultPadding(0)
-            for axis in ["left", "bottom", "right", "top"]:
-                p.getAxis(axis).setTickFont(font)
-                p.getAxis(axis).setStyle(
-                    autoExpandTextSpace=True, autoReduceTextSpace=True
-                )
-            p.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
-            # p.showAxes(sel, showValues=(0, 0, 0, 0), size=(0,0))
-            if i in [1, 4]:
-                p.setXLink(self.axes[0])
-            elif i in [2, 5]:
-                p.setYLink(self.axes[0])
-        self._update_stretch()
-
-    def _lims_to_rect(self, i, j):
-        x = self.data_lims[i][0] - self.data_incs[i]
-        y = self.data_lims[j][0] - self.data_incs[j]
-        w = self.data_lims[i][-1] - x
-        h = self.data_lims[j][-1] - y
-        x += 0.5 * self.data_incs[i]
-        y += 0.5 * self.data_incs[j]
-        return QtCore.QRectF(x, y, w, h)
-
-    def _initialize_plots(self):
-        if self.data_ndim == 2:
-            self.maps = (ItoolImageItem(self, name="Main Image", **self.image_kw),)
-            self.hists = (
-                self.axes[1].plot(name="X Profile", **self.profile_kw),
-                self.axes[2].plot(name="Y Profile", **self.profile_kw),
-            )
-            self.cursors = (
-                (
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                ),
-                (
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                ),
-            )
-            self.spans = (
-                (
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                ),
-                (
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                ),
-            )
-            self.axes[0].addItem(self.maps[0])
-            self.axes[0].addItem(self.cursors[0][0])
-            self.axes[1].addItem(self.cursors[0][1])
-            self.axes[0].addItem(self.cursors[1][0])
-            self.axes[2].addItem(self.cursors[1][1])
-            self.axes[0].addItem(self.spans[0][0])
-            self.axes[1].addItem(self.spans[0][1])
-            self.axes[0].addItem(self.spans[1][0])
-            self.axes[2].addItem(self.spans[1][1])
-        elif self.data_ndim >= 3:
-            self.maps = (
-                ItoolImageItem(self, name="Main Image", **self.image_kw),
-                ItoolImageItem(self, name="Horiz Slice", **self.image_kw),
-                ItoolImageItem(self, name="Vert Slice", **self.image_kw),
-            )
-            self.hists = (
-                self.axes[1].plot(name="X Profile", **self.profile_kw),
-                self.axes[2].plot(name="Y Profile", **self.profile_kw),
-                self.axes[3].plot(name="Z Profile", **self.profile_kw),
-            )
-            self.cursors = (
-                (
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="X Cursor", **self.cursor_kw
-                    ),
-                ),
-                (
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Y Cursor", **self.cursor_kw
-                    ),
-                ),
-                (
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="Z Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=90, movable=True, name="Z Cursor", **self.cursor_kw
-                    ),
-                    ItoolCursorLine(
-                        self, angle=0, movable=True, name="Z Cursor", **self.cursor_kw
-                    ),
-                ),
-            )
-            self.spans = (
-                (
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                ),
-                (
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                ),
-                (
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                    pg.LinearRegionItem(orientation="vertical", **self.span_kw),
-                    pg.LinearRegionItem(orientation="horizontal", **self.span_kw),
-                ),
-            )
-            self.axes[0].addItem(self.maps[0])
-            self.axes[4].addItem(self.maps[1])
-            self.axes[5].addItem(self.maps[2])
-            self.axes[0].addItem(self.cursors[0][0])
-            self.axes[1].addItem(self.cursors[0][1])
-            self.axes[4].addItem(self.cursors[0][2])
-            self.axes[0].addItem(self.cursors[1][0])
-            self.axes[2].addItem(self.cursors[1][1])
-            self.axes[5].addItem(self.cursors[1][2])
-            self.axes[3].addItem(self.cursors[2][0])
-            self.axes[5].addItem(self.cursors[2][1])
-            self.axes[4].addItem(self.cursors[2][2])
-            self.axes[0].addItem(self.spans[0][0])
-            self.axes[1].addItem(self.spans[0][1])
-            self.axes[4].addItem(self.spans[0][2])
-            self.axes[0].addItem(self.spans[1][0])
-            self.axes[2].addItem(self.spans[1][1])
-            self.axes[5].addItem(self.spans[1][2])
-            self.axes[3].addItem(self.spans[2][0])
-            self.axes[5].addItem(self.spans[2][1])
-            self.axes[4].addItem(self.spans[2][2])
-            # if self.data_lims[-1][-1] * self.data_lims[-1][0] < 0:
-            # self.axes[3].axvline(0., label='Fermi Level', **self.fermi_kw)
-            # for m in self.maps:
-            # m.sigImageChanged.connect(self._refresh_histograms)
-            if self.data_ndim == 4:
-                self.hists += (self.axes[6].plot(name="T Profile", **self.profile_kw),)
-                self.cursors += (
-                    (
-                        ItoolCursorLine(
-                            self,
-                            angle=90,
-                            movable=True,
-                            name="T Cursor",
-                            **self.cursor_kw,
-                        ),
-                    ),
-                )
-                self.spans += (
-                    (pg.LinearRegionItem(orientation="vertical", **self.span_kw),),
-                )
-
-                self.axes[6].addItem(self.cursors[3][0])
-                self.axes[6].addItem(self.spans[3][0])
-
-        for s in chain.from_iterable(self.spans):
-            s.setVisible(False)
-
-    @property
-    def all(self):
-        return self.maps + self.hists + self.cursors
-
-    def autoRange(self, padding=None):
-        for ax in self.axes:
-            if not all(ax.autoRangeEnabled()):
-                ax.autoRange(padding=padding)
-
-    def toggle_axes(self, axis):
-        target = self.axes[axis]
-        toggle = False if target in self.ci.items.keys() else True
-
-        if self.data_ndim == 2:
-            ref_dims = ((1, 0, 1, 1), (0, 0, 1, 1), (1, 1, 1, 1))
-            top_left = (1,)
-            bottom_right = (2,)
-            top_right = tuple()
-        elif self.data_ndim == 3:
-            ref_dims = (
-                (2, 0, 1, 1),
-                (0, 0, 1, 1),
-                (2, 2, 1, 1),
-                (0, 1, 2, 2),
-                (1, 0, 1, 1),
-                (2, 1, 1, 1),
-            )
-            top_left = (1, 4)
-            bottom_right = (5, 2)
-            top_right = (3,)
-        elif self.data_ndim == 4:
-            ref_dims = (
-                (2, 0, 1, 1),
-                (0, 0, 1, 1),
-                (2, 2, 1, 1),
-                (0, 1, 1, 2),
-                (1, 0, 1, 1),
-                (2, 1, 1, 1),
-                (1, 1, 1, 2),
-            )
-            top_left = (1, 4)
-            bottom_right = (5, 2)
-            top_right = (3, 6)
-
-        if axis in top_left:
-            group = top_left
-            totalspan = (2, 1)
-        elif axis in bottom_right:
-            group = bottom_right
-            totalspan = (1, 2)
-        elif axis in top_right:
-            group = top_right
-            totalspan = (2, 2)
-        else:
-            if not toggle:
-                self.removeItem(target)
-                return
-            else:
-                self.addItem(target, *ref_dims[axis])
-                return
-
-        anchors = tuple(ref_dims[i][:2] for i in group)
-        other_index = [
-            x for x in group if x != axis and self.axes[x] in self.ci.items.keys()
-        ]
-        other = [self.axes[i] for i in other_index]
-        unique = True if len(other) == 0 else False
-        if not toggle:
-            self.removeItem(target)
-            if not unique:
-                for o in other:
-                    self.removeItem(o)
-                    self.addItem(o, *anchors[0], *totalspan)
-        else:
-            if unique:
-                self.addItem(target, *anchors[0], *totalspan)
-            else:
-                # for i, o, oi in enumerate(zip(other, other_index)):
-                # self.removeItem(o)
-                # for o, oi in zip(other, other_index):
-                #     self.removeItem(o)
-                # self.addItem(self.axes[group[0]], *ref_dims[axis])
-                # for o, oi in zip(other, other_index):
-                #     self.addItem(o, *ref_dims[oi])
-                # for a in group:
-                #     ax = self.axes[a]
-                #     if ax in self.ci.items.keys():
-                #         self.removeItem(ax)
-                #     self.addItem(ax, *ref_dims[a])
-                self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
-                self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
-
-    def set_labels(self, labels=None):
-        """labels: list or tuple of str"""
-        if labels is None:
-            labels = self.data_dims
-        # 0: default, 1: svg, 2: pixmap
-        labelmode = ItoolAxisItem.LabelType.TextLabel
-        if labelmode is ItoolAxisItem.LabelType.TextLabel:
-            labels_ = labels
-        else:
-            with rc_context({"text.usetex": True}):
-                labels_ = [self.labelify(l) for l in labels]
-
-        self.axes[0].setLabels(left=labels_[1], bottom=labels_[0], mode=labelmode)
-        self.axes[1].setLabels(top=labels_[0], mode=labelmode)
-        self.axes[2].setLabels(right=labels_[1], mode=labelmode)
-        if self.data_ndim >= 3:
-            self.axes[3].setLabels(top=labels_[2], mode=labelmode)
-            self.axes[4].setLabels(left=labels_[2], mode=labelmode)
-            self.axes[5].setLabels(bottom=labels_[2], mode=labelmode)
-            if self.data_ndim == 4:
-                self.axes[6].setLabels(top=labels_[3], mode=labelmode)
-
-    @property
-    def data_dims(self):
-        return self.data.dims
-
-    @property
-    def data_shape(self):
-        return self.data.shape
-
-    @property
-    def data_ndim(self):
-        return self.data.ndim
-
-    @property
-    def data_coords(self):
-        return tuple(self.data[dim].values for dim in self.data_dims)
-
-    @property
-    def data_incs(self):
-        return tuple(coord[1] - coord[0] for coord in self.data_coords)
-
-    @property
-    def data_lims(self):
-        return tuple((coord[0], coord[-1]) for coord in self.data_coords)
-
-    @property
-    def data_vals_T(self):
-        if self.data_ndim == 2:
-            return self.data.values.T
-        elif self.data_ndim == 3:
-            return self.data.values.transpose(1, 2, 0)
-        elif self.data_ndim == 4:
-            return self.data.values.transpose(1, 2, 3, 0)
-
-    def _assign_vals_T(self):
-        return
-
-    #     if self.data_ndim == 2:
-    #         self.data_vals_T = np.ascontiguousarray(self.data.values.T)
-    #     elif self.data_ndim == 3:
-    #         self.data_vals_T = np.ascontiguousarray(
-    #             np.transpose(self.data.values, axes=(1, 2, 0))
-    #         )
-    #     elif self.data_ndim == 4:
-    #         self.data_vals_T = np.ascontiguousarray(
-    #             np.transpose(self.data.values, axes=(1, 2, 3, 0))
-    #         )
-    #     else:
-    #         raise NotImplementedError("Wrong data dimensions")
-
-    def set_data(self, data, update_all=False, reset_cursor=True):
-        # Data properties
-        if self.data is not None:
-            ndim_old = self.data_ndim
-            self.data = parse_data(data)
-            # self.data_ndim = self.data.ndim
-            if self.data_ndim != ndim_old:
-                update_all = True
-        self.data = parse_data(data)
-        self._assign_vals_T()
-        if update_all:
-            self.clear()
-            self._initialize_layout()
-            self._initialize_plots()
-            self.clim_locked = False
-            self.clim_list = [()] * self.data_ndim
-            self.avg_win = [
-                1,
-            ] * self.data_ndim
-            self.averaged = [
-                False,
-            ] * self.data_ndim
-            self.axis_locked = [
-                False,
-            ] * self.data_ndim
-
-        # Imagetool properties
-        if reset_cursor:
-            self.cursor_pos = [
-                None,
-            ] * self.data_ndim
-            self._last_ind = [
-                None,
-            ] * self.data_ndim
-            self.reset_cursor()
-        self.set_labels()
-        self._apply_change()
-        # self.autoRange()
-        # for ax in self.axes:
-        #     ax.enableAutoRange(enable=True)
-
-        self.sigDataChanged.emit(self)
-
-    def toggle_colorbar(self, val):
-        if self.colorbar is None:
-            self.colorbar = ItoolColorBar(self, width=20)
-            self.addItem(self.colorbar, None, None, self.ci.layout.rowCount(), 1)
-        self.colorbar.setVisible(val)
-
-    def reset_cursor(self, update=False):
-        """Return the cursor to the center of the image."""
-        for axis, coord in enumerate(self.data_coords):
-            self.set_index(axis, self._get_middle_index(coord), update=update)
-
-    def _cursor_drag(self, axis, line):
-        self.set_value(axis, line.value())
-
-    def connect_signals(self):
-        """Connect events."""
-        for axis, cursors in enumerate(self.cursors):
-            for c in cursors:
-                c.sigDragged.connect(lambda v, i=axis: self.set_value(i, v.value()))
-        # self.proxy = pg.SignalProxy(
-        #     self.scene().sigMouseMoved,
-        #     rateLimit=self.screen.refreshRate(),
-        #     slot=self.onMouseDrag,
-        # )
-        self.ci.geometryChanged.connect(
-            lambda: self._update_stretch(*self._stretch_factors)
-        )
-        self.scene().sigMouseClicked.connect(self.onMouseDrag)
-
-    def _get_curr_axes_index(self, pos):
-        for i, ax in enumerate(self.axes):
-            if ax.vb.sceneBoundingRect().contains(pos):
-                return i, self._get_mouse_datapos(ax, pos)
-        if self.colorbar is not None:
-            if self.colorbar.sceneBoundingRect().contains(pos):
-                return -1, self._get_mouse_datapos(self.colorbar, pos)
-        return None, None
-
-    def _measure_fps(self):
-        now = perf_counter()
-        fps = 1.0 / (now - self._fpsLastUpdate)
-        self._fpsLastUpdate = now
-        w = 0.8
-        self._avg_fps = self._avg_fps * (1 - w) + fps * w
-        self.axes[1].setTitle("%0.2f fps" % self._avg_fps)
-
-    def labelify(self, text):
-        """Prettify some frequently used axis labels."""
-        labelformats = dict(
-            kx="$k_x$",
-            ky="$k_y$",
-            kz="$k_z$",
-            alpha="$\\alpha$",
-            beta="$\\beta$",
-            theta="$\\theta$",
-            phi="$\\phi$",
-            chi="$\\chi$",
-            eV="$E$",
-        )
-        try:
-            return labelformats[text]
-        except KeyError:
-            return text
-
-    def set_cmap(
-        self,
-        cmap=None,
-        gamma=None,
-        reverse=None,
-        highContrast=False,
-        zeroCentered=None,
-    ):
-        if cmap is not None:
-            self.cmap = cmap
-        if gamma is not None:
-            self.gamma = gamma
-        if reverse is not None:
-            self.reverse = reverse
-        if zeroCentered is None:
-            zeroCentered = self.zero_centered
-        else:
-            self.zero_centered = zeroCentered
-        self.norm_cmap = pg_colormap_powernorm(
-            self.cmap,
-            self.gamma,
-            reverse=self.reverse,
-            highContrast=highContrast,
-            zeroCentered=zeroCentered,
-        )
-        for im in self.maps:
-            im._colorMap = self.norm_cmap
-            im.setLookupTable(self.norm_cmap.getStops()[1], update=False)
-        self._apply_change(self._only_maps)
-
-    def set_clim_lock(self, lock):
-        if self.colorbar is not None:
-            self.colorbar.autolevels = ~lock
-        if lock:
-            self.clim_locked = True
-            for i, m in enumerate(self.maps):
-                self.clim_list[i] = m.getLevels()
-        else:
-            self.clim_locked = False
-
-    def set_index(self, axis, index, update=True):
-        self._last_ind[axis] = index
-        self.cursor_pos[axis] = self.data_coords[axis][index]
-        if update is True:
-            self._apply_change(self._only_axis[axis])
-
-    def set_value(self, axis, val, update=True):
-        self._last_ind[axis] = self.get_index_of_value(axis, val)
-        self.cursor_pos[axis] = val
-        if update is True:
-            self._apply_change(self._only_axis[axis])
-
-    def set_cursor_color(self, c):
-        for cursor in self.cursors:
-            cursor.setPen(pg.mkPen(c))
-        self._apply_change()
-
-    def set_line_color(self, c):
-        for line in self.hists:
-            line.setPen(pg.mkPen(c))
-        self._apply_change()
-
-    def set_navg(self, axis, n, update=True):
-        self.avg_win[axis] = n
-        if n == 1:
-            self.averaged[axis] = False
-        else:
-            self.averaged[axis] = True
-        if update:
-            self._refresh_navg(reset=False)
-
-    def _refresh_navg(self, reset=False):
-        if reset:
-            for axis in range(self.data_ndim):
-                self.averaged[axis] = False
-                self.avg_win[axis] = 1
-        for axis in range(self.data_ndim):
-            for s in self.spans[axis]:
-                s.setVisible(self.averaged[axis])
-        self._apply_change()
-
-    def _get_bin_slice(self, axis):
-        if self.averaged[axis]:
-            center = self._last_ind[axis]
-            window = self.avg_win[axis]
-            return slice(center - window // 2, center + (window - 1) // 2 + 1)
-        else:
-            return slice(self._last_ind[axis], self._last_ind[axis] + 1)
-
-    def _get_binned_data(self, axis):
-        axis -= 1
-        if not self.averaged[axis + 1]:
-            return self.data_vals_T[
-                (slice(None),) * (axis % self.data_ndim)
-                + (self._get_bin_slice(axis + 1),)
-            ].squeeze(axis=axis)
-        else:
-            return numbagg.nanmean(
-                self.data_vals_T[
-                    (slice(None),) * (axis % self.data_ndim)
-                    + (self._get_bin_slice(axis + 1),)
-                ],
-                axis=axis,
-            )
-
-    def _binned_profile(self, avg_axis):
-        if not any(self.averaged):
-            return self._block_slicer(avg_axis, [self._last_ind[i] for i in avg_axis])
-        slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
-        return self._block_slice_avg(avg_axis, slices)
-        # self._slice_block = self._block_slicer(avg_axis, slices)
-        # return numbagg.nanmean(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
-
-    def _block_slice_avg(self, axis=None, slices=None):
-        axis = [(ax - 1) % self.data_ndim for ax in axis]
-        return numbagg.nanmean(
-            self.data_vals_T[
-                tuple(
-                    slices[axis.index(d)] if d in axis else slice(None)
-                    for d in range(self.data_ndim)
-                )
-            ],
-            axis=axis,
-        )
-
-    def _block_slicer(self, axis=None, slices=None):
-        axis = [(ax - 1) % self.data_ndim for ax in axis]
-        return self.data_vals_T[
-            tuple(
-                slices[axis.index(d)] if d in axis else slice(None)
-                for d in range(self.data_ndim)
-            )
-        ]
-
-    def update_spans(self, axis):
-        slc = self._get_bin_slice(axis)
-        lb = max(0, slc.start)
-        ub = min(self.data_shape[axis] - 1, slc.stop - 1)
-        region = self.data_coords[axis][[lb, ub]]
-        for span in self.spans[axis]:
-            span.setRegion(region)
-
-    def get_index_of_value(self, axis, val):
-        ind = min(
-            round((val - self.data_lims[axis][0]) / self.data_incs[axis]),
-            self.data_shape[axis] - 1,
-        )
-        if ind < 0:
-            return 0
-        return ind
-
-    def set_axis_lock(self, axis, lock):
-        self.axis_locked[axis] = lock
-
-    def transpose_axes(self, axis1, axis2):
-        dims_new = list(self.data_dims)
-        dims_new[axis1], dims_new[axis2] = self.data_dims[axis2], self.data_dims[axis1]
-        data_new = self.data.transpose(*dims_new)
-        self._last_ind[axis1], self._last_ind[axis2] = (
-            self._last_ind[axis2],
-            self._last_ind[axis1],
-        )
-        self.cursor_pos[axis1], self.cursor_pos[axis2] = (
-            self.cursor_pos[axis2],
-            self.cursor_pos[axis1],
-        )
-        self.clim_list[axis1], self.clim_list[axis2] = (
-            self.clim_list[axis2],
-            self.clim_list[axis1],
-        )
-        self.avg_win[axis1], self.avg_win[axis2] = (
-            self.avg_win[axis2],
-            self.avg_win[axis1],
-        )
-        self.averaged[axis1], self.averaged[axis2] = (
-            self.averaged[axis2],
-            self.averaged[axis1],
-        )
-        self.axis_locked[axis1], self.axis_locked[axis2] = (
-            self.axis_locked[axis2],
-            self.axis_locked[axis1],
-        )
-        self.set_data(data_new, update_all=False, reset_cursor=False)
-
-    def get_key_modifiers(self):
-        Qmods = self.qapp.queryKeyboardModifiers()
-        mods = []
-        if (Qmods & QtCore.Qt.ShiftModifier) == QtCore.Qt.ShiftModifier:
-            mods.append("shift")
-        if (Qmods & QtCore.Qt.ControlModifier) == QtCore.Qt.ControlModifier:
-            mods.append("control")
-        if (Qmods & QtCore.Qt.AltModifier) == QtCore.Qt.AltModifier:
-            mods.append("alt")
-        return mods
-
-    def _get_mouse_datapos(self, plot, pos):
-        """Returns mouse position in data coords"""
-        mouse_point = plot.vb.mapSceneToView(pos)
-        return mouse_point.x(), mouse_point.y()
-
-    def onMouseDrag(self, evt):
-        try:
-            axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
-        except AttributeError:
-            try:
-                axis_ind, datapos = self._get_curr_axes_index(evt.scenePosition())
-            except AttributeError:
-                axis_ind, datapos = self._get_curr_axes_index(evt[0])
-
-        if hasattr(evt, "_buttonDownScenePos"):
-            axis_start, _ = self._get_curr_axes_index(evt.buttonDownScenePos())
-            if axis_ind != axis_start:
-                return
-        elif self.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
-            evt.ignore()
-            return
-
-        if axis_ind is None:
-            return
-
-        V = [None] * self.data_ndim
-        if axis_ind == 0:
-            V[0:2] = datapos
-        elif axis_ind == 1:
-            V[0] = datapos[0]
-        elif axis_ind == 2:
-            V[1] = datapos[1]
-        elif axis_ind == 3:
-            V[2] = datapos[0]
-        elif axis_ind == 4:
-            V[0], V[2] = datapos
-        elif axis_ind == 5:
-            V[2], V[1] = datapos
-        elif axis_ind == 6:
-            V[3] = datapos[0]
-        elif axis_ind == -1:
-            self.colorbar.isoline.setPos(datapos[1])
-            return
-        D = [v is not None for v in V]
-        if not any(D):
-            return
-        for i in range(self.data_ndim):
-            if D[i]:
-                ind = self.get_index_of_value(i, V[i])
-                if self.snap and (ind == self._last_ind[i]) or self.axis_locked[i]:
-                    D[i] = False
-                else:
-                    self._last_ind[i] = ind
-            if not D[i]:
-                V[i] = self.cursor_pos[i]
-        if not any(D):
-            return
-        if not self.snap:
-            self.cursor_pos = V
-        self._apply_change(D)
-
-    def _apply_change(self, cond=None):
-        if cond is None:
-            update = (True,) * len(self.all)
-        elif isinstance(cond, str):
-            if cond == self._only_maps:
-                if self.data_ndim == 2:
-                    update = (True,) + (False,) * 4
-                elif self.data_ndim == 3:
-                    update = (True,) * 3 + (False,) * 6
-                elif self.data_ndim == 4:
-                    update = (True,) * 3 + (False,) * 8
-            elif cond in self._only_axis:
-                update = [False] * self.data_ndim
-                update[self._only_axis.index(cond)] = True
-            else:
-                raise ValueError
-        else:
-            update = cond
-        if len(update) == self.data_ndim:
-            if self.data_ndim == 2:
-                update = (False, update[1], update[0], update[0], update[1])
-            elif self.data_ndim == 3:
-                update = (
-                    update[2],
-                    update[1],
-                    update[0],
-                    update[1] or update[2],
-                    update[0] or update[2],
-                    update[0] or update[1],
-                    update[0],
-                    update[1],
-                    update[2],
-                )
-            elif self.data_ndim == 4:
-                update = (
-                    update[2] or update[3],
-                    update[1] or update[3],
-                    update[0] or update[3],
-                    update[1] or update[2] or update[3],
-                    update[0] or update[2] or update[3],
-                    update[0] or update[1] or update[3],
-                    update[0] or update[1] or update[2],
-                    update[0],
-                    update[1],
-                    update[2],
-                    update[3],
-                )
-        elif len(update) != len(self.all):
-            raise ValueError
-        for i in get_true_indices(update):
-            self._refresh_data(i)
-        if self.bench:
-            self._measure_fps()
-
-    @suppressnanwarning
-    def _refresh_data(self, i):
-        if self.snap:
-            self.cursor_pos = [
-                self.data_coords[i][self._last_ind[i]] for i in range(self.data_ndim)
-            ]
-        if self.data_ndim == 2:
-            self._refresh_data_2d(i)
-        elif self.data_ndim == 3:
-            self._refresh_data_3d(i)
-        elif self.data_ndim == 4:
-            self._refresh_data_4d(i)
-        self.sigIndexChanged.emit(self._last_ind, self.cursor_pos)
-
-    # def get_levels(self, i):
-    #     if self.clim_locked:
-    #         if self.zero_centered:
-
-    #         else:
-    #             return self.clim_list[i]
-    #     else:
-    #         self.all[i].getLevels()
-    # def _refresh_histograms(self):
-    #     self.hists[0].setData(self.data_coords[0], self.maps[0].image[self._last_ind[1], :])
-    #     self.hists[1].setData(self.maps[0].image[:, self._last_ind[0]], self.data_coords[1])
-    #     if self.data_ndim == 3:
-    #         self.hists[2].setData(self.data_coords[2], self.maps[1].image[:, self._last_ind[0]])
-
-    def _refresh_data_2d(self, i):
-        if i == 0:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self.data_vals_T,
-                    levels=self.clim_list[0],
-                    rect=self._lims_to_rect(0, 1),
-                )
-            else:
-                self.all[i].setImage(self.data_vals_T, rect=self._lims_to_rect(0, 1))
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 1:
-            self.all[i].setData(
-                self.data_coords[0],
-                self._binned_profile([1]),
-            )
-        elif i == 2:
-            self.all[i].setData(
-                self._binned_profile([0]),
-                self.data_coords[1],
-            )
-        elif i in [3, 4]:
-            for cursor in self.all[i]:
-                cursor.maxRange = self.data_lims[i - 3]
-                cursor.setPos(self.cursor_pos[i - 3])
-                if self.averaged[i - 3]:
-                    self.update_spans(i - 3)
-
-    def _refresh_data_3d(self, i):
-        if i == 0:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._get_binned_data(2),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(0, 1),
-                )
-            else:
-                self.all[i].setImage(
-                    self._get_binned_data(2),
-                    rect=self._lims_to_rect(0, 1),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 1:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._get_binned_data(1),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(0, 2),
-                )
-            else:
-                self.all[i].setImage(
-                    # self.data_vals_T[self._last_ind[1], :, :],
-                    self._get_binned_data(1),
-                    rect=self._lims_to_rect(0, 2),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 2:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._get_binned_data(0),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(2, 1),
-                )
-            else:
-                self.all[i].setImage(
-                    self._get_binned_data(0),
-                    rect=self._lims_to_rect(2, 1),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 3:
-            self.hists[0].setData(
-                self.data_coords[0],
-                self._binned_profile((1, 2)),
-            )
-        elif i == 4:
-            self.hists[1].setData(
-                self._binned_profile((0, 2)),
-                self.data_coords[1],
-            )
-        elif i == 5:
-            self.hists[2].setData(
-                self.data_coords[2],
-                self._binned_profile((0, 1)),
-            )
-        elif i in [6, 7, 8]:
-            for cursor in self.all[i]:
-                cursor.maxRange = self.data_lims[i - 6]
-                cursor.setPos(self.cursor_pos[i - 6])
-                if self.averaged[i - 6]:
-                    self.update_spans(i - 6)
-
-    def _refresh_data_4d(self, i):
-        if i == 0:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._binned_profile((2, 3)),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(0, 1),
-                )
-            else:
-                self.all[i].setImage(
-                    self._binned_profile((2, 3)),
-                    rect=self._lims_to_rect(0, 1),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 1:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._binned_profile((1, 3)),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(0, 2),
-                )
-            else:
-                self.all[i].setImage(
-                    self._binned_profile((1, 3)),
-                    rect=self._lims_to_rect(0, 2),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 2:
-            if self.clim_locked:
-                self.all[i].setImage(
-                    self._binned_profile((0, 3)),
-                    levels=self.clim_list[i],
-                    rect=self._lims_to_rect(2, 1),
-                )
-            else:
-                self.all[i].setImage(
-                    self._binned_profile((0, 3)),
-                    rect=self._lims_to_rect(2, 1),
-                )
-                if self.zero_centered:
-                    lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
-                    self.all[i].setLevels([-lim, lim])
-        elif i == 3:
-            self.hists[0].setData(
-                self.data_coords[0],
-                self._binned_profile((1, 2, 3)),
-            )
-        elif i == 4:
-            self.hists[1].setData(
-                self._binned_profile((0, 2, 3)),
-                self.data_coords[1],
-            )
-        elif i == 5:
-            self.hists[2].setData(
-                self.data_coords[2],
-                self._binned_profile((0, 1, 3)),
-            )
-        elif i == 6:
-            self.hists[3].setData(
-                self.data_coords[3],
-                self._binned_profile((0, 1, 2)),
-            )
-        elif i in [7, 8, 9, 10]:
-            for cursor in self.all[i]:
-                cursor.maxRange = self.data_lims[i - 7]
-                cursor.setPos(self.cursor_pos[i - 7])
-                if self.averaged[i - 7]:
-                    self.update_spans(i - 7)
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            # if darkdetect.isDark():
-            #     pg.setConfigOption("background", "k")
-            #     pg.setConfigOption("foreground", "gray")
-            # else:
-            #     pg.setConfigOption("background", "w")
-            #     pg.setConfigOption("foreground", "k")
-            self.update()
-        super().changeEvent(evt)
-
-    def _drawpath(self):
-        # ld = LineDrawer(self.canvas, self.axes[0])
-        # points = ld.draw_line()
-        # print(points)
-        # TODO
-        pass
-
-    def _onselectpath(self, verts):
-        print(verts)
-
-
-class ImageToolColors(QtWidgets.QDialog):
-    def __init__(self, parent):
-        self.parent = parent
-        super().__init__(self.parent)
-        self.setWindowTitle("Colors")
-        raise NotImplementedError
-
-    #     self.cursor_default = color_to_QColor(self.parent.itool.cursor_kw["color"])
-    #     self.line_default = color_to_QColor(self.parent.itool.profile_kw["color"])
-    #     self.cursor_current = color_to_QColor(self.parent.itool.cursors[0].get_color())
-    #     self.line_current = color_to_QColor(self.parent.itool.hists[0].get_color())
-
-    #     if (self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) & (
-    #         self.line_default.getRgbF() == self.line_current.getRgbF()
-    #     ):
-    #         buttons = QtWidgets.QDialogButtonBox(
-    #             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-    #         )
-    #     else:
-    #         buttons = QtWidgets.QDialogButtonBox(
-    #             QtWidgets.QDialogButtonBox.RestoreDefaults
-    #             | QtWidgets.QDialogButtonBox.Ok
-    #             | QtWidgets.QDialogButtonBox.Cancel
-    #         )
-    #         buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
-    #             self.reset_colors
-    #         )
-    #     buttons.rejected.connect(self.reject)
-    #     buttons.accepted.connect(self.accept)
-
-    #     cursorlabel = QtWidgets.QLabel("Cursors:")
-    #     linelabel = QtWidgets.QLabel("Lines:")
-    #     self.cursorpicker = ColorButton(color=self.cursor_current)
-    #     self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
-    #     self.linepicker = ColorButton(color=self.line_current)
-    #     self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
-
-    #     layout = QtWidgets.QGridLayout()
-    #     layout.addWidget(cursorlabel, 0, 0)
-    #     layout.addWidget(self.cursorpicker, 0, 1)
-    #     layout.addWidget(linelabel, 1, 0)
-    #     layout.addWidget(self.linepicker, 1, 1)
-    #     layout.addWidget(buttons)
-    #     self.setLayout(layout)
-
-    # def reject(self):
-    #     self.cursorpicker.setColor(self.cursor_current)
-    #     self.linepicker.setColor(self.line_current)
-    #     super().reject()
-
-    # def reset_colors(self):
-    #     self.cursorpicker.setColor(self.cursor_default)
-    #     self.linepicker.setColor(self.line_default)
-
-
-@numba.njit(nogil=True, fastmath=True)
-def fast_isocurve_extend(data):
-    d2 = np.empty((data.shape[0] + 2, data.shape[1] + 2), dtype=data.dtype)
-    d2[1:-1, 1:-1] = data
-    d2[0, 1:-1] = data[0]
-    d2[-1, 1:-1] = data[-1]
-    d2[1:-1, 0] = data[:, 0]
-    d2[1:-1, -1] = data[:, -1]
-    d2[0, 0] = d2[0, 1]
-    d2[0, -1] = d2[1, -1]
-    d2[-1, 0] = d2[-1, 1]
-    d2[-1, -1] = d2[-1, -2]
-    return d2
-
-
-@numba.njit(nogil=True, fastmath=True)
-def fast_isocurve_lines(data, level, index, extendToEdge=False):
-    sideTable = (
-        [np.int64(x) for x in range(0)],
-        [0, 1],
-        [1, 2],
-        [0, 2],
-        [0, 3],
-        [1, 3],
-        [0, 1, 2, 3],
-        [2, 3],
-        [2, 3],
-        [0, 1, 2, 3],
-        [1, 3],
-        [0, 3],
-        [0, 2],
-        [1, 2],
-        [0, 1],
-        [np.int64(x) for x in range(0)],
-    )
-    edgeKey = [[(0, 1), (0, 0)], [(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 1)]]
-    lines = []
-    for i in range(index.shape[0]):
-        for j in range(index.shape[1]):
-            sides = sideTable[index[i, j]]
-            for l in range(0, len(sides), 2):
-                edges = sides[l : l + 2]
-                pts = []
-                for m in range(2):
-                    p1, p2 = edgeKey[edges[m]][0], edgeKey[edges[m]][1]
-                    v1, v2 = data[i + p1[0], j + p1[1]], data[i + p2[0], j + p2[1]]
-                    f = (level - v1) / (v2 - v1)
-                    fi = 1.0 - f
-                    p = (
-                        p1[0] * fi + p2[0] * f + i + 0.5,
-                        p1[1] * fi + p2[1] * f + j + 0.5,
-                    )
-                    if extendToEdge:
-                        p = (
-                            min(data.shape[0] - 2, max(0, p[0] - 1)),
-                            min(data.shape[1] - 2, max(0, p[1] - 1)),
-                        )
-                    pts.append(p)
-                lines.append(pts)
-    return lines
-
-
-@numba.njit(nogil=True, fastmath=True)
-def fast_isocurve_lines_connected(data, level, index, extendToEdge=False):
-    sideTable = (
-        [np.int64(x) for x in range(0)],
-        [0, 1],
-        [1, 2],
-        [0, 2],
-        [0, 3],
-        [1, 3],
-        [0, 1, 2, 3],
-        [2, 3],
-        [2, 3],
-        [0, 1, 2, 3],
-        [1, 3],
-        [0, 3],
-        [0, 2],
-        [1, 2],
-        [0, 1],
-        [np.int64(x) for x in range(0)],
-    )
-    edgeKey = [[(0, 1), (0, 0)], [(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 1)]]
-    lines = []
-    for i in range(index.shape[0]):
-        for j in range(index.shape[1]):
-            sides = sideTable[index[i, j]]
-            for l in range(0, len(sides), 2):
-                edges = sides[l : l + 2]
-                pts = []
-                for m in range(2):
-                    p1, p2 = edgeKey[edges[m]][0], edgeKey[edges[m]][1]
-                    v1, v2 = data[i + p1[0], j + p1[1]], data[i + p2[0], j + p2[1]]
-                    f = (level - v1) / (v2 - v1)
-                    fi = 1.0 - f
-                    p = (
-                        p1[0] * fi + p2[0] * f + i + 0.5,
-                        p1[1] * fi + p2[1] * f + j + 0.5,
-                    )
-                    if extendToEdge:
-                        p = (
-                            min(data.shape[0] - 2, max(0, p[0] - 1)),
-                            min(data.shape[1] - 2, max(0, p[1] - 1)),
-                        )
-                    gridKey = (
-                        i + (1 if edges[m] == 2 else 0),
-                        j + (1 if edges[m] == 3 else 0),
-                        edges[m] % 2,
-                    )
-                    pts.append((p, gridKey))
-                lines.append(pts)
-    return lines
-
-
-def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
-    """
-    Generate isocurve from 2D data using marching squares algorithm.
-
-    ============== =========================================================
-    **Arguments:**
-    data           2D numpy array of scalar values
-    level          The level at which to generate an isosurface
-    connected      If False, return a single long list of point pairs
-                   If True, return multiple long lists of connected point
-                   locations. (This is slower but better for drawing
-                   continuous lines)
-    extendToEdge   If True, extend the curves to reach the exact edges of
-                   the data.
-    path           if True, return a QPainterPath rather than a list of
-                   vertex coordinates.
-    ============== =========================================================
-    """
-
-    if path is True:
-        connected = True
-    np.nan_to_num(data, copy=False)
-    if extendToEdge:
-        data = fast_isocurve_extend(data)
-
-    # mark everything below the isosurface level
-    mask = data < level
-    index = np.zeros([x - 1 for x in mask.shape], dtype=np.int64)
-    fields = np.empty((2, 2), dtype=object)
-    slices = [slice(0, -1), slice(1, None)]
-    for i in range(2):
-        for j in range(2):
-            fields[i, j] = mask[slices[i], slices[j]]
-            vertIndex = i + 2 * j
-            index += fields[i, j] * 2**vertIndex
-
-    # make four sub-fields and compute indexes for grid cells
-    if connected:
-        lines = fast_isocurve_lines_connected(data, level, index, extendToEdge)
-        points = dict()
-        for a, b in lines:
-            if a[1] not in points:
-                points[a[1]] = [[a, b]]
-            else:
-                points[a[1]].append([a, b])
-            if b[1] not in points:
-                points[b[1]] = [[b, a]]
-            else:
-                points[b[1]].append([b, a])
-        lines = fast_isocurve_chain(points)
+    s0.blockSignals(True)
+    s1.blockSignals(True)
+    sizes = s0.sizes()
+    total = sum(sizes)
+    if reverse:
+        sizes = list(reversed(sizes))
+        sizes[0] = s1.sizes()[-1]
     else:
-        lines = fast_isocurve_lines(data, level, index, extendToEdge)
-
-    if not path:
-        return lines  ## a list of pairs of points
-
-    path = QtGui.QPainterPath()
-    for line in lines:
-        path.moveTo(*line[0])
-        for p in line[1:]:
-            path.lineTo(*p)
-
-    return path
-
-
-def fast_isocurve_chain(points):
-    for k in list(points.keys()):
-        try:
-            chains = points[k]
-        except KeyError:
-            continue
-        for chain in chains:
-            x = None
-            while True:
-                if x == chain[-1][1]:
-                    break
-                x = chain[-1][1]
-                if x == k:
-                    break
-                y = chain[-2][1]
-                connects = points[x]
-                for conn in connects[:]:
-                    if conn[1][1] != y:
-                        chain.extend(conn[1:])
-                del points[x]
-            if chain[0][1] == chain[-1][1]:
-                chains.pop()
-                break
-    lines_linked = [np.float64(x) for x in range(0)]
-    for chain in points.values():
-        if len(chain) == 2:
-            chain = chain[1][1:][::-1] + chain[0]  # join together ends of chain
-        else:
-            chain = chain[0]
-        lines_linked.append([p[0] for p in chain])
-    return lines_linked
-
-
-class betterIsocurve(pg.IsocurveItem):
-    def __init__(
-        self,
-        data=None,
-        level=0,
-        pen="cyan",
-        axisOrder=None,
-        connected=False,
-        extendToEdge=False,
-    ):
-        super().__init__(data, level, pen, axisOrder)
-        self.connected = connected
-        self.extendToEdge = extendToEdge
-
-    def generatePath(self):
-        if self.data is None:
-            self.path = None
-            return
-
-        if self.axisOrder == "row-major":
-            data = self.data.T
-        else:
-            data = self.data
-
-        lines = fast_isocurve(data, self.level, self.connected, self.extendToEdge)
-        # lines = pg.functions.isocurve(data, self.level, connected=True, extendToEdge=True)
-        self.path = QtGui.QPainterPath()
-        for line in lines:
-            self.path.moveTo(*line[0])
-            for p in line[1:]:
-                self.path.lineTo(*p)
-
-    def setData(self, data, level=None):
-        if self.parentItem() is not None:
-            self.axisOrder = self.parentItem().axisOrder
-        super().setData(data, level)
-
-
-class ItoolColorBar(ItoolPlotItem):
-    def __init__(
-        self,
-        itool,
-        width=25,
-        horiz_pad=45,
-        vert_pad=30,
-        inner_pad=5,
-        font_size=10,
-        curve_kw={},
-        line_kw={"pen": "cyan"},
-        *args,
-        **kwargs,
-    ):
-        super(ItoolColorBar, self).__init__(itool, *args, **kwargs)
-        self.setDefaultPadding(0)
-        self.cbar = ItoolImageItem(self.itool, axisOrder="row-major")
-        self.npts = 4096
-        self.autolevels = True
-
-        self.cbar.setImage(np.linspace(0, 1, self.npts).reshape((-1, 1)))
-        self.addItem(self.cbar)
-
-        self.isocurve = betterIsocurve(**curve_kw)
-        self.isocurve.setZValue(5)
-
-        self.isoline = ItoolCursorLine(self.itool, angle=0, movable=True, **line_kw)
-        self.addItem(self.isoline)
-        self.isoline.setZValue(1000)
-        self.isoline.sigPositionChanged.connect(self.update_level)
-
-        self.setImageItem(self.itool.maps[0])
-        self.setMouseEnabled(x=False, y=True)
-        self.setMenuEnabled(True)
-
-        font = QtGui.QFont()
-        font.setPointSizeF(float(font_size))
-        for axis in ["left", "bottom", "right", "top"]:
-            self.getAxis(axis).setTickFont(font)
-        self.layout.setColumnFixedWidth(1, width)
-        self.layout.setSpacing(inner_pad)
-        self.layout.setContentsMargins(0.0, 0.0, 0.0, 0.0)
-        self.showAxes(
-            (True, True, True, True),
-            showValues=(False, False, True, False),
-            size=(horiz_pad, 0.0),
-        )
-        # self.getAxis('right').setStyle(
-        # showValues=True, tickTextWidth=horiz_pad,
-        # autoExpandTextSpace=False, autoReduceTextSpace=False)
-
-        self.getAxis("top").setHeight(vert_pad)
-        self.getAxis("bottom").setHeight(vert_pad)
-
-        # self.getAxis('left').setWidth(inner_pad)
-
-    def setImageItem(self, img):
-        self.imageItem = weakref.ref(img)
-        self.isocurve.setParentItem(img)
-        img.sigImageChanged.connect(self.image_changed)
-        self.image_changed()
-
-    def image_changed(self):
-        self.cmap_changed()
-        levels = self.imageItem().getLevels()
-        if self.autolevels:
-            self.cbar.setRect(0.0, levels[0], 1.0, levels[1] - levels[0])
-        else:
-            mn, mx = self.imageItem().quickMinMax(targetSize=2**16)
-            self.cbar.setRect(0.0, mn, 1.0, mx - mn)
-            self.cbar.setLevels(levels / (mx - mn) - mn)
-        self.isoline.setBounds(levels)
-        self.update_isodata()
-
-    def cmap_changed(self):
-        self.cmap = self.imageItem()._colorMap
-        self.lut = self.imageItem().lut
-        # self.lut = self.cmap.getStops()[1]
-        if not self.npts == self.lut.shape[0]:
-            self.npts = self.lut.shape[0]
-            self.cbar.setImage(self.cmap.pos.reshape((-1, 1)))
-        self.cbar._colorMap = self.cmap
-        self.cbar.setLookupTable(self.lut)
-        # self.cbar.setColorMap(self.cmap)
-        # pg.ImageItem
-
-    def update_isodata(self):
-        self.isocurve.setData(self.imageItem().image)
-
-    def update_level(self, line):
-        self.isocurve.setLevel(line.value())
-
-    def setVisible(self, visible, *args, **kwargs):
-        super().setVisible(visible, *args, **kwargs)
-        self.isocurve.setVisible(visible, *args, **kwargs)
-        # self.showAxes((False, False, True, False),
-        #               showValues=(False, False, True, False),
-        #               size=(45, 30))
-
-
-class itoolJoystick(pg.JoystickButton):
-    sigJoystickHeld = QtCore.Signal(object, object)
-    sigJoystickReset = QtCore.Signal(object)
-
-    def __init__(self, parent=None):
-        QtWidgets.QPushButton.__init__(self, parent)
-        self.radius = 100
-        self.marker_r = 3
-        self.setCheckable(True)
-        self.state = None
-        self.setState(0, 0)
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(lambda: self.sigJoystickHeld.emit(self, self.state))
-        # self.setFixedWidth(50)
-        # self.setFixedHeight(50)
-
-    def mousePressEvent(self, ev):
-        super().mousePressEvent(ev)
-        self.timer.start(1000 / 30)
-
-    def mouseReleaseEvent(self, ev):
-        super().mouseReleaseEvent(ev)
-        self.timer.stop()
-
-    def mouseDoubleClickEvent(self, ev):
-        self.sigJoystickReset.emit(self)
-        ev.accept()
-
-    def setState(self, *xy):
-        xy = list(xy)
-        d = np.sqrt(xy[0] ** 2 + xy[1] ** 2)  # length
-        nxy = [0, 0]
-        for i in [0, 1]:
-            if xy[i] == 0:
-                nxy[i] = 0
-            else:
-                nxy[i] = xy[i] / d
-        if d > self.radius:
-            d = self.radius
-        d = (d / self.radius) ** 2
-        xy = [nxy[0] * d, nxy[1] * d]
-        w2 = self.width() / 2
-        h2 = self.height() / 2
-        self.spotPos = QtCore.QPoint(int(w2 * (1 + xy[0])), int(h2 * (1 - xy[1])))
-        self.update()
-        if self.state == xy:
-            return
-        self.state = xy
-        self.sigStateChanged.emit(self, self.state)
-
-
-class itoolCursorControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.itool = itool
-        self.ndim = self.itool.data_ndim
-        self.layout = FlowLayout(self)
-
-        self.initialize_widgets()
-        self.update_content()
-        self.itool.sigIndexChanged.connect(self.update_spin)
-        self.itool.sigDataChanged.connect(self.update_content)
-
-    def initialize_widgets(self):
-        self._cursor_group = BorderlessGroupBox(self, objectName="CursorGroup")
-        self._transpose_group = BorderlessGroupBox(self, objectName="TransposeGroup")
-        cursor_layout = InnerQHBoxLayout(self._cursor_group)
-        transpose_layout = InnerQHBoxLayout(self._transpose_group)
-
-        self._spingroups = tuple(
-            BorderlessGroupBox(self, objectName=f"SpinGroup_{i}")
-            for i in range(self.ndim)
-        )
-        self._spingrouplayouts = tuple(InnerQHBoxLayout(sg) for sg in self._spingroups)
-        self._spinlabels = tuple(
-            QtWidgets.QPushButton(self._spingroups[i], checkable=True)
-            for i in range(self.ndim)
-        )
-        self._spin = tuple(
-            QtWidgets.QSpinBox(
-                self._spingroups[i],
-                singleStep=1,
-                wrapping=False,
-                minimumWidth=60,
-                keyboardTracking=False,
-            )
-            for i in range(self.ndim)
-        )
-        self._dblspin = tuple(
-            QtWidgets.QDoubleSpinBox(
-                self._spingroups[i],
-                decimals=3,
-                wrapping=False,
-                minimumWidth=70,
-                # correctionMode=QtWidgets.QAbstractSpinBox.CorrectToNearestValue,
-                keyboardTracking=False,
-            )
-            for i in range(self.ndim)
-        )
-        self._transpose_button = tuple(
-            IconButton(self, on=f"transpose_{i}") for i in range(self.ndim)
-        )
-        # if self.ndim == 2:
-        #     self._hide_button = (QtWidgets.QPushButton(self),
-        #                          QtWidgets.QPushButton(self))
-        #     self._hide_button[0].toggled.connect(
-        #         lambda val, i=1: self.toggle_axes(val, i))
-        #     self._hide_button[1].toggled.connect(
-        #         lambda val, i=2: self.toggle_axes(val, i))
-        # elif self.ndim == 3:
-
-        self._snap_button = IconButton(
-            self, on="snap", off="snap_off", toolTip="Snap cursor to data"
-        )
-        self._snap_button.toggled.connect(self._assign_snap)
-
-        self._joystick = itoolJoystick(self)
-        self._joystick.sigJoystickHeld.connect(self._joystick_held)
-        self._joystick.sigJoystickReset.connect(self._joystick_reset)
-
-        # col_default = self.itool._stretch_factors[1]
-        # self._hslider = QtWidgets.QSlider(
-        #     QtCore.Qt.Horizontal,
-        #     self,
-        #     minimum=0,
-        #     maximum=col_default[2] + col_default[1],
-        #     value=col_default[2],
-        # )
-        # self._hslider.valueChanged.connect(lambda v: self._assign_stretch(col=v))
-        # self._hslider.mouseDoubleClickEvent = lambda _: self._hslider.setValue(300000)
-        # # self._hslider.setFixedHeight(30)
-        # self._hslider.setFixedWidth(100)
-
-        # row_default = self.itool._stretch_factors[0]
-        # self._vslider = QtWidgets.QSlider(
-        #     QtCore.Qt.Horizontal,
-        #     self,
-        #     minimum=0,
-        #     maximum=row_default[2] + row_default[1],
-        #     value=row_default[2],
-        # )
-        # self._vslider.valueChanged.connect(lambda v: self._assign_stretch(row=v))
-        # self._vslider.mouseDoubleClickEvent = lambda _: self._vslider.setValue(300000)
-        # # self._vslider.setFixedHeight(30)
-        # self._vslider.setFixedWidth(100)
-
-        # cursor_layout.addWidget(self._hslider)
-        # cursor_layout.addWidget(self._vslider)
-
-        for i in range(self.ndim):
-            self._spinlabels[i].toggled.connect(
-                lambda v, axis=i: self.itool.set_axis_lock(axis, v)
-            )
-            self._spin[i].valueChanged.connect(
-                lambda v, axis=i: self._index_changed(axis, v)
-            )
-            self._dblspin[i].valueChanged.connect(
-                lambda v, axis=i: self._value_changed(axis, v)
-            )
-            self._transpose_button[i].clicked.connect(
-                lambda axis1=i, axis2=i - 1: self.itool.transpose_axes(axis1, axis2)
-            )
-            self._spingrouplayouts[i].addWidget(self._spinlabels[i])
-            self._spingrouplayouts[i].addWidget(self._spin[i])
-            self._spingrouplayouts[i].addWidget(self._dblspin[i])
-            self.layout.addWidget(self._spingroups[i])
-            # cursor_layout.addWidget(self._spinlabels[i], 0, 3 * i)
-            # cursor_layout.addWidget(self._spin[i], 0, 3 * i + 1)
-            # cursor_layout.addWidget(self._dblspin[i], 0, 3 * i + 2)
-            # cursor_layout.addSpacing(5)
-        cursor_layout.addWidget(self._snap_button)  # , 0, 3 * self.ndim)
-        cursor_layout.addWidget(self._joystick)  # , 0, 3 * self.ndim + 1)
-
-        self.layout.addWidget(self._cursor_group)
-        self.layout.addWidget(self._transpose_group)
-
-        for tb in self._transpose_button:
-            transpose_layout.addWidget(tb)
-
-        # self.layout.addStretch()
-
-    def _joystick_reset(self, _):
-        if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
-            self.itool._update_stretch()
-        else:
-            self.itool.reset_cursor(update=True)
-
-    def _joystick_held(self, _, state):
-        if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
-            self._assign_stretch(row=20000 * state[1], col=20000 * state[0])
-        else:
-            linearity = 1
-            factor = 0.05
-            for i in range(2):
-                if not self._spinlabels[i].isChecked():
-                    if self.itool.snap:
-                        self._spin[i].setValue(
-                            self._spin[i].value()
-                            + np.sign(state[i])
-                            * (self.itool.data_shape[i] - 1)
-                            * factor
-                            * np.float_power(np.abs(state[i]), linearity)
-                        )
-                    else:
-                        lims = self.itool.data_lims[i]
-                        self._dblspin[i].setValue(
-                            self._dblspin[i].value()
-                            + np.sign(state[i])
-                            * np.abs(lims[1] - lims[0])
-                            * factor
-                            * np.float_power(np.abs(state[i]), linearity)
-                        )
-
-    def update_content(self):
-        ndim = self.itool.data_ndim
-        if ndim != self.ndim:
-            self.layout.clear()
-            self.ndim = ndim
-            self.initialize_widgets()
-        # self._snap_button.blockSignals(True)
-        self._snap_button.setChecked(self.itool.snap)
-        # self._snap_button.blockSignals(False)
-
-        width_spinlabel = []
-        width_dblspin = []
-        width_spin = []
-        for i in range(self.ndim):
-            self._spingroups[i].blockSignals(True)
-            self._spin[i].blockSignals(True)
-            self._dblspin[i].blockSignals(True)
-
-            self._spinlabels[i].setText(self.itool.data_dims[i])
-            self._spinlabels[i].setChecked(self.itool.axis_locked[i])
-
-            width_spinlabel.append(
-                self._spinlabels[i]
-                .fontMetrics()
-                .boundingRect(self._spinlabels[i].text())
-                .width()
-                + 15
-            )
-
-            self._spin[i].setRange(0, self.itool.data_shape[i] - 1)
-            self._spin[i].setValue(self.itool._last_ind[i])
-
-            self._dblspin[i].setRange(*self.itool.data_lims[i])
-            self._dblspin[i].setSingleStep(self.itool.data_incs[i])
-            self._dblspin[i].setValue(
-                self.itool.data_coords[i][self.itool._last_ind[i]]
-            )
-
-            width_dblspin.append(self._dblspin[i].width())
-            width_spin.append(self._spin[i].width())
-
-            self._spinlabels[i].blockSignals(False)
-            self._spin[i].blockSignals(False)
-            self._dblspin[i].blockSignals(False)
-
-        for i in range(self.ndim):
-            self._spinlabels[i].setMaximumWidth(max(width_spinlabel))
-            # self._spingrouplayouts[i].setColumnMinimumWidth(1, max(width_spin))
-            # self._spingrouplayouts[i].setColumnMinimumWidth(2, max(width_dblspin))
-            # self._spin[i].setMaximumWidth(max(width_spin))
-            # self._dblspin[i].setMaximumWidth(max(width_dblspin))
-
-    def _assign_stretch(self, row=None, col=None):
-        if row is None:
-            row = 0
-        if col is None:
-            col = 0
-        if self.ndim == 2:
-            r0, r1 = self.itool._stretch_factors[0]
-            c0, c1 = self.itool._stretch_factors[1]
-            row_factor = (r0 - row, r1 + row)
-            col_factor = (c0 - col, c1 + col)
-        elif self.ndim >= 3:
-            r0, r1, r2 = self.itool._stretch_factors[0]
-            c0, c1, c2 = self.itool._stretch_factors[1]
-            row_factor = (r0, r1 - row, r2 + row)
-            col_factor = (c0, c1 - col, c2 + col)
-        self.itool._update_stretch(row=row_factor, col=col_factor)
-
-    def _assign_snap(self, value):
-        self.itool.snap = value
-
-    def _index_changed(self, axis, index):
-        self._dblspin[axis].blockSignals(True)
-        self.itool.set_index(axis, index)
-        self._dblspin[axis].setValue(self.itool.data_coords[axis][index])
-        self._dblspin[axis].blockSignals(False)
-
-    def _value_changed(self, axis, value):
-        self._spin[axis].blockSignals(True)
-        self.itool.set_value(axis, value)
-        self._spin[axis].setValue(self.itool._last_ind[axis])
-        self._spin[axis].blockSignals(False)
-
-    def update_spin(self, index, value):
-        for i in range(self.ndim):
-            self._spin[i].blockSignals(True)
-            self._dblspin[i].blockSignals(True)
-            self._spin[i].setValue(index[i])
-            self._dblspin[i].setValue(value[i])
-            self._spin[i].blockSignals(False)
-            self._dblspin[i].blockSignals(False)
-
-
-class itoolColorControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.itool = itool
-        self.layout = FlowLayout(self)
-        self._cmap_group = BorderlessGroupBox(self, objectName="CmapGroup")
-        self._button_group = BorderlessGroupBox(self, objectName="ClrCntrls")
-        self.initialize_widgets()
-
-    def initialize_widgets(self):
-        cmap_layout = InnerQHBoxLayout(self._cmap_group)
-        button_layout = InnerQHBoxLayout(self._button_group)
-        # cmap_layout.setContentsMargins(0, 0, 0, 0)
-
-        self._gamma_spin = QtWidgets.QDoubleSpinBox(
-            toolTip="Colormap gamma",
-            singleStep=0.01,
-            value=self.itool.gamma,
-            stepType=QtWidgets.QAbstractSpinBox.AdaptiveDecimalStepType,
-        )
-
-        self._gamma_spin.setRange(0.01, 100.0)
-        self._gamma_spin.valueChanged.connect(self.set_cmap)
-        gamma_label = QtWidgets.QLabel("γ", buddy=self._gamma_spin)
-
-        self.gamma_scale = lambda y: 1000 * np.log10(y)
-        self.gamma_scale_inv = lambda x: np.power(10, x / 1000)
-        self._gamma_slider = QtWidgets.QSlider(
-            toolTip="Colormap gamma",
-            value=self.gamma_scale(self.itool.gamma),
-            orientation=QtCore.Qt.Horizontal,
-        )
-        # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_scale(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
-        self._gamma_slider.setRange(
-            self.gamma_scale(self._gamma_spin.minimum()),
-            self.gamma_scale(self._gamma_spin.maximum()),
-        )
-        self._gamma_slider.valueChanged.connect(
-            lambda x: self._gamma_spin.setValue(self.gamma_scale_inv(x))
-        )
-
-        self._cmap_combo = ColorMapComboBox(self, maximumWidth=175)
-        if isinstance(self.itool.cmap, str):
-            self._cmap_combo.setDefaultCmap(self.itool.cmap)
-
-        self._cmap_combo.textActivated.connect(self._cmap_combo_changed)
-
-        self._cmap_r_button = IconButton(
-            self,
-            on="invert",
-            off="invert_off",
-            checkable=True,
-            toolTip="Invert colormap",
-        )
-        self._cmap_r_button.setChecked(self.itool.reverse)
-        self._cmap_r_button.toggled.connect(self.set_cmap)
-
-        self._cmap_mode_button = IconButton(
-            self, on="contrast", checkable=True, toolTip="High contrast mode"
-        )
-        self._cmap_mode_button.toggled.connect(self.set_cmap)
-
-        self._cmap_lock_button = IconButton(
-            self, on="unlock", off="lock", checkable=True, toolTip="Lock colors"
-        )
-        self._cmap_lock_button.toggled.connect(self.itool.set_clim_lock)
-
-        self._cbar_show_button = IconButton(
-            self, on="colorbar", checkable=True, toolTip="Show colorbar"
-        )
-        self._cbar_show_button.toggled.connect(self.itool.toggle_colorbar)
-
-        self._zero_center_button = IconButton(
-            self,
-            on="zero_center",
-            checkable=True,
-            checked=self.itool.zero_centered,
-            toolTip="Center colormap at zero",
-        )
-        self._zero_center_button.toggled.connect(
-            lambda z: self.itool.set_cmap(zeroCentered=z)
-        )
-
-        axes_names = [
-            "Main Image",
-            "X Profile",
-            "Y Profile",
-            "Z Profile",
-            "Horiz Slice",
-            "Vert Slice",
-            "T Profile",
-        ]
-        self._hide_button = tuple(
-            QtWidgets.QPushButton(
-                self, text=axes_names[i], clicked=lambda i=i: self.itool.toggle_axes(i)
-            )
-            for i in range(len(self.itool.axes))
-        )
-        self._axes_visibility_button = IconButton(self, on="table_eye", checkable=True)
-        self._axes_visibility_button.toggled.connect(
-            lambda v: [hb.setVisible(v) for hb in self._hide_button]
-        )
-
-        colors_button = IconButton(
-            self, on="palette", clicked=self._color_button_clicked
-        )
-        # style_combo = QtWidgets.QComboBox(toolTip="Qt style")
-        # style_combo.addItems(qt_style_names())
-        # style_combo.textActivated.connect(QtWidgets.QApplication.setStyle)
-        # style_combo.setCurrentText("Fusion")
-
-        cmap_layout.addWidget(gamma_label)
-        cmap_layout.addWidget(self._gamma_spin)
-        cmap_layout.addWidget(self._gamma_slider)
-
-        self.layout.addWidget(self._cmap_combo)
-        self.layout.addWidget(self._cmap_group)
-
-        self.layout.addWidget(self._cmap_r_button)
-        self.layout.addWidget(self._cmap_lock_button)
-        self.layout.addWidget(self._cmap_mode_button)
-        self.layout.addWidget(self._cbar_show_button)
-        self.layout.addWidget(self._zero_center_button)
-        self.layout.addWidget(self._axes_visibility_button)
-        self.layout.addWidget(colors_button)
-        # self.layout.addWidget(style_combo)
-
-        for hb in self._hide_button:
-            hb.setMaximumWidth(hb.fontMetrics().boundingRect(hb.text()).width() + 15)
-        for hb in self._hide_button:
-            self.layout.addWidget(hb)
-            hb.setVisible(False)
-
-        # self._cmap_group.setSizePolicy(QtWidgets.QSizePolicy.Minimum,
-        #    QtWidgets.QSizePolicy.Minimum)
-
-        # self.layout.addWidget(self._button_group)
-
-    def _cmap_combo_changed(self, text=None):
-        if text == "Load all...":
-            self._cmap_combo.load_all()
-        else:
-            self.set_cmap(name=text)
-
-    def set_cmap(self, name=None):
-        reverse = self._cmap_r_button.isChecked()
-        gamma = self._gamma_spin.value()
-        self._gamma_slider.blockSignals(True)
-        self._gamma_slider.setValue(self.gamma_scale(gamma))
-        self._gamma_slider.blockSignals(False)
-        if isinstance(name, str):
-            cmap = name
-        else:
-            cmap = self._cmap_combo.currentText()
-        mode = self._cmap_mode_button.isChecked()
-        self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, highContrast=mode)
-
-    def _color_button_clicked(self, s):
-        # print("click", s)
-        dialog = ImageToolColors(self)
-        if dialog.exec():
-            # print("Success!")
-            pass
-        else:
-            pass
-            # print("Cancel!")
-
-
-class ColorMapComboBox(QtWidgets.QComboBox):
-    LOAD_ALL_TEXT = "Load all..."
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.setPlaceholderText("Select colormap...")
-        self.setToolTip("Colormap")
-        w, h = 64, 16
-        self.setIconSize(QtCore.QSize(w, h))
-        for name in pg_colormap_names("mpl"):
-            # for name in pg_colormap_names("local"):
-            self.addItem(name)
-        self.insertItem(0, self.LOAD_ALL_TEXT)
-        self.thumbnails_loaded = False
-        self.currentIndexChanged.connect(self.load_thumbnail)
-        self.default_cmap = None
-
-    def load_thumbnail(self, index):
-        if not self.thumbnails_loaded:
-            text = self.itemText(index)
-            try:
-                self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
-            except KeyError:
-                pass
-
-    def load_all(self):
-        self.clear()
-        for name in pg_colormap_names("all"):
-            self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
-
-    # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
-    def showPopup(self):
-        maxWidth = self.maximumWidth()
-        if maxWidth and maxWidth < 16777215:
-            self.setPopupMinimumWidthForItems()
-        if not self.thumbnails_loaded:
-            for i in range(self.count()):
-                self.load_thumbnail(i)
-            self.thumbnails_loaded = True
-        super().showPopup()
-
-    def setPopupMinimumWidthForItems(self):
-        view = self.view()
-        fm = self.fontMetrics()
-        maxWidth = max([fm.width(self.itemText(i)) for i in range(self.count())])
-        if maxWidth:
-            view.setMinimumWidth(maxWidth)
-
-    def hidePopup(self):
-        self.activated.emit(self.currentIndex())
-        self.textActivated.emit(self.currentText())
-        self.currentIndexChanged.emit(self.currentIndex())
-        self.currentTextChanged.emit(self.currentText())
-        super().hidePopup()
-
-    def setDefaultCmap(self, cmap: str):
-        self.default_cmap = cmap
-        self.setCurrentText(cmap)
-
-    def resetCmap(self):
-        if self.default_cmap is not None:
-            self.setCurrentText(self.default_cmap)
-
-
-class itoolBinningControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.itool = itool
-        self.ndim = self.itool.data_ndim
-        self.layout = FlowLayout(self)
-        # self._bin_group = BorderlessGroupBox(self, objectName="BinGroup")
-        self.initialize_widgets()
-        self.update_content()
-        self.itool.sigDataChanged.connect(self.update_content)
-
-    def initialize_widgets(self):
-        # bin_layout = InnerQHBoxLayout(self._bin_group)
-        self._spinlabels = tuple(QtWidgets.QLabel(self) for _ in range(self.ndim))
-        self._spin = tuple(QtWidgets.QSpinBox(self) for _ in range(self.ndim))
-        self._reset = QtWidgets.QPushButton("Reset")
-        self._reset.clicked.connect(self._navg_reset)
-        for i in range(self.ndim):
-            self._spin[i].setSingleStep(2)
-            self._spin[i].setValue(1)
-            self._spin[i].setWrapping(False)
-            self._spin[i].valueChanged.connect(
-                lambda n, axis=i: self.itool.set_navg(axis, n)
-            )
-        for i in range(self.ndim):
-            self.layout.addWidget(self._spinlabels[i])
-            self.layout.addWidget(self._spin[i])
-            # bin_layout.addSpacing( , 20)
-        self.layout.addWidget(self._reset)
-        # bin_layout.addStretch()
-        # self.layout.addWidget(self._bin_group)
-
-    def _navg_reset(self):
-        for i in range(self.ndim):
-            self._spin[i].blockSignals(True)
-            self._spin[i].setValue(1)
-            self._spin[i].blockSignals(False)
-        self.itool._refresh_navg(reset=True)
-
-    def update_content(self):
-        ndim = self.itool.data_ndim
-        if ndim != self.ndim:
-            self.layout.clear()
-            self.ndim = ndim
-            self.initialize_widgets()
-        for i in range(self.ndim):
-            self._spin[i].blockSignals(True)
-            self._spinlabels[i].setText(self.itool.data_dims[i])
-            self._spin[i].setRange(1, self.itool.data_shape[i] - 1)
-            self._spin[i].setValue(self.itool.avg_win[i])
-            self._spin[i].blockSignals(False)
-        self.itool._refresh_navg()
-
-
-# from qtpy import QtWidgets, QtCore
-class ImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data, title=None, *args, **kwargs):
-        super().__init__()
-        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        self.qapp = QtCore.QCoreApplication.instance()
-        self._main = QtWidgets.QWidget(self)
-        self.data = parse_data(data)
-        if title is None:
-            title = self.data.name
-        self.setWindowTitle(title)
-        self.setCentralWidget(self._main)
-        self.layout = QtWidgets.QVBoxLayout(self._main)
-        self.layout.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
-        self.layout.setSpacing(0)
-        self.data_ndim = self.data.ndim
-
-        self.itool = pg_itool(self.data, *args, **kwargs)
-
-        self.tab1 = itoolCursorControls(self.itool)
-        self.tab2 = itoolColorControls(self.itool)
-        self.tab3 = itoolBinningControls(self.itool)
-
-        self.dockarea = DockArea()
-
-        self.dock1 = ItoolDock(
-            "Cursor", widget=self.tab1, size=(1, 5), autoOrientation=False
-        )
-        self.dock2 = ItoolDock(
-            "Appearance", widget=self.tab2, size=(1, 5), autoOrientation=False
-        )
-        self.dock3 = ItoolDock(
-            "Binning", widget=self.tab3, size=(1, 5), autoOrientation=False
-        )
-
-        self.dock1.layout.setContentsMargins(5, 5, 5, 5)
-        self.dock2.layout.setContentsMargins(5, 5, 5, 5)
-        self.dock3.layout.setContentsMargins(5, 5, 5, 5)
-        self.dockarea.addDock(self.dock3)
-        self.dockarea.addDock(self.dock2, "above", self.dock3)
-        self.dockarea.addDock(self.dock1, "above", self.dock2)
-        self.dockarea.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
-        )
-
-        self.layout.addWidget(self.dockarea)
-        self.layout.addWidget(self.itool)
-        self.resize(700, 700)
-
-        # Shortcut: (Description, Action)
-        self.keyboard_shortcuts = {
-            "R": ("Reverse colormap", self.tab2._cmap_r_button.click),
-            "L": ("Lock color levels", self.tab2._cmap_lock_button.click),
-            "S": ("Toggle cursor snap", self.tab1._snap_button.click),
-            "T": ("Transpose main image", self.tab1._transpose_button[1].click),
-            "Ctrl+A": ("View All", lambda: self.itool.autoRange()),
-        }
-        for k, v in self.keyboard_shortcuts.items():
-            sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
-            sc.activated.connect(v[-1])
-
-        self.itool.setFocusPolicy(QtCore.Qt.ClickFocus)
-        self.itool.setFocus()
-
-    def changeEvent(self, evt):
-        if evt.type() == QtCore.QEvent.PaletteChange:
-            self.qapp.setStyle(self.qapp.style().name())
-        super().changeEvent(evt)
-
-    def tab_changed(self, i):
-        pass
-        # if i == self.tabwidget.indexOf(self.tab3):
-        # lazy loading
-        # self.tab3.initialize_functions()
+        sizes[0] = s1.sizes()[0]
+    if all([x == 0 for x in sizes[1:]]) and sizes[0] != total:
+        sizes[1:] = [1] * len(sizes[1:])
+    try:
+        factor = (total - sizes[0]) / sum(sizes[1:])
+    except ZeroDivisionError:
+        factor = 0.0
+    for k in range(1, len(sizes)):
+        sizes[k] = round(sizes[k] * factor)
+    if reverse:
+        sizes = list(reversed(sizes))
+    s0.setSizes(sizes)
+    s0.blockSignals(False)
+    s1.blockSignals(False)
+
+
+def _sync_splitters(s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter):
+    s0.splitterMoved.connect(lambda: _link_splitters(s1, s0))
+    s1.splitterMoved.connect(lambda: _link_splitters(s0, s1))
 
 
 def itool(data, execute=None, *args, **kwargs):
-    # TODO: implement multiple windows, equal aspect settings
-    qapp = QtWidgets.QApplication.instance()
+    qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
@@ -3209,7 +82,7 @@ def itool(data, execute=None, *args, **kwargs):
         win = ImageTool(data, *args, **kwargs)
         win.show()
         win.activateWindow()
-        win.raise_()
+        # win.raise_()
     if execute is None:
         execute = True
         try:
@@ -3226,38 +99,2135 @@ def itool(data, execute=None, *args, **kwargs):
     return win
 
 
-if __name__ == "__main__":
-    # from pyimagetool import RegularDataArray, imagetool
-    # from erlab.plotting import ximagetool
-    # from arpes.io import load_data
-    # from guppy import hpy
-    # h=hpy()
-    # import sys
+class ImageTool(QtWidgets.QMainWindow):
+    def __init__(self, data=None, **kwargs):
+        super().__init__()
+        self.slicer_area = ImageSlicerArea(self, data, **kwargs)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
+        self.setCentralWidget(self.slicer_area)
 
-    # dat = xr.open_dataarray('~/Documents/ERLab/TiSe2/kxy10.nc')
-    dat = xr.open_dataarray(
+        dock = QtWidgets.QDockWidget("Controls", self)
+
+        self.controls = QtWidgets.QWidget()
+        self.controls.setLayout(QtWidgets.QHBoxLayout(self.controls))
+        self.controls.layout().setContentsMargins(3, 3, 3, 3)
+
+        self.controls.layout().setSpacing(3)
+        self.groups: list[QtWidgets.QGroupBox] = []
+        self.group_layouts: list[QtWidgets.QVBoxLayout] = []
+        self.group_widgets: list[list[QtWidgets.QWidget]] = []
+
+        self.add_group()  # title="Info")
+        self.add_group()  # title="Color")
+        self.add_group()  # title="Bin")
+
+        self.add_widget(
+            0,
+            ItoolCrosshairControls(
+                self.slicer_area, orientation=QtCore.Qt.Orientation.Vertical
+            ),
+        )
+        self.add_widget(1, ItoolColormapControls(self.slicer_area))
+        self.add_widget(2, ItoolBinningControls(self.slicer_area))
+
+        dock.setWidget(self.controls)
+        # dock.setTitleBarWidget(QtWidgets.QWidget())
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, dock)
+        self.resize(720, 720)
+
+        self._createMenuBar()
+        self._refreshMenu()
+        self.slicer_area.sigViewOptionChanged.connect(self._refreshMenu)
+        self.slicer_area.sigDataChanged.connect(self.update_title)
+        self.update_title()
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+    def update_title(self):
+        if self.slicer_area._data is not None:
+            if self.slicer_area._data.name:
+                self.setWindowTitle(str(self.slicer_area._data.name))
+
+    def add_widget(self, idx: int, widget: QtWidgets.QWidget):
+        self.group_layouts[idx].addWidget(widget)
+        self.group_widgets[idx].append(widget)
+
+    def add_group(self, **kwargs):
+        group = QtWidgets.QGroupBox(**kwargs)
+        group_layout = QtWidgets.QVBoxLayout(group)
+        group_layout.setContentsMargins(3, 3, 3, 3)
+        self.controls.layout().addWidget(group)
+        group_layout.setSpacing(3)
+        self.groups.append(group)
+        self.group_widgets.append([])
+        self.group_layouts.append(group_layout)
+
+    def _createMenuBar(self):
+        self._menu_bar = QtWidgets.QMenuBar(self)
+        # self._menu_bar.setNativeMenuBar(False)
+
+        ### FILE MENU
+        self._file_menu = QtWidgets.QMenu("&File", self)
+        self._menu_bar.addMenu(self._file_menu)
+        self._file_menu.addSeparator()
+
+        ### i/o
+        self._open_action = self._file_menu.addAction(
+            "&Open...", QtGui.QKeySequence("Ctrl+O")
+        )
+        self._open_action.triggered.connect(self._open_file)
+        self._export_action = self._file_menu.addAction(
+            "&Save As...", QtGui.QKeySequence("Ctrl+Shift+S")
+        )
+        self._export_action.triggered.connect(self._export_file)
+
+        ### VIEW MENU
+        self._view_menu = QtWidgets.QMenu("&View", self)
+        self._menu_bar.addMenu(self._view_menu)
+        self._view_menu.addSeparator()
+
+        ### misc. view options
+        self._viewall_action = self._view_menu.addAction(
+            "View &All", QtGui.QKeySequence("Ctrl+A")
+        )
+        self._viewall_action.triggered.connect(self.slicer_area.view_all)
+        self._transpose_action = self._view_menu.addAction(
+            "&Transpose Main Image", QtGui.QKeySequence("T")
+        )
+        self._transpose_action.triggered.connect(
+            lambda: self.slicer_area.swap_axes(0, 1)
+        )
+
+        ### cursor options
+        self._view_menu.addSeparator()
+        self._add_action = self._view_menu.addAction(
+            "&Add New Cursor", QtGui.QKeySequence("Shift+A")
+        )
+        self._add_action.triggered.connect(self.slicer_area.add_cursor)
+        self._rem_action = self._view_menu.addAction(
+            "&Remove Current Cursor", QtGui.QKeySequence("Shift+R")
+        )
+        self._view_menu.aboutToShow.connect(
+            lambda: self._rem_action.setDisabled(self.slicer_area.n_cursors == 1)
+        )
+        self._rem_action.triggered.connect(self.slicer_area.remove_current_cursor)
+        self._snap_action = self._view_menu.addAction(
+            "&Snap to Pixels", QtGui.QKeySequence("S")
+        )
+        self._snap_action.setCheckable(True)
+        self._snap_action.toggled.connect(self.slicer_area.toggle_snap)
+
+        ## cursor movement
+        # single cursor
+        self._cursor_move_menu = self._view_menu.addMenu("Cursor Control")
+        self._center_action = self._cursor_move_menu.addAction(
+            "&Center Current Cursor", QtGui.QKeySequence("Shift+C")
+        )
+        self._center_action.triggered.connect(self.slicer_area.center_cursor)
+        self._cursor_step_actions = (
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Up", QtGui.QKeySequence("Shift+Up")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Down", QtGui.QKeySequence("Shift+Down")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Right", QtGui.QKeySequence("Shift+Right")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Left", QtGui.QKeySequence("Shift+Left")
+            ),
+        )
+        for action, i, d in zip(
+            self._cursor_step_actions, (1, 1, 0, 0), (1, -1, 1, -1)
+        ):
+            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
+            action.triggered.connect(
+                lambda *_, ax=ax, d=d: self.slicer_area.step_index(ax, d)
+            )
+
+        # multiple cursors
+        self._cursor_move_menu.addSeparator()
+        self._center_all_action = self._cursor_move_menu.addAction(
+            "&Center All Cursors", QtGui.QKeySequence("Alt+Shift+C")
+        )
+        self._center_all_action.triggered.connect(self.slicer_area.center_all_cursors)
+        self._cursor_step_all_actions = (
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Up", QtGui.QKeySequence("Alt+Shift+Up")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Down", QtGui.QKeySequence("Alt+Shift+Down")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Right", QtGui.QKeySequence("Alt+Shift+Right")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Cursors Left", QtGui.QKeySequence("Alt+Shift+Left")
+            ),
+        )
+        for action, i, d in zip(
+            self._cursor_step_all_actions, (1, 1, 0, 0), (1, -1, 1, -1)
+        ):
+            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
+            action.triggered.connect(
+                lambda *_, ax=ax, d=d: self.slicer_area.step_index_all(ax, d)
+            )
+
+        ### colormap options
+        self._view_menu.addSeparator()
+        self._color_actions = (
+            self._view_menu.addAction("Invert", QtGui.QKeySequence("R")),
+            self._view_menu.addAction("High Contrast"),
+            self._view_menu.addAction("Center At Zero"),
+        )
+        for ca in self._color_actions:
+            ca.setCheckable(True)
+            ca.toggled.connect(self._set_colormap_options)
+            # ca.setShortcutContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+
+        self._view_menu.addSeparator()
+
+        ### HELP MENU
+        self._help_menu = QtWidgets.QMenu("&Help", self)
+        self._menu_bar.addMenu(self._help_menu)
+        self._help_action = self._help_menu.addAction("DataSlicer Help (WIP)")
+        self._help_menu.addSeparator()
+        self._shortcut_action = self._help_menu.addAction(
+            "Keyboard Shortcuts Reference (WIP)"
+        )
+
+    def _refreshMenu(self):
+        self._snap_action.blockSignals(True)
+        self._snap_action.setChecked(self.array_slicer.snap_to_data)
+        self._snap_action.blockSignals(False)
+
+        cmap_props = self.slicer_area.colormap_properties
+        for ca, k in zip(
+            self._color_actions, ["reversed", "highContrast", "zeroCentered"]
+        ):
+            ca.blockSignals(True)
+            ca.setChecked(cmap_props[k])
+            ca.blockSignals(False)
+
+    def _set_colormap_options(self):
+        self.slicer_area.set_colormap(
+            reversed=self._color_actions[0].isChecked(),
+            highContrast=self._color_actions[1].isChecked(),
+            zeroCentered=self._color_actions[2].isChecked(),
+        )
+
+    def _open_file(self):
+        filters = (
+            "xarray HDF5 Files (*.h5)",
+            "SSRL Raw Data (*.h5)",
+            "NetCDF Files (*.nc *.nc4 *.cdf)",
+        )
+
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilters(filters)
+        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            match filters.index(dialog.selectedNameFilter()):
+                case 0:
+                    dat = xr.load_dataarray(files[0], engine="h5netcdf")
+                case 1:
+                    dat = erlab.io.load_ssrl(files[0])
+                case 2:
+                    dat = xr.load_dataarray(files[0])
+                case _:
+                    raise ValueError
+            self.slicer_area.set_data(dat)
+
+            for group in self.group_widgets:
+                for w in group:
+                    if isinstance(w, ItoolControlsBase):
+                        w.slicer_area = self.slicer_area
+
+    def _export_file(self):
+        if not self.slicer_area._data:
+            raise ValueError("Data is Empty!")
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter(
+            "xarray HDF5 Files (*.h5)",
+        )
+        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
+        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
+
+
+class ItoolColorBar(pg.PlotWidget):
+    def __init__(self, parent: QtWidgets.QWidget | None = None, **cbar_kw):
+        super().__init__(parent=parent, plotItem=BetterColorBarItem(**cbar_kw))
+        self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
+
+    @property
+    def cb(self) -> BetterColorBarItem:
+        return self.plotItem
+
+    def set_dimensions(
+        self,
+        width: int = 30,
+        horiz_pad: int | None = None,
+        vert_pad: int | None = None,
+        font_size: float = 11.0,
+    ):
+        self.cb.set_dimensions(horiz_pad, vert_pad, font_size)
+        self.setFixedWidth(width)
+
+    def getPlotItemViewBox(self) -> pg.ViewBox:
+        return self.getPlotItem().vb
+
+    def setVisible(self, visible: bool):
+        super().setVisible(visible)
+        self.cb.setVisible(visible)
+        self.cb._span.blockSignals(not visible)
+
+        if visible:
+            self.cb._span.setRegion(self.cb.limits)
+
+
+# class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
+class ItoolGraphicsLayoutWidget(pg.PlotWidget):
+    # Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
+    # Will need to run some benchmarks in the future
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea,
+        display_axis: tuple[int, ...],
+        image: bool = False,
+        **item_kw,
+    ):
+        # super().__init__()
+        # self.ci.layout.setContentsMargins(0, 0, 0, 0)
+        # self.ci.layout.setSpacing(3)
+        # self.plotItem = ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
+        # self.addItem(self.plotItem)
+
+        super().__init__(
+            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
+        )
+        self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
+
+    def getPlotItem(self) -> ItoolPlotItem:
+        return self.plotItem
+
+    def getPlotItemViewBox(self) -> pg.ViewBox:
+        return self.getPlotItem().vb
+
+
+class ImageSlicerArea(QtWidgets.QWidget):
+    """A interactive tool based on `pyqtgraph` for exploring 3D data.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    data
+        Data to display. The data must have 2 to 4 dimensions.
+    cmap
+        Default colormap of the data.
+    gamma
+        Default power law normalization of the colormap.
+    zeroCentered
+        If `True`, the normalization is applied symmetrically from the midpoint of
+        the colormap.
+    rad2deg
+        If `True` and `data` is not `None`, converts some known angle coordinates to
+        degrees. If an iterable of strings is given, only the coordinates that
+        correspond to the given strings are converted.
+
+    Signals
+    -------
+    sigDataChanged()
+    sigCurrentCursorChanged(index)
+    sigViewOptionChanged()
+    sigCursorCountChanged(n_cursors)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+    sigIndexChanged(cursor, axes)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+    sigBinChanged(cursor, axes)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+
+    """
+
+    COLORS: list[QtGui.QColor] = [
+        pg.mkColor(0.8),
+        pg.mkColor("y"),
+        pg.mkColor("m"),
+        pg.mkColor("c"),
+        pg.mkColor("g"),
+        pg.mkColor("r"),
+    ]#: List of `PySide6.QtGui.QColor` that contains colors for multiple cursors.
+
+    sigDataChanged = QtCore.Signal() #: :meta private:
+    sigCurrentCursorChanged = QtCore.Signal(int) #: :meta private:
+    sigViewOptionChanged = QtCore.Signal() #: :meta private:
+    
+    @property
+    def sigCursorCountChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigCursorCountChanged
+
+    @property
+    def sigIndexChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigIndexChanged
+
+    @property
+    def sigBinChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigBinChanged
+
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        data: xr.DataArray | npt.ArrayLike | None = None,
+        cmap: str | pg.ColorMap = "magma",
+        gamma: float = 0.5,
+        zeroCentered: bool = False,
+        rad2deg: bool | Iterable[str] = False,
+    ):
+        super().__init__(parent)
+
+        self.setLayout(QtWidgets.QHBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(0)
+
+        self._splitters = (
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
+            QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
+        )
+        for s in self._splitters:
+            s.setHandleWidth(4)
+            s.setStyleSheet("QSplitter::handle{background: #222222;}")
+            # palette = s.palette()
+            # palette.setColor(QtGui.QPalette.ColorRole.Light, QtGui.QColor("yellow"))
+            # s.setPalette(palette)
+            # print(s.handleWidth())
+            # pass
+        self.layout().addWidget(self._splitters[0])
+        for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):
+            self._splitters[i].addWidget(self._splitters[j])
+        _sync_splitters(self._splitters[1], self._splitters[4])
+
+        self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
+
+        self._colorbar = ItoolColorBar(self)
+        self.layout().addWidget(self._colorbar)
+        self._colorbar.setVisible(False)
+
+        self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True),
+            ItoolGraphicsLayoutWidget(self, display_axis=(2,)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1)),
+            ItoolGraphicsLayoutWidget(self, display_axis=(3,)),
+        )
+        for i in (1, 4):
+            self._splitters[2].addWidget(self._plots[i])
+        for i in (6, 3):
+            self._splitters[3].addWidget(self._plots[i])
+        self._splitters[5].addWidget(self._plots[0])
+        for i in (5, 2):
+            self._splitters[6].addWidget(self._plots[i])
+
+        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+
+        self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = dict(
+            cmap=cmap,
+            gamma=gamma,
+            reversed=False,
+            highContrast=False,
+            zeroCentered=zeroCentered,
+        )
+
+        self._data: xr.DataArray | None = None
+        self.current_cursor = 0
+
+        if data is not None:
+            self.set_data(data, rad2deg=rad2deg)
+
+    def connect_signals(self):
+        for ax in self.axes:
+            ax.getPlotItem().connect_signals()
+        self.sigDataChanged.connect(self.refresh_all)
+        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+
+    @property
+    def colormap(self) -> str | pg.ColorMap:
+        return self.colormap_properties["cmap"]
+
+    @property
+    def main_image(self) -> ItoolGraphicsLayoutWidget:
+        """returns the main PlotItem"""
+        return self.get_axes(0)
+
+    @property
+    def slices(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+        if self.data.ndim == 2:
+            return tuple()
+        else:
+            slice_axes = [4, 5]
+        return tuple(self.get_axes(ax) for ax in slice_axes)
+
+    @property
+    def images(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+        return (self.main_image,) + self.slices
+
+    @property
+    def profiles(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+        if self.data.ndim == 2:
+            profile_axes = [1, 2]
+        elif self.data.ndim == 3:
+            profile_axes = [1, 2, 3]
+        else:
+            profile_axes = [1, 2, 3, 6]
+        return tuple(self.get_axes(ax) for ax in profile_axes)
+
+    @property
+    def axes(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+        """Currently valid subset of self._plots"""
+        return self.images + self.profiles
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self._array_slicer
+
+    @property
+    def n_cursors(self) -> int:
+        return self.array_slicer.n_cursors
+
+    @property
+    def current_indices(self) -> list[int]:
+        return self.array_slicer.get_indices(self.current_cursor)
+
+    @property
+    def current_values(self) -> list[float]:
+        return self.array_slicer.get_values(self.current_cursor, uniform=False)
+
+    @property
+    def current_values_uniform(self) -> list[float]:
+        return self.array_slicer.get_values(self.current_cursor, uniform=True)
+
+    @property
+    def data(self) -> xr.DataArray:
+        return self.array_slicer._obj
+
+    def get_current_index(self, axis: int) -> int:
+        return self.array_slicer.get_index(self.current_cursor, axis)
+
+    def get_current_value(self, axis: int, uniform: bool = False) -> float:
+        return self.array_slicer.get_value(self.current_cursor, axis, uniform=uniform)
+
+    def get_axes(self, index: int) -> ItoolGraphicsLayoutWidget:
+        return self._plots[index]
+
+    @QtCore.Slot(tuple, bool, bool)
+    def refresh_all(
+        self, axes: tuple[int, ...] | None = None, only_plots: bool = False
+    ):
+        for c in range(self.n_cursors):
+            self.sigIndexChanged.emit(c, axes)
+        if not only_plots:
+            for ax in self.axes:
+                ax.getPlotItem().refresh_labels()
+
+    @QtCore.Slot(tuple)
+    def refresh_current(self, axes: tuple[int, ...] | None = None):
+        self.sigIndexChanged.emit(self.current_cursor, axes)
+
+    @QtCore.Slot(int, list)
+    def refresh(self, cursor: int, axes: tuple[int, ...] | None = None):
+        self.sigIndexChanged.emit(cursor, axes)
+
+    def view_all(self):
+        for ax in self.axes:
+            ax.getPlotItemViewBox().enableAutoRange()
+            ax.getPlotItemViewBox().updateAutoRange()
+
+    def center_all_cursors(self):
+        for i in range(self.n_cursors):
+            self.array_slicer.center_cursor(i)
+
+    def center_cursor(self):
+        self.array_slicer.center_cursor(self.current_cursor)
+
+    def set_current_cursor(self, cursor: int, update=True):
+        if cursor > self.n_cursors - 1:
+            raise IndexError("Cursor index out of range")
+        self.current_cursor = cursor
+        if update:
+            self.refresh_current()
+        self.sigCurrentCursorChanged.emit(cursor)
+
+    def set_data(
+        self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
+    ):
+        if isinstance(self._data, xr.DataArray):
+            self._data.close()
+        else:
+            del self._data
+
+        if not isinstance(data, xr.DataArray):
+            data = xr.DataArray(np.asarray(data))
+
+        if not rad2deg:
+            self._data = data
+        else:
+            if np.iterable(rad2deg):
+                conv_dims = rad2deg
+            else:
+                conv_dims = [
+                    d
+                    for d in ("phi", "theta", "beta", "alpha", "chi")
+                    if d in data.dims
+                ]
+            self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
+        self._array_slicer = ArraySlicer(self._data)
+
+        self.connect_signals()
+
+        self.adjust_layout()
+
+        if self.current_cursor > self.n_cursors - 1:
+            self.set_current_cursor(self.n_cursors - 1, update=False)
+        self.sigDataChanged.emit()
+
+        # self.refresh_current()
+        self.set_colormap(update=True)
+        self._colorbar.cb.setImageItem(
+            tuple(im for ax in self.images for im in ax.getPlotItem().slicer_data_items)
+        )
+        self.lock_levels(False)
+
+    @QtCore.Slot(int, int)
+    def swap_axes(self, ax1: int, ax2: int):
+        self.array_slicer.swap_axes(ax1, ax2)
+        self.sigDataChanged.emit()
+
+    @QtCore.Slot(int, int, bool)
+    def set_index(self, axis: int, value: int, update: bool = True):
+        self.array_slicer.set_index(self.current_cursor, axis, value, update)
+
+    @QtCore.Slot(int, int, bool)
+    def step_index(self, axis: int, amount: int, update: bool = True):
+        self.array_slicer.step_index(self.current_cursor, axis, amount, update)
+
+    @QtCore.Slot(int, int, bool)
+    def step_index_all(self, axis: int, amount: int, update: bool = True):
+        for i in range(self.n_cursors):
+            self.array_slicer.step_index(i, axis, amount, update)
+
+    @QtCore.Slot(int, float, bool, bool)
+    def set_value(
+        self, axis: int, value: float, update: bool = True, uniform: bool = False
+    ):
+        self.array_slicer.set_value(self.current_cursor, axis, value, update, uniform)
+
+    @QtCore.Slot(int, int, bool)
+    def set_bin(self, axis: int, value: int, update: bool = True):
+        new_bins: list[int | None] = [None] * self.data.ndim
+        new_bins[axis] = value
+        self.array_slicer.set_bins(self.current_cursor, new_bins, update)
+
+    @QtCore.Slot(int, int, bool)
+    def set_bin_all(self, axis: int, value: int, update: bool = True):
+        new_bins: list[int | None] = [None] * self.data.ndim
+        new_bins[axis] = value
+        for c in range(self.n_cursors):
+            self.array_slicer.set_bins(c, new_bins, update)
+
+    @QtCore.Slot()
+    def add_cursor(self):
+        self.array_slicer.add_cursor(self.current_cursor, update=False)
+        self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+        self.current_cursor = self.n_cursors - 1
+        for ax in self.axes:
+            ax.add_cursor(update=False)
+        self.refresh_current()
+        self.sigCursorCountChanged.emit(self.n_cursors)
+        self.sigCurrentCursorChanged.emit(self.current_cursor)
+
+    @QtCore.Slot(int)
+    def remove_cursor(self, index: int):
+        if self.n_cursors == 1:
+            return
+        self.array_slicer.remove_cursor(index, update=False)
+        self.cursor_colors.pop(index)
+        if self.current_cursor == index:
+            if index == 0:
+                self.current_cursor = 1
+            self.current_cursor -= 1
+        for ax in self.axes:
+            ax.remove_cursor(index)
+        self.refresh_current()
+        self.sigCursorCountChanged.emit(self.n_cursors)
+        self.sigCurrentCursorChanged.emit(self.current_cursor)
+
+    @QtCore.Slot()
+    def remove_current_cursor(self):
+        self.remove_cursor(self.current_cursor)
+
+    def gen_cursor_color(self, index: int) -> QtGui.QColor:
+        clr = self.COLORS[index % len(self.COLORS)]
+        while clr in self.cursor_colors:
+            clr = self.COLORS[index % len(self.COLORS)]
+            index += 1
+        return clr
+
+    def gen_cursor_colors(
+        self, index: int
+    ) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:
+        clr = self.cursor_colors[index]
+
+        clr_cursor = pg.mkColor(clr)
+        clr_cursor_hover = pg.mkColor(clr)
+        clr_span = pg.mkColor(clr)
+        clr_span_edge = pg.mkColor(clr)
+
+        clr_cursor.setAlphaF(0.75)
+        clr_cursor_hover.setAlphaF(0.95)
+        clr_span.setAlphaF(0.15)
+        clr_span_edge.setAlphaF(0.35)
+
+        return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
+
+    def set_colormap(
+        self,
+        cmap: str | pg.ColorMap | None = None,
+        gamma: float | None = None,
+        reversed: bool | None = None,
+        highContrast: bool | None = None,
+        zeroCentered: bool | None = None,
+        update: bool = True,
+    ):
+        if cmap is not None:
+            self.colormap_properties["cmap"] = cmap
+        if gamma is not None:
+            self.colormap_properties["gamma"] = gamma
+        if reversed is not None:
+            self.colormap_properties["reversed"] = reversed
+        if highContrast is not None:
+            self.colormap_properties["highContrast"] = highContrast
+        if zeroCentered is not None:
+            self.colormap_properties["zeroCentered"] = zeroCentered
+
+        cmap = pg_colormap_powernorm(
+            self.colormap_properties["cmap"],
+            self.colormap_properties["gamma"],
+            self.colormap_properties["reversed"],
+            highContrast=self.colormap_properties["highContrast"],
+            zeroCentered=self.colormap_properties["zeroCentered"],
+        )
+        for ax in self.images:
+            for im in ax.getPlotItem().slicer_data_items:
+                im.set_pg_colormap(cmap, update=update)
+        self.sigViewOptionChanged.emit()
+
+    @QtCore.Slot(bool)
+    def lock_levels(self, lock: bool):
+        if lock:
+            levels = self.array_slicer.limits
+            self._colorbar.cb.setLimits(levels)
+        for ax in self.images:
+            for im in ax.getPlotItem().slicer_data_items:
+                if lock:
+                    im.setAutoLevels(False)
+                    im.setLevels(levels, update=False)
+                else:
+                    im.setAutoLevels(True)
+                im.refresh_data()
+
+        self._colorbar.setVisible(lock)
+        self.sigViewOptionChanged.emit()
+
+    def adjust_layout(
+        self,
+        horiz_pad: int = 45,
+        vert_pad: int = 30,
+        font_size: float = 11.0,
+        r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
+    ):
+        font = QtGui.QFont()
+        font.setPointSizeF(float(font_size))
+
+        # parameters for layout: stretch and axis on/off
+        """
+             ┌───────────┬───────────┐
+        r[0] │     1     │     6     │
+             │───────────┤           │
+             │           ├───────────┤
+        r[1] │     4     │     3     │
+             │           │           │
+             │───────────┼───────┬───┤
+             │           │       │   │
+        r[2] │     0     │   5   │ 2 │
+             │           │       │   │
+             └───────────┴───────┴───┘
+              r[3] * r[2]
+        """
+
+        valid_axis = (
+            (1, 0, 0, 1),
+            (1, 1, 0, 0),
+            (0, 0, 1, 1),
+            (0, 1, 1, 0),
+            (1, 0, 0, 0),
+            (0, 0, 0, 1),
+            (0, 1, 1, 0),
+        )
+
+        invalid: list[int] = []
+        r0, r1, r2, r3 = r
+        if self.data.ndim == 2:
+            invalid = [4, 5, 6]
+            r1 = r0 / 6
+        elif self.data.ndim == 3:
+            invalid = [6]
+
+        r01 = r0 / r1
+        scale = 100
+        d = self._splitters[0].handleWidth() / scale  # padding due to splitters
+        sizes: tuple[tuple[float, ...], ...] = (
+            (r0 + r1, r2),
+            (r3 * r2, r3 * (r0 + r1)),
+            ((r0 + r1 - d) * r01, (r0 + r1 - d) / r01),
+            ((r0 + r1 - d) / 2, (r0 + r1 - d) / 2),
+            (r3 * r2, r3 * (r0 + r1)),
+            (r2,),
+            ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
+        )
+        for split, sz in zip(self._splitters, sizes):
+            split.setSizes(tuple(map(lambda s: round(s * scale), sz)))
+
+        for i, sel in enumerate(valid_axis):
+            axes = self.get_axes(i)
+            axes.setVisible(i not in invalid)
+            axes.getPlotItem().setDefaultPadding(0)
+            for axis in ("left", "bottom", "right", "top"):
+                axes.getPlotItem().getAxis(axis).setTickFont(font)
+                axes.getPlotItem().getAxis(axis).setStyle(
+                    autoExpandTextSpace=True, autoReduceTextSpace=True
+                )
+            axes.getPlotItem().showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
+            if i in (1, 4):
+                axes.getPlotItem().setXLink(self.get_axes(0).getPlotItem())
+            elif i in (2, 5):
+                axes.getPlotItem().setYLink(self.get_axes(0).getPlotItem())
+
+        # reserve space, only hide plotItem
+        self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
+
+        self._colorbar.set_dimensions(
+            width=horiz_pad + 20, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
+        )
+
+    def toggle_snap(self, value: bool | None = None):
+        if value is None:
+            value = not self.array_slicer.snap_to_data
+        elif value == self.array_slicer.snap_to_data:
+            return
+        self.array_slicer.snap_to_data = value
+        self.sigViewOptionChanged.emit()
+
+    def changeEvent(self, evt: QtCore.QEvent):
+        if evt.type() == QtCore.QEvent.Type.PaletteChange:
+            self.qapp.setStyle(self.qapp.style().name())
+        super().changeEvent(evt)
+
+
+class ItoolCursorLine(pg.InfiniteLine):
+    def __init__(self, *args, **kargs):
+        super().__init__(*args, **kargs)
+        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+
+    def setBounds(self, bounds: Sequence[float], value: float | None = None):
+        if bounds[0] > bounds[1]:
+            bounds = list(bounds)
+            bounds.reverse()
+        self.maxRange = bounds
+        if value is None:
+            value = self.value()
+        self.setValue(value)
+
+    def value(self) -> float:
+        return float(super().value())
+
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
+        ):
+            if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+                if ev.isStart():
+                    self.moving = True
+                    self.cursorOffset = self.pos() - self.mapToParent(
+                        ev.buttonDownPos()
+                    )
+                    self.startPosition = self.pos()
+                ev.accept()
+
+                if not self.moving:
+                    return
+
+                new_position = self.cursorOffset + self.mapToParent(ev.pos())
+                if self.angle % 180 == 0:
+                    self.temp_value = new_position.y()
+                elif self.angle % 180 == 90:
+                    self.temp_value = new_position.x()
+
+                self.sigDragged.emit(self)
+                if ev.isFinish():
+                    self.moving = False
+                    self.sigPositionChangeFinished.emit(self)
+        else:
+            self.setMouseHover(False)
+            self.parentItem().parentItem().parentItem().mouseDragEvent(ev)
+
+    def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
+        ):
+            super().mouseClickEvent(ev)
+        else:
+            self.setMouseHover(False)
+            ev.ignore()
+
+    def hoverEvent(self, ev):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            not in self.qapp.queryKeyboardModifiers()
+        ):
+            super().hoverEvent(ev)
+        else:
+            self.setMouseHover(False)
+
+
+class ItoolCursorSpan(pg.LinearRegionItem):
+    def __init__(self, *args, **kargs):
+        kargs.setdefault("movable", False)
+        super().__init__(*args, **kargs)
+
+    def setRegion(self, rgn):
+        # hides when region width is 0
+        if rgn[1] == rgn[0]:
+            self.setVisible(False)
+        else:
+            self.setVisible(True)
+            super().setRegion(rgn)
+
+
+class ItoolDisplayObject(object):
+    def __init__(self, axes, cursor: int | None = None):
+        super().__init__()
+        self.axes = axes
+        if cursor is None:
+            cursor = 0
+        self._cursor_index = int(cursor)
+        self.qapp: QtGui.QGuiApplication = QtGui.QGuiApplication.instance()
+
+    @property
+    def display_axis(self):
+        return self.axes.display_axis
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.axes.array_slicer
+
+    @property
+    def cursor_index(self):
+        return self._cursor_index
+
+    @cursor_index.setter
+    def cursor_index(self, value: int):
+        self._cursor_index = int(value)
+
+    def refresh_data(self):
+        pass
+
+
+class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
+    def __init__(
+        self,
+        axes,
+        cursor: int | None = None,
+        is_vertical: bool = False,
+        *args,
+        **kargs,
+    ):
+        pg.PlotDataItem.__init__(self, *args, **kargs)
+        ItoolDisplayObject.__init__(self, axes, cursor)
+        self.is_vertical = is_vertical
+
+    def refresh_data(self):
+        ItoolDisplayObject.refresh_data(self)
+        coord, vals = self.array_slicer.slice_with_coord(
+            self.cursor_index, self.display_axis
+        )
+        if self.is_vertical:
+            self.setData(vals, coord)
+        else:
+            self.setData(coord, vals)
+
+
+class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
+    def __init__(
+        self,
+        axes,
+        cursor: int | None = None,
+        *args,
+        **kargs,
+    ):
+        BetterImageItem.__init__(self, *args, **kargs)
+        ItoolDisplayObject.__init__(self, axes, cursor)
+
+    @suppressnanwarning
+    def refresh_data(self):
+        ItoolDisplayObject.refresh_data(self)
+        rect, img = self.array_slicer.slice_with_coord(
+            self.cursor_index, self.display_axis
+        )
+        self.setImage(image=img, rect=rect)
+
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in self.qapp.queryKeyboardModifiers()
+        ):
+            ev.ignore()
+        else:
+            super().mouseDragEvent(ev)
+
+    def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in self.qapp.queryKeyboardModifiers()
+        ):
+            ev.ignore()
+        else:
+            super().mouseClickEvent(ev)
+
+
+class ItoolPlotItem(pg.PlotItem):
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea,
+        display_axis: tuple[int, ...],
+        image: bool = False,
+        **item_kw,
+    ):
+        super().__init__(
+            axisItems={a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")}
+        )
+
+        for action in self.getMenu().actions():
+            if action.text() in [
+                "Transforms",
+                "Downsample",
+                "Average",
+                "Alpha",
+                "Points",
+            ]:
+                action.setVisible(False)
+
+        for i in (0, 1):
+            self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
+            self.getViewBoxMenu().ctrl[i].label.setVisible(False)
+        self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
+
+        self.slicer_area = slicer_area
+        self._display_axis = display_axis
+
+        self.is_image = image
+        self._item_kw = item_kw
+        self.slicer_data_items: list[ItoolImageItem | ItoolPlotDataItem] = []
+        self.cursor_lines: list[dict[int, ItoolCursorLine]] = []
+        self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
+        self.add_cursor(update=False)
+
+    def getMenu(self) -> QtWidgets.QMenu:
+        return self.ctrlMenu
+
+    def getViewBox(self) -> pg.ViewBox:
+        return self.vb
+
+    def getViewBoxMenu(self) -> ViewBoxMenu:
+        return self.getViewBox().menu
+
+    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
+        modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
+            and ev.button() == QtCore.Qt.MouseButton.LeftButton
+        ):
+            ev.accept()
+            data_pos = self.getViewBox().mapSceneToView(ev.scenePos())
+            if (not self.is_image) and self.slicer_data_items[-1].is_vertical:
+                data_pos_coords = (data_pos.y(), data_pos.x())
+            else:
+                data_pos_coords = (data_pos.x(), data_pos.y())
+
+            if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
+                for c in range(self.slicer_area.n_cursors):
+                    for i, ax in enumerate(self.display_axis):
+                        self.array_slicer.set_value(
+                            c, ax, data_pos_coords[i], update=False, uniform=True
+                        )
+                    self.slicer_area.refresh(c, self.display_axis)
+            else:
+                for i, ax in enumerate(self.display_axis):
+                    self.slicer_area.set_value(
+                        ax, data_pos_coords[i], update=False, uniform=True
+                    )
+                self.slicer_area.refresh_current(self.display_axis)
+        else:
+            ev.ignore()
+
+    def add_cursor(self, update=True):
+        new_cursor = len(self.slicer_data_items)
+        line_angles = (90, 0)
+
+        (
+            clr,
+            clr_cursor,
+            clr_cursor_hover,
+            clr_span,
+            clr_span_edge,
+        ) = self.slicer_area.gen_cursor_colors(new_cursor)
+
+        if self.is_image:
+            item = ItoolImageItem(
+                self,
+                cursor=new_cursor,
+                autoDownsample=True,
+                axisOrder="row-major",
+                **self._item_kw,
+            )
+            self.slicer_area._colorbar.cb.addImage(item)
+        else:
+            item = ItoolPlotDataItem(
+                self,
+                cursor=new_cursor,
+                pen=pg.mkPen(pg.mkColor(clr)),
+                defaultPadding=0.0,
+                clipToView=False,
+                connect="auto",
+                **self._item_kw,
+            )
+            if item.is_vertical:
+                line_angles = (0, 90)
+        self.slicer_data_items.append(item)
+        self.addItem(item)
+
+        cursors = []
+        spans = []
+        for ang in line_angles:
+            cursors.append(
+                ItoolCursorLine(
+                    pen=pg.mkPen(clr_cursor, width=1),
+                    hoverPen=pg.mkPen(clr_cursor_hover, width=1),
+                    angle=ang,
+                    movable=True,
+                )
+            )
+            spans.append(
+                ItoolCursorSpan(
+                    orientation="vertical" if ang == 90 else "horizontal",
+                    movable=False,
+                    pen=pg.mkPen(clr_span_edge),
+                    brush=pg.mkBrush(clr_span),
+                )
+            )
+
+        self.cursor_lines.append({})
+        self.cursor_spans.append({})
+        for c, s, ax in zip(cursors, spans, self.display_axis):
+            self.cursor_lines[-1][ax] = c
+            self.cursor_spans[-1][ax] = s
+            self.addItem(c)
+            c.setZValue(10)
+            self.addItem(s)
+            s.setZValue(9)
+            c.sigDragged.connect(
+                lambda v, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
+            )
+            c.sigClicked.connect(lambda *_, line=c: self.line_click(line))
+
+        if update:
+            self.refresh_cursor(new_cursor)
+
+    def index_of_line(self, line: ItoolCursorLine) -> int:
+        for i, line_dict in enumerate(self.cursor_lines):
+            for _, v in line_dict.items():
+                if v == line:
+                    return i
+        raise ValueError("`line` is not a valid cursor.")
+
+    def line_click(self, line: ItoolCursorLine):
+        cursor = self.index_of_line(line)
+        if cursor != self.slicer_area.current_cursor:
+            self.slicer_area.set_current_cursor(cursor, update=True)
+
+    def line_drag(self, line: ItoolCursorLine, value: float, axis: int):
+        cursor = self.index_of_line(line)
+        if cursor != self.slicer_area.current_cursor:
+            self.slicer_area.set_current_cursor(cursor, update=True)
+        if (
+            self.slicer_area.qapp.queryKeyboardModifiers()
+            != QtCore.Qt.KeyboardModifier.AltModifier
+        ):
+            self.array_slicer.set_value(cursor, axis, value, update=True, uniform=True)
+        else:
+            for i in range(self.array_slicer.n_cursors):
+                self.array_slicer.set_value(i, axis, value, update=True, uniform=True)
+
+    def remove_cursor(self, index: int):
+        item = self.slicer_data_items.pop(index)
+        if self.is_image:
+            self.slicer_area._colorbar.cb.removeImage(item)
+        self.removeItem(item)
+        for line, span in zip(
+            self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
+        ):
+            self.removeItem(line)
+            self.removeItem(span)
+        for i, item in enumerate(self.slicer_data_items):
+            item.cursor_index = i
+
+    def refresh_cursor(self, cursor: int):
+        for ax, line in self.cursor_lines[cursor].items():
+            line.setBounds(
+                self.array_slicer.lims_uniform[ax],
+                self.array_slicer.get_value(cursor, ax, uniform=True),
+            )
+            self.cursor_spans[cursor][ax].setRegion(
+                self.array_slicer.span_bounds(cursor, ax)
+            )
+
+    def connect_signals(self):
+        self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
+        self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
+
+    @QtCore.Slot(int, tuple)
+    def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None):
+        self.refresh_cursor(cursor)
+        if axes is not None:
+            # display_axis는 축 dim 표시하는거임. 즉 해당 축만 바뀌면 데이터 변화 없음
+            if all(elem in self.display_axis for elem in axes):
+                return
+        for item in self.slicer_data_items:
+            if item.cursor_index != cursor:
+                continue
+            self.set_active_cursor(cursor)
+            item.refresh_data()
+        # TODO: autorange smarter
+        self.vb.updateAutoRange()
+
+    @QtCore.Slot()
+    def refresh_labels(self):
+        if self.is_image:
+            label_kw = {
+                a: self._get_label_unit(i)
+                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
+                if self.getAxis(a).isVisible()
+            }
+        else:
+            label_kw = dict()
+
+            if self.slicer_data_items[-1].is_vertical:
+                valid_ax = ("left", "right")
+            else:
+                valid_ax = ("top", "bottom")
+
+            for a in ("top", "bottom", "left", "right"):
+                if self.getAxis(a).isVisible():
+                    label_kw[a] = self._get_label_unit(0 if a in valid_ax else None)
+        self.setLabels(**label_kw)
+
+    def _get_label_unit(self, index: int | None = None):
+        if index is None:
+            dim = ""
+        else:
+            dim = self.slicer_area.data.dims[self.display_axis[index]]
+        if dim == "eV":
+            return dim, "eV"
+        return dim, ""
+
+    def set_active_cursor(self, index: int):
+        if self.is_image:
+            for i, (item, cursors) in enumerate(
+                zip(self.slicer_data_items, self.cursor_lines)
+            ):
+                item.setVisible(i == index)
+                # for line in cursors.values():
+                # line.setMovable(i == index)
+        else:
+            pass
+            # for i, cursors in enumerate(self.cursor_lines):
+            # for line in cursors.values():
+            # line.setMovable(i == index)
+
+    @property
+    def display_axis(self) -> tuple[int, ...]:
+        return self._display_axis
+
+    @display_axis.setter
+    def display_axis(self, value: tuple[int, ...]):
+        self._display_axis = value
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self._slicer_area
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea):
+        self._slicer_area = value
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+
+class IconButton(QtWidgets.QPushButton):
+    ICON_ALIASES = dict(
+        invert="mdi6.invert-colors",
+        invert_off="mdi6.invert-colors-off",
+        contrast="mdi6.contrast-box",
+        lock="mdi6.lock",
+        unlock="mdi6.lock-open-variant",
+        bright_auto="mdi6.brightness-auto",
+        bright_percent="mdi6.brightness-percent",
+        colorbar="mdi6.gradient-vertical",
+        transpose_0="mdi6.arrow-top-left-bottom-right",
+        transpose_1="mdi6.arrow-up-down",
+        transpose_2="mdi6.arrow-left-right",
+        transpose_3="mdi6.arrow-up-down",
+        snap="mdi6.grid",
+        snap_off="mdi6.grid-off",
+        palette="mdi6.palette-advanced",
+        styles="mdi6.palette-swatch",
+        layout="mdi6.page-layout-body",
+        zero_center="mdi6.format-vertical-align-center",
+        table_eye="mdi6.table-eye",
+        plus="mdi6.plus",
+        minus="mdi6.minus",
+        reset="mdi6.backup-restore",
+        # all_cursors="mdi6.checkbox-multiple-outline",
+        all_cursors="mdi6.select-multiple",
+    )
+
+    def __init__(self, on: str | None = None, off: str | None = None, **kwargs):
+        self.icon_key_on = None
+        self.icon_key_off = None
+
+        if on is not None:
+            self.icon_key_on = on
+            kwargs["icon"] = self.get_icon(self.icon_key_on)
+
+        if off is not None:
+            if on is None and kwargs["icon"] is None:
+                raise ValueError("Icon for `on` state was not supplied.")
+            self.icon_key_off = off
+            kwargs.setdefault("checkable", True)
+
+        super().__init__(**kwargs)
+        if self.isCheckable() and off is not None:
+            self.toggled.connect(self.refresh_icons)
+
+    def setChecked(self, value: bool):
+        super().setChecked(value)
+        self.refresh_icons()
+
+    def get_icon(self, icon: str):
+        try:
+            return qta.icon(self.ICON_ALIASES[icon])
+        except KeyError:
+            return qta.icon(icon)
+
+    def refresh_icons(self):
+        if self.icon_key_off is not None:
+            if self.isChecked():
+                self.setIcon(self.get_icon(self.icon_key_off))
+                return
+        if self.icon_key_on is not None:
+            self.setIcon(self.get_icon(self.icon_key_on))
+
+    def changeEvent(self, evt: QtCore.QEvent):  # handles dark mode
+        if evt.type() == QtCore.QEvent.Type.PaletteChange:
+            qta.reset_cache()
+            self.refresh_icons()
+        super().changeEvent(evt)
+
+
+class ColorMapComboBox(QtWidgets.QComboBox):
+    LOAD_ALL_TEXT = "Load all..."
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setPlaceholderText("Select colormap...")
+        self.setToolTip("Colormap")
+        w, h = 64, 16
+        self.setIconSize(QtCore.QSize(w, h))
+        # for name in pg_colormap_names("local"):
+        for name in pg_colormap_names("mpl"):
+            self.addItem(name)
+        self.insertItem(0, self.LOAD_ALL_TEXT)
+        self.thumbnails_loaded = False
+        self.currentIndexChanged.connect(self.load_thumbnail)
+        self.default_cmap = None
+
+    def load_thumbnail(self, index: int):
+        if not self.thumbnails_loaded:
+            text = self.itemText(index)
+            try:
+                self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
+            except KeyError:
+                pass
+
+    def load_all(self):
+        self.clear()
+        for name in pg_colormap_names("all"):
+            self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
+        self.resetCmap()
+        self.showPopup()
+
+    # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
+    def showPopup(self):
+        maxWidth = self.maximumWidth()
+        if maxWidth and maxWidth < 16777215:
+            self.setPopupMinimumWidthForItems()
+        if not self.thumbnails_loaded:
+            for i in range(self.count()):
+                self.load_thumbnail(i)
+            self.thumbnails_loaded = True
+        super().showPopup()
+
+    def setPopupMinimumWidthForItems(self):
+        view = self.view()
+        fm = self.fontMetrics()
+        maxWidth = max(
+            [fm.boundingRect(self.itemText(i)).width() for i in range(self.count())]
+        )
+        if maxWidth:
+            view.setMinimumWidth(maxWidth)
+
+    def hidePopup(self):
+        self.activated.emit(self.currentIndex())
+        self.textActivated.emit(self.currentText())
+        self.currentIndexChanged.emit(self.currentIndex())
+        self.currentTextChanged.emit(self.currentText())
+        super().hidePopup()
+
+    def setDefaultCmap(self, cmap: str):
+        self.default_cmap = cmap
+        self.setCurrentText(cmap)
+
+    def resetCmap(self):
+        if self.default_cmap is None:
+            self.setCurrentIndex(0)
+        else:
+            self.setCurrentText(self.default_cmap)
+
+
+class ColorMapGammaWidget(QtWidgets.QWidget):
+    valueChanged = QtCore.Signal(float)
+
+    def __init__(self, value: float = 1.0):
+        super().__init__()
+        self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+
+        self.layout().setSpacing(3)
+        self.spin = BetterSpinBox(
+            self,
+            toolTip="Colormap gamma",
+            decimals=2,
+            wrapping=False,
+            keyboardTracking=False,
+            singleStep=0.1,
+            minimum=0.01,
+            maximum=99.99,
+            value=value,
+        )
+        self.label = QtWidgets.QLabel(self, text="γ", buddy=self.spin)
+        # self.label.setIndent(0)
+        self.label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        self.slider = QtWidgets.QSlider(
+            self,
+            toolTip="Colormap gamma",
+            value=self.gamma_scale(value),
+            singleStep=1,
+            orientation=QtCore.Qt.Orientation.Horizontal,
+        )
+        self.slider.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        self.slider.setMinimumWidth(30)
+        self.spin.valueChanged.connect(self.spin_changed)
+
+        self.slider.setRange(
+            self.gamma_scale(self.spin.minimum()),
+            self.gamma_scale(self.spin.maximum()),
+        )
+        self.slider.valueChanged.connect(self.slider_changed)
+
+        self.layout().addWidget(self.label)
+        self.layout().addWidget(self.spin)
+        self.layout().addWidget(self.slider)
+
+    def value(self) -> float:
+        return self.spin.value()
+
+    def setValue(self, value: float):
+        self.spin.setValue(value)
+        self.slider.setValue(self.gamma_scale(value))
+
+    def spin_changed(self, value: float):
+        self.slider.blockSignals(True)
+        self.slider.setValue(self.gamma_scale(value))
+        self.slider.blockSignals(False)
+        self.valueChanged.emit(value)
+
+    def slider_changed(self, value: float):
+        self.spin.setValue(self.gamma_scale_inv(value))
+
+    def gamma_scale(self, y: float) -> float:
+        return 1e4 * np.log10(y)
+
+    def gamma_scale_inv(self, x: float) -> float:
+        return np.power(10, x * 1e-4)
+
+
+def clear_layout(layout: QtWidgets.QLayout):
+    while layout.count():
+        child = layout.takeAt(0)
+        if child.widget():
+            child.widget().deleteLater()
+
+
+class ItoolControlsBase(QtWidgets.QWidget):
+    def __init__(
+        self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self._slicer_area = slicer_area
+        self.sub_controls = []
+        self.initialize_layout()
+        self.initialize_widgets()
+        self.connect_signals()
+        self.update()
+
+    @property
+    def data(self) -> xr.DataArray:
+        return self.slicer_area.data
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+    @property
+    def n_cursors(self) -> int:
+        return self.slicer_area.n_cursors
+
+    @property
+    def current_cursor(self) -> int:
+        return self.slicer_area.current_cursor
+
+    def initialize_layout(self):
+        self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+
+        self.layout().setSpacing(3)
+
+    def initialize_widgets(self):
+        for ctrl in self.sub_controls:
+            if isinstance(ctrl, ItoolControlsBase):
+                ctrl.initialize_widgets()
+
+    def connect_signals(self):
+        for ctrl in self.sub_controls:
+            if isinstance(ctrl, ItoolControlsBase):
+                ctrl.connect_signals()
+
+    def disconnect_signals(self):
+        # Multiple inheritance disconnection is broken
+        # https://bugreports.qt.io/browse/PYSIDE-229
+        # Will not work correctly until this is fixed
+        for ctrl in self.sub_controls:
+            if isinstance(ctrl, ItoolControlsBase):
+                ctrl.disconnect_signals()
+
+    def update(self):
+        for ctrl in self.sub_controls:
+            ctrl.update()
+
+    def add_control(self, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        self.sub_controls.append(widget)
+        return widget
+
+    @property
+    def is_nested(self) -> bool:
+        return isinstance(self._slicer_area, ItoolControlsBase)
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        if isinstance(self._slicer_area, ItoolControlsBase):
+            return self._slicer_area.slicer_area
+        else:
+            return self._slicer_area
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea):
+        # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
+        try:
+            self.disconnect_signals()
+        except RuntimeError:
+            pass
+        self._slicer_area = value
+        clear_layout(self.layout())
+        self.sub_controls = []
+        self.initialize_widgets()
+        self.update()
+        self.connect_signals()
+
+
+class ColorControls(ItoolControlsBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def initialize_widgets(self):
+        self.btn_reverse = IconButton(
+            on="invert",
+            off="invert_off",
+            checkable=True,
+            toolTip="Invert colormap",
+        )
+        self.btn_contrast = IconButton(
+            on="contrast",
+            checkable=True,
+            toolTip="High contrast mode",
+        )
+        self.btn_zero = IconButton(
+            on="zero_center",
+            checkable=True,
+            toolTip="Center colormap at zero",
+        )
+        self.btn_lock = IconButton(
+            # on="unlock", off="lock",
+            on="bright_auto",
+            off="bright_percent",
+            checkable=True,
+            toolTip="Lock color limits",
+        )
+        self.btn_reverse.toggled.connect(self.update_colormap)
+        self.btn_contrast.toggled.connect(self.update_colormap)
+        self.btn_zero.toggled.connect(self.update_colormap)
+
+        self.layout().addWidget(self.btn_reverse)
+        self.layout().addWidget(self.btn_contrast)
+        self.layout().addWidget(self.btn_zero)
+        self.layout().addWidget(self.btn_lock)
+
+    def update(self):
+        self.btn_reverse.blockSignals(True)
+        self.btn_contrast.blockSignals(True)
+        self.btn_zero.blockSignals(True)
+        self.btn_lock.blockSignals(True)
+
+        self.btn_reverse.setChecked(self.slicer_area.colormap_properties["reversed"])
+        self.btn_contrast.setChecked(
+            self.slicer_area.colormap_properties["highContrast"]
+        )
+        self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
+        self.btn_lock.setChecked(self.slicer_area._colorbar.isVisible())
+
+        self.btn_reverse.blockSignals(False)
+        self.btn_contrast.blockSignals(False)
+        self.btn_zero.blockSignals(False)
+        self.btn_lock.blockSignals(False)
+
+    def update_colormap(self):
+        self.slicer_area.set_colormap(
+            reversed=self.btn_reverse.isChecked(),
+            highContrast=self.btn_contrast.isChecked(),
+            zeroCentered=self.btn_zero.isChecked(),
+        )
+
+    def connect_signals(self):
+        super().connect_signals()
+        self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
+        self.slicer_area.sigViewOptionChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
+
+
+# class ItoolAAAAAControls(ItoolControlsBase):
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+
+#     def initialize_layout(self):
+#         pass
+
+#     def initialize_widgets(self):
+#         pass
+
+#     def connect_signals(self):
+
+#         pass
+
+#     def disconnect_signals(self):
+#         pass
+
+#     def update(self):
+#         pass
+
+
+class ItoolCrosshairControls(ItoolControlsBase):
+    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
+        if isinstance(orientation, QtCore.Qt.Orientation):
+            self.orientation = orientation
+        elif orientation == "vertical":
+            self.orientation = QtCore.Qt.Orientation.Vertical
+        elif orientation == "horizontal":
+            self.orientation = QtCore.Qt.Orientation.Horizontal
+        super().__init__(*args, **kwargs)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
+        )
+
+    def initialize_widgets(self):
+        super().initialize_widgets()
+        self.values_groups = tuple(
+            QtWidgets.QWidget() for _ in range(self.data.ndim + 1)
+        )
+        self.values_layouts = tuple(
+            QtWidgets.QGridLayout(g) for g in self.values_groups
+        )
+        for s in self.values_layouts:
+            s.setContentsMargins(0, 0, 0, 0)
+
+            s.setSpacing(3)
+        # buttons for multicursor control
+        self.btn_add = IconButton("plus", toolTip="Add cursor")
+        self.btn_add.clicked.connect(self.slicer_area.add_cursor)
+
+        self.btn_rem = IconButton("minus", toolTip="Remove cursor")
+        self.btn_rem.clicked.connect(
+            lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
+        )
+
+        self.btn_snap = IconButton(
+            on="snap", off="snap_off", toolTip="Snap cursor to data points"
+        )
+        self.btn_snap.toggled.connect(self.slicer_area.toggle_snap)
+
+        # multicursor combobox
+        self.cb_cursors = QtWidgets.QComboBox()
+        self.cb_cursors.textActivated.connect(self.setActiveCursor)
+        self.cb_cursors.setMaximumHeight(
+            QtGui.QFontMetrics(self.cb_cursors.font()).height() + 3
+        )
+        self.cb_cursors.setIconSize(QtCore.QSize(10, 10))
+        for i in range(self.n_cursors):
+            self.cb_cursors.addItem(
+                QtGui.QIcon(self._cursor_icon(i)), self._cursor_name(i)
+            )
+        if self.n_cursors == 1:
+            # can't remove more cursors
+            self.cb_cursors.setDisabled(True)
+            self.btn_rem.setDisabled(True)
+
+        # current value widget
+        self.spin_dat = BetterSpinBox(
+            self.values_groups[-1], discrete=False, scientific=True, readOnly=True
+        )
+        self.spin_dat.setDecimals(
+            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
+        )
+
+        # add multicursor widgets
+        if self.orientation == QtCore.Qt.Orientation.Vertical:
+            self.values_layouts[0].addWidget(self.btn_add, 0, 1, 1, 1)
+            self.values_layouts[0].addWidget(self.btn_rem, 0, 2, 1, 1)
+            self.values_layouts[0].addWidget(self.btn_snap, 0, 0, 1, 1)
+            self.values_layouts[0].addWidget(self.cb_cursors, 1, 0, 1, 3)
+            self.values_layouts[0].addWidget(self.spin_dat, 2, 0, 1, 3)
+        else:
+            self.values_layouts[0].addWidget(self.btn_add, 0, 1, 1, 1)
+            self.values_layouts[0].addWidget(self.btn_rem, 0, 2, 1, 1)
+            self.values_layouts[0].addWidget(self.btn_snap, 0, 3, 1, 1)
+            self.values_layouts[0].addWidget(self.cb_cursors, 0, 0, 1, 1)
+            self.values_layouts[0].addWidget(self.spin_dat, 0, 4, 1, 1)
+        self.layout().addWidget(self.values_groups[0])
+
+        # info widgets
+        self.label_dim = tuple(
+            QtWidgets.QPushButton(grp, checkable=True) for grp in self.values_groups[1:]
+        )
+        self.spin_idx = tuple(
+            BetterSpinBox(
+                grp,
+                integer=True,
+                singleStep=1,
+                wrapping=False,
+                minimumWidth=60,
+                keyboardTracking=False,
+            )
+            for grp in self.values_groups[1:]
+        )
+        self.spin_val = tuple(
+            BetterSpinBox(
+                grp,
+                discrete=True,
+                decimals=3,
+                wrapping=False,
+                minimumWidth=70,
+                keyboardTracking=False,
+            )
+            for grp in self.values_groups[1:]
+        )
+        if self.data.ndim >= 4:
+            self.btn_transpose = tuple(
+                IconButton(on=f"transpose_2") for _ in range(self.data.ndim)
+            )
+        else:
+            self.btn_transpose = tuple(
+                IconButton(on=f"transpose_{i}") for i in range(self.data.ndim)
+            )
+
+        # add and connect info widgets
+        for i in range(self.data.ndim):
+            # TODO: implelemnt cursor locking
+            # self.label_dim[i].toggled.connect()
+            self.spin_idx[i].valueChanged.connect(
+                lambda ind, axis=i: self.slicer_area.set_index(axis, ind)
+            )
+            self.spin_val[i].valueChanged.connect(
+                lambda val, axis=i: self.slicer_area.set_value(axis, val, uniform=False)
+            )
+            self.btn_transpose[i].clicked.connect(
+                lambda ax1=i, ax2=(i + 1) % self.data.ndim: self.slicer_area.swap_axes(
+                    ax1, ax2
+                )
+            )
+            if self.orientation == QtCore.Qt.Orientation.Vertical:
+                self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
+                self.values_layouts[i + 1].addWidget(self.btn_transpose[i], 0, 1, 1, 1)
+                self.values_layouts[i + 1].addWidget(self.spin_idx[i], 1, 0, 1, 2)
+                self.values_layouts[i + 1].addWidget(self.spin_val[i], 2, 0, 1, 2)
+            else:
+                self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
+                self.values_layouts[i + 1].addWidget(self.btn_transpose[i], 0, 1, 1, 1)
+                self.values_layouts[i + 1].addWidget(self.spin_idx[i], 0, 2, 1, 1)
+                self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
+
+            self.layout().addWidget(self.values_groups[i + 1])
+
+    def connect_signals(self):
+        super().connect_signals()
+        self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
+        self.slicer_area.sigCursorCountChanged.connect(self.update_cursor_count)
+        self.slicer_area.sigViewOptionChanged.connect(self.update_options)
+        self.slicer_area.sigIndexChanged.connect(self.update_spins)
+        self.slicer_area.sigBinChanged.connect(self.update_spins)
+        self.slicer_area.sigDataChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
+        self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
+        self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
+        self.slicer_area.sigBinChanged.disconnect(self.update_spins)
+        self.slicer_area.sigDataChanged.disconnect(self.update)
+
+    def update(self):
+        super().update()
+        if len(self.label_dim) != self.data.ndim:
+            # number of required cursors changed, resetting
+            clear_layout(self.layout())
+            self.initialize_widgets()
+
+        label_width = 0
+        for i in range(self.data.ndim):
+            self.values_groups[i].blockSignals(True)
+            self.spin_idx[i].blockSignals(True)
+            self.spin_val[i].blockSignals(True)
+
+            if i in self.array_slicer._nonuniform_axes:
+                self.label_dim[i].setText(str(self.data.dims[i])[:-4])
+            else:
+                self.label_dim[i].setText(str(self.data.dims[i]))
+
+            label_width = max(
+                label_width,
+                self.label_dim[i]
+                .fontMetrics()
+                .boundingRect(self.label_dim[i].text())
+                .width()
+                + 15,
+            )
+
+            # update spinbox properties to match new data
+            self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
+            self.spin_idx[i].setValue(self.slicer_area.get_current_index(i))
+
+            self.spin_val[i].setRange(*self.array_slicer.lims[i])
+            self.spin_val[i].setSingleStep(self.array_slicer.incs[i])
+            self.spin_val[i].setValue(self.slicer_area.get_current_value(i))
+
+            self.label_dim[i].blockSignals(False)
+            self.spin_idx[i].blockSignals(False)
+            self.spin_val[i].blockSignals(False)
+
+        self.spin_dat.setDecimals(
+            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
+        )
+        self.spin_dat.setValue(
+            self.array_slicer.point_value(self.current_cursor, binned=True)
+        )
+
+        for l in self.label_dim:
+            # resize buttons to match dimension label length
+            l.setMaximumWidth(label_width)
+
+    def update_spins(self, _=None, axes=None):
+        if axes is None:
+            axes = range(self.data.ndim)
+        for i in axes:
+            self.spin_idx[i].blockSignals(True)
+            self.spin_val[i].blockSignals(True)
+            self.spin_idx[i].setValue(self.slicer_area.current_indices[i])
+            self.spin_val[i].setValue(self.slicer_area.current_values[i])
+            self.spin_idx[i].blockSignals(False)
+            self.spin_val[i].blockSignals(False)
+
+        self.spin_dat.setValue(
+            self.array_slicer.point_value(self.current_cursor, binned=True)
+        )
+
+    def update_options(self):
+        self.btn_snap.blockSignals(True)
+        self.btn_snap.setChecked(self.array_slicer.snap_to_data)
+        # self.btn_snap.refresh_icons()
+        self.btn_snap.blockSignals(False)
+
+    def _cursor_name(self, i: int) -> str:
+        # for cursor combobox content
+        return f" Cursor {int(i)}"
+
+    def _cursor_icon(self, i: int) -> QtGui.QPixmap:
+        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_ARGB32)
+        img.fill(QtCore.Qt.GlobalColor.transparent)
+
+        painter = QtGui.QPainter(img)
+        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+        clr = self.slicer_area.cursor_colors[i]
+        painter.setBrush(pg.mkColor(clr))
+        painter.drawEllipse(img.rect())
+        painter.end()
+        return QtGui.QPixmap.fromImage(img)
+
+    def update_cursor_count(self, count: int):
+        if count == self.cb_cursors.count():
+            return
+        elif count > self.cb_cursors.count():
+            self.addCursor()
+        else:
+            self.remCursor()
+
+    def addCursor(self):
+        self.cb_cursors.setDisabled(False)
+        # self.slicer_area.add_cursor()
+        self.cb_cursors.addItem(
+            QtGui.QIcon(self._cursor_icon(self.current_cursor)),
+            self._cursor_name(self.current_cursor),
+        )
+        self.cb_cursors.setCurrentIndex(self.current_cursor)
+        self.btn_rem.setDisabled(False)
+
+    def remCursor(self):
+        # self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
+        self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
+        for i in range(self.cb_cursors.count()):
+            self.cb_cursors.setItemText(i, self._cursor_name(i))
+            self.cb_cursors.setItemIcon(i, self._cursor_icon(i))
+        self.cb_cursors.setCurrentText(self._cursor_name(self.current_cursor))
+        if i == 0:
+            self.cb_cursors.setDisabled(True)
+            self.btn_rem.setDisabled(True)
+
+    def cursorChangeEvent(self, idx: int):
+        self.cb_cursors.setCurrentIndex(idx)
+        self.update_spins()
+
+    def setActiveCursor(self, value: str):
+        self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
+
+
+class ItoolColormapControls(ItoolControlsBase):
+    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
+        if isinstance(orientation, QtCore.Qt.Orientation):
+            self.orientation = orientation
+        elif orientation == "vertical":
+            self.orientation = QtCore.Qt.Orientation.Vertical
+        elif orientation == "horizontal":
+            self.orientation = QtCore.Qt.Orientation.Horizontal
+        super().__init__(*args, **kwargs)
+
+    def initialize_layout(self):
+        if self.orientation == QtCore.Qt.Orientation.Vertical:
+            self.setLayout(QtWidgets.QVBoxLayout(self))
+        else:
+            self.setLayout(QtWidgets.QHBoxLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+
+        self.layout().setSpacing(3)
+
+    def initialize_widgets(self):
+        super().initialize_widgets()
+        self.cb_colormap = ColorMapComboBox(self, maximumWidth=175)
+        self.cb_colormap.textActivated.connect(self.change_colormap)
+
+        self.gamma_widget = ColorMapGammaWidget()
+        self.gamma_widget.valueChanged.connect(
+            lambda g: self.slicer_area.set_colormap(gamma=g)
+        )
+
+        self.misc_controls = self.add_control(ColorControls(self))
+
+        self.layout().addWidget(self.cb_colormap)
+        self.layout().addWidget(self.gamma_widget)
+        self.layout().addWidget(self.misc_controls)
+
+    def update(self):
+        super().update()
+        if isinstance(self.slicer_area.colormap, str):
+            self.cb_colormap.setDefaultCmap(self.slicer_area.colormap)
+        self.gamma_widget.blockSignals(True)
+        self.gamma_widget.setValue(self.slicer_area.colormap_properties["gamma"])
+        self.gamma_widget.blockSignals(False)
+
+    def change_colormap(self, name):
+        if name == self.cb_colormap.LOAD_ALL_TEXT:
+            self.cb_colormap.load_all()
+        else:
+            self.slicer_area.set_colormap(name)
+
+
+class ItoolBinningControls(ItoolControlsBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def initialize_layout(self):
+        self.setLayout(QtWidgets.QGridLayout(self))
+        self.layout().setContentsMargins(0, 0, 0, 0)
+
+        self.layout().setSpacing(3)
+
+    def initialize_widgets(self):
+        super().initialize_widgets()
+        self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
+        self.spins = tuple(
+            BetterSpinBox(
+                self,
+                integer=True,
+                singleStep=2,
+                # minimumWidth=60,
+                value=1,
+                minimum=1,
+                maximum=self.data.shape[i],
+                keyboardTracking=False,
+            )
+            for i in range(self.data.ndim)
+        )
+        for i, spin in enumerate(self.spins):
+            spin.valueChanged.connect(lambda n, axis=i: self._update_bin(axis, n))
+
+        self.reset_btn = IconButton("reset")
+        self.reset_btn.clicked.connect(self.reset)
+
+        self.all_btn = IconButton(
+            on="all_cursors",
+            checkable=True,
+            toolTip="Apply changes for all cursors",
+        )
+
+        for i in range(self.data.ndim):
+            self.layout().addWidget(self.labels[i], 0, i, 1, 1)
+            self.layout().addWidget(self.spins[i], 1, i, 1, 1)
+        self.layout().addWidget(self.reset_btn, 2, 0, 1, 1)
+        self.layout().addWidget(self.all_btn, 2, 1, 1, 1)
+        # for spin in self.spins:
+        # spin.setMinimumWidth(60)
+
+    def _update_bin(self, axis, n):
+        if self.all_btn.isChecked():
+            self.slicer_area.set_bin_all(axis, n)
+        else:
+            self.slicer_area.set_bin(axis, n)
+
+    def connect_signals(self):
+        super().connect_signals()
+        self.slicer_area.sigCurrentCursorChanged.connect(self.update)
+        self.slicer_area.sigDataChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.slicer_area.sigCurrentCursorChanged.disconnect(self.update)
+        self.slicer_area.sigDataChanged.disconnect(self.update)
+
+    def update(self):
+        super().update()
+
+        if len(self.labels) != self.data.ndim:
+            clear_layout(self.layout())
+            self.initialize_widgets()
+
+        for i in range(self.data.ndim):
+            self.spins[i].blockSignals(True)
+            self.labels[i].setText(str(self.data.dims[i]))
+            self.spins[i].setRange(1, self.data.shape[i] - 1)
+            self.spins[i].setValue(self.array_slicer.get_bins(self.current_cursor)[i])
+            self.spins[i].blockSignals(False)
+
+    def reset(self):
+        for spin in self.spins:
+            spin.setValue(1)
+
+
+if __name__ == "__main__":
+    data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
+        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
         "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    )  # .sel(eV=-0.15, method="nearest")
-    # dat = xr.open_dataarray(
-    # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
-    # )
-    # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
-    # dat10 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00010.fits',
-    # location='BL1001-ERLab').spectrum
-    # dat16 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00016.fits',
-    # location='BL1001-ERLab').spectrum
-    # print(sys.getsizeof(dat.values))
-    print(dat.nbytes * 2**-20)
-    # print(round(sys.getsizeof(dat) / 1024 / 1024, 2))
-    itool(dat, bench=False)
-    # print(h.heap())
-    # from erlab.plotting.imagetool_mpl import itoolmpl
-    # itoolmpl(dat)
-    # gkmk_cvs = load_data('~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
-    # itool([gkmk_cvs, dat])
-    # itool([dat10, dat16])
-    # itool(dat, bench=False)
-    # itool(dat.sel(eV=0,method='nearest'), bench=False)s
-    # imagetool(dat)
+        ,
+        engine="h5netcdf",
+    )
+    itool_(data)

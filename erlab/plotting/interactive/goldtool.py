@@ -11,7 +11,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab.analysis
 from erlab.parallel import joblib_progress_qt
-from erlab.plotting.interactive.imagetool_new import ImageTool
+from erlab.plotting.interactive.imagetool import ImageTool
 from erlab.plotting.interactive.utilities import (
     AnalysisWindow,
     ParameterGroup,

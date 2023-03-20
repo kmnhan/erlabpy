@@ -17,7 +17,7 @@ Submodules
    erlab.plotting.interactive.goldtool
    erlab.plotting.interactive.imagetool
    erlab.plotting.interactive.imagetool_mpl
-   erlab.plotting.interactive.imagetool_new
+   erlab.plotting.interactive.imagetool_old
    erlab.plotting.interactive.ktool
    erlab.plotting.interactive.masktool
    erlab.plotting.interactive.noisetool

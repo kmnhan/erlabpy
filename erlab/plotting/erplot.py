@@ -36,7 +36,6 @@ from erlab.plotting.general import (
 )
 from erlab.plotting.interactive.goldtool import goldtool
 from erlab.plotting.interactive.imagetool import itool
-from erlab.plotting.interactive.imagetool_new import itool_
 from erlab.plotting.interactive.ktool import ktool
 from erlab.plotting.interactive.noisetool import noisetool
 
