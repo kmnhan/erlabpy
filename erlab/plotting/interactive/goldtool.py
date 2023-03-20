@@ -7,7 +7,7 @@ import xarray as xr
 import pyqtgraph as pg
 import varname
 import arpes.xarray_extensions
-from PySide6 import QtCore, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab.analysis
 from erlab.parallel import joblib_progress_qt
@@ -104,12 +104,16 @@ class goldtool(AnalysisWindow):
         The data to perform Fermi edge fitting on.
     data_corr
         The data to correct with the edge. Defaults to `data`.
-    *kwargs
+    **kwargs
         Arguments passed onto `erlab.plotting.interactive.utilities.AnalysisWindow`.
+
+    Signals
+    -------
+    sigProgressUpdated(int)
 
     """
 
-    sigProgressUpdated = QtCore.Signal(int)
+    sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
 
     def __init__(
         self, data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict

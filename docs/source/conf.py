@@ -11,11 +11,18 @@ copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
 release = "0.1"
 
+
+# build docs with PyQt6 since PySide6 is broken
+# https://bugreports.qt.io/browse/PYSIDE-1884
+import os
+os.environ['QT_API'] = 'pyqt6'
+
+
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    # "sphinx.ext.autodoc",
+    "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     # "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
@@ -46,8 +53,16 @@ nitpick_ignore = [("py:class", "numpy.float64")]
 
 # autosummary_generate = True
 
-# autodoc_inherit_docstrings = False
-# autodoc_typehints = "both"
+autodoc_inherit_docstrings = False
+autodoc_typehints = "both"
+autodoc_member_order="bysource"
+autodoc_default_options = {
+    'members':          True,
+    'undoc-members':    True,
+    # "exclude-members":("sigDataChanged",), 
+    'show-inheritance':True,
+    
+}
 # autodoc_typehints_description_target = "all"
 
 # autodoc_type_aliases = {
@@ -74,7 +89,7 @@ napoleon_type_aliases = {
     "float64": "float",
 }
 napoleon_attr_annotations = True
-napoleon_custom_sections = ["Signals"]
+napoleon_custom_sections = [("Signals", "Attributes")]
 
 
 qt_documentation = "PySide6"

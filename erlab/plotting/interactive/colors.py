@@ -7,8 +7,8 @@ from typing import Literal
 import matplotlib
 import matplotlib.colors as mcolors
 import numpy as np
+from qtpy import QtGui
 import pyqtgraph as pg
-from PySide6 import QtGui
 
 __all__ = [
     "color_to_QColor",
@@ -163,7 +163,7 @@ def pg_colormap_to_QPixmap(
 
     Returns
     -------
-    PySide6.QtGui.QPixmap
+    qtpy.QtGui.QPixmap
 
     """
 

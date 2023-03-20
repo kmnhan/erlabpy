@@ -5,4 +5,3 @@ erlab.analysis.mask.polygon module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

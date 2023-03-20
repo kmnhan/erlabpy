@@ -11,9 +11,9 @@ from typing import Literal
 
 import numpy as np
 import pyclip
-import pyqtgraph as pg
 import xarray as xr
-from PySide6 import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
+import pyqtgraph as pg
 from superqt import QDoubleSlider
 from erlab.plotting.interactive.colors import pg_colormap_powernorm
 

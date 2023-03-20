@@ -5,12 +5,12 @@ from collections.abc import Iterable, Sequence
 
 import numpy as np
 import numpy.typing as npt
-import pyqtgraph as pg
 import qtawesome as qta
 import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
+import pyqtgraph as pg
 from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
 from pyqtgraph.GraphicsScene import mouseEvents
-from PySide6 import QtCore, QtGui, QtWidgets
 
 import erlab.io
 from erlab.plotting.interactive.colors import (
@@ -452,17 +452,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataChanged()
     sigCurrentCursorChanged(index)
     sigViewOptionChanged()
-
-    The following signals are inherited from ArraySlicer.
     sigCursorCountChanged(n_cursors)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
     sigBinChanged(cursor, axes)
+        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
 
     """
-
-    sigDataChanged = QtCore.Signal()
-    sigCurrentCursorChanged = QtCore.Signal(int)
-    sigViewOptionChanged = QtCore.Signal()
 
     COLORS: list[QtGui.QColor] = [
         pg.mkColor(0.8),
@@ -471,7 +468,26 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("c"),
         pg.mkColor("g"),
         pg.mkColor("r"),
-    ]
+    ]#: List of `PySide6.QtGui.QColor` that contains colors for multiple cursors.
+
+    sigDataChanged = QtCore.Signal() #: :meta private:
+    sigCurrentCursorChanged = QtCore.Signal(int) #: :meta private:
+    sigViewOptionChanged = QtCore.Signal() #: :meta private:
+    
+    @property
+    def sigCursorCountChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigCursorCountChanged
+
+    @property
+    def sigIndexChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigIndexChanged
+
+    @property
+    def sigBinChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigBinChanged
 
     def __init__(
         self,
@@ -554,18 +570,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ax.getPlotItem().connect_signals()
         self.sigDataChanged.connect(self.refresh_all)
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
-
-    @property
-    def sigCursorCountChanged(self) -> QtCore.SignalInstance:
-        return self.array_slicer.sigCursorCountChanged
-
-    @property
-    def sigIndexChanged(self) -> QtCore.SignalInstance:
-        return self.array_slicer.sigIndexChanged
-
-    @property
-    def sigBinChanged(self) -> QtCore.SignalInstance:
-        return self.array_slicer.sigBinChanged
 
     @property
     def colormap(self) -> str | pg.ColorMap:

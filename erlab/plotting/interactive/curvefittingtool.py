@@ -4,7 +4,7 @@ import numba
 import numpy as np
 import pyqtgraph as pg
 import xarray as xr
-from PySide6 import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.plotting.interactive.utilities import ParameterGroup, FittingParameterWidget
 

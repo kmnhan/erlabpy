@@ -5,4 +5,3 @@ erlab.analysis.utilities module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

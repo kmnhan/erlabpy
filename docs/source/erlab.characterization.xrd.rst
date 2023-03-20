@@ -5,4 +5,3 @@ erlab.characterization.xrd module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

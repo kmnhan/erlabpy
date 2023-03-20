@@ -1,9 +1,13 @@
 """Functions for data IO.
 
-PyARPES stores files using `pickle`, which can only be opened in the
-environment it was saved in.
-The function `save_as_netcdf` saves an array in the ``netCDF4`` format,
-which can be opened in Igor as ``hdf5`` files. 
+Storing and retrieving files using `pickle` is quick and convenient, but pickled files
+can only be opened in the environment it was saved in. This module provides alternatives
+that enables saving and loading data in an efficient way, without compromising
+efficiency.
+
+This module also provides functions that enables loading various files such as igor pro
+files, livexy and livepolar files from Beamline 4.0.1 of the Advanced Light Source, and
+raw data from the Stanford Synchrotron Light Source Beamline 5-2.
 
 """
 
@@ -24,6 +28,7 @@ from astropy.io import fits
 
 __all__ = [
     "showfitsinfo",
+    "save_as_hdf5",
     "save_as_netcdf",
     "load_igor_pxp",
     "load_igor_ibw",
@@ -32,7 +37,7 @@ __all__ = [
 ]
 
 
-def showfitsinfo(path: str):
+def showfitsinfo(path: str | os.PathLike):
     """Prints raw metadata from a ``.fits`` file.
 
     Parameters
@@ -83,17 +88,19 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
-def save_as_hdf5(data: xr.DataArray | xr.Dataset, filename: str, **kwargs:dict):
-    """Saves data in ``netCDF4`` format.
+def save_as_hdf5(
+    data: xr.DataArray | xr.Dataset, filename: str | os.PathLike, **kwargs: dict
+):
+    """Saves data in ``HDF5`` format.
 
     Parameters
     ----------
     data
-        DataArray object to save.
+        `xarray.DataArray` to save.
     filename
         Target file name.
     **kwargs
-        Extra arguments to `xarray.DataArray.to_netcdf`: refer to the xarray
+        Extra arguments to `xarray.DataArray.to_netcdf`: refer to the `xarray`
         documentation for a list of all possible arguments.
 
     """
@@ -109,15 +116,19 @@ def save_as_hdf5(data: xr.DataArray | xr.Dataset, filename: str, **kwargs:dict):
     )
 
 
-def save_as_netcdf(data: xr.DataArray, filename: str, **kwargs):
-    """Saves data in 'netCDF4' format.
+def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs: dict):
+    """Saves data in ``netCDF4`` format.
+
+    Discards invalid ``netCDF4`` attributes and produces a warning.
 
     Parameters
     ----------
-    data : xarray.DataArray
-        DataArray object to save.
-    **kwargs : dict, optional
-        Extra arguments to `DataArray.to_netcdf`: refer to the xarray
+    data
+        `xarray.DataArray` to save.
+    filename
+        Target file name.
+    **kwargs
+        Extra arguments to `xarray.DataArray.to_netcdf`: refer to the `xarray`
         documentation for a list of all possible arguments.
 
     """

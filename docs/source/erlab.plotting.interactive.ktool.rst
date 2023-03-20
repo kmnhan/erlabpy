@@ -5,4 +5,3 @@ erlab.plotting.interactive.ktool module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

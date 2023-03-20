@@ -5,4 +5,3 @@ erlab.plotting.colors module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

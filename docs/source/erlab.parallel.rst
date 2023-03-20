@@ -5,4 +5,3 @@ erlab.parallel module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

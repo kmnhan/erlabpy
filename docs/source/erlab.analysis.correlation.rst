@@ -5,4 +5,3 @@ erlab.analysis.correlation module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

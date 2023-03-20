@@ -6,13 +6,13 @@ import numpy.typing as npt
 import numba
 import numbagg
 import xarray as xr
-from PySide6 import QtCore
+from qtpy import QtCore
 
 __all__ = ["ArraySlicer"]
 
 VALID_NDIM = (2, 3, 4)
 
-signature_array_rect = [
+_signature_array_rect = [
     numba.types.UniTuple(numba.float64, 4)(
         numba.int64,
         numba.int64,
@@ -22,7 +22,7 @@ signature_array_rect = [
     for i in VALID_NDIM
 ]
 
-signature_index_of_value = [
+_signature_index_of_value = [
     numba.int64(
         numba.int64,
         numba.float64,
@@ -33,7 +33,7 @@ signature_index_of_value = [
     for i in VALID_NDIM
 ]
 
-signature_transposed = [
+_signature_transposed = [
     numba.float64[[slice(None) for _ in range(i)]](
         numba.float64[[slice(None) for _ in range(i)]]
     )
@@ -42,7 +42,7 @@ signature_transposed = [
 
 
 @numba.njit(
-    signature_array_rect,
+    _signature_array_rect,
     fastmath=True,
     cache=True,
 )
@@ -59,7 +59,7 @@ def _array_rect(
 
 
 @numba.njit(
-    signature_index_of_value,
+    _signature_index_of_value,
     fastmath=True,
     cache=True,
 )
@@ -79,7 +79,7 @@ def _index_of_value(
     return ind
 
 
-@numba.njit(signature_transposed, fastmath=True, cache=True)
+@numba.njit(_signature_transposed, fastmath=True, cache=True)
 def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     if arr.ndim == 2:
         return arr.T
@@ -89,7 +89,11 @@ def _transposed(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return arr.transpose(1, 2, 3, 0)
 
 
-@numba.njit([numba.boolean(numba.float64[::1]),numba.boolean(numba.int64[::1])], fastmath=True, cache=True)
+@numba.njit(
+    [numba.boolean(numba.float64[::1]), numba.boolean(numba.int64[::1])],
+    fastmath=True,
+    cache=True,
+)
 def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
     dif = np.diff(arr)
     return np.allclose(dif, dif[0], rtol=1e-05, atol=1e-08, equal_nan=False)
@@ -101,10 +105,29 @@ def _index_of_value_nonuniform(arr: npt.NDArray[np.float64], val: float) -> int:
 
 
 class ArraySlicer(QtCore.QObject):
-    sigIndexChanged = QtCore.Signal(int, tuple)
-    sigBinChanged = QtCore.Signal(int, tuple)
-    sigCursorCountChanged = QtCore.Signal(int)
-    sigShapeChanged = QtCore.Signal()
+    """Internal class used to slice a `xarray.DataArray` rapidly.
+    
+    Computes binned line and image profiles from multiple cursors. Also handles the data
+    indices and the number of bins for each cursor.
+
+    Parameters
+    ----------
+    xarray_obj
+        A `xarray.DataArray` with up to 4 dimensions. 
+
+    Signals
+    -------
+    sigIndexChanged(int, tuple)
+    sigBinChanged(int, tuple)
+    sigCursorCountChanged(int)
+    sigShapeChanged()
+    
+    """
+    
+    sigIndexChanged = QtCore.Signal(int, tuple)  #: :meta private:
+    sigBinChanged = QtCore.Signal(int, tuple)  #: :meta private:
+    sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
+    sigShapeChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
@@ -116,7 +139,7 @@ class ArraySlicer(QtCore.QObject):
 
     def set_array(self, xarray_obj: xr.DataArray, validate=True):
         if validate:
-            self._obj = self._validate_array(xarray_obj)
+            self._obj = self.validate_array(xarray_obj)
         else:
             self._obj = xarray_obj
         self._nonuniform_axes = [
@@ -124,7 +147,24 @@ class ArraySlicer(QtCore.QObject):
         ]
 
     @staticmethod
-    def _validate_array(data: xr.DataArray):
+    def validate_array(data: xr.DataArray) -> xr.DataArray:
+        """Validates a given :class:`xarray.DataArray`.
+        
+        If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
+        exists) as the first two (or three) dimensions. Then, checks the data for
+        non-uniform coordinates, which are converted to indices. Finally, converts the
+        data to C-contiguous float64 for fast slicing.
+
+        Parameters
+        ----------
+        data
+
+        Returns
+        -------
+        xr.DataArray
+            The converted data.
+            
+        """
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
             # if data has kx and ky axis, transpose
@@ -162,7 +202,7 @@ class ArraySlicer(QtCore.QObject):
     def n_cursors(self) -> int:
         return len(self._bins)
 
-    @QtCore.Slot(int, result=list[int])
+    @QtCore.Slot(int, result=list)
     def get_bins(self, cursor: int) -> list[int]:
         return self._bins[cursor]
 
@@ -182,7 +222,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigBinChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, int, bool, result=list[int | None])
+    @QtCore.Slot(int, int, int, bool, result=list)
     def set_bin(
         self, cursor: int, axis: int, value: int, update: bool = True
     ) -> list[int | None]:
@@ -196,11 +236,11 @@ class ArraySlicer(QtCore.QObject):
             return []
         return [axis]
 
-    @QtCore.Slot(int, result=tuple[bool, ...])
+    @QtCore.Slot(int, result=tuple)
     def get_binned(self, cursor: int) -> tuple[bool, ...]:
         return tuple(b != 1 for b in self.get_bins(cursor))
 
-    @QtCore.Slot(int, result=list[int])
+    @QtCore.Slot(int, result=list)
     def get_indices(self, cursor: int) -> list[int]:
         return self._indices[cursor]
 
@@ -219,7 +259,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigIndexChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, int, bool, result=list[int | None])
+    @QtCore.Slot(int, int, int, bool, result=list)
     def set_index(
         self, cursor: int, axis: int, value: int, update: bool = True
     ) -> list[int | None]:
@@ -247,7 +287,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigIndexChanged.emit(cursor, (axis,))
 
-    @QtCore.Slot(int, bool, result=list[float])
+    @QtCore.Slot(int, bool, result=list)
     def get_values(self, cursor: int, uniform: bool = False) -> list[float]:
         if uniform and self._nonuniform_axes:
             val = list(self._values[cursor])
@@ -275,7 +315,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigIndexChanged.emit(cursor, tuple(axes))
 
-    @QtCore.Slot(int, int, float, bool, bool, result=list[int | None])
+    @QtCore.Slot(int, int, float, bool, bool, result=list)
     def set_value(
         self,
         cursor: int,
@@ -399,7 +439,7 @@ class ArraySlicer(QtCore.QObject):
         else:
             return _index_of_value_nonuniform(self.coords[axis], val)
 
-    @QtCore.Slot(int, tuple, result=npt.NDArray[np.float64])
+    @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(
         self, cursor: int, axis: Sequence[int]
     ) -> tuple[

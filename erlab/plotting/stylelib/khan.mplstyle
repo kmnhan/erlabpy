@@ -178,7 +178,7 @@ axes.linewidth: 0.5
 axes.grid: False
 axes.grid.axis: both
 axes.grid.which: major
-axes.titlelocation: center
+axes.titlelocation: left
 axes.titlesize: medium
 axes.titlecolor: auto
 axes.titley: None
@@ -190,9 +190,9 @@ axes.axisbelow: line
 
 axes.formatter.limits: -5, 6
 axes.formatter.use_locale: False
-axes.formatter.use_mathtext: False
+axes.formatter.use_mathtext: True
 axes.formatter.min_exponent: 0
-axes.formatter.useoffset: True
+axes.formatter.useoffset: False
 axes.formatter.offset_threshold: 4
 axes.spines.left: True
 axes.spines.bottom: True

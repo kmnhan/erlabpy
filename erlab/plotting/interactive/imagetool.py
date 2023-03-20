@@ -18,7 +18,7 @@ from matplotlib.backends import backend_agg, backend_svg
 from matplotlib.font_manager import FontProperties
 from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
-from PySide6 import QtCore, QtGui, QtWidgets, QtSvg, QtSvgWidgets
+from qtpy import QtCore, QtGui, QtWidgets, QtSvg, QtSvgWidgets
 
 if __name__ != "__main__":
     from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
@@ -3114,7 +3114,7 @@ class itoolBinningControls(QtWidgets.QWidget):
         self.itool._refresh_navg()
 
 
-# from PySide6 import QtWidgets, QtCore
+# from qtpy import QtWidgets, QtCore
 class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data, title=None, *args, **kwargs):
         super().__init__()

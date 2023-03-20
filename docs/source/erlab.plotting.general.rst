@@ -5,4 +5,3 @@ erlab.plotting.general module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

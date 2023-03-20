@@ -5,4 +5,3 @@ erlab.plotting.annotations module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

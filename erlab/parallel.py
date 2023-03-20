@@ -6,7 +6,7 @@ import joblib
 import joblib._parallel_backends
 import tqdm
 import tqdm.notebook
-from PySide6 import QtCore
+from qtpy import QtCore
 
 __all__ = ["joblib_progress", "joblib_progress_qt"]
 

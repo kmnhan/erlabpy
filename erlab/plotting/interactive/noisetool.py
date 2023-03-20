@@ -5,7 +5,7 @@ import pyqtgraph as pg
 from arpes.analysis.derivative import curvature, minimum_gradient
 from erlab.plotting.interactive.utilities import parse_data, AnalysisWidgetBase
 
-from PySide6 import QtCore, QtWidgets
+from qtpy import QtCore, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
 # def move_mean_centered(a, window, min_count=None, axis=-1):

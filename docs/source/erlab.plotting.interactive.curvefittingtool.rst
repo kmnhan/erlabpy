@@ -5,4 +5,3 @@ erlab.plotting.interactive.curvefittingtool module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:

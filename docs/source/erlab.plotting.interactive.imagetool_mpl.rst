@@ -5,4 +5,3 @@ erlab.plotting.interactive.imagetool\_mpl module
    :members:
    :undoc-members:
    :show-inheritance:
-   :private-members:
