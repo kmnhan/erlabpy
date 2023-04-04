@@ -14,6 +14,8 @@ import matplotlib.colors
 import matplotlib.font_manager
 import numpy as np
 
+os.environ["QT_API"] = "pyside6"
+
 __all__ = [
     "annotations",
     "bz",
