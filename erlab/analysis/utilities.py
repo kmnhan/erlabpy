@@ -19,14 +19,13 @@ def correct_with_edge(
     shift_coords=True,
     **improps
 ):
-
     if isinstance(fmap, xr.Dataset):
         fmap = fmap.spectrum
     if isinstance(modelresult, lmfit.model.ModelResult):
         edge_quad = modelresult.eval(x=fmap.phi)
     elif callable(modelresult):
         edge_quad = modelresult(fmap.phi.values)
-    elif isinstance(modelresult, np.ndarray):
+    elif isinstance(modelresult, np.ndarray | xr.DataArray):
         if len(fmap.phi) != len(modelresult):
             raise ValueError("incompatible modelresult dimensions")
         else:
