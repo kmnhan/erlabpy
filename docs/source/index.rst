@@ -10,11 +10,11 @@ Welcome to ERLabPy's documentation!
    :maxdepth: 1
    :caption: Contents:
 
-   colormaps
    erlab.analysis
    erlab.characterization
    erlab.plotting
    erlab.io
+   erlab.constants
 
 
 Indices and tables

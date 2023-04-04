@@ -22,5 +22,6 @@ Submodules
 .. toctree::
    :maxdepth: 3
 
+   erlab.constants
    erlab.io
    erlab.parallel
