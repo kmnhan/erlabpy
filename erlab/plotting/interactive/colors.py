@@ -96,7 +96,7 @@ def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
     """
     try:
         return pg.colormap.get(name, skipCache=skipCache)
-    except FileNotFoundError:
+    except (FileNotFoundError, IndexError):
         try:
             return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
         except ValueError:

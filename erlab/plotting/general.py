@@ -6,17 +6,17 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence, Iterable
 from typing import Literal
 
+import copy
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
 import matplotlib
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
-from matplotlib.transforms import ScaledTranslation
 from matplotlib.widgets import AxesWidget
 
 from erlab.plotting.annotations import label_subplot_properties, fancy_labels
-from erlab.plotting.colors import axes_textcolor, nice_colorbar
+from erlab.plotting.colors import axes_textcolor, nice_colorbar, _ez_inset
 
 __all__ = [
     "LabeledCursor",
@@ -30,7 +30,7 @@ __all__ = [
 figure_width_ref = dict(
     aps=[3.4, 7.0],
     aip=[3.37, 6.69],
-    nature=[89 / 25.4, 183 / 25.4],
+    nature=[88 / 25.4, 180 / 25.4],
 )
 
 
@@ -189,7 +189,6 @@ def place_inset(
         "lower center",
         "lower right",
     ] = "upper right",
-    polar: bool = False,
     **kwargs: dict,
 ) -> matplotlib.axes.Axes:
     """Easy placement of inset axes.
@@ -206,8 +205,6 @@ def place_inset(
         Padding between `parent_axes` and inset in inches.
     loc
         Location to place the inset axes.
-    polar
-        If `True`, the inset axes will have polar coordinates.
     **kwargs
         Keyword arguments are passed onto `matplotlib.axes.Axes.inset_axes`.
 
@@ -218,63 +215,7 @@ def place_inset(
 
     """
 
-    fig = parent_axes.get_figure()
-    sizes = [width, height]
-
-    ax_sizes = (
-        parent_axes.get_window_extent()
-        .transformed(fig.dpi_scale_trans.inverted())
-        .bounds[2:]
-    )
-    from numbers import Number
-
-    for i, size in enumerate(sizes):
-        if isinstance(size, Number):
-            sizes[i] = size / ax_sizes[i]
-        elif isinstance(size, str):
-            if size[-1] == "%":
-                sizes[i] = float(size[:-1]) / 100
-        else:
-            raise ValueError("Unknown format")
-
-    bounds = [1 - sizes[0], 1 - sizes[1]]
-    pad_num = False
-    if isinstance(pad, Number):
-        pad_num = True
-        pad = [pad, pad]
-    pads = [-pad[0], -pad[1]]
-
-    if "center" in loc:
-        bounds[0] /= 2
-        bounds[1] /= 2
-        pads[0] *= -1
-        pads[1] *= -1
-        if "upper" in loc or "lower" in loc:
-            if pad_num:
-                pads[0] = 0
-            pads[1] *= -1
-            bounds[1] *= 2
-        elif "left" in loc or "right" in loc:
-            if pad_num:
-                pads[1] = 0
-            pads[0] *= -1
-            bounds[0] *= 2
-    if "left" in loc:
-        bounds[0] = 0
-        pads[0] *= -1
-    if "lower" in loc:
-        bounds[1] = 0
-        pads[1] *= -1
-
-    tform = parent_axes.transAxes + ScaledTranslation(*pads, fig.dpi_scale_trans)
-
-    if not polar:
-        return parent_axes.inset_axes(bounds + sizes, transform=tform, **kwargs)
-    else:
-        prect = (fig.transFigure.inverted() + parent_axes.transAxes).transform(
-            bounds + sizes
-        )
-        return fig.add_axes(prect, projection="polar", **kwargs)
+    return _ez_inset(parent_axes, width, height, pad, loc, **kwargs)
 
 
 def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
@@ -393,7 +334,8 @@ def plot_array(
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
 
-    improps["norm"] = improps.pop("norm", colors.PowerNorm(gamma, **norm_kw))
+    norm = colors.PowerNorm(gamma, **norm_kw)
+    improps["norm"] = copy.deepcopy(improps.pop("norm", norm))
 
     improps_default = dict(
         interpolation="none",
@@ -431,6 +373,8 @@ def plot_slices(
     transpose: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
+    crop: bool = True,
+    same_limits: bool = False,
     axis: Literal[
         "on", "off", "equal", "scaled", "tight", "auto", "image", "scaled", "square"
     ] = "auto",
@@ -468,6 +412,11 @@ def plot_slices(
         If given a sequence of length 2, those values are set as the lower and upper
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
         lim)``.  If `None`, automatically determines the limits from the data.
+    crop
+        If `True`, crops the data to the limits given by `xlim` and `ylim` prior to
+        plotting.
+    same_limits
+        If `True`, all images will have the same vmin and vmax.
     axis
         Passed onto `matplotlib.axes.Axes.axis`. Possible values are:
 
@@ -572,9 +521,16 @@ def plot_slices(
 
     kwargs = {k: v for k, v in values.items() if k not in dims}
     slice_kw = {k: v for k, v in values.items() if k not in kwargs}
-    slice_dim = list(slice_kw.keys())[0]
-    slice_levels = slice_kw[slice_dim]
-    slice_width = kwargs.pop(slice_dim + "_width", None)
+    if len(slice_kw) == 0:
+        slice_dim = None
+        slice_levels = [None]
+        slice_width = None
+    else:
+        slice_dim = [k for k in slice_kw.keys() if not k.endswith("_width")][0]
+        slice_levels = slice_kw[slice_dim]
+        slice_width = kwargs.pop(slice_dim + "_width", None)
+
+    plot_dims = [d for d in dims if d != slice_dim]
 
     if not np.iterable(slice_levels):
         slice_levels = [slice_levels]
@@ -605,12 +561,20 @@ def plot_slices(
         axes = axes[:, np.newaxis].reshape(1, -1)
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
-
     for i in range(len(slice_levels)):
-        fatsel_kw = {slice_dim: slice_levels[i]}
+        fatsel_kw = dict()
+        sel_kw = dict()
+        if crop:
+            if xlim is not None:
+                sel_kw[plot_dims[1]] = slice(*xlim)
+            if ylim is not None:
+                sel_kw[plot_dims[0]] = slice(*ylim)
+        if slice_dim is not None:
+            fatsel_kw[slice_dim] = slice_levels[i]
         if slice_width is not None:
             fatsel_kw[slice_dim + "_width"] = slice_width
         for j in range(len(maps)):
+            maps[j] = maps[j].sel(**sel_kw)
             if np.iterable(cmap_norm):
                 if norm_order == "F":
                     try:
@@ -623,7 +587,7 @@ def plot_slices(
                     except TypeError:
                         norm = cmap_norm[j]
             else:
-                norm = cmap_norm
+                norm = copy.deepcopy(cmap_norm)
             if np.iterable(cmap_name) and not isinstance(cmap_name, str):
                 if cmap_order == "F":
                     if isinstance(cmap_name[i], str):
@@ -651,8 +615,21 @@ def plot_slices(
             #     )
             # else:
             plot_array(
-                maps[j].S.fat_sel(**fatsel_kw), ax=ax, norm=norm, cmap=cmap, **kwargs
+                maps[j].copy(deep=True).S.fat_sel(**fatsel_kw),
+                ax=ax,
+                norm=norm,
+                cmap=cmap,
+                **kwargs,
             )
+    if same_limits:
+        vmn, vmx = [], []
+        for ax in axes.flat:
+            vmn.append(ax.get_images()[0].norm.vmin)
+            vmx.append(ax.get_images()[0].norm.vmax)
+        vmn, vmx = min(vmn), max(vmx)
+        for ax in axes.flat:
+            ax.get_images()[0].norm.vmin = vmn
+            ax.get_images()[0].norm.vmax = vmx
 
     for ax in axes.flatten():
         if not show_all_labels:
@@ -671,7 +648,7 @@ def plot_slices(
     if colorbar == "rightspan":
         nice_colorbar(ax=axes, **colorbar_kw)
     fancy_labels(axes)
-    if annotate:
+    if annotate and slice_dim is not None:
         if slice_dim == "eV":
             slice_dim = "Eb"
         label_subplot_properties(
