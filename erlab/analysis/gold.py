@@ -22,6 +22,8 @@ def gold_edge(
     phi_range,
     eV_range,
     bin_size=(1, 1),
+    temp=None,
+    vary_temp=False,
     fast=False,
     method="leastsq",
     progress=True,
@@ -33,8 +35,10 @@ def gold_edge(
         params = {}
         model = arpes.fits.GStepBModel
     else:
+        if temp is None:
+            temp = gold.S.temp
         params = {
-            "temp": dict(value=gold.S.temp, vary=False),
+            "temp": dict(value=temp, vary=vary_temp),
         }
         model = arpes.fits.ExtendedAffineBroadenedFD
 
@@ -82,10 +86,12 @@ def gold_poly(
     phi_range,
     eV_range,
     bin_size=(1, 1),
-    degree=4,
-    correct=False,
+    temp=None,
+    vary_temp=False,
     fast=False,
     method="leastsq",
+    degree=4,
+    correct=False,
     parallel_kw=dict(),
     plot=True,
     fig=None,
@@ -95,6 +101,8 @@ def gold_poly(
         phi_range,
         eV_range,
         bin_size=bin_size,
+        temp=temp,
+        vary_temp=vary_temp,
         fast=fast,
         method=method,
         parallel_kw=parallel_kw,
