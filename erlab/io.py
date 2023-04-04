@@ -88,6 +88,14 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
+def open_hdf5(filename: str | os.PathLike) -> xr.DataArray:
+    return xr.open_dataarray(filename, engine="h5netcdf")
+
+
+def load_hdf5(filename: str | os.PathLike) -> xr.DataArray:
+    return xr.load_dataarray(filename, engine="h5netcdf")
+
+
 def save_as_hdf5(
     data: xr.DataArray | xr.Dataset, filename: str | os.PathLike, **kwargs: dict
 ):
@@ -104,9 +112,15 @@ def save_as_hdf5(
         documentation for a list of all possible arguments.
 
     """
-    # data = data.assign_attrs(provenance="")
     kwargs.setdefault("engine", "h5netcdf")
     kwargs.setdefault("invalid_netcdf", True)
+
+    for k, v in data.attrs.items():
+        if v is None:
+            data = data.assign_attrs({k: "None"})
+        if isinstance(v, dict):
+            data = data.assign_attrs({k: str(v)})
+
     data.to_netcdf(
         filename,
         encoding={
