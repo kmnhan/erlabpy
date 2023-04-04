@@ -1,9 +1,34 @@
 """Utilities related to manipulating colors.
 
+.. contents:: :local:
+
+Colormaps
+---------
+
+In addition `matplotlib
+<https://matplotlib.org/stable/tutorials/colors/colormaps.html>`_ colormaps, `cmasher
+<https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_,
+and `colorcet <https://colorcet.holoviz.org>`_ are included.
+
+Colormap Normalization
+----------------------
+
+.. plot:: norms.py example_1
+    :width: 50 %
+    :caption: Demonstration of :class:`InversePowerNorm <erlab.plotting.colors.InversePowerNorm>`.
+
+.. plot:: norms.py example_2
+    :width: 50 %
+    :caption: Demonstration of :class:`CenteredPowerNorm <erlab.plotting.colors.CenteredPowerNorm>` and :class:`CenteredInversePowerNorm <erlab.plotting.colors.CenteredInversePowerNorm>`.
+    
 """
 from collections.abc import Iterable, Sequence
+from typing import Literal
+from numbers import Number
 
 import matplotlib
+import matplotlib.axes
+import matplotlib.transforms as mtransforms
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,7 +52,7 @@ __all__ = [
 ]
 
 
-class InversePowerNorm(mcolors.PowerNorm):
+class InversePowerNorm(mcolors.Normalize):
     r"""
     Linearly map a given value to the 0-1 range and then apply an inverse power-law
     normalization over that range.
@@ -62,7 +87,8 @@ class InversePowerNorm(mcolors.PowerNorm):
         vmax: float | None = None,
         clip: bool = False,
     ):
-        super().__init__(gamma, vmin, vmax, clip)
+        super().__init__(vmin, vmax, clip)
+        self.gamma = gamma
 
     def __call__(self, value, clip=None):
         if clip is None:
@@ -83,7 +109,6 @@ class InversePowerNorm(mcolors.PowerNorm):
                 result = np.ma.array(
                     np.clip(result.filled(vmax), vmin, vmax), mask=mask
                 )
-
             resdat = result.data
 
             resdat *= -1
@@ -104,6 +129,7 @@ class InversePowerNorm(mcolors.PowerNorm):
             raise ValueError("Not invertible until scaled")
         gamma = self.gamma
         vmin, vmax = self.vmin, self.vmax
+
         if np.iterable(value):
             val = np.ma.asarray(value)
             return np.ma.power(1 - val, gamma) * (vmin - vmax) + vmax
@@ -424,7 +450,25 @@ class CenteredInversePowerNorm(CenteredPowerNorm):
         self._func_i = _diverging_inversepowernorm_inv
 
 
-def get_mappable(ax, image_only=False, error=True):
+def get_mappable(
+    ax: matplotlib.axes.Axes, image_only: bool = False, silent: bool = False
+) -> matplotlib.cm.ScalarMappable | None:
+    """Gets the `matplotlib.cm.ScalarMappable` from a given `matplotlib.axes.Axes`.
+
+    Parameters
+    ----------
+    ax
+        Parent axes.
+    image_only
+        Only consider images as a valid mappable, by default `False`.
+    silent
+        If `False`, raises a `RuntimeError`. If `True`, silently returns `None`.
+
+    Returns
+    -------
+    matplotlib.cm.ScalarMappable or None
+
+    """
     try:
         if not image_only:
             mappable = ax.collections[-1]
@@ -435,7 +479,7 @@ def get_mappable(ax, image_only=False, error=True):
             mappable = ax.get_images()[-1]
         except (IndexError, AttributeError):
             mappable = None
-    if error is True and mappable is None:
+    if not silent and mappable is None:
         raise RuntimeError(
             "No mappable was found to use for colorbar "
             "creation. First define a mappable such as "
@@ -449,7 +493,7 @@ def proportional_colorbar(
     mappable: matplotlib.cm.ScalarMappable | None = None,
     cax: matplotlib.axes.Axes | None = None,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
-    **kwargs: dict
+    **kwargs: dict,
 ) -> matplotlib.colorbar.Colorbar:
     r"""Replaces the current colorbar or creates a new colorbar with proportional spacing.
 
@@ -499,16 +543,20 @@ def proportional_colorbar(
     if ax is None:
         if cax is None:
             ax = plt.gca()
-            ax_ref = ax
+            if mappable is None:
+                mappable = get_mappable(ax)
     else:
-        try:
-            ax_ref = ax.flatten()[0]
-        except AttributeError:
-            ax_ref = ax
-    # else:
-    #     ax_ref = cax
-    if mappable is None:
-        mappable = get_mappable(ax_ref)
+        if isinstance(ax, np.ndarray):
+            i = 0
+            while mappable is None and i < len(ax.flat):
+                mappable = get_mappable(
+                    ax.flatten()[i], silent=(i != (len(ax.flat) - 1))
+                )
+                i += 1
+        else:
+            if mappable is None:
+                mappable = get_mappable(ax)
+
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
     ticks = mappable.colorbar.get_ticks()
@@ -534,9 +582,191 @@ def proportional_colorbar(
     return cbar
 
 
+def _size_to_bounds(ax, width, height, loc):
+    fig = ax.get_figure()
+    sizes = [width, height]
+
+    ax_sizes = (
+        ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted()).bounds[2:]
+    )
+    sizes = [
+        float(size[:-1]) / 100 if isinstance(size, str) else size / ax_sizes[i]
+        for i, size in enumerate(sizes)
+    ]
+
+    origin = [1 - sizes[0], 1 - sizes[1]]
+    if "center" in loc:
+        origin[0] /= 2
+        origin[1] /= 2
+        if "upper" in loc or "lower" in loc:
+            origin[1] *= 2
+        elif "left" in loc or "right" in loc:
+            origin[0] *= 2
+    if "left" in loc:
+        origin[0] = 0
+    if "lower" in loc:
+        origin[1] = 0
+    return origin + sizes
+
+
+def _refresh_pads(ax, cax, pads, loc):
+    ref = _size_to_bounds(ax, 0, 0, loc)[:2]
+    bbox = ax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
+    x0, y0 = bbox.x0 + ref[0] * (bbox.x1 - bbox.x0), bbox.y1 + ref[1] * (
+        bbox.y1 - bbox.y0
+    )
+    bbox = cax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
+    x1, y1 = bbox.x0 + ref[0] * (bbox.x1 - bbox.x0), bbox.y1 + ref[1] * (
+        bbox.y1 - bbox.y0
+    )
+
+    pads[0] += x1 - x0
+    pads[1] += y1 - y0
+    return pads
+
+
+def _get_pad(pad, loc):
+    pad_num = False
+    if isinstance(pad, Number):
+        pad_num = True
+        pad = [pad, pad]
+    pads = [-pad[0], -pad[1]]
+    if "center" in loc:
+        pads[0] *= -1
+        pads[1] *= -1
+        if "upper" in loc or "lower" in loc:
+            if pad_num:
+                pads[0] = 0
+            pads[1] *= -1
+        elif "left" in loc or "right" in loc:
+            if pad_num:
+                pads[1] = 0
+            pads[0] *= -1
+    if "left" in loc:
+        pads[0] *= -1
+    if "lower" in loc:
+        pads[1] *= -1
+    return pads
+
+
+def _ez_inset(
+    parent_axes: matplotlib.axes.Axes,
+    width: float | str,
+    height: float | str,
+    pad: float | tuple[float, float] = 0.1,
+    loc: Literal[
+        "upper left",
+        "upper center",
+        "upper right",
+        "center left",
+        "center",
+        "center right",
+        "lower left",
+        "lower center",
+        "lower right",
+    ] = "upper right",
+    **kwargs: dict,
+) -> matplotlib.axes.Axes:
+    fig = parent_axes.get_figure()
+    locator = InsetAxesLocator(parent_axes, width, height, pad, loc)
+    ax_ = fig.add_axes(locator(parent_axes, None).bounds, **kwargs)
+    ax_.set_axes_locator(locator)
+    return ax_
+
+
+class InsetAxesLocator:
+    def __init__(self, ax, width, height, pad, loc):
+        self._ax = ax
+        self._transAxes = ax.transAxes
+        self._width = width
+        self._height = height
+        self._loc = loc
+        self.set_pad(pad)
+
+    def __call__(self, ax, renderer):
+        return mtransforms.TransformedBbox(
+            mtransforms.Bbox.from_bounds(*self._size_to_bounds(ax)),
+            self._transAxes
+            + mtransforms.ScaledTranslation(*self.pads, ax.figure.dpi_scale_trans)
+            - ax.figure.transSubfigure,
+        )
+
+    def set_pad(self, pad):
+        pad_num = False
+        if isinstance(pad, Number):
+            pad_num = True
+            pad = [pad, pad]
+        self.pads = [-pad[0], -pad[1]]
+        if "center" in self._loc:
+            self.pads[0] *= -1
+            self.pads[1] *= -1
+            if "upper" in self._loc or "lower" in self._loc:
+                if pad_num:
+                    self.pads[0] = 0
+                self.pads[1] *= -1
+            elif "left" in self._loc or "right" in self._loc:
+                if pad_num:
+                    self.pads[1] = 0
+                self.pads[0] *= -1
+        if "left" in self._loc:
+            self.pads[0] *= -1
+        if "lower" in self._loc:
+            self.pads[1] *= -1
+
+    def add_pad(self, delta):
+        self.pads[0] += delta[0]
+        self.pads[1] += delta[1]
+
+    def sizes(self, ax):
+        ax_sizes = (
+            ax.get_window_extent()
+            .transformed(ax.figure.dpi_scale_trans.inverted())
+            .bounds[2:]
+        )
+        return [
+            float(sz[:-1]) / 100 if isinstance(sz, str) else sz / ax_sizes[i]
+            for i, sz in enumerate([self._width, self._height])
+        ]
+
+    def _size_to_bounds(self, ax):
+        sizes = self.sizes(ax)
+        origin = [1 - sizes[0], 1 - sizes[1]]
+        if "center" in self._loc:
+            origin[0] /= 2
+            origin[1] /= 2
+            if "upper" in self._loc or "lower" in self._loc:
+                origin[1] *= 2
+            elif "left" in self._loc or "right" in self._loc:
+                origin[0] *= 2
+        if "left" in self._loc:
+            origin[0] = 0
+        if "lower" in self._loc:
+            origin[1] = 0
+        return origin + sizes
+
+
+def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
+    w, h = width / 72, aspect * width / 72
+    if horiz:
+        cax = _ez_inset(ax, h, w, pad=(0, -w - pad / 72), **kwargs)
+    else:
+        cax = _ez_inset(ax, w, h, pad=(-w - pad / 72, 0), **kwargs)
+    return cax
+
+
 # TODO: fix colorbar size properly
 def nice_colorbar(
-    ax:matplotlib.axes.Axes, mappable:matplotlib.cm.ScalarMappable|None=None, width:float=5.0, aspect:float=5.0, minmax:bool=False, ticklabels:Sequence[str]|None=None, *args, **kwargs:dict
+    ax: matplotlib.axes.Axes,
+    mappable: matplotlib.cm.ScalarMappable | None = None,
+    width: float = 4.0,
+    aspect: float = 5.0,
+    pad: float = 3.0,
+    minmax: bool = False,
+    orientation: Literal["vertical", "horizontal"] = "vertical",
+    floating=False,
+    ticklabels: Sequence[str] | None = None,
+    *args,
+    **kwargs: dict,
 ):
     r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
 
@@ -550,10 +780,14 @@ def nice_colorbar(
         The width of the colorbar in points.
     aspect
         aspect ratio of the colorbar.
+    pad
+        The pad between the colorbar and axes in points.
     minmax
         If `False`, the ticks and the ticklabels will be determined from the keyword
         arguments (the default). If `True`, the minimum and maximum of the colorbar will
         be labeled.
+    orientation
+        Colorbar orientation.
     **kwargs
         Keyword arguments are passed to `proportional_colorbar`.
 
@@ -563,37 +797,77 @@ def nice_colorbar(
         The created colorbar.
 
     """
-    if isinstance(ax, np.ndarray):
-        parents = list(ax.flat)
-    elif not isinstance(ax, list):
-        parents = [ax]
-    fig = parents[0].get_figure()
 
-    bbox = matplotlib.transforms.Bbox.union(
-        [p.get_position(original=True).frozen() for p in parents]
-    ).transformed(fig.transFigure + fig.dpi_scale_trans.inverted())
-    # bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-    fraction = width / (72 * bbox.width)
-    shrink = width * aspect / (72 * bbox.height)
+    is_horizontal = orientation == "horizontal"
 
-    cbar = proportional_colorbar(
-        mappable=mappable,
-        ax=ax,
-        fraction=fraction,
-        pad=0.5 * fraction,
-        shrink=shrink,
-        aspect=aspect,
-        anchor=(0, 1),
-        panchor=(0, 1),
-        *args,
-        **kwargs,
-    )
+    if floating:
+        if isinstance(ax, np.ndarray):
+            if ax.ndim == 1:
+                parent = ax[-1]
+            elif ax.ndim == 2:
+                parent = ax[0, -1]
+            else:
+                raise ValueError
+        else:
+            parent = ax
+
+        cbar = proportional_colorbar(
+            mappable=mappable,
+            ax=ax,
+            cax=_gen_cax(parent, width, aspect, pad, is_horizontal),
+            orientation=orientation,
+            *args,
+            **kwargs,
+        )
+
+    else:
+        if np.iterable(ax):
+            bbox = mtransforms.Bbox.union(
+                [
+                    x.get_window_extent().transformed(
+                        x.figure.dpi_scale_trans.inverted()
+                    )
+                    for x in ax.flat
+                ]
+            )
+        else:
+            bbox = ax.get_window_extent().transformed(
+                ax.figure.dpi_scale_trans.inverted()
+            )
+
+        fraction = width / (72 * bbox.width)
+        pad = pad / (72 * bbox.width)
+        shrink = width * aspect / (72 * bbox.height)
+        cbar = proportional_colorbar(
+            mappable=mappable,
+            ax=ax,
+            fraction=fraction,
+            pad=pad,
+            shrink=shrink,
+            aspect=aspect,
+            anchor=(0, 1),
+            panchor=(0, 1),
+            orientation=orientation,
+            *args,
+            **kwargs,
+        )
+
     if minmax:
-        cbar.set_ticks(cbar.ax.get_ylim())
+        if is_horizontal:
+            cbar.set_ticks(cbar.ax.get_xlim())
+        else:
+            cbar.set_ticks(cbar.ax.get_ylim())
         cbar.set_ticklabels(("Min", "Max"))
         cbar.ax.tick_params(labelsize="small")
+
     if ticklabels is not None:
         cbar.set_ticklabels(ticklabels)
+
+    if is_horizontal:
+        cbar.ax.set_box_aspect(1 / aspect)
+    else:
+        cbar.ax.set_box_aspect(aspect)
+
     return cbar
 
 
@@ -632,7 +906,7 @@ def image_is_light(im):
 
 def axes_textcolor(ax, light="k", dark="w"):
     c = light
-    mappable = get_mappable(ax, error=False)
+    mappable = get_mappable(ax, silent=True)
     if mappable is not None:
         if isinstance(
             mappable, (matplotlib.image._ImageBase, matplotlib.collections.QuadMesh)
