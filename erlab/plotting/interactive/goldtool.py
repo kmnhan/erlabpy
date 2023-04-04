@@ -88,6 +88,9 @@ class EdgeFitter(QtCore.QRunnable):
                 phi_range=self.x_range,
                 eV_range=self.y_range,
                 bin_size=(self.params["Bin x"], self.params["Bin y"]),
+                temp=self.params["T (K)"],
+                vary_temp=not self.params["Fix T"],
+                fast=self.params["Fast"], 
                 method=self.params["Method"],
                 progress=False,
                 parallel_kw=dict(n_jobs=self.params["# CPU"]),
@@ -161,6 +164,7 @@ class goldtool(AnalysisWindow):
                 "Fix T": dict(qwtype="chkbox", checked=True),
                 "Bin x": dict(qwtype="spin", value=1, minimum=1),
                 "Bin y": dict(qwtype="spin", value=1, minimum=1),
+                "Fast": dict(qwtype="chkbox", checked=False),
                 "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
                 "# CPU": dict(
                     qwtype="spin",
@@ -176,6 +180,8 @@ class goldtool(AnalysisWindow):
                 ),
             }
         )
+        
+        self.params_edge.widgets["Fast"].stateChanged.connect(self._toggle_fast)
 
         self.params_poly = ParameterGroup(
             **{
@@ -226,6 +232,12 @@ class goldtool(AnalysisWindow):
 
         self.axes[0].disableAutoRange()
         self.__post_init__(execute=True)
+    
+    def _toggle_fast(self):
+        self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
+        self.params_edge.widgets["Fix T"].setDisabled(self.params_edge.values["Fast"])
+        
+        
 
     def perform_edge_fit(self):
         self.params_roi.draw_button.setChecked(False)
@@ -326,6 +338,9 @@ class goldtool(AnalysisWindow):
                             phi_range=(x0, x1),
                             eV_range=(y0, y1),
                             bin_size=(p0["Bin x"], p0["Bin y"]),
+                            temp=p0["T (K)"],
+                            vary_temp=not p0["Fix T"],
+                            fast=p0["Fast"],
                             degree=p1["Degree"],
                             method=p0["Method"],
                         ),
@@ -342,6 +357,9 @@ class goldtool(AnalysisWindow):
                             phi_range=(x0, x1),
                             eV_range=(y0, y1),
                             bin_size=(p0["Bin x"], p0["Bin y"]),
+                            temp=p0["T (K)"],
+                            vary_temp=not p0["Fix T"],
+                            fast=p0["Fast"],
                             degree=p1["Degree"],
                             method=p0["Method"],
                             correct=False,
