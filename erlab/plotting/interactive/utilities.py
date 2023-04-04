@@ -60,13 +60,10 @@ def array_rect(data):
     return QtCore.QRectF(x, y, w, h)
 
 
-def copy_to_clipboard(content: str):
+def copy_to_clipboard(content: str|list):
     if isinstance(content, list):
         content = "\n".join(content)
-
-    cb = QtWidgets.QApplication.instance().clipboard()
-    cb.clear(mode=cb.Mode.Clipboard)
-    cb.setText(content, mode=cb.Mode.Clipboard)
+    pyclip.copy(content)
     return content
 
 
@@ -210,9 +207,12 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.setDecimals(decimals)
 
         self._value = value
+        self._lastvalue = None
         self._min = -np.inf
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
+        
+        kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
         super().__init__(*args, **kwargs)
         # self.editingFinished.disconnect()
         self.setSizePolicy(
@@ -368,18 +368,20 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def setValue(self, val):
         if np.isnan(val):
-            self._value = np.nan
+            val = np.nan
         else:
-            self._value = max(self.minimum(), min(val, self.maximum()))
+            val = max(self.minimum(), min(val, self.maximum()))
 
-        if self._only_int and np.isfinite(self._value):
-            self._value = round(self._value)
+        if self._only_int and np.isfinite(val):
+            val = round(val)
+        
+        self._lastvalue, self._value = self._value, val
 
         self.valueChanged.emit(self.value())
         self.lineEdit().setText(self.text())
         self.textChanged.emit(self.text())
 
-    # def fixup(self, input):
+    def fixup(self, input):
     #     # fixup is called when the spinbox loses focus with an invalid or intermediate string
     #     self.lineEdit().setText(self.text())
 
@@ -391,10 +393,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     #         input.clear()
     #         input.append(self.lineEdit().text())
     #     except AttributeError:
-    #         return self.lineEdit().text()
-
-    # # def hasAcceptableInput(self) -> bool:
-    # #     return True
+        # print("fixup called ", input)
+        return self.textFromValue(self._lastvalue)
 
     def validate(self, strn, pos):
         # if self.skipValidate:
@@ -403,23 +403,19 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         else:
             ret = QtGui.QValidator.State.Intermediate
             try:
-                val = float(self.value())
+                val = self.valueFromText(strn)
                 if val < self.maximum() and val > self.minimum():
                     ret = QtGui.QValidator.State.Acceptable
             except ValueError:
-                pass
+                # sys.excepthook(*sys.exc_info())
+                ret =  QtGui.QValidator.State.Invalid
 
         ## note: if text is invalid, we don't change the textValid flag
         ## since the text will be forced to its previous state anyway
-        self.update()
-
-        ## support 2 different pyqt APIs. Bleh.
+        # self.update()
 
         # print(strn, pos, ret)
-        if hasattr(QtCore, "QString"):
-            return (ret, pos)
-        else:
-            return (ret, strn, pos)
+        return (ret, strn, pos)
 
     def editingFinishedEvent(self):
         self.setValue(self.valueFromText(self.lineEdit().text()))
@@ -527,9 +523,9 @@ class BetterAxisItem(pg.AxisItem):
             (scale, prefix) = pg.siScale(
                 max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
             )
-            # if self.labelUnits == '' and prefix in ['k', 'm']:  ## If we are not showing units, wait until 1e6 before scaling.
-            #     scale = 1.0
-            #     prefix = ''
+            if self.labelUnits == '' and prefix in ['k', 'm']:  ## If we are not showing units, wait until 1e6 before scaling.
+                scale = 1.0
+                prefix = ''
             self.autoSIPrefixScale = scale
             self.labelUnitPrefix = prefix
         else:
@@ -1678,8 +1674,6 @@ if __name__ == "__main__":
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
 
-    wdgt = QtWidgets.QWidget()
-    layout = QtWidgets.QVBoxLayout(wdgt)
 
     dat = (
         xr.open_dataarray(
@@ -1689,16 +1683,16 @@ if __name__ == "__main__":
         .fillna(0)
     )
     win = AnalysisWindow(dat, analysisWidget=ComparisonWidget, orientation="vertical")
+    win.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
+    gaussfilt_2d = lambda dat, sx, sy: gaussian_filter(dat, sigma=(sx, sy))
+    win.aw.set_main_function(gaussfilt_2d, sx=0.1, sy=1, only_values=True)
 
     # win.set_pre_function(gaussian_filter, sigma=[1, 1], only_values=True)
     # win.set_pre_function(gaussian_filter, sigma=(0.1, 0.1))
 
-    gaussfilt_2d = lambda dat, sx, sy: gaussian_filter(dat, sigma=(sx, sy))
-    win.aw.set_main_function(gaussfilt_2d, sx=0.1, sy=1, only_values=True)
 
-    layout.addWidget(win)
-    layout.addWidget(
-        ParameterGroup(
+    # layout.addWidget(win)
+    win.addParameterGroup(
             sigma_x=dict(
                 qwtype="btspin",
                 minimum=0,
@@ -1713,12 +1707,12 @@ if __name__ == "__main__":
             ),
             b=dict(qwtype="combobox", items=["item1", "item2", "item3"]),
         )
-    )
-    new_roi = win.add_roi(0)
+    
+    win.__post_init__(execute=True)
+    # new_roi = win.add_roi(0)
 
-    layout.addWidget(ROIControls(new_roi))
+    # layout.addWidget(ROIControls(new_roi))
 
-    wdgt.show()
-    wdgt.activateWindow()
-    wdgt.raise_()
-    qapp.exec()
+    # wdgt.show()
+    # wdgt.activateWindow()
+    # wdgt.raise_()
