@@ -15,6 +15,7 @@ from collections.abc import Iterable, Sequence
 from typing import Literal
 
 import matplotlib
+import matplotlib.transforms as mtransforms
 import matplotlib.pyplot as plt
 import numpy as np
 import pyclip
@@ -27,10 +28,14 @@ from erlab.plotting.colors import axes_textcolor
 __all__ = [
     "plot_hv_text",
     "label_subplots",
+    "label_subplots_nature",
     "label_subplot_properties",
     "set_titles",
+    "set_xlabels",
+    "set_ylabels",
     "annotate_cuts_erlab",
     "fancy_labels",
+    "mark_points_outside",
     "mark_points",
     "sizebar",
     "copy_mathtext",
@@ -179,7 +184,8 @@ def annotate_cuts_erlab(
             v = [v]
         selected = converted_coordinates.sel(**dict([[k, v]]), method="nearest")
         for coords_dict, obj in selected.G.iterate_axis(k):
-            plt_css = [np.mean(obj[d].values, axis=1) for d in plotted_dims]
+            # plt_css = [np.mean(obj[d].values, axis=1) for d in plotted_dims]
+            plt_css = [obj[d].values for d in plotted_dims]
             plt_css[-1] *= factor
             with plt.rc_context({"lines.linestyle": "--", "lines.linewidth": 0.85}):
                 ax.plot(*plt_css, **plot_kw)
@@ -325,7 +331,10 @@ def label_subplots(
                 fs = "medium"
         else:
             fs = fontsize
-        bbox_transform = matplotlib.transforms.Affine2D().translate(*offset)
+
+        bbox_transform = matplotlib.transforms.ScaledTranslation(
+            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
+        )
         label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
         with plt.rc_context({"text.color": axes_textcolor(axlist[i])}):
             at = matplotlib.offsetbox.AnchoredText(
@@ -337,8 +346,118 @@ def label_subplots(
                 prop=dict(fontsize=fs, **kwargs),
                 bbox_to_anchor=bbox_to_anchor,
                 bbox_transform=bbox_transform,
+                clip_on=False,
             )
         axlist[i].add_artist(at)
+
+
+def label_subplots_nature(
+    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
+    values: Sequence[int | str] | None = None,
+    startfrom: int = 1,
+    order: Literal["C", "F", "A", "K"] = "C",
+    offset: tuple[float, float] = (-20.0, 7.0),
+    prefix: str = "",
+    suffix: str = "",
+    numeric: bool = False,
+    capital: bool = False,
+    fontweight: Literal[
+        "ultralight",
+        "light",
+        "normal",
+        "regular",
+        "book",
+        "medium",
+        "roman",
+        "semibold",
+        "demibold",
+        "demi",
+        "bold",
+        "heavy",
+        "extra bold",
+        "black",
+    ] = "black",
+    fontsize: float
+    | Literal[
+        "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
+    ] = 8,
+    **kwargs,
+):
+    r"""Labels subplots with automatically generated labels.
+
+    Parameters
+    ----------
+    axes
+        `matplotlib.axes.Axes` to label. If an array is given, the order will be
+        determined by the flattening method given by `order`.
+    values
+        Integer or string labels corresponding to each Axes in `axes` for
+        manual labels.
+    startfrom
+        Start from this number when creating automatic labels. Has no
+        effect when `values` is not `None`.
+    order
+        Order in which to flatten `ax`. 'C' means to flatten in
+        row-major (C-style) order. 'F' means to flatten in column-major
+        (Fortran- style) order. 'A' means to flatten in column-major
+        order if a is Fortran contiguous in memory, row-major order
+        otherwise. 'K' means to flatten a in the order the elements
+        occur in memory. The default is 'C'.
+    offset
+        Values that are used to position the labels, given in points.
+    prefix
+        String to prepend to the alphabet label.
+    suffix
+        String to append to the alphabet label.
+    numeric
+        Use integer labels instead of alphabets.
+    capital
+        Capitalize automatically generated alphabetical labels.
+    fontweight
+        Set the font weight. The default is ``'normal'``.
+    fontsize
+        Set the font size. The default is ``'medium'`` for axes, and ``'large'`` for
+        figures.
+    **kwargs
+        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
+
+    """
+
+    kwargs["fontweight"] = fontweight
+    if plt.rcParams["text.usetex"] & (fontweight == "bold"):
+        prefix = "\\textbf{" + prefix
+        suffix = suffix + "}"
+        kwargs.pop("fontweight")
+
+    axlist = np.array(axes, dtype=object).flatten(order=order)
+    if values is None:
+        values = np.array([i + startfrom for i in range(len(axlist))], dtype=np.int64)
+    else:
+        values = np.array(values).flatten(order=order)
+        if not (axlist.size == values.size):
+            raise IndexError(
+                "The number of given values must match the number" " of given axes."
+            )
+
+    for i in range(len(axlist)):
+        label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
+        trans = matplotlib.transforms.ScaledTranslation(
+            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
+        )
+
+        if fontsize is None:
+            fontsize = "medium"
+        axlist[i].text(
+            0.0,
+            1.0,
+            label_str,
+            transform=axlist[i].transAxes + trans,
+            fontsize=fontsize,
+            va="baseline",
+            clip_on=False,
+            **kwargs,
+        )
 
 
 def set_titles(axes, labels, order="C", **kwargs):
@@ -346,6 +465,24 @@ def set_titles(axes, labels, order="C", **kwargs):
     labels = np.asarray(labels)
     for ax, l in zip(axlist.flat, labels.flat):
         ax.set_title(l, **kwargs)
+
+
+def set_xlabels(axes, labels, order="C", **kwargs):
+    axlist = np.array(axes, dtype=object).flatten(order=order)
+    if isinstance(labels, str):
+        labels = [labels] * len(axlist)
+    labels = np.asarray(labels)
+    for ax, l in zip(axlist.flat, labels.flat):
+        ax.set_xlabel(l, **kwargs)
+
+
+def set_ylabels(axes, labels, order="C", **kwargs):
+    axlist = np.array(axes, dtype=object).flatten(order=order)
+    if isinstance(labels, str):
+        labels = [labels] * len(axlist)
+    labels = np.asarray(labels)
+    for ax, l in zip(axlist.flat, labels.flat):
+        ax.set_ylabel(l, **kwargs)
 
 
 def name_for_dim(dim_name, escaped=True):
@@ -419,14 +556,16 @@ def fancy_labels(ax=None, rad2deg=False):
         ax = plt.gca()
     if np.iterable(ax):
         for ax in ax:
-            fancy_labels(ax)
+            fancy_labels(ax, rad2deg)
         return
 
     ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), rad2deg=rad2deg))
     ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), rad2deg=rad2deg))
+    if hasattr(ax, "get_zlabel"):
+        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), rad2deg=rad2deg))
 
 
-def property_label(key, value, decimals=0, si=0, name=None, unit=None):
+def property_label(key, value, decimals=None, si=0, name=None, unit=None):
     if name == "":
         delim = ""
     else:
@@ -673,10 +812,10 @@ def parse_point_labels(name: str, roman=True, bar=False):
     return name
 
 
-def mark_points(
+def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
-    axis: Literal["x", "y"],
+    axis: Literal["x", "y"] = "x",
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
@@ -707,7 +846,7 @@ def mark_points(
         ax = plt.gca()
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
-            mark_points(points, labels, axis, roman, bar, a)
+            mark_points_outside(points, labels, axis, roman, bar, a)
     else:
         if axis == "x":
             label_ax = ax.twiny()
@@ -724,6 +863,64 @@ def mark_points(
                 [parse_point_labels(l, roman, bar) for l in labels]
             )
         label_ax.set_frame_on(False)
+
+
+def mark_points(
+    points: Sequence[float],
+    labels: Sequence[str],
+    y: float | Sequence[float] = 0.0,
+    pad: tuple[float, float] = (0, 1.75),
+    roman: bool = True,
+    bar: bool = False,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
+    **kwargs: dict,
+):
+    """Mark points above the horizontal axis.
+
+    Useful when annotating high symmetry points along a cut.
+
+    Parameters
+    ----------
+    points
+        Floats indicating the position of each label.
+    labels
+        Sequence of label strings indicating a high symmetry point. Must be the same
+        length as `points`.
+    y
+        Position of the label in data coordinates
+    pad
+        Offset of the text in points.
+    roman
+        If ``False``, *True*, itallic fonts are used.
+    bar
+        If ``True``, prints a bar over the label.
+    ax
+        `matplotlib.axes.Axes` to annotate.
+
+    """
+    if ax is None:
+        ax = plt.gca()
+    if np.iterable(ax):
+        for a in np.asarray(ax, dtype=object).flatten():
+            mark_points(points, labels, y, pad, roman, bar, a, **kwargs)
+    else:
+        for k, v in dict(
+            family="serif", ha="center", va="baseline", fontsize="small"
+        ).items():
+            kwargs.setdefault(k, v)
+        if not np.iterable(y):
+            y = [y] * len(points)
+        for xi, yi, l in zip(points, y, labels):
+            ax.text(
+                xi,
+                yi,
+                parse_point_labels(l, roman, bar),
+                transform=ax.transData
+                + mtransforms.ScaledTranslation(
+                    pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
+                ),
+                **kwargs
+            )
 
 
 def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
