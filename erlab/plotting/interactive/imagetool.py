@@ -24,6 +24,7 @@ from erlab.plotting.interactive.utilities import (
     BetterColorBarItem,
     BetterImageItem,
     BetterSpinBox,
+    copy_to_clipboard,
 )
 
 __all__ = ["itool", "ImageTool", "ImageSlicerArea"]
@@ -182,6 +183,10 @@ class ImageTool(QtWidgets.QMainWindow):
             "&Save As...", QtGui.QKeySequence("Ctrl+Shift+S")
         )
         self._export_action.triggered.connect(self._export_file)
+        self._copy_cursor_pos_action = self._file_menu.addAction(
+            "&Copy Cursor Position", QtGui.QKeySequence("Ctrl+Shift+C")
+        )
+        self._copy_cursor_pos_action.triggered.connect(self._copy_cursor_pos)
 
         ### VIEW MENU
         self._view_menu = QtWidgets.QMenu("&View", self)
@@ -318,6 +323,9 @@ class ImageTool(QtWidgets.QMainWindow):
             highContrast=self._color_actions[1].isChecked(),
             zeroCentered=self._color_actions[2].isChecked(),
         )
+
+    def _copy_cursor_pos(self):
+        copy_to_clipboard(str(self.slicer_area.array_slicer._values))
 
     def _open_file(self):
         filters = (
@@ -468,12 +476,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("c"),
         pg.mkColor("g"),
         pg.mkColor("r"),
-    ]#: List of `PySide6.QtGui.QColor` that contains colors for multiple cursors.
+    ]  #: List of `PySide6.QtGui.QColor` that contains colors for multiple cursors.
 
-    sigDataChanged = QtCore.Signal() #: :meta private:
-    sigCurrentCursorChanged = QtCore.Signal(int) #: :meta private:
-    sigViewOptionChanged = QtCore.Signal() #: :meta private:
-    
+    sigDataChanged = QtCore.Signal()  #: :meta private:
+    sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
+    sigViewOptionChanged = QtCore.Signal()  #: :meta private:
+
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
         """:meta private:"""
@@ -1365,11 +1373,12 @@ class ItoolPlotItem(pg.PlotItem):
 
     def _get_label_unit(self, index: int | None = None):
         if index is None:
-            dim = ""
-        else:
-            dim = self.slicer_area.data.dims[self.display_axis[index]]
+            return "", ""
+        dim = self.slicer_area.data.dims[self.display_axis[index]]
         if dim == "eV":
             return dim, "eV"
+        # if dim in ("kx", "ky", "phi", "theta", "beta", "alpha", "chi"):
+        # return dim
         return dim, ""
 
     def set_active_cursor(self, index: int):
@@ -1495,6 +1504,11 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.currentIndexChanged.connect(self.load_thumbnail)
         self.default_cmap = None
 
+        sc_p = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Up"), self)
+        sc_p.activated.connect(self.previousIndex)
+        sc_m = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Down"), self)
+        sc_m.activated.connect(self.nextIndex)
+
     def load_thumbnail(self, index: int):
         if not self.thumbnails_loaded:
             text = self.itemText(index)
@@ -1529,6 +1543,36 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         )
         if maxWidth:
             view.setMinimumWidth(maxWidth)
+
+    @QtCore.Slot()
+    def nextIndex(self):
+        self.wheelEvent(
+            QtGui.QWheelEvent(
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, -15),
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+                QtCore.Qt.ScrollPhase.ScrollUpdate,
+                True,
+            )
+        )
+
+    @QtCore.Slot()
+    def previousIndex(self):
+        self.wheelEvent(
+            QtGui.QWheelEvent(
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, 0),
+                QtCore.QPoint(0, 15),
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+                QtCore.Qt.ScrollPhase.ScrollUpdate,
+                True,
+            )
+        )
 
     def hidePopup(self):
         self.activated.emit(self.currentIndex())
@@ -2230,4 +2274,4 @@ if __name__ == "__main__":
         ,
         engine="h5netcdf",
     )
-    itool_(data)
+    itool(data)
