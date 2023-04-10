@@ -248,7 +248,7 @@ class ImageTool(QtWidgets.QMainWindow):
         for action, i, d in zip(
             self._cursor_step_actions, (1, 1, 0, 0), (1, -1, 1, -1)
         ):
-            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
+            ax = self.slicer_area.main_image.display_axis[i]
             action.triggered.connect(
                 lambda *_, ax=ax, d=d: self.slicer_area.step_index(ax, d)
             )
@@ -276,7 +276,7 @@ class ImageTool(QtWidgets.QMainWindow):
         for action, i, d in zip(
             self._cursor_step_all_actions, (1, 1, 0, 0), (1, -1, 1, -1)
         ):
-            ax = self.slicer_area.main_image.getPlotItem().display_axis[i]
+            ax = self.slicer_area.main_image.display_axis[i]
             action.triggered.connect(
                 lambda *_, ax=ax, d=d: self.slicer_area.step_index_all(ax, d)
             )
@@ -392,7 +392,7 @@ class ItoolColorBar(pg.PlotWidget):
         super().__init__(
             parent=slicer_area, plotItem=ItoolColorBarItem(slicer_area, **cbar_kw)
         )
-        self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
+        self.scene().sigMouseClicked.connect(self.mouseDragEvent)
 
     @property
     def cb(self) -> BetterColorBarItem:
@@ -407,9 +407,6 @@ class ItoolColorBar(pg.PlotWidget):
     ):
         self.cb.set_dimensions(horiz_pad, vert_pad, font_size)
         self.setFixedWidth(width)
-
-    def getPlotItemViewBox(self) -> pg.ViewBox:
-        return self.getPlotItem().vb
 
     def setVisible(self, visible: bool):
         super().setVisible(visible)
@@ -590,7 +587,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def connect_signals(self):
         for ax in self.axes:
-            ax.getPlotItem().connect_signals()
+            ax.connect_signals()
         self.sigDataChanged.connect(self.refresh_all)
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
 
@@ -599,23 +596,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.colormap_properties["cmap"]
 
     @property
-    def main_image(self) -> ItoolGraphicsLayoutWidget:
+    def main_image(self) -> ItoolPlotItem:
         """returns the main PlotItem"""
         return self.get_axes(0)
 
     @property
-    def slices(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+    def slices(self) -> tuple[ItoolPlotItem, ...]:
         if self.data.ndim == 2:
             return tuple()
         else:
             return tuple(self.get_axes(ax) for ax in (4, 5))
 
     @property
-    def images(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+    def images(self) -> tuple[ItoolPlotItem, ...]:
         return (self.main_image,) + self.slices
 
     @property
-    def profiles(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+    def profiles(self) -> tuple[ItoolPlotItem, ...]:
         if self.data.ndim == 2:
             profile_axes = (1, 2)
         elif self.data.ndim == 3:
@@ -625,15 +622,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
-    def axes(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
+    def axes(self) -> tuple[ItoolPlotItem, ...]:
         """Currently valid subset of self._plots"""
         return self.images + self.profiles
 
     @property
     def _imageitems(self) -> tuple[ItoolImageItem, ...]:
-        return tuple(
-            im for ax in self.images for im in ax.getPlotItem().slicer_data_items
-        )
+        return tuple(im for ax in self.images for im in ax.slicer_data_items)
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -665,8 +660,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def get_current_value(self, axis: int, uniform: bool = False) -> float:
         return self.array_slicer.get_value(self.current_cursor, axis, uniform=uniform)
 
-    def get_axes(self, index: int) -> ItoolGraphicsLayoutWidget:
+    def get_axes_widget(self, index: int) -> ItoolGraphicsLayoutWidget:
         return self._plots[index]
+
+    def get_axes(self, index: int) -> ItoolPlotItem:
+        return self._plots[index].plotItem
 
     @QtCore.Slot(tuple, bool, bool)
     def refresh_all(
@@ -676,7 +674,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigIndexChanged.emit(c, axes)
         if not only_plots:
             for ax in self.axes:
-                ax.getPlotItem().refresh_labels()
+                ax.refresh_labels()
 
     @QtCore.Slot(tuple)
     def refresh_current(self, axes: tuple[int, ...] | None = None):
@@ -688,8 +686,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def view_all(self):
         for ax in self.axes:
-            ax.getPlotItemViewBox().enableAutoRange()
-            ax.getPlotItemViewBox().updateAutoRange()
+            ax.vb.enableAutoRange()
+            ax.vb.updateAutoRange()
 
     def center_all_cursors(self):
         for i in range(self.n_cursors):
@@ -946,22 +944,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
             split.setSizes(tuple(map(lambda s: round(s * scale), sz)))
 
         for i, sel in enumerate(valid_axis):
+            self.get_axes_widget(i).setVisible(i not in invalid)
+            if i in invalid:
+                continue
             axes = self.get_axes(i)
-            axes.setVisible(i not in invalid)
-            axes.getPlotItem().setDefaultPadding(0)
+            axes.setDefaultPadding(0)
             for axis in ("left", "bottom", "right", "top"):
-                axes.getPlotItem().getAxis(axis).setTickFont(font)
-                axes.getPlotItem().getAxis(axis).setStyle(
+                axes.getAxis(axis).setTickFont(font)
+                axes.getAxis(axis).setStyle(
                     autoExpandTextSpace=True, autoReduceTextSpace=True
                 )
-            axes.getPlotItem().showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
+            axes.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
             if i in (1, 4):
-                axes.getPlotItem().setXLink(self.get_axes(0).getPlotItem())
+                axes.setXLink(self.get_axes(0))
             elif i in (2, 5):
-                axes.getPlotItem().setYLink(self.get_axes(0).getPlotItem())
+                axes.setYLink(self.get_axes(0))
 
         # reserve space, only hide plotItem
-        self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
+        self.get_axes(3).setVisible(not self.data.ndim == 2)
 
         self._colorbar.set_dimensions(
             width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
