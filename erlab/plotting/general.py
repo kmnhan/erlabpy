@@ -442,7 +442,8 @@ def plot_slices(
         ======== ============================================================
     show_all_labels
         If `True`, shows every xlabel and ylabel. If `False`, labels on shared axes are
-        minimized.
+        minimized. When `False` and the `axes` argument is given, the `order` must be
+        specified to correctly hide shared labels.
     colorbar
         Controls colorbar behavior. Possible values are:
 
@@ -461,7 +462,9 @@ def plot_slices(
     cmap
         If supplied a single `str` or `matplotlib.colors.Colormap`, the colormap is
         applied to all axes. Otherwise, a nested sequence with the same shape as the
-        resulting axes can be provided to use different colormaps for different axes.
+        resulting axes can be provided to use different colormaps for different axes. If
+        the slices are 1D, this argument can be used to supply valid colors as line
+        colors for differnet slices.
     norm
         If supplied a single `matplotlib.colors.Normalize`, the norm is applied to all
         axes. Otherwise, a nested sequence with the same shape as the resulting axes can
@@ -532,6 +535,9 @@ def plot_slices(
 
     plot_dims = [d for d in dims if d != slice_dim]
 
+    if len(plot_dims) not in (1, 2):
+        raise ValueError("The data to plot must be 1D or 2D")
+
     if not np.iterable(slice_levels):
         slice_levels = [slice_levels]
 
@@ -565,31 +571,31 @@ def plot_slices(
         fatsel_kw = dict()
         sel_kw = dict()
         if crop:
-            if xlim is not None:
-                sel_kw[plot_dims[1]] = slice(*xlim)
-            if ylim is not None:
-                sel_kw[plot_dims[0]] = slice(*ylim)
+            if len(plot_dims) == 1:
+                if transpose and (ylim is not None):
+                    sel_kw[plot_dims[0]] = slice(*ylim)
+                elif xlim is not None:
+                    sel_kw[plot_dims[0]] = slice(*xlim)
+            elif len(plot_dims) == 2:
+                if xlim is not None:
+                    sel_kw[plot_dims[1]] = slice(*xlim)
+                if ylim is not None:
+                    sel_kw[plot_dims[0]] = slice(*ylim)
         if slice_dim is not None:
             fatsel_kw[slice_dim] = slice_levels[i]
         if slice_width is not None:
             fatsel_kw[slice_dim + "_width"] = slice_width
             if slice_width == 0:
                 fatsel_kw["method"] = "nearest"
+
         for j in range(len(maps)):
-            maps[j] = maps[j].sel(**sel_kw)
-            if np.iterable(cmap_norm):
-                if norm_order == "F":
-                    try:
-                        norm = cmap_norm[i][j]
-                    except TypeError:
-                        norm = cmap_norm[i]
-                elif norm_order == "C":
-                    try:
-                        norm = cmap_norm[j][i]
-                    except TypeError:
-                        norm = cmap_norm[j]
-            else:
-                norm = copy.deepcopy(cmap_norm)
+            dat_sel = maps[j].copy(deep=True).sel(**sel_kw).S.fat_sel(**fatsel_kw)
+
+            if order == "F":
+                ax = axes[i, j]
+            elif order == "C":
+                ax = axes[j, i]
+
             if np.iterable(cmap_name) and not isinstance(cmap_name, str):
                 if cmap_order == "F":
                     if isinstance(cmap_name[i], str):
@@ -603,27 +609,36 @@ def plot_slices(
                         cmap = cmap_name[j][i]
             else:
                 cmap = cmap_name
-            if order == "F":
-                ax = axes[i, j]
-            elif order == "C":
-                ax = axes[j, i]
-            # if slice_width == 0:
-            #     plot_array(
-            #         maps[j].sel({slice_dim: slice_levels[i]}, method='nearest'),
-            #         ax=ax,
-            #         norm=norm,
-            #         cmap=cmap,
-            #         **kwargs
-            #     )
-            # else:
-            plot_array(
-                maps[j].copy(deep=True).S.fat_sel(**fatsel_kw),
-                ax=ax,
-                norm=norm,
-                cmap=cmap,
-                **kwargs,
-            )
-    if same_limits:
+
+            if len(plot_dims) == 1:
+                if cmap is not None:
+                    kwargs["color"] = cmap
+
+                if transpose:
+                    ax.plot(dat_sel.values, dat_sel[plot_dims[0]], **kwargs)
+                    ax.set_ylabel(plot_dims[0])
+                    ax.set_xlabel(dat_sel.name)
+                else:
+                    dat_sel.plot(ax=ax, **kwargs)
+                    ax.set_title("")
+
+            elif len(plot_dims) == 2:
+                if np.iterable(cmap_norm):
+                    if norm_order == "F":
+                        try:
+                            norm = cmap_norm[i][j]
+                        except TypeError:
+                            norm = cmap_norm[i]
+                    elif norm_order == "C":
+                        try:
+                            norm = cmap_norm[j][i]
+                        except TypeError:
+                            norm = cmap_norm[j]
+                else:
+                    norm = copy.deepcopy(cmap_norm)
+                plot_array(dat_sel, ax=ax, norm=norm, cmap=cmap, **kwargs)
+
+    if same_limits and len(plot_dims) == 2:
         vmn, vmx = [], []
         for ax in axes.flat:
             vmn.append(ax.get_images()[0].norm.vmin)
