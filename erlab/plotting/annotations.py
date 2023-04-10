@@ -29,6 +29,7 @@ __all__ = [
     "plot_hv_text",
     "label_subplots",
     "label_subplots_nature",
+    "property_label",
     "label_subplot_properties",
     "set_titles",
     "set_xlabels",
@@ -609,7 +610,7 @@ def label_subplot_properties(
     name: str | None = None,
     unit: str | None = None,
     order: Literal["C", "F", "A", "K"] = "C",
-    **kwargs,
+    **kwargs: dict,
 ):
     r"""Labels subplots with automatically generated labels.
 
@@ -637,6 +638,8 @@ def label_subplot_properties(
         order if a is Fortran contiguous in memory, row-major order
         otherwise. 'K' means to flatten a in the order the elements
         occur in memory. The default is 'C'.
+    **kwargs
+        Extra arguments to `erlab.plotting.annotations.label_subplots`.
 
     """
     kwargs.setdefault("fontweight", plt.rcParams["font.weight"])
