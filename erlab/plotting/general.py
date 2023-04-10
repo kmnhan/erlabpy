@@ -573,6 +573,8 @@ def plot_slices(
             fatsel_kw[slice_dim] = slice_levels[i]
         if slice_width is not None:
             fatsel_kw[slice_dim + "_width"] = slice_width
+            if slice_width == 0:
+                fatsel_kw["method"] = "nearest"
         for j in range(len(maps)):
             maps[j] = maps[j].sel(**sel_kw)
             if np.iterable(cmap_norm):
