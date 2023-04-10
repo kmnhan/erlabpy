@@ -26,7 +26,7 @@ Installing Git
 
       xcode-select --install
 
-* Windows 10 1709 (build 16299) or later: type this command in command prompt or Powershell.
+* Windows 10 1709 (build 16299) or later: run in command prompt or PowerShell:
   
   .. code-block:: powershell
 

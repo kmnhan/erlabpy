@@ -15,7 +15,8 @@ release = "0.1"
 # build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
 import os
-os.environ['QT_API'] = 'pyqt6'
+
+os.environ["QT_API"] = "pyqt6"
 
 
 # -- General configuration ---------------------------------------------------
@@ -55,13 +56,12 @@ nitpick_ignore = [("py:class", "numpy.float64")]
 
 autodoc_inherit_docstrings = False
 autodoc_typehints = "both"
-autodoc_member_order="bysource"
+autodoc_member_order = "bysource"
 autodoc_default_options = {
-    'members':          True,
-    'undoc-members':    True,
-    # "exclude-members":("sigDataChanged",), 
-    'show-inheritance':True,
-    
+    "members": True,
+    "undoc-members": True,
+    # "exclude-members":("sigDataChanged",),
+    "show-inheritance": True,
 }
 # autodoc_typehints_description_target = "all"
 
@@ -113,8 +113,13 @@ plot_html_show_formats = False
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
+html_theme = "sphinx_book_theme"
+html_theme_options = {
+    "repository_url": "https://github.com/kmnhan/erlabpy",
+    "use_repository_button": True,
+    "use_source_button": True,
+}
 
 # -- LaTeX options -----------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options

@@ -28,7 +28,7 @@ def color_to_QColor(
     ----------
     c
         A valid matplotlib color. See the `matplotlib documentation
-        <https://matplotlib.org/stable/tutorials/colors/colors.html>` for more
+        <https://matplotlib.org/stable/tutorials/colors/colors.html>`_ for more
         information.
     alpha
         If supplied, applies transparency to the color.
@@ -44,7 +44,7 @@ def color_to_QColor(
 def pg_colormap_names(
     source: Literal["local", "all", "matplotlib"] = "all"
 ) -> list[str]:
-    """Get all valid `pyqtgraph` colormap names.
+    """Get all valid :obj:`pyqtgraph` colormap names.
 
     Parameters
     ----------
@@ -112,7 +112,7 @@ def pg_colormap_powernorm(
 ) -> pg.ColorMap:
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
-    N = 4096
+    N = 65536
 
     if gamma == 1:
         mapping_fn = lambda x: x
@@ -163,7 +163,7 @@ def pg_colormap_to_QPixmap(
 
     Returns
     -------
-    qtpy.QtGui.QPixmap
+    PySide6.QtGui.QPixmap
 
     """
 

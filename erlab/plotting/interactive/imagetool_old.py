@@ -816,7 +816,7 @@ class ItoolCursorLine(pg.InfiniteLine):
 
 
 class pg_itool(pg.GraphicsLayoutWidget):
-    """A interactive tool based on `pyqtgraph` for exploring 3D data.
+    """A interactive tool based on :obj:`pyqtgraph` for exploring 3D data.
 
     For the tool to remain responsive you must
     keep a reference to it.
@@ -831,7 +831,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     gamma : float, default: 0.5
         Colormap default gamma.
-    cmap : str or `pyqtgraph.colorMap`, default: 'magma'
+    cmap : str or `pyqtgraph.ColorMap`, default: 'magma'
         Default colormap.
 
     bench : bool, default: False
@@ -892,7 +892,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     # !TODO: auto adjust limits on transpose
 
     sigDataChanged = QtCore.Signal(object)  #:noindex:
-    sigIndexChanged = QtCore.Signal(list, list)
+    sigIndexChanged = QtCore.Signal(list, list)  #:noindex:
 
     _only_axis = ("x", "y", "z", "t")
     _only_maps = "maps"
