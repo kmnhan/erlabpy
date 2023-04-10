@@ -23,7 +23,9 @@ import h5netcdf
 import igor.igorpy
 import numpy as np
 import xarray as xr
+import arpes.io
 from arpes import load_pxt
+
 from astropy.io import fits
 
 __all__ = [
@@ -34,6 +36,7 @@ __all__ = [
     "load_igor_ibw",
     "load_igor_h5",
     "load_ssrl",
+    "load_als_bl4",
 ]
 
 
@@ -243,7 +246,7 @@ def load_igor_h5(filename):
 def load_igor_ibw(filename, data_dir=None):
     try:
         filename = find_first_file(filename, data_dir=data_dir)
-    except ValueError:
+    except (ValueError, TypeError):
         pass
 
     class ibwfile_wave(object):
@@ -370,6 +373,10 @@ def load_ssrl(filename, data_dir=None, contains=None):
         out = data.spectrum
     out.attrs = attrs
     return out
+
+
+def load_als_bl4(filename, data_dir=None, **kwargs):
+    return arpes.io.load_data(filename, location="BL4", data_dir=data_dir, **kwargs)
 
 
 def files_for_search(directory, contains=None):
