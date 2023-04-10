@@ -60,7 +60,20 @@ def array_rect(data):
     return QtCore.QRectF(x, y, w, h)
 
 
-def copy_to_clipboard(content: str|list):
+def copy_to_clipboard(content: str | list[str]) -> str:
+    """Convenience function for clipboard handling.
+
+    Parameters
+    ----------
+    content
+        The content to be copied.
+
+    Returns
+    -------
+    str
+        The copied content.
+
+    """
     if isinstance(content, list):
         content = "\n".join(content)
     pyclip.copy(content)
@@ -154,7 +167,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     textChanged
         Emitted when the text is changed.
 
-
     Parameters
     ----------
     integer
@@ -184,8 +196,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     """
 
-    valueChanged = QtCore.Signal(object)
-    textChanged = QtCore.Signal(object)
+    valueChanged = QtCore.Signal(object)  #:noindex:
+    textChanged = QtCore.Signal(object)  #:noindex:
 
     def __init__(
         self,
@@ -211,14 +223,15 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._min = -np.inf
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
-        
+
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
         super().__init__(*args, **kwargs)
         # self.editingFinished.disconnect()
         self.setSizePolicy(
             # QtWidgets.QSizePolicy.Policy.Expanding,
             # QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Minimum,
+            # QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.editingFinished.connect(self.editingFinishedEvent)
@@ -374,7 +387,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
         if self._only_int and np.isfinite(val):
             val = round(val)
-        
+
         self._lastvalue, self._value = self._value, val
 
         self.valueChanged.emit(self.value())
@@ -382,17 +395,17 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.textChanged.emit(self.text())
 
     def fixup(self, input):
-    #     # fixup is called when the spinbox loses focus with an invalid or intermediate string
-    #     self.lineEdit().setText(self.text())
+        #     # fixup is called when the spinbox loses focus with an invalid or intermediate string
+        #     self.lineEdit().setText(self.text())
 
-    #     # support both PyQt APIs (for Python 2 and 3 respectively)
-    #     # http://pyqt.sourceforge.net/Docs/PyQt4/python_v3.html#qvalidator
+        #     # support both PyQt APIs (for Python 2 and 3 respectively)
+        #     # http://pyqt.sourceforge.net/Docs/PyQt4/python_v3.html#qvalidator
 
-    #     print(input)
-    #     try:
-    #         input.clear()
-    #         input.append(self.lineEdit().text())
-    #     except AttributeError:
+        #     print(input)
+        #     try:
+        #         input.clear()
+        #         input.append(self.lineEdit().text())
+        #     except AttributeError:
         # print("fixup called ", input)
         return self.textFromValue(self._lastvalue)
 
@@ -408,7 +421,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     ret = QtGui.QValidator.State.Acceptable
             except ValueError:
                 # sys.excepthook(*sys.exc_info())
-                ret =  QtGui.QValidator.State.Invalid
+                ret = QtGui.QValidator.State.Invalid
 
         ## note: if text is invalid, we don't change the textValid flag
         ## since the text will be forced to its previous state anyway
@@ -523,9 +536,12 @@ class BetterAxisItem(pg.AxisItem):
             (scale, prefix) = pg.siScale(
                 max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
             )
-            if self.labelUnits == '' and prefix in ['k', 'm']:  ## If we are not showing units, wait until 1e6 before scaling.
+            if self.labelUnits == "" and prefix in [
+                "k",
+                "m",
+            ]:  ## If we are not showing units, wait until 1e6 before scaling.
                 scale = 1.0
-                prefix = ''
+                prefix = ""
             self.autoSIPrefixScale = scale
             self.labelUnitPrefix = prefix
         else:
@@ -658,6 +674,14 @@ class BetterColorBarItem(pg.PlotItem):
         self.setLabels(right=("", ""))
         self.set_dimensions()
 
+    @property
+    def images(self):
+        return self._images
+
+    @property
+    def primary_image(self):
+        return self._primary_image
+
     def set_dimensions(
         self,
         horiz_pad: int | None = None,
@@ -681,7 +705,7 @@ class BetterColorBarItem(pg.PlotItem):
     def _level_change(self):
         if not self.isVisible():
             return
-        for img_ref in self._images:
+        for img_ref in self.images:
             if not img_ref().auto_levels:
                 img_ref().setLevels(self._span.getRegion())
         self.limit_changed()
@@ -691,14 +715,14 @@ class BetterColorBarItem(pg.PlotItem):
 
     @property
     def levels(self) -> Sequence[float]:
-        return self._primary_image().getLevels()
+        return self.primary_image().getLevels()
 
     @property
     def limits(self) -> tuple[float, float]:
         if self._fixedlimits is not None:
             return self._fixedlimits
         else:
-            return self._primary_image().quickMinMax(targetSize=2**16)
+            return self.primary_image().quickMinMax(targetSize=2**16)
 
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
@@ -713,11 +737,11 @@ class BetterColorBarItem(pg.PlotItem):
                 self._images.add(weakref.ref(img))
 
     def removeImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
-        if isinstance(image, BetterImageItem):
-            self._images.remove(weakref.ref(image))
-        else:
+        if isinstance(image, Iterable):
             for img in image:
                 self._images.remove(weakref.ref(img))
+        else:
+            self._images.remove(weakref.ref(image))
 
     def setImageItem(
         self,
@@ -734,10 +758,10 @@ class BetterColorBarItem(pg.PlotItem):
 
         if self._primary_image is None:
             raise ValueError("ImageItem with a colormap was not found")
-        self._primary_image().sigLimitChanged.connect(self.limit_changed)
-        # self._primary_image().sigImageChanged.connect(self.limit_changed)
-        # self._primary_image().sigColorChanged.connect(self.color_changed)
-        self._primary_image().sigColorChanged.connect(self.limit_changed)
+        self.primary_image().sigLimitChanged.connect(self.limit_changed)
+        # self.primary_image().sigImageChanged.connect(self.limit_changed)
+        # self.primary_image().sigColorChanged.connect(self.color_changed)
+        self.primary_image().sigColorChanged.connect(self.limit_changed)
         # else:
         # print("hello")
 
@@ -775,7 +799,7 @@ class BetterColorBarItem(pg.PlotItem):
     def color_changed(self):
         if not self.isVisible():
             return
-        cmap = self._primary_image()._colorMap
+        cmap = self.primary_image()._colorMap
         lut = cmap.getStops()[1]
         if not self._colorbar.image.shape[0] == lut.shape[0]:
             self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
@@ -838,12 +862,19 @@ class FittingParameterWidget(QtWidgets.QWidget):
         if label is None:
             label = self.param_name
         self.label = QtWidgets.QLabel(label)
+        # spin_min_width = spin_kw.pop("minimumWidth", 80)
         self.spin_value = BetterSpinBox(**spin_kw)
         self.spin_lb = BetterSpinBox(
             value=-np.inf, minimumWidth=60, toolTip="Lower Bound"
         )
         self.spin_ub = BetterSpinBox(
             value=np.inf, minimumWidth=60, toolTip="Upper Bound"
+        )
+        self.spin_lb.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        self.spin_ub.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Fixed
         )
         self.check = QtWidgets.QCheckBox(toolTip="Fixed")
 
@@ -1015,14 +1046,14 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)
 
-    def __init__(self, ncols: int = 1, groupbox_kw:dict=dict(), **kwargs:dict):
+    def __init__(self, ncols: int = 1, groupbox_kw: dict = dict(), **kwargs: dict):
         super(ParameterGroup, self).__init__(**groupbox_kw)
         self.setLayout(QtWidgets.QGridLayout(self))
 
         self.labels = []
         self.untracked = []
         self.widgets: dict[str, QtWidgets.QWidget] = dict()
-        
+
         j = 0
         for i, (k, v) in enumerate(kwargs.items()):
             if isinstance(v, dict):
@@ -1073,7 +1104,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             "fitparam",
         ]
         | None = None,
-        **kwargs:dict,
+        **kwargs: dict,
     ):
         """Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
 
@@ -1113,6 +1144,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
         valueChanged = kwargs.pop("valueChanged", None)
         textChanged = kwargs.pop("textChanged", None)
 
+        policy = kwargs.pop("policy", None)
+
         if qwtype == "fitparam":
             show_param_label = kwargs.pop("show_param_label", False)
             kwargs["show_label"] = show_param_label
@@ -1144,6 +1177,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.valueChanged.connect(valueChanged)
         if textChanged is not None:
             widget.textChanged.connect(textChanged)
+        if policy is not None:
+            widget.setSizePolicy(*policy)
 
         return widget
 
@@ -1674,7 +1709,6 @@ if __name__ == "__main__":
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
 
-
     dat = (
         xr.open_dataarray(
             "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
@@ -1690,24 +1724,23 @@ if __name__ == "__main__":
     # win.set_pre_function(gaussian_filter, sigma=[1, 1], only_values=True)
     # win.set_pre_function(gaussian_filter, sigma=(0.1, 0.1))
 
-
     # layout.addWidget(win)
     win.addParameterGroup(
-            sigma_x=dict(
-                qwtype="btspin",
-                minimum=0,
-                maximum=10,
-                valueChanged=lambda x: win.aw.set_main_function_args(sx=x),
-            ),
-            sigma_y=dict(
-                qwtype="btspin",
-                minimum=0,
-                maximum=10,
-                valueChanged=lambda x: win.aw.set_main_function_args(sy=x),
-            ),
-            b=dict(qwtype="combobox", items=["item1", "item2", "item3"]),
-        )
-    
+        sigma_x=dict(
+            qwtype="btspin",
+            minimum=0,
+            maximum=10,
+            valueChanged=lambda x: win.aw.set_main_function_args(sx=x),
+        ),
+        sigma_y=dict(
+            qwtype="btspin",
+            minimum=0,
+            maximum=10,
+            valueChanged=lambda x: win.aw.set_main_function_args(sy=x),
+        ),
+        b=dict(qwtype="combobox", items=["item1", "item2", "item3"]),
+    )
+
     win.__post_init__(execute=True)
     # new_roi = win.add_roi(0)
 
