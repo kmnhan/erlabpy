@@ -331,6 +331,7 @@ class ImageTool(QtWidgets.QMainWindow):
         filters = (
             "xarray HDF5 Files (*.h5)",
             "SSRL Raw Data (*.h5)",
+            "ALS BL4 Raw Data (*.pxt)",
             "NetCDF Files (*.nc *.nc4 *.cdf)",
         )
 
@@ -348,6 +349,8 @@ class ImageTool(QtWidgets.QMainWindow):
                 case 1:
                     dat = erlab.io.load_ssrl(files[0])
                 case 2:
+                    dat = erlab.io.load_als_bl4(files[0])
+                case 3:
                     dat = xr.load_dataarray(files[0])
                 case _:
                     raise ValueError
@@ -374,9 +377,21 @@ class ImageTool(QtWidgets.QMainWindow):
             erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
 
 
+class ItoolColorBarItem(BetterColorBarItem):
+    def __init__(self, slicer_area: ImageSlicerArea | None = None, **kwargs):
+        self._slicer_area = slicer_area
+        super().__init__(**kwargs)
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self._slicer_area
+
+
 class ItoolColorBar(pg.PlotWidget):
-    def __init__(self, parent: QtWidgets.QWidget | None = None, **cbar_kw):
-        super().__init__(parent=parent, plotItem=BetterColorBarItem(**cbar_kw))
+    def __init__(self, slicer_area: ImageSlicerArea | None = None, **cbar_kw):
+        super().__init__(
+            parent=slicer_area, plotItem=ItoolColorBarItem(slicer_area, **cbar_kw)
+        )
         self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
 
     @property
@@ -593,8 +608,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.data.ndim == 2:
             return tuple()
         else:
-            slice_axes = [4, 5]
-        return tuple(self.get_axes(ax) for ax in slice_axes)
+            return tuple(self.get_axes(ax) for ax in (4, 5))
 
     @property
     def images(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
@@ -603,17 +617,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def profiles(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         if self.data.ndim == 2:
-            profile_axes = [1, 2]
+            profile_axes = (1, 2)
         elif self.data.ndim == 3:
-            profile_axes = [1, 2, 3]
+            profile_axes = (1, 2, 3)
         else:
-            profile_axes = [1, 2, 3, 6]
+            profile_axes = (1, 2, 3, 6)
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
     def axes(self) -> tuple[ItoolGraphicsLayoutWidget, ...]:
         """Currently valid subset of self._plots"""
         return self.images + self.profiles
+
+    @property
+    def _imageitems(self) -> tuple[ItoolImageItem, ...]:
+        return tuple(
+            im for ax in self.images for im in ax.getPlotItem().slicer_data_items
+        )
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -695,7 +715,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             del self._data
 
         if not isinstance(data, xr.DataArray):
-            data = xr.DataArray(np.asarray(data))
+            if isinstance(data, xr.Dataset):
+                data = data.spectrum
+            else:
+                data = xr.DataArray(np.asarray(data))
 
         if not rad2deg:
             self._data = data
@@ -721,9 +744,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # self.refresh_current()
         self.set_colormap(update=True)
-        self._colorbar.cb.setImageItem(
-            tuple(im for ax in self.images for im in ax.getPlotItem().slicer_data_items)
-        )
+        self._colorbar.cb.setImageItem(self._imageitems)  #!!!
         self.lock_levels(False)
 
     @QtCore.Slot(int, int)
@@ -845,9 +866,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             highContrast=self.colormap_properties["highContrast"],
             zeroCentered=self.colormap_properties["zeroCentered"],
         )
-        for ax in self.images:
-            for im in ax.getPlotItem().slicer_data_items:
-                im.set_pg_colormap(cmap, update=update)
+        for im in self._imageitems:
+            im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
     @QtCore.Slot(bool)
@@ -855,14 +875,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if lock:
             levels = self.array_slicer.limits
             self._colorbar.cb.setLimits(levels)
-        for ax in self.images:
-            for im in ax.getPlotItem().slicer_data_items:
-                if lock:
-                    im.setAutoLevels(False)
-                    im.setLevels(levels, update=False)
-                else:
-                    im.setAutoLevels(True)
-                im.refresh_data()
+        for im in self._imageitems:
+            if lock:
+                im.setAutoLevels(False)
+                im.setLevels(levels, update=False)
+            else:
+                im.setAutoLevels(True)
+            im.refresh_data()
 
         self._colorbar.setVisible(lock)
         self.sigViewOptionChanged.emit()
@@ -945,7 +964,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.get_axes(3).getPlotItem().setVisible(not self.data.ndim == 2)
 
         self._colorbar.set_dimensions(
-            width=horiz_pad + 20, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
+            width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
         )
 
     def toggle_snap(self, value: bool | None = None):
@@ -1230,7 +1249,7 @@ class ItoolPlotItem(pg.PlotItem):
                 axisOrder="row-major",
                 **self._item_kw,
             )
-            self.slicer_area._colorbar.cb.addImage(item)
+            self.slicer_area._colorbar.cb.addImage(item)  #!!!
         else:
             item = ItoolPlotDataItem(
                 self,
@@ -1311,7 +1330,7 @@ class ItoolPlotItem(pg.PlotItem):
     def remove_cursor(self, index: int):
         item = self.slicer_data_items.pop(index)
         if self.is_image:
-            self.slicer_area._colorbar.cb.removeImage(item)
+            self.slicer_area._colorbar.cb.removeImage(item)  #!!!
         self.removeItem(item)
         for line, span in zip(
             self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
