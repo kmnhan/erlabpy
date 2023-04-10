@@ -2,8 +2,8 @@
 
 """
 import os
+import io
 import pkgutil
-from io import StringIO
 
 import cmasher
 import cmocean
@@ -13,6 +13,8 @@ import matplotlib.style
 import matplotlib.colors
 import matplotlib.font_manager
 import numpy as np
+
+import erlab.io
 
 os.environ["QT_API"] = "pyside6"
 
@@ -25,16 +27,21 @@ __all__ = [
 ]
 
 
-def load_igor_ct(file, name):
-    file = pkgutil.get_data(__package__, "IgorCT/" + file)
-    cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
-        name, np.genfromtxt(StringIO(file.decode())) / 65535
-    )
+def load_igor_ct(fname, name):
+    file = pkgutil.get_data(__package__, "IgorCT/" + fname)
+    if fname.endswith(".txt"):
+        values = np.genfromtxt(io.StringIO(file.decode()))
+    elif fname.endswith(".ibw"):
+        values = erlab.io.load_igor_ibw(io.BytesIO(file)).values
+
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list(name, values / 65535)
     matplotlib.colormaps.register(cmap)
     matplotlib.colormaps.register(cmap.reversed())
 
 
-load_igor_ct("Blue-White.txt", "BuWh")
+load_igor_ct("CTBlueWhite.ibw", "BuWh")
+load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
+load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
 
 matplotlib.style.core.USER_LIBRARY_PATHS.append(
     os.path.join(os.path.dirname(__file__), "stylelib")
