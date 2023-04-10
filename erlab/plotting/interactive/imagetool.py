@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import weakref
 from collections.abc import Iterable, Sequence
 
 import numpy as np
@@ -386,6 +387,24 @@ class ItoolColorBarItem(BetterColorBarItem):
     def slicer_area(self) -> ImageSlicerArea:
         return self._slicer_area
 
+    @property
+    def images(self):
+        return [weakref.ref(x) for x in self._slicer_area._imageitems]
+
+    @property
+    def primary_image(self):
+        return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
+
+    def setImageItem(self, *args, **kwargs):
+        self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
+
+        self._span.blockSignals(True)
+        self._span.setRegion(self.limits)
+        self._span.blockSignals(False)
+        self._span.sigRegionChanged.connect(self._level_change)
+        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
+        self.color_changed()
+
 
 class ItoolColorBar(pg.PlotWidget):
     def __init__(self, slicer_area: ImageSlicerArea | None = None, **cbar_kw):
@@ -654,6 +673,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
 
+    @property
+    def color_locked(self) -> bool:
+        return self._colorbar.isVisible()
+
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
 
@@ -742,7 +765,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # self.refresh_current()
         self.set_colormap(update=True)
-        self._colorbar.cb.setImageItem(self._imageitems)  #!!!
+        self._colorbar.cb.setImageItem()
         self.lock_levels(False)
 
     @QtCore.Slot(int, int)
@@ -1249,7 +1272,9 @@ class ItoolPlotItem(pg.PlotItem):
                 axisOrder="row-major",
                 **self._item_kw,
             )
-            self.slicer_area._colorbar.cb.addImage(item)  #!!!
+            if self.slicer_area.color_locked:
+                item.setAutoLevels(False)
+                item.setLevels(self.array_slicer.limits, update=True)
         else:
             item = ItoolPlotDataItem(
                 self,
@@ -1329,8 +1354,6 @@ class ItoolPlotItem(pg.PlotItem):
 
     def remove_cursor(self, index: int):
         item = self.slicer_data_items.pop(index)
-        if self.is_image:
-            self.slicer_area._colorbar.cb.removeImage(item)  #!!!
         self.removeItem(item)
         for line, span in zip(
             self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
@@ -1823,7 +1846,7 @@ class ColorControls(ItoolControlsBase):
             self.slicer_area.colormap_properties["highContrast"]
         )
         self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
-        self.btn_lock.setChecked(self.slicer_area._colorbar.isVisible())
+        self.btn_lock.setChecked(self.slicer_area.color_locked)
 
         self.btn_reverse.blockSignals(False)
         self.btn_contrast.blockSignals(False)
