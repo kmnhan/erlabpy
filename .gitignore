@@ -158,3 +158,6 @@ cython_debug/
 
 # VS Code
 .vscode/*
+
+# Misc. files
+itool_testing.ipynb
