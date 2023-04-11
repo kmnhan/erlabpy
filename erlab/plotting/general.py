@@ -7,21 +7,31 @@ from collections.abc import Callable, Sequence, Iterable
 from typing import Literal
 
 import copy
+import contextlib
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
 import matplotlib
-import matplotlib.colors as colors
+import matplotlib.image
+import matplotlib.path
+import matplotlib.patches
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.widgets import AxesWidget
 
 from erlab.plotting.annotations import label_subplot_properties, fancy_labels
-from erlab.plotting.colors import axes_textcolor, nice_colorbar, _ez_inset
+from erlab.plotting.colors import (
+    InversePowerNorm,
+    axes_textcolor,
+    nice_colorbar,
+    _ez_inset,
+)
 
 __all__ = [
     "LabeledCursor",
     "place_inset",
     "plot_array",
+    "gradient_fill",
     "plot_slices",
     "figwh",
     "fermiline",
@@ -43,6 +53,16 @@ def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=
     else:
         h = w * wscale * ratio
     return w * wscale, h
+
+
+@contextlib.contextmanager
+def autoscale_off(ax: matplotlib.axes.Axes | None = None):
+    if ax is None:
+        ax = plt.gca()
+    xl, yl = ax.get_xlim(), ax.get_ylim()
+    yield
+    ax.set_xlim(*xl)
+    ax.set_ylim(*yl)
 
 
 class LabeledCursor(AxesWidget):
@@ -247,14 +267,14 @@ def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
-    colorbar_kw: dict = dict(),
+    colorbar_kw: dict | None = None,
     cursor: bool = False,
-    cursor_kw: dict = dict(),
+    cursor_kw: dict | None = None,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     rad2deg: bool | Iterable[str] = False,
-    func: Callable = None,
-    func_args: dict = dict(),
+    func: Callable | None = None,
+    func_args: dict | None = None,
     **improps: dict,
 ) -> tuple[matplotlib.image.AxesImage, LabeledCursor] | matplotlib.image.AxesImage:
     """Plots a 2D `xarray.DataArray` using `matplotlib.pyplot.imshow`.
@@ -294,6 +314,13 @@ def plot_array(
     c : erlab.plotting.general.LabeledCursor
 
     """
+    if colorbar_kw is None:
+        colorbar_kw = dict()
+    if cursor_kw is None:
+        cursor_kw = dict()
+    if func_args is None:
+        func_args = dict()
+
     if isinstance(arr, xr.Dataset):
         arr = arr.spectrum
     elif isinstance(arr, np.ndarray):
@@ -334,7 +361,7 @@ def plot_array(
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
 
-    norm = colors.PowerNorm(gamma, **norm_kw)
+    norm = mcolors.PowerNorm(gamma, **norm_kw)
     improps["norm"] = copy.deepcopy(improps.pop("norm", norm))
 
     improps_default = dict(
@@ -367,6 +394,85 @@ def plot_array(
         return img
 
 
+def gradient_fill(
+    x: Sequence[int | float],
+    y: Sequence[int | float],
+    y0: float | None = None,
+    color: str | tuple[float, float, float] | tuple[float, float, float, float] = "C0",
+    cmap: str | mcolors.Colormap | None = None,
+    transpose: bool = False,
+    reverse: bool = False,
+    ax: matplotlib.axes.Axes | None = None,
+    **kwargs: dict,
+) -> matplotlib.image.AxesImage:
+    """Applies a gradient fill to a line plot.
+
+    Parameters
+    ----------
+    x, y
+        Data of the plot to fill under.
+    y0
+        The minimum y value of the gradient. If `None`, defaults to the minimum of `y`.
+    color
+        A valid matplotlib color to make the gradient from.
+    cmap
+        If given, ignores `color` and fills with the given colormap.
+    transpose
+        Transpose the gradient.
+    reverse
+        Reverse the gradient.
+    ax
+        The `matplotlib.axes.Axes` to plot in.
+    **kwargs
+        Keyword arguments passed onto `matplotlib.axes.Axes.imshow`.
+
+    Returns
+    -------
+    matplotlib.image.AxesImage
+
+    """
+    color = kwargs.pop("c", color)
+    kwargs.setdefault("norm", InversePowerNorm(0.5))
+    kwargs.setdefault("alpha", 0.75)
+    if cmap is None:
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "", colors=[(1, 1, 1, 0), mcolors.to_rgba(color)], N=1024
+        )
+    if isinstance(cmap, str):
+        cmap = matplotlib.colormaps[cmap]
+    if reverse:
+        cmap = cmap.reversed()
+
+    if ax is None:
+        ax = plt.gca()
+    x, y = np.asarray(x), np.asarray(y)
+    valid_inds = (~np.isnan(x)) * (~np.isnan(y))
+    x, y = x[valid_inds], y[valid_inds]
+
+    if y0 is None:
+        y0 = min(y)
+    xn = np.r_[x[0], x, x[-1]]
+    yn = np.r_[y0, y, y0]
+    patch = matplotlib.patches.PathPatch(
+        matplotlib.path.Path(np.array([xn, yn]).T), edgecolor="none", facecolor="none"
+    )
+    ax.add_patch(patch)
+
+    im = matplotlib.image.AxesImage(
+        ax, cmap=cmap, interpolation="bicubic", origin="lower", zorder=0, **kwargs
+    )
+    ax.add_artist(im)
+    if transpose:
+        im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1).T)
+    else:
+        im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1))
+    with autoscale_off(ax):
+        im.set_extent((min(xn), max(xn), min(yn), max(yn)))
+    im.set_clip_path(patch)
+
+    return im
+
+
 def plot_slices(
     maps: xr.DataArray | Sequence[xr.DataArray],
     figsize: tuple[float, float] | None = None,
@@ -382,19 +488,16 @@ def plot_slices(
     colorbar: Literal["none", "right", "rightspan", "all"] = "none",
     hide_colorbar_ticks: bool = True,
     annotate: bool = True,
-    cmap: str
-    | matplotlib.colors.Colormap
-    | Iterable[matplotlib.colors.Colormap | str]
-    | None = None,
-    norm: matplotlib.colors.Normalize
-    | Iterable[matplotlib.colors.Normalize]
-    | None = None,
+    cmap: str | mcolors.Colormap | Iterable[mcolors.Colormap | str] | None = None,
+    norm: mcolors.Normalize | Iterable[mcolors.Normalize] | None = None,
     order: Literal["C", "F"] = "C",
     cmap_order: Literal["C", "F"] = "C",
     norm_order: Literal["C", "F"] | None = None,
-    subplot_kw: dict = dict(),
-    annotate_kw: dict = dict(),
-    colorbar_kw: dict = dict(),
+    gradient: bool = False,
+    gradient_kw: dict | None = None,
+    subplot_kw: dict | None = None,
+    annotate_kw: dict | None = None,
+    colorbar_kw: dict | None = None,
     axes: npt.NDArray[matplotlib.axes.Axes] | None = None,
     **values: dict,
 ) -> tuple[matplotlib.figure.Figure, npt.NDArray[matplotlib.axes.Axes]]:
@@ -479,6 +582,11 @@ def plot_slices(
     norm_order
         The order to flatten when given a nested sequence for `norm`,
         Defaults to `cmap_order`.
+    gradient
+        If `True`, for 1D slices, fills the area under the curve with a gradient. Has no
+        effect for 2D slices.
+    gradient_kw
+        Extra arguments to `erlab.plotting.general.gradient_fill`.
     subplot_kw
         Extra arguments to `matplotlib.pyplot.subplots`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
@@ -520,6 +628,15 @@ def plot_slices(
         cmap_order = order
     if norm_order is None:
         norm_order = cmap_order
+    if gradient_kw is None:
+        gradient_kw = dict()
+    if subplot_kw is None:
+        subplot_kw = dict()
+    if annotate_kw is None:
+        annotate_kw = dict()
+    if colorbar_kw is None:
+        colorbar_kw = dict()
+
     dims = maps[0].dims
 
     kwargs = {k: v for k, v in values.items() if k not in dims}
@@ -546,6 +663,8 @@ def plot_slices(
     if ylim is not None and not np.iterable(ylim):
         ylim = (-ylim, ylim)
 
+    auto_gradient_color = all(k not in gradient_kw for k in ("c", "color"))
+
     if hide_colorbar_ticks:
         colorbar_kw["ticks"] = []
 
@@ -567,6 +686,7 @@ def plot_slices(
         axes = axes[:, np.newaxis].reshape(1, -1)
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
+
     for i in range(len(slice_levels)):
         fatsel_kw = dict()
         sel_kw = dict()
@@ -613,14 +733,28 @@ def plot_slices(
             if len(plot_dims) == 1:
                 if cmap is not None:
                     kwargs["color"] = cmap
+                    if auto_gradient_color:
+                        gradient_kw["color"] = cmap
 
                 if transpose:
                     ax.plot(dat_sel.values, dat_sel[plot_dims[0]], **kwargs)
-                    ax.set_ylabel(plot_dims[0])
                     ax.set_xlabel(dat_sel.name)
+                    ax.set_ylabel(plot_dims[0])
+                    if gradient:
+                        gradient_fill(
+                            dat_sel.values,
+                            dat_sel[plot_dims[0]],
+                            ax=ax,
+                            transpose=True,
+                            **gradient_kw,
+                        )
                 else:
                     dat_sel.plot(ax=ax, **kwargs)
                     ax.set_title("")
+                    if gradient:
+                        gradient_fill(
+                            dat_sel[plot_dims[0]], dat_sel.values, ax=ax, **gradient_kw
+                        )
 
             elif len(plot_dims) == 2:
                 if np.iterable(cmap_norm):
@@ -654,7 +788,8 @@ def plot_slices(
                 ax.set_ylabel("")
             if ax not in axes[-1, :]:
                 ax.set_xlabel("")
-        ax.axis(axis)
+        if not gradient:
+            ax.axis(axis)
         if xlim is not None:
             ax.set_xlim(*xlim)
         if ylim is not None:

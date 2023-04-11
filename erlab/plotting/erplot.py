@@ -41,6 +41,7 @@ from erlab.plotting.general import (
     figwh,
     place_inset,
     plot_array,
+    gradient_fill,
     plot_slices,
 )
 from erlab.plotting.interactive.goldtool import goldtool
@@ -78,6 +79,7 @@ __all__ = [
     "figwh",
     "place_inset",
     "plot_array",
+    "gradient_fill",
     "plot_slices",
     "goldtool",
     "itool",
