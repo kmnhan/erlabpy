@@ -873,6 +873,7 @@ def mark_points(
     labels: Sequence[str],
     y: float | Sequence[float] = 0.0,
     pad: tuple[float, float] = (0, 1.75),
+    literal: bool=False,
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
@@ -893,6 +894,8 @@ def mark_points(
         Position of the label in data coordinates
     pad
         Offset of the text in points.
+    literal
+        If `True`, take the input string literally.
     roman
         If ``False``, *True*, itallic fonts are used.
     bar
@@ -905,25 +908,26 @@ def mark_points(
         ax = plt.gca()
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
-            mark_points(points, labels, y, pad, roman, bar, a, **kwargs)
+            mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
         for k, v in dict(
-            family="serif", ha="center", va="baseline", fontsize="small"
+            ha="center", va="baseline", fontsize="small"
         ).items():
             kwargs.setdefault(k, v)
         if not np.iterable(y):
             y = [y] * len(points)
-        for xi, yi, l in zip(points, y, labels):
-            ax.text(
-                xi,
-                yi,
-                parse_point_labels(l, roman, bar),
-                transform=ax.transData
-                + mtransforms.ScaledTranslation(
-                    pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
-                ),
-                **kwargs
-            )
+        with plt.rc_context({"font.family":"serif"}):
+            for xi, yi, l in zip(points, y, labels):
+                ax.text(
+                    xi,
+                    yi,
+                    l if literal else parse_point_labels(l, roman, bar),
+                    transform=ax.transData
+                    + mtransforms.ScaledTranslation(
+                        pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
+                    ),
+                    **kwargs
+                )
 
 
 def mark_points_y(pts, labels, roman=True, bar=False, ax=None):

@@ -682,6 +682,17 @@ class BetterColorBarItem(pg.PlotItem):
     def primary_image(self):
         return self._primary_image
 
+    @property
+    def levels(self) -> Sequence[float]:
+        return self.primary_image().getLevels()
+
+    @property
+    def limits(self) -> tuple[float, float]:
+        if self._fixedlimits is not None:
+            return self._fixedlimits
+        else:
+            return self.primary_image().quickMinMax(targetSize=2**16)
+
     def set_dimensions(
         self,
         horiz_pad: int | None = None,
@@ -712,17 +723,6 @@ class BetterColorBarItem(pg.PlotItem):
 
     def _level_change_fin(self):
         pass
-
-    @property
-    def levels(self) -> Sequence[float]:
-        return self.primary_image().getLevels()
-
-    @property
-    def limits(self) -> tuple[float, float]:
-        if self._fixedlimits is not None:
-            return self._fixedlimits
-        else:
-            return self.primary_image().quickMinMax(targetSize=2**16)
 
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
