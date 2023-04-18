@@ -7,14 +7,10 @@ Welcome to ERLabPy's documentation!
 ===================================
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 3
    :caption: Contents:
 
-   erlab.analysis
-   erlab.characterization
-   erlab.plotting
-   erlab.io
-   erlab.constants
+   erlab
 
 
 Indices and tables

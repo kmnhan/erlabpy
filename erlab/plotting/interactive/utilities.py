@@ -196,8 +196,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     """
 
-    valueChanged = QtCore.Signal(object)  #:noindex:
-    textChanged = QtCore.Signal(object)  #:noindex:
+    valueChanged = QtCore.Signal(object)  #: :meta private:
+    textChanged = QtCore.Signal(object)  #: :meta private:
 
     def __init__(
         self,
@@ -1718,7 +1718,10 @@ if __name__ == "__main__":
     )
     win = AnalysisWindow(dat, analysisWidget=ComparisonWidget, orientation="vertical")
     win.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, False)
-    gaussfilt_2d = lambda dat, sx, sy: gaussian_filter(dat, sigma=(sx, sy))
+
+    def gaussfilt_2d(dat, sx, sy):
+        return gaussian_filter(dat, sigma=(sx, sy))
+
     win.aw.set_main_function(gaussfilt_2d, sx=0.1, sy=1, only_values=True)
 
     # win.set_pre_function(gaussian_filter, sigma=[1, 1], only_values=True)

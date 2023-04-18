@@ -106,14 +106,15 @@ def _index_of_value_nonuniform(arr: npt.NDArray[np.float64], val: float) -> int:
 
 class ArraySlicer(QtCore.QObject):
     """Internal class used to slice a `xarray.DataArray` rapidly.
-    
+
     Computes binned line and image profiles from multiple cursors. Also handles the data
-    indices and the number of bins for each cursor.
+    indices and the number of bins for each cursor. Automatic conversion of non-uniform
+    dimensions are also handled here.
 
     Parameters
     ----------
     xarray_obj
-        A `xarray.DataArray` with up to 4 dimensions. 
+        A `xarray.DataArray` with up to 4 dimensions.
 
     Signals
     -------
@@ -121,9 +122,9 @@ class ArraySlicer(QtCore.QObject):
     sigBinChanged(int, tuple)
     sigCursorCountChanged(int)
     sigShapeChanged()
-    
+
     """
-    
+
     sigIndexChanged = QtCore.Signal(int, tuple)  #: :meta private:
     sigBinChanged = QtCore.Signal(int, tuple)  #: :meta private:
     sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
@@ -149,7 +150,7 @@ class ArraySlicer(QtCore.QObject):
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
         """Validates a given :class:`xarray.DataArray`.
-        
+
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
         exists) as the first two (or three) dimensions. Then, checks the data for
         non-uniform coordinates, which are converted to indices. Finally, converts the
@@ -158,12 +159,13 @@ class ArraySlicer(QtCore.QObject):
         Parameters
         ----------
         data
+            Input array with at least two dimensions.
 
         Returns
         -------
-        xr.DataArray
+        xarray.DataArray
             The converted data.
-            
+
         """
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
