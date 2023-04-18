@@ -1,4 +1,8 @@
-"""Polygon mask generation code adapted from the CGAL C++ library."""
+"""
+Polygon mask generation code adapted from the `CGAL C++ library
+<https://doc.cgal.org/5.3.2/Polygon/index.html>`_.
+
+"""
 from __future__ import annotations
 
 from typing import Annotated, Literal
@@ -53,7 +57,7 @@ def _get_argmax_all(arr):
 
 
 @numba.njit(nogil=True, cache=True)
-def left_vertex(points:Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int:
+def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int:
     """Returns the index of the leftmost point of a polygon.
 
     In case of a tie, the point with the smallest y-coordinate is taken.
@@ -73,8 +77,8 @@ def left_vertex(points:Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int
 
 
 @numba.njit(nogil=True, cache=True)
-def right_vertex(points:Annotated[npt.NDArray[np.float64], Literal[1, 2]]):
-    """rReturns the index of the rightmost point of a polygon.
+def right_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]):
+    """Returns the index of the rightmost point of a polygon.
 
     In case of a tie, the point with the largest y-coordinate is taken.
 
@@ -100,6 +104,9 @@ def polygon_orientation(points):
 
 @numba.njit(nogil=True, cache=True)
 def _orientation(p0, p1, p2):
+    # 1: left turn
+    # -1: right turn
+    # 0: colinear
     p10, p20 = p1 - p0, p2 - p0
     return np.sign(p10[0] * p20[1] - p20[0] * p10[1])
 
@@ -126,10 +133,20 @@ def which_side_in_slab(point, low, high, points):
 
 
 @numba.njit(nogil=True, cache=True)
-def bounded_side(
-    points: Annotated[npt.NDArray[np.float64], Literal["N", 2]],
-    point: Annotated[npt.NDArray[np.float64], Literal[1, 2]],
+def bounded_side_bool(
+    points: npt.NDArray[np.float64], point: tuple[float, float], boundary=True
 ):
+    match bounded_side(points, point):
+        case Side.ON_UNBOUNDED_SIDE:
+            return False
+        case Side.ON_BOUNDED_SIDE:
+            return True
+        case Side.ON_BOUNDARY:
+            return boundary
+
+
+@numba.njit(nogil=True, cache=True)
+def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]):
     """Computes if a point lies inside a polygon.
 
     The polygon is defined by the sequence of points [first,last). Being inside is
@@ -140,9 +157,9 @@ def bounded_side(
     Parameters
     ----------
     points
-        Input array of polygon vertices.
+        (N, 2) input array of polygon vertices.
     point
-        Point of interest
+        2-tuple specifying point of interest
 
     Notes
     -----

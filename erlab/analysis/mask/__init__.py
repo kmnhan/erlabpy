@@ -8,7 +8,12 @@ import xarray as xr
 
 from erlab.analysis.mask import polygon
 
-__all__ = ["mask_with_polygon", "polygon_mask", "mask_with_hex_bz"]
+__all__ = [
+    "mask_with_polygon",
+    "polygon_mask",
+    "polygon_mask_points",
+    "mask_with_hex_bz",
+]
 
 
 def mask_with_polygon(arr, vertices, dims=("kx", "ky"), invert=False):
@@ -30,13 +35,21 @@ def polygon_mask(vertices, x, y, invert=False):
 
     for i in numba.prange(shape[0]):
         for j in range(shape[1]):
-            match polygon.bounded_side(vertices, (x[i], y[j])):
-                case polygon.Side.ON_UNBOUNDED_SIDE:
-                    mask[i, j] = False
-                case polygon.Side.ON_BOUNDED_SIDE:
-                    mask[i, j] = True
-                case polygon.Side.ON_BOUNDARY:
-                    mask[i, j] = True
+            mask[i,j] = polygon.bounded_side_bool(vertices, (x[i], y[j]))
+    if invert:
+        return ~mask
+    else:
+        return mask
+
+
+@numba.njit(parallel=True, cache=True)
+def polygon_mask_points(vertices, x, y, invert=False):
+    if len(x) != len(y):
+        raise ValueError
+    mask = np.empty(len(x), dtype=np.int16)
+    vertices = np.concatenate((vertices, vertices[0].reshape(1, -1)))
+    for i in numba.prange(len(x)):
+        mask[i] = polygon.bounded_side_bool(vertices, (x[i], y[i]))
     if invert:
         return ~mask
     else:
@@ -44,9 +57,7 @@ def polygon_mask(vertices, x, y, invert=False):
 
 
 def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
-    """Returns array masked with a hexagonal BZ.
-    
-    """
+    """Returns array masked with a hexagonal BZ."""
     if isinstance(kxymap, xr.Dataset):
         kxymap = kxymap.spectrum
 
