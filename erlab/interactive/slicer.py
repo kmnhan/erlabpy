@@ -1,4 +1,4 @@
-"""Helper functions for fast slicing xarray.DataArray objects."""
+"""Helper functions for fast slicing :class:`xarray.DataArray` objects."""
 from collections.abc import Iterable, Sequence
 
 import numpy as np
@@ -105,7 +105,7 @@ def _index_of_value_nonuniform(arr: npt.NDArray[np.float64], val: float) -> int:
 
 
 class ArraySlicer(QtCore.QObject):
-    """Internal class used to slice a `xarray.DataArray` rapidly.
+    """Internal class used to slice a :class:`xarray.DataArray` rapidly.
 
     Computes binned line and image profiles from multiple cursors. Also handles the data
     indices and the number of bins for each cursor. Automatic conversion of non-uniform
@@ -114,7 +114,7 @@ class ArraySlicer(QtCore.QObject):
     Parameters
     ----------
     xarray_obj
-        A `xarray.DataArray` with up to 4 dimensions.
+        A :class:`xarray.DataArray` with up to 4 dimensions.
 
     Signals
     -------
@@ -138,14 +138,51 @@ class ArraySlicer(QtCore.QObject):
         self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
         self.snap_to_data = False
 
-    def set_array(self, xarray_obj: xr.DataArray, validate=True):
-        if validate:
-            self._obj = self.validate_array(xarray_obj)
+    @property
+    def n_cursors(self) -> int:
+        """The number of cursors."""
+        return len(self._bins)
+
+    @property
+    def coords(self) -> tuple[npt.NDArray[np.float64], ...]:
+        if self._nonuniform_axes:
+            return tuple(
+                self._obj[str(dim)[:-4]].values.astype(np.float64)
+                if i in self._nonuniform_axes
+                else self._obj[dim].values.astype(np.float64)
+                for i, dim in enumerate(self._obj.dims)
+            )
         else:
-            self._obj = xarray_obj
-        self._nonuniform_axes = [
-            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
-        ]
+            return self.coords_uniform
+
+    @property
+    def coords_uniform(self) -> tuple[npt.NDArray[np.float64], ...]:
+        return tuple(self._obj[dim].values.astype(np.float64) for dim in self._obj.dims)
+
+    @property
+    def incs(self) -> tuple[float, ...]:
+        return tuple(coord[1] - coord[0] for coord in self.coords)
+
+    @property
+    def incs_uniform(self) -> tuple[float, ...]:
+        return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
+
+    @property
+    def lims(self) -> tuple[tuple[float, float], ...]:
+        return tuple((coord[0], coord[-1]) for coord in self.coords)
+
+    @property
+    def lims_uniform(self) -> tuple[tuple[float, float], ...]:
+        return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
+
+    @property
+    def data_vals_T(self) -> npt.NDArray[np.float64]:
+        return _transposed(self._obj.values)
+
+    @property
+    def limits(self) -> tuple[float, float]:
+        """Returns the global minima and maxima of the data."""
+        return self.nanmin(), self.nanmax()
 
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
@@ -183,6 +220,15 @@ class ArraySlicer(QtCore.QObject):
 
         return data.astype(np.float64, order="C")
 
+    def set_array(self, xarray_obj: xr.DataArray, validate=True):
+        if validate:
+            self._obj = self.validate_array(xarray_obj)
+        else:
+            self._obj = xarray_obj
+        self._nonuniform_axes = [
+            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
+        ]
+
     def add_cursor(self, like_cursor: int = -1, update: bool = True):
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)
@@ -200,20 +246,16 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigCursorCountChanged.emit(self.n_cursors)
 
-    @property
-    def n_cursors(self) -> int:
-        return len(self._bins)
-
-    @QtCore.Slot(int, result=list)
-    def get_bins(self, cursor: int) -> list[int]:
-        return self._bins[cursor]
-
     def center_cursor(self, cursor: int, update: bool = True):
         self.set_indices(
             cursor,
             [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape],
             update=update,
         )
+
+    @QtCore.Slot(int, result=list)
+    def get_bins(self, cursor: int) -> list[int]:
+        return self._bins[cursor]
 
     def set_bins(self, cursor: int, value: list[int | None], update: bool = True):
         if not len(value) == self._obj.ndim:
@@ -340,46 +382,6 @@ class ArraySlicer(QtCore.QObject):
             self.sigIndexChanged.emit(cursor, (axis,))
             return []
         return [axis]
-
-    @property
-    def coords(self) -> tuple[npt.NDArray[np.float64], ...]:
-        if self._nonuniform_axes:
-            return tuple(
-                self._obj[str(dim)[:-4]].values.astype(np.float64)
-                if i in self._nonuniform_axes
-                else self._obj[dim].values.astype(np.float64)
-                for i, dim in enumerate(self._obj.dims)
-            )
-        else:
-            return self.coords_uniform
-
-    @property
-    def coords_uniform(self) -> tuple[npt.NDArray[np.float64], ...]:
-        return tuple(self._obj[dim].values.astype(np.float64) for dim in self._obj.dims)
-
-    @property
-    def incs(self) -> tuple[float, ...]:
-        return tuple(coord[1] - coord[0] for coord in self.coords)
-
-    @property
-    def incs_uniform(self) -> tuple[float, ...]:
-        return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
-
-    @property
-    def lims(self) -> tuple[tuple[float, float]]:
-        return tuple((coord[0], coord[-1]) for coord in self.coords)
-
-    @property
-    def lims_uniform(self) -> tuple[tuple[float, float]]:
-        return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
-
-    @property
-    def data_vals_T(self) -> npt.NDArray[np.float64]:
-        return _transposed(self._obj.values)
-
-    @property
-    def limits(self) -> tuple[float, float]:
-        return self.nanmin(), self.nanmax()
 
     def absnanmax(self, *args, **kwargs) -> float:
         return numbagg.nanmax(np.abs(self._obj.values), *args, **kwargs)

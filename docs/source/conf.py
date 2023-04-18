@@ -89,7 +89,9 @@ napoleon_type_aliases = {
     "float64": "float",
 }
 napoleon_attr_annotations = True
-napoleon_custom_sections = [("Signals", "Attributes")]
+napoleon_custom_sections = [("Signals", "params_style")]
+# napoleon_custom_sections = [("Signals", "Methods")]
+# napoleon_custom_sections = [("Signals", "Attributes")]
 
 
 qt_documentation = "PySide6"

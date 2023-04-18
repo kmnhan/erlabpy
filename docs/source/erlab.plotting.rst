@@ -6,14 +6,6 @@ erlab.plotting package
    :undoc-members:
    :show-inheritance:
 
-Subpackages
------------
-
-.. toctree::
-   :maxdepth: 3
-
-   erlab.plotting.interactive
-
 Submodules
 ----------
 

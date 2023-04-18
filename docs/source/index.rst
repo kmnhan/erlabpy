@@ -11,6 +11,7 @@ Welcome to ERLabPy's documentation!
    :caption: Contents:
 
    erlab
+   development
 
 
 Indices and tables

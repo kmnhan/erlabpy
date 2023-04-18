@@ -14,6 +14,7 @@ Subpackages
 
    erlab.analysis
    erlab.characterization
+   erlab.interactive
    erlab.plotting
 
 Submodules

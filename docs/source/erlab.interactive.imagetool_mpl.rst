@@ -1,7 +1,7 @@
-erlab.plotting.interactive.ktool module
+erlab.interactive.imagetool\_mpl module
 =======================================
 
-.. automodule:: erlab.plotting.interactive.ktool
+.. automodule:: erlab.interactive.imagetool_mpl
    :members:
    :undoc-members:
    :show-inheritance:

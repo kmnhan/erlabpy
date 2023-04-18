@@ -481,7 +481,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
-    """A interactive tool based on `pyqtgraph` for exploring 3D data.
+    """A interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
     Parameters
     ----------
@@ -504,8 +504,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     Signals
     -------
     sigDataChanged()
+    
     sigCurrentCursorChanged(index)
+    
     sigViewOptionChanged()
+    
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -522,7 +525,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("c"),
         pg.mkColor("g"),
         pg.mkColor("r"),
-    ]  #: List of `PySide6.QtGui.QColor` that contains colors for multiple cursors.
+    ]  #: List of :class:`PySide6.QtGui.QColor` that contains colors for multiple cursors.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
