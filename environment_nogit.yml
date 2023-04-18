@@ -17,7 +17,7 @@ dependencies:
   - cmasher
   - numpy>=1.22.0
   - scipy>=1.8.0
-  - matplotlib>=3.6.0
+  - matplotlib>=3.7.0
   - h5py>=3.2.1
   - netCDF4>=1.5.0
   - astropy
@@ -36,7 +36,7 @@ dependencies:
   - imageio
   - ipywidgets>=7.0.1
   - joblib
-  - lmfit>=1.0.0
+  - lmfit>=1.2.0
   - pandas
   - pint
   - psutil
