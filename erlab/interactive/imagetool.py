@@ -14,13 +14,13 @@ from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
 from pyqtgraph.GraphicsScene import mouseEvents
 
 import erlab.io
-from erlab.plotting.interactive.colors import (
+from erlab.interactive.colors import (
     pg_colormap_names,
     pg_colormap_powernorm,
     pg_colormap_to_QPixmap,
 )
-from erlab.plotting.interactive.slicer import ArraySlicer
-from erlab.plotting.interactive.utilities import (
+from erlab.interactive.slicer import ArraySlicer
+from erlab.interactive.utilities import (
     BetterAxisItem,
     BetterColorBarItem,
     BetterImageItem,
@@ -507,11 +507,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigCurrentCursorChanged(index)
     sigViewOptionChanged()
     sigCursorCountChanged(n_cursors)
-        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+        Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
-        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+        Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigBinChanged(cursor, axes)
-        Inherited from :class:`erlab.plotting.interactive.slicer.ArraySlicer`.
+        Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
 
     """
 

@@ -16,14 +16,11 @@ import numpy as np
 
 import erlab.io
 
-os.environ["QT_API"] = "pyside6"
-
 __all__ = [
     "annotations",
     "bz",
     "colors",
     "general",
-    "interactive",
 ]
 
 

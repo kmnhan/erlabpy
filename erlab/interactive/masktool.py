@@ -8,8 +8,8 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 
-from erlab.plotting.interactive.imagetool import ImageTool
-from erlab.plotting.interactive.utilities import (
+from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.utilities import (
     AnalysisWindow,
     ParameterGroup,
     ROIControls,

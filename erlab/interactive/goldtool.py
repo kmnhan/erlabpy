@@ -11,8 +11,8 @@ from qtpy import QtCore, QtWidgets
 
 import erlab.analysis
 from erlab.parallel import joblib_progress_qt
-from erlab.plotting.interactive.imagetool import ImageTool
-from erlab.plotting.interactive.utilities import (
+from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.utilities import (
     AnalysisWindow,
     ParameterGroup,
     ROIControls,
@@ -108,7 +108,7 @@ class goldtool(AnalysisWindow):
     data_corr
         The data to correct with the edge. Defaults to `data`.
     **kwargs
-        Arguments passed onto `erlab.plotting.interactive.utilities.AnalysisWindow`.
+        Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
 
     Signals
     -------

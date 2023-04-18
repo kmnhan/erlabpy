@@ -44,10 +44,10 @@ from erlab.plotting.general import (
     gradient_fill,
     plot_slices,
 )
-from erlab.plotting.interactive.goldtool import goldtool
-from erlab.plotting.interactive.imagetool import itool
-from erlab.plotting.interactive.ktool import ktool
-from erlab.plotting.interactive.noisetool import noisetool
+from erlab.interactive.goldtool import goldtool
+from erlab.interactive.imagetool import itool
+from erlab.interactive.ktool import ktool
+from erlab.interactive.noisetool import noisetool
 
 __all__ = [
     "annotate_cuts_erlab",

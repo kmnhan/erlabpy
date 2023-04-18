@@ -1,1 +1,0 @@
-"""Interactive plotting, mainly with Qt and pyqtgraph."""

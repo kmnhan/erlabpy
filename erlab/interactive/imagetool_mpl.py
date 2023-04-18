@@ -2,7 +2,7 @@
 .. deprecated:: 0.1
 
     This module is deprecated, and is only kept for reference purposes.
-    Use `erlab.plotting.interactive.imagetool` instead.
+    Use `erlab.interactive.imagetool` instead.
 
 """
 

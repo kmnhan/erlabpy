@@ -1,3 +1,19 @@
-from erlab import analysis, characterization, plotting, io, parallel
+from erlab import (
+    analysis,
+    characterization,
+    plotting,
+    interactive,
+    io,
+    parallel,
+    constants,
+)
 
-__all__ = ["analysis", "characterization", "plotting", "io", "parallel"]
+__all__ = [
+    "analysis",
+    "characterization",
+    "plotting",
+    "interactive",
+    "io",
+    "parallel",
+    "constants",
+]

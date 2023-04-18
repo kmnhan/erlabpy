@@ -11,7 +11,7 @@ from matplotlib.patches import Ellipse
 from matplotlib.transforms import Affine2D
 from arpes.utilities.conversion import convert_to_kspace
 from erlab.plotting.bz import plot_hex_bz
-from erlab.plotting.interactive.utilities import parse_data
+from erlab.interactive.utilities import parse_data
 import copy
 
 

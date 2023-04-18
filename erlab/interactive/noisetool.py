@@ -3,7 +3,7 @@ import numpy as np
 import pyqtgraph as pg
 
 from arpes.analysis.derivative import curvature, minimum_gradient
-from erlab.plotting.interactive.utilities import parse_data, AnalysisWidgetBase
+from erlab.interactive.utilities import parse_data, AnalysisWidgetBase
 
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
