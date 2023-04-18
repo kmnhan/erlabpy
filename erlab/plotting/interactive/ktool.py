@@ -10,12 +10,14 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Ellipse
 from matplotlib.transforms import Affine2D
 from arpes.utilities.conversion import convert_to_kspace
-from ..bz import plot_hex_bz
-from ..interactive.utilities import parse_data
+from erlab.plotting.bz import plot_hex_bz
+from erlab.plotting.interactive.utilities import parse_data
 import copy
 
 
-def plot_bz_tise2(ax=None, a=3.54, pockets=False, pocket_length=1.5, rotate=0, **kwargs):
+def plot_bz_tise2(
+    ax=None, a=3.54, pockets=False, pocket_length=1.5, rotate=0, **kwargs
+):
     """
     Plots a TiSe2 BZ on top of specified axis.
     """
@@ -34,7 +36,12 @@ def plot_bz_tise2(ax=None, a=3.54, pockets=False, pocket_length=1.5, rotate=0, *
         color = kwargs.pop("color", None)
         kwargs["edgecolor"] = color
         kwargs["facecolor"] = "none"
-        p1 = Ellipse((0, 2 * np.pi / (np.sqrt(3) * a)), width=0.2, height=0.2*pocket_length, **kwargs)
+        p1 = Ellipse(
+            (0, 2 * np.pi / (np.sqrt(3) * a)),
+            width=0.2,
+            height=0.2 * pocket_length,
+            **kwargs
+        )
         p2 = copy.deepcopy(p1)
         p3 = copy.deepcopy(p1)
         p4 = copy.deepcopy(p1)
@@ -141,8 +148,12 @@ class kTool(QtWidgets.QMainWindow):
         self.ax0.set_ylabel(self.dim_y)
         self.ax1.set_xlabel(self.dim_kx)
         self.ax1.set_ylabel(self.dim_ky)
-        self.ax1.axline((0,0), (-np.pi/np.sqrt(3)/3.54,  np.pi/3.54), ls='--', lw=0.75, c="k")
-        self.ax1.axline((0,0), (-np.pi/np.sqrt(3)/3.54,  -np.pi/3.54), ls='--', lw=0.75, c="k")
+        self.ax1.axline(
+            (0, 0), (-np.pi / np.sqrt(3) / 3.54, np.pi / 3.54), ls="--", lw=0.75, c="k"
+        )
+        self.ax1.axline(
+            (0, 0), (-np.pi / np.sqrt(3) / 3.54, -np.pi / 3.54), ls="--", lw=0.75, c="k"
+        )
 
         self.offsetpanel = QtWidgets.QWidget()
         offsetpanelcontent = QtWidgets.QHBoxLayout()

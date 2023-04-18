@@ -28,17 +28,12 @@ from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
 from qtpy import QtCore, QtGui, QtSvg, QtSvgWidgets, QtWidgets
 
-if __name__ != "__main__":
-    from ..interactive.utilities import parse_data, xImageItem
-    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
-else:
-    from erlab.plotting.interactive.colors import (
-        pg_colormap_names,
-        pg_colormap_powernorm,
-        pg_colormap_to_QPixmap,
-    )
-    from erlab.plotting.interactive.utilities import parse_data, xImageItem
-
+from erlab.plotting.interactive.colors import (
+    pg_colormap_names,
+    pg_colormap_powernorm,
+    pg_colormap_to_QPixmap,
+)
+from erlab.plotting.interactive.utilities import parse_data, xImageItem
 
 # pg.setConfigOption('useNumba', True)
 # pg.setConfigOption('background', 'w')
