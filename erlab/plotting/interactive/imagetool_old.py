@@ -6,6 +6,7 @@
 
 """
 import colorsys
+import enum
 import sys
 import weakref
 from itertools import chain, compress
@@ -25,11 +26,11 @@ from matplotlib.backends import backend_agg, backend_svg
 from matplotlib.font_manager import FontProperties
 from pyqtgraph.dockarea.Dock import Dock, DockLabel
 from pyqtgraph.dockarea.DockArea import DockArea
-from qtpy import QtCore, QtGui, QtWidgets, QtSvg, QtSvgWidgets
+from qtpy import QtCore, QtGui, QtSvg, QtSvgWidgets, QtWidgets
 
 if __name__ != "__main__":
-    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
     from ..interactive.utilities import parse_data, xImageItem
+    from .colors import pg_colormap_names, pg_colormap_powernorm, pg_colormap_to_QPixmap
 else:
     from erlab.plotting.interactive.colors import (
         pg_colormap_names,
@@ -44,7 +45,7 @@ else:
 # pg.setConfigOption('foreground', 'k')
 
 
-__all__ = ["itool", "pg_itool"]
+__all__ = ["itool_", "pg_itool"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -591,9 +592,6 @@ def get_svg_label(
     return outfile.fileName()
 
 
-import enum
-
-
 class ItoolAxisItem(pg.AxisItem):
     class LabelType(enum.Flag):
         TextLabel = 0
@@ -859,12 +857,19 @@ class pg_itool(pg.GraphicsLayoutWidget):
     Notes
     -----
     Axes indices for 2D data:
+
+    .. code-block:: text
+
         ┌───┬───┐
         │ 1 │   │
         │───┼───│
         │ 0 │ 2 │
         └───┴───┘
+
     Axes indices for 3D data:
+
+    .. code-block:: text
+
         ┌───┬─────┐
         │ 1 │     │
         │───┤  3  │
@@ -872,7 +877,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
         │───┼───┬─│
         │ 0 │ 5 │2│
         └───┴───┴─┘
+
     Axes indices for 4D data:
+
+    .. code-block:: text
+
         ┌───┬─────┐
         │ 1 │  6  │
         │───┼─────│
@@ -883,7 +892,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     Signals
     -------
-    sigDataChanged(self)
+    sigDataChanged()
     sigIndexChanged(indices, values)
 
     """
@@ -891,13 +900,14 @@ class pg_itool(pg.GraphicsLayoutWidget):
     # !TODO: ctrl + A to view all
     # !TODO: auto adjust limits on transpose
 
-    sigDataChanged = QtCore.Signal(object)  #:noindex:
-    sigIndexChanged = QtCore.Signal(list, list)  #:noindex:
+    sigDataChanged = QtCore.Signal(object)  #: :meta private:
+    sigIndexChanged = QtCore.Signal(list, list)  #: :meta private:
 
     _only_axis = ("x", "y", "z", "t")
     _only_maps = "maps"
 
-    _get_middle_index = lambda _, x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
+    def _get_middle_index(self, x):
+        return len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
 
     def __init__(
         self,
@@ -1423,7 +1433,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             labels_ = labels
         else:
             with rc_context({"text.usetex": True}):
-                labels_ = [self.labelify(l) for l in labels]
+                labels_ = [self.labelify(lab) for lab in labels]
 
         self.axes[0].setLabels(left=labels_[1], bottom=labels_[0], mode=labelmode)
         self.axes[1].setLabels(top=labels_[0], mode=labelmode)
@@ -2218,8 +2228,8 @@ def fast_isocurve_lines(data, level, index, extendToEdge=False):
     for i in range(index.shape[0]):
         for j in range(index.shape[1]):
             sides = sideTable[index[i, j]]
-            for l in range(0, len(sides), 2):
-                edges = sides[l : l + 2]
+            for k in range(0, len(sides), 2):
+                edges = sides[k : k + 2]
                 pts = []
                 for m in range(2):
                     p1, p2 = edgeKey[edges[m]][0], edgeKey[edges[m]][1]
@@ -2265,8 +2275,8 @@ def fast_isocurve_lines_connected(data, level, index, extendToEdge=False):
     for i in range(index.shape[0]):
         for j in range(index.shape[1]):
             sides = sideTable[index[i, j]]
-            for l in range(0, len(sides), 2):
-                edges = sides[l : l + 2]
+            for k in range(0, len(sides), 2):
+                edges = sides[k : k + 2]
                 pts = []
                 for m in range(2):
                     p1, p2 = edgeKey[edges[m]][0], edgeKey[edges[m]][1]
@@ -2363,30 +2373,30 @@ def fast_isocurve_chain(points):
             chains = points[k]
         except KeyError:
             continue
-        for chain in chains:
+        for ch in chains:
             x = None
             while True:
-                if x == chain[-1][1]:
+                if x == ch[-1][1]:
                     break
-                x = chain[-1][1]
+                x = ch[-1][1]
                 if x == k:
                     break
-                y = chain[-2][1]
+                y = ch[-2][1]
                 connects = points[x]
                 for conn in connects[:]:
                     if conn[1][1] != y:
-                        chain.extend(conn[1:])
+                        ch.extend(conn[1:])
                 del points[x]
-            if chain[0][1] == chain[-1][1]:
+            if ch[0][1] == ch[-1][1]:
                 chains.pop()
                 break
     lines_linked = [np.float64(x) for x in range(0)]
-    for chain in points.values():
-        if len(chain) == 2:
-            chain = chain[1][1:][::-1] + chain[0]  # join together ends of chain
+    for ch in points.values():
+        if len(ch) == 2:
+            ch = ch[1][1:][::-1] + ch[0]  # join together ends of chain
         else:
-            chain = chain[0]
-        lines_linked.append([p[0] for p in chain])
+            ch = ch[0]
+        lines_linked.append([p[0] for p in ch])
     return lines_linked
 
 
@@ -2841,12 +2851,12 @@ class itoolColorControls(QtWidgets.QWidget):
         self.itool = itool
         self.layout = FlowLayout(self)
         self._cmap_group = BorderlessGroupBox(self, objectName="CmapGroup")
-        self._button_group = BorderlessGroupBox(self, objectName="ClrCntrls")
+        # self._button_group = BorderlessGroupBox(self, objectName="ClrCntrls")
         self.initialize_widgets()
 
     def initialize_widgets(self):
         cmap_layout = InnerQHBoxLayout(self._cmap_group)
-        button_layout = InnerQHBoxLayout(self._button_group)
+        # button_layout = InnerQHBoxLayout(self._button_group)
         # cmap_layout.setContentsMargins(0, 0, 0, 0)
 
         self._gamma_spin = QtWidgets.QDoubleSpinBox(

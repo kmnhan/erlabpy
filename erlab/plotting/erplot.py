@@ -83,7 +83,6 @@ __all__ = [
     "plot_slices",
     "goldtool",
     "itool",
-    "itool_",
     "ktool",
     "noisetool",
 ]

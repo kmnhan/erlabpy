@@ -18,8 +18,8 @@ def autocorrelate(arr, *args, **kwargs):
     return acf / acf[m, n]
 
 
-def autocorrelation_lags(l, *args, **kwargs):
-    return correlation_lags(l, l, *args, **kwargs)
+def autocorrelation_lags(in_len, *args, **kwargs):
+    return correlation_lags(in_len, in_len, *args, **kwargs)
 
 
 def nanacf(arr, *args, **kwargs):
@@ -62,7 +62,7 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
 
         stack_coords = tuple(arr[d] for d in stack_dims)
         stack_shape = tuple(len(x) for x in stack_coords)
-        stack_iter = tuple(range(l) for l in stack_shape)
+        stack_iter = tuple(range(s) for s in stack_shape)
         stack_axis = arr.get_axis_num(stack_dims)
         out_list = Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
             delayed(nanacf)(
@@ -109,16 +109,14 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
 def match_dims(da1: xr.DataArray, da2: xr.DataArray):
     """
     Returns the second array interpolated with the coordinates of the first array,
-    making them the same size. 
-    
+    making them the same size.
+
     """
     return da2.interp({dim: da1[dim] for dim in da2.dims})
 
 
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
-    """
-    Performs 1-dimensional correlation analysis on `xarray.DataArray`s.
-    """
+    """Performs 1-dimensional correlation analysis on `xarray.DataArray` s."""
     in2 = match_dims(in1, in2)
     out = in1.copy(deep=True)
     xind = correlation_lags(in1.values.size, in2.values.size, mode="same")

@@ -218,10 +218,10 @@ def gold_resolution(
             data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
             fit_kws=dict(c="r", lw=1.5),
         )
-    print(
-        f"center = {ufloat(fit.params['center'], fit.params['center'].stderr):S} eV\n"
-        f"resolution = {ufloat(fit.params['resolution'], fit.params['resolution'].stderr):.4S} eV"
-    )
+
+    center_uf = ufloat(fit.params["center"], fit.params["center"].stderr)
+    res_uf = ufloat(fit.params["resolution"], fit.params["resolution"].stderr)
+    print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
     return fit
 
 
@@ -261,8 +261,8 @@ def gold_resolution_roi(
             data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
             fit_kws=dict(c="r", lw=1.5),
         )
-    print(
-        f"center = {ufloat(fit.params['center'], fit.params['center'].stderr):S} eV\n"
-        f"resolution = {ufloat(fit.params['resolution'], fit.params['resolution'].stderr):.4S} eV"
-    )
+
+    center_uf = ufloat(fit.params["center"], fit.params["center"].stderr)
+    res_uf = ufloat(fit.params["resolution"], fit.params["resolution"].stderr)
+    print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
     return fit

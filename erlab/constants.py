@@ -18,4 +18,6 @@ HBARSQ_EV: float = 4.332429802731423e-31  #: :math:`\hbar^2` (eV²·s²)
 HBARC: float = 3.1615267734966903e-26  #: :math:`\hbar c`  (J·m)
 
 K_COEFF: float = 0.512316721967493  #: :math:`\frac{\sqrt{2 m_e}}{\hbar}`, Used in momentum conversion
-KZ_COEFF: float = 3.8099821161548606 #: :math:`\frac{\hbar^2}{2 m_e}`, Used in momentum conversion
+KZ_COEFF: float = (
+    3.8099821161548606  #: :math:`\frac{\hbar^2}{2 m_e}`, Used in momentum conversion
+)

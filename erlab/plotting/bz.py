@@ -66,14 +66,14 @@ def get_bz_edge(
 
     # remove duplicates
     lines_new = []
-    for l in lines:
-        for i in range(l.shape[0] - 1):
+    for ln in lines:
+        for i in range(ln.shape[0] - 1):
             if not any(
-                np.allclose(l[i : i + 2], ln)
-                or np.allclose(l[i : i + 2], np.flipud(ln))
+                np.allclose(ln[i : i + 2], ln)
+                or np.allclose(ln[i : i + 2], np.flipud(ln))
                 for ln in lines_new
             ):
-                lines_new.append(l[i : i + 2])
+                lines_new.append(ln[i : i + 2])
     vertices_new = []
     for v in vertices:
         if not any(np.allclose(v, vn) for vn in vertices_new):
@@ -82,7 +82,9 @@ def get_bz_edge(
     return np.asarray(lines_new), np.asarray(vertices_new)
 
 
-def plot_hex_bz(a=3.54, rotate=0.0, offset=(0.0, 0.0), ax=None, **kwargs):
+def plot_hex_bz(
+    a=3.54, rotate=0.0, offset=(0.0, 0.0), reciprocal=True, ax=None, **kwargs
+):
     """
     Plots a 2D hexagonal BZ overlay on the specified axes.
     """
@@ -99,9 +101,10 @@ def plot_hex_bz(a=3.54, rotate=0.0, offset=(0.0, 0.0), ax=None, **kwargs):
         kwargs["edgecolor"] = kwargs.pop(
             "edgecolor", kwargs.pop("ec", axes_textcolor(ax))
         )
-
-    poly = RegularPolygon(
-        offset, 6, radius=4 * np.pi / a / 3, orientation=np.deg2rad(rotate), **kwargs
-    )
+    if reciprocal:
+        r = 4 * np.pi / (a * 3)
+    else:
+        r = 2 * a
+    poly = RegularPolygon(offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs)
     ax.add_patch(poly)
     return poly

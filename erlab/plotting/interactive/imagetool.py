@@ -245,9 +245,24 @@ class ImageTool(QtWidgets.QMainWindow):
             self._cursor_move_menu.addAction(
                 "Shift Current Cursor Left", QtGui.QKeySequence("Shift+Left")
             ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Up × 10", QtGui.QKeySequence("Ctrl+Shift+Up")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Down × 10", QtGui.QKeySequence("Ctrl+Shift+Down")
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Right × 10",
+                QtGui.QKeySequence("Ctrl+Shift+Right"),
+            ),
+            self._cursor_move_menu.addAction(
+                "Shift Current Cursor Left × 10", QtGui.QKeySequence("Ctrl+Shift+Left")
+            ),
         )
         for action, i, d in zip(
-            self._cursor_step_actions, (1, 1, 0, 0), (1, -1, 1, -1)
+            self._cursor_step_actions,
+            (1, 1, 0, 0) * 2,
+            (1, -1, 1, -1, 10, -10, 10, -10),
         ):
             ax = self.slicer_area.main_image.display_axis[i]
             action.triggered.connect(
@@ -1998,7 +2013,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         if self.data.ndim >= 4:
             self.btn_transpose = tuple(
-                IconButton(on=f"transpose_2") for _ in range(self.data.ndim)
+                IconButton(on="transpose_2") for _ in range(self.data.ndim)
             )
         else:
             self.btn_transpose = tuple(
@@ -2097,9 +2112,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
 
-        for l in self.label_dim:
+        for lab in self.label_dim:
             # resize buttons to match dimension label length
-            l.setMaximumWidth(label_width)
+            lab.setMaximumWidth(label_width)
 
     def update_spins(self, _=None, axes=None):
         if axes is None:

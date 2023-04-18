@@ -115,13 +115,21 @@ def pg_colormap_powernorm(
     N = 65536
 
     if gamma == 1:
-        mapping_fn = lambda x: x
+
+        def mapping_fn(x):
+            return x
+
     elif highContrast:
-        mapping_fn = lambda x: 1 - np.power(np.flip(x), 1.0 / gamma)
+
+        def mapping_fn(x):
+            return 1 - np.power(np.flip(x), 1.0 / gamma)
+
     else:
         if gamma < 1:
             N = 65536  # maximum uint16
-        mapping_fn = lambda x: np.power(x, gamma)
+
+        def mapping_fn(x):
+            return np.power(x, gamma)
 
     x = np.linspace(0, 1, N)
     if zeroCentered:
