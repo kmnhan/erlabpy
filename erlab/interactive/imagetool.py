@@ -504,11 +504,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     Signals
     -------
     sigDataChanged()
-    
+
     sigCurrentCursorChanged(index)
-    
+
     sigViewOptionChanged()
-    
+
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -607,6 +607,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._splitters[6].addWidget(self._plots[i])
 
         self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+        self.qapp.aboutToQuit.connect(self.on_close)
 
         self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = dict(
             cmap=cmap,
@@ -621,6 +622,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
+
+    def on_close(self):
+        pass
 
     def connect_signals(self):
         for ax in self.axes:
@@ -748,10 +752,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def set_data(
         self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
     ):
-        if isinstance(self._data, xr.DataArray):
-            self._data.close()
-        else:
+        if hasattr(self, "_array_slicer"):
+            n_cursors_old = self.n_cursors
+            if isinstance(self._data, xr.DataArray):
+                self._data.close()
             del self._data
+            del self._array_slicer
+        else:
+            n_cursors_old = 1
 
         if not isinstance(data, xr.DataArray):
             if isinstance(data, xr.Dataset):
@@ -772,6 +780,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
         self._array_slicer = ArraySlicer(self._data)
+        while self.n_cursors != n_cursors_old:
+            self.array_slicer.add_cursor(update=False)
 
         self.connect_signals()
 
@@ -1243,6 +1253,11 @@ class ItoolPlotItem(pg.PlotItem):
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
+        # self.proxy = pg.SignalProxy(
+        #     self.scene().sigMouseMoved,
+        #     rateLimit=self.screen.refreshRate(),
+        #     slot=self.onMouseDrag,
+        # )
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
@@ -2330,7 +2345,7 @@ if __name__ == "__main__":
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
         # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
         "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc"
         ,
         engine="h5netcdf",
     )
