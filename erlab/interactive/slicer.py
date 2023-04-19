@@ -5,6 +5,7 @@ import numpy as np
 import numpy.typing as npt
 import numba
 import numbagg
+import bottleneck as bn
 import xarray as xr
 from qtpy import QtCore
 
@@ -147,9 +148,9 @@ class ArraySlicer(QtCore.QObject):
     def coords(self) -> tuple[npt.NDArray[np.float64], ...]:
         if self._nonuniform_axes:
             return tuple(
-                self._obj[str(dim)[:-4]].values.astype(np.float64)
+                self._obj[str(dim)[:-4]].values
                 if i in self._nonuniform_axes
-                else self._obj[dim].values.astype(np.float64)
+                else self._obj[dim].values
                 for i, dim in enumerate(self._obj.dims)
             )
         else:
@@ -157,7 +158,7 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def coords_uniform(self) -> tuple[npt.NDArray[np.float64], ...]:
-        return tuple(self._obj[dim].values.astype(np.float64) for dim in self._obj.dims)
+        return tuple(self._obj[dim].values for dim in self._obj.dims)
 
     @property
     def incs(self) -> tuple[float, ...]:
@@ -204,6 +205,9 @@ class ArraySlicer(QtCore.QObject):
             The converted data.
 
         """
+        # convert dimensions to float
+        data = data.assign_coords({d: data[d].astype(np.float64) for d in data.dims})
+
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
             # if data has kx and ky axis, transpose
@@ -384,16 +388,16 @@ class ArraySlicer(QtCore.QObject):
         return [axis]
 
     def absnanmax(self, *args, **kwargs) -> float:
-        return numbagg.nanmax(np.abs(self._obj.values), *args, **kwargs)
+        return bn.nanmax(np.abs(self._obj.values), *args, **kwargs)
 
     def absnanmin(self, *args, **kwargs) -> float:
-        return numbagg.nanmin(np.abs(self._obj.values), *args, **kwargs)
+        return bn.nanmin(np.abs(self._obj.values), *args, **kwargs)
 
     def nanmax(self, *args, **kwargs) -> float:
-        return numbagg.nanmax(self._obj.values, *args, **kwargs)
+        return bn.nanmax(self._obj.values, *args, **kwargs)
 
     def nanmin(self, *args, **kwargs) -> float:
-        return numbagg.nanmin(self._obj.values, *args, **kwargs)
+        return bn.nanmin(self._obj.values, *args, **kwargs)
 
     @QtCore.Slot(int, bool, result=float)
     def point_value(
@@ -454,13 +458,14 @@ class ArraySlicer(QtCore.QObject):
         return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
 
     def extract_avg_slice(
-        self, cursor: int, axis: int | Sequence[int] | None = None
+        self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.float64] | float:
-        if axis is None:
+        if len(axis) == 0:
             return self.data_vals_T
-        if isinstance(axis, int):
-            return self._bin_along_axis(cursor, axis)
-        return self._bin_along_multiaxis(cursor, axis)
+        elif len(axis) == 1:
+            return self._bin_along_axis(cursor, axis[0])
+        else:
+            return self._bin_along_multiaxis(cursor, axis)
 
     def span_bounds(self, cursor: int, axis: int):
         slc = self._bin_slice(cursor, axis)
@@ -486,7 +491,7 @@ class ArraySlicer(QtCore.QObject):
                 + (self._bin_slice(cursor, axis + 1),)
             ].squeeze(axis=axis)
         else:
-            return numbagg.nanmean(
+            return bn.nanmean(
                 self.data_vals_T[
                     (slice(None),) * (axis % self._obj.ndim)
                     + (self._bin_slice(cursor, axis + 1),)
@@ -498,9 +503,9 @@ class ArraySlicer(QtCore.QObject):
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.float64] | float:
         if any(self.get_binned(cursor)):
-            slices = [self._bin_slice(cursor, ax) for ax in axis]
+            slices = tuple(self._bin_slice(cursor, ax) for ax in axis)
         else:
-            slices = [self.get_indices(cursor)[i] for i in axis]
+            slices = tuple(self.get_indices(cursor)[i] for i in axis)
         axis = tuple((ax - 1) % self._obj.ndim for ax in axis)
         selected = self.data_vals_T[
             tuple(
