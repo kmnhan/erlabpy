@@ -103,7 +103,7 @@ def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     return np.allclose(dif, dif[0], rtol=1.193e-06, atol=1.193e-06, equal_nan=True)
 
 
-@numba.njit(numba.int64(numba.float32[:], numba.float32), fastmath=True, cache=True)
+@numba.njit(numba.int64(numba.float32[::1], numba.float32), fastmath=True, cache=True)
 def _index_of_value_nonuniform(arr: npt.NDArray[np.float32], val: np.float32) -> int:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
@@ -209,7 +209,9 @@ class ArraySlicer(QtCore.QObject):
 
         """
         # convert dimensions to float
-        data = data.assign_coords({d: data[d].astype(np.float32) for d in data.dims})
+        data = data.assign_coords(
+            {d: data[d].astype(np.float32, order="C") for d in data.dims}
+        )
 
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
@@ -225,7 +227,7 @@ class ArraySlicer(QtCore.QObject):
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
             ).swap_dims({d: d + "_idx"})
 
-        return data.astype(np.float32, order="C")
+        return data.astype(np.float32)
 
     def set_array(self, xarray_obj: xr.DataArray, validate=True):
         if validate:
@@ -460,7 +462,9 @@ class ArraySlicer(QtCore.QObject):
         npt.NDArray[np.float32] | np.float32,
     ]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
-        return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
+        return self.array_rect(*axis), self.extract_avg_slice(cursor, domain).astype(
+            np.float32, order="C"
+        )
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
