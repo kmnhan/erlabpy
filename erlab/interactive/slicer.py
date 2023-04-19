@@ -183,10 +183,34 @@ class ArraySlicer(QtCore.QObject):
     def data_vals_T(self) -> npt.NDArray[np.float32]:
         return _transposed(self._obj.values)
 
+    # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
+    # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
+    @property
+    def nanmax(self) -> np.float32:
+        return np.nanmax(self._obj.values)
+
+    @property
+    def nanmin(self) -> np.float32:
+        return np.nanmin(self._obj.values)
+
+    @property
+    def absnanmax(self) -> np.float32:
+        return max(self.nanmin, self.nanmax, key=abs)
+
+    @property
+    def absnanmin(self) -> np.float32:
+        mn, mx = self.nanmin, self.nanmax
+        if mn * mx <= np.float32(0.0):
+            return np.float32(0.0)
+        elif mn < np.float32(0.0):
+            return -mx
+        else:
+            return mn
+
     @property
     def limits(self) -> tuple[np.float32, np.float32]:
         """Returns the global minima and maxima of the data."""
-        return self.nanmin(), self.nanmax()
+        return self.nanmin, self.nanmax
 
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
@@ -392,18 +416,6 @@ class ArraySlicer(QtCore.QObject):
             return []
         return [axis]
 
-    def absnanmax(self, *args, **kwargs) -> np.float32:
-        return bn.nanmax(np.abs(self._obj.values), *args, **kwargs)
-
-    def absnanmin(self, *args, **kwargs) -> np.float32:
-        return bn.nanmin(np.abs(self._obj.values), *args, **kwargs)
-
-    def nanmax(self, *args, **kwargs) -> np.float32:
-        return bn.nanmax(self._obj.values, *args, **kwargs)
-
-    def nanmin(self, *args, **kwargs) -> np.float32:
-        return bn.nanmin(self._obj.values, *args, **kwargs)
-
     @QtCore.Slot(int, bool, result=np.float32)
     def point_value(
         self, cursor: int, binned: bool = True
@@ -462,8 +474,8 @@ class ArraySlicer(QtCore.QObject):
         npt.NDArray[np.float32] | np.float32,
     ]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
-        return self.array_rect(*axis), self.extract_avg_slice(cursor, domain).astype(
-            np.float32, order="C"
+        return self.array_rect(*axis), np.ascontiguousarray(
+            self.extract_avg_slice(cursor, domain)
         )
 
     def extract_avg_slice(
