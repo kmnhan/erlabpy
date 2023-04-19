@@ -1504,7 +1504,7 @@ class IconButton(QtWidgets.QPushButton):
         transpose_0="mdi6.arrow-top-left-bottom-right",
         transpose_1="mdi6.arrow-up-down",
         transpose_2="mdi6.arrow-left-right",
-        transpose_3="mdi6.arrow-up-down",
+        transpose_3="mdi6.axis-z-arrow",
         snap="mdi6.grid",
         snap_off="mdi6.grid-off",
         palette="mdi6.palette-advanced",
@@ -2029,14 +2029,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
             )
             for grp in self.values_groups[1:]
         )
-        if self.data.ndim >= 4:
-            self.btn_transpose = tuple(
-                IconButton(on="transpose_2") for _ in range(self.data.ndim)
-            )
-        else:
-            self.btn_transpose = tuple(
-                IconButton(on=f"transpose_{i}") for i in range(self.data.ndim)
-            )
+
+        self.btn_transpose = tuple(
+            IconButton(on=f"transpose_{i}") for i in range(self.data.ndim)
+        )
 
         # add and connect info widgets
         for i in range(self.data.ndim):
@@ -2049,9 +2045,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 lambda val, axis=i: self.slicer_area.set_value(axis, val, uniform=False)
             )
             self.btn_transpose[i].clicked.connect(
-                lambda ax1=i, ax2=(i + 1) % self.data.ndim: self.slicer_area.swap_axes(
-                    ax1, ax2
-                )
+                lambda *, idx=i: self._transpose_axes(idx)
             )
             if self.orientation == QtCore.Qt.Orientation.Vertical:
                 self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
@@ -2065,6 +2059,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
 
             self.layout().addWidget(self.values_groups[i + 1])
+
+    def _transpose_axes(self, idx):
+        if self.data.ndim == 4:
+            if idx == 3:
+                self.slicer_area.swap_axes(2, 3)
+            else:
+                self.slicer_area.swap_axes(idx, (idx + 1) % 3)
+        else:
+            self.slicer_area.swap_axes(idx, (idx + 1) % self.data.ndim)
 
     def connect_signals(self):
         super().connect_signals()
