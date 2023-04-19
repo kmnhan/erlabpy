@@ -100,7 +100,7 @@ def _transposed(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 )
 def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     dif = np.diff(arr)
-    return np.allclose(dif, dif[0], rtol=1e-05, atol=1e-08, equal_nan=False)
+    return np.allclose(dif, dif[0], rtol=1.193e-06, atol=1.193e-06, equal_nan=True)
 
 
 @numba.njit(numba.int64(numba.float32[:], numba.float32), fastmath=True, cache=True)
