@@ -340,36 +340,36 @@ class ImageTool(QtWidgets.QMainWindow):
             zeroCentered=self._color_actions[2].isChecked(),
         )
 
-    def _copy_cursor_pos(self):
+    def _copy_cursor_val(self):
         copy_to_clipboard(str(self.slicer_area.array_slicer._values))
 
+    def _copy_cursor_idx(self):
+        copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
+
     def _open_file(self):
-        filters = (
-            "xarray HDF5 Files (*.h5)",
-            "SSRL Raw Data (*.h5)",
-            "ALS BL4 Raw Data (*.pxt)",
-            "NetCDF Files (*.nc *.nc4 *.cdf)",
-        )
+
+        valid_files = {
+            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, dict(engine="h5netcdf")),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, dict()),
+            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.load_ssrl, dict()),
+            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.load_als_bl4, dict()),
+            "ALS BL4.0.3 LiveXY (*.ibw)": (erlab.io.load_livexy, dict()),
+            "ALS BL4.0.3 LivePolar (*.ibw)": (erlab.io.load_livepolar, dict()),
+        }
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilters(filters)
+        dialog.setNameFilters(valid_files.keys())
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             files = dialog.selectedFiles()
-            match filters.index(dialog.selectedNameFilter()):
-                case 0:
-                    dat = xr.load_dataarray(files[0], engine="h5netcdf")
-                case 1:
-                    dat = erlab.io.load_ssrl(files[0])
-                case 2:
-                    dat = erlab.io.load_als_bl4(files[0])
-                case 3:
-                    dat = xr.load_dataarray(files[0])
-                case _:
-                    raise ValueError
+            fn, kargs = valid_files[dialog.selectedNameFilter()]
+
+            dat = fn(files[0], **kargs)
+            # !TODO: handle ambiguous datasets
+            
             self.slicer_area.set_data(dat)
 
             for group in self.group_widgets:
@@ -378,7 +378,7 @@ class ImageTool(QtWidgets.QMainWindow):
                         w.slicer_area = self.slicer_area
 
     def _export_file(self):
-        if not self.slicer_area._data:
+        if self.slicer_area._data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
@@ -525,6 +525,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("c"),
         pg.mkColor("g"),
         pg.mkColor("r"),
+        pg.mkColor("b"),
     ]  #: List of :class:`PySide6.QtGui.QColor` that contains colors for multiple cursors.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
@@ -868,6 +869,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         clr = self.COLORS[index % len(self.COLORS)]
         while clr in self.cursor_colors:
             clr = self.COLORS[index % len(self.COLORS)]
+            if self.n_cursors > len(self.COLORS):
+                break
             index += 1
         return clr
 
@@ -1984,9 +1987,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.spin_dat = BetterSpinBox(
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
-        self.spin_dat.setDecimals(
-            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
-        )
+        self.spin_dat.setDecimals(round(abs(np.log10(self.array_slicer.absnanmax)) + 1))
 
         # add multicursor widgets
         if self.orientation == QtCore.Qt.Orientation.Vertical:
@@ -2126,9 +2127,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
 
-        self.spin_dat.setDecimals(
-            round(abs(np.log10(self.array_slicer.absnanmax())) + 1)
-        )
+        self.spin_dat.setDecimals(round(abs(np.log10(self.array_slicer.absnanmax)) + 1))
         self.spin_dat.setValue(
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
