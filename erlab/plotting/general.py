@@ -25,12 +25,14 @@ from erlab.plotting.colors import (
     axes_textcolor,
     nice_colorbar,
     _ez_inset,
+    gen_2d_colormap,
 )
 
 __all__ = [
     "LabeledCursor",
     "place_inset",
     "plot_array",
+    "plot_array_2d",
     "gradient_fill",
     "plot_slices",
     "figwh",
@@ -392,6 +394,80 @@ def plot_array(
         return img, c
     else:
         return img
+
+
+def plot_array_2d(
+    larr: xr.DataArray,
+    carr: xr.DataArray,
+    ax: matplotlib.axes.Axes | None = None,
+    *,
+    xlim: float | tuple[float, float] | None = None,
+    ylim: float | tuple[float, float] | None = None,
+    cmap: mcolors.Colormap | str = None,
+    lnorm: mcolors.Normalize | None = None,
+    cnorm: mcolors.Normalize | None = None,
+    background: Sequence[float] | None = None,
+    colorbar: bool = True,
+    cax: matplotlib.axes.Axes | None = None,
+    colorbar_kw: dict | None = None,
+    imshow_kw: dict | None = None,
+    **fatsel_kw: dict,
+):
+    if colorbar_kw is None:
+        colorbar_kw = {}
+    if imshow_kw is None:
+        imshow_kw = {}
+    improps_default = dict(
+        interpolation="none",
+        extent=array_extent(larr),
+        aspect="equal",
+        origin="lower",
+        rasterized=True,
+    )
+    for k, v in improps_default.items():
+        imshow_kw.setdefault(k, v)
+    if ax is None:
+        ax = plt.gca()
+
+    larr = larr.S.fat_sel(**fatsel_kw).copy(deep=True)
+    carr = carr.S.fat_sel(**fatsel_kw).copy(deep=True)
+    sel_kw = {}
+    if xlim is not None:
+        if not np.iterable(xlim):
+            xlim = (-xlim, xlim)
+        sel_kw[larr.dims[1]] = slice(*xlim)
+    if ylim is not None:
+        if not np.iterable(ylim):
+            ylim = (-ylim, ylim)
+        sel_kw[larr.dims[0]] = slice(*ylim)
+    larr = larr.sel(**sel_kw)
+    carr = carr.sel(**sel_kw)
+
+    cmap_img, img = gen_2d_colormap(
+        larr.values, carr.values, cmap, lnorm=lnorm, cnorm=cnorm, background=background
+    )
+
+    if colorbar:
+        if cax is None:
+            colorbar_kw.setdefault("aspect", 2)
+            colorbar_kw.setdefault("anchor", (0, 1))
+            colorbar_kw.setdefault("panchor", (0, 1))
+            cb = ax.get_figure().colorbar(plt.cm.ScalarMappable(), ax=ax, **colorbar_kw)
+            cax = cb.ax
+            cax.clear()
+
+        cax.imshow(cmap_img.transpose(1, 0, 2), extent=(0, 1, -1, 1), origin="lower")
+        cax.set_xticks([0, 1])
+        cax.set_xticklabels(["Min", "Max"])
+
+    im = ax.imshow(img, **imshow_kw)
+
+    ax.set_xlabel(larr.dims[0])
+    ax.set_ylabel(larr.dims[1])
+    if colorbar:
+        return im, cb
+    else:
+        return im
 
 
 def gradient_fill(

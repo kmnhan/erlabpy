@@ -43,6 +43,8 @@ __all__ = [
     "get_mappable",
     "proportional_colorbar",
     "nice_colorbar",
+    "flatten_transparency",
+    "gen_2d_colormap",
     "color_distance",
     "close_to_white",
     "prominent_color",
@@ -868,6 +870,62 @@ def nice_colorbar(
         cbar.ax.set_box_aspect(aspect)
 
     return cbar
+
+
+def flatten_transparency(rgba, background: Sequence[float] | None = None):
+    if background is None:
+        background = (1, 1, 1)
+    original_shape = rgba.shape
+    rgba = rgba.reshape(-1, 4)
+    rgb = rgba[:, :-1]
+    a = rgba[:, -1][:, np.newaxis]
+    rgb *= a
+    rgb += (1 - a) * background
+    return rgb.reshape(original_shape[:-1] + (3,))
+
+
+def gen_2d_colormap(
+    ldat,
+    cdat,
+    cmap: mcolors.Colormap | str = None,
+    colorbar: bool=True, 
+    *,
+    lnorm: plt.Normalize | None = None,
+    cnorm: plt.Normalize | None = None,
+    background: Sequence[float] | None = None,
+    N: int = 256,
+):
+    if cmap is None:
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "", colors=[[0, 0, 1], [0, 0, 0], [1, 0, 0]], N=N
+        )
+    elif isinstance(cmap, str):
+        cmap = plt.get_cmap(cmap)
+    if lnorm is None:
+        lnorm = plt.Normalize()
+    if cnorm is None:
+        cnorm = plt.Normalize()
+    if background is None:
+        background = (1, 1, 1)
+
+    lnorm.autoscale(ldat)
+    cnorm.autoscale(cdat)
+
+    l_vals = lnorm(ldat)[:, :, np.newaxis]
+    img = cmap(cnorm(cdat))[:, :, :-1]
+    img *= l_vals
+    img += (1 - l_vals) * background
+
+    if colorbar:
+        l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
+        cmap_img = np.repeat(
+            cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
+        )[:, :, :-1]
+        cmap_img *= l_vals
+        cmap_img += (1 - l_vals) * background
+        return cmap_img, img
+    else:
+        return None, img
 
 
 def color_distance(c1, c2):
