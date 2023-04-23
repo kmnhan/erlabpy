@@ -413,13 +413,20 @@ def plot_array_2d(
     imshow_kw: dict | None = None,
     **fatsel_kw: dict,
 ):
+    if lnorm is None:
+        lnorm = plt.Normalize()
+    else:
+        lnorm = copy.deepcopy(lnorm)
+    if cnorm is None:
+        cnorm = plt.Normalize()
+    else:
+        cnorm = copy.deepcopy(cnorm)
     if colorbar_kw is None:
         colorbar_kw = {}
     if imshow_kw is None:
         imshow_kw = {}
     improps_default = dict(
         interpolation="none",
-        extent=array_extent(larr),
         aspect="equal",
         origin="lower",
         rasterized=True,
@@ -456,18 +463,20 @@ def plot_array_2d(
             cax = cb.ax
             cax.clear()
 
-        cax.imshow(cmap_img.transpose(1, 0, 2), extent=(0, 1, -1, 1), origin="lower")
-        cax.set_xticks([0, 1])
-        cax.set_xticklabels(["Min", "Max"])
+        cax.imshow(
+            cmap_img.transpose(1, 0, 2),
+            extent=(lnorm.vmin, lnorm.vmax, cnorm.vmin, cnorm.vmax),
+            origin="lower",
+        )
 
-    im = ax.imshow(img, **imshow_kw)
-
+    im = ax.imshow(img, extent=array_extent(larr), **imshow_kw)
     ax.set_xlabel(larr.dims[0])
     ax.set_ylabel(larr.dims[1])
+
     if colorbar:
         return im, cb
     else:
-        return im
+        return im, None
 
 
 def gradient_fill(

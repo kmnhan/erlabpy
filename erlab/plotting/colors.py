@@ -888,7 +888,7 @@ def gen_2d_colormap(
     ldat,
     cdat,
     cmap: mcolors.Colormap | str = None,
-    colorbar: bool=True, 
+    colorbar: bool = True,
     *,
     lnorm: plt.Normalize | None = None,
     cnorm: plt.Normalize | None = None,
@@ -908,8 +908,8 @@ def gen_2d_colormap(
     if background is None:
         background = (1, 1, 1)
 
-    lnorm.autoscale(ldat)
-    cnorm.autoscale(cdat)
+    lnorm.autoscale_None(ldat)
+    cnorm.autoscale_None(cdat)
 
     l_vals = lnorm(ldat)[:, :, np.newaxis]
     img = cmap(cnorm(cdat))[:, :, :-1]
@@ -917,7 +917,9 @@ def gen_2d_colormap(
     img += (1 - l_vals) * background
 
     if colorbar:
-        l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
+        l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[
+            :, np.newaxis, np.newaxis
+        ]
         cmap_img = np.repeat(
             cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
         )[:, :, :-1]
