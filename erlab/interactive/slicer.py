@@ -1,6 +1,7 @@
 """Helper functions for fast slicing :class:`xarray.DataArray` objects."""
 from collections.abc import Iterable, Sequence
 
+import numba
 import numpy as np
 import numpy.typing as npt
 import numba
@@ -100,7 +101,7 @@ def _transposed(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 )
 def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     dif = np.diff(arr)
-    return np.allclose(dif, dif[0], rtol=1.193e-06, atol=1.193e-06, equal_nan=True)
+    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
 
 
 @numba.njit(numba.int64(numba.float32[::1], numba.float32), fastmath=True, cache=True)
@@ -195,7 +196,7 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def absnanmax(self) -> np.float32:
-        return max(self.nanmin, self.nanmax, key=abs)
+        return max(abs(self.nanmin), abs(self.nanmax))
 
     @property
     def absnanmin(self) -> np.float32:
