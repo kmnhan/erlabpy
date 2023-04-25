@@ -151,9 +151,9 @@ class ArraySlicer(QtCore.QObject):
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
         if self._nonuniform_axes:
             return tuple(
-                self._obj[str(dim)[:-4]].values
+                self.values_of_dim(str(dim)[:-4])
                 if i in self._nonuniform_axes
-                else self._obj[dim].values
+                else self.values_of_dim(dim)
                 for i, dim in enumerate(self._obj.dims)
             )
         else:
@@ -161,7 +161,7 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def coords_uniform(self) -> tuple[npt.NDArray[np.float32], ...]:
-        return tuple(self._obj[dim].values for dim in self._obj.dims)
+        return tuple(self.values_of_dim(dim) for dim in self._obj.dims)
 
     @property
     def incs(self) -> tuple[np.float32, ...]:
@@ -261,6 +261,33 @@ class ArraySlicer(QtCore.QObject):
         self._nonuniform_axes = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
+
+    def values_of_dim(self, dim: str) -> npt.NDArray[np.float32]:
+        """Fast equivalent of :code:`self._obj[dim].values`.
+
+        Returns the cached pointer of the underlying coordinate array, achieving a ~80x
+        speedup. This should work most of the time since we only assume floating point
+        values, but does require further testing. May break for future versions of
+        :obj:`pandas` or :obj:`xarray`. See Notes.
+
+        Parameters
+        ----------
+        dim
+            Name of the dimension to get the values from.
+
+        Returns
+        -------
+        numpy.ndarray
+
+        Notes
+        -----
+        Looking at the implementation, I think this may return a pandas array in some
+        cases, but I'm not sure so I'll just leave it this way. When something breaks,
+        replacing with :code:`self._obj._coords[dim]._data.array.array._ndarray` may
+        do the trick.
+
+        """
+        return self._obj._coords[dim]._data.array._data
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True):
         self._bins.append(list(self.get_bins(like_cursor)))
