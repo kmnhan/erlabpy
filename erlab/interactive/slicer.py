@@ -4,11 +4,10 @@ from collections.abc import Iterable, Sequence
 import numba
 import numpy as np
 import numpy.typing as npt
-import numba
-import numbagg
-import bottleneck as bn
 import xarray as xr
 from qtpy import QtCore
+
+from erlab.interactive.fastbinning import fast_nanmean_skipcheck
 
 __all__ = ["ArraySlicer"]
 
@@ -502,9 +501,7 @@ class ArraySlicer(QtCore.QObject):
         npt.NDArray[np.float32] | np.float32,
     ]:
         domain = sorted(set(range(self._obj.ndim)) - set(axis))
-        return self.array_rect(*axis), np.ascontiguousarray(
-            self.extract_avg_slice(cursor, domain)
-        )
+        return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
@@ -533,19 +530,17 @@ class ArraySlicer(QtCore.QObject):
     def _bin_along_axis(
         self, cursor: int, axis: int
     ) -> npt.NDArray[np.float32] | np.float32:
-        axis -= 1
-        if not self.get_binned(cursor)[axis + 1]:
+        axis_val = (axis - 1) % self._obj.ndim
+        if not self.get_binned(cursor)[axis]:
             return self.data_vals_T[
-                (slice(None),) * (axis % self._obj.ndim)
-                + (self._bin_slice(cursor, axis + 1),)
-            ].squeeze(axis=axis)
+                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
+            ].squeeze(axis=axis_val)
         else:
-            return bn.nanmean(
+            return fast_nanmean_skipcheck(
                 self.data_vals_T[
-                    (slice(None),) * (axis % self._obj.ndim)
-                    + (self._bin_slice(cursor, axis + 1),)
+                    (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
                 ],
-                axis=axis,
+                axis=axis_val,
             )
 
     def _bin_along_multiaxis(
@@ -563,6 +558,6 @@ class ArraySlicer(QtCore.QObject):
             )
         ]
         if any(self.get_binned(cursor)):
-            return numbagg.nanmean(selected, axis=axis)
+            return fast_nanmean_skipcheck(selected, axis=axis)
         else:
             return selected
