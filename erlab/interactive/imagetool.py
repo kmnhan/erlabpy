@@ -184,10 +184,14 @@ class ImageTool(QtWidgets.QMainWindow):
             "&Save As...", QtGui.QKeySequence("Ctrl+Shift+S")
         )
         self._export_action.triggered.connect(self._export_file)
-        self._copy_cursor_pos_action = self._file_menu.addAction(
-            "&Copy Cursor Position", QtGui.QKeySequence("Ctrl+Shift+C")
+        self._copy_cursor_val_action = self._file_menu.addAction(
+            "&Copy Cursor Values", QtGui.QKeySequence("Ctrl+C")
         )
-        self._copy_cursor_pos_action.triggered.connect(self._copy_cursor_pos)
+        self._copy_cursor_val_action.triggered.connect(self._copy_cursor_val)
+        self._copy_cursor_idx_action = self._file_menu.addAction(
+            "&Copy Cursor Indices", QtGui.QKeySequence("Ctrl+Alt+C")
+        )
+        self._copy_cursor_idx_action.triggered.connect(self._copy_cursor_idx)
 
         ### VIEW MENU
         self._view_menu = QtWidgets.QMenu("&View", self)
