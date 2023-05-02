@@ -396,64 +396,6 @@ class ImageTool(QtWidgets.QMainWindow):
             erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
 
 
-class ItoolColorBarItem(BetterColorBarItem):
-    def __init__(self, slicer_area: ImageSlicerArea | None = None, **kwargs):
-        self._slicer_area = slicer_area
-        super().__init__(**kwargs)
-
-    @property
-    def slicer_area(self) -> ImageSlicerArea:
-        return self._slicer_area
-
-    @property
-    def images(self):
-        return [weakref.ref(x) for x in self._slicer_area._imageitems]
-
-    @property
-    def primary_image(self):
-        return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
-
-    def setImageItem(self, *args, **kwargs):
-        self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
-
-        self._span.blockSignals(True)
-        self._span.setRegion(self.limits)
-        self._span.blockSignals(False)
-        self._span.sigRegionChanged.connect(self._level_change)
-        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
-        self.color_changed()
-
-
-class ItoolColorBar(pg.PlotWidget):
-    def __init__(self, slicer_area: ImageSlicerArea | None = None, **cbar_kw):
-        super().__init__(
-            parent=slicer_area, plotItem=ItoolColorBarItem(slicer_area, **cbar_kw)
-        )
-        self.scene().sigMouseClicked.connect(self.mouseDragEvent)
-
-    @property
-    def cb(self) -> BetterColorBarItem:
-        return self.plotItem
-
-    def set_dimensions(
-        self,
-        width: int = 30,
-        horiz_pad: int | None = None,
-        vert_pad: int | None = None,
-        font_size: float = 11.0,
-    ):
-        self.cb.set_dimensions(horiz_pad, vert_pad, font_size)
-        self.setFixedWidth(width)
-
-    def setVisible(self, visible: bool):
-        super().setVisible(visible)
-        self.cb.setVisible(visible)
-        self.cb._span.blockSignals(not visible)
-
-        if visible:
-            self.cb._span.setRegion(self.cb.limits)
-
-
 # class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
 class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     # Unsure of whether to subclass GraphicsLayoutWidget or PlotWidget at the moment
@@ -1764,6 +1706,64 @@ def clear_layout(layout: QtWidgets.QLayout):
         child = layout.takeAt(0)
         if child.widget():
             child.widget().deleteLater()
+
+
+class ItoolColorBarItem(BetterColorBarItem):
+    def __init__(self, slicer_area: ImageSlicerArea | None = None, **kwargs):
+        self._slicer_area = slicer_area
+        super().__init__(**kwargs)
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self._slicer_area
+
+    @property
+    def images(self):
+        return [weakref.ref(x) for x in self._slicer_area._imageitems]
+
+    @property
+    def primary_image(self):
+        return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
+
+    def setImageItem(self, *args, **kwargs):
+        self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
+
+        self._span.blockSignals(True)
+        self._span.setRegion(self.limits)
+        self._span.blockSignals(False)
+        self._span.sigRegionChanged.connect(self._level_change)
+        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
+        self.color_changed()
+
+
+class ItoolColorBar(pg.PlotWidget):
+    def __init__(self, slicer_area: ImageSlicerArea | None = None, **cbar_kw):
+        super().__init__(
+            parent=slicer_area, plotItem=ItoolColorBarItem(slicer_area, **cbar_kw)
+        )
+        self.scene().sigMouseClicked.connect(self.mouseDragEvent)
+
+    @property
+    def cb(self) -> BetterColorBarItem:
+        return self.plotItem
+
+    def set_dimensions(
+        self,
+        width: int = 30,
+        horiz_pad: int | None = None,
+        vert_pad: int | None = None,
+        font_size: float = 11.0,
+    ):
+        self.cb.set_dimensions(horiz_pad, vert_pad, font_size)
+        self.setFixedWidth(width)
+
+    def setVisible(self, visible: bool):
+        super().setVisible(visible)
+        self.cb.setVisible(visible)
+        self.cb._span.blockSignals(not visible)
+
+        if visible:
+            self.cb._span.setRegion(self.cb.limits)
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
