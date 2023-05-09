@@ -9,7 +9,7 @@ from typing import Any, Optional
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import PySide6.QtWidgets
+# import PySide6.QtWidgets
 import qtawesome as qta
 import xarray as xr
 from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
@@ -1213,17 +1213,16 @@ class ItoolDisplayObject(object):
         pass
 
 
-class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
+class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
     def __init__(
         self,
         axes,
         cursor: int | None = None,
         is_vertical: bool = False,
-        *args,
         **kargs,
     ):
-        pg.PlotDataItem.__init__(self, *args, **kargs)
-        ItoolDisplayObject.__init__(self, axes, cursor)
+        pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
+        ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.is_vertical = is_vertical
 
     def refresh_data(self):
@@ -1237,16 +1236,15 @@ class ItoolPlotDataItem(pg.PlotDataItem, ItoolDisplayObject):
             self.setData(coord, vals)
 
 
-class ItoolImageItem(BetterImageItem, ItoolDisplayObject):
+class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
     def __init__(
         self,
         axes,
         cursor: int | None = None,
-        *args,
         **kargs,
     ):
-        BetterImageItem.__init__(self, *args, **kargs)
-        ItoolDisplayObject.__init__(self, axes, cursor)
+        BetterImageItem.__init__(self, axes=axes, cursor=cursor,**kargs)
+        ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
 
     @suppressnanwarning
     def refresh_data(self):
