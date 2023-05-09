@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import sys
+import warnings
 import weakref
 from collections.abc import Iterable, Sequence
+from typing import Any, Optional
 
 import numpy as np
 import numpy.typing as npt
+import pyqtgraph as pg
+import PySide6.QtWidgets
 import qtawesome as qta
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
-import pyqtgraph as pg
 from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
 from pyqtgraph.GraphicsScene import mouseEvents
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.io
 from erlab.interactive.colors import (
@@ -137,9 +140,10 @@ class ImageTool(QtWidgets.QMainWindow):
         self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, dock)
         self.resize(720, 720)
 
-        self._createMenuBar()
-        self._refreshMenu()
-        self.slicer_area.sigViewOptionChanged.connect(self._refreshMenu)
+        # self._createMenuBar()
+
+        self.mnb = ItoolMenuBar(self.slicer_area, self)
+
         self.slicer_area.sigDataChanged.connect(self.update_title)
         self.update_title()
 
@@ -166,182 +170,296 @@ class ImageTool(QtWidgets.QMainWindow):
         self.group_widgets.append([])
         self.group_layouts.append(group_layout)
 
-    def _createMenuBar(self):
-        self._menu_bar = QtWidgets.QMenuBar(self)
-        # self._menu_bar.setNativeMenuBar(False)
 
-        ### FILE MENU
-        self._file_menu = QtWidgets.QMenu("&File", self)
-        self._menu_bar.addMenu(self._file_menu)
-        self._file_menu.addSeparator()
+class DictMenuBar(QtWidgets.QMenuBar):
+    def __init__(self, parent: QtWidgets.QWidget | None = ..., **kwargs) -> None:
+        super().__init__(parent)
 
-        ### i/o
-        self._open_action = self._file_menu.addAction(
-            "&Open...", QtGui.QKeySequence("Ctrl+O")
-        )
-        self._open_action.triggered.connect(self._open_file)
-        self._export_action = self._file_menu.addAction(
-            "&Save As...", QtGui.QKeySequence("Ctrl+Shift+S")
-        )
-        self._export_action.triggered.connect(self._export_file)
-        self._copy_cursor_val_action = self._file_menu.addAction(
-            "&Copy Cursor Values", QtGui.QKeySequence("Ctrl+C")
-        )
-        self._copy_cursor_val_action.triggered.connect(self._copy_cursor_val)
-        self._copy_cursor_idx_action = self._file_menu.addAction(
-            "&Copy Cursor Indices", QtGui.QKeySequence("Ctrl+Alt+C")
-        )
-        self._copy_cursor_idx_action.triggered.connect(self._copy_cursor_idx)
+        self.menu_dict: dict[str, QtWidgets.QMenu] = dict()
+        self.action_dict: dict[str, QtWidgets.QAction] = dict()
 
-        ### VIEW MENU
-        self._view_menu = QtWidgets.QMenu("&View", self)
-        self._menu_bar.addMenu(self._view_menu)
-        self._view_menu.addSeparator()
+        self.add_items(**kwargs)
 
-        ### misc. view options
-        self._viewall_action = self._view_menu.addAction(
-            "View &All", QtGui.QKeySequence("Ctrl+A")
-        )
-        self._viewall_action.triggered.connect(self.slicer_area.view_all)
-        self._transpose_action = self._view_menu.addAction(
-            "&Transpose Main Image", QtGui.QKeySequence("T")
-        )
-        self._transpose_action.triggered.connect(
-            lambda: self.slicer_area.swap_axes(0, 1)
+    def __getattribute__(self, __name: str) -> Any:
+        try:
+            return super().__getattribute__(__name)
+        except AttributeError:
+            try:
+                out = self.menu_dict[__name]
+            except KeyError:
+                out = self.action_dict[__name]
+            warnings.warn(
+                f"Menu or Action '{__name}' called as an attribute",
+                PendingDeprecationWarning,
+            )
+            return out
+
+    def add_items(self, **kwargs):
+        self.parse_menu(self, **kwargs)
+
+    def parse_menu(self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs: dict):
+        for name, opts in kwargs.items():
+            menu = opts.pop("menu", None)
+            actions = opts.pop("actions")
+
+            if menu is None:
+                title = opts.pop("title", None)
+                icon = opts.pop("icon", None)
+                if title is None:
+                    title = name
+                if icon is None:
+                    menu = parent.addMenu(title)
+                else:
+                    menu = parent.addMenu(icon, title)
+            else:
+                menu = parent.addMenu(menu)
+
+            self.menu_dict[name] = menu
+
+            for actname, actopts in actions.items():
+                if isinstance(actopts, QtWidgets.QAction):
+                    act = actopts
+                    sep_before, sep_after = False, False
+                else:
+                    if "actions" in actopts:
+                        self.parse_menu(menu, **{actname: actopts})
+                        continue
+                    sep_before = actopts.pop("sep_before", False)
+                    sep_after = actopts.pop("sep_after", False)
+                    if "text" not in actopts:
+                        actopts["text"] = actname
+                    act = self.parse_action(actopts)
+                if sep_before:
+                    menu.addSeparator()
+                menu.addAction(act)
+                if (
+                    act.text() is not None
+                ):  # check whether it's a separator without text
+                    self.action_dict[actname] = act
+                if sep_after:
+                    menu.addSeparator()
+
+    @staticmethod
+    def parse_action(actopts: dict):
+        shortcut = actopts.pop("shortcut", None)
+        triggered = actopts.pop("triggered", None)
+        toggled = actopts.pop("toggled", None)
+        changed = actopts.pop("changed", None)
+
+        if shortcut is not None:
+            actopts["shortcut"] = QtGui.QKeySequence(shortcut)
+
+        action = QtGui.QAction(**actopts)
+
+        if triggered is not None:
+            action.triggered.connect(triggered)
+        if toggled is not None:
+            action.toggled.connect(toggled)
+        if changed is not None:
+            action.changed.connect(changed)
+        return action
+
+
+class ItoolMenuBar(DictMenuBar):
+    def __init__(
+        self, slicer_area: ImageSlicerArea, parent: QtWidgets.QWidget | None
+    ) -> None:
+        super().__init__(parent)
+        self.slicer_area = slicer_area
+
+        self.createMenus()
+        self.refreshMenus()
+        self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+    @property
+    def colorAct(self):
+        return tuple(
+            self.action_dict[k]
+            for k in ("colorInvertAct", "highContrastAct", "zeroCenterAct")
         )
 
-        ### cursor options
-        self._view_menu.addSeparator()
-        self._add_action = self._view_menu.addAction(
-            "&Add New Cursor", QtGui.QKeySequence("Shift+A")
+    def createMenus(self):
+        menu_kwargs = dict(
+            fileMenu=dict(
+                title="&File",
+                actions={
+                    "&Open...": dict(
+                        shortcut="Ctrl+O",
+                        triggered=self._open_file,
+                    ),
+                    "&Save As...": dict(
+                        shortcut="Ctrl+Shift+S",
+                        triggered=self._export_file,
+                    ),
+                    "&Copy Cursor Values": dict(
+                        shortcut="Ctrl+C",
+                        triggered=self._copy_cursor_val,
+                    ),
+                    "&Copy Cursor Indices": dict(
+                        shortcut="Ctrl+Alt+C",
+                        triggered=self._copy_cursor_idx,
+                    ),
+                },
+            ),
+            viewMenu=dict(
+                title="&View",
+                actions=dict(
+                    viewAllAct=dict(
+                        text="View &All",
+                        shortcut="Ctrl+A",
+                        triggered=self.slicer_area.view_all,
+                    ),
+                    transposeAct=dict(
+                        text="&Transpose Main Image",
+                        shortcut="T",
+                        triggered=lambda: self.slicer_area.swap_axes(0, 1),
+                        sep_after=True,
+                    ),
+                    addCursorAct=dict(
+                        text="&Add New Cursor",
+                        shortcut="Shift+A",
+                        triggered=self.slicer_area.add_cursor,
+                    ),
+                    remCursorAct=dict(
+                        text="&Remove Current Cursor",
+                        shortcut="Shift+R",
+                        triggered=self.slicer_area.remove_current_cursor,
+                    ),
+                    snapCursorAct=dict(
+                        text="&Snap to Pixels",
+                        shortcut="S",
+                        triggered=self.slicer_area.toggle_snap,
+                        checkable=True,
+                    ),
+                    cursorMoveMenu=dict(
+                        title="Cursor Control",
+                        actions=dict(),
+                    ),
+                    colorInvertAct=dict(
+                        text="Invert",
+                        shortcut="R",
+                        checkable=True,
+                        toggled=self._set_colormap_options,
+                        sep_before=True,
+                    ),
+                    highContrastAct=dict(
+                        text="High Contrast",
+                        checkable=True,
+                        toggled=self._set_colormap_options,
+                    ),
+                    zeroCenterAct=dict(
+                        text="Center At Zero",
+                        checkable=True,
+                        toggled=self._set_colormap_options,
+                        sep_after=True,
+                    ),
+                ),
+            ),
+            helpMenu=dict(
+                title="&Help",
+                actions=dict(
+                    helpAction=dict(text="DataSlicer Help (WIP)"),
+                    shortcutsAction=dict(
+                        text="Keyboard Shortcuts Reference (WIP)", sep_before=True
+                    ),
+                ),
+            ),
         )
-        self._add_action.triggered.connect(self.slicer_area.add_cursor)
-        self._rem_action = self._view_menu.addAction(
-            "&Remove Current Cursor", QtGui.QKeySequence("Shift+R")
-        )
-        self._view_menu.aboutToShow.connect(
-            lambda: self._rem_action.setDisabled(self.slicer_area.n_cursors == 1)
-        )
-        self._rem_action.triggered.connect(self.slicer_area.remove_current_cursor)
-        self._snap_action = self._view_menu.addAction(
-            "&Snap to Pixels", QtGui.QKeySequence("S")
-        )
-        self._snap_action.setCheckable(True)
-        self._snap_action.toggled.connect(self.slicer_area.toggle_snap)
 
-        ## cursor movement
-        # single cursor
-        self._cursor_move_menu = self._view_menu.addMenu("Cursor Control")
-        self._center_action = self._cursor_move_menu.addAction(
-            "&Center Current Cursor", QtGui.QKeySequence("Shift+C")
+        menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
+            "centerCursorAct"
+        ] = dict(
+            text="&Center Current Cursor",
+            shortcut="Shift+C",
+            triggered=self.slicer_area.center_cursor,
         )
-        self._center_action.triggered.connect(self.slicer_area.center_cursor)
-        self._cursor_step_actions = (
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Up", QtGui.QKeySequence("Shift+Up")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Down", QtGui.QKeySequence("Shift+Down")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Right", QtGui.QKeySequence("Shift+Right")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Left", QtGui.QKeySequence("Shift+Left")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Up × 10", QtGui.QKeySequence("Ctrl+Shift+Up")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Down × 10", QtGui.QKeySequence("Ctrl+Shift+Down")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Right × 10",
-                QtGui.QKeySequence("Ctrl+Shift+Right"),
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Current Cursor Left × 10", QtGui.QKeySequence("Ctrl+Shift+Left")
-            ),
-        )
-        for action, i, d in zip(
-            self._cursor_step_actions,
-            (1, 1, 0, 0) * 2,
-            (1, -1, 1, -1, 10, -10, 10, -10),
+        for i, ((t, s), axis, amount) in enumerate(
+            zip(
+                (
+                    ("Shift Current Cursor Up", "Shift+Up"),
+                    ("Shift Current Cursor Down", "Shift+Down"),
+                    ("Shift Current Cursor Right", "Shift+Right"),
+                    ("Shift Current Cursor Left", "Shift+Left"),
+                    ("Shift Current Cursor Up × 10", "Ctrl+Shift+Up"),
+                    ("Shift Current Cursor Down × 10", "Ctrl+Shift+Down"),
+                    ("Shift Current Cursor Right × 10", "Ctrl+Shift+Right"),
+                    ("Shift Current Cursor Left × 10", "Ctrl+Shift+Left"),
+                ),
+                (1, 1, 0, 0) * 2,
+                (1, -1, 1, -1, 10, -10, 10, -10),
+            )
         ):
-            ax = self.slicer_area.main_image.display_axis[i]
-            action.triggered.connect(
-                lambda *, ax=ax, d=d: self.slicer_area.step_index(ax, d)
+            menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
+                f"ShiftCursorAct{i}"
+            ] = dict(
+                text=t,
+                shortcut=s,
+                triggered=lambda *, ax=self.slicer_area.main_image.display_axis[
+                    axis
+                ], d=amount: self.slicer_area.step_index(ax, d),
+            )
+        menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
+            "centerAllCursorsAct"
+        ] = dict(
+            text="&Center All Cursors",
+            shortcut="Alt+Shift+C",
+            triggered=self.slicer_area.center_all_cursors,
+            sep_before=True,
+        )
+        for i, ((t, s), axis, amount) in enumerate(
+            zip(
+                (
+                    ("Shift Cursors Up", "Alt+Shift+Up"),
+                    ("Shift Cursors Down", "Alt+Shift+Down"),
+                    ("Shift Cursors Right", "Alt+Shift+Right"),
+                    ("Shift Cursors Left", "Alt+Shift+Left"),
+                    ("Shift Cursors Up × 10", "Ctrl+Alt+Shift+Up"),
+                    ("Shift Cursors Down × 10", "Ctrl+Alt+Shift+Down"),
+                    ("Shift Cursors Right × 10", "Ctrl+Alt+Shift+Right"),
+                    ("Shift Cursors Left × 10", "Ctrl+Alt+Shift+Left"),
+                ),
+                (1, 1, 0, 0) * 2,
+                (1, -1, 1, -1, 10, -10, 10, -10),
+            )
+        ):
+            menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
+                f"ShiftAllCursorAct{i}"
+            ] = dict(
+                text=t,
+                shortcut=s,
+                triggered=lambda *, ax=self.slicer_area.main_image.display_axis[
+                    axis
+                ], d=amount: self.slicer_area.step_index_all(ax, d),
             )
 
-        # multiple cursors
-        self._cursor_move_menu.addSeparator()
-        self._center_all_action = self._cursor_move_menu.addAction(
-            "&Center All Cursors", QtGui.QKeySequence("Alt+Shift+C")
-        )
-        self._center_all_action.triggered.connect(self.slicer_area.center_all_cursors)
-        self._cursor_step_all_actions = (
-            self._cursor_move_menu.addAction(
-                "Shift Cursors Up", QtGui.QKeySequence("Alt+Shift+Up")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Cursors Down", QtGui.QKeySequence("Alt+Shift+Down")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Cursors Right", QtGui.QKeySequence("Alt+Shift+Right")
-            ),
-            self._cursor_move_menu.addAction(
-                "Shift Cursors Left", QtGui.QKeySequence("Alt+Shift+Left")
-            ),
-        )
-        for action, i, d in zip(
-            self._cursor_step_all_actions, (1, 1, 0, 0), (1, -1, 1, -1)
-        ):
-            ax = self.slicer_area.main_image.display_axis[i]
-            action.triggered.connect(
-                lambda *, ax=ax, d=d: self.slicer_area.step_index_all(ax, d)
+        self.add_items(**menu_kwargs)
+
+        self.menu_dict["viewMenu"].aboutToShow.connect(
+            lambda: self.action_dict["remCursorAct"].setDisabled(
+                self.slicer_area.n_cursors == 1
             )
-
-        ### colormap options
-        self._view_menu.addSeparator()
-        self._color_actions = (
-            self._view_menu.addAction("Invert", QtGui.QKeySequence("R")),
-            self._view_menu.addAction("High Contrast"),
-            self._view_menu.addAction("Center At Zero"),
-        )
-        for ca in self._color_actions:
-            ca.setCheckable(True)
-            ca.toggled.connect(self._set_colormap_options)
-            # ca.setShortcutContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
-
-        self._view_menu.addSeparator()
-
-        ### HELP MENU
-        self._help_menu = QtWidgets.QMenu("&Help", self)
-        self._menu_bar.addMenu(self._help_menu)
-        self._help_action = self._help_menu.addAction("DataSlicer Help (WIP)")
-        self._help_menu.addSeparator()
-        self._shortcut_action = self._help_menu.addAction(
-            "Keyboard Shortcuts Reference (WIP)"
         )
 
-    def _refreshMenu(self):
-        self._snap_action.blockSignals(True)
-        self._snap_action.setChecked(self.array_slicer.snap_to_data)
-        self._snap_action.blockSignals(False)
+    def refreshMenus(self):
+        self.action_dict["snapCursorAct"].blockSignals(True)
+        self.action_dict["snapCursorAct"].setChecked(self.array_slicer.snap_to_data)
+        self.action_dict["snapCursorAct"].blockSignals(False)
 
         cmap_props = self.slicer_area.colormap_properties
-        for ca, k in zip(
-            self._color_actions, ["reversed", "highContrast", "zeroCentered"]
-        ):
+        for ca, k in zip(self.colorAct, ["reversed", "highContrast", "zeroCentered"]):
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
 
     def _set_colormap_options(self):
         self.slicer_area.set_colormap(
-            reversed=self._color_actions[0].isChecked(),
-            highContrast=self._color_actions[1].isChecked(),
-            zeroCentered=self._color_actions[2].isChecked(),
+            reversed=self.colorAct[0].isChecked(),
+            highContrast=self.colorAct[1].isChecked(),
+            zeroCentered=self.colorAct[2].isChecked(),
         )
 
     def _copy_cursor_val(self):
@@ -2361,17 +2479,17 @@ class ItoolBinningControls(ItoolControlsBase):
 
 
 if __name__ == "__main__":
-    # data = xr.load_dataarray(
-    # "~/Documents/ERLab/TiSe2/kxy10.nc"
-    # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
-    # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-    # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
-    # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
-    # engine="h5netcdf",
-    # )
-    data = erlab.io.load_als_bl4(
-        19, "/Users/khan/Documents/ERLab/TiSe2/220327_ALS_BL4/data"
+    data = xr.load_dataarray(
+        # "~/Documents/ERLab/TiSe2/kxy10.nc"
+        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
+        # engine="h5netcdf",
     )
+    # data = erlab.io.load_als_bl4(
+    # 19, "/Users/khan/Documents/ERLab/TiSe2/220327_ALS_BL4/data"
+    # )
     win = itool(data)
 
     # print(win.array_slicer._nanmeancalls)
