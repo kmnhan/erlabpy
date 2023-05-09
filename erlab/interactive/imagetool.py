@@ -9,7 +9,7 @@ from typing import Any, Optional
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import PySide6.QtWidgets
+# import PySide6.QtWidgets
 import qtawesome as qta
 import xarray as xr
 from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
