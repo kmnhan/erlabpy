@@ -129,7 +129,7 @@ class ArraySlicer(QtCore.QObject):
 
     """
 
-    sigIndexChanged = QtCore.Signal(int, tuple)  #: :meta private:
+    sigIndexChanged = QtCore.Signal(int, object)  #: :meta private:
     sigBinChanged = QtCore.Signal(int, tuple)  #: :meta private:
     sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
     sigShapeChanged = QtCore.Signal()  #: :meta private:

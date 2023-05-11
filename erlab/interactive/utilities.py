@@ -225,7 +225,15 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._step = 1 if self._only_int else 0.01
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
+
+        # PyQt6 compatibility
+        set_dict = {}
+        for k in ["singleStep", "minimum", "maximum"]:
+            set_dict[k] = kwargs.pop(k, None)
         super().__init__(*args, **kwargs)
+        for k, v in set_dict.items():
+            if v is not None:
+                getattr(self, f"set{k[0].capitalize()}{k[1:]}")(v)
         # self.editingFinished.disconnect()
         self.setSizePolicy(
             # QtWidgets.QSizePolicy.Policy.Expanding,
@@ -1022,7 +1030,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
     --------
 
     >>> ParameterGroup(
-        {
+        **{
             "a": QtWidgets.QDoubleSpinBox(range=(0, 1), singleStep=0.01, value=0.2),
             "b": dict(qwtype="dblspin", range=(0, 2), singleStep=0.04),
             "c": QtWidgets.QSlider(range=(0, 10000))

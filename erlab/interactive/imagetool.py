@@ -9,6 +9,7 @@ from typing import Any, Optional
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
+
 # import PySide6.QtWidgets
 import qtawesome as qta
 import xarray as xr
@@ -775,7 +776,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def get_axes(self, index: int) -> ItoolPlotItem:
         return self._plots[index].plotItem
 
-    @QtCore.Slot(tuple, bool, bool)
+    @QtCore.Slot()
+    @QtCore.Slot(tuple)
+    @QtCore.Slot(tuple, bool)
     def refresh_all(
         self, axes: tuple[int, ...] | None = None, only_plots: bool = False
     ):
@@ -1186,7 +1189,6 @@ class ItoolCursorSpan(pg.LinearRegionItem):
 
 class ItoolDisplayObject(object):
     def __init__(self, axes, cursor: int | None = None):
-        super().__init__()
         self.axes = axes
         if cursor is None:
             cursor = 0
@@ -1243,7 +1245,7 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         cursor: int | None = None,
         **kargs,
     ):
-        BetterImageItem.__init__(self, axes=axes, cursor=cursor,**kargs)
+        BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
 
     @suppressnanwarning
@@ -1766,7 +1768,8 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             maximum=99.99,
             value=value,
         )
-        self.label = QtWidgets.QLabel(self, text="γ", buddy=self.spin)
+        self.label = QtWidgets.QLabel("γ", self)
+        self.label.setBuddy(self.spin)
         # self.label.setIndent(0)
         self.label.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
@@ -1810,10 +1813,10 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
     def slider_changed(self, value: float):
         self.spin.setValue(self.gamma_scale_inv(value))
 
-    def gamma_scale(self, y: float) -> float:
-        return 1e4 * np.log10(y)
+    def gamma_scale(self, y: float) -> int:
+        return round(1e4 * np.log10(y))
 
-    def gamma_scale_inv(self, x: float) -> float:
+    def gamma_scale_inv(self, x: int) -> float:
         return np.power(10, x * 1e-4)
 
 
