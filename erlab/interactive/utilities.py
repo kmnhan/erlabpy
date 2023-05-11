@@ -721,7 +721,8 @@ class BetterColorBarItem(pg.PlotItem):
         for axis in ("left", "bottom", "right", "top"):
             self.getAxis(axis).setTickFont(font)
 
-    def _level_change(self):
+    @QtCore.Slot()
+    def level_change(self):
         if not self.isVisible():
             return
         for img_ref in self.images:
@@ -729,7 +730,8 @@ class BetterColorBarItem(pg.PlotItem):
                 img_ref().setLevels(self._span.getRegion())
         self.limit_changed()
 
-    def _level_change_fin(self):
+    @QtCore.Slot()
+    def level_change_fin(self):
         pass
 
     def setLimits(self, limits: tuple[float, float] | None):
@@ -780,8 +782,8 @@ class BetterColorBarItem(pg.PlotItem):
         self._span.blockSignals(True)
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
-        self._span.sigRegionChanged.connect(self._level_change)
-        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
+        self._span.sigRegionChanged.connect(self.level_change)
+        self._span.sigRegionChangeFinished.connect(self.level_change_fin)
         self.color_changed()
         self.limit_changed()
         # self.isocurve.setParentItem(image)

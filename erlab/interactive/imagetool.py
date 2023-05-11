@@ -907,6 +907,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
+        self._colorbar.cb.level_change()
         self.refresh_current()
         self.sigCursorCountChanged.emit(self.n_cursors)
         self.sigCurrentCursorChanged.emit(self.current_cursor)
@@ -1850,8 +1851,8 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.blockSignals(True)
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
-        self._span.sigRegionChanged.connect(self._level_change)
-        self._span.sigRegionChangeFinished.connect(self._level_change_fin)
+        self._span.sigRegionChanged.connect(self.level_change)
+        self._span.sigRegionChangeFinished.connect(self.level_change_fin)
         self.color_changed()
 
 
