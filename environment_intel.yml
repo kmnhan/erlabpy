@@ -54,3 +54,4 @@ dependencies:
     - darkdetect
     - pyclip
     - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
+    - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
