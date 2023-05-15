@@ -21,6 +21,7 @@ __all__ = [
     "bz",
     "colors",
     "general",
+    "plot3d",
 ]
 
 
