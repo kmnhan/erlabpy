@@ -21,6 +21,7 @@ import arpes
 import arpes.endstations
 import h5netcdf
 import igor.igorpy
+import igor2
 import numpy as np
 import xarray as xr
 import arpes.io
@@ -248,7 +249,8 @@ def load_igor_ibw(filename, data_dir=None):
     try:
         filename = find_first_file(filename, data_dir=data_dir)
     except (ValueError, TypeError):
-        pass
+        if data_dir is not None:
+            filename = os.path.join(data_dir, filename)
 
     class ibwfile_wave(object):
         def __init__(self, fname):
@@ -260,6 +262,11 @@ def load_igor_ibw(filename, data_dir=None):
 def load_livexy(filename, data_dir=None):
     dat = load_igor_ibw(filename, data_dir)
     return parse_livexy(dat)
+
+
+def load_livepolar(filename, data_dir=None):
+    dat = load_igor_ibw(filename, data_dir)
+    return parse_livepolar(dat)
 
 
 def load_ssrl(filename, data_dir=None, contains=None):
@@ -282,7 +289,8 @@ def load_ssrl(filename, data_dir=None, contains=None):
         "CreationTime": "creation_time",
         "HDF5Version": "HDF5_Version",
         "H5pyVersion": "h5py_version",
-        "Notes": "description",
+        "Description": "description",
+        "Notes": "notes",
         "Sample": "sample",
         "User": "user",
         "Model": "analyzer_name",
@@ -315,32 +323,56 @@ def load_ssrl(filename, data_dir=None, contains=None):
     for k, v in fixed_attrs.items():
         attrs[k] = v
 
+    compat_mode = "data" in ncf.groups  # compatibility with older data
+
+    if compat_mode:
+        attr_keys_mapping = {
+            "BL_photon_energy": "hv",
+            "a": "chi",  # azi
+            "t": "beta",  # polar
+            "cryo_temperature": "temperature_cryotip",  # cold head temp
+            "cold_head_temperature": "temperature",  # sample temp
+            "creationtime": "creation_time",
+            "model": "analyzer_name",
+            "MCPVoltage": "mcp_voltage",
+            "BL_i0": "photon_flux",  # 이거 맞나..?
+            "BL_spear_current": "beam_current",  # 이거 맞나..?
+            "DeflectionY": "theta_DA",
+        }
+
     for k, v in ncf.groups.items():
         ds = xr.open_dataset(xr.backends.H5NetCDFStore(v))
-        if k == "Beamline":
+        if k.casefold() == "Beamline".casefold():
             ds.attrs = {f"BL_{kk}": vv for kk, vv in ds.attrs.items()}
 
         attrs = attrs | ds.attrs
-        if k == "Data":
+        if k.casefold() == "Data".casefold():
             axes = [dict(v.groups[g].attrs) for g in v.groups]
+            for i, ax in enumerate(axes):
+                axes[i] = {name.lower(): val for name, val in ax.items()}  # unify case
             data = ds.rename_dims(
-                {f"phony_dim_{i}": ax["Label"] for i, ax in enumerate(axes)}
+                {f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)}
             )
-            for ax in axes:
-                # try:
-                #     mn, mx = ax["Minimum"], ax["Maximum"]
-                # except KeyError:
+            for i, ax in enumerate(axes):
+                if compat_mode:
+                    cnt = v.dimensions[f"phony_dim_{i}"].size
+                else:
+                    cnt = ax["count"]
                 mn, mx = (
-                    ax["Offset"],
-                    ax["Offset"] + (ax["Count"] - 1) * ax["Delta"],
+                    ax["offset"],
+                    ax["offset"] + (cnt - 1) * ax["delta"],
                 )
-                data = data.assign_coords(
-                    {ax["Label"]: np.linspace(mn, mx, ax["Count"])}
-                )
-            if "Time" in data.variables:
-                data = data.rename_vars(Count="spectrum", Time="time")
+                data = data.assign_coords({ax["label"]: np.linspace(mn, mx, cnt)})
+            if compat_mode:
+                if "exposure" in data.variables:
+                    data = data.rename_vars(counts="spectrum", exposure="time")
+                else:
+                    data = data.rename_vars(counts="spectrum")
             else:
-                data = data.rename_vars(Count="spectrum")
+                if "Time" in data.variables:
+                    data = data.rename_vars(Count="spectrum", Time="time")
+                else:
+                    data = data.rename_vars(Count="spectrum")
 
     for k in list(attrs.keys()):
         if k in attr_keys_mapping.keys():
