@@ -29,7 +29,7 @@ def load_igor_ct(fname, name):
     if fname.endswith(".txt"):
         values = np.genfromtxt(io.StringIO(file.decode()))
     elif fname.endswith(".ibw"):
-        values = erlab.io.load_igor_ibw(io.BytesIO(file)).values
+        values = erlab.io.load_ibw(io.BytesIO(file)).values
 
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list(name, values / 65535)
     matplotlib.colormaps.register(cmap)
