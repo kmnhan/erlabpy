@@ -21,7 +21,7 @@ import arpes
 import arpes.endstations
 import h5netcdf
 import igor.igorpy
-import igor2
+# import igor2
 import numpy as np
 import xarray as xr
 import arpes.io
