@@ -11,7 +11,6 @@ import time
 from itertools import compress
 
 import bottleneck as bn
-import darkdetect
 import matplotlib.pyplot as plt
 import numpy as np
 import qtawesome as qta
@@ -1431,10 +1430,7 @@ def itoolmpl(data, *args, **kwargs):
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     # print(qapp.devicePixelRatio())
-    if darkdetect.isDark():
-        mpl_style = "dark_background"
-    else:
-        mpl_style = "default"
+    mpl_style = "default"
     with plt.rc_context(
         {
             "text.usetex": False,

@@ -483,8 +483,6 @@ def noisetool(data, *args, **kwargs):
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setApplicationName("Dispersive features analysis")
-    # if darkdetect.isDark():
-    # pass
     app = NoiseTool(data, *args, **kwargs)
     qapp.setStyle("Fusion")
     app.show()

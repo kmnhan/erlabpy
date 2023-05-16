@@ -12,7 +12,6 @@ import weakref
 from itertools import chain, compress
 from time import perf_counter
 
-import darkdetect
 import matplotlib.mathtext
 import numba
 import numbagg
@@ -427,10 +426,7 @@ class ItoolDockLabel(DockLabel):
         r = "3px"
         self.set_fg_color()
         if self.dim:
-            if darkdetect.isDark():
-                self.dim_l_factor = 0.8
-            else:
-                self.dim_l_factor = 1.25
+            self.dim_l_factor = 0.8
             fg = self.dim_color(self.fg_color, self.dim_l_factor, 0.8)
             bg = self.dim_color(self.bg_color, self.dim_l_factor, 0.8)
         else:
@@ -2108,12 +2104,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def changeEvent(self, evt):
         if evt.type() == QtCore.QEvent.PaletteChange:
-            # if darkdetect.isDark():
-            #     pg.setConfigOption("background", "k")
-            #     pg.setConfigOption("foreground", "gray")
-            # else:
-            #     pg.setConfigOption("background", "w")
-            #     pg.setConfigOption("foreground", "k")
             self.update()
         super().changeEvent(evt)
 
