@@ -312,7 +312,7 @@ class edctool(QtWidgets.QMainWindow):
 
         if parameters is not None:
             self.set_params(parameters)
-        self.__post_init__()
+        self.__post_init__(execute=True)
 
     @property
     def xdata(self):
