@@ -24,6 +24,7 @@ rel_kzconv: float = (
     3.8099821161548606  #: :math:`\frac{\hbar^2}{2 m_e}`, Used in momentum conversion
 )
 
+kb = 8.617333262145178e-5  # in units of eV / Kelvin
 
 def conv_eV_nm(value: float) -> float:
     return np.divide(rel_eV_nm, np.float64(value))
