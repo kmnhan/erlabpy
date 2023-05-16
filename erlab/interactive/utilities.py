@@ -852,7 +852,7 @@ class BetterColorBarItem(pg.PlotItem):
 
 
 class FittingParameterWidget(QtWidgets.QWidget):
-    sigParamChanged = QtCore.Signal(dict)
+    sigParamChanged = QtCore.Signal()
 
     def __init__(
         self,
@@ -872,13 +872,17 @@ class FittingParameterWidget(QtWidgets.QWidget):
         if label is None:
             label = self.param_name
         self.label = QtWidgets.QLabel(label)
+        spin_kw.setdefault("keyboardTracking", False)
         # spin_min_width = spin_kw.pop("minimumWidth", 80)
         self.spin_value = BetterSpinBox(**spin_kw)
         self.spin_lb = BetterSpinBox(
-            value=-np.inf, minimumWidth=60, toolTip="Lower Bound"
+            value=-np.inf,
+            minimumWidth=60,
+            toolTip="Lower Bound",
+            keyboardTracking=False,
         )
         self.spin_ub = BetterSpinBox(
-            value=np.inf, minimumWidth=60, toolTip="Upper Bound"
+            value=np.inf, minimumWidth=60, toolTip="Upper Bound", keyboardTracking=False
         )
         self.spin_lb.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Fixed
@@ -896,9 +900,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.check)
 
         for spin in (self.spin_value, self.spin_lb, self.spin_ub):
-            spin.valueChanged.connect(
-                lambda: self.sigParamChanged.emit(self.param_dict())
-            )
+            spin.valueChanged.connect(lambda: self.sigParamChanged.emit())
         self.spin_lb.valueChanged.connect(self._refresh_bounds)
         self.spin_ub.valueChanged.connect(self._refresh_bounds)
         self.check.stateChanged.connect(self.setFixed)
@@ -955,6 +957,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
     def maximum(self):
         return self.spin_ub.value()
 
+    @property
     def param_dict(self):
         param_info = dict(value=self.value())
         if self.checkable():
@@ -963,7 +966,6 @@ class FittingParameterWidget(QtWidgets.QWidget):
             param_info["min"] = float(self.minimum())
         if np.isfinite(self.maximum()):
             param_info["max"] = float(self.maximum())
-
         return {self.prefix() + self.param_name: param_info}
 
 
@@ -1159,9 +1161,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
         if qwtype == "fitparam":
             show_param_label = kwargs.pop("show_param_label", False)
             kwargs["show_label"] = show_param_label
-            
-        fixedWidth = kwargs.pop("fixedWidth",None)
-        fixedHeight = kwargs.pop("fixedHeight",None)
+
+        fixedWidth = kwargs.pop("fixedWidth", None)
+        fixedHeight = kwargs.pop("fixedHeight", None)
 
         widget = widget_class(**kwargs)
 
@@ -1190,7 +1192,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.valueChanged.connect(valueChanged)
         if textChanged is not None:
             widget.textChanged.connect(textChanged)
-            
+
         if fixedWidth is not None:
             widget.setFixedWidth(fixedWidth)
         if fixedHeight is not None:
@@ -1262,7 +1264,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         for k, v in self.widgets.items():
             if k not in self.untracked:
                 self.widget_change_signal(v).connect(
-                    lambda x: self.sigParameterChanged.emit({k: x})
+                    lambda x=None: self.sigParameterChanged.emit({k: x})
                 )
 
     def widgets_of_type(self, widgetclass):

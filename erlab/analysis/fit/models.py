@@ -287,6 +287,11 @@ class MultiPeakFunction(DynamicFunction):
                 kws.append((f"p{i}_{arg}", val))
         return kws
 
+    def eval_peak(self, index: int, x: npt.NDArray[np.float64], **params: dict):
+        return self.peak_funcs[index](
+            x, **{k[3:]: v for k, v in params.items() if k.startswith(f"p{index}")}
+        )
+
     def pre_call(
         self, x: npt.NDArray[np.float64], **params: dict
     ) -> npt.NDArray[np.float64]:
