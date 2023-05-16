@@ -1159,6 +1159,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
         if qwtype == "fitparam":
             show_param_label = kwargs.pop("show_param_label", False)
             kwargs["show_label"] = show_param_label
+            
+        fixedWidth = kwargs.pop("fixedWidth",None)
+        fixedHeight = kwargs.pop("fixedHeight",None)
 
         widget = widget_class(**kwargs)
 
@@ -1187,6 +1190,11 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.valueChanged.connect(valueChanged)
         if textChanged is not None:
             widget.textChanged.connect(textChanged)
+            
+        if fixedWidth is not None:
+            widget.setFixedWidth(fixedWidth)
+        if fixedHeight is not None:
+            widget.setFixedHeight(fixedHeight)
         if policy is not None:
             widget.setSizePolicy(*policy)
 
