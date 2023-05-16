@@ -39,44 +39,35 @@ Installing Conda
 ----------------
 * `Install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_
 
-Installation
-============
-
-1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_.
-2. Open a terminal window where the file is located and run:
-   
-   .. code-block:: bash
-      
-      conda env create -f environment.yml -n envname
-
-   Replace :code:`envname` with the environment name.
-
 Editable Installation from Source
 =================================
 
-1. Go to your preferred directory.
+
+1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_ to your preferred directory :code:`my/directory`. If on Apple silicon, download `environment_apple.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment_apple.yml>`_ instead.
+2. Open a terminal window and go to the directory.
 
    .. code-block:: bash
       
       cd my/directory
 
-2. Clone repository.
-   
-   .. code-block:: bash
-      mkdir src
-      cd src
-      git clone https://github.com/kmnhan/erlabpy.git
-
-3. Create a conda environment and install with pip.
+3. Create a conda environment and activate it.
+   Here, replace :code:`envname` with the environment name you prefer.
+   Again, if on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
 
    .. code-block:: bash
 
       conda config --prepend channels conda-forge
       conda config --set channel_priority strict
-      cd erlabpy
       conda env create -f environment.yml -n envname
-      pip install -e . --config-settings editable_mode=compat
+      conda activate envname
 
-   Here, replace :code:`envname` with the environment name.
    
-   If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+
+4. Clone and install the repository.
+   
+   .. code-block:: bash
+
+      cd src
+      git clone https://github.com/kmnhan/erlabpy.git
+      cd erlabpy
+      pip install -e . --config-settings editable_mode=compat
