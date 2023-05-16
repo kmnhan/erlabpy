@@ -33,14 +33,10 @@ __all__ = [
 
 
 def load_igor_ibw(*args, **kwargs):
-    warnings.warn(
-        "Use `erlab.io.load_ibw` instead", DeprecationWarning, stacklevel=2
-    )
+    warnings.warn("Use `erlab.io.load_ibw` instead", DeprecationWarning, stacklevel=2)
     return load_ibw(*args, **kwargs)
 
 
 def load_igor_pxp(*args, **kwargs):
-    warnings.warn(
-        "Use `erlab.io.load_pxp` instead", DeprecationWarning, stacklevel=2
-    )
+    warnings.warn("Use `erlab.io.load_pxp` instead", DeprecationWarning, stacklevel=2)
     return load_pxp(*args, **kwargs)

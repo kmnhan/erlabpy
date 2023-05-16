@@ -196,9 +196,7 @@ def gold_resolution(
         temp=dict(value=gold.S.temp, vary=False),
         resolution=dict(value=0.1, vary=True, min=0),
     )
-    fit = ExtendedAffineBroadenedFD().guess_fit(
-        edc_avg, params=params, method=method
-    )
+    fit = ExtendedAffineBroadenedFD().guess_fit(edc_avg, params=params, method=method)
     if plot:
         plt.show()
         ax = plt.gca()
@@ -240,9 +238,7 @@ def gold_resolution_roi(
         resolution=dict(value=0.1, vary=True, min=0),
     )
     fit = ExtendedAffineBroadenedFD().guess_fit(
-        edc_avg,
-        params=params,
-        method=method,  # weights=1 / edc_stderr
+        edc_avg, params=params, method=method  # weights=1 / edc_stderr
     )
     if plot:
         ax = plt.gca()

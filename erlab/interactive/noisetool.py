@@ -494,11 +494,10 @@ def noisetool(data, *args, **kwargs):
 
 
 if __name__ == "__main__":
-    from arpes.io import load_data
+    import erlab.io
 
-    gkmk_cvs = load_data(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt",
-        location="BL4",
+    gkmk_cvs = erlab.io.load_als_bl4(
+        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"
     ).spectrum
     phi_new = np.linspace(gkmk_cvs.phi[0], gkmk_cvs.phi[-1], 1000)
     eV_new = np.linspace(gkmk_cvs.eV[0], gkmk_cvs.eV[-1], 2000)
