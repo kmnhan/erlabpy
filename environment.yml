@@ -7,10 +7,6 @@ dependencies:
   - pip>=19.3
   - setuptools
   - packaging
-  - libblas=*=*accelerate
-  - libcblas=*=*accelerate
-  - liblapack=*=*accelerate
-  - liblapacke=*=*accelerate
   - h5netcdf
   - varname
   - cmocean
@@ -50,14 +46,12 @@ dependencies:
   - tqdm
   - uncertainties>=3.0.1
   - qtawesome
+  - numbagg
   - pip:
     - pyside6>=6.2.2
-    - numbagg
     - csaps
     - numba_progress
-    - darkdetect
     - pyclip
-    - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
+    - -e git+https://github.com/kmnhan/igor2.git#egg=igor2
     - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
     - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
-    - -e git+https://github.com/kmnhan/chinook.git#egg=chinook

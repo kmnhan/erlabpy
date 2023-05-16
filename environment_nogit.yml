@@ -50,10 +50,9 @@ dependencies:
   - tqdm
   - uncertainties>=3.0.1
   - qtawesome
+  - numbagg
   - pip:
     - pyside6>=6.2.2
-    - numbagg
     - csaps
     - numba_progress
-    - darkdetect
     - pyclip
