@@ -15,6 +15,7 @@ Subpackages
    erlab.analysis
    erlab.characterization
    erlab.interactive
+   erlab.io
    erlab.plotting
 
 Submodules
@@ -24,5 +25,4 @@ Submodules
    :maxdepth: 3
 
    erlab.constants
-   erlab.io
    erlab.parallel

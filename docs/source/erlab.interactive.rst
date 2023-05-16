@@ -14,6 +14,8 @@ Submodules
 
    erlab.interactive.colors
    erlab.interactive.curvefittingtool
+   erlab.interactive.exampledata
+   erlab.interactive.fastbinning
    erlab.interactive.goldtool
    erlab.interactive.imagetool
    erlab.interactive.imagetool_mpl

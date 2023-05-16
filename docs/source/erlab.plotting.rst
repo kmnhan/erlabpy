@@ -17,3 +17,4 @@ Submodules
    erlab.plotting.colors
    erlab.plotting.erplot
    erlab.plotting.general
+   erlab.plotting.plot3d
