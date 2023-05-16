@@ -5,6 +5,7 @@ import numpy as np
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
 
+from erlab.analysis.fit.models import ExtendedAffineBroadenedFD, PolynomialModel
 from erlab.analysis.utilities import correct_with_edge
 from erlab.plotting.general import figwh
 
@@ -40,7 +41,7 @@ def gold_edge(
         params = {
             "temp": dict(value=temp, vary=vary_temp),
         }
-        model = arpes.fits.ExtendedAffineBroadenedFD
+        model = ExtendedAffineBroadenedFD
 
     if fixed_center is not None:
         params["center"] = dict(value=fixed_center, vary=False)
@@ -75,7 +76,7 @@ def gold_edge(
 
 
 def gold_poly_from_edge(center, weights=None, degree=4, method="leastsq"):
-    modelresult = arpes.fits.PolynomialModel(degree=degree).guess_fit(
+    modelresult = PolynomialModel(degree=degree).guess_fit(
         center, weights=weights, method=method
     )
     return modelresult
@@ -108,7 +109,7 @@ def gold_poly(
         parallel_kw=parallel_kw,
     )
 
-    modelresult = arpes.fits.PolynomialModel(degree=degree).guess_fit(
+    modelresult = PolynomialModel(degree=degree).guess_fit(
         center_arr, weights=1 / center_stderr, method=method
     )
     if plot:
@@ -195,7 +196,7 @@ def gold_resolution(
         temp=dict(value=gold.S.temp, vary=False),
         resolution=dict(value=0.1, vary=True, min=0),
     )
-    fit = arpes.fits.ExtendedAffineBroadenedFD().guess_fit(
+    fit = ExtendedAffineBroadenedFD().guess_fit(
         edc_avg, params=params, method=method
     )
     if plot:
@@ -238,7 +239,7 @@ def gold_resolution_roi(
         temp=dict(value=gold_roi.S.temp, vary=not fix_temperature),
         resolution=dict(value=0.1, vary=True, min=0),
     )
-    fit = arpes.fits.ExtendedAffineBroadenedFD().guess_fit(
+    fit = ExtendedAffineBroadenedFD().guess_fit(
         edc_avg,
         params=params,
         method=method,  # weights=1 / edc_stderr

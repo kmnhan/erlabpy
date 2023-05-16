@@ -24,6 +24,9 @@ rel_kzconv: float = (
     3.8099821161548606  #: :math:`\frac{\hbar^2}{2 m_e}`, Used in momentum conversion
 )
 
+kb: float = 1.380649e-23  #: Boltzmann constant :math:`k_B` (J/K)
+kb_eV: float = 8.617333262145179e-5  #: Boltzmann constant :math:`k_B` (eV/K)
+
 
 def conv_eV_nm(value: float) -> float:
     return np.divide(rel_eV_nm, np.float64(value))
