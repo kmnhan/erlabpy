@@ -112,41 +112,45 @@ class ImageTool(QtWidgets.QMainWindow):
         # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setCentralWidget(self.slicer_area)
 
-        dock = QtWidgets.QDockWidget("Controls", self)
-
-        self.controls = QtWidgets.QWidget(self)
-        self.controls.setLayout(QtWidgets.QHBoxLayout(self.controls))
-        self.controls.layout().setContentsMargins(3, 3, 3, 3)
-
-        self.controls.layout().setSpacing(3)
-        self.groups: list[QtWidgets.QGroupBox] = []
-        self.group_layouts: list[QtWidgets.QVBoxLayout] = []
-        self.group_widgets: list[list[QtWidgets.QWidget]] = []
-
-        self.add_group()  # title="Info")
-        self.add_group()  # title="Color")
-        self.add_group()  # title="Bin")
-
-        self.add_widget(
-            0,
-            ItoolCrosshairControls(
-                self.slicer_area, orientation=QtCore.Qt.Orientation.Vertical
-            ),
+        self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
+            QtWidgets.QDockWidget(name, self) for name in ("Cursor", "Color", "Binning")
         )
-        self.add_widget(1, ItoolColormapControls(self.slicer_area))
-        self.add_widget(2, ItoolBinningControls(self.slicer_area))
+        for i, d in enumerate(self.docks):
+            d.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+            d.topLevelChanged.connect(
+                lambda val, *, idx=i: self._sync_dock_float(val, idx)
+            )
 
-        dock.setWidget(self.controls)
-        # dock.setTitleBarWidget(QtWidgets.QWidget())
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, dock)
+        self.docks[0].setWidget(
+            self.widget_box(
+                ItoolCrosshairControls(
+                    self.slicer_area, orientation=QtCore.Qt.Orientation.Vertical
+                )
+            )
+        )
+        self.docks[1].setWidget(
+            self.widget_box(ItoolColormapControls(self.slicer_area))
+        )
+        self.docks[2].setWidget(self.widget_box(ItoolBinningControls(self.slicer_area)))
+
+        for d in self.docks:
+            self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
-
-        # self._createMenuBar()
 
         self.mnb = ItoolMenuBar(self.slicer_area, self)
 
         self.slicer_area.sigDataChanged.connect(self.update_title)
         self.update_title()
+
+    def _sync_dock_float(self, floating: bool, index: int):
+        for i in range(len(self.docks)):
+            if i != index:
+                self.docks[i].blockSignals(True)
+                self.docks[i].setFloating(floating)
+                self.docks[i].blockSignals(False)
+        self.docks[index].blockSignals(True)
+        self.docks[index].setFloating(floating)
+        self.docks[index].blockSignals(False)
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -157,19 +161,17 @@ class ImageTool(QtWidgets.QMainWindow):
             if self.slicer_area._data.name:
                 self.setWindowTitle(str(self.slicer_area._data.name))
 
-    def add_widget(self, idx: int, widget: QtWidgets.QWidget):
-        self.group_layouts[idx].addWidget(widget)
-        self.group_widgets[idx].append(widget)
-
-    def add_group(self, **kwargs):
+    # !TODO: this is ugly and temporary, fix it
+    def widget_box(self, widget: QtWidgets.QWidget, **kwargs):
         group = QtWidgets.QGroupBox(**kwargs)
+        group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
+        )
         group_layout = QtWidgets.QVBoxLayout(group)
         group_layout.setContentsMargins(3, 3, 3, 3)
-        self.controls.layout().addWidget(group)
         group_layout.setSpacing(3)
-        self.groups.append(group)
-        self.group_widgets.append([])
-        self.group_layouts.append(group_layout)
+        group_layout.addWidget(widget)
+        return group
 
 
 class DictMenuBar(QtWidgets.QMenuBar):
@@ -1772,9 +1774,6 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.label = QtWidgets.QLabel("γ", self)
         self.label.setBuddy(self.spin)
         # self.label.setIndent(0)
-        self.label.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
-        )
         self.slider = QtWidgets.QSlider(
             self,
             toolTip="Colormap gamma",
@@ -1782,10 +1781,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             singleStep=1,
             orientation=QtCore.Qt.Orientation.Horizontal,
         )
-        self.slider.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
-        )
-        self.slider.setMinimumWidth(30)
+        self.slider.setMinimumWidth(75)
         self.spin.valueChanged.connect(self.spin_changed)
 
         self.slider.setRange(
@@ -1972,79 +1968,6 @@ class ItoolControlsBase(QtWidgets.QWidget):
         self.connect_signals()
 
 
-class ColorControls(ItoolControlsBase):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def initialize_widgets(self):
-        self.btn_reverse = IconButton(
-            on="invert",
-            off="invert_off",
-            checkable=True,
-            toolTip="Invert colormap",
-        )
-        self.btn_contrast = IconButton(
-            on="contrast",
-            checkable=True,
-            toolTip="High contrast mode",
-        )
-        self.btn_zero = IconButton(
-            on="zero_center",
-            checkable=True,
-            toolTip="Center colormap at zero",
-        )
-        self.btn_lock = IconButton(
-            # on="unlock", off="lock",
-            on="bright_auto",
-            off="bright_percent",
-            checkable=True,
-            toolTip="Lock color limits",
-        )
-        self.btn_reverse.toggled.connect(self.update_colormap)
-        self.btn_contrast.toggled.connect(self.update_colormap)
-        self.btn_zero.toggled.connect(self.update_colormap)
-
-        self.layout().addWidget(self.btn_reverse)
-        self.layout().addWidget(self.btn_contrast)
-        self.layout().addWidget(self.btn_zero)
-        self.layout().addWidget(self.btn_lock)
-
-    def update(self):
-        self.btn_reverse.blockSignals(True)
-        self.btn_contrast.blockSignals(True)
-        self.btn_zero.blockSignals(True)
-        self.btn_lock.blockSignals(True)
-
-        self.btn_reverse.setChecked(self.slicer_area.colormap_properties["reversed"])
-        self.btn_contrast.setChecked(
-            self.slicer_area.colormap_properties["highContrast"]
-        )
-        self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
-        self.btn_lock.setChecked(self.slicer_area.color_locked)
-
-        self.btn_reverse.blockSignals(False)
-        self.btn_contrast.blockSignals(False)
-        self.btn_zero.blockSignals(False)
-        self.btn_lock.blockSignals(False)
-
-    def update_colormap(self):
-        self.slicer_area.set_colormap(
-            reversed=self.btn_reverse.isChecked(),
-            highContrast=self.btn_contrast.isChecked(),
-            zeroCentered=self.btn_zero.isChecked(),
-        )
-
-    def connect_signals(self):
-        super().connect_signals()
-        self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.connect(self.update)
-
-    def disconnect_signals(self):
-        super().disconnect_signals()
-        self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
-
-
 # class ItoolAAAAAControls(ItoolControlsBase):
 #     def __init__(self, *args, **kwargs):
 #         super().__init__(*args, **kwargs)
@@ -2075,9 +1998,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         elif orientation == "horizontal":
             self.orientation = QtCore.Qt.Orientation.Horizontal
         super().__init__(*args, **kwargs)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
-        )
 
     def initialize_widgets(self):
         super().initialize_widgets()
@@ -2349,6 +2269,79 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
 
 
+class ColorControls(ItoolControlsBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def initialize_widgets(self):
+        self.btn_reverse = IconButton(
+            on="invert",
+            off="invert_off",
+            checkable=True,
+            toolTip="Invert colormap",
+        )
+        self.btn_contrast = IconButton(
+            on="contrast",
+            checkable=True,
+            toolTip="High contrast mode",
+        )
+        self.btn_zero = IconButton(
+            on="zero_center",
+            checkable=True,
+            toolTip="Center colormap at zero",
+        )
+        self.btn_lock = IconButton(
+            # on="unlock", off="lock",
+            on="bright_auto",
+            off="bright_percent",
+            checkable=True,
+            toolTip="Lock color limits",
+        )
+        self.btn_reverse.toggled.connect(self.update_colormap)
+        self.btn_contrast.toggled.connect(self.update_colormap)
+        self.btn_zero.toggled.connect(self.update_colormap)
+
+        self.layout().addWidget(self.btn_reverse)
+        self.layout().addWidget(self.btn_contrast)
+        self.layout().addWidget(self.btn_zero)
+        self.layout().addWidget(self.btn_lock)
+
+    def update(self):
+        self.btn_reverse.blockSignals(True)
+        self.btn_contrast.blockSignals(True)
+        self.btn_zero.blockSignals(True)
+        self.btn_lock.blockSignals(True)
+
+        self.btn_reverse.setChecked(self.slicer_area.colormap_properties["reversed"])
+        self.btn_contrast.setChecked(
+            self.slicer_area.colormap_properties["highContrast"]
+        )
+        self.btn_zero.setChecked(self.slicer_area.colormap_properties["zeroCentered"])
+        self.btn_lock.setChecked(self.slicer_area.color_locked)
+
+        self.btn_reverse.blockSignals(False)
+        self.btn_contrast.blockSignals(False)
+        self.btn_zero.blockSignals(False)
+        self.btn_lock.blockSignals(False)
+
+    def update_colormap(self):
+        self.slicer_area.set_colormap(
+            reversed=self.btn_reverse.isChecked(),
+            highContrast=self.btn_contrast.isChecked(),
+            zeroCentered=self.btn_zero.isChecked(),
+        )
+
+    def connect_signals(self):
+        super().connect_signals()
+        self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
+        self.slicer_area.sigViewOptionChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
+
+
 class ItoolColormapControls(ItoolControlsBase):
     def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
         if isinstance(orientation, QtCore.Qt.Orientation):
@@ -2376,6 +2369,9 @@ class ItoolColormapControls(ItoolControlsBase):
         self.gamma_widget = ColorMapGammaWidget()
         self.gamma_widget.valueChanged.connect(
             lambda g: self.slicer_area.set_colormap(gamma=g)
+        )
+        self.gamma_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
         )
 
         self.misc_controls = self.add_control(ColorControls(self))
