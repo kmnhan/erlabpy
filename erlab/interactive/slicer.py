@@ -1,4 +1,5 @@
 """Helper functions for fast slicing :class:`xarray.DataArray` objects."""
+import functools
 from collections.abc import Iterable, Sequence
 
 import numba
@@ -147,7 +148,7 @@ class ArraySlicer(QtCore.QObject):
         """The number of cursors."""
         return len(self._bins)
 
-    @property
+    @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
         if self._nonuniform_axes:
             return tuple(
@@ -159,45 +160,45 @@ class ArraySlicer(QtCore.QObject):
         else:
             return self.coords_uniform
 
-    @property
+    @functools.cached_property
     def coords_uniform(self) -> tuple[npt.NDArray[np.float32], ...]:
         return tuple(self.values_of_dim(dim) for dim in self._obj.dims)
 
-    @property
+    @functools.cached_property
     def incs(self) -> tuple[np.float32, ...]:
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
-    @property
+    @functools.cached_property
     def incs_uniform(self) -> tuple[np.float32, ...]:
         return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
 
-    @property
+    @functools.cached_property
     def lims(self) -> tuple[tuple[np.float32, np.float32], ...]:
         return tuple((coord[0], coord[-1]) for coord in self.coords)
 
-    @property
+    @functools.cached_property
     def lims_uniform(self) -> tuple[tuple[np.float32, np.float32], ...]:
         return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
 
-    @property
+    @functools.cached_property
     def data_vals_T(self) -> npt.NDArray[np.float32]:
         return _transposed(self._obj.values)
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
     # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
-    @property
-    def nanmax(self) -> np.float32:
+    @functools.cached_property
+    def nanmax(self) -> float:
         return np.nanmax(self._obj.values)
 
-    @property
-    def nanmin(self) -> np.float32:
+    @functools.cached_property
+    def nanmin(self) -> float:
         return np.nanmin(self._obj.values)
 
-    @property
-    def absnanmax(self) -> np.float32:
+    @functools.cached_property
+    def absnanmax(self) -> float:
         return max(abs(self.nanmin), abs(self.nanmax))
 
-    @property
+    @functools.cached_property
     def absnanmin(self) -> np.float32:
         mn, mx = self.nanmin, self.nanmax
         if mn * mx <= np.float32(0.0):
@@ -261,6 +262,30 @@ class ArraySlicer(QtCore.QObject):
         self._nonuniform_axes = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
+        if validate:
+            # cache following attributes
+            (
+                self.coords,
+                self.coords_uniform,
+                self.incs,
+                self.incs_uniform,
+                self.lims,
+                self.lims_uniform,
+                self.data_vals_T,
+            )
+            # reset following attributes
+            (self.nanmax, self.nanmin, self.absnanmax, self.absnanmin)
+            del self.nanmax, self.nanmin, self.absnanmax, self.absnanmin
+        else:
+            del (
+                self.coords,
+                self.coords_uniform,
+                self.incs,
+                self.incs_uniform,
+                self.lims,
+                self.lims_uniform,
+                self.data_vals_T,
+            )
 
     def values_of_dim(self, dim: str) -> npt.NDArray[np.float32]:
         """Fast equivalent of :code:`self._obj[dim].values`.
