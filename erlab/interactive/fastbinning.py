@@ -27,10 +27,10 @@ def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.float64:
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :]),
-        numba.float64[::1](numba.float64[:, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :]),
+        # numba.float64[::1](numba.float64[:, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -43,10 +43,10 @@ def _nanmean_2_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :]),
-        numba.float64[::1](numba.float64[:, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :]),
+        # numba.float64[::1](numba.float64[:, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -59,10 +59,10 @@ def _nanmean_2_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -76,10 +76,10 @@ def _nanmean_3_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -93,10 +93,10 @@ def _nanmean_3_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -110,10 +110,10 @@ def _nanmean_3_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :]),
-        numba.float64[::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -126,10 +126,10 @@ def _nanmean_3_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :]),
-        numba.float64[::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -142,10 +142,10 @@ def _nanmean_3_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :]),
-        numba.float64[::1](numba.float64[:, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -158,10 +158,10 @@ def _nanmean_3_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -176,10 +176,10 @@ def _nanmean_4_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -194,10 +194,10 @@ def _nanmean_4_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -212,10 +212,10 @@ def _nanmean_4_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -230,10 +230,10 @@ def _nanmean_4_3(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -247,10 +247,10 @@ def _nanmean_4_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -264,10 +264,10 @@ def _nanmean_4_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -281,10 +281,10 @@ def _nanmean_4_03(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -298,10 +298,10 @@ def _nanmean_4_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -315,10 +315,10 @@ def _nanmean_4_13(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
+        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -332,10 +332,10 @@ def _nanmean_4_23(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :, :]),
-        numba.float64[::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -348,10 +348,10 @@ def _nanmean_4_012(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :, :]),
-        numba.float64[::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -364,10 +364,10 @@ def _nanmean_4_013(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :, :]),
-        numba.float64[::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
@@ -380,10 +380,10 @@ def _nanmean_4_023(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
 
 
 @numba.njit(
-    [
-        numba.float64[::1](numba.float32[:, :, :, :]),
-        numba.float64[::1](numba.float64[:, :, :, :]),
-    ],
+    # [
+        # numba.float64[::1](numba.float32[:, :, :, :]),
+        # numba.float64[::1](numba.float64[:, :, :, :]),
+    # ],
     cache=True,
     parallel=True,
 )
