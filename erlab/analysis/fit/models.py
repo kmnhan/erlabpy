@@ -277,7 +277,7 @@ class MultiPeakFunction(DynamicFunction):
             kws += [
                 ("efermi", 0.0),  # fermi level
                 ("temp", 30),  # temperature
-                ("offset", 0),  # temperature
+                ("offset", 0),
             ]
         if self.convolve:
             kws += [("resolution", 0.02)]
