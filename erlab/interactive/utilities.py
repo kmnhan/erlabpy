@@ -1059,7 +1059,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
     sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)
 
     def __init__(self, ncols: int = 1, groupbox_kw: dict = dict(), **kwargs: dict):
-        super(ParameterGroup, self).__init__(**groupbox_kw)
+        super().__init__(**groupbox_kw)
         self.setLayout(QtWidgets.QGridLayout(self))
 
         self.labels = []
@@ -1295,9 +1295,8 @@ class ROIControls(ParameterGroup):
         default_properties = dict(decimals=3, singleStep=0.002, keyboardTracking=False)
         for k, v in default_properties.items():
             spinbox_kw.setdefault(k, v)
-        print(self.roi.parentItem())
 
-        super(ROIControls, self).__init__(
+        super().__init__(
             x0=dict(
                 qwtype="btspin",
                 value=x0,
