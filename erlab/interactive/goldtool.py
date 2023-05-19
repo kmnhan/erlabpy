@@ -1,16 +1,16 @@
 import os
 import sys
 
+import arpes.xarray_extensions
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
 import pyqtgraph as pg
+import scipy.interpolate
 import varname
-import arpes.xarray_extensions
+import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis
-from erlab.parallel import joblib_progress_qt
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utilities import (
     AnalysisWindow,
@@ -18,6 +18,7 @@ from erlab.interactive.utilities import (
     ROIControls,
     gen_function_code,
 )
+from erlab.parallel import joblib_progress_qt
 
 __all__ = ["goldtool"]
 
@@ -206,11 +207,56 @@ class goldtool(AnalysisWindow):
             }
         )
 
+        self.params_spl = ParameterGroup(
+            **{
+                "Auto": dict(qwtype="chkbox", checked=True),
+                "lambda": dict(
+                    qwtype="dblspin", minimum=0, singleStep=0.001, decimals=4
+                ),
+                "Residuals": dict(qwtype="chkbox", checked=False),
+                "Corrected": dict(qwtype="chkbox", checked=False),
+                "Shift coords": dict(qwtype="chkbox", checked=True),
+                "itool": dict(
+                    qwtype="pushbtn",
+                    notrack=True,
+                    showlabel=False,
+                    text="Open in ImageTool",
+                    clicked=self.open_itool,
+                ),
+                "copy": dict(
+                    qwtype="pushbtn",
+                    notrack=True,
+                    showlabel=False,
+                    text="Copy to clipboard",
+                    clicked=self.gen_code,
+                ),
+            }
+        )
+        self.params_spl.widgets["lambda"].setDisabled(
+            self.params_spl.widgets["Auto"].checkState() == QtCore.Qt.CheckState.Checked
+        )
+        self.params_spl.widgets["Auto"].toggled.connect(
+            lambda _: self.params_spl.widgets["lambda"].setDisabled(
+                self.params_spl.widgets["Auto"].checkState()
+                == QtCore.Qt.CheckState.Checked
+            )
+        )
+        self.params_poly.setDisabled(True)
+        self.params_spl.setDisabled(True)
+
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
-        self.controls.addWidget(self.params_poly)
 
-        self.params_poly.setDisabled(True)
+        params_tab = QtWidgets.QTabWidget()
+        params_tab.addTab(self.params_poly, "Polynomial")
+        params_tab.addTab(self.params_spl, "Spline")
+        params_tab.currentChanged.connect(
+            lambda i: self.perform_fit(("poly", "spl")[i])
+        )
+        self.controls.addWidget(params_tab)
+        self.controlgroup.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
+        )
 
         self.scatterplots = [
             pg.ScatterPlotItem(
@@ -228,7 +274,8 @@ class goldtool(AnalysisWindow):
             self.axes[i].addItem(self.scatterplots[i])
             self.axes[i].addItem(self.errorbars[i])
             self.axes[i].addItem(self.polycurves[i])
-        self.params_poly.sigParameterChanged.connect(self.perform_function_fit)
+        self.params_poly.sigParameterChanged.connect(lambda: self.perform_fit("poly"))
+        self.params_spl.sigParameterChanged.connect(lambda: self.perform_fit("spl"))
 
         self.axes[0].disableAutoRange()
         self.__post_init__(execute=True)
@@ -264,6 +311,11 @@ class goldtool(AnalysisWindow):
 
         QtCore.QThreadPool.globalInstance().start(self.fitter)
 
+    def closeEvent(self, event):
+        if QtCore.QThreadPool.globalInstance().activeThreadCount() > 0:
+            QtCore.QThreadPool.globalInstance().waitForDone()
+        super().closeEvent(event)
+
     @QtCore.Slot()
     def post_fit(self):
         self.edge_center, self.edge_stderr = (
@@ -278,9 +330,39 @@ class goldtool(AnalysisWindow):
             self.errorbars[i].setData(x=xval, y=yval, height=self.edge_stderr.values)
 
         self.params_poly.setDisabled(False)
-        self.perform_function_fit()
+        self.params_spl.setDisabled(False)
+        self.perform_fit("poly")
 
-    def perform_function_fit(self):
+    def perform_fit(self, mode="poly"):
+        match mode:
+            case "poly":
+                modelresult = self._perform_poly_fit()
+                params = self.params_poly.values
+            case "spl":
+                modelresult = self._perform_spline_fit()
+                params = self.params_spl.values
+        for i in range(2):
+            xval = self.data.phi.values
+            if i == 1 and params["Residuals"]:
+                yval = np.zeros_like(xval)
+            else:
+                yval = modelresult(xval)
+            self.polycurves[i].setData(x=xval, y=yval)
+
+        xval = self.edge_center.phi.values
+        if params["Residuals"]:
+            yval = modelresult(xval) - self.edge_center.values
+        else:
+            yval = self.edge_center.values
+        self.errorbars[1].setData(x=xval, y=yval)
+        self.scatterplots[1].setData(x=xval, y=yval, height=self.edge_stderr)
+
+        self.aw.axes[1].setVisible(True)
+        self.aw.images[-1].setDataArray(self.corrected)
+        self.aw.axes[2].setVisible(params["Corrected"])
+        self.aw.hists[2].setVisible(params["Corrected"])
+
+    def _perform_poly_fit(self):
         params = self.params_poly.values
         modelresult = erlab.analysis.gold_poly_from_edge(
             center=self.edge_center,
@@ -295,27 +377,27 @@ class goldtool(AnalysisWindow):
         self.corrected = erlab.analysis.correct_with_edge(
             target, modelresult, plot=False, shift_coords=params["Shift coords"]
         )
+        return lambda x: modelresult.eval(modelresult.params, x=x)
 
-        for i in range(2):
-            xval = self.data.phi.values
-            if i == 1 and params["Residuals"]:
-                yval = np.zeros_like(xval)
-            else:
-                yval = modelresult.eval(modelresult.params, x=xval)
-            self.polycurves[i].setData(x=xval, y=yval)
+    def _perform_spline_fit(self):
+        params = self.params_spl.values
+        if params["Auto"]:
+            params["lambda"] = None
+        modelresult = scipy.interpolate.make_smoothing_spline(
+            self.edge_center.phi.values,
+            self.edge_center.values,
+            w=np.asarray(1 / self.edge_stderr),
+            lam=params["lambda"],
+        )
 
-        xval = self.edge_center.phi.values
-        if params["Residuals"]:
-            yval = modelresult.eval() - modelresult.data
+        if self.data_corr is None:
+            target = self.data
         else:
-            yval = self.edge_center.values
-        self.errorbars[1].setData(x=xval, y=yval)
-        self.scatterplots[1].setData(x=xval, y=yval, height=self.edge_stderr)
-
-        self.aw.axes[1].setVisible(True)
-        self.aw.images[-1].setDataArray(self.corrected)
-        self.aw.axes[2].setVisible(params["Corrected"])
-        self.aw.hists[2].setVisible(params["Corrected"])
+            target = self.data_corr
+        self.corrected = erlab.analysis.correct_with_edge(
+            target, modelresult, plot=False, shift_coords=params["Shift coords"]
+        )
+        return modelresult
 
     def open_itool(self):
         self.itool = ImageTool(self.corrected)
@@ -326,42 +408,40 @@ class goldtool(AnalysisWindow):
         p1 = self.params_poly.values
         x0, y0, x1, y1 = self.params_roi.roi_limits
 
+        arg_dict = dict(
+            phi_range=(x0, x1),
+            eV_range=(y0, y1),
+            bin_size=(p0["Bin x"], p0["Bin y"]),
+            temp=p0["T (K)"],
+            vary_temp=not p0["Fix T"],
+            fast=p0["Fast"],
+            degree=p1["Degree"],
+            method=p0["Method"],
+            correct=False,
+        )
+
+        if arg_dict["fast"]:
+            del arg_dict["temp"]
+            del arg_dict["vary_temp"]
+
         if self.data_corr is None:
             gen_function_code(
                 copy=True,
                 **{
                     "modelresult = era.gold_poly": [
                         f"|{self._argnames['data']}|",
-                        dict(
-                            phi_range=(x0, x1),
-                            eV_range=(y0, y1),
-                            bin_size=(p0["Bin x"], p0["Bin y"]),
-                            temp=p0["T (K)"],
-                            vary_temp=not p0["Fix T"],
-                            fast=p0["Fast"],
-                            degree=p1["Degree"],
-                            method=p0["Method"],
-                        ),
+                        arg_dict,
                     ]
                 },
             )
         else:
+            arg_dict["correct"] = False
             gen_function_code(
                 copy=True,
                 **{
                     "modelresult = era.gold_poly": [
                         f"|{self._argnames['data']}|",
-                        dict(
-                            phi_range=(x0, x1),
-                            eV_range=(y0, y1),
-                            bin_size=(p0["Bin x"], p0["Bin y"]),
-                            temp=p0["T (K)"],
-                            vary_temp=not p0["Fix T"],
-                            fast=p0["Fast"],
-                            degree=p1["Degree"],
-                            method=p0["Method"],
-                            correct=False,
-                        ),
+                        arg_dict,
                     ],
                     "corrected = era.correct_with_edge": [
                         f"|{self._argnames['data_corr']}|",
