@@ -1,7 +1,9 @@
-import numpy as np
-import numba
 from typing import Callable
+
+import numba
+import numpy as np
 import numpy.typing as npt
+
 from erlab.constants import kb_eV
 
 TINY: float = 1.0e-15  #: From `lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
@@ -9,11 +11,11 @@ TINY: float = 1.0e-15  #: From `lmfit.lineshapes`, equal to `numpy.finfo(numpy.f
 
 @numba.njit(cache=True)
 def _gen_kernel(
-    x: npt.NDArray[np.float64], resolution: float, pad: int = 5
+    x: npt.NDArray[np.float64], resolution: float, pad: int = 12
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     delta_x = x[1] - x[0]
     sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
-    n_pad = int(sigma * pad / delta_x + 0.5)
+    n_pad = int(resolution * pad / delta_x + 0.5)
     x_pad = n_pad * delta_x
 
     extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
@@ -106,10 +108,9 @@ def fermi_dirac_linbkg(
 ) -> npt.NDArray[np.float64]:
     """Fermi-dirac edge with linear backgrounds above and below the fermi level.
 
-    
     `back0` and `back1` corresponds to the detector efficiency above EF, while
     `dos0` and `dos1` corresponds to the below the fermi l
-    
+
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (
         1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV))
