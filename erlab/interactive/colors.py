@@ -109,10 +109,10 @@ def pg_colormap_powernorm(
     reverse: bool = False,
     highContrast: bool = False,
     zeroCentered: bool = False,
+    N: int = 65536,
 ) -> pg.ColorMap:
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
-    N = 65536
 
     if gamma == 1:
 
@@ -125,8 +125,6 @@ def pg_colormap_powernorm(
             return 1 - np.power(np.flip(x), 1.0 / gamma)
 
     else:
-        if gamma < 1:
-            N = 65536  # maximum uint16
 
         def mapping_fn(x):
             return np.power(x, gamma)

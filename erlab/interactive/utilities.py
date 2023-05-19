@@ -1592,11 +1592,13 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         self.hists = [pg.HistogramLUTItem() for _ in range(nax)]
         self.axes = [pg.PlotItem() for _ in range(nax)]
         self.images = [xImageItem(axisOrder="row-major") for _ in range(nax)]
+        cmap = pg_colormap_powernorm("terrain", 1.0, N=6)
         for i in range(nax):
             self.addItem(self.axes[i], *self.get_axis_pos(i))
             self.addItem(self.hists[i], *self.get_hist_pos(i))
             self.axes[i].addItem(self.images[i])
             self.hists[i].setImageItem(self.images[i])
+            self.hists[i].gradient.setColorMap(cmap)
         self.roi = [None for _ in range(nax)]
 
     def get_axis_pos(self, ax):
