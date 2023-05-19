@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import collections
 import sys
+import time
 import warnings
 import weakref
 from collections.abc import Iterable, Sequence
@@ -9,8 +11,6 @@ from typing import Any, Optional
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-
-# import PySide6.QtWidgets
 import qtawesome as qta
 import xarray as xr
 from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
@@ -109,7 +109,6 @@ class ImageTool(QtWidgets.QMainWindow):
     def __init__(self, data=None, **kwargs):
         super().__init__()
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
-        # self.setAttribute(QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setCentralWidget(self.slicer_area)
 
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
@@ -537,6 +536,9 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         super().__init__(
             plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
         )
+        self.viewport().setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, False
+        )
         self.scene().sigMouseClicked.connect(self.getPlotItem().mouseDragEvent)
 
     def getPlotItem(self) -> ItoolPlotItem:
@@ -566,6 +568,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
         correspond to the given strings are converted.
+    bench
+        Prints the fps on Ctrl + drag, for debug purposes
 
     Signals
     -------
@@ -621,8 +625,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         gamma: float = 0.5,
         zeroCentered: bool = False,
         rad2deg: bool | Iterable[str] = False,
+        *,
+        bench: bool = False,
     ):
         super().__init__(parent)
+        self.bench = bench
 
         self.setLayout(QtWidgets.QHBoxLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
@@ -689,6 +696,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
+
+        if self.bench:
+            print("\n")
 
     def on_close(self):
         pass
@@ -1317,12 +1327,17 @@ class ItoolPlotItem(pg.PlotItem):
         self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
         self.add_cursor(update=False)
 
-        self.proxy = pg.SignalProxy(
-            self.sigDragged,
-            delay=1 / 75,
-            rateLimit=75,
-            slot=self.process_drag,
-        )
+        # self.proxy = pg.SignalProxy(
+        #     self.sigDragged,
+        #     delay=1 / 60,
+        #     rateLimit=60,
+        #     slot=self.process_drag,
+        # )
+        if self.slicer_area.bench:
+            self._time_start = None
+            self._time_end = None
+            self._single_queue = collections.deque([0], maxlen=9)
+            self._next_queue = collections.deque([0], maxlen=9)
 
     def getMenu(self) -> QtWidgets.QMenu:
         return self.ctrlMenu
@@ -1340,13 +1355,29 @@ class ItoolPlotItem(pg.PlotItem):
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
         ):
             ev.accept()
-            self.sigDragged.emit(ev, modifiers)
+            # self.sigDragged.emit(ev, modifiers)
+            self.process_drag((ev, modifiers))
         else:
             ev.ignore()
 
     def process_drag(
         self, sig: tuple[mouseEvents.MouseDragEvent, QtCore.Qt.KeyboardModifier]
     ):
+        if self.slicer_area.bench:
+            if self._time_end is not None:
+                self._single_queue.append(1 / (self._time_end - self._time_start))
+            self._time_end = self._time_start
+            self._time_start = time.perf_counter()
+            if self._time_end is not None:
+                self._next_queue.append(1 / (self._time_start - self._time_end))
+            print(
+                "\x1b[2K\x1b[1A\x1b[2K"
+                f"SingleUpdate\t{np.mean(self._single_queue):.1f} ± {np.std(self._single_queue):.1f}",
+                f"NextUpdate\t{np.mean(self._next_queue):.1f} ± {np.std(self._next_queue):.1f}",
+                sep="\t",
+            )
+            self._time_start = time.perf_counter()
+
         ev, modifiers = sig
         data_pos = self.getViewBox().mapSceneToView(ev.scenePos())
 
@@ -1368,6 +1399,9 @@ class ItoolPlotItem(pg.PlotItem):
                     ax, data_pos_coords[i], update=False, uniform=True
                 )
             self.slicer_area.refresh_current(self.display_axis)
+
+        if self.slicer_area.bench:
+            self._time_end = time.perf_counter()
 
     def add_cursor(self, update=True):
         new_cursor = len(self.slicer_data_items)
@@ -2477,6 +2511,43 @@ class ItoolBinningControls(ItoolControlsBase):
 
 
 if __name__ == "__main__":
+    import linecache
+    import tracemalloc
+
+    def display_top(snapshot: tracemalloc.Snapshot, limit=10):
+        snapshot = snapshot.filter_traces(
+            (
+                tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+                tracemalloc.Filter(False, "<unknown>"),
+            )
+        )
+        top_stats = snapshot.statistics("traceback")
+
+        print(f"\nTop {limit} lines")
+        for index, stat in enumerate(top_stats[:limit], 1):
+            frame = stat.traceback[0]
+            print(f"#{index} {stat.traceback.total_nframe}: {frame.filename}:{frame.lineno}: {stat.size/1024:.1f} KiB")
+            line = linecache.getline(frame.filename, frame.lineno).strip()
+            if line:
+                print("    %s" % line)
+
+        other = top_stats[limit:]
+        if other:
+            size = sum(stat.size for stat in other)
+            print(f"{len(other)} other: {size/1024:.1f} KiB")
+        total = sum(stat.size for stat in top_stats)
+        print(f"Total allocated size: {total/1024:.1f} KiB")
+
+        while True:
+            try:
+                idx = int(input("Index: "))
+                stat = top_stats[idx-1]
+            except (IndexError, ValueError):
+                break
+            print("%s memory blocks: %.1f KiB" % (stat.count, stat.size / 1024))
+            for line in stat.traceback.format():
+                print(line)
+
     data = xr.load_dataarray(
         # "~/Documents/ERLab/TiSe2/kxy10.nc"
         # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5"
@@ -2485,9 +2556,17 @@ if __name__ == "__main__":
         # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
         # engine="h5netcdf",
     )
-    # data = erlab.io.load_als_bl4(
-    # 19, "/Users/khan/Documents/ERLab/TiSe2/220327_ALS_BL4/data"
-    # )
-    win = itool(data)
 
+    tracemalloc.start()
+    win = itool(data, bench=True)
+    snapshot = tracemalloc.take_snapshot()
+    print(
+        *[
+            f"{n} {m * 2**-20:.2f} MB\t"
+            for n, m in zip(("Current", "Max"), tracemalloc.get_traced_memory())
+        ],
+        sep="",
+    )
+    tracemalloc.stop()
+    display_top(snapshot)
     # print(win.array_slicer._nanmeancalls)
