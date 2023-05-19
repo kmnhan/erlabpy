@@ -1,6 +1,5 @@
 import arpes.xarray_extensions
 import lmfit
-import csaps
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -24,7 +23,9 @@ def correct_with_edge(
     if isinstance(modelresult, lmfit.model.ModelResult):
         edge_quad = modelresult.eval(x=fmap.phi)
     elif callable(modelresult):
-        edge_quad = modelresult(fmap.phi.values)
+        edge_quad = xr.DataArray(
+            modelresult(fmap.phi.values), coords=dict(phi=fmap.phi)
+        )
     elif isinstance(modelresult, np.ndarray | xr.DataArray):
         if len(fmap.phi) != len(modelresult):
             raise ValueError("incompatible modelresult dimensions")
