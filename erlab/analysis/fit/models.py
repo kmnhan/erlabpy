@@ -161,13 +161,11 @@ class PolyFunc(DynamicFunction):
         return ["x"] + [f"c{i}" for i in range(self.degree + 1)]
 
     def __call__(self, x, **params):
-        coeffs = [params[f"c{d}"] for d in reversed(range(self.degree + 1))]
+        coeffs = [params[f"c{d}"] for d in range(self.degree + 1)]
         if isinstance(x, np.ndarray):
-            return np.polyval(coeffs, x)
+            return np.polynomial.polynomial.polyval(x, coeffs)
         else:
-            coeffs = xr.DataArray(
-                coeffs, coords={"degree": np.flip(np.arange(self.degree + 1))}
-            )
+            coeffs = xr.DataArray(coeffs, coords={"degree": np.arange(self.degree + 1)})
             return xr.polyval(x, coeffs)
 
 
