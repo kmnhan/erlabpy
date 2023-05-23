@@ -23,24 +23,24 @@ _signature_array_rect = [
     )
     for i in VALID_NDIM
 ]
-
-_signature_index_of_value = [
-    numba.int64(
-        numba.int64,
-        numba.float32,
-        numba.types.UniTuple(numba.types.UniTuple(numba.float32, 2), i),
-        numba.types.UniTuple(numba.float32, i),
-        numba.types.UniTuple(numba.int64, i),
-    )
-    for i in VALID_NDIM
-]
-
-_signature_transposed = [
-    numba.float32[[slice(None) for _ in range(i)]](
-        numba.float32[[slice(None) for _ in range(i)]]
-    )
-    for i in VALID_NDIM
-]
+_signature_index_of_value = []
+_signature_transposed = []
+for ftype in (numba.float32, numba.float64):
+    for i in VALID_NDIM:
+        _signature_index_of_value.append(
+            numba.int64(
+                numba.int64,
+                ftype,
+                numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
+                numba.types.UniTuple(ftype, i),
+                numba.types.UniTuple(numba.int64, i),
+            )
+        )
+        _signature_transposed.append(
+            ftype[[slice(None) for _ in range(i)]](
+                ftype[[slice(None) for _ in range(i)]]
+            )
+        )
 
 
 @numba.njit(
@@ -70,9 +70,9 @@ def _array_rect(
 )
 def _index_of_value(
     axis: int,
-    val: np.float32,
-    lims: tuple[tuple[np.float32, np.float32], ...],
-    incs: tuple[np.float32, ...],
+    val: np.floating,
+    lims: tuple[tuple[np.floating, np.floating], ...],
+    incs: tuple[np.floating, ...],
     shape: tuple[int],
 ) -> int:
     ind = min(
@@ -85,7 +85,7 @@ def _index_of_value(
 
 
 @numba.njit(_signature_transposed, fastmath=True, cache=True)
-def _transposed(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
+def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     if arr.ndim == 2:
         return arr.T
     elif arr.ndim == 3:
@@ -104,7 +104,14 @@ def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
 
 
-@numba.njit(numba.int64(numba.float32[::1], numba.float32), fastmath=True, cache=True)
+@numba.njit(
+    [
+        numba.int64(numba.float32[::1], numba.float32),
+        numba.int64(numba.float64[::1], numba.float64),
+    ],
+    fastmath=True,
+    cache=True,
+)
 def _index_of_value_nonuniform(arr: npt.NDArray[np.float32], val: np.float32) -> int:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
@@ -181,25 +188,25 @@ class ArraySlicer(QtCore.QObject):
         return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
 
     @functools.cached_property
-    def data_vals_T(self) -> npt.NDArray[np.float32]:
+    def data_vals_T(self) -> npt.NDArray[np.floating]:
         return _transposed(self._obj.values)
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
     # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
     @functools.cached_property
-    def nanmax(self) -> float:
+    def nanmax(self) -> np.floating:
         return np.nanmax(self._obj.values)
 
     @functools.cached_property
-    def nanmin(self) -> float:
+    def nanmin(self) -> np.floating:
         return np.nanmin(self._obj.values)
 
     @functools.cached_property
-    def absnanmax(self) -> float:
+    def absnanmax(self) -> np.floating:
         return max(abs(self.nanmin), abs(self.nanmax))
 
     @functools.cached_property
-    def absnanmin(self) -> np.float32:
+    def absnanmin(self) -> np.floating:
         mn, mx = self.nanmin, self.nanmax
         if mn * mx <= np.float32(0.0):
             return np.float32(0.0)
@@ -209,7 +216,7 @@ class ArraySlicer(QtCore.QObject):
             return mn
 
     @property
-    def limits(self) -> tuple[np.float32, np.float32]:
+    def limits(self) -> tuple[np.floating, np.floating]:
         """Returns the global minima and maxima of the data."""
         return self.nanmin, self.nanmax
 
@@ -233,7 +240,7 @@ class ArraySlicer(QtCore.QObject):
             The converted data.
 
         """
-        # convert dimensions to float
+        # convert coords to float32
         data = data.assign_coords(
             {d: data[d].astype(np.float32, order="C") for d in data.dims}
         )
@@ -252,9 +259,10 @@ class ArraySlicer(QtCore.QObject):
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
             ).swap_dims({d: d + "_idx"})
 
-        return data.astype(np.float32)
+        # return data.astype(np.float32)
+        return data
 
-    def set_array(self, xarray_obj: xr.DataArray, validate=True):
+    def set_array(self, xarray_obj: xr.DataArray, validate: bool = True):
         if validate:
             self._obj = self.validate_array(xarray_obj)
         else:
@@ -468,10 +476,10 @@ class ArraySlicer(QtCore.QObject):
             return []
         return [axis]
 
-    @QtCore.Slot(int, bool, result=np.float32)
+    @QtCore.Slot(int, bool, result=np.floating)
     def point_value(
         self, cursor: int, binned: bool = True
-    ) -> npt.NDArray[np.float32] | np.float32:
+    ) -> npt.NDArray[np.floating] | np.floating:
         if binned:
             return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
         else:
@@ -530,7 +538,7 @@ class ArraySlicer(QtCore.QObject):
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
-    ) -> npt.NDArray[np.float32] | np.float32:
+    ) -> npt.NDArray[np.floating] | np.floating:
         if len(axis) == 0:
             return self.data_vals_T
         elif len(axis) == 1:
@@ -554,7 +562,7 @@ class ArraySlicer(QtCore.QObject):
 
     def _bin_along_axis(
         self, cursor: int, axis: int
-    ) -> npt.NDArray[np.float32] | np.float32:
+    ) -> npt.NDArray[np.floating] | np.floating:
         axis_val = (axis - 1) % self._obj.ndim
         if not self.get_binned(cursor)[axis]:
             return self.data_vals_T[
@@ -570,7 +578,7 @@ class ArraySlicer(QtCore.QObject):
 
     def _bin_along_multiaxis(
         self, cursor: int, axis: Sequence[int]
-    ) -> npt.NDArray[np.float32] | np.float32:
+    ) -> npt.NDArray[np.floating] | np.floating:
         if any(self.get_binned(cursor)):
             slices = tuple(self._bin_slice(cursor, ax) for ax in axis)
         else:
