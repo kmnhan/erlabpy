@@ -496,7 +496,7 @@ def name_for_dim(dim_name, escaped=True):
         "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
         "psi": (r"\ensuremath{\psi}", r"$\psi$"),
         "phi": (r"\ensuremath{\phi}", r"$\phi$"),
-        "Eb": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
+        "Eb": (r"\ensuremath{E}", r"$E$"),
         "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
         "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
         "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
@@ -592,11 +592,13 @@ def property_label(key, value, decimals=None, si=0, name=None, unit=None):
             if delim == "":
                 return "$E_F$"
             else:
-                return "$E - E_F$"
-        elif delim == "":
-            if value > 0:
-                delim = "+"
+                return "$E = E_F$"
+        if delim == "":
             name = "E_F"
+        else:
+            delim += "E_F"
+        if value > 0:
+            delim += "+"
 
     base = "${}" + delim + "{}$ {}"
     return str(base.format(name, value, unit))
@@ -856,14 +858,14 @@ def mark_points_outside(
             label_ax.set_xlim(ax.get_xlim())
             label_ax.set_xticks(points)
             label_ax.set_xticklabels(
-                [parse_point_labels(l, roman, bar) for l in labels]
+                [parse_point_labels(lab, roman, bar) for lab in labels]
             )
         else:
             label_ax = ax.twinx()
             label_ax.set_ylim(ax.get_ylim())
             label_ax.set_yticks(points)
             label_ax.set_yticklabels(
-                [parse_point_labels(l, roman, bar) for l in labels]
+                [parse_point_labels(lab, roman, bar) for lab in labels]
             )
         label_ax.set_frame_on(False)
 
@@ -873,7 +875,7 @@ def mark_points(
     labels: Sequence[str],
     y: float | Sequence[float] = 0.0,
     pad: tuple[float, float] = (0, 1.75),
-    literal: bool=False,
+    literal: bool = False,
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
@@ -910,13 +912,11 @@ def mark_points(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
-        for k, v in dict(
-            ha="center", va="baseline", fontsize="small"
-        ).items():
+        for k, v in dict(ha="center", va="baseline", fontsize="small").items():
             kwargs.setdefault(k, v)
         if not np.iterable(y):
             y = [y] * len(points)
-        with plt.rc_context({"font.family":"serif"}):
+        with plt.rc_context({"font.family": "serif"}):
             for xi, yi, l in zip(points, y, labels):
                 ax.text(
                     xi,
@@ -926,7 +926,7 @@ def mark_points(
                     + mtransforms.ScaledTranslation(
                         pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
                     ),
-                    **kwargs
+                    **kwargs,
                 )
 
 
@@ -940,7 +940,9 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_ylim(a.get_ylim())
         label_ax.set_yticks(pts)
         # label_ax.set_xlabel('')
-        label_ax.set_yticklabels([parse_point_labels(l, roman, bar) for l in labels])
+        label_ax.set_yticklabels(
+            [parse_point_labels(lab, roman, bar) for lab in labels]
+        )
         # label_ax.set_zorder(a.get_zorder())
         label_ax.set_frame_on(False)
 
