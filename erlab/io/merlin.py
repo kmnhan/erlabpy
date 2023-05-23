@@ -1,11 +1,12 @@
 import arpes
+import arpes.preparation
 import numpy as np
 
 from erlab.io.igor import load_ibw
 
 
 def parse_livepolar(wave, normalize=False):
-    wave = wave.rename({"W": "eV", "X": "phi", "Y": "theta"})
+    wave = wave.rename({"Energy": "eV", "Scienta": "phi", "Polar": "theta"})
     new_coords = {}
     new_coords["alpha"] = np.pi / 2
     new_coords["beta"] = np.deg2rad(wave.attrs["tilt"])
@@ -23,11 +24,10 @@ def parse_livepolar(wave, normalize=False):
 
 
 def parse_livexy(wave):
-    wave = wave.rename({"W": "eV", "X": "y", "Y": "x"})
+    wave = wave.rename({"Energy": "eV", "Sample Y (Vert)": "y", "Sample X": "x"})
     new_coords = {}
     new_coords["alpha"] = np.pi / 2
     new_coords["beta"] = np.deg2rad(wave.attrs["tilt"])
-    # new_coords["phi"] = np.deg2rad(wave["phi"])
     new_coords["theta"] = np.deg2rad(wave.attrs["polar"])
     new_coords["chi"] = np.deg2rad(wave.attrs["azimuth"])
     new_coords["hv"] = wave.attrs["hv"]
