@@ -161,8 +161,9 @@ class PolyFunc(DynamicFunction):
     def argnames(self) -> list[str]:
         return ["x"] + [f"c{i}" for i in range(self.degree + 1)]
 
-    def __call__(self, x, **params):
-        coeffs = [params[f"c{d}"] for d in range(self.degree + 1)]
+    def __call__(self, x, *coeffs, **params):
+        if len(coeffs) != self.degree + 1:
+            coeffs = [params[f"c{d}"] for d in range(self.degree + 1)]
         if isinstance(x, np.ndarray):
             return np.polynomial.polynomial.polyval(x, coeffs)
         else:
