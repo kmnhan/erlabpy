@@ -53,7 +53,9 @@ def do_convolve(
         Additional keyword arguments to `func`.
 
     """
-    xn, g = _gen_kernel(np.asarray(x, dtype=np.float64), resolution, pad=pad)
+    xn, g = _gen_kernel(
+        np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
+    )
     return np.convolve(func(xn, **kwargs), g, mode="valid")
 
 

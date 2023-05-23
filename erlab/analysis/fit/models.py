@@ -57,7 +57,6 @@ def _fit_x(a, b):
 def fit_poly_jit(x, y, deg):
     a = _coeff_mat(x, deg)
     p = _fit_x(a, y)
-    # Reverse order so p[0] is coefficient of highest order
     return p
 
 
@@ -66,6 +65,8 @@ class ExtendedAffineBroadenedFD(XModelMixin):
     Fermi-dirac function with linear background above and below the fermi level,
     convolved with a gaussian kernel.
     """
+
+    guess_dataarray = True
 
     @staticmethod
     def LinearBroadFermiDirac(
@@ -101,13 +102,13 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         # len_fit = 10
 
         dos0, dos1 = fit_poly_jit(
-            np.asarray(x[:len_fit], dtype=np.float64),
-            np.asarray(data[:len_fit], dtype=np.float64),
+            np.array(x[:len_fit], dtype=np.float64),
+            np.array(data[:len_fit], dtype=np.float64),
             deg=1,
         )
         back0, back1 = fit_poly_jit(
-            np.asarray(x[-len_fit:], dtype=np.float64),
-            np.asarray(data[-len_fit:], dtype=np.float64),
+            np.array(x[-len_fit:], dtype=np.float64),
+            np.array(data[-len_fit:], dtype=np.float64),
             deg=1,
         )
         efermi = x[
@@ -117,7 +118,7 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         temp = 30
         if isinstance(data, xr.DataArray):
             try:
-                temp = data.S.temp()
+                temp = data.S.temp
             except AttributeError:
                 pass
 
@@ -127,7 +128,7 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         pars[f"{self.prefix}dos0"].set(value=dos0)
         pars[f"{self.prefix}dos1"].set(value=dos1)
         pars[f"{self.prefix}temp"].set(value=temp)
-        pars[f"{self.prefix}resolution"].set(0.02)
+        pars[f"{self.prefix}resolution"].set(value=0.02)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
