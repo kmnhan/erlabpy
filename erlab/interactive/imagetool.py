@@ -6,7 +6,7 @@ import time
 import warnings
 import weakref
 from collections.abc import Iterable, Sequence
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -70,7 +70,7 @@ def _sync_splitters(s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter):
     s1.splitterMoved.connect(lambda: _link_splitters(s0, s1))
 
 
-def itool(data, execute=None, *args, **kwargs):
+def itool(data, *args, execute: bool | None = None, **kwargs):
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -2526,7 +2526,9 @@ if __name__ == "__main__":
         print(f"\nTop {limit} lines")
         for index, stat in enumerate(top_stats[:limit], 1):
             frame = stat.traceback[0]
-            print(f"#{index} {stat.traceback.total_nframe}: {frame.filename}:{frame.lineno}: {stat.size/1024:.1f} KiB")
+            print(
+                f"#{index} {stat.traceback.total_nframe}: {frame.filename}:{frame.lineno}: {stat.size/1024:.1f} KiB"
+            )
             line = linecache.getline(frame.filename, frame.lineno).strip()
             if line:
                 print("    %s" % line)
@@ -2541,7 +2543,7 @@ if __name__ == "__main__":
         while True:
             try:
                 idx = int(input("Index: "))
-                stat = top_stats[idx-1]
+                stat = top_stats[idx - 1]
             except (IndexError, ValueError):
                 break
             print("%s memory blocks: %.1f KiB" % (stat.count, stat.size / 1024))
