@@ -1,41 +1,80 @@
 import os
 
 import h5netcdf
-import igor.igorpy
+import igor2.record
+import igor2.binarywave
+import igor2.packed
 import numpy as np
 import xarray as xr
-from arpes import load_pxt
 
 from erlab.io.utilities import find_first_file
 
-__all__ = ["load_pxp", "load_h5", "load_ibw"]
+__all__ = ["load_experiment", "load_h5", "load_wave", "load_pxp", "load_ibw"]
 
 
-def process_wave(arr):
-    arr = arr.where(arr != 0)
-    for d in arr.dims:
-        arr = arr.sortby(d)
-    return arr
+def load_experiment(
+    filename: str | os.PathLike,
+    folder: str | None = None,
+    *,
+    prefix: str | None = None,
+    ignore: list[str] | None = None,
+    recursive: bool = False,
+    **kwargs: dict,
+) -> xr.Dataset:
+    """Loads waves from an igor experiment (`.pxp`) file.
 
+    Parameters
+    ----------
+    filename
+        The experiment file.
+    folder
+        Target folder within the experiment, given as a slash-separated string. If
+        `None`, defaults to the root.
+    prefix
+        If given, only include waves with names that starts with the given string.
+    ignore
+        List of wave names to ignore.
+    recursive
+        If `True`, includes waves in child directories.
+    **kwargs
+        Extra arguments to `erlab.io.igor.load_wave`.
 
-def load_pxp(filename, recursive=False, silent=False, **kwargs):
-    expt = load_pxt.read_experiment(filename, **kwargs)
-    waves = dict()
+    Returns
+    -------
+    xarray.Dataset
+        Dataset containing the waves.
+
+    """
+    if folder is None:
+        folder = []
+    if ignore is None:
+        ignore = []
+
+    _, expt = igor2.packed.load(filename)
+    waves = {}
+    if isinstance(folder, str):
+        folder = folder.split("/")
+    folder = [n.encode() for n in folder]
+
+    expt = expt["root"]
+    for dir in folder:
+        expt = expt[dir]
 
     def unpack_folders(expt):
-        for e in expt:
-            try:
-                arr = process_wave(load_pxt.wave_to_xarray(e))
-                waves[arr.name] = arr
-                if not silent:
-                    print(arr.name)
-            except AttributeError:
-                pass
-            if recursive and isinstance(e, igor.igorpy.Folder):
-                unpack_folders(e)
+        for name, record in expt.items():
+            if isinstance(record, igor2.record.WaveRecord):
+                if prefix is not None:
+                    if not name.decode().startswith(prefix):
+                        continue
+                if name.decode() in ignore:
+                    continue
+                waves[name.decode()] = load_wave(record, **kwargs)
+            elif isinstance(record, dict):
+                if recursive:
+                    unpack_folders(record)
 
     unpack_folders(expt)
-    return waves
+    return xr.Dataset(waves)
 
 
 def load_h5(filename):
@@ -53,16 +92,145 @@ def load_h5(filename):
     return ds
 
 
-def load_ibw(filename, data_dir=None):
-    try:
-        filename = find_first_file(filename, data_dir=data_dir)
-    except (ValueError, TypeError):
-        if data_dir is not None:
-            filename = os.path.join(data_dir, filename)
+def load_wave(
+    wave: dict | igor2.record.WaveRecord | str | os.PathLike,
+    data_dir: str | os.PathLike | None = None,
+):
+    DEFAULT_DIMS = ["W", "X", "Y", "Z"]
+    _MAXDIM = 4
 
-    class ibwfile_wave(object):
-        def __init__(self, fname):
-            # self.wave = igor2.binarywave.load(fname)
-            self.wave = load_pxt.read_single_ibw(fname)
+    if isinstance(wave, dict):
+        wave_dict = wave
+    elif isinstance(wave, igor2.record.WaveRecord):
+        wave_dict = wave.wave
+    else:
+        try:
+            wave = find_first_file(wave, data_dir=data_dir)
+        except (ValueError, TypeError):
+            if data_dir is not None:
+                wave = os.path.join(data_dir, wave)
+        wave_dict = igor2.binarywave.load(wave)
 
-    return load_pxt.wave_to_xarray(igor.igorpy.Wave(ibwfile_wave(filename)))
+    d = wave_dict["wave"]
+    version = wave_dict["version"]
+    dim_labels = [""] * _MAXDIM
+    bin_header, wave_header = d["bin_header"], d["wave_header"]
+    if version <= 3:
+        shape = [wave_header["npnts"]] + [0] * (_MAXDIM - 1)
+        sfA = [wave_header["hsA"]] + [0] * (_MAXDIM - 1)
+        sfB = [wave_header["hsB"]] + [0] * (_MAXDIM - 1)
+        # data_units = wave_header["dataUnits"]
+        axis_units = [wave_header["xUnits"]]
+        axis_units.extend([""] * (_MAXDIM - len(axis_units)))
+    else:
+        shape = wave_header["nDim"]
+        sfA = wave_header["sfA"]
+        sfB = wave_header["sfB"]
+        if version >= 5:
+            # data_units = d["data_units"].decode()
+            axis_units = [b"".join(d).decode() for d in wave_header["dimUnits"]]
+            units_sizes = bin_header["dimEUnitsSize"]
+            sz_cum = 0
+            for i, sz in enumerate(units_sizes):
+                if sz != 0:
+                    axis_units[i] = d["dimension_units"][sz_cum : sz_cum + sz].decode()
+                sz_cum += sz
+            for i, sz in enumerate(bin_header["dimLabelsSize"]):
+                if sz != 0:
+                    dim_labels[i] = b"".join(d["labels"][i]).decode()
+        else:
+            # data_units = d["data_units"].decode()
+            axis_units = [d["dimension_units"].decode()]
+
+    def get_dim_name(index):
+        dim = dim_labels[index]
+        unit = axis_units[index]
+        if dim == "":
+            if unit == "":
+                return DEFAULT_DIMS[index]
+            else:
+                return unit
+        else:
+            if unit == "":
+                return dim
+            else:
+                return f"{dim} ({unit})"
+
+    dims = [get_dim_name(i) for i in range(_MAXDIM)]
+    coords = {
+        dims[i]: np.linspace(b, b + a * (c - 1), c)
+        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape))
+        if c != 0
+    }
+
+    attrs = {}
+    for ln in d.get("note", "").decode().splitlines():
+        if "=" in ln:
+            k, v = ln.split("=", 1)
+            try:
+                v = int(v)
+            except ValueError:
+                try:
+                    v = float(v)
+                except ValueError:
+                    pass
+            attrs[k.lower().replace(" ", "_")] = v
+    keys_dict = {
+        "sample_x": "x",
+        "sample_y_(vert)": "y",
+        "sample_y": "y",
+        "sample_z": "z",
+        "bl_energy": "hv",
+    }
+    attrs = {keys_dict[k] if k in keys_dict else k: v for k, v in attrs.items()}
+
+    return xr.DataArray(
+        d["wData"], dims=coords.keys(), coords=coords, attrs=attrs
+    ).rename(wave_header["bname"].decode())
+
+
+load_pxp = load_experiment
+load_ibw = load_wave
+
+# from arpes import load_pxt
+# import igor.igorpy
+
+
+# def load_pxp_old(filename, recursive=False, silent=False, **kwargs):
+#     expt = load_pxt.read_experiment(filename, **kwargs)
+#     waves = dict()
+
+#     def process_wave(arr):
+#         arr = arr.where(arr != 0)
+#         for d in arr.dims:
+#             arr = arr.sortby(d)
+#         return arr
+
+#     def unpack_folders(expt):
+#         for e in expt:
+#             try:
+#                 arr = process_wave(load_pxt.wave_to_xarray(e))
+#                 waves[arr.name] = arr
+#                 if not silent:
+#                     print(arr.name)
+#             except AttributeError:
+#                 pass
+#             if recursive and isinstance(e, igor.igorpy.Folder):
+#                 unpack_folders(e)
+
+#     unpack_folders(expt)
+#     return waves
+
+
+# def load_ibw_old(filename, data_dir: str | os.PathLike | None = None):
+#     try:
+#         filename = find_first_file(filename, data_dir=data_dir)
+#     except (ValueError, TypeError):
+#         if data_dir is not None:
+#             filename = os.path.join(data_dir, filename)
+
+#     class ibwfile_wave(object):
+#         def __init__(self, fname):
+#             self.wave = load_pxt.read_single_ibw(fname)
+
+#     return load_pxt.wave_to_xarray(igor.igorpy.Wave(ibwfile_wave(filename)))

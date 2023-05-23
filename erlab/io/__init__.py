@@ -12,15 +12,17 @@ raw data from the Stanford Synchrotron Light Source Beamline 5-2.
 """
 import warnings
 
-from erlab.io.igor import load_ibw, load_pxp
+from erlab.io.igor import load_experiment, load_wave, load_pxp, load_ibw
 from erlab.io.merlin import load as load_als_bl4
 from erlab.io.merlin import load_livepolar, load_livexy
 from erlab.io.ssrl52 import load as load_ssrl
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
 __all__ = [
-    "load_ibw",
     "load_pxp",
+    "load_ibw",
+    "load_experiment",
+    "load_wave",
     "load_als_bl4",
     "load_livepolar",
     "load_livexy",
@@ -33,10 +35,12 @@ __all__ = [
 
 
 def load_igor_ibw(*args, **kwargs):
-    warnings.warn("Use `erlab.io.load_ibw` instead", DeprecationWarning, stacklevel=2)
-    return load_ibw(*args, **kwargs)
+    warnings.warn("Use `erlab.io.load_wave` instead", DeprecationWarning, stacklevel=2)
+    return load_wave(*args, **kwargs)
 
 
 def load_igor_pxp(*args, **kwargs):
-    warnings.warn("Use `erlab.io.load_pxp` instead", DeprecationWarning, stacklevel=2)
-    return load_pxp(*args, **kwargs)
+    warnings.warn(
+        "Use `erlab.io.load_experiment` instead", DeprecationWarning, stacklevel=2
+    )
+    return load_experiment(*args, **kwargs)
