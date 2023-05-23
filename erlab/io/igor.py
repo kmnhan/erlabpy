@@ -37,7 +37,7 @@ def load_experiment(
     recursive
         If `True`, includes waves in child directories.
     **kwargs
-        Extra arguments to `erlab.io.igor.load_wave`.
+        Extra arguments to :func:`load_wave`.
 
     Returns
     -------

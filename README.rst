@@ -43,7 +43,7 @@ Editable Installation from Source
 =================================
 
 
-1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_ to your preferred directory :code:`my/directory`. If on Apple silicon, download `environment_apple.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment_apple.yml>`_ instead.
+1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_ to your preferred directory (:code:`my/directory`). If on Apple silicon, download `environment_apple.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment_apple.yml>`_ instead.
 2. Open a terminal window and go to the directory.
 
    .. code-block:: bash

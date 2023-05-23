@@ -12,6 +12,7 @@ Subpackages
 .. toctree::
    :maxdepth: 3
 
+   erlab.analysis.fit
    erlab.analysis.mask
 
 Submodules

@@ -83,7 +83,7 @@ def lorentzian_wh(
 
     Notes
     -----
-    `\sigma=w/2`.
+    :math:`\sigma=w/2`
 
     """
     return height / (1 + 4 * ((1.0 * x - center) / max(TINY, width)) ** 2)
@@ -110,8 +110,12 @@ def fermi_dirac_linbkg(
 ) -> npt.NDArray[np.float64]:
     """Fermi-dirac edge with linear backgrounds above and below the fermi level.
 
-    `back0` and `back1` corresponds to the detector efficiency above EF, while
-    `dos0` and `dos1` corresponds to the below the fermi l
+    Notes
+    -----
+    `back0` and `back1` corresponds to the linear background above and below EF (due to
+    non-homogeneous detector efficiency or residual intensity on the phosphor screen
+    during sweep mode), while `dos0` and `dos1` corresponds to the linear density of
+    states below EF including the linear background. 
 
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (

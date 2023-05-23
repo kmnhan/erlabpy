@@ -3,18 +3,20 @@
 """
 from __future__ import annotations
 
-import sys
 import re
+import sys
 import weakref
 from collections.abc import Iterable, Sequence
 from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 import pyclip
+import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
-import pyqtgraph as pg
 from superqt import QDoubleSlider
+
 from erlab.interactive.colors import pg_colormap_powernorm
 
 __all__ = [
@@ -476,21 +478,37 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
 
 class BetterImageItem(pg.ImageItem):
-    sigColorChanged = QtCore.Signal()
-    sigLimitChanged = QtCore.Signal(float, float)
+    """:class:`pyqtgraph.ImageItem` with improved colormap support.
 
-    def __init__(self, image=None, **kargs):
+    Parameters
+    ----------
+    image
+        Image data
+    **kwargs
+        Additional arguments to :class:`pyqtgraph.ImageItem`.
+
+    Signals
+    -------
+    sigColorChanged()
+    sigLimitChanged(float, float)
+
+    """
+
+    sigColorChanged = QtCore.Signal()  #: :meta private:
+    sigLimitChanged = QtCore.Signal(float, float)  #: :meta private:
+
+    def __init__(self, image: npt.NDArray = None, **kwargs):
         self.auto_levels: bool = True
-        super().__init__(image, **kargs)
+        super().__init__(image, **kwargs)
 
-    def setImage(self, image=None, autoLevels: bool | None = None, **kargs):
+    def setImage(self, image=None, autoLevels: bool | None = None, **kwargs):
         if autoLevels is None:
-            if "levels" in kargs:
+            if "levels" in kwargs:
                 self.setAutoLevels(False)
         else:
             self.setAutoLevels(autoLevels)
 
-        super().setImage(image=image, autoLevels=self.auto_levels, **kargs)
+        super().setImage(image=image, autoLevels=self.auto_levels, **kwargs)
 
         if image is not None:
             if self.auto_levels:
@@ -499,9 +517,9 @@ class BetterImageItem(pg.ImageItem):
     def setAutoLevels(self, autoLevels: bool):
         self.auto_levels = autoLevels
 
-    def updateImage(self, *args, **kargs):
-        kargs.setdefault("autoLevels", self.auto_levels)
-        return self.setImage(*args, **kargs)
+    def updateImage(self, *args, **kwargs):
+        kwargs.setdefault("autoLevels", self.auto_levels)
+        return self.setImage(*args, **kwargs)
 
     def setLevels(self, levels, update: bool = True):
         super().setLevels(levels, update)
@@ -970,10 +988,27 @@ class FittingParameterWidget(QtWidgets.QWidget):
 
 
 class xImageItem(pg.ImageItem):
-    sigToleranceChanged = QtCore.Signal(float, float)
+    """
+    :class:`pyqtgraph.ImageItem` with additional functionality, including
+    :class:`xarray.DataArray` support and auto limits based on histogram analysis.
 
-    def __init__(self, *args, **kargs):
-        super().__init__(*args, **kargs)
+    Parameters
+    ----------
+    image
+        Image data.
+    **kwargs
+        Additional arguments to :class:`pyqtgraph.ImageItem`.
+
+    Signals
+    -------
+    sigToleranceChanged()
+
+    """
+
+    sigToleranceChanged = QtCore.Signal(float, float)  #: :meta private:
+
+    def __init__(self, image: npt.NDArray | None = None, **kwargs):
+        super().__init__(image, **kwargs)
         self.cut_tolerance = (30, 30)
         self.data_array = None
 
@@ -1030,6 +1065,11 @@ class ParameterGroup(QtWidgets.QGroupBox):
     params
         See Examples.
 
+
+    Signals
+    -------
+    sigParameterChanged(dict)
+
     Examples
     --------
 
@@ -1056,7 +1096,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         "fitparam": FittingParameterWidget,
     }  # : Dictionary of valid widgets that can be added.
 
-    sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)
+    sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)  #: :meta private:
 
     def __init__(self, ncols: int = 1, groupbox_kw: dict = dict(), **kwargs: dict):
         super().__init__(**groupbox_kw)
