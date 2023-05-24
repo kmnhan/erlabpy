@@ -269,16 +269,18 @@ def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
+    *,
+    colorbar: bool = False,
     colorbar_kw: dict | None = None,
-    cursor: bool = False,
-    cursor_kw: dict | None = None,
+    gamma: float = 1.0,
+    norm: mcolors.Normalize | None = None,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     rad2deg: bool | Iterable[str] = False,
     func: Callable | None = None,
     func_args: dict | None = None,
     **improps: dict,
-) -> tuple[matplotlib.image.AxesImage, LabeledCursor] | matplotlib.image.AxesImage:
+) -> matplotlib.image.AxesImage:
     """Plots a 2D `xarray.DataArray` using `matplotlib.pyplot.imshow`.
 
     Parameters
@@ -287,33 +289,29 @@ def plot_array(
         A two-dimensional `xarray.DataArray` to be plotted.
     ax
         The target `matplotlib.axes.Axes`.
+    colorbar
+        Whether to plot a colorbar.
     colorbar_kw
         Keyword arguments passed onto `erlab.plotting.colors.nice_colorbar`.
-    cursor
-        Whether to display a dynamic cursor.
-    cursor_kw
-        Arguments passed onto `erlab.plotting.general.LabeledCursor`. Ignored if `cursor` is `False`.
     xlim, ylim
         If given a sequence of length 2, those values are set as the lower and upper
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
         lim)``.  If `None`, automatically determines the limits from the data.
+    rad2deg
+        If `True`, converts some known angle coordinates to degrees. If an iterable of
+        `str` is given, only the coordinates that correspond to the given strings are
+        converted.
     func
         A callable that processes the values prior to displaying. Its output must have
         the same shape as the input.
     func_args
         Keyword arguments passed onto `func`.
-    rad2deg
-        If `True`, converts some known angle coordinates to degrees. If an iterable of
-        `str` is given, only the coordinates that correspond to the given strings are
-        converted.
     **improps
         Keyword arguments passed onto `matplotlib.axes.Axes.imshow`.
 
     Returns
     -------
-    img : matplotlib.image.AxesImage
-
-    c : erlab.plotting.general.LabeledCursor
+    img
 
     """
     if colorbar_kw is None:
@@ -342,16 +340,7 @@ def plot_array(
             ]
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
-    improps.setdefault("cmap", "BuWh_r")
-    colorbar = improps.pop("colorbar", False)
-    gamma = improps.pop("gamma", 1.0)
-    try:
-        if improps["norm"] is None:
-            improps.pop("norm")
-    except KeyError:
-        pass
     norm_kw = dict()
-
     if "vmin" in improps.keys():
         norm_kw["vmin"] = improps.pop("vmin")
         if "vmax" in improps.keys():
@@ -363,8 +352,8 @@ def plot_array(
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
 
-    norm = mcolors.PowerNorm(gamma, **norm_kw)
-    improps["norm"] = copy.deepcopy(improps.pop("norm", norm))
+    if norm is None:
+        improps["norm"] = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
 
     improps_default = dict(
         interpolation="none",
@@ -388,12 +377,7 @@ def plot_array(
         ax.set_ylim(*ylim)
     if colorbar:
         nice_colorbar(ax=ax, **colorbar_kw)
-    if cursor:
-        cursor_kw.setdefault("textOn", False)
-        c = LabeledCursor(ax, **cursor_kw)
-        return img, c
-    else:
-        return img
+    return img
 
 
 def plot_array_2d(
@@ -561,6 +545,7 @@ def gradient_fill(
 def plot_slices(
     maps: xr.DataArray | Sequence[xr.DataArray],
     figsize: tuple[float, float] | None = None,
+    *,
     transpose: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
