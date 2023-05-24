@@ -153,7 +153,7 @@ boxplot.meanprops.linewidth: 1.0
 # relative to font.size, using the following values: xx-small, x-small,
 # small, medium, large, x-large, xx-large, larger, or smaller
 
-font.size: 8.0
+font.size: 7.0
 
 # ***************************************************************************
 # * TEXT                                                                    *
@@ -172,7 +172,7 @@ text.parse_math: True
 # Following are default face and edge colors, default tick sizes,
 # default font sizes for tick labels, and so on.  See
 # https://matplotlib.org/api/axes_api.html#module-matplotlib.axes
-axes.facecolor: white
+axes.facecolor: FFFFFF00
 axes.edgecolor: black
 axes.linewidth: 0.5
 axes.grid: False
@@ -267,7 +267,7 @@ ytick.alignment: center_baseline
 # ***************************************************************************
 grid.color: "#b0b0b0"  # grid color
 grid.linestyle: -          # solid
-grid.linewidth: 0.8        # in points
+grid.linewidth: 0.4        # in points
 grid.alpha: 1.0        # transparency, between 0.0 and 1.0
 
 
@@ -304,19 +304,19 @@ legend.columnspacing: 1.0
 # See https://matplotlib.org/api/figure_api.html#matplotlib.figure.Figure
 figure.titlesize: medium
 figure.labelsize: medium
-figure.figsize: 3.4, 2.55
-figure.dpi: 135
-figure.facecolor: white
-figure.edgecolor: white
+figure.figsize: 3.4, 2.1013155617
+figure.dpi: 150
+figure.facecolor: FFFFFF00
+figure.edgecolor: FFFFFF00
 figure.frameon: True
 
 # The figure subplot parameters.  All dimensions are a fraction of the figure width and height.
-figure.subplot.left: 0.125
+figure.subplot.left: 0.1
 figure.subplot.right: 0.9
-figure.subplot.bottom: 0.11
-figure.subplot.top: 0.88
-figure.subplot.wspace: 0.2
-figure.subplot.hspace: 0.2
+figure.subplot.bottom: 0.1
+figure.subplot.top: 0.9
+figure.subplot.wspace: 0.15
+figure.subplot.hspace: 0.15
 
 # Figure layout
 figure.autolayout: False
@@ -332,7 +332,7 @@ figure.constrained_layout.wspace: 0.0
 # ***************************************************************************
 image.aspect: auto
 image.interpolation: none
-image.cmap: viridis
+image.cmap: terrain_r
 image.lut: 256
 image.origin: lower
 image.resample: True
@@ -394,8 +394,8 @@ savefig.facecolor: auto
 savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight
-savefig.pad_inches: 0.02
-savefig.transparent: False
+savefig.pad_inches: 0.00
+savefig.transparent: True
 savefig.orientation: portrait
 
 ## ps backend params
