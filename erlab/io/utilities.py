@@ -159,7 +159,10 @@ def load_hdf5(filename: str | os.PathLike) -> xr.DataArray:
 
 
 def save_as_hdf5(
-    data: xr.DataArray | xr.Dataset, filename: str | os.PathLike, **kwargs: dict
+    data: xr.DataArray | xr.Dataset,
+    filename: str | os.PathLike,
+    igor_compat:bool=True,
+    **kwargs: dict,
 ):
     """Saves data in ``HDF5`` format.
 
@@ -169,6 +172,8 @@ def save_as_hdf5(
         `xarray.DataArray` to save.
     filename
         Target file name.
+    igor_compat
+        Make the resulting file compatible with Igor's `HDF5OpenFile`.
     **kwargs
         Extra arguments to `xarray.DataArray.to_netcdf`: refer to the `xarray`
         documentation for a list of all possible arguments.
@@ -177,12 +182,22 @@ def save_as_hdf5(
     kwargs.setdefault("engine", "h5netcdf")
     kwargs.setdefault("invalid_netcdf", True)
 
+    data = data.copy(deep=True)
     for k, v in data.attrs.items():
         if v is None:
             data = data.assign_attrs({k: "None"})
         if isinstance(v, dict):
             data = data.assign_attrs({k: str(v)})
-
+    if igor_compat:
+        # IGORWaveScaling order: chunk row column layer
+        scaling = [[1, 0]]
+        for i in range(data.ndim):
+            coord = data[data.dims[i]].values
+            delta = coord[1] - coord[0]
+            scaling.append([delta, coord[0]])
+        if data.ndim == 4:
+            scaling[0] = scaling.pop(-1)
+        data.attrs["IGORWaveScaling"] = scaling
     data.to_netcdf(
         filename,
         encoding={
