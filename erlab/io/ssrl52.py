@@ -46,8 +46,6 @@ def load(filename, data_dir=None, contains=None):
         "PassEnergy": "pass_energy",
         "MCP": "mcp_voltage",
         "BL_pexit": "exit_slit",
-        "BL_I0": "photon_flux",  # 이거 맞나..?
-        "BL_spear": "beam_current",  # 이거 맞나..?
         "YDeflection": "theta_DA",
     }
     coords_keys_mapping = {
@@ -73,8 +71,6 @@ def load(filename, data_dir=None, contains=None):
             "creationtime": "creation_time",
             "model": "analyzer_name",
             "MCPVoltage": "mcp_voltage",
-            "BL_i0": "photon_flux",  # 이거 맞나..?
-            "BL_spear_current": "beam_current",  # 이거 맞나..?
             "DeflectionY": "theta_DA",
         }
 
