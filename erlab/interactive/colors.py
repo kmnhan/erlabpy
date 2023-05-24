@@ -144,10 +144,10 @@ def pg_colormap_powernorm(
     mapping[mapping > 1] = 1
     mapping[mapping < 0] = 0
 
-    cmap.color = cmap.mapToFloat(mapping)
-    cmap.pos = np.linspace(0, 1, N)
     if reverse:
         cmap.reverse()
+    cmap.color = cmap.mapToFloat(mapping)
+    cmap.pos = np.linspace(0, 1, N)
     pg.colormap._mapCache = {}  # disable cache to reduce memory usage
     return cmap
 
