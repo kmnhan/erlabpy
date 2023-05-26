@@ -1,12 +1,6 @@
 """Functions related to masking.
 
 """
-import numpy as np
-import numpy.typing as npt
-import numba
-import xarray as xr
-
-from erlab.analysis.mask import polygon
 
 __all__ = [
     "mask_with_polygon",
@@ -14,6 +8,13 @@ __all__ = [
     "polygon_mask_points",
     "mask_with_hex_bz",
 ]
+
+import numpy as np
+import numpy.typing as npt
+import numba
+import xarray as xr
+
+from erlab.analysis.mask import polygon
 
 
 def mask_with_polygon(arr, vertices, dims=("kx", "ky"), invert=False):
@@ -35,7 +36,7 @@ def polygon_mask(vertices, x, y, invert=False):
 
     for i in numba.prange(shape[0]):
         for j in range(shape[1]):
-            mask[i,j] = polygon.bounded_side_bool(vertices, (x[i], y[j]))
+            mask[i, j] = polygon.bounded_side_bool(vertices, (x[i], y[j]))
     if invert:
         return ~mask
     else:

@@ -1,3 +1,11 @@
+__all__ = [
+    "gold_edge",
+    "gold_poly",
+    "gold_poly_from_edge",
+    "gold_resolution",
+    "gold_resolution_roi",
+]
+
 import arpes
 import arpes.fits
 import matplotlib.pyplot as plt
@@ -8,14 +16,6 @@ from uncertainties import ufloat
 from erlab.analysis.fit.models import ExtendedAffineBroadenedFD, PolynomialModel
 from erlab.analysis.utilities import correct_with_edge
 from erlab.plotting.general import figwh
-
-__all__ = [
-    "gold_edge",
-    "gold_poly",
-    "gold_poly_from_edge",
-    "gold_resolution",
-    "gold_resolution_roi",
-]
 
 
 def gold_edge(

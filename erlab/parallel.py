@@ -1,4 +1,7 @@
 """Helper functions for parallel processing."""
+
+__all__ = ["joblib_progress", "joblib_progress_qt"]
+
 import contextlib
 import sys
 
@@ -7,8 +10,6 @@ import joblib._parallel_backends
 import tqdm
 import tqdm.notebook
 from qtpy import QtCore
-
-__all__ = ["joblib_progress", "joblib_progress_qt"]
 
 
 def is_notebook():

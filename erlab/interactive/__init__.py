@@ -2,4 +2,4 @@
 
 import os 
 
-os.environ["QT_API"] = "pyside6"
+os.environ["QT_API"] = "pyqt6"

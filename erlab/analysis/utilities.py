@@ -1,3 +1,5 @@
+__all__ = ["correct_with_edge"]
+
 import arpes.xarray_extensions
 import lmfit
 import matplotlib.pyplot as plt
@@ -6,8 +8,6 @@ import xarray as xr
 
 from erlab.plotting.colors import proportional_colorbar
 from erlab.plotting.general import plot_array
-
-__all__ = ["correct_with_edge"]
 
 
 def correct_with_edge(

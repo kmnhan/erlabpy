@@ -1,6 +1,15 @@
 """Plotting utilities.
 
 """
+
+__all__ = [
+    "annotations",
+    "bz",
+    "colors",
+    "general",
+    "plot3d",
+]
+
 import os
 import io
 import pkgutil
@@ -15,14 +24,6 @@ import matplotlib.font_manager
 import numpy as np
 
 import erlab.io
-
-__all__ = [
-    "annotations",
-    "bz",
-    "colors",
-    "general",
-    "plot3d",
-]
 
 
 def load_igor_ct(fname, name):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__all__ = ["itool", "ImageTool", "ImageSlicerArea"]
+
 import collections
 import sys
 import time
@@ -32,7 +34,6 @@ from erlab.interactive.utilities import (
     copy_to_clipboard,
 )
 
-__all__ = ["itool", "ImageTool", "ImageSlicerArea"]
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")

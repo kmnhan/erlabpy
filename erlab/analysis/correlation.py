@@ -2,14 +2,15 @@
 
 """
 
+__all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
+
+
 from itertools import chain, product
 
 import numpy as np
 import xarray as xr
 from joblib import Parallel, delayed
 from scipy.signal import correlate, correlation_lags
-
-__all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
 
 
 def autocorrelate(arr, *args, **kwargs):
