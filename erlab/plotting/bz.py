@@ -66,14 +66,15 @@ def get_bz_edge(
 
     # remove duplicates
     lines_new = []
-    for ln in lines:
-        for i in range(ln.shape[0] - 1):
+    for line in lines:
+        for i in range(line.shape[0] - 1):
             if not any(
-                np.allclose(ln[i : i + 2], ln)
-                or np.allclose(ln[i : i + 2], np.flipud(ln))
-                for ln in lines_new
+                np.allclose(line[i : i + 2], line_new)
+                or np.allclose(line[i : i + 2], np.flipud(line_new))
+                for line_new in lines_new
             ):
-                lines_new.append(ln[i : i + 2])
+                lines_new.append(line[i : i + 2])
+
     vertices_new = []
     for v in vertices:
         if not any(np.allclose(v, vn) for vn in vertices_new):
