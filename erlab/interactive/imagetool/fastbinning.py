@@ -1,3 +1,11 @@
+"""
+This module exists to provide a fast, parallelized version of nanmean that supports
+multiple axes based on numba. Enables efficient real-time multidimensional binning.
+
+"""
+
+__all__ = ["fast_nanmean"]
+
 import numpy as np
 import numpy.typing as npt
 from collections.abc import Iterable
@@ -6,34 +14,13 @@ import numba.typed
 import numba.core.registry
 import numbagg
 
-__all__ = ["fast_nanmean"]
 
-
-@numba.njit(
-    [
-        numba.float64(numba.float32[:]),
-        numba.float64(numba.float64[:]),
-        numba.float64(numba.float32[:, :]),
-        numba.float64(numba.float64[:, :]),
-        numba.float64(numba.float32[:, :, :]),
-        numba.float64(numba.float64[:, :, :]),
-        numba.float64(numba.float32[:, :, :, :]),
-        numba.float64(numba.float64[:, :, :, :]),
-    ],
-    cache=True,
-)
+@numba.njit(cache=True)
 def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.float64:
     return np.nanmean(a)
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :]),
-        # numba.float64[::1](numba.float64[:, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_2_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[1]
     output = np.empty(n, dtype=np.float64)
@@ -42,14 +29,7 @@ def _nanmean_2_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :]),
-        # numba.float64[::1](numba.float64[:, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_2_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[0]
     output = np.empty(n, dtype=np.float64)
@@ -58,14 +38,7 @@ def _nanmean_2_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     _, n0, n1 = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -75,14 +48,7 @@ def _nanmean_3_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, _, n1 = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -92,14 +58,7 @@ def _nanmean_3_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, n1, _ = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -109,14 +68,7 @@ def _nanmean_3_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[2]
     output = np.empty(n, dtype=np.float64)
@@ -125,14 +77,7 @@ def _nanmean_3_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[1]
     output = np.empty(n, dtype=np.float64)
@@ -141,14 +86,7 @@ def _nanmean_3_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_3_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[0]
     output = np.empty(n, dtype=np.float64)
@@ -157,14 +95,7 @@ def _nanmean_3_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     _, n0, n1, n2 = a.shape
     output = np.empty((n0, n1, n2), dtype=np.float64)
@@ -175,14 +106,7 @@ def _nanmean_4_0(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, _, n1, n2 = a.shape
     output = np.empty((n0, n1, n2), dtype=np.float64)
@@ -193,14 +117,7 @@ def _nanmean_4_1(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, n1, _, n2 = a.shape
     output = np.empty((n0, n1, n2), dtype=np.float64)
@@ -211,14 +128,7 @@ def _nanmean_4_2(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, :, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, :, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_3(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, n1, n2, _ = a.shape
     output = np.empty((n0, n1, n2), dtype=np.float64)
@@ -229,14 +139,7 @@ def _nanmean_4_3(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.floa
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     _, _, n0, n1 = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -246,14 +149,7 @@ def _nanmean_4_01(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     _, n0, _, n1 = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -263,14 +159,7 @@ def _nanmean_4_02(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_03(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     _, n0, n1, _ = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -280,14 +169,7 @@ def _nanmean_4_03(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, _, _, n1 = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -297,14 +179,7 @@ def _nanmean_4_12(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_13(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, _, n1, _ = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -314,14 +189,7 @@ def _nanmean_4_13(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[:, ::1](numba.float32[:, :, :, :]),
-        # numba.float64[:, ::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_23(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n0, n1, _, _ = a.shape
     output = np.empty((n0, n1), dtype=np.float64)
@@ -331,14 +199,7 @@ def _nanmean_4_23(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.flo
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_012(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[3]
     output = np.empty(n, dtype=np.float64)
@@ -347,14 +208,7 @@ def _nanmean_4_012(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_013(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[2]
     output = np.empty(n, dtype=np.float64)
@@ -363,14 +217,7 @@ def _nanmean_4_013(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_023(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[1]
     output = np.empty(n, dtype=np.float64)
@@ -379,14 +226,7 @@ def _nanmean_4_023(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
     return output
 
 
-@numba.njit(
-    # [
-        # numba.float64[::1](numba.float32[:, :, :, :]),
-        # numba.float64[::1](numba.float64[:, :, :, :]),
-    # ],
-    cache=True,
-    parallel=True,
-)
+@numba.njit(cache=True, parallel=True)
 def _nanmean_4_123(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.float64]:
     n = a.shape[0]
     output = np.empty(n, dtype=np.float64)
@@ -477,7 +317,7 @@ def fast_nanmean(
     return nanmean_funcs[a.ndim][axis](a).astype(a.dtype)
 
 
-def fast_nanmean_skipcheck(
+def _fast_nanmean_skipcheck(
     a: npt.NDArray[np.float32 | np.float64], axis: int | Iterable[int]
 ) -> npt.NDArray[np.float32 | np.float64] | float:
     """A version of `fast_nanmean` with near-zero overhead. Meant for internal use.

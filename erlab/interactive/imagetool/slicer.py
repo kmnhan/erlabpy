@@ -1,4 +1,7 @@
 """Helper functions for fast slicing :class:`xarray.DataArray` objects."""
+
+__all__ = ["ArraySlicer"]
+
 import functools
 from collections.abc import Iterable, Sequence
 
@@ -8,9 +11,8 @@ import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore
 
-from erlab.interactive.fastbinning import fast_nanmean_skipcheck
+from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
 
-__all__ = ["ArraySlicer"]
 
 VALID_NDIM = (2, 3, 4)
 
@@ -24,7 +26,6 @@ _signature_array_rect = [
     for i in VALID_NDIM
 ]
 _signature_index_of_value = []
-_signature_transposed = []
 for ftype in (numba.float32, numba.float64):
     for i in VALID_NDIM:
         _signature_index_of_value.append(
@@ -34,11 +35,6 @@ for ftype in (numba.float32, numba.float64):
                 numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
                 numba.types.UniTuple(ftype, i),
                 numba.types.UniTuple(numba.int64, i),
-            )
-        )
-        _signature_transposed.append(
-            ftype[[slice(None) for _ in range(i)]](
-                ftype[[slice(None) for _ in range(i)]]
             )
         )
 
@@ -84,7 +80,7 @@ def _index_of_value(
     return ind
 
 
-@numba.njit(_signature_transposed, fastmath=True, cache=True)
+@numba.njit(fastmath=True, cache=True)
 def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     if arr.ndim == 2:
         return arr.T
@@ -240,7 +236,7 @@ class ArraySlicer(QtCore.QObject):
             The converted data.
 
         """
-        # convert coords to float32
+        # convert coords to C-contiguous float32
         data = data.assign_coords(
             {d: data[d].astype(np.float32, order="C") for d in data.dims}
         )
@@ -259,7 +255,6 @@ class ArraySlicer(QtCore.QObject):
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
             ).swap_dims({d: d + "_idx"})
 
-        # return data.astype(np.float32)
         return data
 
     def set_array(self, xarray_obj: xr.DataArray, validate: bool = True):
@@ -569,7 +564,7 @@ class ArraySlicer(QtCore.QObject):
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
             ].squeeze(axis=axis_val)
         else:
-            return fast_nanmean_skipcheck(
+            return _fast_nanmean_skipcheck(
                 self.data_vals_T[
                     (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
                 ],
@@ -591,6 +586,6 @@ class ArraySlicer(QtCore.QObject):
             )
         ]
         if any(self.get_binned(cursor)):
-            return fast_nanmean_skipcheck(selected, axis=axis)
+            return _fast_nanmean_skipcheck(selected, axis=axis)
         else:
             return selected

@@ -2853,7 +2853,8 @@ class itoolColorControls(QtWidgets.QWidget):
 
         self._gamma_spin.setRange(0.01, 100.0)
         self._gamma_spin.valueChanged.connect(self.set_cmap)
-        gamma_label = QtWidgets.QLabel("γ", buddy=self._gamma_spin)
+        gamma_label = QtWidgets.QLabel("γ")
+        gamma_label.setBuddy(self._gamma_spin)
 
         self.gamma_scale = lambda y: 1000 * np.log10(y)
         self.gamma_scale_inv = lambda x: np.power(10, x / 1000)
@@ -2864,8 +2865,8 @@ class itoolColorControls(QtWidgets.QWidget):
         )
         # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_scale(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
         self._gamma_slider.setRange(
-            self.gamma_scale(self._gamma_spin.minimum()),
-            self.gamma_scale(self._gamma_spin.maximum()),
+            int(self.gamma_scale(self._gamma_spin.minimum())),
+            int(self.gamma_scale(self._gamma_spin.maximum())),
         )
         self._gamma_slider.valueChanged.connect(
             lambda x: self._gamma_spin.setValue(self.gamma_scale_inv(x))
