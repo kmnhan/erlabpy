@@ -59,6 +59,27 @@ def do_convolve(
     return np.convolve(func(xn, **kwargs), g, mode="valid")
 
 
+def do_convolve_y(
+    x: npt.NDArray[np.float64],
+    y: npt.NDArray[np.float64],
+    func: Callable,
+    resolution: float,
+    pad: int = 5,
+    **kwargs: dict
+) -> npt.NDArray[np.float64]:
+    xn, g = _gen_kernel(
+        np.asarray(np.squeeze(x), dtype=np.float64), resolution, pad=pad
+    )
+    if not np.iterable(y):
+        y = [y]
+    return np.vstack(
+        [
+            np.convolve(func(xn, yi, **kwargs), g, mode="valid")
+            for yi in np.asarray(y).flat
+        ]
+    ).T
+
+
 @numba.njit(cache=True)
 def gaussian_wh(
     x: npt.NDArray[np.float64], center: float, width: float, height: float
@@ -115,7 +136,7 @@ def fermi_dirac_linbkg(
     `back0` and `back1` corresponds to the linear background above and below EF (due to
     non-homogeneous detector efficiency or residual intensity on the phosphor screen
     during sweep mode), while `dos0` and `dos1` corresponds to the linear density of
-    states below EF including the linear background. 
+    states below EF including the linear background.
 
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (

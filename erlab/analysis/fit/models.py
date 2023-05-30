@@ -1,22 +1,25 @@
+import functools
+import inspect
+from typing import Callable
+
 import lmfit
 import numba
 import numpy as np
-from typing import Callable
-import xarray as xr
+import numpy.typing as npt
 import scipy.ndimage
+import xarray as xr
 from arpes.fits import XModelMixin
 
+from erlab.constants import kb_eV
 from erlab.analysis.fit.functions import (
+    TINY,
+    do_convolve,
+    do_convolve_y,
+    fermi_dirac,
     fermi_dirac_linbkg_broad,
     gaussian_wh,
     lorentzian_wh,
-    fermi_dirac,
-    do_convolve,
 )
-import numpy.typing as npt
-
-import functools
-import inspect
 
 
 def get_args_kwargs(func) -> tuple[list[str], dict[str, int | float]]:
@@ -372,4 +375,106 @@ class MultiPeakModel(XModelMixin):
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     __init__.doc = lmfit.models.COMMON_INIT_DOC
+    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+
+
+class FermiEdge2dFunc(DynamicFunction):
+    def __init__(self, degree=1) -> None:
+        super().__init__()
+        self.poly = PolyFunc(degree)
+
+    @property
+    def argnames(self) -> list[str]:
+        return ["eV", "phi"] + self.poly.argnames[1:]
+
+    @property
+    def kwargs(self):
+        return [
+            ("temp", 30.0),
+            ("lin_bkg", 0.0),
+            ("const_bkg", 1.0),
+            ("offset", 0.0),
+            ("resolution", 0.02),
+        ]
+
+    def pre_call(self, eV, phi, **params: dict):
+        center = self.poly(
+            np.asarray(phi), *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)]
+        )
+        return (params["const_bkg"] - params["offset"] + params["lin_bkg"] * eV) / (
+            1 + np.exp((1.0 * eV - center) / max(TINY, params["temp"] * kb_eV))
+        ) + params["offset"]
+
+    def __call__(self, eV, phi, **params: dict):
+        return do_convolve_y(eV, phi, self.pre_call, **params).flatten()
+
+
+class FermiEdge2dModel(XModelMixin):
+    """
+    A 2D model for a polynomial Fermi edge with a linear density of states.
+
+    .. math::
+
+        I = A \left[1 + \exp \left(\frac{\omega - \sum_{i = 0} ^ n c_i \phi ^ i}{k_B
+        T}\right)\right] ^ {-1} + k
+
+    """
+
+    n_dims = 2
+    dimension_order = ["eV", "phi"]
+    guess_dataarray = True
+    fit_flat = True
+
+    def __init__(
+        self,
+        degree=2,
+        independent_vars=["eV", "phi"],
+        prefix="",
+        nan_policy="raise",
+        **kwargs,
+    ):
+        kwargs.update(
+            {
+                "prefix": prefix,
+                "nan_policy": nan_policy,
+                "independent_vars": independent_vars,
+            }
+        )
+        super().__init__(FermiEdge2dFunc(degree), **kwargs)
+        self.name = f"FermiEdge2dModel (deg {degree})"
+
+    def guess(self, data, eV, phi, negative=False, **kwargs):
+        pars = self.make_params()
+        for i in range(self.func.poly.degree + 1):
+            pars[f"{self.prefix}c{i}"].set(value=0.0)
+
+        avg_edc = data.mean("phi").values
+        len_fit = max(round(len(eV) * 0.05), 10)
+        dos0, dos1 = fit_poly_jit(
+            np.asarray(eV[:len_fit], dtype=np.float64),
+            np.asarray(avg_edc[:len_fit], dtype=np.float64),
+            deg=1,
+        )
+        pars[f"{self.prefix}const_bkg"].set(value=dos0)
+        pars[f"{self.prefix}lin_bkg"].set(value=dos1)
+        pars[f"{self.prefix}temp"].set(value=data.S.temp)
+
+        return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
+    
+    def eval(self, params, **kwargs):
+        # if not self.fit_flat:
+            # return super().eval(params, **kwargs).flatten()
+        # else:
+        return super().eval(params, **kwargs)
+        
+    def eval_components(self, params, **kwargs):
+        # if not self.fit_flat:
+            # return super().eval_components(params, **kwargs).flatten()
+        # else:
+        return super().eval_components(params, **kwargs)
+
+    def guess_fit(self, *args, **kwargs):
+        return super().guess_fit(*args, **kwargs)
+
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'phi']")
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC

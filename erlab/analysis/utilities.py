@@ -8,6 +8,7 @@ import xarray as xr
 
 from erlab.plotting.colors import proportional_colorbar
 from erlab.plotting.general import plot_array
+from erlab.analysis.fit.models import FermiEdge2dModel
 
 
 def correct_with_edge(
@@ -16,12 +17,26 @@ def correct_with_edge(
     plot=False,
     zero_nans=False,
     shift_coords=True,
-    **improps
+    **improps,
 ):
     if isinstance(fmap, xr.Dataset):
         fmap = fmap.spectrum
     if isinstance(modelresult, lmfit.model.ModelResult):
-        edge_quad = modelresult.eval(x=fmap.phi)
+        if isinstance(modelresult.model, FermiEdge2dModel):
+            edge_quad = xr.DataArray(
+                np.polynomial.polynomial.polyval(
+                    fmap.phi,
+                    np.array(
+                        [
+                            modelresult.best_values[f"c{i}"]
+                            for i in range(modelresult.model.func.poly.degree + 1)
+                        ]
+                    ),
+                ),
+                coords=dict(phi=fmap.phi),
+            )
+        else:
+            edge_quad = modelresult.eval(x=fmap.phi)
     elif callable(modelresult):
         edge_quad = xr.DataArray(
             modelresult(fmap.phi.values), coords=dict(phi=fmap.phi)
