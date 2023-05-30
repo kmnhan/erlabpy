@@ -1,4 +1,24 @@
-"""Plotting utilities.
+"""
+================================
+Plotting (:mod:`erlab.plotting`)
+================================
+
+.. currentmodule:: erlab.plotting
+
+Plotting utilities.
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+   
+   annotations
+   bz
+   colors
+   erplot
+   general
+   plot3d
 
 """
 

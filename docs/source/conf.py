@@ -61,7 +61,7 @@ autodoc_default_options = {
     "members": True,
     "undoc-members": True,
     # "exclude-members":("sigDataChanged",),
-    "show-inheritance": True,
+    "show-inheritance": False,
 }
 # autodoc_typehints_description_target = "all"
 
@@ -94,16 +94,18 @@ napoleon_custom_sections = [("Signals", "params_style")]
 # napoleon_custom_sections = [("Signals", "Attributes")]
 
 
-qt_documentation = "PySide6"
+qt_documentation = "Qt6"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3.10/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "numba": ("https://numba.readthedocs.io/en/stable/", None),
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "lmfit": ("https://lmfit.github.io/lmfit-py/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
     "arpes": ("https://arpes.readthedocs.io/en/latest/", None),
+    "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),
 }
 
 

@@ -1,4 +1,11 @@
-"""Helper functions for parallel processing."""
+"""
+===========================================
+Parallel processing (:mod:`erlab.parallel`)
+===========================================
+
+Helper functions for parallel processing.
+
+"""
 
 __all__ = ["joblib_progress", "joblib_progress_qt"]
 

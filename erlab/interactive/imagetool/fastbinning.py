@@ -1,6 +1,6 @@
 """
-This module exists to provide a fast, parallelized version of nanmean that supports
-multiple axes based on numba. Enables efficient real-time multidimensional binning.
+This module provides a fast, parallelized version of nanmean that supports multiple axes
+based on numba. Enables efficient real-time multidimensional binning. 
 
 """
 

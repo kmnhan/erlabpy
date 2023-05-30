@@ -1,11 +1,12 @@
+"""Extensions to mplot3d. 
+
+"""
+
 import matplotlib.collections
 import matplotlib.patches
-
-
-import mpl_toolkits.mplot3d.proj3d
-
 import mpl_toolkits.mplot3d
 import mpl_toolkits.mplot3d.art3d
+import mpl_toolkits.mplot3d.proj3d
 import numpy as np
 
 

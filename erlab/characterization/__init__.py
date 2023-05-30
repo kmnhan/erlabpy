@@ -1,4 +1,20 @@
-"""Data import and analysis for characterization experiments.
+"""
+================================================
+Characterization (:mod:`erlab.characterization`)
+================================================
+
+.. currentmodule:: erlab.characterization
+
+Data import and analysis for characterization experiments.
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+   
+   xrd
+   resistance
 
 """
 

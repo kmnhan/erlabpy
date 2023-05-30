@@ -1,5 +1,23 @@
-"""Various functions for data analysis.
+"""
+================================
+Analysis (:mod:`erlab.analysis`)
+================================
 
+Various functions for data analysis.
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+   
+   fit
+   mask
+   correlation
+   gold
+   transform
+   utilities
+   
 """
 
 __all__ = [

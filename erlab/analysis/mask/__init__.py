@@ -1,5 +1,15 @@
 """Functions related to masking.
 
+.. currentmodule:: erlab.analysis.mask
+
+Modules
+=======
+
+.. autosummary::
+   :toctree:
+   
+   polygon
+
 """
 
 __all__ = [

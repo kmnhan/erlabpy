@@ -1,4 +1,4 @@
-.. automodule:: erlab.characterization
+.. automodule:: erlab.accessors
    :members:
    :undoc-members:
    :show-inheritance:

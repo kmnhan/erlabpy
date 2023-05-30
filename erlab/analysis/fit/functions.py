@@ -6,7 +6,7 @@ import numpy.typing as npt
 
 from erlab.constants import kb_eV
 
-TINY: float = 1.0e-15  #: From `lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
+TINY: float = 1.0e-15  #: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
 
 
 @numba.njit(cache=True)

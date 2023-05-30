@@ -1,4 +1,11 @@
-"""Functions for data IO.
+"""
+=========================
+Data IO (:mod:`erlab.io`)
+=========================
+
+.. currentmodule:: erlab.io
+
+Functions for data IO.
 
 Storing and retrieving files using `pickle` is quick and convenient, but pickled files
 can only be opened in the environment it was saved in. This module provides alternatives
@@ -8,6 +15,17 @@ efficiency.
 This module also provides functions that enables loading various files such as igor pro
 files, livexy and livepolar files from Beamline 4.0.1 of the Advanced Light Source, and
 raw data from the Stanford Synchrotron Light Source Beamline 5-2.
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+   
+   utilities
+   igor
+   merlin
+   ssrl52
 
 """
 

@@ -1,3 +1,10 @@
+__all__ = [
+    "ExtendedAffineBroadenedFD",
+    "PolynomialModel",
+    "MultiPeakModel",
+    "FermiEdge2dModel",
+]
+
 import functools
 import inspect
 from typing import Callable
@@ -410,13 +417,20 @@ class FermiEdge2dFunc(DynamicFunction):
 
 
 class FermiEdge2dModel(XModelMixin):
-    """
-    A 2D model for a polynomial Fermi edge with a linear density of states.
+    r"""A 2D model for a polynomial Fermi edge with a linear density of states.
+
+    The model function can be written as
 
     .. math::
 
-        I = A \left[1 + \exp \left(\frac{\omega - \sum_{i = 0} ^ n c_i \phi ^ i}{k_B
-        T}\right)\right] ^ {-1} + k
+        I = \left\{(a\omega + b)\left[1 +
+        \exp\left(\frac{\omega - \sum_{i = 0}^{n} c_i \phi^i}{k_B T}\right)\right]^{-1}
+        + c\right\}\otimes g(\sigma)
+
+    for a :math:`n` th degree polynomial edge with coefficients :math:`c_i` with a
+    linear density of states described by :math:`a\omega+b` with a constant background
+    :math:`c` convolved with a gaussian, where :math:`\omega` is the binding energy and
+    :math:`\phi` is the detector angle.
 
     """
 
@@ -460,18 +474,6 @@ class FermiEdge2dModel(XModelMixin):
         pars[f"{self.prefix}temp"].set(value=data.S.temp)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
-    
-    def eval(self, params, **kwargs):
-        # if not self.fit_flat:
-            # return super().eval(params, **kwargs).flatten()
-        # else:
-        return super().eval(params, **kwargs)
-        
-    def eval_components(self, params, **kwargs):
-        # if not self.fit_flat:
-            # return super().eval_components(params, **kwargs).flatten()
-        # else:
-        return super().eval_components(params, **kwargs)
 
     def guess_fit(self, *args, **kwargs):
         return super().guess_fit(*args, **kwargs)

@@ -54,6 +54,8 @@ coverage.xml
 .pytest_cache/
 cover/
 *.prof
+*.pstats
+*.pstats.png
 *.austin
 
 # Translations
@@ -75,6 +77,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/source/generated
 
 # PyBuilder
 .pybuilder/

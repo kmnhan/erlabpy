@@ -1,22 +1,19 @@
-.. ERLabPy documentation master file, created by
-   sphinx-quickstart on Wed Mar 15 13:26:09 2023.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+ERLabPy documentation
+=====================
 
-Welcome to ERLabPy's documentation!
-===================================
 
 .. toctree::
    :maxdepth: 3
    :caption: Contents:
-
-   erlab
+  
+   introduction
    development
+   erlab
+
+.. Indices and tables
+.. ==================
+
+.. * :ref:`genindex`
+.. * :ref:`modindex`
 
 
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
