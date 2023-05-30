@@ -1,9 +1,9 @@
 """Transformations."""
 
+__all__ = ["rotateinplane", "rotatestackinplane"]
+
 import numpy as np
 import xarray as xr
-
-__all__ = ["rotateinplane", "rotatestackinplane"]
 
 
 def rotateinplane(data: xr.DataArray, rotate):
