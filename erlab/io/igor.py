@@ -12,6 +12,47 @@ from erlab.io.utilities import find_first_file
 __all__ = ["load_experiment", "load_h5", "load_wave", "load_pxp", "load_ibw"]
 
 
+def _load_experiment_raw(
+    filename: str | os.PathLike,
+    folder: str | None = None,
+    *,
+    prefix: str | None = None,
+    ignore: list[str] | None = None,
+    recursive: bool = False,
+    **kwargs: dict,
+) -> xr.Dataset:
+    if folder is None:
+        folder = []
+    if ignore is None:
+        ignore = []
+
+    _, expt = igor2.packed.load(filename)
+    waves = {}
+    if isinstance(folder, str):
+        folder = folder.split("/")
+    folder = [n.encode() for n in folder]
+
+    expt = expt["root"]
+    for dir in folder:
+        expt = expt[dir]
+
+    def unpack_folders(expt):
+        for name, record in expt.items():
+            if isinstance(record, igor2.record.WaveRecord):
+                if prefix is not None:
+                    if not name.decode().startswith(prefix):
+                        continue
+                if name.decode() in ignore:
+                    continue
+                waves[name.decode()] = load_wave(record, **kwargs)
+            elif isinstance(record, dict):
+                if recursive:
+                    unpack_folders(record)
+
+    unpack_folders(expt)
+    return waves
+
+
 def load_experiment(
     filename: str | os.PathLike,
     folder: str | None = None,
@@ -45,36 +86,16 @@ def load_experiment(
         Dataset containing the waves.
 
     """
-    if folder is None:
-        folder = []
-    if ignore is None:
-        ignore = []
-
-    _, expt = igor2.packed.load(filename)
-    waves = {}
-    if isinstance(folder, str):
-        folder = folder.split("/")
-    folder = [n.encode() for n in folder]
-
-    expt = expt["root"]
-    for dir in folder:
-        expt = expt[dir]
-
-    def unpack_folders(expt):
-        for name, record in expt.items():
-            if isinstance(record, igor2.record.WaveRecord):
-                if prefix is not None:
-                    if not name.decode().startswith(prefix):
-                        continue
-                if name.decode() in ignore:
-                    continue
-                waves[name.decode()] = load_wave(record, **kwargs)
-            elif isinstance(record, dict):
-                if recursive:
-                    unpack_folders(record)
-
-    unpack_folders(expt)
-    return xr.Dataset(waves)
+    return xr.Dataset(
+        _load_experiment_raw(
+            filename,
+            folder,
+            prefix=prefix,
+            ignore=ignore,
+            recursive=recursive,
+            **kwargs,
+        )
+    )
 
 
 def load_h5(filename):
