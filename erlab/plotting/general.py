@@ -316,8 +316,6 @@ def plot_array(
     """
     if colorbar_kw is None:
         colorbar_kw = dict()
-    if cursor_kw is None:
-        cursor_kw = dict()
     if func_args is None:
         func_args = dict()
 
@@ -351,10 +349,12 @@ def plot_array(
     elif "vmax" in improps.keys():
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
-
+        
+        
     if norm is None:
-        improps["norm"] = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
-
+        norm = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
+        
+    
     improps_default = dict(
         interpolation="none",
         extent=array_extent(arr),
@@ -366,9 +366,9 @@ def plot_array(
         improps.setdefault(k, v)
 
     if func is not None:
-        img = ax.imshow(func(arr.values, **func_args), **improps)
+        img = ax.imshow(func(arr.values, **func_args), norm=norm, **improps)
     else:
-        img = ax.imshow(arr.values, **improps)
+        img = ax.imshow(arr.values, norm=norm, **improps)
     ax.set_xlabel(arr.dims[1])
     ax.set_ylabel(arr.dims[0])
     if xlim is not None:
