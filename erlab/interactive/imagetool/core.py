@@ -17,7 +17,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import pg_colormap_powernorm
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utilities import BetterAxisItem, BetterColorBarItem, BetterImageItem
+from erlab.interactive.utilities import (
+    BetterAxisItem,
+    BetterColorBarItem,
+    BetterImageItem,
+)
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -124,6 +128,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigBinChanged(cursor, axes)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
+    sigShapeChanged()
+        Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
 
     """
 
@@ -155,6 +161,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def sigBinChanged(self) -> QtCore.SignalInstance:
         """:meta private:"""
         return self.array_slicer.sigBinChanged
+
+    @property
+    def sigShapeChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""
+        return self.array_slicer.sigShapeChanged
 
     def __init__(
         self,
@@ -202,6 +213,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.layout().addWidget(self._colorbar)
         self._colorbar.setVisible(False)
 
+        self.manual_limits: dict[str | list[float]] = dict()
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
@@ -878,6 +890,47 @@ class ItoolPlotItem(pg.PlotItem):
             self._single_queue = collections.deque([0], maxlen=9)
             self._next_queue = collections.deque([0], maxlen=9)
 
+    @property
+    def axis_dims(self) -> list[str]:
+        dim_list = [self.slicer_area.data.dims[ax] for ax in self.display_axis]
+        if not self.is_image:
+            if self.slicer_data_items[-1].is_vertical:
+                dim_list = [None] + dim_list
+            else:
+                dim_list = dim_list + [None]
+        return dim_list
+
+    @property
+    def is_independent(self) -> bool:
+        return self.vb.state["linkedViews"] == [None, None]
+
+    def refresh_manual_range(self):
+        if self.is_independent:
+            return
+        for dim, auto, rng in zip(
+            self.axis_dims, self.vb.state["autoRange"], self.vb.state["viewRange"]
+        ):
+            if dim is not None:
+                if auto:
+                    self.slicer_area.manual_limits.pop("dim", None)
+                else:
+                    self.slicer_area.manual_limits[dim] = rng
+
+    def update_manual_range(self):
+        if self.is_independent:
+            return
+        self.set_range_from(self.slicer_area.manual_limits)
+
+    def set_range_from(self, limits: dict[str, list[float]], **kwargs: dict):
+        for dim, key in zip(self.axis_dims, ("xRange", "yRange")):
+            if dim is not None:
+                try:
+                    kwargs[key] = limits[dim]
+                except KeyError:
+                    pass
+        if len(kwargs) != 0:
+            self.setRange(**kwargs)
+
     def getMenu(self) -> QtWidgets.QMenu:
         return self.ctrlMenu
 
@@ -1066,6 +1119,8 @@ class ItoolPlotItem(pg.PlotItem):
     def connect_signals(self):
         self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
+        self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
+        self.vb.sigRangeChanged.connect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None):
