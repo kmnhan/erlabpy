@@ -103,6 +103,7 @@ intersphinx_mapping = {
     "lmfit": ("https://lmfit.github.io/lmfit-py/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
+    "pandas": ("https://pandas.pydata.org/docs/", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
     "arpes": ("https://arpes.readthedocs.io/en/latest/", None),
     "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),

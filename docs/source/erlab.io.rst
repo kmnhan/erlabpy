@@ -1,4 +1,27 @@
-.. automodule:: erlab.io
-   :members:
-   :undoc-members:
-   :show-inheritance:
+﻿.. automodule:: erlab.io
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+   
+      load_igor_ibw
+      load_igor_pxp
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

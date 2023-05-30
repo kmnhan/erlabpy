@@ -37,6 +37,7 @@ kb_eV: float = 8.617333262145179e-5  #: Boltzmann constant :math:`k_B` (eV/K)
 
 
 def conv_eV_nm(value: float) -> float:
+    """Convert between energy and wavelength."""
     return np.divide(rel_eV_nm, np.float64(value))
 
 
@@ -52,7 +53,7 @@ def conv_watt_photons(value: float, wavelength: float) -> float:
 
     Returns
     -------
-    power
+    power : float
         Power in photons per second.
 
     """

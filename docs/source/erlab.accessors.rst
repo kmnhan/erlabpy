@@ -1,4 +1,27 @@
-.. automodule:: erlab.accessors
-   :members:
-   :undoc-members:
-   :show-inheritance:
+﻿.. automodule:: erlab.accessors
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+   
+      ERLabAccessor
+      ERLabDataArrayAccessor
+   
+   
+
+   
+   
+   
+
+
+
