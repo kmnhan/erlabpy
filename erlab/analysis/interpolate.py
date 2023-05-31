@@ -79,8 +79,9 @@ def interp3(
 ):
     """Multidimensional interpolation on evenly spaced coordinates.
 
-    For evenly spaced coordinates, this can be used as a drop-in replacement for linear
-    interpolation on three-dimensional data using `scipy.interpolate.interpn`.
+    For evenly spaced, strictly ascending, three-dimensional coordinates, this can be
+    used as a drop-in replacement for `scipy.interpolate.interpn` in case of linear
+    interpolation.
 
     Parameters
     ----------
