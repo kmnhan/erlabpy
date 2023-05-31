@@ -16,6 +16,7 @@ Modules
    correlation
    gold
    transform
+   interpolate
    utilities
    
 """
