@@ -15,7 +15,7 @@ from uncertainties import ufloat
 
 from erlab.analysis.fit.models import ExtendedAffineBroadenedFD, PolynomialModel
 from erlab.analysis.utilities import correct_with_edge
-from erlab.plotting.general import figwh
+from erlab.plotting.general import figwh, autoscale_to
 
 
 def gold_edge(
@@ -152,6 +152,10 @@ def gold_poly(
         fit_kws = dict(c="r", lw=0.75)
         modelresult.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
         modelresult.plot_fit(ax=ax2, data_kws=data_kws, fit_kws=fit_kws)
+
+        ax1.set_ylim(autoscale_to(modelresult.residual))
+        ax2.set_ylim(autoscale_to(modelresult.best_fit))
+
         ax1.set_title("")
         ax2.set_title("")
 

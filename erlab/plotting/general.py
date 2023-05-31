@@ -29,13 +29,15 @@ from erlab.plotting.colors import (
 )
 
 __all__ = [
+    "figwh",
+    "autoscale_off",
+    "autoscale_to",
     "LabeledCursor",
     "place_inset",
     "plot_array",
     "plot_array_2d",
     "gradient_fill",
     "plot_slices",
-    "figwh",
     "fermiline",
 ]
 
@@ -65,6 +67,11 @@ def autoscale_off(ax: matplotlib.axes.Axes | None = None):
     yield
     ax.set_xlim(*xl)
     ax.set_ylim(*yl)
+
+def autoscale_to(arr, margin=0.2):
+    mn, mx = min(arr), max(arr)
+    diff = margin * (mx - mn)
+    return mn - diff, mx + diff
 
 
 class LabeledCursor(AxesWidget):

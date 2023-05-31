@@ -40,6 +40,7 @@ from erlab.plotting.colors import (
 from erlab.plotting.general import (
     fermiline,
     figwh,
+    autoscale_to,
     place_inset,
     plot_array,
     plot_array_2d,
@@ -80,6 +81,7 @@ __all__ = [
     "proportional_colorbar",
     "fermiline",
     "figwh",
+    "autoscale_to",
     "place_inset",
     "plot_array",
     "plot_array_2d",
@@ -130,7 +132,3 @@ def integer_ticks(axes):
     )
 
 
-def autoscale_to(arr, margin=0.2):
-    mn, mx = min(arr), max(arr)
-    diff = margin * (mx - mn)
-    return mn - diff, mx + diff
