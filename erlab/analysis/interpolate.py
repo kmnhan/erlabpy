@@ -10,24 +10,24 @@ import numpy as np
 import numpy.typing as npt
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit
 def _do_interp1(x, v0, v1):
     return v0 * (1 - x) + v1 * x
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit
 def _do_interp2(x, y, v0, v1, v2, v3):
     return _do_interp1(y, _do_interp1(x, v0, v1), _do_interp1(x, v2, v3))
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit
 def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
     return _do_interp1(
         z, _do_interp2(x, y, v0, v1, v2, v3), _do_interp2(x, y, v4, v5, v6, v7)
     )
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit
 def _calc_interp3(values, v0, v1, v2):
     i0, i1, i2 = math.floor(v0), math.floor(v1), math.floor(v2)
     return _do_interp3(
@@ -45,14 +45,14 @@ def _calc_interp3(values, v0, v1, v2):
     )
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit
 def _val2ind(val, coord):
     if val > coord[-1] or val < coord[0]:
         return np.nan
     return (val - coord[0]) / (coord[1] - coord[0])
 
 
-@numba.njit(nogil=True, parallel=True, cache=True)
+@numba.njit(parallel=True)
 def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     n = len(xc)
 
@@ -65,7 +65,6 @@ def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
 
         if np.isnan(v0) or np.isnan(v1) or np.isnan(v2):
             arr_new[m] = fill_value
-            continue
         else:
             arr_new[m] = _calc_interp3(values, v0, v1, v2)
     return arr_new
