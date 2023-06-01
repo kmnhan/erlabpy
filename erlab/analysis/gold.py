@@ -1,3 +1,5 @@
+"""Fermi edge fitting."""
+
 __all__ = [
     "gold_edge",
     "gold_poly",
@@ -15,7 +17,7 @@ from uncertainties import ufloat
 
 from erlab.analysis.fit.models import ExtendedAffineBroadenedFD, PolynomialModel
 from erlab.analysis.utilities import correct_with_edge
-from erlab.plotting.general import figwh, autoscale_to
+from erlab.plotting.general import autoscale_to, figwh
 
 
 def gold_edge(
@@ -65,6 +67,7 @@ def gold_edge(
         method=method,
         progress=progress,
         parallel_kw=parallel_kw,
+        scale_covar=False,
     )
     if return_full:
         return fitresults
@@ -77,7 +80,7 @@ def gold_edge(
 
 def gold_poly_from_edge(center, weights=None, degree=4, method="leastsq"):
     modelresult = PolynomialModel(degree=degree).guess_fit(
-        center, weights=weights, method=method
+        center, weights=weights, method=method, scale_covar=False
     )
     return modelresult
 
@@ -110,7 +113,7 @@ def gold_poly(
     )
 
     modelresult = PolynomialModel(degree=degree).guess_fit(
-        center_arr, weights=1 / center_stderr, method=method
+        center_arr, weights=1 / center_stderr, method=method, scale_covar=False
     )
     if plot:
         if not isinstance(fig, plt.Figure):
@@ -200,7 +203,9 @@ def gold_resolution(
         temp=dict(value=gold.S.temp, vary=False),
         resolution=dict(value=0.1, vary=True, min=0),
     )
-    fit = ExtendedAffineBroadenedFD().guess_fit(edc_avg, params=params, method=method)
+    fit = ExtendedAffineBroadenedFD().guess_fit(
+        edc_avg, params=params, method=method, scale_covar=False
+    )
     if plot:
         plt.show()
         ax = plt.gca()
@@ -242,7 +247,10 @@ def gold_resolution_roi(
         resolution=dict(value=0.1, vary=True, min=0),
     )
     fit = ExtendedAffineBroadenedFD().guess_fit(
-        edc_avg, params=params, method=method  # weights=1 / edc_stderr
+        edc_avg,
+        params=params,
+        method=method,
+        scale_covar=False,  # weights=1 / edc_stderr
     )
     if plot:
         ax = plt.gca()
