@@ -106,6 +106,9 @@ def plot_hex_bz(
         r = 4 * np.pi / (a * 3)
     else:
         r = 2 * a
+    clip = kwargs.pop('clip_path', None)
     poly = RegularPolygon(offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs)
     ax.add_patch(poly)
+    if clip is not None:
+        poly.set_clip_path(clip)
     return poly
