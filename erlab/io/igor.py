@@ -26,7 +26,13 @@ def _load_experiment_raw(
     if ignore is None:
         ignore = []
 
-    _, expt = igor2.packed.load(filename)
+    for bo in [">", "=", "<"]:
+        try:
+            _, expt = igor2.packed.load(filename, initial_byte_order=bo)
+            break
+        except ValueError:
+            continue
+
     waves = {}
     if isinstance(folder, str):
         folder = folder.split("/")
