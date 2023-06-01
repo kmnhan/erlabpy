@@ -156,7 +156,7 @@ def gold_poly(
         modelresult.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
         modelresult.plot_fit(ax=ax2, data_kws=data_kws, fit_kws=fit_kws)
 
-        ax1.set_ylim(autoscale_to(modelresult.residual))
+        ax1.set_ylim(autoscale_to(modelresult.eval() - modelresult.data))
         ax2.set_ylim(autoscale_to(modelresult.best_fit))
 
         ax1.set_title("")
