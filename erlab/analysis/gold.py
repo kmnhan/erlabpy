@@ -157,7 +157,7 @@ def gold_poly(
         modelresult.plot_fit(ax=ax2, data_kws=data_kws, fit_kws=fit_kws)
 
         ax1.set_ylim(autoscale_to(modelresult.eval() - modelresult.data))
-        ax2.set_ylim(autoscale_to(modelresult.best_fit))
+        ax2.set_ylim(autoscale_to(modelresult.data))
 
         ax1.set_title("")
         ax2.set_title("")
