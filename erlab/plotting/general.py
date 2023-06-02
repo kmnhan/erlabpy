@@ -68,6 +68,7 @@ def autoscale_off(ax: matplotlib.axes.Axes | None = None):
     ax.set_xlim(*xl)
     ax.set_ylim(*yl)
 
+
 def autoscale_to(arr, margin=0.2):
     mn, mx = min(arr), max(arr)
     diff = margin * (mx - mn)
@@ -356,12 +357,10 @@ def plot_array(
     elif "vmax" in improps.keys():
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
-        
-        
+
     if norm is None:
         norm = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
-        
-    
+
     improps_default = dict(
         interpolation="none",
         extent=array_extent(arr),
@@ -378,6 +377,7 @@ def plot_array(
         img = ax.imshow(arr.values, norm=norm, **improps)
     ax.set_xlabel(arr.dims[1])
     ax.set_ylabel(arr.dims[0])
+    fancy_labels(ax, rad2deg=rad2deg)
     if xlim is not None:
         ax.set_xlim(*xlim)
     if ylim is not None:
@@ -876,7 +876,6 @@ def plot_slices(
                 nice_colorbar(mappable=ax.images[0], ax=ax, **colorbar_kw)
     if colorbar == "rightspan":
         nice_colorbar(ax=axes, **colorbar_kw)
-    fancy_labels(axes)
     if annotate and slice_dim is not None:
         if slice_dim == "eV":
             slice_dim = "Eb"
