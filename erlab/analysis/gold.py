@@ -1,4 +1,6 @@
-"""Fermi edge fitting."""
+"""Fermi edge fitting.
+
+"""
 
 __all__ = [
     "gold_edge",

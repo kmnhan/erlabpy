@@ -17,6 +17,8 @@ Subpackage                 Description
 `erlab.characterization`   Analyze sample characterization results such as XRD and transport measurements
 ========================   ========================
 
+.. currentmodule:: erlab
+   
 .. toctree::
    :hidden:
 
@@ -36,7 +38,6 @@ Submodule           Description
 `erlab.accessors`   `xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_
 `erlab.parallel`    Helpers for parallel processing
 ==================  ==================
-
 
 .. toctree::
    :hidden:

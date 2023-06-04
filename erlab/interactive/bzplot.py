@@ -1,18 +1,15 @@
 import sys
 
+import mpl_toolkits
 import numpy as np
 import numpy.typing as npt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtWidgets
 
 import erlab.plotting.erplot as eplt
 from erlab.interactive.utilities import ParameterGroup
-
-from qtpy import QtWidgets, QtCore
-from matplotlib.backends.backend_qtagg import (
-    FigureCanvasQTAgg as FigureCanvas,
-    NavigationToolbar2QT as NavigationToolbar,
-)
-from matplotlib.figure import Figure
-import mpl_toolkits
 
 
 def _ang(v1, v2):
@@ -105,7 +102,7 @@ class BZPlotter(QtWidgets.QMainWindow):
 
 
 class LatticeWidget(QtWidgets.QTabWidget):
-    sigChanged = QtCore.Signal(np.ndarray)
+    sigChanged = QtCore.Signal(np.ndarray)  #: :meta private:
 
     def __init__(self, bvec):
         super().__init__()

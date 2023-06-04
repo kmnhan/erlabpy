@@ -211,7 +211,8 @@ class ArraySlicer(QtCore.QObject):
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
         exists) as the first two (or three) dimensions. Then, checks the data for
         non-uniform coordinates, which are converted to indices. Finally, converts the
-        data to C-contiguous float32 for fast slicing.
+        coordinates to C-contiguous float32. If input data values neither float32 nor
+        float64, a conversion to float64 is attempted.
 
         Parameters
         ----------
@@ -228,6 +229,9 @@ class ArraySlicer(QtCore.QObject):
         data = data.assign_coords(
             {d: data[d].astype(np.float32, order="C") for d in data.dims}
         )
+
+        if data.dtype not in (np.float32, np.float64):
+            data = data.astype(np.float64)
 
         new_dims = ("kx", "ky")
         if all(d in data.dims for d in new_dims):

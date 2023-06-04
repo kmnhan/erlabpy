@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.accessors
+.. automodule:: erlab.accessors
 
    
    
@@ -16,6 +16,7 @@
    
       ERLabAccessor
       ERLabDataArrayAccessor
+      KspaceAccessor
    
    
 

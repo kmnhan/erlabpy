@@ -1,4 +1,6 @@
-"""Fast linear interpolation"""
+"""Fast linear interpolation.
+
+"""
 
 __all__ = ["interp3"]
 

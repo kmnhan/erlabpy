@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.plotting
+.. automodule:: erlab.plotting
 
    
    

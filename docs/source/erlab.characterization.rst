@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.characterization
+.. automodule:: erlab.characterization
 
    
    

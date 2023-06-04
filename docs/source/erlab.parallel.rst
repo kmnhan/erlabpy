@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.parallel
+.. automodule:: erlab.parallel
 
    
    

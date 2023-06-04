@@ -5,7 +5,6 @@ Constants (:mod:`erlab.constants`)
 
 .. currentmodule:: erlab.constants
 
-
 Physical constants and some functions for unit conversion.
 
 """

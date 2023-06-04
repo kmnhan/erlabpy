@@ -52,7 +52,8 @@ nitpicky = False
 nitpick_ignore = [("py:class", "numpy.float64")]
 
 
-# autosummary_generate = True
+autosummary_generate = True
+autosummary_generate_overwrite = True
 
 autodoc_inherit_docstrings = False
 autodoc_typehints = "both"

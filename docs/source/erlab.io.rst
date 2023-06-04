@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.io
+.. automodule:: erlab.io
 
    
    

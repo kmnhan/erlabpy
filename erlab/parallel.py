@@ -3,6 +3,8 @@
 Parallel processing (:mod:`erlab.parallel`)
 ===========================================
 
+.. currentmodule:: erlab.parallel
+
 Helper functions for parallel processing.
 
 """

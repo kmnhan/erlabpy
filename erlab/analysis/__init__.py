@@ -3,6 +3,8 @@
 Analysis (:mod:`erlab.analysis`)
 ================================
 
+.. currentmodule:: erlab.analysis
+
 Various functions for data analysis.
 
 Modules

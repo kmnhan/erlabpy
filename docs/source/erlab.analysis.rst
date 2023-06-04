@@ -1,4 +1,4 @@
-﻿.. automodule:: erlab.analysis
+.. automodule:: erlab.analysis
 
    
    
