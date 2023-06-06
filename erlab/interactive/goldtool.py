@@ -84,7 +84,7 @@ class EdgeFitter(QtCore.QRunnable):
     def run(self):
         self.sigIterated.emit(0)
         with joblib_progress_qt(self.sigIterated) as _:
-            self.edge_center, self.edge_stderr = erlab.analysis.gold_edge(
+            self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
                 gold=self.data,
                 phi_range=self.x_range,
                 eV_range=self.y_range,
@@ -364,7 +364,7 @@ class goldtool(AnalysisWindow):
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
-        modelresult = erlab.analysis.gold_poly_from_edge(
+        modelresult = erlab.analysis.gold.poly_from_edge(
             center=self.edge_center,
             weights=1 / self.edge_stderr,
             degree=params["Degree"],
@@ -383,10 +383,9 @@ class goldtool(AnalysisWindow):
         params = self.params_spl.values
         if params["Auto"]:
             params["lambda"] = None
-        modelresult = scipy.interpolate.make_smoothing_spline(
-            self.edge_center.phi.values,
-            self.edge_center.values,
-            w=np.asarray(1 / self.edge_stderr),
+        modelresult = erlab.analysis.gold.spline_from_edge(
+            center=self.edge_center,
+            weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
         )
 
@@ -413,33 +412,34 @@ class goldtool(AnalysisWindow):
             eV_range=(y0, y1),
             bin_size=(p0["Bin x"], p0["Bin y"]),
             temp=p0["T (K)"],
-            vary_temp=not p0["Fix T"],
-            fast=p0["Fast"],
             degree=p1["Degree"],
             method=p0["Method"],
-            correct=False,
         )
 
-        if arg_dict["fast"]:
+        if p0["Fast"]:
+            arg_dict["fast"] = True
             del arg_dict["temp"]
             del arg_dict["vary_temp"]
+        else:
+            if not p0["Fix T"]:
+                arg_dict["vary_temp"] = True
 
         if self.data_corr is None:
             gen_function_code(
                 copy=True,
                 **{
-                    "modelresult = era.gold_poly": [
+                    "modelresult = era.gold.poly": [
                         f"|{self._argnames['data']}|",
                         arg_dict,
                     ]
                 },
             )
         else:
-            arg_dict["correct"] = False
+            arg_dict["correct"] = True
             gen_function_code(
                 copy=True,
                 **{
-                    "modelresult = era.gold_poly": [
+                    "modelresult = era.gold.poly": [
                         f"|{self._argnames['data']}|",
                         arg_dict,
                     ],

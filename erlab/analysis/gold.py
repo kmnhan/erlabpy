@@ -3,26 +3,32 @@
 """
 
 __all__ = [
-    "gold_edge",
-    "gold_poly",
-    "gold_poly_from_edge",
-    "gold_resolution",
-    "gold_resolution_roi",
+    "edge",
+    "poly",
+    "poly_from_edge",
+    "spline_from_edge",
+    "resolution",
+    "resolution_roi",
 ]
 
 import arpes
 import arpes.fits
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.interpolate
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
 
-from erlab.analysis.fit.models import ExtendedAffineBroadenedFD, PolynomialModel
+from erlab.analysis.fit.models import (
+    ExtendedAffineBroadenedFD,
+    PolynomialModel,
+    StepEdgeModel,
+)
 from erlab.analysis.utilities import correct_with_edge
 from erlab.plotting.general import autoscale_to, figwh
 
 
-def gold_edge(
+def edge(
     gold,
     phi_range,
     eV_range,
@@ -38,7 +44,7 @@ def gold_edge(
 ):
     if fast:
         params = {}
-        model = arpes.fits.GStepBModel
+        model = StepEdgeModel
     else:
         if temp is None:
             temp = gold.S.temp
@@ -80,14 +86,24 @@ def gold_edge(
     return center_arr, center_stderr
 
 
-def gold_poly_from_edge(center, weights=None, degree=4, method="leastsq"):
+def poly_from_edge(center, weights=None, degree=4, method="leastsq"):
     modelresult = PolynomialModel(degree=degree).guess_fit(
         center, weights=weights, method=method, scale_covar=False
     )
     return modelresult
 
 
-def gold_poly(
+def spline_from_edge(center, weights=None, lam=None):
+    spl = scipy.interpolate.make_smoothing_spline(
+        center.phi.values,
+        center.values,
+        w=np.asarray(weights),
+        lam=lam,
+    )
+    return spl
+
+
+def poly(
     gold,
     phi_range,
     eV_range,
@@ -102,7 +118,7 @@ def gold_poly(
     plot=True,
     fig=None,
 ):
-    center_arr, center_stderr = gold_edge(
+    center_arr, center_stderr = edge(
         gold,
         phi_range,
         eV_range,
@@ -170,7 +186,7 @@ def gold_poly(
         return modelresult
 
 
-def gold_resolution(
+def resolution(
     gold,
     phi_range,
     eV_range_edge,
@@ -182,7 +198,7 @@ def gold_resolution(
     plot=True,
     parallel_kw=dict(),
 ):
-    poly, gold = gold_poly(
+    pol, gold_corr = poly(
         gold,
         phi_range,
         eV_range_edge,
@@ -196,9 +212,9 @@ def gold_resolution(
     )
 
     if eV_range_fit is None:
-        eV_range_fit = tuple(r - np.mean(poly.best_fit) for r in eV_range_edge)
-    del poly
-    gold_roi = gold.sel(phi=slice(*phi_range))
+        eV_range_fit = tuple(r - np.mean(pol.best_fit) for r in eV_range_edge)
+    del pol
+    gold_roi = gold_corr.sel(phi=slice(*phi_range))
     edc_avg = gold_roi.mean("phi").sel(eV=slice(*eV_range_fit))
 
     params = dict(
@@ -211,7 +227,7 @@ def gold_resolution(
     if plot:
         plt.show()
         ax = plt.gca()
-        gold.S.plot(ax=ax, cmap="copper", gamma=0.5)
+        gold_corr.S.plot(ax=ax, cmap="copper", gamma=0.5)
         rect = Rectangle(
             (phi_range[0], eV_range_fit[0]),
             np.diff(phi_range)[0],
@@ -222,7 +238,7 @@ def gold_resolution(
             fc="none",
         )
         ax.add_patch(rect)
-        ax.set_ylim(gold.eV[[0, -1]])
+        ax.set_ylim(gold_corr.eV[[0, -1]])
 
         fit.plot(
             data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
@@ -235,7 +251,7 @@ def gold_resolution(
     return fit
 
 
-def gold_resolution_roi(
+def resolution_roi(
     gold_roi,
     eV_range,
     fix_temperature=True,
