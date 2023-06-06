@@ -3,6 +3,7 @@ from typing import Callable
 import numba
 import numpy as np
 import numpy.typing as npt
+import scipy.special
 
 from erlab.constants import kb_eV
 
@@ -164,4 +165,37 @@ def fermi_dirac_linbkg_broad(
         back1=back1,
         dos0=dos0,
         dos1=dos1,
+    )
+
+
+def step_linbkg_broad(
+    x: npt.NDArray[np.float64],
+    center: float,
+    sigma: float,
+    back0: float,
+    back1: float,
+    dos0: float,
+    dos1: float,
+):
+    """
+    A linear density of states multiplied with a resolution broadened step function with
+    a linear background.
+
+    """
+    return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) * (
+        step_broad(x, center, sigma, 1.0)
+    )
+
+
+def step_broad(
+    x: npt.NDArray[np.float64],
+    center: float = 0.0,
+    sigma: float = 1.0,
+    amplitude: float = 1.0,
+):
+    """Step function convolved with a Gaussian."""
+    return (
+        amplitude
+        * 0.5
+        * scipy.special.erfc((1.0 * x - center) / max(TINY, np.sqrt(2) * sigma))
     )

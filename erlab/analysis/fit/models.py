@@ -1,5 +1,6 @@
 __all__ = [
     "ExtendedAffineBroadenedFD",
+    "LinearBroadStep",
     "PolynomialModel",
     "MultiPeakModel",
     "FermiEdge2dModel",
@@ -17,7 +18,6 @@ import scipy.ndimage
 import xarray as xr
 from arpes.fits import XModelMixin
 
-from erlab.constants import kb_eV
 from erlab.analysis.fit.functions import (
     TINY,
     do_convolve,
@@ -26,7 +26,9 @@ from erlab.analysis.fit.functions import (
     fermi_dirac_linbkg_broad,
     gaussian_wh,
     lorentzian_wh,
+    step_linbkg_broad,
 )
+from erlab.constants import kb_eV
 
 
 def get_args_kwargs(func) -> tuple[list[str], dict[str, int | float]]:
@@ -70,6 +72,21 @@ def fit_poly_jit(x, y, deg):
     return p
 
 
+def fit_edges_linear(x, data, len_fit):
+    """Fit y = mx + n to each edge of the data."""
+    n0, m0 = fit_poly_jit(
+        np.array(x[:len_fit], dtype=np.float64),
+        np.array(data[:len_fit], dtype=np.float64),
+        deg=1,
+    )
+    n1, m1 = fit_poly_jit(
+        np.array(x[-len_fit:], dtype=np.float64),
+        np.array(data[-len_fit:], dtype=np.float64),
+        deg=1,
+    )
+    return n0, m0, n1, m1
+
+
 class ExtendedAffineBroadenedFD(XModelMixin):
     """
     Fermi-dirac function with linear background above and below the fermi level,
@@ -109,18 +126,7 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         pars = self.make_params()
 
         len_fit = max(round(len(x) * 0.05), 10)
-        # len_fit = 10
-
-        dos0, dos1 = fit_poly_jit(
-            np.array(x[:len_fit], dtype=np.float64),
-            np.array(data[:len_fit], dtype=np.float64),
-            deg=1,
-        )
-        back0, back1 = fit_poly_jit(
-            np.array(x[-len_fit:], dtype=np.float64),
-            np.array(data[-len_fit:], dtype=np.float64),
-            deg=1,
-        )
+        dos0, dos1, back0, back1 = fit_edges_linear(x, data, len_fit)
         efermi = x[
             np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
         ]
@@ -139,6 +145,42 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         pars[f"{self.prefix}dos1"].set(value=dos1)
         pars[f"{self.prefix}temp"].set(value=temp)
         pars[f"{self.prefix}resolution"].set(value=0.02)
+
+        return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
+
+    __init__.doc = lmfit.models.COMMON_INIT_DOC
+    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+
+
+class StepEdgeModel(XModelMixin):
+    guess_dataarray = True
+
+    def __init__(
+        self, independent_vars=("x",), prefix="", missing="raise", name=None, **kwargs
+    ):
+        """Defer to lmfit for initialization."""
+        kwargs.update(
+            {"prefix": prefix, "missing": missing, "independent_vars": independent_vars}
+        )
+        super().__init__(step_linbkg_broad, **kwargs)
+        self.set_param_hint("sigma", min=0.0)
+
+    def guess(self, data, x, **kwargs):
+        """Make some heuristic guesses."""
+        pars = self.make_params()
+
+        len_fit = max(round(len(x) * 0.05), 10)
+        dos0, dos1, back0, back1 = fit_edges_linear(x, data, len_fit)
+        efermi = x[
+            np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
+        ]
+
+        pars[f"{self.prefix}center"].set(value=efermi)
+        pars[f"{self.prefix}back0"].set(value=back0)
+        pars[f"{self.prefix}back1"].set(value=back1)
+        pars[f"{self.prefix}dos0"].set(value=dos0)
+        pars[f"{self.prefix}dos1"].set(value=dos1)
+        pars[f"{self.prefix}sigma"].set(value=0.02)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
