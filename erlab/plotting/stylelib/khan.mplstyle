@@ -394,7 +394,7 @@ savefig.facecolor: auto
 savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight
-savefig.pad_inches: 0.00
+savefig.pad_inches: 0.02
 savefig.transparent: True
 savefig.orientation: portrait
 
