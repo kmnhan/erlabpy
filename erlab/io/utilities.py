@@ -150,18 +150,24 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
-def open_hdf5(filename: str | os.PathLike) -> xr.DataArray:
-    return xr.open_dataarray(filename, engine="h5netcdf")
+def open_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+    try:
+        return xr.open_dataarray(filename, engine="h5netcdf")
+    except ValueError:
+        return xr.open_dataset(filename, engine="h5netcdf")
 
 
-def load_hdf5(filename: str | os.PathLike) -> xr.DataArray:
-    return xr.load_dataarray(filename, engine="h5netcdf")
+def load_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+    try:
+        return xr.load_dataarray(filename, engine="h5netcdf")
+    except ValueError:
+        return xr.load_dataset(filename, engine="h5netcdf")
 
 
 def save_as_hdf5(
     data: xr.DataArray | xr.Dataset,
     filename: str | os.PathLike,
-    igor_compat:bool=True,
+    igor_compat: bool = True,
     **kwargs: dict,
 ):
     """Saves data in ``HDF5`` format.
@@ -188,6 +194,8 @@ def save_as_hdf5(
             data = data.assign_attrs({k: "None"})
         if isinstance(v, dict):
             data = data.assign_attrs({k: str(v)})
+    if isinstance(data, xr.Dataset):
+        igor_compat = False
     if igor_compat:
         # IGORWaveScaling order: chunk row column layer
         scaling = [[1, 0]]
