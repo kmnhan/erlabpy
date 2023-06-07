@@ -12,11 +12,11 @@ TINY: float = 1.0e-15  #: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(nu
 
 @numba.njit(cache=True)
 def _gen_kernel(
-    x: npt.NDArray[np.float64], resolution: float, pad: int = 12
+    x: npt.NDArray[np.float64], resolution: float, pad: int = 5
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     delta_x = x[1] - x[0]
     sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
-    n_pad = int(resolution * pad / delta_x + 0.5)
+    n_pad = int(sigma * pad / delta_x + 0.5)
     x_pad = n_pad * delta_x
 
     extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
