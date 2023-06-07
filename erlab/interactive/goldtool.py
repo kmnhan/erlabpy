@@ -425,7 +425,6 @@ class goldtool(AnalysisWindow):
         if p0["Fast"]:
             arg_dict["fast"] = True
             del arg_dict["temp"]
-            del arg_dict["vary_temp"]
         else:
             if not p0["Fix T"]:
                 arg_dict["vary_temp"] = True
