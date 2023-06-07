@@ -41,6 +41,7 @@ def edge(
     parallel_kw=dict(),
     return_full=False,
     fixed_center=None,
+    scale_covar=True,
 ):
     if fast:
         params = {}
@@ -60,22 +61,24 @@ def edge(
     if any([b != 1 for b in bin_size]):
         gold_binned = gold.coarsen(phi=bin_size[0], eV=bin_size[1], boundary="trim")
         gold = gold_binned.mean()
-        gold_stderr = (gold_binned.std() / np.sqrt(np.prod(bin_size))).sel(
-            phi=slice(*phi_range), eV=slice(*eV_range)
-        )
-        if (gold_stderr > 0).all():
-            weights = 1 / gold_stderr
+        # gold_stderr = (gold_binned.std() / np.sqrt(np.prod(bin_size))).sel(
+        #     phi=slice(*phi_range), eV=slice(*eV_range)
+        # )
+        # if (gold_stderr > 0).all():
+        #     weights = 1 / gold_stderr
+    
+    gold_sel = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
 
     fitresults = arpes.fits.broadcast_model(
         model,
-        gold.sel(phi=slice(*phi_range), eV=slice(*eV_range)),
+        gold_sel,
         "phi",
         weights=weights,
         params=params,
         method=method,
         progress=progress,
         parallel_kw=parallel_kw,
-        scale_covar=False,
+        scale_covar=scale_covar,
     )
     if return_full:
         return fitresults
@@ -86,9 +89,9 @@ def edge(
     return center_arr, center_stderr
 
 
-def poly_from_edge(center, weights=None, degree=4, method="leastsq"):
+def poly_from_edge(center, weights=None, degree=4, method="leastsq", scale_covar=True):
     modelresult = PolynomialModel(degree=degree).guess_fit(
-        center, weights=weights, method=method, scale_covar=False
+        center, weights=weights, method=method, scale_covar=scale_covar
     )
     return modelresult
 
@@ -117,6 +120,8 @@ def poly(
     parallel_kw=dict(),
     plot=True,
     fig=None,
+    scale_covar=True,
+    scale_covar_edge=True,
 ):
     center_arr, center_stderr = edge(
         gold,
@@ -128,10 +133,11 @@ def poly(
         fast=fast,
         method=method,
         parallel_kw=parallel_kw,
+        scale_covar=scale_covar_edge,
     )
 
     modelresult = PolynomialModel(degree=degree).guess_fit(
-        center_arr, weights=1 / center_stderr, method=method, scale_covar=False
+        center_arr, weights=1 / center_stderr, method=method, scale_covar=scale_covar
     )
     if plot:
         if not isinstance(fig, plt.Figure):
@@ -197,6 +203,7 @@ def resolution(
     method="leastsq",
     plot=True,
     parallel_kw=dict(),
+    scale_covar=True,
 ):
     pol, gold_corr = poly(
         gold,
@@ -222,7 +229,7 @@ def resolution(
         resolution=dict(value=0.1, vary=True, min=0),
     )
     fit = ExtendedAffineBroadenedFD().guess_fit(
-        edc_avg, params=params, method=method, scale_covar=False
+        edc_avg, params=params, method=method, scale_covar=scale_covar
     )
     if plot:
         plt.show()
@@ -257,6 +264,7 @@ def resolution_roi(
     fix_temperature=True,
     method="leastsq",
     plot=True,
+    scale_covar=True,
 ):
     edc_avg = gold_roi.mean("phi").sel(eV=slice(*eV_range))
 
@@ -268,7 +276,7 @@ def resolution_roi(
         edc_avg,
         params=params,
         method=method,
-        scale_covar=False,  # weights=1 / edc_stderr
+        scale_covar=scale_covar,  # weights=1 / edc_stderr
     )
     if plot:
         ax = plt.gca()

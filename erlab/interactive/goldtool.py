@@ -1,11 +1,10 @@
+__all__ = ["goldtool"]
+
 import os
-import sys
 
 import arpes.xarray_extensions
 import numpy as np
-import numpy.typing as npt
 import pyqtgraph as pg
-import scipy.interpolate
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -20,32 +19,30 @@ from erlab.interactive.utilities import (
 )
 from erlab.parallel import joblib_progress_qt
 
-__all__ = ["goldtool"]
-
 LMFIT_METHODS = [
     "leastsq",
     "least_squares",
-    "differential_evolution",
-    "brute",
-    "basinhopping",
-    "ampgo",
-    "nelder",
-    "lbfgsb",
-    "powell",
+    # "differential_evolution",
+    # "brute",
+    # "basinhopping",
+    # "ampgo",
+    # "nelder",
+    # "lbfgsb",
+    # "powell",
     "cg",
-    "newton",
-    "cobyla",
-    "bfgs",
-    "tnc",
-    "trust-ncg",
-    "trust-exact",
-    "trust-krylov",
-    "trust-constr",
-    "dogleg",
-    "slsqp",
+    # "newton",
+    # "cobyla",
+    # "bfgs",
+    # "tnc",
+    # "trust-ncg",
+    # "trust-exact",
+    # "trust-krylov",
+    # "trust-constr",
+    # "dogleg",
+    # "slsqp",
     "emcee",
-    "shgo",
-    "dual_annealing",
+    # "shgo",
+    # "dual_annealing",
 ]
 
 
@@ -93,6 +90,7 @@ class EdgeFitter(QtCore.QRunnable):
                 vary_temp=not self.params["Fix T"],
                 fast=self.params["Fast"],
                 method=self.params["Method"],
+                scale_covar=self.params["Scale cov"],
                 progress=False,
                 parallel_kw=dict(n_jobs=self.params["# CPU"]),
             )
@@ -167,6 +165,7 @@ class goldtool(AnalysisWindow):
                 "Bin y": dict(qwtype="spin", value=1, minimum=1),
                 "Fast": dict(qwtype="chkbox", checked=False),
                 "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
+                "Scale cov": dict(qwtype="chkbox", checked=True),
                 "# CPU": dict(
                     qwtype="spin",
                     value=os.cpu_count(),
@@ -186,7 +185,9 @@ class goldtool(AnalysisWindow):
 
         self.params_poly = ParameterGroup(
             **{
-                "Degree": dict(qwtype="spin", value=4, range=(1, 12)),
+                "Degree": dict(qwtype="spin", value=4, range=(1, 20)),
+                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
+                "Scale cov": dict(qwtype="chkbox", checked=True),
                 "Residuals": dict(qwtype="chkbox", checked=False),
                 "Corrected": dict(qwtype="chkbox", checked=False),
                 "Shift coords": dict(qwtype="chkbox", checked=True),
@@ -241,19 +242,22 @@ class goldtool(AnalysisWindow):
                 == QtCore.Qt.CheckState.Checked
             )
         )
-        self.params_poly.setDisabled(True)
-        self.params_spl.setDisabled(True)
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
 
-        params_tab = QtWidgets.QTabWidget()
-        params_tab.addTab(self.params_poly, "Polynomial")
-        params_tab.addTab(self.params_spl, "Spline")
-        params_tab.currentChanged.connect(
+        self.params_tab = QtWidgets.QTabWidget()
+        self.params_tab.addTab(self.params_poly, "Polynomial")
+        self.params_tab.addTab(self.params_spl, "Spline")
+        self.params_tab.currentChanged.connect(
             lambda i: self.perform_fit(("poly", "spl")[i])
         )
-        self.controls.addWidget(params_tab)
+        self.controls.addWidget(self.params_tab)
+
+        self.params_poly.setDisabled(True)
+        self.params_spl.setDisabled(True)
+        self.params_tab.setDisabled(True)
+
         self.controlgroup.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
         )
@@ -331,6 +335,7 @@ class goldtool(AnalysisWindow):
 
         self.params_poly.setDisabled(False)
         self.params_spl.setDisabled(False)
+        self.params_tab.setDisabled(False)
         self.perform_fit("poly")
 
     def perform_fit(self, mode="poly"):
@@ -368,7 +373,8 @@ class goldtool(AnalysisWindow):
             center=self.edge_center,
             weights=1 / self.edge_stderr,
             degree=params["Degree"],
-            method=self.params_edge.values["Method"],
+            method=params["Method"],
+            scale_covar=params["Scale cov"],
         )
         if self.data_corr is None:
             target = self.data
@@ -423,6 +429,11 @@ class goldtool(AnalysisWindow):
         else:
             if not p0["Fix T"]:
                 arg_dict["vary_temp"] = True
+
+        if not p0["Scale cov"]:
+            arg_dict["scale_covar_edge"] = False
+        if not p1["Scale cov"]:
+            arg_dict["scale_covar"] = False
 
         if self.data_corr is None:
             gen_function_code(
