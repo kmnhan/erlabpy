@@ -39,7 +39,7 @@ for ftype in (numba.float32, numba.float64):
         )
 
 
-@numba.njit(_signature_array_rect, fastmath=True)
+@numba.njit(_signature_array_rect, cache=True, fastmath=True)
 def _array_rect(
     i: int,
     j: int,
@@ -55,7 +55,7 @@ def _array_rect(
     return x, y, w, h
 
 
-@numba.njit(_signature_index_of_value)
+@numba.njit(_signature_index_of_value, cache=True)
 def _index_of_value(
     axis: int,
     val: np.floating,
@@ -72,7 +72,7 @@ def _index_of_value(
     return ind
 
 
-@numba.njit
+@numba.njit(cache=True)
 def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     if arr.ndim == 2:
         return arr.T
@@ -83,7 +83,7 @@ def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
 
 
 @numba.njit(
-    [numba.boolean(numba.float32[::1]), numba.boolean(numba.int64[::1])],
+    [numba.boolean(numba.float32[::1]), numba.boolean(numba.int64[::1])], cache=True
 )
 def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     dif = np.diff(arr)
@@ -94,7 +94,8 @@ def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     [
         numba.int64(numba.float32[::1], numba.float32),
         numba.int64(numba.float64[::1], numba.float64),
-    ]
+    ],
+    cache=True,
 )
 def _index_of_value_nonuniform(arr: npt.NDArray[np.float32], val: np.float32) -> int:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)

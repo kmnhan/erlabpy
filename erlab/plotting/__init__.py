@@ -60,10 +60,10 @@ def load_igor_ct(fname, name):
 
 load_igor_ct("CTBlueWhite.ibw", "BuWh")
 load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
-load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
+# load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
 load_igor_ct("ColdWarm.ibw", "ColdWarm")
 load_igor_ct("BlueHot.ibw", "BlueHot")
-load_igor_ct("PlanetEarth.ibw", "PlanetEarth")
+# load_igor_ct("PlanetEarth.ibw", "PlanetEarth")
 # load_igor_ct("ametrine.ibw", "ametrine")
 # load_igor_ct("isolum.ibw", "isolum")
 # load_igor_ct("morgenstemning.ibw", "morgenstemning")

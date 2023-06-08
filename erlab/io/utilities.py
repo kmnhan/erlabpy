@@ -8,7 +8,6 @@ import arpes.endstations
 import arpes.io
 import numpy as np
 import xarray as xr
-from astropy.io import fits
 
 __all__ = [
     "showfitsinfo",
@@ -29,6 +28,7 @@ def showfitsinfo(path: str | os.PathLike):
         Local path to ``.fits`` file.
 
     """
+    from astropy.io import fits
     with fits.open(path, ignore_missing_end=True) as hdul:
         hdul.verify("silentfix+warn")
         hdul.info()
