@@ -4,6 +4,7 @@ import warnings
 from pathlib import Path
 
 import arpes
+import arpes.config
 import arpes.endstations
 import arpes.io
 import numpy as np
