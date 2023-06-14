@@ -97,11 +97,18 @@ __all__ = [
 def clean_labels(axes, tick_right=False, *args, **kwargs):
     if axes.ndim == 1:
         axes = axes[None]
+    for ax in axes[:-1, :].flat:
+        ax.set_xlabel("")
+    if tick_right:
+        target = axes[:, :-1]
+    else:
+        target = axes[:, 1:]
+    for ax in target.flat:
+        ax.set_ylabel("")
+    fancy_labels(axes, *args, **kwargs)
     for ax in axes.flat:
         if tick_right:
             ax.yaxis.set_label_position("right")
-        ax.label_outer()
-    fancy_labels(axes, *args, **kwargs)
 
 
 def integer_ticks(axes):
