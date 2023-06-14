@@ -166,7 +166,15 @@ class ArraySlicer(QtCore.QObject):
 
     @functools.cached_property
     def lims(self) -> tuple[tuple[np.float32, np.float32], ...]:
-        return tuple((coord[0], coord[-1]) for coord in self.coords)
+        if self._nonuniform_axes:
+            return tuple(
+                (min(coord), max(coord))
+                if i in self._nonuniform_axes
+                else (coord[0], coord[-1])
+                for i, coord in enumerate(self.coords)
+            )
+        else:
+            return tuple((coord[0], coord[-1]) for coord in self.coords)
 
     @functools.cached_property
     def lims_uniform(self) -> tuple[tuple[np.float32, np.float32], ...]:

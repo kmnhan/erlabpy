@@ -878,12 +878,12 @@ class ItoolPlotItem(pg.PlotItem):
         self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
         self.add_cursor(update=False)
 
-        # self.proxy = pg.SignalProxy(
-        #     self.sigDragged,
-        #     delay=1 / 60,
-        #     rateLimit=60,
-        #     slot=self.process_drag,
-        # )
+        self.proxy = pg.SignalProxy(
+            self.sigDragged,
+            delay=1 / 60,
+            rateLimit=60,
+            slot=self.process_drag,
+        )
         if self.slicer_area.bench:
             self._time_start = None
             self._time_end = None
@@ -947,8 +947,8 @@ class ItoolPlotItem(pg.PlotItem):
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
         ):
             ev.accept()
-            # self.sigDragged.emit(ev, modifiers)
-            self.process_drag((ev, modifiers))
+            self.sigDragged.emit(ev, modifiers)
+            # self.process_drag((ev, modifiers))
         else:
             ev.ignore()
 
