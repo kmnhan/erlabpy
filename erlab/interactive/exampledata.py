@@ -6,6 +6,7 @@ import scipy.ndimage
 
 __all__ = ["generate_data"]
 
+
 def func(kvec, a):
     n1 = np.array([a / np.sqrt(3), 0])
     n2 = np.array([-a / 2 / np.sqrt(3), a / 2])
@@ -29,7 +30,6 @@ def spectral_function(w, bareband, Sreal, Simag):
     return Simag / (np.pi * ((w - bareband - Sreal) ** 2 + Simag**2))
 
 
-
 def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
     if temp != 0:
         image *= fermi_dirac(eV - efermi, temp)[None, None, :]
@@ -39,13 +39,13 @@ def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
 
 
 def generate_data(
-    shape:tuple[int,int,int]=(200, 200, 250),
-    krange:float=1.4,
-    Erange:tuple[float,float]=(-1, 0.1),
-    temp:float=30.0,
-    a:float=6.97,
-    t:float=0.43,
-    bandshift:float=-0.2,
+    shape: tuple[int, int, int] = (200, 200, 250),
+    krange: float = 1.4,
+    Erange: tuple[float, float] = (-0.45, 0.09),
+    temp: float = 30.0,
+    a: float = 6.97,
+    t: float = 0.43,
+    bandshift: float = -0.2,
     Sreal: float = 0.0,
     Simag: float = 0.05,
     kres: float = 0.01,
@@ -54,27 +54,26 @@ def generate_data(
     count: int = 1000,
     ccd_sigma: float = 0.6,
 ):
-    x = np.linspace(-krange, krange, shape[0])
-    y = np.linspace(-krange, krange, shape[1])
-    z = np.linspace(*Erange, shape[2])
+    kx = np.linspace(-krange, krange, shape[0])
+    ky = np.linspace(-krange, krange, shape[1])
+    eV = np.linspace(*Erange, shape[2])
 
-    dE = z[1] - z[0]
-    dk = ((x[1] - x[0]) + (y[1] - y[0])) / 2
+    dE = eV[1] - eV[0]
+    dk = ((kx[1] - kx[0]) + (ky[1] - ky[0])) / 2
 
-    Eij = band([x[:, None], y[None, :]], t, a)[:, :, None]
-    Eij_p, Eij_m = Eij, -Eij
+    point_iter = np.array(np.meshgrid(kx, ky)).T.reshape(-1, 2).T
 
-    Akw_p = spectral_function(z[None, None, :], Eij_p + bandshift, Sreal, Simag)
-    Akw_m = spectral_function(z[None, None, :], Eij_m + bandshift, Sreal, Simag)
+    Eij = band(point_iter, t, a).reshape(*shape[:-1], 1)
 
-    point_iter = np.array(np.meshgrid(x, y)).T.reshape(-1, 2)
+    Akw_p = spectral_function(eV[None, None, :], Eij + bandshift, Sreal, Simag)
+    Akw_m = spectral_function(eV[None, None, :], -Eij + bandshift, Sreal, Simag)
 
-    phase = np.angle(func(point_iter.T, a)).reshape(shape[0], shape[1])
+    phase = np.angle(func(point_iter, a)).reshape(shape[0], shape[1])
     Akw_p *= (1 + np.cos(phase))[:, :, None]
     Akw_m *= (1 - np.cos(phase))[:, :, None]
     out = Akw_p + Akw_m
 
-    add_fd_norm(out, z, efermi=0, temp=temp, count=count)
+    add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
 
     if noise:
         rng = np.random.default_rng()
@@ -90,16 +89,19 @@ def generate_data(
             rng.poisson(broadened).astype(float), ccd_sigma, truncate=10.0
         )
 
-    return xr.DataArray(broadened, coords=dict(kx=x, ky=y, eV=z))
+    return xr.DataArray(broadened, coords=dict(kx=kx, ky=ky, eV=eV))
 
 
 if __name__ == "__main__":
     out = generate_data(
         shape=(200, 200, 200),
         krange=1.4,
-        Erange=(-1, 0.1),
+        Erange=(-0.45, 0.09),
         temp=30,
         bandshift=-0.2,
         count=1000,
         noise=True,
     )
+    import arpes.xarray_extensions
+
+    out.S.show()
