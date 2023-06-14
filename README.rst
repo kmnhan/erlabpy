@@ -71,3 +71,31 @@ Editable Installation from Source
       git clone https://github.com/kmnhan/erlabpy.git
       cd erlabpy
       pip install -e . --config-settings editable_mode=compat
+
+
+**************************
+Building the documentation
+**************************
+
+Install requirements
+====================
+
+.. code-block:: bash
+
+   conda activate envname
+   conda install sphinx, sphinx-autodoc-typehints, furo -y
+   pip install sphinx-qt-documentation
+
+Build
+-----
+
+.. code-block:: bash
+
+   cd my/directory/erlabpy
+
+.. code-block:: bash
+
+   cd docs
+   make clean
+   make html && make latexpdf
+   cd ..
