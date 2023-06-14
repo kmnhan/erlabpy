@@ -66,7 +66,7 @@ def edge(
         # )
         # if (gold_stderr > 0).all():
         #     weights = 1 / gold_stderr
-    
+
     gold_sel = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
 
     fitresults = arpes.fits.broadcast_model(
@@ -117,6 +117,7 @@ def poly(
     method="leastsq",
     degree=4,
     correct=False,
+    crop_correct=False,
     parallel_kw=dict(),
     plot=True,
     fig=None,
@@ -187,7 +188,10 @@ def poly(
         ax2.set_title("")
 
     if correct:
-        return modelresult, correct_with_edge(gold, modelresult, plot=False)
+        if crop_correct:
+            gold = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
+        corr = correct_with_edge(gold, modelresult, plot=False)
+        return modelresult, corr
     else:
         return modelresult
 
