@@ -35,8 +35,7 @@ __all__ = [
     "load_experiment",
     "load_wave",
     "load_als_bl4",
-    "load_livepolar",
-    "load_livexy",
+    "load_live",
     "open_hdf5",
     "load_hdf5",
     "save_as_hdf5",
@@ -46,9 +45,9 @@ __all__ = [
 
 import warnings
 
-from erlab.io.igor import load_experiment, load_wave, load_pxp, load_ibw
+from erlab.io.igor import load_experiment, load_ibw, load_pxp, load_wave
 from erlab.io.merlin import load as load_als_bl4
-from erlab.io.merlin import load_livepolar, load_livexy
+from erlab.io.merlin import load_live
 from erlab.io.ssrl52 import load as load_ssrl
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
