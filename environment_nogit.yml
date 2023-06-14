@@ -51,8 +51,8 @@ dependencies:
   - uncertainties>=3.0.1
   - qtawesome
   - numbagg
+  - numba-progress
   - pip:
-    - pyside6>=6.2.2
+    - pyqt6>=6.2.2
     - csaps
-    - numba_progress
     - pyclip
