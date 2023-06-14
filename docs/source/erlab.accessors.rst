@@ -1,14 +1,9 @@
+﻿=========================================
+xarray accessors (:mod:`erlab.accessors`)
+=========================================
+
 .. automodule:: erlab.accessors
 
-   
-   
-   
-
-   
-   
-   
-
-   
    
    .. rubric:: Classes
 
