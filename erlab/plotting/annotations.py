@@ -449,7 +449,8 @@ def label_subplots_nature(
 
         if fontsize is None:
             fontsize = "medium"
-        axlist[i].text(
+        axlist[i].figure.text(
+            # axlist[i].text(
             0.0,
             1.0,
             label_str,
