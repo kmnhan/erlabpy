@@ -1,11 +1,7 @@
 """
-======================================
-Interactive (:mod:`erlab.interactive`)
-======================================
+Interactive plotting based on Qt and pyqtgraph
 
 .. currentmodule:: erlab.interactive
-
-Interactive plotting, mainly with Qt and pyqtgraph.
 
 Interactive tools
 =================

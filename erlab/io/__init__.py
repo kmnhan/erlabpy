@@ -1,11 +1,7 @@
 """
-=========================
-Data IO (:mod:`erlab.io`)
-=========================
+Read & write ARPES data.
 
 .. currentmodule:: erlab.io
-
-Functions for data IO.
 
 Storing and retrieving files using `pickle` is quick and convenient, but pickled files
 can only be opened in the environment it was saved in. This module provides alternatives

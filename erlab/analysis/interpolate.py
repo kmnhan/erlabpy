@@ -149,7 +149,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     Notes
     -----
-    Parallel acceleration is only applied when all of the following is true.
+    Parallel acceleration is only applied when all of the following are true.
 
     * `method` is "linear".
     * Coordinates along all dimensions are evenly spaced.

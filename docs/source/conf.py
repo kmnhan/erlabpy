@@ -11,6 +11,10 @@ copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
 release = "0.1"
 
+# Documentation build dependencies
+# sphinx, sphinx-autodoc-typehints, furo
+# pypi: sphinx-qt-documentation
+
 
 # build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -95,8 +99,9 @@ napoleon_custom_sections = [("Signals", "params_style")]
 # napoleon_custom_sections = [("Signals", "Attributes")]
 
 
-qt_documentation = "Qt6"
+qt_documentation = "PyQt6"
 intersphinx_mapping = {
+    "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),
     "python": ("https://docs.python.org/3.10/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "numba": ("https://numba.readthedocs.io/en/stable/", None),
@@ -107,7 +112,6 @@ intersphinx_mapping = {
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
     "arpes": ("https://arpes.readthedocs.io/en/latest/", None),
-    "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),
 }
 
 
@@ -120,12 +124,12 @@ plot_html_show_formats = False
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_static_path = ["_static"]
-html_theme = "sphinx_book_theme"
-html_theme_options = {
-    "repository_url": "https://github.com/kmnhan/erlabpy",
-    "use_repository_button": True,
-    "use_source_button": True,
-}
+html_theme = "furo"
+# html_theme_options = {
+#     "repository_url": "https://github.com/kmnhan/erlabpy",
+#     "use_repository_button": True,
+#     "use_source_button": True,
+# }
 
 # -- LaTeX options -----------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options

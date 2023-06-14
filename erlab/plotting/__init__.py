@@ -1,11 +1,7 @@
 """
-================================
-Plotting (:mod:`erlab.plotting`)
-================================
+Everything related to plotting.
 
 .. currentmodule:: erlab.plotting
-
-Plotting utilities.
 
 Modules
 =======

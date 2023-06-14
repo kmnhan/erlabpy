@@ -1,3 +1,7 @@
+﻿===========================================
+Parallel processing (:mod:`erlab.parallel`)
+===========================================
+
 .. automodule:: erlab.parallel
 
    

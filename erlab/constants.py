@@ -1,11 +1,7 @@
 """
-==================================
-Constants (:mod:`erlab.constants`)
-==================================
+Physical constants and unit conversion.
 
 .. currentmodule:: erlab.constants
-
-Physical constants and some functions for unit conversion.
 
 """
 import numpy as np

@@ -1,7 +1,5 @@
 """
-=========================================
-xarray accessors (:mod:`erlab.accessors`)
-=========================================
+`xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_
 
 .. currentmodule:: erlab.accessors
 

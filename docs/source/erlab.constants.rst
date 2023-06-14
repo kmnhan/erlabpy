@@ -1,3 +1,8 @@
+﻿==================================
+Constants (:mod:`erlab.constants`)
+==================================
+
+
 .. automodule:: erlab.constants
 
    

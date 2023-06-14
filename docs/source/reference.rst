@@ -18,10 +18,12 @@ Subpackage                 Description
 ========================   ========================
 
 .. currentmodule:: erlab
-   
+
+
+
 .. toctree::
    :hidden:
-
+   
    erlab.analysis
    erlab.io
    erlab.plotting
@@ -41,7 +43,7 @@ Submodule           Description
 
 .. toctree::
    :hidden:
-
+   
    erlab.constants
    erlab.accessors
    erlab.parallel
