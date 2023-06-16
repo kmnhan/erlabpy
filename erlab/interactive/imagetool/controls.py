@@ -354,6 +354,8 @@ class ItoolControlsBase(QtWidgets.QWidget):
         self.update()
         self.connect_signals()
 
+        print("called!")
+
 
 # class ItoolAAAAAControls(ItoolControlsBase):
 #     def __init__(self, *args, **kwargs):
@@ -521,18 +523,26 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
         self.slicer_area.sigDataChanged.connect(self.update)
+        self.slicer_area.sigShapeChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
-        self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
-        self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
-        self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
-        self.slicer_area.sigBinChanged.disconnect(self.update_spins)
         self.slicer_area.sigDataChanged.disconnect(self.update)
+        self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
+        try:
+            self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
+            self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
+            self.slicer_area.sigBinChanged.disconnect(self.update_spins)
+            self.slicer_area.sigShapeChanged.disconnect(self.update)
+        except TypeError:
+            pass
 
+    @QtCore.Slot()
     def update(self):
         super().update()
+        self.disconnect_signals()
+        self.connect_signals()
         if len(self.label_dim) != self.data.ndim:
             # number of required cursors changed, resetting
             clear_layout(self.layout())
@@ -594,6 +604,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
 
+    @QtCore.Slot()
     def update_options(self):
         self.btn_snap.blockSignals(True)
         self.btn_snap.setChecked(self.array_slicer.snap_to_data)
@@ -617,6 +628,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         painter.end()
         return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
 
+    @QtCore.Slot(int)
     def update_cursor_count(self, count: int):
         if count == self.cb_cursors.count():
             return
@@ -646,10 +658,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.cb_cursors.setDisabled(True)
             self.btn_rem.setDisabled(True)
 
+    @QtCore.Slot(int)
     def cursorChangeEvent(self, idx: int):
         self.cb_cursors.setCurrentIndex(idx)
         self.update_spins()
 
+    @QtCore.Slot(str)
     def setActiveCursor(self, value: str):
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
 
@@ -779,6 +793,14 @@ class ItoolColormapControls(ItoolControlsBase):
         else:
             self.slicer_area.set_colormap(name)
 
+    def connect_signals(self):
+        super().connect_signals()
+        self.slicer_area.sigViewOptionChanged.connect(self.update)
+
+    def disconnect_signals(self):
+        super().disconnect_signals()
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
+
 
 class ItoolBinningControls(ItoolControlsBase):
     def __init__(self, *args, **kwargs):
@@ -835,11 +857,13 @@ class ItoolBinningControls(ItoolControlsBase):
     def connect_signals(self):
         super().connect_signals()
         self.slicer_area.sigCurrentCursorChanged.connect(self.update)
+        self.slicer_area.sigBinChanged.connect(self.update)
         self.slicer_area.sigDataChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.update)
+        self.slicer_area.sigBinChanged.disconnect(self.update)
         self.slicer_area.sigDataChanged.disconnect(self.update)
 
     def update(self):

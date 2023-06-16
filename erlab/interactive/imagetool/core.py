@@ -3,9 +3,13 @@ from __future__ import annotations
 __all__ = ["ImageSlicerArea"]
 
 import collections
+import copy
+import functools
+import inspect
 import time
 import weakref
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -89,6 +93,160 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
     def getPlotItemViewBox(self) -> pg.ViewBox:
         return self.getPlotItem().vb
+
+
+def link_slicer(
+    func: Callable | None = None, *, indices: bool = False, steps: bool = False
+):
+    """
+    An internal decorator for choosing which functions to sync accross multiple
+    instances of `ImageSlicerArea`.
+
+    Parameters
+    ----------
+    func
+        The method to sync across multiple instances of `ImageSlicerArea`.
+    indices
+        If `True`, the input argument named `value` given to `func` are interpreted as
+        indices, and will be converted to appropriate values for other instances of
+        `ImageSlicerArea`. The behavior of this conversion is determined by `steps`.
+    steps
+        If `False`, considers `value` as an absolute index. If `True`, considers
+        `value` as a relative value such as the number of steps or bins. See the
+        implementation of `SlicerLinkProxy` for more information.
+
+    """
+
+    def my_decorator(func: Callable):
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            skip_sync: bool = kwargs.pop("__slicer_skip_sync", False)
+            out = func(*args, **kwargs)
+            if args[0].is_linked:
+                if not skip_sync:
+                    all_args = inspect.Signature.from_callable(func).bind(
+                        *args, **kwargs
+                    )
+                    all_args.apply_defaults()
+                    obj: ImageSlicerArea = all_args.arguments.pop("self")
+                    obj._linking_proxy.sync(
+                        obj, func.__name__, all_args.arguments, indices, steps
+                    )
+            return out
+
+        return wrapped
+
+    if func is not None:
+        return my_decorator(func)
+    return my_decorator
+
+
+class SlicerLinkProxy:
+    """
+    An internal class for handling linked `ImageSlicerArea`s.
+
+    Parameters
+    ----------
+    *slicers
+        The slicers to link.
+
+    """
+
+    def __init__(self, *slicers: list[ImageSlicerArea]):
+        self._slicers: set[ImageSlicerArea] = set()
+        for s in slicers:
+            self.add(s)
+
+    def add(self, slicer: ImageSlicerArea):
+        if slicer.is_linked:
+            if slicer._linking_proxy == self:
+                return
+            else:
+                raise ValueError("Already linked to another proxy.")
+        self._slicers.add(slicer)
+        slicer._linking_proxy = self
+
+    def remove(self, slicer: ImageSlicerArea):
+        self._slicers.remove(slicer)
+        slicer._linking_proxy = None
+
+    def sync(
+        self,
+        source: ImageSlicerArea,
+        funcname: str,
+        arguments: dict[str, Any],
+        indices: bool,
+        steps: bool,
+    ):
+        """The core method that propagates changes across multiple `ImageSlicerArea`s.
+
+        This method is invoked every time a method decorated with :func:`link_slicer` in
+        a linked `ImageSlicerArea` is called.
+
+        Parameters
+        ----------
+        source
+            Instance of `ImageSlicerArea` corresponding to the called method.
+        funcname
+            Name of the called method.
+        arguments
+            Arguments included in the function call.
+        indices, steps
+            Arguments given to the decorator. See :func:`link_slicer`
+
+        """
+
+        for target in self._slicers.difference({source}):
+            getattr(target, funcname)(
+                **self.convert_args(source, target, arguments, indices, steps)
+            )
+
+    def convert_args(
+        self,
+        source: ImageSlicerArea,
+        target: ImageSlicerArea,
+        args: dict[str, Any],
+        indices: bool,
+        steps: bool,
+    ):
+        if indices:
+            axis: int | None = args.get("axis", None)
+            index: int | None = args.get("value", None)
+
+            if index is not None:
+                if axis is None:
+                    args["value"] = [
+                        self.convert_index(source, target, a, i, steps)
+                        for (a, i) in zip(axis, index)
+                    ]
+                else:
+                    args["value"] = self.convert_index(
+                        source, target, axis, index, steps
+                    )
+
+        args["__slicer_skip_sync"]: bool = True  # passed onto the decorator
+        return args
+
+    @staticmethod
+    def convert_index(
+        source: ImageSlicerArea,
+        target: ImageSlicerArea,
+        axis: int,
+        index: int,
+        steps: bool,
+    ):
+        if steps:
+            return round(
+                index * source.array_slicer.incs[axis] / target.array_slicer.incs[axis]
+            )
+        else:
+            value: np.float32 = source.array_slicer.value_of_index(
+                axis, index, uniform=False
+            )
+            new_index: int = target.array_slicer.index_of_value(
+                axis, value, uniform=False
+            )
+            return new_index
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -179,6 +337,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bench: bool = False,
     ):
         super().__init__(parent)
+
+        self._linking_proxy: SlicerLinkProxy | None = None
+
         self.bench = bench
 
         self.setLayout(QtWidgets.QHBoxLayout())
@@ -258,7 +419,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.axes:
             ax.connect_signals()
         self.sigDataChanged.connect(self.refresh_all)
+        self.sigShapeChanged.connect(self.refresh_all)
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+
+    def add_link(self, proxy: SlicerLinkProxy):
+        proxy.add(self)
+
+    def remove_link(self):
+        self._linking_proxy.remove(self)
+
+    @property
+    def is_linked(self) -> bool:
+        return self._linking_proxy is not None
 
     @property
     def colormap(self) -> str | pg.ColorMap:
@@ -352,10 +524,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ax.refresh_labels()
 
     @QtCore.Slot(tuple)
+    @link_slicer
     def refresh_current(self, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(self.current_cursor, axes)
 
     @QtCore.Slot(int, list)
+    @link_slicer
     def refresh(self, cursor: int, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(cursor, axes)
 
@@ -364,13 +538,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ax.vb.enableAutoRange()
             ax.vb.updateAutoRange()
 
+    @link_slicer
     def center_all_cursors(self):
         for i in range(self.n_cursors):
             self.array_slicer.center_cursor(i)
 
+    @link_slicer
     def center_cursor(self):
         self.array_slicer.center_cursor(self.current_cursor)
 
+    @link_slicer
     def set_current_cursor(self, cursor: int, update=True):
         if cursor > self.n_cursors - 1:
             raise IndexError("Cursor index out of range")
@@ -427,36 +604,61 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.lock_levels(False)
 
     @QtCore.Slot(int, int)
+    @link_slicer
     def swap_axes(self, ax1: int, ax2: int):
         self.array_slicer.swap_axes(ax1, ax2)
-        self.sigDataChanged.emit()
 
     @QtCore.Slot(int, int, bool)
-    def set_index(self, axis: int, value: int, update: bool = True):
-        self.array_slicer.set_index(self.current_cursor, axis, value, update)
+    @link_slicer(indices=True)
+    def set_index(
+        self, axis: int, value: int, update: bool = True, cursor: int | None = None
+    ):
+        if cursor is None:
+            cursor = self.current_cursor
+        self.array_slicer.set_index(cursor, axis, value, update)
 
     @QtCore.Slot(int, int, bool)
-    def step_index(self, axis: int, amount: int, update: bool = True):
-        self.array_slicer.step_index(self.current_cursor, axis, amount, update)
+    @link_slicer(indices=True, steps=True)
+    def step_index(
+        self, axis: int, value: int, update: bool = True, cursor: int | None = None
+    ):
+        if cursor is None:
+            cursor = self.current_cursor
+        self.array_slicer.step_index(cursor, axis, value, update)
 
     @QtCore.Slot(int, int, bool)
-    def step_index_all(self, axis: int, amount: int, update: bool = True):
+    @link_slicer(indices=True, steps=True)
+    def step_index_all(self, axis: int, value: int, update: bool = True):
         for i in range(self.n_cursors):
-            self.array_slicer.step_index(i, axis, amount, update)
+            self.array_slicer.step_index(i, axis, value, update)
 
     @QtCore.Slot(int, float, bool, bool)
+    @link_slicer
     def set_value(
-        self, axis: int, value: float, update: bool = True, uniform: bool = False
+        self,
+        axis: int,
+        value: float,
+        update: bool = True,
+        uniform: bool = False,
+        cursor: int | None = None,
     ):
-        self.array_slicer.set_value(self.current_cursor, axis, value, update, uniform)
+        if cursor is None:
+            cursor = self.current_cursor
+        self.array_slicer.set_value(cursor, axis, value, update, uniform)
 
     @QtCore.Slot(int, int, bool)
-    def set_bin(self, axis: int, value: int, update: bool = True):
+    @link_slicer(indices=True, steps=True)
+    def set_bin(
+        self, axis: int, value: int, update: bool = True, cursor: int | None = None
+    ):
+        if cursor is None:
+            cursor = self.current_cursor
         new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
-        self.array_slicer.set_bins(self.current_cursor, new_bins, update)
+        self.array_slicer.set_bins(cursor, new_bins, update)
 
     @QtCore.Slot(int, int, bool)
+    @link_slicer(indices=True, steps=True)
     def set_bin_all(self, axis: int, value: int, update: bool = True):
         new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
@@ -464,6 +666,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.array_slicer.set_bins(c, new_bins, update)
 
     @QtCore.Slot()
+    @link_slicer
     def add_cursor(self):
         self.array_slicer.add_cursor(self.current_cursor, update=False)
         self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
@@ -476,6 +679,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot(int)
+    @link_slicer
     def remove_cursor(self, index: int):
         if self.n_cursors == 1:
             return
@@ -521,6 +725,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
 
+    @link_slicer
     def set_colormap(
         self,
         cmap: str | pg.ColorMap | None = None,
@@ -981,8 +1186,8 @@ class ItoolPlotItem(pg.PlotItem):
         if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
             for c in range(self.slicer_area.n_cursors):
                 for i, ax in enumerate(self.display_axis):
-                    self.array_slicer.set_value(
-                        c, ax, data_pos_coords[i], update=False, uniform=True
+                    self.slicer_area.set_value(
+                        ax, data_pos_coords[i], update=False, uniform=True, cursor=c
                     )
                 self.slicer_area.refresh(c, self.display_axis)
         else:
@@ -1090,10 +1295,14 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.qapp.queryKeyboardModifiers()
             != QtCore.Qt.KeyboardModifier.AltModifier
         ):
-            self.array_slicer.set_value(cursor, axis, value, update=True, uniform=True)
+            self.slicer_area.set_value(
+                axis, value, update=True, uniform=True, cursor=cursor
+            )
         else:
-            for i in range(self.array_slicer.n_cursors):
-                self.array_slicer.set_value(i, axis, value, update=True, uniform=True)
+            for i in range(self.slicer_area.n_cursors):
+                self.slicer_area.set_value(
+                    axis, value, update=True, uniform=True, cursor=i
+                )
 
     def remove_cursor(self, index: int):
         item = self.slicer_data_items.pop(index)

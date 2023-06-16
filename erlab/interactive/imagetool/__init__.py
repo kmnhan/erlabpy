@@ -32,12 +32,12 @@ from erlab.interactive.imagetool.controls import (
     ItoolControlsBase,
     ItoolCrosshairControls,
 )
-from erlab.interactive.imagetool.core import ImageSlicerArea
+from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import copy_to_clipboard
 
 
-def itool(data, *args, execute: bool | None = None, **kwargs):
+def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs):
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -51,6 +51,9 @@ def itool(data, *args, execute: bool | None = None, **kwargs):
             w.show()
         win[-1].activateWindow()
         win[-1].raise_()
+
+        if link:
+            linker = SlicerLinkProxy(*[w.slicer_area for w in win])
     else:
         win = ImageTool(data, *args, **kwargs)
         win.show()
@@ -344,7 +347,7 @@ class ItoolMenuBar(DictMenuBar):
         ] = dict(
             text="&Center Current Cursor",
             shortcut="Shift+C",
-            triggered=self.slicer_area.center_cursor,
+            triggered=lambda: self.slicer_area.center_cursor(),
         )
         for i, ((t, s), axis, amount) in enumerate(
             zip(
@@ -376,7 +379,7 @@ class ItoolMenuBar(DictMenuBar):
         ] = dict(
             text="&Center All Cursors",
             shortcut="Alt+Shift+C",
-            triggered=self.slicer_area.center_all_cursors,
+            triggered=lambda: self.slicer_area.center_all_cursors(),
             sep_before=True,
         )
         for i, ((t, s), axis, amount) in enumerate(
@@ -443,8 +446,7 @@ class ItoolMenuBar(DictMenuBar):
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, dict()),
             "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.load_ssrl, dict()),
             "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.load_als_bl4, dict()),
-            "ALS BL4.0.3 LiveXY (*.ibw)": (erlab.io.load_livexy, dict()),
-            "ALS BL4.0.3 LivePolar (*.ibw)": (erlab.io.load_livepolar, dict()),
+            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.load_live, dict()),
         }
 
         dialog = QtWidgets.QFileDialog(self)
@@ -461,11 +463,7 @@ class ItoolMenuBar(DictMenuBar):
             # !TODO: handle ambiguous datasets
 
             self.slicer_area.set_data(dat)
-
-            for group in self.group_widgets:
-                for w in group:
-                    if isinstance(w, ItoolControlsBase):
-                        w.slicer_area = self.slicer_area
+            self.slicer_area.view_all()
 
     def _export_file(self):
         if self.slicer_area._data is None:
@@ -523,18 +521,26 @@ if __name__ == "__main__":
         #     for line in stat.traceback.format():
         #         print(line)
 
-    data = xr.load_dataarray(
-        # "~/Documents/ERLab/TiSe2/kxy10.nc",
-        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5",
-        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
-        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
-        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
-        engine="h5netcdf",
-    )
+    # data = xr.load_dataarray(
+    #     # "~/Documents/ERLab/TiSe2/kxy10.nc",
+    #     # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5",
+    #     "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
+    #     # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
+    #     # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
+    #     engine="h5netcdf",
+    # )
 
     # tracemalloc.start()
-    win = itool(data, bench=True)
+    # win = itool(data, bench=True)
     # snapshot = tracemalloc.take_snapshot()
+
+    from erlab.interactive.exampledata import generate_data
+
+    data = generate_data()
+
+    # win = itool([data, data], link=True)
+    win = itool(data, link=True)
+
     # print(
     #     *[
     #         f"{n} {m * 2**-20:.2f} MB\t"

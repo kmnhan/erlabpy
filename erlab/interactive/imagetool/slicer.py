@@ -1,9 +1,10 @@
 """Helper functions for fast slicing :class:`xarray.DataArray` objects."""
+from __future__ import annotations
 
 __all__ = ["ArraySlicer"]
 
 import functools
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import numba
 import numpy as np
@@ -12,7 +13,6 @@ import xarray as xr
 from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
-
 
 VALID_NDIM = (2, 3, 4)
 
@@ -258,6 +258,9 @@ class ArraySlicer(QtCore.QObject):
 
         return data
 
+    def reset_property_cache(self, propname):
+        self.__dict__.pop(propname, None)
+
     def set_array(self, xarray_obj: xr.DataArray, validate: bool = True):
         if validate:
             self._obj = self.validate_array(xarray_obj)
@@ -266,30 +269,21 @@ class ArraySlicer(QtCore.QObject):
         self._nonuniform_axes = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
+
+        for prop in (
+            "coords",
+            "coords_uniform",
+            "incs",
+            "incs_uniform",
+            "lims",
+            "lims_uniform",
+            "data_vals_T",
+        ):
+            self.reset_property_cache(prop)
+
         if validate:
-            # cache following attributes
-            (
-                self.coords,
-                self.coords_uniform,
-                self.incs,
-                self.incs_uniform,
-                self.lims,
-                self.lims_uniform,
-                self.data_vals_T,
-            )
-            # reset following attributes
-            (self.nanmax, self.nanmin, self.absnanmax, self.absnanmin)
-            del self.nanmax, self.nanmin, self.absnanmax, self.absnanmin
-        else:
-            del (
-                self.coords,
-                self.coords_uniform,
-                self.incs,
-                self.incs_uniform,
-                self.lims,
-                self.lims_uniform,
-                self.data_vals_T,
-            )
+            for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
+                self.reset_property_cache(prop)
 
     def values_of_dim(self, dim: str) -> npt.NDArray[np.float32]:
         """Fast equivalent of :code:`self._obj[dim].values`.
@@ -408,13 +402,13 @@ class ArraySlicer(QtCore.QObject):
         return [axis]
 
     @QtCore.Slot(int, int, int, bool)
-    def step_index(self, cursor: int, axis: int, amount: int, update: bool = True):
-        self._indices[cursor][axis] += amount
+    def step_index(self, cursor: int, axis: int, value: int, update: bool = True):
+        self._indices[cursor][axis] += value
         if (
             self._indices[cursor][axis] >= self._obj.shape[axis]
             or self._indices[cursor][axis] < 0
         ):
-            self._indices[cursor][axis] -= amount
+            self._indices[cursor][axis] -= value
             return
         self._values[cursor][axis] = self.coords[axis][self._indices[cursor][axis]]
         if update:
@@ -514,13 +508,23 @@ class ArraySlicer(QtCore.QObject):
             return self.coords_uniform[i]
         return _array_rect(i, j, self.lims_uniform, self.incs_uniform)
 
-    def index_of_value(self, axis: int, val: np.float32, uniform: bool = False) -> int:
+    def value_of_index(
+        self, axis: int, value: int, uniform: bool = False
+    ) -> np.float32:
+        if uniform or (axis not in self._nonuniform_axes):
+            return self.coords_uniform[axis][value]
+        else:
+            return self.coords[axis][value]
+
+    def index_of_value(
+        self, axis: int, value: np.float32, uniform: bool = False
+    ) -> int:
         if uniform or (axis not in self._nonuniform_axes):
             return _index_of_value(
-                axis, val, self.lims_uniform, self.incs_uniform, self._obj.shape
+                axis, value, self.lims_uniform, self.incs_uniform, self._obj.shape
             )
         else:
-            return _index_of_value_nonuniform(self.coords[axis], val)
+            return _index_of_value_nonuniform(self.coords[axis], value)
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(
