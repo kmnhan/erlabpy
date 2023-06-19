@@ -144,8 +144,7 @@ def link_slicer(
 
 
 class SlicerLinkProxy:
-    """
-    An internal class for handling linked `ImageSlicerArea`s.
+    """Internal class for handling linked `ImageSlicerArea` s.
 
     Parameters
     ----------
@@ -417,11 +416,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def on_close(self):
         pass
-    
+
     def connect_axes_signals(self):
         for ax in self.axes:
             ax.connect_signals()
-        
+
     def disconnect_axes_signals(self):
         for ax in self.axes:
             ax.disconnect_signals()
@@ -1247,8 +1246,8 @@ class ItoolPlotItem(pg.PlotItem):
         self.slicer_data_items.append(item)
         self.addItem(item)
 
-        cursors = []
-        spans = []
+        cursors: list[ItoolCursorLine] = []
+        spans: list[ItoolCursorSpan] = []
         for ang in line_angles:
             cursors.append(
                 ItoolCursorLine(
@@ -1339,7 +1338,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
-    
+
     def disconnect_signals(self):
         self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
