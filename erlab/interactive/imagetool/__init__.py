@@ -19,11 +19,9 @@ from __future__ import annotations
 __all__ = ["itool", "ImageTool"]
 
 import sys
-import warnings
-from typing import Any
 
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab.io
 from erlab.interactive.imagetool.controls import (
@@ -34,7 +32,7 @@ from erlab.interactive.imagetool.controls import (
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utilities import copy_to_clipboard
+from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
 
 
 def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs):
@@ -141,95 +139,6 @@ class ImageTool(QtWidgets.QMainWindow):
         group_layout.setSpacing(3)
         group_layout.addWidget(widget)
         return group
-
-
-class DictMenuBar(QtWidgets.QMenuBar):
-    def __init__(self, parent: QtWidgets.QWidget | None = ..., **kwargs) -> None:
-        super().__init__(parent)
-
-        self.menu_dict: dict[str, QtWidgets.QMenu] = dict()
-        self.action_dict: dict[str, QtWidgets.QAction] = dict()
-
-        self.add_items(**kwargs)
-
-    def __getattribute__(self, __name: str) -> Any:
-        try:
-            return super().__getattribute__(__name)
-        except AttributeError:
-            try:
-                out = self.menu_dict[__name]
-            except KeyError:
-                out = self.action_dict[__name]
-            warnings.warn(
-                f"Menu or Action '{__name}' called as an attribute",
-                PendingDeprecationWarning,
-            )
-            return out
-
-    def add_items(self, **kwargs):
-        self.parse_menu(self, **kwargs)
-
-    def parse_menu(self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs: dict):
-        for name, opts in kwargs.items():
-            menu = opts.pop("menu", None)
-            actions = opts.pop("actions")
-
-            if menu is None:
-                title = opts.pop("title", None)
-                icon = opts.pop("icon", None)
-                if title is None:
-                    title = name
-                if icon is None:
-                    menu = parent.addMenu(title)
-                else:
-                    menu = parent.addMenu(icon, title)
-            else:
-                menu = parent.addMenu(menu)
-
-            self.menu_dict[name] = menu
-
-            for actname, actopts in actions.items():
-                if isinstance(actopts, QtWidgets.QAction):
-                    act = actopts
-                    sep_before, sep_after = False, False
-                else:
-                    if "actions" in actopts:
-                        self.parse_menu(menu, **{actname: actopts})
-                        continue
-                    sep_before = actopts.pop("sep_before", False)
-                    sep_after = actopts.pop("sep_after", False)
-                    if "text" not in actopts:
-                        actopts["text"] = actname
-                    act = self.parse_action(actopts)
-                if sep_before:
-                    menu.addSeparator()
-                menu.addAction(act)
-                if (
-                    act.text() is not None
-                ):  # check whether it's a separator without text
-                    self.action_dict[actname] = act
-                if sep_after:
-                    menu.addSeparator()
-
-    @staticmethod
-    def parse_action(actopts: dict):
-        shortcut = actopts.pop("shortcut", None)
-        triggered = actopts.pop("triggered", None)
-        toggled = actopts.pop("toggled", None)
-        changed = actopts.pop("changed", None)
-
-        if shortcut is not None:
-            actopts["shortcut"] = QtGui.QKeySequence(shortcut)
-
-        action = QtGui.QAction(**actopts)
-
-        if triggered is not None:
-            action.triggered.connect(triggered)
-        if toggled is not None:
-            action.toggled.connect(toggled)
-        if changed is not None:
-            action.changed.connect(changed)
-        return action
 
 
 class ItoolMenuBar(DictMenuBar):
@@ -538,8 +447,8 @@ if __name__ == "__main__":
 
     data = generate_data()
 
-    # win = itool([data, data], link=True)
-    win = itool(data, link=True)
+    win = itool([data, data], link=True)
+    # win = itool(data, link=True)
 
     # print(
     #     *[
