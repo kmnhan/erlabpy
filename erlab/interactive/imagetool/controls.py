@@ -589,9 +589,13 @@ class ItoolCrosshairControls(ItoolControlsBase):
             # resize buttons to match dimension label length
             lab.setMaximumWidth(label_width)
 
-    def update_spins(self, _=None, axes=None):
+    def update_spins(self, *, axes=None):
         if axes is None:
             axes = range(self.data.ndim)
+        if len(axes) != len(self.spin_idx):
+            # called from sigIndexChanged before update was called
+            return
+
         for i in axes:
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
