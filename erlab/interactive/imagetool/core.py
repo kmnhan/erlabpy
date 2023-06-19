@@ -385,10 +385,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2)),
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1)),
             ItoolGraphicsLayoutWidget(self, display_axis=(3,)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(3, 2)),
         )
         for i in (1, 4):
             self._splitters[2].addWidget(self._plots[i])
-        for i in (6, 3):
+        for i in (7, 6, 3):
             self._splitters[3].addWidget(self._plots[i])
         self._splitters[5].addWidget(self._plots[0])
         for i in (5, 2):
@@ -439,20 +440,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.colormap_properties["cmap"]
 
     @property
-    def main_image(self) -> ItoolPlotItem:
-        """returns the main PlotItem"""
-        return self.get_axes(0)
-
-    @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
         if self.data.ndim == 2:
             return tuple()
-        else:
+        elif self.data.ndim == 3:
             return tuple(self.get_axes(ax) for ax in (4, 5))
-
-    @property
-    def images(self) -> tuple[ItoolPlotItem, ...]:
-        return (self.main_image,) + self.slices
+        elif self.data.ndim == 4:
+            return tuple(self.get_axes(ax) for ax in (4, 5, 7))
 
     @property
     def profiles(self) -> tuple[ItoolPlotItem, ...]:
@@ -788,11 +782,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # parameters for layout: stretch and axis on/off
         """
              ┌───────────┬───────────┐
-        r[0] │     1     │     6     │
-             │───────────┤           │
+        r[0] │     1     │     7     │
              │           ├───────────┤
-        r[1] │     4     │     3     │
-             │           │           │
+             ├───────────┤     6     │
+        r[1] │     4     ├───────────┤
+             │           │     3     │
              │───────────┼───────┬───┤
              │           │       │   │
         r[2] │     0     │   5   │ 2 │
@@ -808,6 +802,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             (0, 1, 1, 0),
             (1, 0, 0, 0),
             (0, 0, 0, 1),
+            (0, 1, 1, 0),
             (0, 1, 1, 0),
         )
 
