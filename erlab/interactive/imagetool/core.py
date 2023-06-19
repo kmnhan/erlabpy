@@ -417,10 +417,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def on_close(self):
         pass
-
-    def connect_signals(self):
+    
+    def connect_axes_signals(self):
         for ax in self.axes:
             ax.connect_signals()
+        
+    def disconnect_axes_signals(self):
+        for ax in self.axes:
+            ax.disconnect_signals()
+
+    def connect_signals(self):
+        self.connect_axes_signals()
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
@@ -560,7 +567,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if isinstance(self._data, xr.DataArray):
                 self._data.close()
             del self._data
-            del self._array_slicer
+            self.disconnect_axes_signals()
         else:
             n_cursors_old = 1
 
@@ -582,7 +589,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     if d in data.dims
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
-        self._array_slicer = ArraySlicer(self._data)
+
+        if hasattr(self, "_array_slicer"):
+            self._array_slicer.set_array(self._data, reset=True)
+        else:
+            self._array_slicer = ArraySlicer(self._data)
+
         while self.n_cursors != n_cursors_old:
             self.array_slicer.add_cursor(update=False)
 
@@ -1327,6 +1339,12 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
+    
+    def disconnect_signals(self):
+        self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
+        self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
+        self._slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
+        self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None):
