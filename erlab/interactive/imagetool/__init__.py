@@ -27,7 +27,6 @@ import erlab.io
 from erlab.interactive.imagetool.controls import (
     ItoolBinningControls,
     ItoolColormapControls,
-    ItoolControlsBase,
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
@@ -109,6 +108,10 @@ class ImageTool(QtWidgets.QMainWindow):
         self.slicer_area.sigDataChanged.connect(self.update_title)
         self.update_title()
 
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
     def _sync_dock_float(self, floating: bool, index: int):
         for i in range(len(self.docks)):
             if i != index:
@@ -118,10 +121,6 @@ class ImageTool(QtWidgets.QMainWindow):
         self.docks[index].blockSignals(True)
         self.docks[index].setFloating(floating)
         self.docks[index].blockSignals(False)
-
-    @property
-    def array_slicer(self) -> ArraySlicer:
-        return self.slicer_area.array_slicer
 
     def update_title(self):
         if self.slicer_area._data is not None:

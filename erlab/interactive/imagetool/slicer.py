@@ -130,10 +130,14 @@ class ArraySlicer(QtCore.QObject):
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
         self.set_array(xarray_obj)
-        self._bins = [[1] * self._obj.ndim]
-        self._indices = [[s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]]
-        self._values = [[c[i] for c, i in zip(self.coords, self._indices[0])]]
-        self.snap_to_data = False
+        self._bins: list[list[int]] = [[1] * self._obj.ndim]
+        self._indices: list[list[int]] = [
+            [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
+        ]
+        self._values: list[list[np.float32]] = [
+            [c[i] for c, i in zip(self.coords, self._indices[0])]
+        ]
+        self.snap_to_data: bool = False
 
     @property
     def n_cursors(self) -> int:
@@ -242,7 +246,7 @@ class ArraySlicer(QtCore.QObject):
         if data.dtype not in (np.float32, np.float64):
             data = data.astype(np.float64)
 
-        new_dims = ("kx", "ky")
+        new_dims: tuple[str, ...] = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
             # if data has kx and ky axis, transpose
             if "eV" in data.dims:
@@ -250,7 +254,9 @@ class ArraySlicer(QtCore.QObject):
             new_dims += tuple(d for d in data.dims if d not in new_dims)
             data = data.transpose(*new_dims)
 
-        nonuniform_dims = [str(d) for d in data.dims if not _is_uniform(data[d].values)]
+        nonuniform_dims: list[str] = [
+            str(d) for d in data.dims if not _is_uniform(data[d].values)
+        ]
         for d in nonuniform_dims:
             data = data.assign_coords(
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
@@ -258,15 +264,15 @@ class ArraySlicer(QtCore.QObject):
 
         return data
 
-    def reset_property_cache(self, propname):
+    def reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def set_array(self, xarray_obj: xr.DataArray, validate: bool = True):
+    def set_array(self, xarray_obj: xr.DataArray, validate: bool = True) -> None:
         if validate:
-            self._obj = self.validate_array(xarray_obj)
+            self._obj: xr.DataArray = self.validate_array(xarray_obj)
         else:
-            self._obj = xarray_obj
-        self._nonuniform_axes = [
+            self._obj: xr.DataArray = xarray_obj
+        self._nonuniform_axes: list[str] = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
 
@@ -312,7 +318,7 @@ class ArraySlicer(QtCore.QObject):
         """
         return self._obj._coords[dim]._data.array._data
 
-    def add_cursor(self, like_cursor: int = -1, update: bool = True):
+    def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)
         self._indices.append(list(new_ind))
@@ -320,7 +326,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigCursorCountChanged.emit(self.n_cursors)
 
-    def remove_cursor(self, index: int, update: bool = True):
+    def remove_cursor(self, index: int, update: bool = True) -> None:
         if self.n_cursors == 1:
             raise ValueError("There must be at least one cursor.")
         self._bins.pop(index)
@@ -329,7 +335,7 @@ class ArraySlicer(QtCore.QObject):
         if update:
             self.sigCursorCountChanged.emit(self.n_cursors)
 
-    def center_cursor(self, cursor: int, update: bool = True):
+    def center_cursor(self, cursor: int, update: bool = True) -> None:
         self.set_indices(
             cursor,
             [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape],
@@ -340,10 +346,12 @@ class ArraySlicer(QtCore.QObject):
     def get_bins(self, cursor: int) -> list[int]:
         return self._bins[cursor]
 
-    def set_bins(self, cursor: int, value: list[int | None], update: bool = True):
+    def set_bins(
+        self, cursor: int, value: list[int | None], update: bool = True
+    ) -> None:
         if not len(value) == self._obj.ndim:
             raise ValueError("length of bin array must match the number of dimensions.")
-        axes = []
+        axes: list[int | None] = []
         for i, x in enumerate(value):
             axes += self.set_bin(cursor, i, x, update=False)
         if update:
@@ -375,12 +383,12 @@ class ArraySlicer(QtCore.QObject):
     def get_index(self, cursor: int, axis: int) -> int:
         return self._indices[cursor][axis]
 
-    def set_indices(self, cursor: int, value: list[int], update: bool = True):
+    def set_indices(self, cursor: int, value: list[int], update: bool = True) -> None:
         if not len(value) == self._obj.ndim:
             raise ValueError(
                 "length of index array must match the number of dimensions"
             )
-        axes = []
+        axes: list[int | None] = []
         for i, x in enumerate(value):
             axes += self.set_index(cursor, i, x, update=False)
         if update:
@@ -402,7 +410,9 @@ class ArraySlicer(QtCore.QObject):
         return [axis]
 
     @QtCore.Slot(int, int, int, bool)
-    def step_index(self, cursor: int, axis: int, value: int, update: bool = True):
+    def step_index(
+        self, cursor: int, axis: int, value: int, update: bool = True
+    ) -> None:
         self._indices[cursor][axis] += value
         if (
             self._indices[cursor][axis] >= self._obj.shape[axis]
@@ -431,12 +441,14 @@ class ArraySlicer(QtCore.QObject):
         else:
             return self._values[cursor][axis]
 
-    def set_values(self, cursor: int, value: list[np.float32], update: bool = True):
+    def set_values(
+        self, cursor: int, value: list[np.float32], update: bool = True
+    ) -> None:
         if not len(value) == self._obj.ndim:
             raise ValueError(
                 "length of value array must match the number of dimensions"
             )
-        axes = []
+        axes: list[int | None] = []
         for i, x in enumerate(value):
             axes += self.set_value(cursor, i, x, update=False)
         if update:
@@ -476,7 +488,7 @@ class ArraySlicer(QtCore.QObject):
             return self._obj.values[tuple(self.get_indices(cursor))]
 
     @QtCore.Slot(int, int)
-    def swap_axes(self, ax1: int, ax2: int):
+    def swap_axes(self, ax1: int, ax2: int) -> None:
         for i in range(self.n_cursors):
             self._bins[i][ax1], self._bins[i][ax2] = (
                 self._bins[i][ax2],
@@ -546,7 +558,7 @@ class ArraySlicer(QtCore.QObject):
         else:
             return self._bin_along_multiaxis(cursor, axis)
 
-    def span_bounds(self, cursor: int, axis: int):
+    def span_bounds(self, cursor: int, axis: int) -> npt.NDArray[np.float32]:
         slc = self._bin_slice(cursor, axis)
         lb = max(0, slc.start)
         ub = min(self._obj.shape[axis] - 1, slc.stop - 1)
