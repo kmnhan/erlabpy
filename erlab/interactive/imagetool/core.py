@@ -388,7 +388,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         for i in (1, 4):
             self._splitters[2].addWidget(self._plots[i])
-        for i in (7, 6, 3):
+        for i in (6, 3, 7):
             self._splitters[3].addWidget(self._plots[i])
         self._splitters[5].addWidget(self._plots[0])
         for i in (5, 2):
@@ -820,23 +820,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         invalid: list[int] = []
         r0, r1, r2, r3 = r
         if self.data.ndim == 2:
-            invalid = [4, 5, 6]
+            invalid = [4, 5, 6, 7]
             r1 = r0 / 6
         elif self.data.ndim == 3:
-            invalid = [6]
+            invalid = [6, 7]
 
         r01 = r0 / r1
         scale = 100
         d = self._splitters[0].handleWidth() / scale  # padding due to splitters
-        sizes: tuple[tuple[float, ...], ...] = (
+        sizes: list[tuple[float, ...]] = [
             (r0 + r1, r2),
             (r3 * r2, r3 * (r0 + r1)),
             ((r0 + r1 - d) * r01, (r0 + r1 - d) / r01),
-            ((r0 + r1 - d) / 2, (r0 + r1 - d) / 2),
+            ((r0 + r1 - d) / 2, (r0 + r1 - d) / 2, 0),
             (r3 * r2, r3 * (r0 + r1)),
             (r2,),
             ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
-        )
+        ]
+        if self.data.ndim == 4:
+            sizes[3] = (0, 0, (r0 + r1 - d))
         for split, sz in zip(self._splitters, sizes):
             split.setSizes(tuple(map(lambda s: round(s * scale), sz)))
 
