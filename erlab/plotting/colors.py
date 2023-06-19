@@ -1,7 +1,5 @@
 """Utilities related to manipulating colors.
 
-.. contents:: :local:
-
 Colormaps
 ---------
 
