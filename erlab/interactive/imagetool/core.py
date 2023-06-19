@@ -5,9 +5,9 @@ from __future__ import annotations
 __all__ = ["ImageSlicerArea"]
 
 import collections
-import copy
 import functools
 import inspect
+import os
 import time
 import weakref
 from collections.abc import Callable, Iterable, Sequence
@@ -1017,6 +1017,10 @@ class ItoolDisplayObject(object):
     def cursor_index(self, value: int):
         self._cursor_index = int(value)
 
+    @property
+    def sliced_data(self) -> xr.DataArray:
+        return self.array_slicer.xslice(self.cursor_index, self.display_axis)
+
     def refresh_data(self):
         pass
 
@@ -1094,16 +1098,11 @@ class ItoolPlotItem(pg.PlotItem):
         super().__init__(
             axisItems={a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")}
         )
+        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
+            self.setContextMenuActionVisible(act, False)
 
-        for action in self.getMenu().actions():
-            if action.text() in [
-                "Transforms",
-                "Downsample",
-                "Average",
-                "Alpha",
-                "Points",
-            ]:
-                action.setVisible(False)
+        save_action = self.vb.menu.addAction("Save data as HDF5")
+        save_action.triggered.connect(lambda: self.save_current_data())
 
         for i in (0, 1):
             self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
@@ -1433,6 +1432,36 @@ class ItoolPlotItem(pg.PlotItem):
             # for i, cursors in enumerate(self.cursor_lines):
             # for line in cursors.values():
             # line.setMovable(i == index)
+
+    def save_current_data(self, fileName=None):
+        if fileName is None:
+            self.fileDialog = QtWidgets.QFileDialog()
+            self.fileDialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+            self.fileDialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+            self.fileDialog.setNameFilter("xarray HDF5 Files (*.h5)")
+            if pg.PlotItem.lastFileDir is not None:
+                self.fileDialog.setDirectory(
+                    os.path.join(
+                        pg.PlotItem.lastFileDir, f"{self.slicer_area._data.name}.h5"
+                    )
+                )
+            else:
+                self.fileDialog.setDirectory(
+                    os.path.join(os.getcwd(), f"{self.slicer_area._data.name}.h5")
+                )
+            self.fileDialog.show()
+            self.fileDialog.fileSelected.connect(self.save_current_data)
+            return
+
+        fileName = str(fileName)
+        pg.PlotItem.lastFileDir = os.path.dirname(fileName)
+
+        import erlab.io
+
+        erlab.io.save_as_hdf5(
+            self.slicer_data_items[self.slicer_area.current_cursor].sliced_data,
+            fileName,
+        )
 
     @property
     def display_axis(self) -> tuple[int, ...]:

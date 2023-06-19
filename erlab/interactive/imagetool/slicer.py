@@ -119,7 +119,7 @@ class ArraySlicer(QtCore.QObject):
     sigBinChanged(int, tuple)
     sigCursorCountChanged(int)
     sigShapeChanged()
-    
+
     Notes
     -----
     The original intent of this class was a xarray accessor. This is why `ArraySlicer`
@@ -557,15 +557,28 @@ class ArraySlicer(QtCore.QObject):
         else:
             return _index_of_value_nonuniform(self.coords[axis], value)
 
+    def gen_selection_code(self, cursor: int, disp: Sequence[int]) -> str:
+        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        slice_dict = {
+            self._obj.dims[ax]: self._bin_slice(cursor, ax, int_if_one=True)
+            for ax in axis
+        }
+        return f".isel(**{str(slice_dict)}).squeeze()"
+
+    def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
+        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        slices = {self._obj.dims[ax]: self._bin_slice(cursor, ax) for ax in axis}
+        return self._obj.isel(**slices).squeeze()
+
     @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(
-        self, cursor: int, axis: Sequence[int]
+        self, cursor: int, disp: Sequence[int]
     ) -> tuple[
         tuple[np.float32, np.float32, np.float32, np.float32] | npt.NDArray[np.float32],
         npt.NDArray[np.float32] | np.float32,
     ]:
-        domain = sorted(set(range(self._obj.ndim)) - set(axis))
-        return self.array_rect(*axis), self.extract_avg_slice(cursor, domain)
+        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        return self.array_rect(*disp), self.extract_avg_slice(cursor, axis)
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
@@ -583,13 +596,18 @@ class ArraySlicer(QtCore.QObject):
         ub = min(self._obj.shape[axis] - 1, slc.stop - 1)
         return self.coords_uniform[axis][[lb, ub]]
 
-    def _bin_slice(self, cursor: int, axis: int) -> slice:
+    def _bin_slice(
+        self, cursor: int, axis: int, int_if_one: bool = False
+    ) -> slice | int:
         center = self.get_indices(cursor)[axis]
         if self.get_binned(cursor)[axis]:
             window = self.get_bins(cursor)[axis]
             return slice(center - window // 2, center + (window - 1) // 2 + 1)
         else:
-            return slice(center, center + 1)
+            if int_if_one:
+                return center
+            else:
+                return slice(center, center + 1)
 
     def _bin_along_axis(
         self, cursor: int, axis: int
