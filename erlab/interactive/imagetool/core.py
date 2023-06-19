@@ -1,3 +1,5 @@
+"""Provides core functionality of imagetool."""
+
 from __future__ import annotations
 
 __all__ = ["ImageSlicerArea"]

@@ -19,8 +19,6 @@ Subpackage                 Description
 
 .. currentmodule:: erlab
 
-
-
 .. toctree::
    :hidden:
    
