@@ -859,12 +859,14 @@ class ItoolBinningControls(ItoolControlsBase):
         self.slicer_area.sigCurrentCursorChanged.connect(self.update)
         self.slicer_area.sigBinChanged.connect(self.update)
         self.slicer_area.sigDataChanged.connect(self.update)
+        self.slicer_area.sigShapeChanged.connect(self.update)
 
     def disconnect_signals(self):
         super().disconnect_signals()
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.update)
         self.slicer_area.sigBinChanged.disconnect(self.update)
         self.slicer_area.sigDataChanged.disconnect(self.update)
+        self.slicer_area.sigShapeChanged.disconnect(self.update)
 
     def update(self):
         super().update()
