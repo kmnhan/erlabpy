@@ -465,6 +465,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
+    def main_image(self) -> ItoolPlotItem:
+        """returns the main PlotItem"""
+        return self.get_axes(0)
+
+    @property
+    def images(self) -> tuple[ItoolPlotItem, ...]:
+        return (self.main_image,) + self.slices
+
+    @property
     def axes(self) -> tuple[ItoolPlotItem, ...]:
         """Currently valid subset of self._plots"""
         return self.images + self.profiles
@@ -787,26 +796,42 @@ class ImageSlicerArea(QtWidgets.QWidget):
         font_size: float = 11.0,
         r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
     ):
+        """Determines the padding and aspect ratios.
+
+        Parameters
+        ----------
+        horiz_pad, vert_pad
+            Reserved space for the x and y axes.
+        font_size
+            Font size in points.
+        r
+            4 numbers that determine the layout aspect ratios. See notes.
+
+        Notes
+        -----
+        Axes indices and layout parameters.
+
+        .. code-block:: text
+
+                 ┌───────────┬───────────┐
+            r[0] │     1     │     6     │
+                 │           ├───────────┤
+                 ├───────────┤     3     │
+            r[1] │     4     ├───────────┤
+                 │           │     7     │
+                 │───────────┼───────┬───┤
+                 │           │       │   │
+            r[2] │     0     │   5   │ 2 │
+                 │           │       │   │
+                 └───────────┴───────┴───┘
+                  r[3] * r[2]
+
+        """
+
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
-        # parameters for layout: stretch and axis on/off
-        """
-             ┌───────────┬───────────┐
-        r[0] │     1     │     7     │
-             │           ├───────────┤
-             ├───────────┤     6     │
-        r[1] │     4     ├───────────┤
-             │           │     3     │
-             │───────────┼───────┬───┤
-             │           │       │   │
-        r[2] │     0     │   5   │ 2 │
-             │           │       │   │
-             └───────────┴───────┴───┘
-              r[3] * r[2]
-        """
-
-        valid_axis = (
+        valid_axis: tuple[tuple[bool, bool, bool, bool]] = (
             (1, 0, 0, 1),
             (1, 1, 0, 0),
             (0, 0, 1, 1),
@@ -815,10 +840,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             (0, 0, 0, 1),
             (0, 1, 1, 0),
             (0, 1, 1, 0),
-        )
+        )  # booleans corresponding to the (left, top, right, bottom) axes of each plot.
 
-        invalid: list[int] = []
+        invalid: list[int] = []  # axes to hide.
         r0, r1, r2, r3 = r
+
+        # !TODO: automate this based on ItoolPlotItem.display_axis
         if self.data.ndim == 2:
             invalid = [4, 5, 6, 7]
             r1 = r0 / 6
