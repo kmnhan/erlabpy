@@ -129,15 +129,8 @@ class ArraySlicer(QtCore.QObject):
 
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
-        self.set_array(xarray_obj)
-        self._bins: list[list[int]] = [[1] * self._obj.ndim]
-        self._indices: list[list[int]] = [
-            [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
-        ]
-        self._values: list[list[np.float32]] = [
-            [c[i] for c, i in zip(self.coords, self._indices[0])]
-        ]
-        self.snap_to_data: bool = False
+        self._obj: xr.DataArray | None = None
+        self.set_array(xarray_obj, validate=True, reset=True)
 
     @property
     def n_cursors(self) -> int:
@@ -267,7 +260,10 @@ class ArraySlicer(QtCore.QObject):
     def reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def set_array(self, xarray_obj: xr.DataArray, validate: bool = True) -> None:
+    def set_array(
+        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
+    ) -> None:
+        del self._obj
         if validate:
             self._obj: xr.DataArray = self.validate_array(xarray_obj)
         else:
@@ -290,6 +286,16 @@ class ArraySlicer(QtCore.QObject):
         if validate:
             for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
                 self.reset_property_cache(prop)
+
+        if reset:
+            self._bins: list[list[int]] = [[1] * self._obj.ndim]
+            self._indices: list[list[int]] = [
+                [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
+            ]
+            self._values: list[list[np.float32]] = [
+                [c[i] for c, i in zip(self.coords, self._indices[0])]
+            ]
+            self.snap_to_data: bool = False
 
     def values_of_dim(self, dim: str) -> npt.NDArray[np.float32]:
         """Fast equivalent of :code:`self._obj[dim].values`.
