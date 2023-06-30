@@ -81,9 +81,33 @@ def load(filename, data_dir=None, contains=None):
 
         attrs = attrs | ds.attrs
         if k.casefold() == "Data".casefold():
+            if compat_mode:
+                if "exposure" in ds.variables:
+                    ds = ds.rename_vars(counts="spectrum", exposure="time")
+                else:
+                    ds = ds.rename_vars(counts="spectrum")
+            else:
+                if "Time" in ds.variables:
+                    ds = ds.rename_vars(Count="spectrum", Time="time")
+                else:
+                    ds = ds.rename_vars(Count="spectrum")
+
             axes = [dict(v.groups[g].attrs) for g in v.groups]
             for i, ax in enumerate(axes):
                 axes[i] = {name.lower(): val for name, val in ax.items()}  # unify case
+
+            if not compat_mode:
+                # some data have mismatching order between axes and phony dims
+                # some even have mismatching counts... those are currently not supported
+                axes_new = [None] * len(axes)
+                for ax in axes:
+                    if ax["count"] in ds.spectrum.shape:
+                        try:
+                            axes_new[ds.spectrum.shape.index(ax["count"])] = ax
+                        except ValueError:
+                            pass
+                axes = axes_new
+
             data = ds.rename_dims(
                 {f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)}
             )
@@ -97,16 +121,6 @@ def load(filename, data_dir=None, contains=None):
                     ax["offset"] + (cnt - 1) * ax["delta"],
                 )
                 data = data.assign_coords({ax["label"]: np.linspace(mn, mx, cnt)})
-            if compat_mode:
-                if "exposure" in data.variables:
-                    data = data.rename_vars(counts="spectrum", exposure="time")
-                else:
-                    data = data.rename_vars(counts="spectrum")
-            else:
-                if "Time" in data.variables:
-                    data = data.rename_vars(Count="spectrum", Time="time")
-                else:
-                    data = data.rename_vars(Count="spectrum")
 
     for k in list(attrs.keys()):
         if k in attr_keys_mapping.keys():
