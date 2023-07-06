@@ -89,15 +89,19 @@ def folder_summary(data_dir, exclude_live=False):
         data_info.append([name])
 
         for k in data_attrs.keys():
-            val = data.attrs[k]
-            if k == "lens_mode_name":
-                val = val.replace("Angular", "A")
-            elif k in ("entrance_slit", "exit_slit"):
-                val = round(val)
-            elif k == "undulator_polarization":
-                val = {0: "LH", 2: "LV", -1: "RC", 1: "LC"}[val]
-            elif k in ("chi", "beta"):
-                val = np.rad2deg(val)
+            try:
+                val = data.attrs[k]
+            except KeyError:
+                val = ""
+            else:
+                if k == "lens_mode_name":
+                    val = val.replace("Angular", "A")
+                elif k in ("entrance_slit", "exit_slit"):
+                    val = round(val)
+                elif k == "undulator_polarization":
+                    val = {0: "LH", 2: "LV", -1: "RC", 1: "LC"}[val]
+                elif k in ("chi", "beta"):
+                    val = np.rad2deg(val)
             data_info[-1].append(val)
         del data
 
