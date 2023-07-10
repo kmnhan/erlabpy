@@ -34,6 +34,7 @@ Submodules
 ==================  ==================
 Submodule           Description
 ==================  ==================
+`erlab.lattice`     Tools for working with real and reciprocal lattices.
 `erlab.constants`   Physical constants and unit conversion
 `erlab.accessors`   `xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_
 `erlab.parallel`    Helpers for parallel processing
@@ -42,6 +43,7 @@ Submodule           Description
 .. toctree::
    :hidden:
    
+   erlab.lattice
    erlab.constants
    erlab.accessors
    erlab.parallel

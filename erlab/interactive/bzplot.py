@@ -10,47 +10,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab.plotting.erplot as eplt
 from erlab.interactive.utilities import ParameterGroup
-
-
-def _ang(v1, v2):
-    return np.rad2deg(np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0)))
-
-
-def abc2avec(a, b, c, alpha, beta, gamma):
-    alpha, beta, gamma = np.deg2rad(alpha), np.deg2rad(beta), np.deg2rad(gamma)
-    sa, ca, sb, cb, cg = (
-        np.sin(alpha),
-        np.cos(alpha),
-        np.sin(beta),
-        np.cos(beta),
-        np.cos(gamma),
-    )
-
-    gp = np.arccos(np.clip((ca * cb - cg) / (sa * sb), -1.0, 1.0))
-    cgp, sgp = np.cos(gp), np.sin(gp)
-    return np.array(
-        [
-            [a * sb, 0, a * cb],
-            [-b * sa * cgp, b * sa * sgp, b * ca],
-            [0, 0, c],
-        ]
-    )
-
-
-def avec2abc(avec):
-    a, b, c = [np.linalg.norm(x) for x in avec]
-    alpha = _ang(avec[1] / b, avec[2] / c)
-    beta = _ang(avec[2] / c, avec[0] / a)
-    gamma = _ang(avec[0] / a, avec[1] / b)
-    return a, b, c, alpha, beta, gamma
-
-
-def to_reciprocal(avec):
-    return 2 * np.pi * np.linalg.inv(avec).T
-
-
-def to_real(bvec):
-    return np.linalg.inv(bvec.T / 2 / np.pi)
+from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
 
 
 class BZPlotter(QtWidgets.QMainWindow):
