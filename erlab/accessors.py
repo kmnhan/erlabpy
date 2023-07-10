@@ -89,6 +89,28 @@ class KspaceAccessor:
         kx, ky = self._forward_func(alpha[np.newaxis, :], beta[np.newaxis, :])
         return (kx.min(), kx.max()), (ky.min(), ky.max())
 
+    @property
+    def angle_resolution(self):
+        try:
+            return self._obj.attrs["angle_resolution"]
+        except KeyError:
+            return 0.1
+
+    @angle_resolution.setter
+    def angle_resolution(self, value: float):
+        self._obj.attrs["angle_resolution"] = value
+
+    @property
+    def minimum_k_resolution(self):
+        min_ek = np.min(self.kinetic_energy)
+        max_angle = max(np.abs(self._obj.phi.values))
+        return (
+            rel_kconv
+            * np.sqrt(min_ek)
+            * np.cos(max_angle)
+            * np.deg2rad(self.angle_resolution)
+        )
+
     def _forward_func(self, alpha, beta):
         ca = np.cos(alpha)
         cb = np.cos(beta)
@@ -136,7 +158,11 @@ class KspaceAccessor:
         kxval, kyval = np.array(np.meshgrid(kx, ky)).reshape(2, -1)[:, None]
         return self._inverse_func(kxval, kyval)
 
-    def convert(self, bounds=None, resolution=None):
+    def convert(
+        self,
+        bounds: dict[str, tuple[float, float]] | None = None,
+        resolution: dict[str, float] | None = None,
+    ) -> xr.DataArray:
         if bounds is None:
             bounds = dict()
         if resolution is None:
@@ -145,8 +171,8 @@ class KspaceAccessor:
         kx_lims = bounds.get("kx", self.get_bounds()[0])
         ky_lims = bounds.get("ky", self.get_bounds()[1])
 
-        kx_res = resolution.get("kx", 0.02)
-        ky_res = resolution.get("ky", 0.02)
+        kx_res = resolution.get("kx", self.minimum_k_resolution)
+        ky_res = resolution.get("ky", self.minimum_k_resolution)
 
         new_size = dict(
             kx=round((kx_lims[1] - kx_lims[0]) / kx_res + 1),
@@ -168,11 +194,11 @@ class KspaceAccessor:
             old_dim_order += ("hv",)
             new_dim_order += ("kz",)
             new_size["kz"] = len(self.photon_energy)
-        
+
         for d in self._obj.dims:
             if d not in old_dim_order:
-                old_dim_order += (d, )
-                new_dim_order += (d, )
+                old_dim_order += (d,)
+                new_dim_order += (d,)
 
         out = xr.DataArray(
             interpn(
