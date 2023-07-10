@@ -2,13 +2,6 @@
 
 """
 from __future__ import annotations
-from typing import Literal
-
-import matplotlib
-import matplotlib.colors as mcolors
-import numpy as np
-from qtpy import QtGui
-import pyqtgraph as pg
 
 __all__ = [
     "color_to_QColor",
@@ -17,6 +10,14 @@ __all__ = [
     "pg_colormap_powernorm",
     "pg_colormap_to_QPixmap",
 ]
+
+from typing import Literal
+
+import matplotlib
+import matplotlib.colors as mcolors
+import numpy as np
+from qtpy import QtGui
+import pyqtgraph as pg
 
 
 def color_to_QColor(

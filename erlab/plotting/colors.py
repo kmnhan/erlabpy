@@ -20,17 +20,6 @@ Colormap Normalization
     :caption: Demonstration of :class:`CenteredPowerNorm <erlab.plotting.colors.CenteredPowerNorm>` and :class:`CenteredInversePowerNorm <erlab.plotting.colors.CenteredInversePowerNorm>`.
 
 """
-from collections.abc import Iterable, Sequence
-from typing import Literal
-from numbers import Number
-
-import matplotlib
-import matplotlib.axes
-import matplotlib.transforms as mtransforms
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-import numpy as np
-
 
 __all__ = [
     "InversePowerNorm",
@@ -49,6 +38,17 @@ __all__ = [
     "image_is_light",
     "axes_textcolor",
 ]
+
+from collections.abc import Iterable, Sequence
+from numbers import Number
+from typing import Literal
+
+import matplotlib
+import matplotlib.axes
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
+import numpy as np
 
 
 class InversePowerNorm(mcolors.Normalize):

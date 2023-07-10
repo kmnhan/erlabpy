@@ -2,16 +2,15 @@
 
 """
 
+__all__ = ["get_bz_edge", "plot_hex_bz"]
+
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.spatial
-import matplotlib.pyplot as plt
-
 from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
-
-__all__ = ["get_bz_edge", "plot_hex_bz"]
 
 abbrv_kws = dict(
     facecolor=["fc", "none"],
@@ -106,7 +105,7 @@ def plot_hex_bz(
         r = 4 * np.pi / (a * 3)
     else:
         r = 2 * a
-    clip = kwargs.pop('clip_path', None)
+    clip = kwargs.pop("clip_path", None)
     poly = RegularPolygon(offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs)
     ax.add_patch(poly)
     if clip is not None:

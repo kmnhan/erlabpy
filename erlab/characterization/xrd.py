@@ -3,13 +3,13 @@
 Currently only supports loading raw data from igor ``.itx`` files.
 
 """
+__all__ = ["load_xrd_itx"]
+
 import ast
 import re
 
 import numpy as np
 import xarray as xr
-
-__all__ = ["load_xrd_itx"]
 
 
 def load_xrd_itx(path: str, **kwargs: dict):

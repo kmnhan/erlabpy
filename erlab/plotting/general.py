@@ -3,31 +3,6 @@
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence, Iterable
-from typing import Literal
-
-import copy
-import contextlib
-import numpy as np
-import numpy.typing as npt
-import xarray as xr
-import matplotlib
-import matplotlib.image
-import matplotlib.path
-import matplotlib.patches
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-from matplotlib.widgets import AxesWidget
-
-from erlab.plotting.annotations import label_subplot_properties, fancy_labels
-from erlab.plotting.colors import (
-    InversePowerNorm,
-    axes_textcolor,
-    nice_colorbar,
-    _ez_inset,
-    gen_2d_colormap,
-)
-
 __all__ = [
     "figwh",
     "autoscale_off",
@@ -40,6 +15,31 @@ __all__ = [
     "plot_slices",
     "fermiline",
 ]
+
+import contextlib
+import copy
+from collections.abc import Callable, Iterable, Sequence
+from typing import Literal
+
+import matplotlib
+import matplotlib.colors as mcolors
+import matplotlib.image
+import matplotlib.patches
+import matplotlib.path
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy.typing as npt
+import xarray as xr
+from matplotlib.widgets import AxesWidget
+
+from erlab.plotting.annotations import fancy_labels, label_subplot_properties
+from erlab.plotting.colors import (
+    InversePowerNorm,
+    _ez_inset,
+    axes_textcolor,
+    gen_2d_colormap,
+    nice_colorbar,
+)
 
 figure_width_ref = dict(
     aps=[3.4, 7.0],

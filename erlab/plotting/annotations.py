@@ -9,21 +9,6 @@ SI_PREFIX_NAMES : tuple of str
 
 """
 from __future__ import annotations
-import io
-
-from collections.abc import Iterable, Sequence
-from typing import Literal
-
-import matplotlib
-import matplotlib.transforms as mtransforms
-import matplotlib.pyplot as plt
-import numpy as np
-import pyclip
-import xarray as xr
-from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-
-from erlab.plotting.colors import axes_textcolor
 
 __all__ = [
     "plot_hv_text",
@@ -42,6 +27,20 @@ __all__ = [
     "copy_mathtext",
 ]
 
+import io
+from collections.abc import Iterable, Sequence
+from typing import Literal
+
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
+import numpy as np
+import pyclip
+import xarray as xr
+from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+
+from erlab.plotting.colors import axes_textcolor
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",
