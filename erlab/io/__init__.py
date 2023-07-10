@@ -26,8 +26,6 @@ Modules
 """
 
 __all__ = [
-    "load_pxp",
-    "load_ibw",
     "load_experiment",
     "load_wave",
     "load_als_bl4",
@@ -41,7 +39,7 @@ __all__ = [
 
 import warnings
 
-from erlab.io.igor import load_experiment, load_ibw, load_pxp, load_wave
+from erlab.io.igor import load_experiment, load_wave
 from erlab.io.merlin import load as load_als_bl4
 from erlab.io.merlin import load_live
 from erlab.io.ssrl52 import load as load_ssrl
