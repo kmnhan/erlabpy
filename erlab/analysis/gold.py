@@ -246,7 +246,7 @@ def poly(
         weights=1 / center_stderr,
         degree=degree,
         method=method,
-        scale_cover=scale_covar,
+        scale_covar=scale_covar,
     )
     if plot:
         _plot_gold_fit(
