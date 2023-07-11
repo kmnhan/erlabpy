@@ -195,7 +195,6 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
             ax=ax1,
             data_kws=data_kws,
             fit_kws=fit_kws,
-            numpoints=3 * len(center_arr.phi),
         )
         res.plot_fit(
             ax=ax2,
