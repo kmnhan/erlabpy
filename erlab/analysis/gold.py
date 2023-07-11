@@ -18,6 +18,7 @@ import numpy as np
 import scipy.interpolate
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
+import lmfit.model
 
 from erlab.analysis.fit.models import (
     ExtendedAffineBroadenedFD,
@@ -89,7 +90,9 @@ def edge(
     return center_arr, center_stderr
 
 
-def poly_from_edge(center, weights=None, degree=4, method="leastsq", scale_covar=True):
+def poly_from_edge(
+    center, weights=None, degree=4, method="leastsq", scale_covar=True
+) -> lmfit.model.ModelResult:
     modelresult = PolynomialModel(degree=degree).guess_fit(
         center, weights=weights, method=method, scale_covar=scale_covar
     )
@@ -104,6 +107,107 @@ def spline_from_edge(center, weights=None, lam=None):
         lam=lam,
     )
     return spl
+
+
+def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, res):
+    if isinstance(res, lmfit.model.ModelResult):
+        is_callable = False
+    elif callable(res):
+        is_callable = True
+    else:
+        raise ValueError
+
+    if not isinstance(fig, plt.Figure):
+        fig = plt.figure(figsize=figwh(0.75, wscale=1.75))
+
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 3])
+    ax0 = fig.add_subplot(gs[:, 0])
+    ax1 = fig.add_subplot(gs[0, 1])
+    plt.tick_params("x", labelbottom=False)
+    ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
+
+    gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
+    rect = Rectangle(
+        (phi_range[0], eV_range[0]),
+        np.diff(phi_range)[0],
+        np.diff(eV_range)[0],
+        ec="w",
+        alpha=0.5,
+        lw=0.75,
+        fc="none",
+    )
+    ax0.add_patch(rect)
+    ax0.errorbar(
+        center_arr.phi,
+        center_arr,
+        center_stderr,
+        fmt="o",
+        lw=0.5,
+        mfc="w",
+        zorder=0,
+        ms=2,
+    )
+
+    if is_callable:
+        ax0.plot(gold.phi, res(gold.phi), "r-", lw=0.75)
+    else:
+        ax0.plot(gold.phi, res.eval(res.params, x=gold.phi), "r-", lw=0.75)
+    ax0.set_ylim(gold.eV[[0, -1]])
+
+    data_kws = dict(lw=0.5, ms=2, mfc="w", zorder=0, c="0.4", capsize=0)
+    fit_kws = dict(c="r", lw=0.75)
+
+    if is_callable:
+        residuals = res(center_arr.phi.values) - center_arr.values
+        x_eval = np.linspace(
+            min(center_arr.phi.values),
+            max(center_arr.phi.values),
+            3 * len(center_arr.phi),
+        )
+        ax1.axhline(0, **fit_kws)
+        ax1.errorbar(
+            center_arr.phi,
+            residuals,
+            yerr=lmfit.model.propagate_err(
+                center_arr.values, center_stderr.values, "abs"
+            ),
+            fmt="o",
+            **data_kws,
+        )
+        ax1.set_ylabel("residuals")
+
+        ax2.errorbar(
+            center_arr.phi,
+            center_arr.values,
+            yerr=lmfit.model.propagate_err(
+                center_arr.values, center_stderr.values, "abs"
+            ),
+            fmt="o",
+            label="data",
+            **data_kws,
+        )
+        ax2.plot(x_eval, res(x_eval), "-", label="best fit", **fit_kws)
+        ax2.legend()
+        ax1.set_ylim(autoscale_to(residuals))
+        ax2.set_ylim(autoscale_to(center_arr.values))
+    else:
+        res.plot_residuals(
+            ax=ax1,
+            data_kws=data_kws,
+            fit_kws=fit_kws,
+            numpoints=3 * len(center_arr.phi),
+        )
+        res.plot_fit(
+            ax=ax2,
+            data_kws=data_kws,
+            fit_kws=fit_kws,
+            numpoints=3 * len(center_arr.phi),
+        )
+        ax1.set_ylim(autoscale_to(res.eval() - res.data))
+        ax2.set_ylim(autoscale_to(res.data))
+
+    ax1.set_title("")
+    ax2.set_title("")
 
 
 def poly(
@@ -137,56 +241,17 @@ def poly(
         scale_covar=scale_covar_edge,
     )
 
-    modelresult = PolynomialModel(degree=degree).guess_fit(
-        center_arr, weights=1 / center_stderr, method=method, scale_covar=scale_covar
+    modelresult = poly_from_edge(
+        center_arr,
+        weights=1 / center_stderr,
+        degree=degree,
+        method=method,
+        scale_cover=scale_covar,
     )
     if plot:
-        if not isinstance(fig, plt.Figure):
-            fig = plt.figure(figsize=figwh(0.75, wscale=1.75))
-
-        gs = fig.add_gridspec(2, 2, height_ratios=[1, 3])
-        ax0 = fig.add_subplot(gs[:, 0])
-        ax1 = fig.add_subplot(gs[0, 1])
-        plt.tick_params("x", labelbottom=False)
-        ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
-
-        gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
-        rect = Rectangle(
-            (phi_range[0], eV_range[0]),
-            np.diff(phi_range)[0],
-            np.diff(eV_range)[0],
-            ec="w",
-            alpha=0.5,
-            lw=0.75,
-            fc="none",
+        _plot_gold_fit(
+            fig, gold, phi_range, eV_range, center_arr, center_stderr, modelresult
         )
-        ax0.add_patch(rect)
-        ax0.errorbar(
-            center_arr.phi,
-            center_arr,
-            center_stderr,
-            fmt="o",
-            lw=0.5,
-            mfc="w",
-            zorder=0,
-            ms=2,
-        )
-        ax0.plot(
-            gold.phi, modelresult.eval(modelresult.params, x=gold.phi), "r-", lw=0.75
-        )
-        ax0.set_ylim(gold.eV[[0, -1]])
-
-        data_kws = dict(lw=0.5, ms=2, mfc="w", zorder=0, c="0.4", capsize=0)
-        fit_kws = dict(c="r", lw=0.75)
-        modelresult.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
-        modelresult.plot_fit(ax=ax2, data_kws=data_kws, fit_kws=fit_kws)
-
-        ax1.set_ylim(autoscale_to(modelresult.eval() - modelresult.data))
-        ax2.set_ylim(autoscale_to(modelresult.data))
-
-        ax1.set_title("")
-        ax2.set_title("")
-
     if correct:
         if crop_correct:
             gold = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
@@ -194,6 +259,48 @@ def poly(
         return modelresult, corr
     else:
         return modelresult
+
+
+def spline(
+    gold,
+    phi_range,
+    eV_range,
+    bin_size=(1, 1),
+    temp=None,
+    vary_temp=False,
+    fast=False,
+    method="leastsq",
+    lam=None,
+    correct=False,
+    crop_correct=False,
+    parallel_kw=dict(),
+    plot=True,
+    fig=None,
+    scale_covar_edge=True,
+):
+    center_arr, center_stderr = edge(
+        gold,
+        phi_range,
+        eV_range,
+        bin_size=bin_size,
+        temp=temp,
+        vary_temp=vary_temp,
+        fast=fast,
+        method=method,
+        parallel_kw=parallel_kw,
+        scale_covar=scale_covar_edge,
+    )
+
+    spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
+    if plot:
+        _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, spl)
+    if correct:
+        if crop_correct:
+            gold = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
+        corr = correct_with_edge(gold, spl, plot=False)
+        return spl, corr
+    else:
+        return spl
 
 
 def resolution(

@@ -203,7 +203,7 @@ class goldtool(AnalysisWindow):
                     notrack=True,
                     showlabel=False,
                     text="Copy to clipboard",
-                    clicked=self.gen_code,
+                    clicked=lambda: self.gen_code("poly"),
                 ),
             }
         )
@@ -229,7 +229,7 @@ class goldtool(AnalysisWindow):
                     notrack=True,
                     showlabel=False,
                     text="Copy to clipboard",
-                    clicked=self.gen_code,
+                    clicked=lambda: self.gen_code("spl"),
                 ),
             }
         )
@@ -408,9 +408,13 @@ class goldtool(AnalysisWindow):
         self.itool = ImageTool(self.corrected)
         self.itool.show()
 
-    def gen_code(self):
+    def gen_code(self, mode: str):
         p0 = self.params_edge.values
-        p1 = self.params_poly.values
+        match mode:
+            case "poly":
+                p1 = self.params_poly.values
+            case "spl":
+                p1 = self.params_spl.values
         x0, y0, x1, y1 = self.params_roi.roi_limits
 
         arg_dict = dict(
@@ -418,9 +422,19 @@ class goldtool(AnalysisWindow):
             eV_range=(y0, y1),
             bin_size=(p0["Bin x"], p0["Bin y"]),
             temp=p0["T (K)"],
-            degree=p1["Degree"],
             method=p0["Method"],
         )
+
+        match mode:
+            case "poly":
+                fname = 'poly'
+                arg_dict["degree"] = p1["Degree"]
+            case "spl":
+                fname = 'spline'
+                if p1["Auto"]:
+                    arg_dict["lam"] = None
+                else:
+                    arg_dict["lam"] = p1["lambda"]
 
         if p0["Fast"]:
             arg_dict["fast"] = True
@@ -431,14 +445,16 @@ class goldtool(AnalysisWindow):
 
         if not p0["Scale cov"]:
             arg_dict["scale_covar_edge"] = False
-        if not p1["Scale cov"]:
-            arg_dict["scale_covar"] = False
+
+        if mode == "poly":
+            if not p1["Scale cov"]:
+                arg_dict["scale_covar"] = False
 
         if self.data_corr is None:
             gen_function_code(
                 copy=True,
                 **{
-                    "modelresult = era.gold.poly": [
+                    f"modelresult = era.gold.{fname}": [
                         f"|{self._argnames['data']}|",
                         arg_dict,
                     ]
@@ -449,7 +465,7 @@ class goldtool(AnalysisWindow):
             gen_function_code(
                 copy=True,
                 **{
-                    "modelresult = era.gold.poly": [
+                    f"modelresult = era.gold.{fname}": [
                         f"|{self._argnames['data']}|",
                         arg_dict,
                     ],
