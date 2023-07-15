@@ -57,6 +57,7 @@ def load_resistance_physlab(
         content = re.sub(
             r"(e[-+]\d{3}) {2,3}(-?)", "\\g<1>\\t \\g<2>", file.read(), 0, re.MULTILINE
         )
+    content = content.replace("-1.#IO", "   nan")
     data = np.genfromtxt(
         StringIO(content),
         delimiter="\t",
@@ -64,6 +65,16 @@ def load_resistance_physlab(
         usecols=[2, 3, 4, 5, 6, 7],
         **kwargs
     )
-    head = ["time", "temp", "res", "curr", "temperr", "reserr"]
-    ds = xr.Dataset({head[i]: ([head[1]], data[:, i]) for i in range(len(head))})
+    ds = xr.Dataset(
+        data_vars=dict(
+            time=("temp", data[:, 0]),
+            res=("temp", data[:, 2]),
+            curr=("temp", data[:, 3]),
+            temp_err=("temp", data[:, 4]),
+            res_err=("temp", data[:, 5]),
+        ),
+        coords=dict(
+            temp=data[:, 1],
+        ),
+    )
     return ds
