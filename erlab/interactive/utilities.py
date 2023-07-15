@@ -721,6 +721,9 @@ class BetterColorBarItem(pg.PlotItem):
         else:
             return self.primary_image().quickMinMax(targetSize=2**16)
 
+    def set_width(self, width: int):
+        self.layout.setColumnFixedWidth(1, width)
+
     def set_dimensions(
         self,
         horiz_pad: int | None = None,
