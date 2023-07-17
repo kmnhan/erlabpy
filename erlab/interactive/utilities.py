@@ -626,6 +626,7 @@ class BetterColorBarItem(pg.PlotItem):
         self,
         parent: QtWidgets.QWidget | None = None,
         image: Sequence[BetterImageItem] | BetterImageItem | None = None,
+        autoLevels:bool=False,
         limits: tuple[float, float] | None = None,
         pen: QtGui.QPen | str = "c",
         hoverPen: QtGui.QPen | str = "m",
@@ -666,7 +667,7 @@ class BetterColorBarItem(pg.PlotItem):
         self.addItem(self._span)
 
         self._fixedlimits: tuple[float, float] | None = None
-
+        self.setAutoLevels(autoLevels)
         self._images: set[weakref.ref[BetterImageItem]] = set()
         self._primary_image: weakref.ref[BetterImageItem] | None = None
         if image is not None:
@@ -759,10 +760,10 @@ class BetterColorBarItem(pg.PlotItem):
         for img_ref in self._images:
             img = img_ref()
             if img is not None:
-                # if hasattr(img, "sigLevelsChanged"):
-                    # img.sigLevelsChanged.connect(self.limit_changed)
-                # if hasattr(img, "sigImageChanged"):
-                # img.sigImageChanged.connect(self.image_changed)
+                if hasattr(img, "sigLevelsChanged"):
+                    img.sigLevelsChanged.connect(self.image_level_changed)
+                if hasattr(img, "sigImageChanged"):
+                    img.sigImageChanged.connect(self.image_changed)
                 if img.getColorMap() is not None:
                     self._primary_image = img_ref
                     break
@@ -791,10 +792,24 @@ class BetterColorBarItem(pg.PlotItem):
         self.image_changed()
         # self.color_changed()
         self.limit_changed()
+    
+    def image_level_changed(self):
+        levels = self.primary_image().getLevels()
+        if levels is not None:
+            self._span.setRegion(levels)
 
     def image_changed(self):
         self.level_change()
+        if self._auto_levels:
+            self.reset_levels()
 
+    def reset_levels(self):
+        self._span.setRegion(self.limits)
+        
+    def setAutoLevels(self, value):
+        self._auto_levels = bool(value) 
+        self._span.setVisible(not self._auto_levels)
+        
         # self.isocurve.setParentItem(image)
 
     # def hideEvent(self, event: QtGui.QHideEvent):
