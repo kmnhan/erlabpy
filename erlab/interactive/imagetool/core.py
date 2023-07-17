@@ -406,7 +406,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         self._data: xr.DataArray | None = None
-        self.current_cursor = 0
+        self.current_cursor: int = 0
+
+        self.levels_locked: bool = False
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -775,18 +777,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool):
-        if lock:
+        self.levels_locked: bool = lock
+
+        if self.levels_locked:
             levels = self.array_slicer.limits
             self._colorbar.cb.setLimits(levels)
         for im in self._imageitems:
-            if lock:
-                im.setAutoLevels(False)
+            if self.levels_locked:
                 im.setLevels(levels, update=False)
             else:
-                im.setAutoLevels(True)
+                im.levels = None
             im.refresh_data()
 
-        self._colorbar.setVisible(lock)
+        self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
     def adjust_layout(
@@ -1006,6 +1009,10 @@ class ItoolDisplayObject(object):
         return self.axes.display_axis
 
     @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self.axes.slicer_area
+
+    @property
     def array_slicer(self) -> ArraySlicer:
         return self.axes.array_slicer
 
@@ -1058,13 +1065,20 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
 
+    def updateImage(self, *args, **kargs):
+        defaults = {"autoLevels": not self.slicer_area.levels_locked}
+        defaults.update(kargs)
+        return self.setImage(*args, **defaults)
+
     @suppressnanwarning
     def refresh_data(self):
         ItoolDisplayObject.refresh_data(self)
         rect, img = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
-        self.setImage(image=img, rect=rect)
+        self.setImage(
+            image=img, rect=rect, autoLevels=not self.slicer_area.levels_locked
+        )
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
@@ -1257,7 +1271,6 @@ class ItoolPlotItem(pg.PlotItem):
                 **self._item_kw,
             )
             if self.slicer_area.color_locked:
-                item.setAutoLevels(False)
                 item.setLevels(self.array_slicer.limits, update=True)
         else:
             item = ItoolPlotDataItem(

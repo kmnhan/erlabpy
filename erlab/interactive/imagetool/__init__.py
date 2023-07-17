@@ -440,14 +440,15 @@ if __name__ == "__main__":
 
     # tracemalloc.start()
     # win = itool(data, bench=True)
+    # win = itool(data)
     # snapshot = tracemalloc.take_snapshot()
 
     from erlab.interactive.exampledata import generate_data
 
     data = generate_data()
 
-    win = itool([data, data], link=True)
-    # win = itool(data, link=True)
+    # win = itool([data, data], link=True)
+    win = itool(data)
 
     # print(
     #     *[

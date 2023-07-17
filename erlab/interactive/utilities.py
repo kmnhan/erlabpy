@@ -497,35 +497,9 @@ class BetterImageItem(pg.ImageItem):
     """
 
     sigColorChanged = QtCore.Signal()  #: :meta private:
-    sigLimitChanged = QtCore.Signal(float, float)  #: :meta private:
 
     def __init__(self, image: npt.NDArray = None, **kwargs):
-        self.auto_levels: bool = True
         super().__init__(image, **kwargs)
-
-    def setImage(self, image=None, autoLevels: bool | None = None, **kwargs):
-        if autoLevels is None:
-            if "levels" in kwargs:
-                self.setAutoLevels(False)
-        else:
-            self.setAutoLevels(autoLevels)
-
-        super().setImage(image=image, autoLevels=self.auto_levels, **kwargs)
-
-        if image is not None:
-            if self.auto_levels:
-                self.sigLimitChanged.emit(*self.levels)
-
-    def setAutoLevels(self, autoLevels: bool):
-        self.auto_levels = autoLevels
-
-    def updateImage(self, *args, **kwargs):
-        kwargs.setdefault("autoLevels", self.auto_levels)
-        return self.setImage(*args, **kwargs)
-
-    def setLevels(self, levels, update: bool = True):
-        super().setLevels(levels, update)
-        self.sigLimitChanged.emit(*self.levels)
 
     def set_colormap(
         self,
@@ -749,8 +723,7 @@ class BetterColorBarItem(pg.PlotItem):
         if not self.isVisible():
             return
         for img_ref in self.images:
-            if not img_ref().auto_levels:
-                img_ref().setLevels(self._span.getRegion())
+            img_ref().setLevels(self._span.getRegion())
         self.limit_changed()
 
     @QtCore.Slot()
@@ -759,7 +732,8 @@ class BetterColorBarItem(pg.PlotItem):
 
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
-        self.limit_changed()
+        if self._primary_image is not None:
+            self.limit_changed()
 
     def addImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
         # if isinstance(image, BetterImageItem):
@@ -785,13 +759,18 @@ class BetterColorBarItem(pg.PlotItem):
         for img_ref in self._images:
             img = img_ref()
             if img is not None:
+                # if hasattr(img, "sigLevelsChanged"):
+                    # img.sigLevelsChanged.connect(self.limit_changed)
+                # if hasattr(img, "sigImageChanged"):
+                # img.sigImageChanged.connect(self.image_changed)
                 if img.getColorMap() is not None:
                     self._primary_image = img_ref
                     break
 
         if self._primary_image is None:
             raise ValueError("ImageItem with a colormap was not found")
-        self.primary_image().sigLimitChanged.connect(self.limit_changed)
+        # self.primary_image().sigLimitChanged.connect(self.limit_changed)
+
         # self.primary_image().sigImageChanged.connect(self.limit_changed)
         # self.primary_image().sigColorChanged.connect(self.color_changed)
         self.primary_image().sigColorChanged.connect(self.limit_changed)
@@ -803,12 +782,19 @@ class BetterColorBarItem(pg.PlotItem):
             insert_in.layout.setColumnFixedWidth(4, 5)
 
         self._span.blockSignals(True)
-        self._span.setRegion(self.limits)
+        if hasattr(self, "limits"):
+            self._span.setRegion(self.limits)
         self._span.blockSignals(False)
+
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
-        self.color_changed()
+        self.image_changed()
+        # self.color_changed()
         self.limit_changed()
+
+    def image_changed(self):
+        self.level_change()
+
         # self.isocurve.setParentItem(image)
 
     # def hideEvent(self, event: QtGui.QHideEvent):
@@ -843,12 +829,14 @@ class BetterColorBarItem(pg.PlotItem):
     def limit_changed(self):
         if not self.isVisible():
             return
+        if not hasattr(self, "limits"):
+            return
         self.color_changed()
         # if (self._fixedlimits is not None) or (mn is None):
         mn, mx = self.limits
         self._colorbar.setRect(0.0, mn, 1.0, mx - mn)
         if self.levels is not None:
-            self._colorbar.setLevels((self.levels - mn) / (mx - mn))
+            self._colorbar.setLevels((np.asarray(self.levels) - mn) / (mx - mn))
         self._span.setBounds((mn, mx))
 
     # def cmap_changed(self):
