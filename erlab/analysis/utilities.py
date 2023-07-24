@@ -37,6 +37,9 @@ def correct_with_edge(
             )
         else:
             edge_quad = modelresult.eval(x=fmap.phi)
+            edge_quad = xr.DataArray(
+                edge_quad, coords=dict(x=fmap.phi), dims=["phi"]
+            )  # workaround for lmfit 1.22 coercing
     elif callable(modelresult):
         edge_quad = xr.DataArray(
             modelresult(fmap.phi.values), coords=dict(phi=fmap.phi)
