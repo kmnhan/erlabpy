@@ -13,12 +13,12 @@ __all__ = [
 
 import arpes
 import arpes.fits
+import lmfit.model
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.interpolate
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
-import lmfit.model
 
 from erlab.analysis.fit.models import (
     ExtendedAffineBroadenedFD,
@@ -43,6 +43,7 @@ def edge(
     return_full=False,
     fixed_center=None,
     scale_covar=True,
+    **kwargs,
 ):
     if fast:
         params = {}
@@ -80,6 +81,7 @@ def edge(
         progress=progress,
         parallel_kw=parallel_kw,
         scale_covar=scale_covar,
+        **kwargs,
     )
     if return_full:
         return fitresults
