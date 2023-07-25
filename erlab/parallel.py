@@ -64,6 +64,11 @@ def joblib_progress(file=None, notebook=None, dynamic_ncols=True, **kwargs):
 
 @contextlib.contextmanager
 def joblib_progress_qt(signal: QtCore.Signal):
+    """Context manager for interactive windows.
+
+    The number of completed tasks are emitted by the given signal.
+    """
+
     def qt_print_progress(self):
         signal.emit(self.n_completed_tasks)
 
@@ -74,18 +79,3 @@ def joblib_progress_qt(signal: QtCore.Signal):
         yield None
     finally:
         joblib.parallel.Parallel.print_progress = original_print_progress
-
-
-# @contextlib.contextmanager
-# def joblib_progress_qt(signal: QtCore.Signal):
-#     class QtBatchCompletionCallback(joblib.parallel.BatchCompletionCallBack):
-#         def __call__(self, *a, **kwa):
-#             signal.emit(self.parallel.n_completed_tasks + self.batch_size)
-#             return super().__call__(*a, **kwa)
-
-#     old_batch_callback = joblib.parallel.BatchCompletionCallBack
-#     joblib.parallel.BatchCompletionCallBack = QtBatchCompletionCallback
-#     try:
-#         yield None
-#     finally:
-#         joblib.parallel.BatchCompletionCallBack = old_batch_callback
