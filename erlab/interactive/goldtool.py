@@ -3,6 +3,7 @@ __all__ = ["goldtool"]
 import os
 
 import arpes.xarray_extensions
+import joblib
 import numpy as np
 import pyqtgraph as pg
 import varname
@@ -46,38 +47,22 @@ LMFIT_METHODS = [
 ]
 
 
-class EdgeFitterSignals(QtCore.QObject):
+class EdgeFitter(QtCore.QThread):
     sigIterated = QtCore.Signal(int)
     sigFinished = QtCore.Signal()
 
-
-class EdgeFitter(QtCore.QRunnable):
-    def __init__(self, data, x0, y0, x1, y1, params, proxy=None):
-        super().__init__()
-
-        self._signals = EdgeFitterSignals()
-
+    def set_params(self, data, x0, y0, x1, y1, params):
         self.data = data
-        self.x_range = (x0, x1)
-        self.y_range = (y0, y1)
+        self.x_range: tuple[float, float] = (x0, x1)
+        self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
-
-        self.proxy = proxy
-        if self.proxy is not None:
-            self.proxy.setCancelButton(None)
-            self.proxy.setAutoReset(False)
-            self.sigIterated.connect(self.proxy.setValue)
-            self.sigFinished.connect(self.proxy.reset)
-
-    @property
-    def sigIterated(self):
-        return self._signals.sigIterated
-
-    @property
-    def sigFinished(self):
-        return self._signals.sigFinished
+        self.parallel_obj = joblib.Parallel(n_jobs=self.params["# CPU"])
 
     @QtCore.Slot()
+    def abort_fit(self):
+        self.parallel_obj._aborting = True
+        self.parallel_obj._exception = True
+
     def run(self):
         self.sigIterated.emit(0)
         with joblib_progress_qt(self.sigIterated) as _:
@@ -92,7 +77,7 @@ class EdgeFitter(QtCore.QRunnable):
                 method=self.params["Method"],
                 scale_covar=self.params["Scale cov"],
                 progress=False,
-                parallel_kw=dict(n_jobs=self.params["# CPU"]),
+                parallel_obj=self.parallel_obj,
             )
         self.sigFinished.emit()
 
@@ -112,10 +97,14 @@ class goldtool(AnalysisWindow):
     Signals
     -------
     sigProgressUpdated(int)
+        Signal used to update the progress bar.
+    sigAbortFitting()
+        Signal used to abort the fitting, emitted when the cancel button is clicked.
 
     """
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
+    sigAbortFitting = QtCore.Signal()  #: :meta private:
 
     def __init__(
         self, data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict
@@ -282,46 +271,59 @@ class goldtool(AnalysisWindow):
         self.params_spl.sigParameterChanged.connect(lambda: self.perform_fit("spl"))
 
         self.axes[0].disableAutoRange()
+
+        # setup progress bar
+        self.progress = QtWidgets.QProgressDialog(
+            labelText="Fitting...",
+            minimum=0,
+            parent=self,
+            minimumDuration=0,
+            windowModality=QtCore.Qt.WindowModal,
+        )
+        self.progress.setFixedSize(self.progress.size())
+        self.progress.setCancelButtonText("Abort!")
+        self.progress.canceled.disconnect(self.progress.cancel)  # don't auto close
+        self.progress.canceled.connect(self.abort_fit)
+        self.progress.setAutoReset(False)
+        self.progress.cancel()
+
+        # setup fitter
+        self.fitter = EdgeFitter()
+        self.fitter.sigIterated.connect(self.progress.setValue)
+        self.fitter.sigFinished.connect(self.post_fit)
+        self.sigAbortFitting.connect(self.fitter.abort_fit)
+
         self.__post_init__(execute=True)
 
     def _toggle_fast(self):
         self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
         self.params_edge.widgets["Fix T"].setDisabled(self.params_edge.values["Fast"])
 
+    @QtCore.Slot()
     def perform_edge_fit(self):
+        self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
-
         x0, y0, x1, y1 = self.params_roi.roi_limits
         params = self.params_edge.values
-
         n_total = len(
             self.data.phi.coarsen(phi=params["Bin x"], boundary="trim")
             .mean()
             .sel(phi=slice(x0, x1))
         )
+        self.progress.setMaximum(n_total)
+        self.fitter.set_params(self.data, x0, y0, x1, y1, params)
+        self.fitter.start()
 
-        self.progress = QtWidgets.QProgressDialog(
-            labelText="Fitting...",
-            minimum=0,
-            maximum=n_total,
-            parent=self,
-            minimumDuration=0,
-            windowModality=QtCore.Qt.WindowModal,
-        )
-        self.progress.setFixedSize(self.progress.size())
-
-        self.fitter = EdgeFitter(self.data, x0, y0, x1, y1, params, self.progress)
-        self.fitter.sigFinished.connect(self.post_fit)
-
-        QtCore.QThreadPool.globalInstance().start(self.fitter)
+    @QtCore.Slot()
+    def abort_fit(self):
+        self.sigAbortFitting.emit()
 
     def closeEvent(self, event):
-        if QtCore.QThreadPool.globalInstance().activeThreadCount() > 0:
-            QtCore.QThreadPool.globalInstance().waitForDone()
         super().closeEvent(event)
 
     @QtCore.Slot()
     def post_fit(self):
+        self.progress.reset()
         self.edge_center, self.edge_stderr = (
             self.fitter.edge_center,
             self.fitter.edge_stderr,
@@ -427,10 +429,10 @@ class goldtool(AnalysisWindow):
 
         match mode:
             case "poly":
-                fname = 'poly'
+                fname = "poly"
                 arg_dict["degree"] = p1["Degree"]
             case "spl":
-                fname = 'spline'
+                fname = "spline"
                 if p1["Auto"]:
                     arg_dict["lam"] = None
                 else:
