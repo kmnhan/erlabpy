@@ -128,7 +128,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
-    valueChanged = QtCore.Signal(float)
+    valueChanged = QtCore.Signal(float)  #: :meta private:
 
     def __init__(
         self,

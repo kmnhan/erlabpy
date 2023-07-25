@@ -11,8 +11,8 @@ from collections.abc import Iterable, Sequence
 import numba
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
 import scipy.interpolate
+import xarray as xr
 import xarray.core.missing
 
 
@@ -203,9 +203,9 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
         )
 
     def __call__(self, xi, method=None):
-        is_linear = method == "linear" or self.method == "linear"
-        nd_supported = self.values.ndim in (2, 3)
-        no_extrap = self.fill_value is not None
+        is_linear: bool = method == "linear" or self.method == "linear"
+        nd_supported: bool = self.values.ndim in (2, 3)
+        no_extrap: bool = self.fill_value is not None
 
         if (len(self.uneven_dims) == 0) and is_linear and nd_supported and no_extrap:
             if isinstance(xi, np.ndarray):
