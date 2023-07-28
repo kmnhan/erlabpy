@@ -28,17 +28,19 @@ Modules
 __all__ = [
     "load_experiment",
     "load_wave",
+    "load_da30",
     "load_als_bl4",
+    "load_ssrl",
     "load_live",
     "open_hdf5",
     "load_hdf5",
     "save_as_hdf5",
     "save_as_netcdf",
-    "load_ssrl",
 ]
 
 import warnings
 
+from erlab.io.da30 import load as load_da30
 from erlab.io.igor import load_experiment, load_wave
 from erlab.io.merlin import load as load_als_bl4
 from erlab.io.merlin import load_live
