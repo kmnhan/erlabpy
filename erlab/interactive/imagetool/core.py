@@ -583,7 +583,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if not isinstance(data, xr.DataArray):
             if isinstance(data, xr.Dataset):
-                data = data.spectrum
+                try:
+                    data = data.spectrum
+                except AttributeError:
+                    data = data[list(data.data_vars.keys())[0]]
             else:
                 data = xr.DataArray(np.asarray(data))
 
