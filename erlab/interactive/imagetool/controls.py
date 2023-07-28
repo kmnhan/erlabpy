@@ -260,7 +260,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.spin_dat = BetterSpinBox(
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
-        self.spin_dat.setDecimals(round(abs(np.log10(self.array_slicer.absnanmax)) + 1))
+        try:
+            self.spin_dat.setDecimals(
+                round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+            )
+        except OverflowError:
+            self.spin_dat.setDecimals(4)
 
         # add multicursor widgets
         if self.orientation == QtCore.Qt.Orientation.Vertical:
@@ -402,8 +407,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.label_dim[i].blockSignals(False)
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
-
-        self.spin_dat.setDecimals(round(abs(np.log10(self.array_slicer.absnanmax)) + 1))
+        try:
+            self.spin_dat.setDecimals(
+                round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+            )
+        except OverflowError:
+            self.spin_dat.setDecimals(4)
         self.spin_dat.setValue(
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
