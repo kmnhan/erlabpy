@@ -21,6 +21,8 @@ Modules
 
 __all__ = [
     "gold",
+    "correlation",
+    "transform",
     "mask_with_polygon",
     "polygon_mask",
     "polygon_mask_points",
@@ -33,6 +35,8 @@ __all__ = [
 import warnings
 
 from erlab.analysis import gold
+from erlab.analysis import correlation
+from erlab.analysis import transform
 from erlab.analysis.mask import (
     mask_with_hex_bz,
     mask_with_polygon,
