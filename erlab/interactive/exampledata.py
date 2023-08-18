@@ -40,7 +40,7 @@ def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
 
 def generate_data(
     shape: tuple[int, int, int] = (200, 200, 250),
-    krange: float = 1.4,
+    krange: float | tuple[float, float] | dict[str, tuple[float, float]] = 1.4,
     Erange: tuple[float, float] = (-0.45, 0.09),
     temp: float = 30.0,
     a: float = 6.97,
@@ -54,8 +54,16 @@ def generate_data(
     count: int = 1000,
     ccd_sigma: float = 0.6,
 ):
-    kx = np.linspace(-krange, krange, shape[0])
-    ky = np.linspace(-krange, krange, shape[1])
+    if isinstance(krange, dict):
+        kx = np.linspace(**krange["kx"], shape[0])
+        ky = np.linspace(**krange["ky"], shape[1])
+    elif not np.iterable(krange):
+        kx = np.linspace(-krange, krange, shape[0])
+        ky = np.linspace(-krange, krange, shape[1])
+    else:
+        kx = np.linspace(*krange, shape[0])
+        ky = np.linspace(*krange, shape[1])
+    
     eV = np.linspace(*Erange, shape[2])
 
     dE = eV[1] - eV[0]
