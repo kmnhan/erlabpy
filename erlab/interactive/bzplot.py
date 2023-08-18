@@ -32,6 +32,9 @@ class BZPlotter(QtWidgets.QMainWindow):
             Specifies the type of the input parameters. Valid types are 'lattice',
             'avec', 'bvec'.
         """
+        self.qapp = QtCore.QCoreApplication.instance()
+        if not self.qapp:
+            self.qapp = QtWidgets.QApplication(sys.argv)
         super().__init__()
 
         if params is None:
@@ -56,9 +59,30 @@ class BZPlotter(QtWidgets.QMainWindow):
         self.setCentralWidget(self.plot)
 
         self.controls = LatticeWidget(bvec)
+        self.controls.sigChanged.connect(self.plot.set_bvec)
+
+        self.__post_init__(execute=True)
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        self.qapp.quit()
+
+    def __post_init__(self, execute=None):
+        self.show()
+        self.activateWindow()
+        self.raise_()
         self.controls.show()
 
-        self.controls.sigChanged.connect(self.plot.set_bvec)
+        if execute is None:
+            execute = True
+            try:
+                shell = get_ipython().__class__.__name__  # type: ignore
+                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                    execute = False
+            except NameError:
+                pass
+        if execute:
+            self.qapp.exec()
 
 
 class LatticeWidget(QtWidgets.QTabWidget):
@@ -71,17 +95,32 @@ class LatticeWidget(QtWidgets.QTabWidget):
         self.params_latt = ParameterGroup(
             ncols=3,
             **{
-                "a": dict(qwtype="btspin", value=1, showlabel="𝑎"),
-                "b": dict(qwtype="btspin", value=1, showlabel="𝑏"),
-                "c": dict(qwtype="btspin", value=1, showlabel="𝑐"),
+                "a": dict(qwtype="btspin", value=1, showlabel="𝑎", decimals=5),
+                "b": dict(qwtype="btspin", value=1, showlabel="𝑏", decimals=5),
+                "c": dict(qwtype="btspin", value=1, showlabel="𝑐", decimals=5),
                 "alpha": dict(
-                    qwtype="btspin", value=90.0, minimum=0, maximum=180, showlabel="𝛼"
+                    qwtype="btspin",
+                    value=90.0,
+                    minimum=0,
+                    maximum=180,
+                    showlabel="𝛼",
+                    decimals=5,
                 ),
                 "beta": dict(
-                    qwtype="btspin", value=90.0, minimum=0, maximum=180, showlabel="𝛽"
+                    qwtype="btspin",
+                    value=90.0,
+                    minimum=0,
+                    maximum=180,
+                    showlabel="𝛽",
+                    decimals=5,
                 ),
                 "gamma": dict(
-                    qwtype="btspin", value=90.0, minimum=0, maximum=180, showlabel="𝛾"
+                    qwtype="btspin",
+                    value=90.0,
+                    minimum=0,
+                    maximum=180,
+                    showlabel="𝛾",
+                    decimals=5,
                 ),
                 "apply": dict(
                     qwtype="pushbtn",
@@ -213,6 +252,10 @@ class LatticeWidget(QtWidgets.QTabWidget):
         # self.params_latt.sigParameterChanged.connect(self.latt_changed)
         # self.params_avec.sigParameterChanged.connect(self.avec_changed)
         # self.params_bvec.sigParameterChanged.connect(self.bvec_changed)
+
+    def closeEvent(self, event):
+        super().closeEvent(event)
+        QtCore.QCoreApplication.instance().quit()
 
     def block_params_signals(self, b: bool):
         self.params_latt.blockSignals(b)
@@ -349,12 +392,4 @@ class BZPlotWidget(QtWidgets.QWidget):
 
 
 if __name__ == "__main__":
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
     app = BZPlotter()
-    app.show()
-    app.controls.activateWindow()
-    app.controls.raise_()
-    qapp.exec()
