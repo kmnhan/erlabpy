@@ -28,7 +28,7 @@ Modules
 __all__ = [
     "load_experiment",
     "load_wave",
-    "load_da30",
+    "da30",
     "load_als_bl4",
     "load_ssrl",
     "load_live",
@@ -40,12 +40,13 @@ __all__ = [
 
 import warnings
 
-from erlab.io.da30 import load as load_da30
-from erlab.io.igor import load_experiment, load_wave
-from erlab.io.merlin import load as load_als_bl4
-from erlab.io.merlin import load_live
-from erlab.io.ssrl52 import load as load_ssrl
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
+from erlab.io.igor import load_experiment, load_wave
+
+from erlab.io import merlin, ssrl52, da30
+
+load_als_bl4 = merlin.load
+load_ssrl = ssrl52.load
 
 
 def load_igor_ibw(*args, **kwargs):
