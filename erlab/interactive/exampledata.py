@@ -55,8 +55,8 @@ def generate_data(
     ccd_sigma: float = 0.6,
 ):
     if isinstance(krange, dict):
-        kx = np.linspace(**krange["kx"], shape[0])
-        ky = np.linspace(**krange["ky"], shape[1])
+        kx = np.linspace(*krange["kx"], shape[0])
+        ky = np.linspace(*krange["ky"], shape[1])
     elif not np.iterable(krange):
         kx = np.linspace(-krange, krange, shape[0])
         ky = np.linspace(-krange, krange, shape[1])
