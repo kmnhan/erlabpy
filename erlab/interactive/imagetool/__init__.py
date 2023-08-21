@@ -7,7 +7,7 @@ Modules
 
 .. autosummary::
    :toctree:
-   
+
    core
    slicer
    fastbinning
@@ -351,10 +351,11 @@ class ItoolMenuBar(DictMenuBar):
     def _open_file(self):
         valid_files = {
             "xarray HDF5 Files (*.h5)": (xr.load_dataarray, dict(engine="h5netcdf")),
+            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.merlin.load, dict()),
+            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.merlin.load_live, dict()),
+            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.da30.load, dict()),
+            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.ssrl52.load, dict()),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, dict()),
-            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.load_ssrl, dict()),
-            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.load_als_bl4, dict()),
-            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.load_live, dict()),
         }
 
         dialog = QtWidgets.QFileDialog(self)
