@@ -54,6 +54,18 @@ def load_igor_ct(fname, name):
     matplotlib.colormaps.register(cmap.reversed())
 
 
+def load_bonehot():
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+        name="bonehot",
+        colors=np.r_[
+            matplotlib.colormaps["bone_r"](np.linspace(0, 1, 128)),
+            matplotlib.colormaps["hot"](np.linspace(0, 1, 128)),
+        ],
+    )
+    matplotlib.colormaps.register(cmap)
+    matplotlib.colormaps.register(cmap.reversed())
+
+
 load_igor_ct("CTBlueWhite.ibw", "BuWh")
 load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
 # load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
@@ -63,6 +75,8 @@ load_igor_ct("BlueHot.ibw", "BlueHot")
 # load_igor_ct("ametrine.ibw", "ametrine")
 # load_igor_ct("isolum.ibw", "isolum")
 # load_igor_ct("morgenstemning.ibw", "morgenstemning")
+
+load_bonehot()
 
 matplotlib.style.core.USER_LIBRARY_PATHS.append(
     os.path.join(os.path.dirname(__file__), "stylelib")
