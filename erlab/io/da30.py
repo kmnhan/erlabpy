@@ -49,6 +49,8 @@ def load(filename, data_dir=None, contains=None):
             wave = list(wave.data_vars.values())[0]
 
     wave = wave.assign_coords(phi=np.deg2rad(wave.phi))
+    if "theta" in wave.coords:
+        wave = wave.assign_coords(theta=np.deg2rad(wave.theta))
     if "hv" in wave.attrs:
         wave = wave.assign_coords(eV=wave.eV - float(wave.attrs["hv"]))
 
