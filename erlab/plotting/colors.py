@@ -882,6 +882,44 @@ def flatten_transparency(rgba, background: Sequence[float] | None = None):
     return rgb.reshape(original_shape[:-1] + (3,))
 
 
+def combined_cmap(
+    cmap1: mcolors.Colormap | str,
+    cmap2: mcolors.Colormap | str,
+    name: str,
+    register: bool = False,
+    N=256,
+):
+    """Stitch two existing colormaps to create a new colormap."""
+    if isinstance(cmap1, str):
+        cmap1 = matplotlib.colormaps[cmap1]
+    if isinstance(cmap2, str):
+        cmap2 = matplotlib.colormaps[cmap2]
+
+    if all(isinstance(c, mcolors.LinearSegmentedColormap) for c in (cmap1, cmap2)):
+        segnew = dict()
+        for c in ["red", "green", "blue"]:
+            seg1_c, seg2_c = (
+                np.asarray(cmap1._segmentdata[c]),
+                np.asarray(cmap2._segmentdata[c]),
+            )
+            seg1_c[:, 0] = seg1_c[:, 0] * 0.5
+            seg2_c[:, 0] = seg2_c[:, 0] * 0.5 + 0.5
+            segnew[c] = np.r_[seg1_c, seg2_c]
+        cmap = mcolors.LinearSegmentedColormap(name=name, segmentdata=segnew, N=N)
+    else:
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            name=name,
+            colors=np.r_[
+                cmap1(np.linspace(0, 1, int(N / 2))),
+                cmap2(np.linspace(0, 1, int(N / 2))),
+            ],
+        )
+    if register:
+        matplotlib.colormaps.register(cmap)
+        matplotlib.colormaps.register(cmap.reversed())
+    return cmap
+
+
 def gen_2d_colormap(
     ldat,
     cdat,
@@ -971,3 +1009,6 @@ def axes_textcolor(ax, light="k", dark="w"):
             if not image_is_light(mappable):
                 c = dark
     return c
+
+
+combined_cmap("bone_r", "hot", "bonehot", register=True)
