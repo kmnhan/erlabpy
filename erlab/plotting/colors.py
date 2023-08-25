@@ -498,7 +498,7 @@ def unify_clim(axes, target=None, image_only: bool = False):
             vmx.append(mappable.norm.vmax)
         vmn, vmx = min(vmn), max(vmx)
     else:
-        mappable = get_mappable(ax, image_only=image_only)
+        mappable = get_mappable(target, image_only=image_only)
         vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
     for ax in axes.flat:
         mappable = get_mappable(ax, image_only=image_only)
