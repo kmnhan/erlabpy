@@ -28,6 +28,7 @@ __all__ = [
     "TwoSlopeInversePowerNorm",
     "CenteredInversePowerNorm",
     "get_mappable",
+    "unify_clim",
     "proportional_colorbar",
     "nice_colorbar",
     "flatten_transparency",
@@ -486,6 +487,22 @@ def get_mappable(
             "with contourf)."
         )
     return mappable
+
+
+def unify_clim(axes, target=None, image_only: bool = False):
+    if target is None:
+        vmn, vmx = [], []
+        for ax in axes.flat:
+            mappable = get_mappable(ax, image_only=image_only)
+            vmn.append(mappable.norm.vmin)
+            vmx.append(mappable.norm.vmax)
+        vmn, vmx = min(vmn), max(vmx)
+    else:
+        mappable = get_mappable(ax, image_only=image_only)
+        vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
+    for ax in axes.flat:
+        mappable = get_mappable(ax, image_only=image_only)
+        mappable.norm.vmin, mappable.norm.vmax = vmn, vmx
 
 
 def proportional_colorbar(
@@ -1011,4 +1028,7 @@ def axes_textcolor(ax, light="k", dark="w"):
     return c
 
 
-combined_cmap("bone_r", "hot", "bonehot", register=True)
+try:
+    combined_cmap("bone_r", "hot", "bonehot", register=True)
+except ValueError:
+    pass
