@@ -15,7 +15,6 @@ __all__ = [
 
 from typing import Literal
 
-import matplotlib
 import matplotlib.colors as mcolors
 import numpy as np
 import pyqtgraph as pg

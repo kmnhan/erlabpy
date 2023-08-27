@@ -54,8 +54,8 @@ def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs
     else:
         win = ImageTool(data, *args, **kwargs)
         win.show()
+        win.raise_()
         win.activateWindow()
-        # win.raise_()
     if execute is None:
         execute = True
         try:
