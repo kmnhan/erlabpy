@@ -21,13 +21,13 @@ from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
 from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
-from erlab.interactive.colors import pg_colormap_powernorm
-from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utilities import (
-    BetterAxisItem,
+from erlab.interactive.colors import (
     BetterColorBarItem,
     BetterImageItem,
+    pg_colormap_powernorm,
 )
+from erlab.interactive.imagetool.slicer import ArraySlicer
+from erlab.interactive.utilities import BetterAxisItem
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -1503,6 +1503,10 @@ class ItoolPlotItem(pg.PlotItem):
 class ItoolColorBarItem(BetterColorBarItem):
     def __init__(self, slicer_area: ImageSlicerArea | None = None, **kwargs):
         self._slicer_area = slicer_area
+        kwargs.setdefault(
+            "axisItems",
+            {a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")},
+        )
         super().__init__(**kwargs)
 
     @property
