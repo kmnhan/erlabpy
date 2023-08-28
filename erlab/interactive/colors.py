@@ -6,9 +6,9 @@ from __future__ import annotations
 __all__ = [
     "ColorMapComboBox",
     "ColorMapGammaWidget",
-    "color_to_QColor",
     "BetterImageItem",
     "BetterColorBarItem",
+    "color_to_QColor",
     "pg_colormap_names",
     "pg_colormap_from_name",
     "pg_colormap_powernorm",
