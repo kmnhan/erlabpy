@@ -26,7 +26,7 @@ COORDS_MAPPING = {
 ATTRS_MAPPING = {"bl_energy": "hv", "excitation_energy": "hv"}
 
 
-def load(filename, data_dir=None, contains=None):
+def load(filename, data_dir=None, contains=None, **kwargs):
     xr.set_options(keep_attrs=True)
     try:
         filename = find_first_file(filename, data_dir=data_dir, contains=contains)
@@ -34,11 +34,11 @@ def load(filename, data_dir=None, contains=None):
         pass
 
     if filename.endswith(".ibw"):
-        wave = load_wave(filename)
+        wave = load_wave(filename, **kwargs)
     elif filename.endswith(".pxt"):
-        wave = load_experiment(filename)
+        wave = load_experiment(filename, **kwargs)
     elif filename.endswith(".zip"):
-        wave = load_zip(filename)
+        wave = load_zip(filename, **kwargs)
     else:
         raise ValueError("Unsupported file type")
 
@@ -57,8 +57,8 @@ def load(filename, data_dir=None, contains=None):
     return wave
 
 
-def load_zip(filename):
-    regions = []
+def load_zip(filename, merge: bool = True) -> xr.DataArray | list[xr.DataArray]:
+    regions: list[str] = []
 
     with zipfile.ZipFile(filename) as z:
         for fn in z.namelist():
@@ -100,7 +100,8 @@ def load_zip(filename):
                 arr.reshape(shape), coords=coords, name=region_info["name"], attrs=attrs
             )
             out.append(arr)
-    out = xr.merge(out)
+    if merge:
+        out = xr.merge(out)
     return out
 
 
