@@ -42,6 +42,14 @@ def load(filename, data_dir=None, contains=None, **kwargs):
     else:
         raise ValueError("Unsupported file type")
 
+    if isinstance(wave, list):
+        wave = [process_array(w) for w in wave]
+    else:
+        wave = process_array(wave)
+    return wave
+
+
+def process_array(wave: xr.DataArray | xr.Dataset):
     wave = wave.rename({k: v for k, v in COORDS_MAPPING.items() if k in wave.dims})
 
     if isinstance(wave, xr.Dataset):
@@ -52,7 +60,9 @@ def load(filename, data_dir=None, contains=None, **kwargs):
     if "theta" in wave.coords:
         wave = wave.assign_coords(theta=np.deg2rad(wave.theta))
     if "hv" in wave.attrs:
-        wave = wave.assign_coords(eV=wave.eV - float(wave.attrs["hv"]))
+        wave = wave.assign_coords(
+            eV=wave.eV - float(wave.attrs["hv"]), hv=float(wave.attrs["hv"])
+        )
 
     return wave
 
