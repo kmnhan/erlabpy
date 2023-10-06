@@ -937,7 +937,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.queryKeyboardModifiers()
+            not in self.qapp.keyboardModifiers()
         ):
             if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
                 if ev.isStart():
@@ -968,7 +968,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.queryKeyboardModifiers()
+            not in self.qapp.keyboardModifiers()
         ):
             super().mouseClickEvent(ev)
         else:
@@ -978,7 +978,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def hoverEvent(self, ev):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.queryKeyboardModifiers()
+            not in self.qapp.keyboardModifiers()
         ):
             super().hoverEvent(ev)
         else:
@@ -1084,19 +1084,13 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         )
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
-        if (
-            QtCore.Qt.KeyboardModifier.ControlModifier
-            in self.qapp.queryKeyboardModifiers()
-        ):
+        if QtCore.Qt.KeyboardModifier.ControlModifier in self.qapp.keyboardModifiers():
             ev.ignore()
         else:
             super().mouseDragEvent(ev)
 
     def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
-        if (
-            QtCore.Qt.KeyboardModifier.ControlModifier
-            in self.qapp.queryKeyboardModifiers()
-        ):
+        if QtCore.Qt.KeyboardModifier.ControlModifier in self.qapp.keyboardModifiers():
             ev.ignore()
         else:
             super().mouseClickEvent(ev)
@@ -1199,7 +1193,7 @@ class ItoolPlotItem(pg.PlotItem):
         return self.getViewBox().menu
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
-        modifiers = self.slicer_area.qapp.queryKeyboardModifiers()
+        modifiers = self.slicer_area.qapp.keyboardModifiers()
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
@@ -1344,7 +1338,7 @@ class ItoolPlotItem(pg.PlotItem):
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
         if (
-            self.slicer_area.qapp.queryKeyboardModifiers()
+            self.slicer_area.qapp.keyboardModifiers()
             != QtCore.Qt.KeyboardModifier.AltModifier
         ):
             self.slicer_area.set_value(
