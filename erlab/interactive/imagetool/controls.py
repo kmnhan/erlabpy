@@ -523,7 +523,7 @@ class ColorControls(ItoolControlsBase):
         self.btn_zero = IconButton(
             on="zero_center",
             checkable=True,
-            toolTip="Center colormap at zero",
+            toolTip="Keep center color fixed",
         )
         self.btn_lock = IconButton(
             # on="unlock", off="lock",
