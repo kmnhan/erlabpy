@@ -170,6 +170,19 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea):
+        """
+        Initially, the goal was to be able to control multiple `ImageSlicerArea`s
+        with a single control widget, so the control widgets were designed with easy
+        connection and disconnection of signals in mind. However, this has become
+        largely unnecessary since we now have `SlicerLinkProxy` as a translation layer
+        between multiple `ImageSlicerArea`s with individual control widgets. Hence, this
+        method will remain unused for the time being.
+
+        Also, in principle, most of the control widgets along with the menu bar should
+        be re-written to use QActions...
+
+        """
+
         # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
         try:
             self.disconnect_signals()
@@ -196,7 +209,6 @@ class ItoolControlsBase(QtWidgets.QWidget):
 #         pass
 
 #     def connect_signals(self):
-
 #         pass
 
 #     def disconnect_signals(self):
