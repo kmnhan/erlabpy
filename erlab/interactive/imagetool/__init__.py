@@ -72,7 +72,7 @@ def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs
     return win
 
 
-class ImageTool(QtWidgets.QMainWindow):
+class BaseImageTool(QtWidgets.QMainWindow):
     def __init__(self, data=None, **kwargs):
         super().__init__()
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
@@ -103,11 +103,6 @@ class ImageTool(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
-        self.mnb = ItoolMenuBar(self.slicer_area, self)
-
-        self.slicer_area.sigDataChanged.connect(self.update_title)
-        self.update_title()
-
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
@@ -122,11 +117,6 @@ class ImageTool(QtWidgets.QMainWindow):
         self.docks[index].setFloating(floating)
         self.docks[index].blockSignals(False)
 
-    def update_title(self):
-        if self.slicer_area._data is not None:
-            if self.slicer_area._data.name:
-                self.setWindowTitle(str(self.slicer_area._data.name))
-
     # !TODO: this is ugly and temporary, fix it
     def widget_box(self, widget: QtWidgets.QWidget, **kwargs):
         group = QtWidgets.QGroupBox(**kwargs)
@@ -138,6 +128,20 @@ class ImageTool(QtWidgets.QMainWindow):
         group_layout.setSpacing(3)
         group_layout.addWidget(widget)
         return group
+
+
+class ImageTool(BaseImageTool):
+    def __init__(self, data=None, **kwargs):
+        super().__init__(data, **kwargs)
+        self.mnb = ItoolMenuBar(self.slicer_area, self)
+
+        self.slicer_area.sigDataChanged.connect(self.update_title)
+        self.update_title()
+
+    def update_title(self):
+        if self.slicer_area._data is not None:
+            if self.slicer_area._data.name:
+                self.setWindowTitle(str(self.slicer_area._data.name))
 
 
 class ItoolMenuBar(DictMenuBar):
@@ -461,3 +465,14 @@ if __name__ == "__main__":
     # tracemalloc.stop()
     # display_top(snapshot)
     # print(win.array_slicer._nanmeancalls)
+
+    # qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+    # if not qapp:
+    #     qapp = QtWidgets.QApplication(sys.argv)
+    # qapp.setStyle("Fusion")
+    # import numpy as np
+    # win = ImageTool(np.ones((2,2)))
+    # win.show()
+    # win.raise_()
+    # win.activateWindow()
+    # qapp.exec()
