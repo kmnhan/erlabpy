@@ -20,10 +20,8 @@ __all__ = ["itool", "ImageTool"]
 
 import sys
 
-import xarray as xr
-from qtpy import QtCore, QtWidgets
-
 import erlab.io
+import xarray as xr
 from erlab.interactive.imagetool.controls import (
     ItoolBinningControls,
     ItoolColormapControls,
@@ -32,6 +30,7 @@ from erlab.interactive.imagetool.controls import (
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
+from qtpy import QtCore, QtWidgets
 
 
 def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs):
@@ -166,7 +165,7 @@ class ItoolMenuBar(DictMenuBar):
             for k in ("colorInvertAct", "highContrastAct", "zeroCenterAct")
         )
 
-    def createMenus(self):
+    def _generate_menu_kwargs(self) -> dict:
         menu_kwargs = dict(
             fileMenu=dict(
                 title="&File",
@@ -319,7 +318,10 @@ class ItoolMenuBar(DictMenuBar):
                     axis
                 ], d=amount: self.slicer_area.step_index_all(ax, d),
             )
+        return menu_kwargs
 
+    def createMenus(self):
+        menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
 
         self.menu_dict["viewMenu"].aboutToShow.connect(
