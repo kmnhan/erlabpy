@@ -34,6 +34,7 @@ __all__ = [
 
 import warnings
 
+from erlab.analysis import fit
 from erlab.analysis import gold
 from erlab.analysis import correlation
 from erlab.analysis import transform
