@@ -163,6 +163,10 @@ class KspaceAccessor:
         bounds: dict[str, tuple[float, float]] | None = None,
         resolution: dict[str, float] | None = None,
     ) -> xr.DataArray:
+        if self._obj.ndim == 2:
+            from arpes.utilities.conversion import convert_to_kspace
+
+            return convert_to_kspace(self._obj, bounds=bounds, resolution=resolution)
         if bounds is None:
             bounds = dict()
         if resolution is None:
