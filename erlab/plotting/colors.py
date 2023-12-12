@@ -899,6 +899,14 @@ def flatten_transparency(rgba, background: Sequence[float] | None = None):
     return rgb.reshape(original_shape[:-1] + (3,))
 
 
+def _is_segment_iterable(cmap: mcolors.Colormap) -> bool:
+    if not isinstance(cmap, mcolors.LinearSegmentedColormap):
+        return False
+    if any([callable(cmap._segmentdata[c]) for c in ["red", "green", "blue"]]):
+        return False
+    return True
+
+
 def combined_cmap(
     cmap1: mcolors.Colormap | str,
     cmap2: mcolors.Colormap | str,
@@ -912,7 +920,7 @@ def combined_cmap(
     if isinstance(cmap2, str):
         cmap2 = matplotlib.colormaps[cmap2]
 
-    if all(isinstance(c, mcolors.LinearSegmentedColormap) for c in (cmap1, cmap2)):
+    if all(_is_segment_iterable(c) for c in (cmap1, cmap2)):
         segnew = dict()
         for c in ["red", "green", "blue"]:
             seg1_c, seg2_c = (
