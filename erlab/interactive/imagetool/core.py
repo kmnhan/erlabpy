@@ -98,7 +98,11 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
 
 def link_slicer(
-    func: Callable | None = None, *, indices: bool = False, steps: bool = False
+    func: Callable | None = None,
+    *,
+    indices: bool = False,
+    steps: bool = False,
+    color: bool = False,
 ):
     """
     An internal decorator for choosing which functions to sync accross multiple
@@ -116,13 +120,18 @@ def link_slicer(
         If `False`, considers `value` as an absolute index. If `True`, considers
         `value` as a relative value such as the number of steps or bins. See the
         implementation of `SlicerLinkProxy` for more information.
+    color
+        Boolean whether the decorated method is related to visualization, such as
+        colormap control.
 
     """
 
     def my_decorator(func: Callable):
         @functools.wraps(func)
         def wrapped(*args, **kwargs):
+            # skip sync if already synced
             skip_sync: bool = kwargs.pop("__slicer_skip_sync", False)
+
             out = func(*args, **kwargs)
             if args[0].is_linked:
                 if not skip_sync:
@@ -132,7 +141,7 @@ def link_slicer(
                     all_args.apply_defaults()
                     obj: ImageSlicerArea = all_args.arguments.pop("self")
                     obj._linking_proxy.sync(
-                        obj, func.__name__, all_args.arguments, indices, steps
+                        obj, func.__name__, all_args.arguments, indices, steps, color
                     )
             return out
 
@@ -148,12 +157,15 @@ class SlicerLinkProxy:
 
     Parameters
     ----------
+    link_colors
+        Whether to sync color related changes.
     *slicers
         The slicers to link.
 
     """
 
-    def __init__(self, *slicers: list[ImageSlicerArea]):
+    def __init__(self, *slicers: list[ImageSlicerArea], link_colors: bool = True):
+        self.link_colors = link_colors
         self._slicers: set[ImageSlicerArea] = set()
         for s in slicers:
             self.add(s)
@@ -178,6 +190,7 @@ class SlicerLinkProxy:
         arguments: dict[str, Any],
         indices: bool,
         steps: bool,
+        color: bool,
     ):
         """The core method that propagates changes across multiple `ImageSlicerArea`s.
 
@@ -192,11 +205,12 @@ class SlicerLinkProxy:
             Name of the called method.
         arguments
             Arguments included in the function call.
-        indices, steps
+        indices, steps, color
             Arguments given to the decorator. See :func:`link_slicer`
 
         """
-
+        if color and not self.link_colors:
+            return
         for target in self._slicers.difference({source}):
             getattr(target, funcname)(
                 **self.convert_args(source, target, arguments, indices, steps)
@@ -746,7 +760,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
 
-    @link_slicer
+    @link_slicer(color=True)
     def set_colormap(
         self,
         cmap: str | pg.ColorMap | None = None,

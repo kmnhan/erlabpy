@@ -33,7 +33,14 @@ from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
 from qtpy import QtCore, QtWidgets
 
 
-def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs):
+def itool(
+    data,
+    *args,
+    link: bool = False,
+    link_colors: bool = True,
+    execute: bool | None = None,
+    **kwargs,
+):
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -49,7 +56,9 @@ def itool(data, *args, link: bool = False, execute: bool | None = None, **kwargs
         win[-1].raise_()
 
         if link:
-            linker = SlicerLinkProxy(*[w.slicer_area for w in win])
+            linker = SlicerLinkProxy(
+                *[w.slicer_area for w in win], link_colors=link_colors
+            )
     else:
         win = ImageTool(data, *args, **kwargs)
         win.show()
@@ -454,7 +463,7 @@ if __name__ == "__main__":
 
     data = generate_data()
 
-    # win = itool([data, data], link=True)
+    # win = itool([data, data], link=True, link_colors=False)
     win = itool(data)
 
     # print(
