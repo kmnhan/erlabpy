@@ -774,7 +774,7 @@ def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
 def nice_colorbar(
     ax: matplotlib.axes.Axes,
     mappable: matplotlib.cm.ScalarMappable | None = None,
-    width: float = 4.0,
+    width: float = 5.0,
     aspect: float = 5.0,
     pad: float = 3.0,
     minmax: bool = False,
@@ -851,17 +851,22 @@ def nice_colorbar(
                 ax.figure.dpi_scale_trans.inverted()
             )
 
-        fraction = width / (72 * bbox.width)
-        pad = pad / (72 * bbox.width)
-        shrink = width * aspect / (72 * bbox.height)
+        if orientation == "horizontal":
+            kwargs["anchor"] = (1, 1)
+            kwargs["location"] = "top"
+            kwargs["fraction"] = width / (72 * bbox.height)
+            kwargs["pad"] = pad / (72 * bbox.height)
+            kwargs["shrink"] = width * aspect / (72 * bbox.width)
+        else:
+            kwargs["anchor"] = (0, 1)
+            kwargs["fraction"] = width / (72 * bbox.width)
+            kwargs["pad"] = pad / (72 * bbox.width)
+            kwargs["shrink"] = width * aspect / (72 * bbox.height)
+
         cbar = proportional_colorbar(
             mappable=mappable,
             ax=ax,
-            fraction=fraction,
-            pad=pad,
-            shrink=shrink,
             aspect=aspect,
-            anchor=(0, 1),
             panchor=(0, 1),
             orientation=orientation,
             *args,
