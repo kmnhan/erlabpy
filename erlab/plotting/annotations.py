@@ -901,6 +901,24 @@ def property_label(key, value, decimals=None, si=0, name=None, unit=None):
     return str(base.format(name, value, unit))
 
 
+class _SIFormatter(matplotlib.ticker.ScalarFormatter):
+    def __init__(self, si: int = 0, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._si_exponent = int(si)
+
+    def __call__(self, x, pos=None):
+        self.orderOfMagnitude += self._si_exponent
+
+        sigfigs = int(re.match(r".*{%1.(\d+)f}", self.format).group(1))
+        self.format = self.format.replace(
+            f"%1.{sigfigs}f", f"%1.{max(0, sigfigs+self._si_exponent)}f"
+        )
+        val = super().__call__(x, pos)
+
+        self.orderOfMagnitude -= self._si_exponent
+        return val
+
+
 def scale_units(
     ax: matplotlib.axes.Axes,
     axis: Literal["x", "y", "z"],
@@ -913,6 +931,9 @@ def scale_units(
 
     Useful when you want to rescale the ticks. For example, when plotting a cut from a
     low pass energy scan, you might want to convert the energy units from eV to meV.
+
+    Using this function on an axis where the major locator is not the default formatter
+    `matplotlib.ticker.ScalarFormatter` will result in undefined behavior.
 
     Parameters
     ----------
@@ -938,14 +959,7 @@ def scale_units(
     label = getlabel()
     unit = _unit_from_label(label)
 
-    def _sifunc(value, pos=None):
-        return matplotlib.ticker.Formatter.fix_minus(
-            str(np.round(value, 15) / (10**si))
-        )
-
-    getattr(ax, f"{axis}axis").set_major_formatter(
-        matplotlib.ticker.FuncFormatter(_sifunc)
-    )
+    getattr(ax, f"{axis}axis").set_major_formatter(_SIFormatter(si))
 
     if prefix and (unit is not None):
         if power:
