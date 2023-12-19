@@ -11,6 +11,7 @@ SI_PREFIX_NAMES : tuple of str
 from __future__ import annotations
 
 __all__ = [
+    "scale_units",
     "plot_hv_text",
     "label_subplots",
     "label_subplots_nature",
@@ -28,11 +29,13 @@ __all__ = [
 ]
 
 import io
+import re
 from collections.abc import Iterable, Sequence
 from typing import Literal
 
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 import matplotlib.transforms as mtransforms
 import numpy as np
 import pyclip
@@ -97,7 +100,7 @@ def get_si_str(si: int) -> str:
     Parameters
     ----------
     si : int
-        Exponent of 10.
+        Exponent of 10 corresponding to a SI prefix.
 
     Returns
     -------
@@ -112,6 +115,21 @@ def get_si_str(si: int) -> str:
             return SI_PREFIXES[si]
         except KeyError:
             raise ValueError("Invalid SI prefix.")
+
+
+def _unit_from_label(label: str) -> str | None:
+    """Try to determine the unit from a given label.
+
+    Returns None if it fails to determine the unit.
+
+    """
+    m = re.match(r".*\((.*)\)\s*?$", label)
+    if m is None:
+        return None
+    try:
+        return m.group(1)
+    except IndexError:
+        return None
 
 
 def annotate_cuts_erlab(
@@ -202,6 +220,59 @@ def annotate_cuts_erlab(
                         ),
                         **text_kw,
                     )
+
+
+def scale_units(
+    ax: matplotlib.axes.Axes,
+    axis: Literal["x", "y", "z"],
+    si: int = 0,
+    *,
+    prefix: bool = True,
+    power: bool = False,
+):
+    """Rescales ticks and adds an SI prefix to the axis label.
+
+    Useful when you want to rescale the ticks. For example, when plotting a cut from a
+    low pass energy scan, you might want to convert the energy units from eV to meV.
+
+    Parameters
+    ----------
+    ax
+        _description_
+    axis
+        The axis you wish to rescale.
+    si
+        Exponent of 10 corresponding to a SI prefix.
+    prefix
+        If True, tries to detect the unit from the axis label and scales it accordingly.
+        The scaling behaviour is controlled by the `power` argument. If no units are
+        found in the axis label, it is silently ignored.
+    power
+        If False, prefixes the detected unit on the axis label with a SI prefix
+        corresponding to `si`. If True, the unit is prefixed with a scientific notation
+        instead.
+
+    """
+    getlabel = getattr(ax, f"get_{axis}label")
+    setlabel = getattr(ax, f"set_{axis}label")
+
+    label = getlabel()
+    unit = _unit_from_label(label)
+
+    def _sifunc(value, pos=None):
+        return matplotlib.ticker.Formatter.fix_minus(
+            str(np.round(value, 15) / (10**si))
+        )
+
+    getattr(ax, f"{axis}axis").set_major_formatter(
+        matplotlib.ticker.FuncFormatter(_sifunc)
+    )
+
+    if prefix and (unit is not None):
+        if power:
+            setlabel(label.replace(f"({unit})", f"($\\times{{{10}}}^{{{si}}}$ {unit})"))
+        else:
+            setlabel(label.replace(f"({unit})", f"({get_si_str(si)}{unit})"))
 
 
 def _alph_label(val, prefix, suffix, numeric, capital):
