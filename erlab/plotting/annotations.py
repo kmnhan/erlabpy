@@ -911,7 +911,7 @@ class _SIFormatter(matplotlib.ticker.ScalarFormatter):
 
         sigfigs = int(re.match(r".*{%1.(\d+)f}", self.format).group(1))
         self.format = self.format.replace(
-            f"%1.{sigfigs}f", f"%1.{max(0, sigfigs+self._si_exponent)}f"
+            f"%1.{sigfigs}f", f"%1.{max(0, sigfigs + self._si_exponent)}f"
         )
         val = super().__call__(x, pos)
 
