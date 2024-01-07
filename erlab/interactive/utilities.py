@@ -225,6 +225,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._step = 1 if self._only_int else 0.01
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
+        kwargs.setdefault("keyboardTracking", False)
 
         # PyQt6 compatibility: set options with keyword arguments
         set_dict = {}
