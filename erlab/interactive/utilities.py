@@ -441,13 +441,17 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def editingFinishedEvent(self):
         self.setValue(self.valueFromText(self.lineEdit().text()))
 
-    # def keyPressEvent(self, evt):
-    #     if evt.key() == QtGui.QKeySequence("Escape") or evt.key() == QtGui.QKeySequence("Return"):
-    #         self.focusOutEvent(QtGui.QFocusEvent(QtCore.QEvent.FocusIn, QtCore.Qt.MouseFocusReason))
-    #         self.editingFinishedEvent()
-    #         print("hey")
-    #     else:
-    #         super().keyPressEvent(evt)
+    def keyPressEvent(self, evt):
+        if evt == QtGui.QKeySequence.StandardKey.Copy:
+            if not evt.isAutoRepeat():
+                if self.lineEdit().hasSelectedText():
+                    copy_to_clipboard(self.lineEdit().selectedText())
+        #     elif evt.key() == QtGui.QKeySequence("Escape") or evt.key() == QtGui.QKeySequence("Return"):
+        #         self.focusOutEvent(QtGui.QFocusEvent(QtCore.QEvent.FocusIn, QtCore.Qt.MouseFocusReason))
+        #         self.editingFinishedEvent()
+        #         print("hey")
+        else:
+            super().keyPressEvent(evt)
 
     def _updateHeight(self):
         if self._is_compact:
