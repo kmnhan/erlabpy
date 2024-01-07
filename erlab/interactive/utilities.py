@@ -226,7 +226,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
 
-        # PyQt6 compatibility
+        # PyQt6 compatibility: set options with keyword arguments
         set_dict = {}
         for k in ["singleStep", "minimum", "maximum"]:
             set_dict[k] = kwargs.pop(k, None)
@@ -234,11 +234,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         for k, v in set_dict.items():
             if v is not None:
                 getattr(self, f"set{k[0].capitalize()}{k[1:]}")(v)
-        # self.editingFinished.disconnect()
+
         self.setSizePolicy(
-            # QtWidgets.QSizePolicy.Policy.Expanding,
-            # QtWidgets.QSizePolicy.Policy.Preferred,
-            # QtWidgets.QSizePolicy.Policy.MinimumExpanding,
             QtWidgets.QSizePolicy.Policy.MinimumExpanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
@@ -266,14 +263,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def widthFromValue(self, value):
         return self.widthFromText(self.textFromValue(value))
-
-    # def sizeHint(self):
-    #     return QtCore.QSize(
-    #         max(
-    #             self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
-    #         ),
-    #         0,
-    #     )
 
     def setMaximum(self, mx):
         if self._only_int and np.isfinite(mx):
@@ -418,9 +407,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return self.textFromValue(self._lastvalue)
 
     def validate(self, strn, pos):
-        # if self.skipValidate:
-        if False:
-            ret = QtGui.QValidator.State.Acceptable
+        if strn == "-":
+            ret = QtGui.QValidator.State.Intermediate
         else:
             ret = QtGui.QValidator.State.Intermediate
             try:
@@ -433,9 +421,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
         ## note: if text is invalid, we don't change the textValid flag
         ## since the text will be forced to its previous state anyway
-        # self.update()
-
-        # print(strn, pos, ret)
         return (ret, strn, pos)
 
     def editingFinishedEvent(self):
@@ -446,10 +431,6 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             if not evt.isAutoRepeat():
                 if self.lineEdit().hasSelectedText():
                     copy_to_clipboard(self.lineEdit().selectedText())
-        #     elif evt.key() == QtGui.QKeySequence("Escape") or evt.key() == QtGui.QKeySequence("Return"):
-        #         self.focusOutEvent(QtGui.QFocusEvent(QtCore.QEvent.FocusIn, QtCore.Qt.MouseFocusReason))
-        #         self.editingFinishedEvent()
-        #         print("hey")
         else:
             super().keyPressEvent(evt)
 
