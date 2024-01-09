@@ -61,10 +61,9 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
                 "The number of dimensions excluding the stacking dimensions must be 2"
             )
 
-        stack_coords = tuple(arr[d] for d in stack_dims)
-        stack_shape = tuple(len(x) for x in stack_coords)
-        stack_iter = tuple(range(s) for s in stack_shape)
-        stack_axis = arr.get_axis_num(stack_dims)
+        stack_sizes = {d: len(arr[d]) for d in stack_dims}
+        stack_iter = tuple(range(s) for s in stack_sizes.values())
+
         out_list = Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
             delayed(nanacf)(
                 np.squeeze(arr.isel({s: v for s, v in zip(stack_dims, vals)}).values),
@@ -74,28 +73,24 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
             for vals in product(*stack_iter)
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
-        acf_shape = out_list[0].shape
+        acf_sizes = {d: s for d, s in zip(acf_dims, out_list[0].shape)}
         acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
+
+        out_sizes = stack_sizes | acf_sizes
 
         if mode == "same":
             out = arr.copy(deep=True)
         else:
             out = xr.DataArray(
-                np.empty(stack_shape + acf_shape),
-                dims=[d for d in chain(stack_dims, acf_dims)],
+                np.empty(tuple(out_sizes[d] for d in arr.dims)),
+                dims=arr.dims,
                 attrs=arr.attrs,
             )
             out = out.assign_coords({d: arr[d] for d in stack_dims})
-        for i, cut in enumerate(out_list):
-            index = np.unravel_index(i, stack_shape)
-            out[
-                tuple(
-                    slice(index[stack_axis.index(d)], index[stack_axis.index(d)] + 1)
-                    if d in stack_axis
-                    else slice(None)
-                    for d in range(out.ndim)
-                )
-            ] = cut
+
+        for i, vals in enumerate(product(*stack_iter)):
+            out.loc[{s: arr[s][v] for s, v in zip(stack_dims, vals)}] = out_list[i]
+
         out = out.assign_coords(
             {
                 d: autocorrelation_lags(len(arr[d]), mode) * s
