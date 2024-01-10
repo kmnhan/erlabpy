@@ -5,22 +5,22 @@
 __all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
 
 
-from itertools import chain, product
+import itertools
 
+import joblib
 import numpy as np
+import scipy.signal
 import xarray as xr
-from joblib import Parallel, delayed
-from scipy.signal import correlate, correlation_lags
 
 
 def autocorrelate(arr, *args, **kwargs):
-    acf = correlate(arr, arr, *args, **kwargs)
+    acf = scipy.signal.correlate(arr, arr, *args, **kwargs)
     m, n = [s // 2 for s in acf.shape]
     return acf / acf[m, n]
 
 
 def autocorrelation_lags(in_len, *args, **kwargs):
-    return correlation_lags(in_len, in_len, *args, **kwargs)
+    return scipy.signal.correlation_lags(in_len, in_len, *args, **kwargs)
 
 
 def nanacf(arr, *args, **kwargs):
@@ -64,13 +64,13 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
         stack_sizes = {d: len(arr[d]) for d in stack_dims}
         stack_iter = tuple(range(s) for s in stack_sizes.values())
 
-        out_list = Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
-            delayed(nanacf)(
+        out_list = joblib.Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
+            joblib.delayed(nanacf)(
                 np.squeeze(arr.isel({s: v for s, v in zip(stack_dims, vals)}).values),
                 mode,
                 method,
             )
-            for vals in product(*stack_iter)
+            for vals in itertools.product(*stack_iter)
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
         acf_sizes = {d: s for d, s in zip(acf_dims, out_list[0].shape)}
@@ -88,7 +88,7 @@ def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
             )
             out = out.assign_coords({d: arr[d] for d in stack_dims})
 
-        for i, vals in enumerate(product(*stack_iter)):
+        for i, vals in enumerate(itertools.product(*stack_iter)):
             out.loc[{s: arr[s][v] for s, v in zip(stack_dims, vals)}] = out_list[i]
 
         out = out.assign_coords(
@@ -115,9 +115,9 @@ def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
     """Performs 1-dimensional correlation analysis on `xarray.DataArray` s."""
     in2 = match_dims(in1, in2)
     out = in1.copy(deep=True)
-    xind = correlation_lags(in1.values.size, in2.values.size, mode="same")
+    xind = scipy.signal.correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]
-    out.values = correlate(
+    out.values = scipy.signal.correlate(
         in1.fillna(0).values, in2.fillna(0).values, mode="same", method=method
     )
     out[in1.dims[0]] = out[in1.dims[0]] - out[in1.dims[0]][xzero]
