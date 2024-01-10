@@ -18,6 +18,7 @@ from __future__ import annotations
 
 __all__ = ["itool", "ImageTool"]
 
+import gc
 import sys
 
 import erlab.io
@@ -77,6 +78,10 @@ def itool(
             pass
     if execute:
         qapp.exec()
+        del win
+        # gc.collect()
+
+        return
     return win
 
 
@@ -382,11 +387,8 @@ class ItoolMenuBar(DictMenuBar):
         if dialog.exec():
             files = dialog.selectedFiles()
             fn, kargs = valid_files[dialog.selectedNameFilter()]
-
-            dat = fn(files[0], **kargs)
             # !TODO: handle ambiguous datasets
-
-            self.slicer_area.set_data(dat)
+            self.slicer_area.set_data(fn(files[0], **kargs))
             self.slicer_area.view_all()
 
     def _export_file(self):
@@ -406,6 +408,7 @@ class ItoolMenuBar(DictMenuBar):
 
 
 if __name__ == "__main__":
+    import gc
     import linecache
     import tracemalloc
 
@@ -445,36 +448,43 @@ if __name__ == "__main__":
         #     for line in stat.traceback.format():
         #         print(line)
 
+    tracemalloc.start()
+    data = xr.load_dataarray(
+        # "~/Documents/ERLab/TiSe2/kxy10.nc",
+        # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5",
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
+        engine="h5netcdf",
+    )
+
+    # win = itool(data, bench=True)
+    win = itool(data)
+    # del data
+
+    # gc.collect()
     # data = xr.load_dataarray(
-    #     # "~/Documents/ERLab/TiSe2/kxy10.nc",
-    #     # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5",
-    #     "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
-    #     # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
-    #     # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
+    #     "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
     #     engine="h5netcdf",
     # )
 
-    # tracemalloc.start()
-    # win = itool(data, bench=True)
-    # win = itool(data)
-    # snapshot = tracemalloc.take_snapshot()
+    # from erlab.interactive.exampledata import generate_data
 
-    from erlab.interactive.exampledata import generate_data
-
-    data = generate_data()
+    # data = generate_data()
 
     # win = itool([data, data], link=True, link_colors=False)
-    win = itool(data)
+    # win = itool(data)
 
-    # print(
-    #     *[
-    #         f"{n} {m * 2**-20:.2f} MB\t"
-    #         for n, m in zip(("Current", "Max"), tracemalloc.get_traced_memory())
-    #     ],
-    #     sep="",
-    # )
-    # tracemalloc.stop()
-    # display_top(snapshot)
+    snapshot = tracemalloc.take_snapshot()
+    print(
+        *[
+            f"{n} {m * 2**-20:.2f} MB\t"
+            for n, m in zip(("Current", "Max"), tracemalloc.get_traced_memory())
+        ],
+        sep="",
+    )
+    tracemalloc.stop()
+    display_top(snapshot)
     # print(win.array_slicer._nanmeancalls)
 
     # qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()

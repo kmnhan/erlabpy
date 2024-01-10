@@ -6,6 +6,7 @@ __all__ = ["ImageSlicerArea"]
 
 import collections
 import functools
+import gc
 import inspect
 import os
 import time
@@ -418,6 +419,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             highContrast=False,
             zeroCentered=zeroCentered,
         )
+        if isinstance(cmap, str):
+            if cmap.endswith("_r"):
+                self.colormap_properties["cmap"] = cmap[:-2]
+                self.colormap_properties["reversed"] = True
 
         self._data: xr.DataArray | None = None
         self.current_cursor: int = 0
@@ -431,7 +436,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             print("\n")
 
     def on_close(self):
-        pass
+        self.array_slicer.clear_cache()
+        self.data.close()
+        if hasattr(self, "_data"):
+            self._data.close()
+            del self._data
+        # gc.collect()
 
     def connect_axes_signals(self):
         for ax in self.axes:
