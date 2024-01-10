@@ -23,17 +23,20 @@ Install requirements
 
 .. code-block:: bash
 
-    conda install sphinx, sphinx-autodoc-typehints, furo -y
-    pip install sphinx-qt-documentation
-
+   conda activate envname
+   conda install sphinx, sphinx-autodoc-typehints, nbsphinx furo -y
+   pip install sphinx-qt-documentation
 
 Build
 -----
 
 .. code-block:: bash
 
-    cd docs
-    make clean
-    make html && make latexpdf
-    cd ..
+   cd my/directory/erlabpy
 
+.. code-block:: bash
+
+   cd docs
+   make clean
+   make html && make latexpdf
+   cd ..

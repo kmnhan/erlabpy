@@ -6,7 +6,7 @@ from pyqtgraph.colormap import modulatedBarData
 
 import erlab.plotting.erplot as eplt
 
-plt.style.use(["khan", "fira"])
+plt.style.use(["khan", "firalight"])
 
 sns.set_palette("Set2")
 
@@ -38,7 +38,11 @@ def example_2():
             f"CenteredInversePowerNorm ($\\gamma={gamma}$)",
         ],
         [dict(halfrange=0.5), dict(halfrange=0.5), dict(halfrange=0.5)],
-        [dict(vcenter=0.5), dict(gamma=gamma, vcenter=0.5), dict(gamma=gamma, vcenter=0.5)],
+        [
+            dict(vcenter=0.5),
+            dict(gamma=gamma, vcenter=0.5),
+            dict(gamma=gamma, vcenter=0.5),
+        ],
         cmap,
     )
 
@@ -52,7 +56,11 @@ def sample_plot(norms, labels, kw0, kw1, cmap):
     num = len(norms)
 
     _, axs = plt.subplots(
-        1, num + 1, width_ratios=[9 - num] + [1] * num, layout="constrained"
+        1,
+        num + 1,
+        width_ratios=[9 - num] + [1] * num,
+        layout="constrained",
+        figsize=eplt.figwh(),
     )
 
     for norm, label, k0, k1 in zip(norms, labels, kw0, kw1):
@@ -90,6 +98,10 @@ def sample_plot(norms, labels, kw0, kw1, cmap):
     axs[0].set_xlim([0, 1])
     axs[0].sharey(axs[-1])
     axs[0].legend(
-        fontsize="x-small", framealpha=0.8, edgecolor="0.8", fancybox=True, loc="lower right"
+        fontsize="x-small",
+        framealpha=0.8,
+        edgecolor="0.8",
+        fancybox=True,
+        loc="lower right",
     )
     plt.show()

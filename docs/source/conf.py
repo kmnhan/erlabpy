@@ -40,6 +40,7 @@ extensions = [
     #   'sphinx.ext.doctest',
     # "sphinx.ext.inheritance_diagram",
     "sphinx_qt_documentation",
+    "nbsphinx",
 ]
 
 templates_path = ["_templates"]

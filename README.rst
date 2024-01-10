@@ -1,19 +1,21 @@
 
-#######
+=======
 ERLabPy
-#######
+=======
 
-.. image:: https://img.shields.io/badge/code%20style-black-000000.svg
-   :target: https://github.com/psf/black
 
 Python macros for ERLab.
 
-***************
+===============
 Getting Started
-***************
+===============
 
+Installing
+==========
+
+-------------
 Prerequisites
-=============
+-------------
 
 Installation requires `git` and `conda`. 
 
@@ -37,10 +39,16 @@ Installing Git
 
 Installing Conda
 ----------------
-* `Install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_
+
+* `Install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_ 
+* Miniconda is recommended to save disk space.
+
+------------
+Installation
+------------
 
 Editable Installation from Source
-=================================
+---------------------------------
 
 
 1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_ to your preferred directory (:code:`my/directory`). If on Apple silicon, download `environment_apple.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment_apple.yml>`_ instead.
@@ -61,7 +69,6 @@ Editable Installation from Source
       conda env create -f environment.yml -n envname
       conda activate envname
 
-   
 
 4. Clone and install the repository.
    
@@ -73,29 +80,37 @@ Editable Installation from Source
       pip install -e . --config-settings editable_mode=compat
 
 
-**************************
-Building the documentation
-**************************
+=================
+Core Dependencies
+=================
 
-Install requirements
-====================
+ERLabPy relies on some python libraries. Some key packages and links to their documentation are listed below, ordered by importance. In particular, this documentation assumes familiarity with the first four packages, which are sufficient for ARPES data analysis. 
 
-.. code-block:: bash
+.. list-table::
+    :header-rows: 1
+    :stub-columns: 1
+    :widths: auto
 
-   conda activate envname
-   conda install sphinx, sphinx-autodoc-typehints, furo -y
-   pip install sphinx-qt-documentation
+    * - Package
+      - Used in
+    * - `numpy <https://numpy.org/doc/stable/>`_
+      - Computation and array manipulation, linear algebra
+    * - `xarray <https://docs.xarray.dev/en/stable/>`_
+      - Data storage and manipulation
+    * - `matplotlib <https://matplotlib.org>`_
+      - Plotting
+    * - `scipy <https://docs.scipy.org/doc/scipy/index.html>`_
+      - Linear algebra, signal processing, and image processing
+    * - `lmfit <https://lmfit.github.io/lmfit-py/>`_
+      - Optimization problems including curve fitting
+    * - `pyqtgraph <https://pyqtgraph.readthedocs.io/en/latest/>`_
+      - Interactive plotting (i.e., imagetool)
+    * - `csaps <https://csaps.readthedocs.io/en/latest/>`_
+      - Smoothing splines
+    * - `joblib <https://joblib.readthedocs.io/en/stable/>`_
+      - Parallel processing when numba is impractical
+    * - `numba <https://numba.readthedocs.io/en/stable/index.html>`_
+      - Acceleration of some performance critical code using just-in-time compilation
 
-Build
------
 
-.. code-block:: bash
-
-   cd my/directory/erlabpy
-
-.. code-block:: bash
-
-   cd docs
-   make clean
-   make html && make latexpdf
-   cd ..
+For the list of packages and modules provided by ERLabPy, see :doc:`reference`.

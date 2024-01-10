@@ -9,6 +9,7 @@ ERLabPy documentation
    :maxdepth: 3
    :caption: Contents:
   
-   introduction
+   readme
+   notebooks/introduction
    reference
    development
