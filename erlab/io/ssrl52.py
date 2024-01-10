@@ -13,144 +13,151 @@ def load(filename, data_dir=None, contains=None):
     except ValueError:
         pass
 
-    ncf = h5netcdf.File(filename, mode="r", phony_dims="sort")
-    attrs = dict(ncf.attrs)
-    attr_keys_mapping = {
-        "BL_energy": "hv",
-        "X": "x",
-        "Y": "y",
-        "Z": "z",
-        "A": "chi",  # azi
-        "T": "beta",  # polar
-        "TA": "temperature_cryotip",  # cold head temp
-        "TB": "temperature",  # sample temp
-        "CreationTime": "creation_time",
-        "HDF5Version": "HDF5_Version",
-        "H5pyVersion": "h5py_version",
-        "Description": "description",
-        "Notes": "notes",
-        "Sample": "sample",
-        "User": "user",
-        "Model": "analyzer_name",
-        "SerialNumber": "serial_number",
-        "Version": "version",
-        "StartTime": "start_time",
-        "StopTime": "stop_time",
-        "UpdateTime": "update_time",
-        "Duration": "duration",
-        "LensModeName": "lens_mode",
-        "CameraMode": "camera_mode",
-        "AcquisitionTime": "acquisition_time",
-        "WorkFunction": "sample_workfunction",
-        "MeasurementMode": "acquisition_mode",
-        "PassEnergy": "pass_energy",
-        "MCP": "mcp_voltage",
-        "BL_pexit": "exit_slit",
-        "YDeflection": "theta_DA",
-    }
-    coords_keys_mapping = {
-        "Kinetic Energy": "eV",
-        "ThetaX": "phi",
-        "ThetaY": "theta",
-    }
-    fixed_attrs = {"analyzer_type": "hemispherical"}
-    attr_to_coords = ["hv"]
-
-    for k, v in fixed_attrs.items():
-        attrs[k] = v
-
-    compat_mode = "data" in ncf.groups  # compatibility with older data
-
-    if compat_mode:
+    with h5netcdf.File(filename, mode="r", phony_dims="sort") as ncf:
+        attrs = dict(ncf.attrs)
         attr_keys_mapping = {
-            "BL_photon_energy": "hv",
-            "a": "chi",  # azi
-            "t": "beta",  # polar
-            "cryo_temperature": "temperature_cryotip",  # cold head temp
-            "cold_head_temperature": "temperature",  # sample temp
-            "creationtime": "creation_time",
-            "model": "analyzer_name",
-            "MCPVoltage": "mcp_voltage",
-            "DeflectionY": "theta_DA",
+            "BL_energy": "hv",
+            "X": "x",
+            "Y": "y",
+            "Z": "z",
+            "A": "chi",  # azi
+            "T": "beta",  # polar
+            "TA": "temperature_cryotip",  # cold head temp
+            "TB": "temperature",  # sample temp
+            "CreationTime": "creation_time",
+            "HDF5Version": "HDF5_Version",
+            "H5pyVersion": "h5py_version",
+            "Description": "description",
+            "Notes": "notes",
+            "Sample": "sample",
+            "User": "user",
+            "Model": "analyzer_name",
+            "SerialNumber": "serial_number",
+            "Version": "version",
+            "StartTime": "start_time",
+            "StopTime": "stop_time",
+            "UpdateTime": "update_time",
+            "Duration": "duration",
+            "LensModeName": "lens_mode",
+            "CameraMode": "camera_mode",
+            "AcquisitionTime": "acquisition_time",
+            "WorkFunction": "sample_workfunction",
+            "MeasurementMode": "acquisition_mode",
+            "PassEnergy": "pass_energy",
+            "MCP": "mcp_voltage",
+            "BL_pexit": "exit_slit",
+            "YDeflection": "theta_DA",
         }
+        coords_keys_mapping = {
+            "Kinetic Energy": "eV",
+            "ThetaX": "phi",
+            "ThetaY": "theta",
+        }
+        fixed_attrs = {"analyzer_type": "hemispherical"}
+        attr_to_coords = ["hv"]
 
-    for k, v in ncf.groups.items():
-        ds = xr.open_dataset(xr.backends.H5NetCDFStore(v))
-        if k.casefold() == "Beamline".casefold():
-            ds.attrs = {f"BL_{kk}": vv for kk, vv in ds.attrs.items()}
+        for k, v in fixed_attrs.items():
+            attrs[k] = v
 
-        attrs = attrs | ds.attrs
-        if k.casefold() == "Data".casefold():
-            if compat_mode:
-                if "exposure" in ds.variables:
-                    ds = ds.rename_vars(counts="spectrum", exposure="time")
-                else:
-                    ds = ds.rename_vars(counts="spectrum")
-            else:
-                if "Time" in ds.variables:
-                    ds = ds.rename_vars(Count="spectrum", Time="time")
-                else:
-                    ds = ds.rename_vars(Count="spectrum")
+        compat_mode = "data" in ncf.groups  # compatibility with older data
 
-            axes = [dict(v.groups[g].attrs) for g in v.groups]
-            for i, ax in enumerate(axes):
-                axes[i] = {name.lower(): val for name, val in ax.items()}  # unify case
+        if compat_mode:
+            attr_keys_mapping = {
+                "BL_photon_energy": "hv",
+                "a": "chi",  # azi
+                "t": "beta",  # polar
+                "cryo_temperature": "temperature_cryotip",  # cold head temp
+                "cold_head_temperature": "temperature",  # sample temp
+                "creationtime": "creation_time",
+                "model": "analyzer_name",
+                "MCPVoltage": "mcp_voltage",
+                "DeflectionY": "theta_DA",
+            }
 
-            if not compat_mode:
-                # some data have mismatching order between axes and phony dims
-                # some even have mismatching counts... those are currently not supported
-                axes_new = [None] * len(axes)
-                for ax in axes:
-                    if ax["count"] in ds.spectrum.shape:
-                        try:
-                            axes_new[ds.spectrum.shape.index(ax["count"])] = ax
-                        except ValueError:
-                            pass
-                axes = axes_new
+        for k, v in ncf.groups.items():
+            ds = xr.open_dataset(xr.backends.H5NetCDFStore(v, autoclose=True))
+            if k.casefold() == "Beamline".casefold():
+                ds.attrs = {f"BL_{kk}": vv for kk, vv in ds.attrs.items()}
 
-            data = ds.rename_dims(
-                {f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)}
-            )
-            for i, ax in enumerate(axes):
+            attrs = attrs | ds.attrs
+            if k.casefold() == "Data".casefold():
                 if compat_mode:
-                    cnt = v.dimensions[f"phony_dim_{i}"].size
+                    if "exposure" in ds.variables:
+                        ds = ds.rename_vars(counts="spectrum", exposure="time")
+                    else:
+                        ds = ds.rename_vars(counts="spectrum")
                 else:
-                    cnt = ax["count"]
-                mn, mx = (
-                    ax["offset"],
-                    ax["offset"] + (cnt - 1) * ax["delta"],
-                )
-                data = data.assign_coords({ax["label"]: np.linspace(mn, mx, cnt)})
+                    if "Time" in ds.variables:
+                        ds = ds.rename_vars(Count="spectrum", Time="time")
+                    else:
+                        ds = ds.rename_vars(Count="spectrum")
 
-    for k in list(attrs.keys()):
-        if k in attr_keys_mapping.keys():
-            attrs[attr_keys_mapping[k]] = attrs.pop(k)
+                axes = [dict(v.groups[g].attrs) for g in v.groups]
 
-    data = data.rename({k: v for k, v in coords_keys_mapping.items() if k in data.dims})
+                for i, ax in enumerate(axes):
+                    axes[i] = {
+                        name.lower(): val for name, val in ax.items()
+                    }  # unify case
 
-    if "theta" not in itertools.product(attrs.keys(), data.dims):
-        attrs["theta"] = 0.0
+                # if not compat_mode:
+                #     # some data have mismatching order between axes and phony dims
+                #     # some even have mismatching counts... those are currently not supported
+                #     axes_new = [None] * len(axes)
+                #     for ax in axes:
+                #         if ax["count"] in ds.spectrum.shape:
+                #             try:
+                #                 axes_new[ds.spectrum.shape.index(ax["count"])] = ax
+                #             except ValueError:
+                #                 pass
+                #     axes = axes_new
 
-    attrs["alpha"] = 90.0
-    attrs["psi"] = 0.0
+                data = ds.rename_dims(
+                    {f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)}
+                ).load()
+                ds.close()
 
-    for a in ["alpha", "beta", "theta", "theta_DA", "chi", "phi", "psi"]:
-        try:
-            data = data.assign_coords({a: np.deg2rad(data[a])})
-        except KeyError:
+                for i, ax in enumerate(axes):
+                    if compat_mode:
+                        cnt = v.dimensions[f"phony_dim_{i}"].size
+                    else:
+                        cnt = ax["count"]
+                    mn, mx = (
+                        ax["offset"],
+                        ax["offset"] + (cnt - 1) * ax["delta"],
+                    )
+                    data = data.assign_coords({ax["label"]: np.linspace(mn, mx, cnt)})
+
+        for k in list(attrs.keys()):
+            if k in attr_keys_mapping.keys():
+                attrs[attr_keys_mapping[k]] = attrs.pop(k)
+
+        data = data.rename(
+            {k: v for k, v in coords_keys_mapping.items() if k in data.dims}
+        )
+
+        if "theta" not in itertools.product(attrs.keys(), data.dims):
+            attrs["theta"] = 0.0
+
+        attrs["alpha"] = 90.0
+        attrs["psi"] = 0.0
+
+        for a in ["alpha", "beta", "theta", "theta_DA", "chi", "phi", "psi"]:
             try:
-                data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
+                data = data.assign_coords({a: np.deg2rad(data[a])})
             except KeyError:
-                continue
+                try:
+                    data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
+                except KeyError:
+                    continue
 
-    for c in attr_to_coords:
-        data = data.assign_coords({c: attrs.pop(c)})
+        for c in attr_to_coords:
+            data = data.assign_coords({c: attrs.pop(c)})
 
-    # data.attrs = attrs
-    # data.spectrum.attrs = attrs
-    if "time" in data.variables:
-        out = data.spectrum / data.time
-    else:
-        out = data.spectrum
-    out.attrs = attrs
+        # data.attrs = attrs
+        # data.spectrum.attrs = attrs
+        if "time" in data.variables:
+            out = data.spectrum / data.time
+        else:
+            out = data.spectrum
+        out.attrs = attrs
     return out
