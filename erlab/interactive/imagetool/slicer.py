@@ -273,18 +273,7 @@ class ArraySlicer(QtCore.QObject):
     def reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def set_array(
-        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
-    ) -> None:
-        del self._obj
-        if validate:
-            self._obj: xr.DataArray = self.validate_array(xarray_obj)
-        else:
-            self._obj: xr.DataArray = xarray_obj
-        self._nonuniform_axes: list[str] = [
-            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
-        ]
-
+    def clear_dim_cache(self):
         for prop in (
             "coords",
             "coords_uniform",
@@ -296,9 +285,30 @@ class ArraySlicer(QtCore.QObject):
         ):
             self.reset_property_cache(prop)
 
+    def clear_val_cache(self):
+        for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
+            self.reset_property_cache(prop)
+
+    def clear_cache(self):
+        self.clear_dim_cache()
+        self.clear_val_cache()
+
+    def set_array(
+        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
+    ) -> None:
+        del self._obj
+
         if validate:
-            for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
-                self.reset_property_cache(prop)
+            self._obj: xr.DataArray = self.validate_array(xarray_obj)
+        else:
+            self._obj: xr.DataArray = xarray_obj
+        self._nonuniform_axes: list[str] = [
+            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
+        ]
+
+        self.clear_dim_cache()
+        if validate:
+            self.clear_val_cache()
 
         if reset:
             self._bins: list[list[int]] = [[1] * self._obj.ndim]
