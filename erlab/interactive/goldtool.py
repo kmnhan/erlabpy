@@ -23,7 +23,7 @@ from erlab.parallel import joblib_progress_qt
 LMFIT_METHODS = [
     "leastsq",
     "least_squares",
-    # "differential_evolution",
+    "differential_evolution",
     # "brute",
     # "basinhopping",
     # "ampgo",
@@ -148,7 +148,7 @@ class goldtool(AnalysisWindow):
         self.params_roi = ROIControls(self.add_roi(0))
         self.params_edge = ParameterGroup(
             **{
-                "T (K)": dict(qwtype="dblspin", value=temp, range=(0, 400)),
+                "T (K)": dict(qwtype="dblspin", value=temp, range=(0.0, 400.0)),
                 "Fix T": dict(qwtype="chkbox", checked=True),
                 "Bin x": dict(qwtype="spin", value=1, minimum=1),
                 "Bin y": dict(qwtype="spin", value=1, minimum=1),
