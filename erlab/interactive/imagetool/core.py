@@ -351,6 +351,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         *,
         bench: bool = False,
+        image_cls=None,
+        plotdata_cls=None,
     ):
         super().__init__(parent)
 
@@ -390,16 +392,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.layout().addWidget(self._colorbar)
         self._colorbar.setVisible(False)
 
+        pkw = dict(image_cls=image_cls, plotdata_cls=plotdata_cls)
         self.manual_limits: dict[str | list[float]] = dict()
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1)),
-            ItoolGraphicsLayoutWidget(self, display_axis=(0,)),
-            ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True),
-            ItoolGraphicsLayoutWidget(self, display_axis=(2,)),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2)),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1)),
-            ItoolGraphicsLayoutWidget(self, display_axis=(3,)),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(3, 2)),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
+            ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
+            ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True, **pkw),
+            ItoolGraphicsLayoutWidget(self, display_axis=(2,), **pkw),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2), **pkw),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1), **pkw),
+            ItoolGraphicsLayoutWidget(self, display_axis=(3,), **pkw),
+            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(3, 2), **pkw),
         )
         for i in (1, 4):
             self._splitters[2].addWidget(self._plots[i])
@@ -1128,6 +1131,8 @@ class ItoolPlotItem(pg.PlotItem):
         slicer_area: ImageSlicerArea,
         display_axis: tuple[int, ...],
         image: bool = False,
+        image_cls=None,
+        plotdata_cls=None,
         **item_kw,
     ):
         super().__init__(
@@ -1149,6 +1154,12 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.is_image = image
         self._item_kw = item_kw
+
+        if image_cls is None:
+            self.image_cls = ItoolImageItem
+        if plotdata_cls is None:
+            self.plotdata_cls = ItoolPlotDataItem
+
         self.slicer_data_items: list[ItoolImageItem | ItoolPlotDataItem] = []
         self.cursor_lines: list[dict[int, ItoolCursorLine]] = []
         self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
@@ -1284,7 +1295,7 @@ class ItoolPlotItem(pg.PlotItem):
         ) = self.slicer_area.gen_cursor_colors(new_cursor)
 
         if self.is_image:
-            item = ItoolImageItem(
+            item = self.image_cls(
                 self,
                 cursor=new_cursor,
                 autoDownsample=True,
@@ -1294,7 +1305,7 @@ class ItoolPlotItem(pg.PlotItem):
             if self.slicer_area.color_locked:
                 item.setLevels(self.array_slicer.limits, update=True)
         else:
-            item = ItoolPlotDataItem(
+            item = self.plotdata_cls(
                 self,
                 cursor=new_cursor,
                 pen=pg.mkPen(pg.mkColor(clr)),
