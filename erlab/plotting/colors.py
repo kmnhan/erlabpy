@@ -772,7 +772,7 @@ def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
 
 # TODO: fix colorbar size properly
 def nice_colorbar(
-    ax: matplotlib.axes.Axes,
+    ax: matplotlib.axes.Axes | None = None,
     mappable: matplotlib.cm.ScalarMappable | None = None,
     width: float = 5.0,
     aspect: float = 5.0,
@@ -815,6 +815,9 @@ def nice_colorbar(
     """
 
     is_horizontal = orientation == "horizontal"
+
+    if ax is None:
+        ax = plt.gca()
 
     if floating:
         if isinstance(ax, np.ndarray):
