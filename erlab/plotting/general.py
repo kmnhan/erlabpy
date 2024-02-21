@@ -63,10 +63,15 @@ def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=
 def autoscale_off(ax: matplotlib.axes.Axes | None = None):
     if ax is None:
         ax = plt.gca()
+    xauto, yauto = ax.get_autoscalex_on(), ax.get_autoscaley_on()
     xl, yl = ax.get_xlim(), ax.get_ylim()
-    yield
     ax.set_xlim(*xl)
     ax.set_ylim(*yl)
+    try:
+        yield
+    finally:
+        ax.autoscale(enable=xauto, axis="x")
+        ax.autoscale(enable=yauto, axis="y")
 
 
 def autoscale_to(arr, margin=0.2):
