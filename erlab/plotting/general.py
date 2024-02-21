@@ -289,6 +289,7 @@ def plot_array(
     norm: mcolors.Normalize | None = None,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
+    crop: bool = False,
     rad2deg: bool | Iterable[str] = False,
     func: Callable | None = None,
     func_args: dict | None = None,
@@ -376,6 +377,11 @@ def plot_array(
     for k, v in improps_default.items():
         improps.setdefault(k, v)
 
+    if crop:
+        if xlim is not None:
+            arr = arr.copy(deep=True).sel({arr.dims[1]: slice(*xlim)})
+        if ylim is not None:
+            arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
     if func is not None:
         img = ax.imshow(func(arr.values, **func_args), norm=norm, **improps)
     else:
