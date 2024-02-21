@@ -39,19 +39,19 @@ def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
 
 
 def generate_data(
-    shape: tuple[int, int, int] = (200, 200, 250),
-    krange: float | tuple[float, float] | dict[str, tuple[float, float]] = 1.4,
+    shape: tuple[int, int, int] = (250, 250, 300),
+    krange: float | tuple[float, float] | dict[str, tuple[float, float]] = 0.89,
     Erange: tuple[float, float] = (-0.45, 0.09),
-    temp: float = 30.0,
+    temp: float = 20.0,
     a: float = 6.97,
     t: float = 0.43,
     bandshift: float = -0.2,
     Sreal: float = 0.0,
-    Simag: float = 0.05,
+    Simag: float = 0.03,
     kres: float = 0.01,
     Eres: float = 2.0e-3,
     noise: bool = True,
-    count: int = 1000,
+    count: int = 10000,
     ccd_sigma: float = 0.6,
 ):
     if isinstance(krange, dict):
@@ -63,7 +63,7 @@ def generate_data(
     else:
         kx = np.linspace(*krange, shape[0])
         ky = np.linspace(*krange, shape[1])
-    
+
     eV = np.linspace(*Erange, shape[2])
 
     dE = eV[1] - eV[0]
