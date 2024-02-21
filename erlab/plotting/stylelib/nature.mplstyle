@@ -78,7 +78,8 @@ font.variant: normal
 font.weight: normal
 font.stretch: normal
 
-font.serif: Symbol, Times New Roman, serif
+# font.serif: Symbol, Times New Roman, serif
+font.serif: Times New Roman, Symbol, serif
 font.sans-serif: Arial, Symbol
 font.cursive: Apple Chancery, Textile, Zapf Chancery, Sand, Script MT, Felipa, Comic Neue, Comic Sans MS, cursive
 font.fantasy: xkcd, fantasy

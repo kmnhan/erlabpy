@@ -265,7 +265,7 @@ ytick.alignment: center_baseline
 # ***************************************************************************
 # * GRIDS                                                                   *
 # ***************************************************************************
-grid.color: "#b0b0b0"  # grid color
+grid.color: "b0b0b0"  # grid color
 grid.linestyle: -          # solid
 grid.linewidth: 0.4        # in points
 grid.alpha: 1.0        # transparency, between 0.0 and 1.0
@@ -306,7 +306,7 @@ figure.titlesize: medium
 figure.labelsize: medium
 figure.figsize: 3.4, 2.1013155617
 figure.dpi: 150
-figure.facecolor: FFFFFF00
+figure.facecolor: FFFFFFFF
 figure.edgecolor: FFFFFF00
 figure.frameon: True
 
@@ -390,7 +390,7 @@ path.sketch: None
 # e.g., you may want a higher resolution, or to make the figure
 # background white
 savefig.dpi: 600
-savefig.facecolor: auto
+savefig.facecolor: auto 
 savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight
@@ -403,10 +403,11 @@ ps.papersize: letter
 ps.useafm: False
 ps.usedistiller: False
 ps.distiller.res: 6000
-ps.fonttype: 3
+ps.fonttype: 42
 
 ## PDF backend params
 pdf.compression: 6
+pdf.fonttype: 42
 pdf.use14corefonts: False
 pdf.inheritcolor: False
 
