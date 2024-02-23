@@ -10,6 +10,6 @@ ERLabPy documentation
    :caption: Contents:
   
    readme
-   notebooks/introduction
+   userguide
    reference
    development
