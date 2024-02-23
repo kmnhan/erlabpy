@@ -273,9 +273,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
         try:
-            self.spin_dat.setDecimals(
-                round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
-            )
+            with np.errstate(divide="ignore"):
+                self.spin_dat.setDecimals(
+                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                )
         except OverflowError:
             self.spin_dat.setDecimals(4)
 
@@ -420,9 +421,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
         try:
-            self.spin_dat.setDecimals(
-                round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
-            )
+            with np.errstate(divide="ignore"):
+                self.spin_dat.setDecimals(
+                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                )
         except OverflowError:
             self.spin_dat.setDecimals(4)
         self.spin_dat.setValue(
