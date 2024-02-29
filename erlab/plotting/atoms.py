@@ -1,3 +1,11 @@
+"""
+Classes and functions for plotting atoms and bonds in a crystal structure using
+matplotlib's 3D plotting capabilities.
+
+Some of the projection code was adapted from kwant.
+
+"""
+
 import contextlib
 import functools
 import itertools
@@ -157,11 +165,10 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
             proj_sizes = projected_length_pos(
                 self.axes, np.sqrt(self.sizes_orig), np.c_[self._offsets3d]
             )
-            # print(((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi)
+            args = self.axes.transData.frozen().to_values()
+            proj_sizes = proj_sizes * ((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi
         else:
             proj_sizes = np.sqrt(self.sizes_orig)
-        args = self.axes.transData.frozen().to_values()
-        proj_sizes = proj_sizes * ((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi
 
         super().set_sizes(proj_sizes**2, self.figure.dpi)
         with self._use_zordered_offset():
@@ -179,7 +186,24 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
 
 
 class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
-    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs):
+    """
+    A subclass of `mpl_toolkits.mplot3d.art3d.Line3DCollection` representing a
+    collection of 3D bonds.
+
+    Parameters
+    ----------
+    segments
+        List of segments representing the bonds.
+    scale_linewidths
+        Boolean indicating whether to scale the linewidths based on the plot's
+        perspective.
+    **kwargs
+        Additional keyword arguments to be passed to
+        `mpl_toolkits.mplot3d.art3d.Line3DCollection`.
+
+    """
+
+    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs: dict):
         super().__init__(segments, **kwargs)
         self._scale_linewidths: bool = scale_linewidths
 
@@ -191,11 +215,6 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
         if self._scale_linewidths:  # and np.isfinite(self.axes._focal_length):
             proj_len = projected_length(self.axes, self.linewidths_orig)
             args = self.axes.transData.frozen().to_values()
-            # Note: unlike in the 2D case, where we can enforce equal
-            #       aspect ratio, this (currently) does not work with
-            #       3D plots in matplotlib. As an approximation, we
-            #       thus scale with the average of the x- and y-axis
-            #       transformation.
             proj_len = proj_len * ((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi
         else:
             proj_len = self.linewidths_orig
@@ -266,7 +285,8 @@ class CrystalProperty:
             boolean. If the function returns False, the atom will not be plotted, by
             default `None`
         r_factor
-            _description_, by default 0.4
+            Additional scaling factor for the bond lengths, by default 0.4
+
         """
         self.atom_pos_given = atom_pos
         self.avec = avec
@@ -433,6 +453,7 @@ class CrystalProperty:
         atom_kw
             Keyword arguments passed onto `mpl_toolkits.mplot3d.Axes3D.scatter` used to
             plot the atoms.
+
         """
 
         if ax is None:
