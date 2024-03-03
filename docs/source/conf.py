@@ -32,6 +32,7 @@ extensions = [
     # "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
     "matplotlib.sphinxext.plot_directive",
+    "matplotlib.sphinxext.figmpl_directive",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     "sphinx.ext.autosummary",
@@ -42,6 +43,8 @@ extensions = [
     "sphinx_qt_documentation",
     "nbsphinx",
 ]
+
+plot_srcset = ["2x"]
 
 templates_path = ["_templates"]
 exclude_patterns = []
