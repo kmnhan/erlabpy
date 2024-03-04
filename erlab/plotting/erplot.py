@@ -3,7 +3,7 @@
 """
 
 __all__ = [
-    "annotate_cuts_erlab",
+    # "annotate_cuts_erlab",
     "copy_mathtext",
     "fancy_labels",
     "label_subplot_properties",
@@ -58,7 +58,7 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.ktool import ktool
 from erlab.interactive.noisetool import noisetool
 from erlab.plotting.annotations import (
-    annotate_cuts_erlab,
+    # annotate_cuts_erlab,
     copy_mathtext,
     fancy_labels,
     label_subplot_properties,

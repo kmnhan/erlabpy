@@ -11,7 +11,7 @@ SI_PREFIX_NAMES : tuple of str
 from __future__ import annotations
 
 __all__ = [
-    "annotate_cuts_erlab",
+    # "annotate_cuts_erlab",
     "copy_mathtext",
     "fancy_labels",
     "label_subplot_properties",
@@ -40,7 +40,7 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import pyclip
 import xarray as xr
-from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
+# from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from erlab.plotting.colors import axes_textcolor
@@ -253,94 +253,94 @@ def parse_point_labels(name: str, roman=True, bar=False):
     return name
 
 
-def annotate_cuts_erlab(
-    data: xr.DataArray,
-    plotted_dims: Sequence[str],
-    ax: matplotlib.axes.Axes | None = None,
-    include_text_labels: bool = False,
-    color: str | None = None,
-    textoffset: Sequence[float] = [0, 0],
-    plot_kw: dict = {},
-    text_kw: dict = {},
-    factor: float = 1.0,
-    **kwargs: dict,
-):
-    r"""Annotates a cut location onto a plot.
+# def annotate_cuts_erlab(
+#     data: xr.DataArray,
+#     plotted_dims: Sequence[str],
+#     ax: matplotlib.axes.Axes | None = None,
+#     include_text_labels: bool = False,
+#     color: str | None = None,
+#     textoffset: Sequence[float] = [0, 0],
+#     plot_kw: dict = {},
+#     text_kw: dict = {},
+#     factor: float = 1.0,
+#     **kwargs: dict,
+# ):
+#     r"""Annotates a cut location onto a plot.
 
-    Does what `arpes.plotting.annotations.annotate_cuts` aims to do, but
-    is much more robust and customizable.
+#     Does what `arpes.plotting.annotations.annotate_cuts` aims to do, but
+#     is much more robust and customizable.
 
-    Parameters
-    ----------
-    data
-        The data before momentum space conversion.
-    plotted_dims
-        The dimension names currently plotted on the target axes.
-    ax
-        The `matplotlib.axes.Axes` instance in which the annotation is
-        placed, defaults to the current axes when optional.
-    include_text_labels
-        Whether to include text labels.
-    color
-        Color of both the line and label text. Each color can be
-        overridden by `plot_kw` and `text_kw`.
-    plot_kw
-        Extra arguments to `matplotlib.pyplot.plot`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
-    text_kw
-        Extra arguments to `matplotlib.pyplot.text`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
-        Has no effect if `include_text_labels` is False.
-    textoffset
-        Horizontal and vertical offset of text labels. Has no effect if
-        `include_text_labels` is False.
-    **kwargs
-        Defines the coordinates of the cut location.
+#     Parameters
+#     ----------
+#     data
+#         The data before momentum space conversion.
+#     plotted_dims
+#         The dimension names currently plotted on the target axes.
+#     ax
+#         The `matplotlib.axes.Axes` instance in which the annotation is
+#         placed, defaults to the current axes when optional.
+#     include_text_labels
+#         Whether to include text labels.
+#     color
+#         Color of both the line and label text. Each color can be
+#         overridden by `plot_kw` and `text_kw`.
+#     plot_kw
+#         Extra arguments to `matplotlib.pyplot.plot`: refer to the
+#         `matplotlib` documentation for a list of all possible arguments.
+#     text_kw
+#         Extra arguments to `matplotlib.pyplot.text`: refer to the
+#         `matplotlib` documentation for a list of all possible arguments.
+#         Has no effect if `include_text_labels` is False.
+#     textoffset
+#         Horizontal and vertical offset of text labels. Has no effect if
+#         `include_text_labels` is False.
+#     **kwargs
+#         Defines the coordinates of the cut location.
 
-    Examples
-    --------
-    Annotate :math:`k_z`-:math:`k_x` plot in the current axes with lines
-    at :math:`h\nu=56` and :math:`60`.
+#     Examples
+#     --------
+#     Annotate :math:`k_z`-:math:`k_x` plot in the current axes with lines
+#     at :math:`h\nu=56` and :math:`60`.
 
-    >>> annotate_cuts(hv_scan, ['kx', 'kz'], hv=[56, 60])
+#     >>> annotate_cuts(hv_scan, ['kx', 'kz'], hv=[56, 60])
 
-    Annotate with thin dashed red lines.
+#     Annotate with thin dashed red lines.
 
-    >>> annotate_cuts(hv_scan, ['kx', 'kz'], hv=[56, 60],
-                      plot_kw={'ls': '--', 'lw': 0.5, 'color': 'red'})
+#     >>> annotate_cuts(hv_scan, ['kx', 'kz'], hv=[56, 60],
+#                       plot_kw={'ls': '--', 'lw': 0.5, 'color': 'red'})
 
-    """
-    assert len(plotted_dims) == 2, "Only 2D axes can be annotated."
-    converted_coordinates = convert_coordinates_to_kspace_forward(data)
-    text_kw.setdefault("horizontalalignment", "left")
-    text_kw.setdefault("verticalalignment", "top")
+#     """
+#     assert len(plotted_dims) == 2, "Only 2D axes can be annotated."
+#     converted_coordinates = convert_coordinates_to_kspace_forward(data)
+#     text_kw.setdefault("horizontalalignment", "left")
+#     text_kw.setdefault("verticalalignment", "top")
 
-    if color is None:
-        color = axes_textcolor(ax)
-    plot_kw.setdefault("color", color)
-    for k, v in kwargs.items():
-        if not isinstance(v, (tuple, list, np.ndarray)):
-            v = [v]
-        selected = converted_coordinates.sel(**dict([[k, v]]), method="nearest")
-        for coords_dict, obj in selected.G.iterate_axis(k):
-            # plt_css = [np.mean(obj[d].values, axis=1) for d in plotted_dims]
-            plt_css = [obj[d].values for d in plotted_dims]
-            plt_css[-1] *= factor
-            with plt.rc_context({"lines.linestyle": "--", "lines.linewidth": 0.85}):
-                ax.plot(*plt_css, **plot_kw)
-            if include_text_labels:
-                idx = np.argmin(plt_css[0])
-                with plt.rc_context({"text.color": color}):
-                    ax.text(
-                        plt_css[0][idx] + 0.02 + textoffset[0],
-                        plt_css[1][idx] + 0.04 + textoffset[1],
-                        "{} = {} {}".format(
-                            name_for_dim(k),
-                            int(np.rint(coords_dict[k].item())),
-                            unit_for_dim(k),
-                        ),
-                        **text_kw,
-                    )
+#     if color is None:
+#         color = axes_textcolor(ax)
+#     plot_kw.setdefault("color", color)
+#     for k, v in kwargs.items():
+#         if not isinstance(v, (tuple, list, np.ndarray)):
+#             v = [v]
+#         selected = converted_coordinates.sel(**dict([[k, v]]), method="nearest")
+#         for coords_dict, obj in selected.G.iterate_axis(k):
+#             # plt_css = [np.mean(obj[d].values, axis=1) for d in plotted_dims]
+#             plt_css = [obj[d].values for d in plotted_dims]
+#             plt_css[-1] *= factor
+#             with plt.rc_context({"lines.linestyle": "--", "lines.linewidth": 0.85}):
+#                 ax.plot(*plt_css, **plot_kw)
+#             if include_text_labels:
+#                 idx = np.argmin(plt_css[0])
+#                 with plt.rc_context({"text.color": color}):
+#                     ax.text(
+#                         plt_css[0][idx] + 0.02 + textoffset[0],
+#                         plt_css[1][idx] + 0.04 + textoffset[1],
+#                         "{} = {} {}".format(
+#                             name_for_dim(k),
+#                             int(np.rint(coords_dict[k].item())),
+#                             unit_for_dim(k),
+#                         ),
+#                         **text_kw,
+#                     )
 
 
 def copy_mathtext(
