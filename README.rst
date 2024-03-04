@@ -1,4 +1,3 @@
-
 =======
 ERLabPy
 =======
@@ -111,6 +110,3 @@ ERLabPy relies on some python libraries. Some key packages and links to their do
       - Parallel processing when numba is impractical
     * - `numba <https://numba.readthedocs.io/en/stable/index.html>`_
       - Acceleration of some performance critical code using just-in-time compilation
-
-
-For the list of packages and modules provided by ERLabPy, see :doc:`reference`.

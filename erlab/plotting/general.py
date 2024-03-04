@@ -1,6 +1,7 @@
 """General plotting utilities.
 
 """
+
 from __future__ import annotations
 
 __all__ = [
@@ -255,16 +256,17 @@ def place_inset(
 
 def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
     """
-    Gets the extent of a `xarray.DataArray` to be used in `matplotlib.pyplot.imshow`.
+    Gets the extent of a :class:`xarray.DataArray` to be used in
+    :func:`matplotlib.pyplot.imshow`.
 
     Parameters
     ----------
     data
-        A two-dimensional `xarray.DataArray`.
+        A two-dimensional :class:`xarray.DataArray`.
 
     Returns
     -------
-    tuple of float
+    x0, x1, y0, y1 : float
 
     """
 
@@ -295,18 +297,18 @@ def plot_array(
     func_args: dict | None = None,
     **improps: dict,
 ) -> matplotlib.image.AxesImage:
-    """Plots a 2D `xarray.DataArray` using `matplotlib.pyplot.imshow`.
+    """Plots a 2D :class:`xarray.DataArray` using :func:`matplotlib.pyplot.imshow`.
 
     Parameters
     ----------
     arr
-        A two-dimensional `xarray.DataArray` to be plotted.
+        A two-dimensional :class:`xarray.DataArray` to be plotted.
     ax
-        The target `matplotlib.axes.Axes`.
+        The target :class:`matplotlib.axes.Axes`.
     colorbar
         Whether to plot a colorbar.
     colorbar_kw
-        Keyword arguments passed onto `erlab.plotting.colors.nice_colorbar`.
+        Keyword arguments passed onto :func:`erlab.plotting.colors.nice_colorbar`.
     xlim, ylim
         If given a sequence of length 2, those values are set as the lower and upper
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
@@ -316,16 +318,16 @@ def plot_array(
         `str` is given, only the coordinates that correspond to the given strings are
         converted.
     func
-        A callable that processes the values prior to displaying. Its output must have
-        the same shape as the input.
+        A callable that processes the values prior to display. Its output must have the
+        same shape as the input.
     func_args
         Keyword arguments passed onto `func`.
     **improps
-        Keyword arguments passed onto `matplotlib.axes.Axes.imshow`.
+        Keyword arguments passed onto :func:`matplotlib.axes.Axes.imshow`.
 
     Returns
     -------
-    img
+    matplotlib.image.AxesImage
 
     """
     if colorbar_kw is None:
@@ -509,9 +511,9 @@ def gradient_fill(
     reverse
         Reverse the gradient.
     ax
-        The `matplotlib.axes.Axes` to plot in.
+        The :class:`matplotlib.axes.Axes` to plot in.
     **kwargs
-        Keyword arguments passed onto `matplotlib.axes.Axes.imshow`.
+        Keyword arguments passed onto :func:`matplotlib.axes.Axes.imshow`.
 
     Returns
     -------
@@ -610,7 +612,7 @@ def plot_slices(
     same_limits
         If `True`, all images will have the same vmin and vmax.
     axis
-        Passed onto `matplotlib.axes.Axes.axis`. Possible values are:
+        Passed onto :func:`matplotlib.axes.Axes.axis`. Possible values are:
 
         ======== ============================================================
         Value    Description
@@ -652,15 +654,15 @@ def plot_slices(
     annotate
         If `False`, turn off automatic annotation.
     cmap
-        If supplied a single `str` or `matplotlib.colors.Colormap`, the colormap is
-        applied to all axes. Otherwise, a nested sequence with the same shape as the
+        If supplied a single `str` or :class:`matplotlib.colors.Colormap`, the colormap
+        is applied to all axes. Otherwise, a nested sequence with the same shape as the
         resulting axes can be provided to use different colormaps for different axes. If
         the slices are 1D, this argument can be used to supply valid colors as line
         colors for differnet slices.
     norm
-        If supplied a single `matplotlib.colors.Normalize`, the norm is applied to all
-        axes. Otherwise, a nested sequence with the same shape as the resulting axes can
-        be provided to use different norms for different axes.
+        If supplied a single :class:`matplotlib.colors.Normalize`, the norm is applied
+        to all axes. Otherwise, a nested sequence with the same shape as the resulting
+        axes can be provided to use different norms for different axes.
     order
         Order to display the data. Effectively, this determines if each map is displayed
         along the same row or the same column. 'C' means to flatten in row-major
@@ -675,21 +677,21 @@ def plot_slices(
         If `True`, for 1D slices, fills the area under the curve with a gradient. Has no
         effect for 2D slices.
     gradient_kw
-        Extra arguments to `erlab.plotting.general.gradient_fill`.
+        Extra arguments to :func:`gradient_fill`.
     subplot_kw
-        Extra arguments to `matplotlib.pyplot.subplots`: refer to the
+        Extra arguments to :func:`matplotlib.pyplot.subplots`: refer to the
         `matplotlib` documentation for a list of all possible arguments.
     annotate_kw
-        Extra arguments to `erlab.plotting.annotations.label_subplot_properties`. Only
-        applied when `annotate` is `True`.
+        Extra arguments to :func:`erlab.plotting.annotations.label_subplot_properties`.
+        Only applied when `annotate` is `True`.
     colorbar_kw
-        Extra arguments to `erlab.plotting.colors.proportional_colorbar`.
+        Extra arguments to :func:`erlab.plotting.colors.proportional_colorbar`.
     axes
-        A nested sequence of `matplotlib.axes.Axes`. If supplied, the returned
-        `matplotlib.figure.Figure` is inferred from the first axes.
+        A nested sequence of :class:`matplotlib.axes.Axes`. If supplied, the returned
+        :class:`matplotlib.figure.Figure` is inferred from the first axes.
     **values
         Key-value pair of cut location and bin widths. See examples.
-        Remaining arguments are passed onto `plot_array`.
+        Remaining arguments are passed onto :func:`plot_array`.
 
     Returns
     -------
