@@ -17,6 +17,8 @@ tqdm
 uncertainties>=3.0.1
 pyclip
 pyqt6>=6.2.2
+cmasher
+superqt
 csaps
 qtpy
 -e git+https://github.com/kmnhan/igor2.git#egg=igor2
