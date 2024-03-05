@@ -1,3 +1,28 @@
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "erlab"
+authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
+description = "Python package for ARPES data analysis and visualization."
+readme = "README.rst"
+requires-python = ">=3.10"
+keywords = ["ARPES"]
+license = { text = "BSD-3-Clause" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.22.0",
+    "scipy",
+    "astropy",
+    "joblib",
+    "numba>=0.56.2",
+    'importlib-metadata; python_version>="3.10"',
+]
+dynamic = ["version"]

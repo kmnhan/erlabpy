@@ -50,26 +50,34 @@ Editable Installation from Source
 ---------------------------------
 
 
-1. Download `environment.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment.yml>`_ to your preferred directory (:code:`my/directory`). If on Apple silicon, download `environment_apple.yml <https://raw.githubusercontent.com/kmnhan/erlabpy/main/environment_apple.yml>`_ instead.
-2. Open a terminal window and go to the directory.
-
-   .. code-block:: bash
-      
-      cd my/directory
-
-3. Create a conda environment and activate it.
-   Here, replace :code:`envname` with the environment name you prefer.
-   Again, if on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+1. Configure conda channels.
 
    .. code-block:: bash
 
       conda config --prepend channels conda-forge
       conda config --set channel_priority strict
+
+
+2. Clone the repository to your preferred directory (:code:`my/directory`).
+
+   .. code-block:: bash
+
+      cd my/directory
+      git clone https://github.com/kmnhan/erlabpy.git
+
+
+3. Create a conda environment and activate it.
+   Here, replace :code:`envname` with the environment name you prefer.
+   If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+
+   .. code-block:: bash
+
+      cd erlabpy
       conda env create -f environment.yml -n envname
       conda activate envname
 
 
-4. Clone and install the repository.
+4. Install the repository.
    
    .. code-block:: bash
 
