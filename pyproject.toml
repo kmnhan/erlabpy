@@ -4,7 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "erlab"
-version = "1.0.0"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.rst"
@@ -26,6 +25,7 @@ dependencies = [
     "numba>=0.56.2",
     'importlib-metadata; python_version>="3.10"',
 ]
+dynamic = ["version"]
 
 [tool.setuptools]
 packages = [
@@ -35,3 +35,6 @@ packages = [
     "erlab.io",
     "erlab.plotting",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "erlab.__version__" }
