@@ -26,3 +26,12 @@ dependencies = [
     "numba>=0.56.2",
     'importlib-metadata; python_version>="3.10"',
 ]
+
+[tool.setuptools]
+packages = [
+    "erlab",
+    "erlab.analysis",
+    "erlab.characterization",
+    "erlab.io",
+    "erlab.plotting",
+]
