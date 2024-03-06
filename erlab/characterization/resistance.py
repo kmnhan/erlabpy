@@ -1,6 +1,6 @@
 """Functions related to analyzing temperature-dependent resistance data.
 
-Currently only supports loading raw data from ``.dat`` files output by
+Currently only supports loading raw data from ``.dat`` and ``.csv`` files output by
 physics lab III equipment.
 
 """
@@ -17,13 +17,17 @@ __all__ = ["load_resistance_physlab"]
 
 
 def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
-    """Loads resistance measurement acquired with physics lab III
-    equipment.
+    """Loads resistance measurement acquired with physics lab III equipment.
 
     Parameters
     ----------
     path
         Local path to ``.dat`` file.
+
+    Returns
+    -------
+    ds : xarray.Dataset
+        Dataset containing resistance data from the file.
 
     """
     if os.path.splitext(path)[1] == ".dat":
@@ -46,8 +50,7 @@ def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
 def _load_resistance_physlab_old(
     path: str, encoding: str = "windows-1252", **kwargs
 ) -> xr.Dataset:
-    """Loads resistance measurement acquired with physics lab III
-    equipment.
+    """Loads resistance measurement acquired with physics lab III equipment.
 
     Parameters
     ----------
