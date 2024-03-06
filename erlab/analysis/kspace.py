@@ -1,0 +1,280 @@
+"""Momentum conversion functions.
+
+Angle conventions and function forms are based on [IS18]_.
+
+.. rubric:: References
+
+.. [IS18] Ishida, Y. and Shin, S.: *Rev. Sci. Instrum.* **89**, 043903 (2018)
+
+"""
+
+import enum
+from collections.abc import Callable
+
+import numba
+import numpy as np
+import numpy.typing as npt
+
+import erlab.constants
+import erlab.io
+import erlab.lattice
+
+
+class AxesConfiguration(enum.IntEnum):
+    """
+    Enum class representing different types of axes configurations. See [IS18]_.
+    """
+
+    Type1 = 1
+    Type2 = 2
+    Type1DA = 3
+    Type2DA = 4
+
+
+@numba.njit
+def _sinc(x):
+    return np.sin(x) / (x + 1e-15)
+
+
+def get_kconv_func(
+    kinetic_energy: np.floating | npt.NDArray,
+    configuration: AxesConfiguration,
+    angle_params: dict[str, float],
+) -> tuple[Callable, Callable]:
+    """
+    Returns the appropriate momentum conversion functions based on the given
+    configuration and kinetic energy.
+
+    Parameters
+    ----------
+    kinetic_energy
+        The kinetic energy in eV.
+    configuration
+        Experimental configuration.
+    angle_params
+        Dictionary of required angle parameters. If the configuration has a DA, the
+        parameters should be `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they
+        should be `delta`, `xi`, `xi0`, and `beta0`, following the notation in [IS18])_.
+
+    Returns
+    -------
+    forward_func : Callable
+        Forward function that takes :math:`(α, β)` and returns :math:`(k_x, k_y)`.
+    inverse_func : Callable
+        Inverse function that takes :math:`(k_x, k_y)` and returns :math:`(α, β)`.
+
+    Notes
+    -----
+    The only requirement for the input parameters is that the shape of the input angles
+    must be broadcastable with each other, and with the shape of the kinetic energy
+    array. This means that the shape of the output array can be controlled By adjusting
+    the shape of the input arrays. For instance, if the kinetic energy is given as a (L,
+    1, 1) array, :math:`k_x` as a (1, M, 1) array, and :math:`k_y` as a (1, 1, N) array,
+    the output angle arrays :math:`α` and :math:`β` will each be broadcasted to a (L, M,
+    N) array which can be directly used for interpolation.
+
+    See Also
+    --------
+    `NumPy Broadcasting Documentation
+    <https://numpy.org/doc/stable/user/basics.broadcasting.html>`_
+
+    """
+    k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
+    func = (
+        _kconv_func_type1,
+        _kconv_func_type2,
+        _kconv_func_type1_da,
+        _kconv_func_type2_da,
+    )[int(configuration) - 1]
+
+    return func(k_tot, **angle_params)
+
+
+def _kz_func(k_tot_sq, kx, ky):
+    """:math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
+    return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
+
+
+def _kconv_func_type1(
+    k_tot: np.floating | npt.NDArray,
+    delta: np.floating = 0.0,
+    xi: np.floating = 0.0,
+    xi0: np.floating = 0.0,
+    beta0: np.floating = 0.0,
+):
+    cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
+
+    k_tot_sq = k_tot**2
+
+    def _forward_func(alpha, beta):
+        alpha_r, beta_r = np.deg2rad(alpha), np.deg2rad(beta - beta0)
+
+        ca, cb = np.cos(alpha_r), np.cos(beta_r)
+        sa, sb = np.sin(alpha_r), np.sin(beta_r)
+        cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
+
+        kx = k_tot * ((sd * sb + cd * sx * cb) * ca - cd * cx * sa)
+        ky = k_tot * ((-cd * sb + sd * sx * cb) * ca - sd * cx * sa)
+
+        return kx, ky
+
+    def _inverse_func(kx, ky):
+        cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
+
+        # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
+        # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
+
+        kperp = _kz_func(k_tot_sq, kx, ky)
+
+        alpha = np.arcsin((sx * kperp - cx * (cd * kx + sd * ky)) / k_tot)
+        beta = np.arctan((sd * kx - cd * ky) / (sx * (cd * kx + sd * ky) + cx * kperp))
+
+        return np.rad2deg(alpha), np.rad2deg(beta) + beta0
+
+    return _forward_func, _inverse_func
+
+
+def _kconv_func_type2(
+    k_tot: np.floating | npt.NDArray,
+    delta: np.floating = 0.0,
+    xi: np.floating = 0.0,
+    xi0: np.floating = 0.0,
+    beta0: np.floating = 0.0,
+):
+    cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
+
+    k_tot_sq = k_tot**2
+
+    def _forward_func(alpha, beta):
+        alpha_r, beta_r = np.deg2rad(alpha), np.deg2rad(beta - beta0)
+
+        ca, sa, sb = np.cos(alpha_r), np.sin(alpha_r), np.sin(beta_r)
+        cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
+
+        kx = k_tot * ((sd * sx + cd * sb * cx) * ca - (sd * cx - cd * sb * sx) * sa)
+        ky = k_tot * ((-cd * sx + sd * sb * cx) * ca + (cd * cx + sd * sb * sx) * sa)
+
+        return kx, ky
+
+    def _inverse_func(kx, ky):
+        cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
+
+        # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
+        # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
+
+        kperp = _kz_func(k_tot_sq, kx, ky)
+        kproj = np.sqrt(
+            np.clip(k_tot_sq - (sd * kx - cd * ky) ** 2, a_min=0, a_max=None)
+        )
+
+        alpha = np.arcsin((sx * kproj - cx * (sd * kx - cd * ky)) / k_tot)
+        beta = np.arctan((cd * kx + sd * ky) / kperp)
+
+        return np.rad2deg(alpha), np.rad2deg(beta) + beta0
+
+    return _forward_func, _inverse_func
+
+
+def _kconv_func_type1_da(
+    k_tot: np.floating | npt.NDArray,
+    delta: np.floating = 0.0,
+    chi: np.floating = 0.0,
+    chi0: np.floating = 0.0,
+    xi: np.floating = 0.0,
+    xi0: np.floating = 0.0,
+):
+    _fwd_2, _inv_2 = _kconv_func_type2_da(k_tot, delta, chi, chi0, xi, xi0)
+
+    def _forward_func(alpha, beta):
+        return _fwd_2(-beta, alpha)
+
+    def _inverse_func(kx, ky):
+        alpha, beta = _inv_2(kx, ky)
+        return beta, -alpha
+
+    return _forward_func, _inverse_func
+
+
+def _kconv_func_type2_da(
+    k_tot: np.floating | npt.NDArray,
+    delta: np.floating = 0.0,
+    chi: np.floating = 0.0,
+    chi0: np.floating = 0.0,
+    xi: np.floating = 0.0,
+    xi0: np.floating = 0.0,
+):
+    cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ, azimuth
+    cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ
+    cc, sc = np.cos(np.deg2rad(chi - chi0)), np.sin(np.deg2rad(chi - chi0))  # χ
+
+    t11, t12, t13 = cx * cd, cx * sd, -sx
+    t21, t22, t23 = sc * sx * cd - cc * sd, sc * sx * sd + cc * cd, sc * cx
+    t31, t32, t33 = cc * sx * cd + sc * sd, cc * sx * sd - sc * cd, cc * cx
+
+    k_tot_sq = k_tot**2
+
+    def _forward_func(alpha, beta):
+        ar, br = np.deg2rad(alpha), np.deg2rad(beta)
+
+        absq = np.sqrt(ar**2 + br**2)
+        scab, cab = _sinc(absq), np.cos(absq)
+
+        # Type I DA
+        # kx = k_tot * (
+        #     (-ar * cd * cx + br * sd * cc - br * cd * sx * sc) * scab
+        #     + (sd * sc + cd * sx * cc) * cab
+        # )
+        # ky = k_tot * (
+        #     (-ar * sd * cx - br * cd * cc - br * sd * sx * sc) * scab
+        #     - (cd * sc - sd * sx * cc) * cab
+        # )
+
+        # Type II DA
+        kx = k_tot * (
+            (-br * cd * cx - ar * sd * cc + ar * cd * sx * sc) * scab
+            + (sd * sc + cd * sx * cc) * cab
+        )
+        ky = k_tot * (
+            (-br * sd * cx + ar * cd * cc + ar * sd * sx * sc) * scab
+            - (cd * sc - sd * sx * cc) * cab
+        )
+
+        return kx, ky
+
+    def _inverse_func(kx, ky):
+        # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
+        # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
+
+        kperp = _kz_func(k_tot_sq, kx, ky)  # sqrt(k² − k_x² − k_y²)
+
+        proj1 = t11 * kx + t12 * ky + t13 * kperp
+        proj2 = t21 * kx + t22 * ky + t23 * kperp
+        proj3 = t31 * kx + t32 * ky + t33 * kperp
+
+        # Type I DA
+        # alpha = (
+        #     -np.arccos(np.clip(proj3 / k_tot, -1, 1))
+        #     * proj1
+        #     / np.sqrt((k_tot_sq - proj3**2).clip(min=0))
+        # )
+        # beta = (
+        #     -np.arccos(np.clip(proj3 / k_tot, -1, 1))
+        #     * proj2
+        #     / np.sqrt((k_tot_sq - proj3**2).clip(min=0))
+        # )
+
+        # Type II DA
+        alpha = (
+            np.arccos(np.clip(proj3 / k_tot, -1, 1))
+            * proj2
+            / np.sqrt((k_tot_sq - proj3**2).clip(min=0))
+        )
+        beta = (
+            -np.arccos(np.clip(proj3 / k_tot, -1, 1))
+            * proj1
+            / np.sqrt((k_tot_sq - proj3**2).clip(min=0))
+        )
+
+        return np.rad2deg(alpha), np.rad2deg(beta)
+
+    return _forward_func, _inverse_func
