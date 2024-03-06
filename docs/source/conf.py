@@ -41,6 +41,7 @@ extensions = [
     #   'sphinx.ext.doctest',
     # "sphinx.ext.inheritance_diagram",
     "sphinx_qt_documentation",
+    "sphinx_copybutton",
     "nbsphinx",
 ]
 

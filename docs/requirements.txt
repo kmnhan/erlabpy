@@ -4,6 +4,7 @@ setuptools
 nbsphinx
 furo
 sphinx-qt-documentation
+sphinx-copybutton
 numpy>=1.22.0
 matplotlib>=3.8.0
 xarray

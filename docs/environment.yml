@@ -25,6 +25,7 @@ dependencies:
   - qtpy
   - sphinx
   - sphinx-autodoc-typehints
+  - sphinx-copybutton
   - nbsphinx
   - furo
   - pip:
