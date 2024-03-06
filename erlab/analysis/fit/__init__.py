@@ -10,6 +10,7 @@ Modules
    
    functions
    models
+   spline
 
 """
 

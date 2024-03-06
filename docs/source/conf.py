@@ -116,6 +116,7 @@ intersphinx_mapping = {
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
     "arpes": ("https://arpes.readthedocs.io/en/latest/", None),
+    "csaps": ("https://csaps.readthedocs.io/en/latest/", None),
 }
 
 
