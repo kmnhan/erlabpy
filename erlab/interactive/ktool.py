@@ -1,28 +1,28 @@
+import copy
 import sys
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib import colors
 from matplotlib.backends.backend_qtagg import FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Circle, Ellipse
 from matplotlib.transforms import Affine2D
-from arpes.utilities.conversion import convert_to_kspace
-from erlab.plotting.bz import plot_hex_bz
+
+import erlab.accessors
 from erlab.interactive.utilities import parse_data
-import copy
+from erlab.plotting.bz import plot_hex_bz
+from erlab.plotting.colors import CenteredInversePowerNorm
 
 
-def plot_bz_tise2(
-    ax=None, a=3.54, pockets=False, pocket_length=1.5, rotate=0, **kwargs
-):
+def plot_bz_tise2(ax=None, a=3.54, pockets=False, aspect=1, rotate=0, **kwargs):
     """
     Plots a TiSe2 BZ on top of specified axis.
     """
     kwargs.setdefault("alpha", 1)
-    kwargs.setdefault("color", "k")
+    kwargs.setdefault("color", "w")
     kwargs.setdefault("linestyle", "-")
     kwargs.setdefault("linewidth", 0.75)
     kwargs.setdefault("zorder", 5)
@@ -36,46 +36,74 @@ def plot_bz_tise2(
         color = kwargs.pop("color", None)
         kwargs["edgecolor"] = color
         kwargs["facecolor"] = "none"
-        p1 = Ellipse(
-            (0, 2 * np.pi / (np.sqrt(3) * a)),
-            width=0.2,
-            height=0.2 * pocket_length,
-            **kwargs
-        )
-        p2 = copy.deepcopy(p1)
-        p3 = copy.deepcopy(p1)
-        p4 = copy.deepcopy(p1)
-        p5 = copy.deepcopy(p1)
-        p6 = copy.deepcopy(p1)
-        p1.set_transform(Affine2D().rotate_deg(rotate - 30 + 0) + ax.transData)
-        p2.set_transform(Affine2D().rotate_deg(rotate - 30 + 60) + ax.transData)
-        p3.set_transform(Affine2D().rotate_deg(rotate - 30 + 120) + ax.transData)
-        p4.set_transform(Affine2D().rotate_deg(rotate - 30 + 180) + ax.transData)
-        p5.set_transform(Affine2D().rotate_deg(rotate - 30 + 240) + ax.transData)
-        p6.set_transform(Affine2D().rotate_deg(rotate - 30 + 300) + ax.transData)
-        ax.add_patch(p1)
-        ax.add_patch(p2)
-        ax.add_patch(p3)
-        ax.add_patch(p4)
-        ax.add_patch(p5)
-        ax.add_patch(p6)
+
+        ln = 2 * np.pi / (a * 3)
+        width = 0.25
+        center = (0, np.sqrt(3) * ln)
+        offset = (0, 0)
+        for i, ang in enumerate(
+            [np.deg2rad(rotate - 30 + a) for a in [0, 60, 120, 180, 240, 300]]
+        ):
+            x = np.cos(ang) * center[0] - np.sin(ang) * center[1]
+            y = np.sin(ang) * center[0] + np.cos(ang) * center[1]
+            if aspect == 1:
+                p = Circle((x + offset[0], y + offset[1]), radius=width / 2, **kwargs)
+            else:
+                p = Ellipse(
+                    (x + offset[0], y + offset[1]),
+                    width=width,
+                    height=width * aspect,
+                    angle=np.rad2deg(ang),
+                    **kwargs,
+                )
+            ax.add_patch(p)
+
+        # p1 = Ellipse(
+        #     (0, 2 * np.pi / (np.sqrt(3) * a)),
+        #     width=0.2,
+        #     height=0.2 * pocket_length,
+        #     **kwargs
+        # )
+        # p2 = copy.deepcopy(p1)
+        # p3 = copy.deepcopy(p1)
+        # p4 = copy.deepcopy(p1)
+        # p5 = copy.deepcopy(p1)
+        # p6 = copy.deepcopy(p1)
+        # p1.set_transform(Affine2D().rotate_deg(rotate - 30 + 0) + ax.transData)
+        # p2.set_transform(Affine2D().rotate_deg(rotate - 30 + 60) + ax.transData)
+        # p3.set_transform(Affine2D().rotate_deg(rotate - 30 + 120) + ax.transData)
+        # p4.set_transform(Affine2D().rotate_deg(rotate - 30 + 180) + ax.transData)
+        # p5.set_transform(Affine2D().rotate_deg(rotate - 30 + 240) + ax.transData)
+        # p6.set_transform(Affine2D().rotate_deg(rotate - 30 + 300) + ax.transData)
+        # ax.add_patch(p1)
+        # ax.add_patch(p2)
+        # ax.add_patch(p3)
+        # ax.add_patch(p4)
+        # ax.add_patch(p5)
+        # ax.add_patch(p6)
 
 
 class kTool(QtWidgets.QMainWindow):
     def __init__(
         self,
         data,
-        bounds={"kx": [-1.5, 1.5], "ky": [-1.5, 1.5], "kp": [-1.5, 1.5]},
-        resolution={"kx": 0.02, "ky": 0.02},
+        bounds: dict | None = None,
+        resolution: dict | None = None,
         gamma=0.5,
         cmap="twilight",
-        plot_bz=True,
+        plot_hex_bz=True,
+        diff_data=None,
         a=3.54,
-        rotate=0,
+        rotate=90,
         *args,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        if bounds is None:
+            bounds = {"kx": [-1.5, 1.5], "ky": [-1.5, 1.5], "kp": [-1.5, 1.5]}
+        if resolution is None:
+            resolution = {"kx": 0.02, "ky": 0.02}
+        self.diff_data = diff_data
         self.data = parse_data(data)
         _get_middle_index = lambda x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
         self.has_eV = "eV" in self.data.dims
@@ -99,9 +127,9 @@ class kTool(QtWidgets.QMainWindow):
         self.vals = self.data.values
         self.bounds = bounds
         self.resolution = resolution
-        self.kxy = convert_to_kspace(
-            self.data, bounds=self.bounds, resolution=self.resolution
-        ).T
+        self.kxy = self.data.kspace.convert(
+            bounds=self.bounds, resolution=self.resolution
+        )
         self.gamma = gamma
         self.cmap = cmap
         self.visible = True
@@ -142,17 +170,21 @@ class kTool(QtWidgets.QMainWindow):
             self.vals, extent=(*self.lims_x, *self.lims_y), **improps
         )
 
-        self._update_extent()
-        self.im_k = self.ax1.imshow(self.kxy.values, extent=self.extent, **improps)
+        self.dispmode = QtWidgets.QComboBox()
+        self.dispmode.addItems(["diff", "converted", "reference"])
+        self.dispmode.setCurrentIndex(0)
+        self.dispmode.currentIndexChanged.connect(self._update_all)
+
+        self.im_k = self.ax1.imshow(self.disp_values, extent=self.extent, **improps)
         self.ax0.set_xlabel(self.dim_x)
         self.ax0.set_ylabel(self.dim_y)
         self.ax1.set_xlabel(self.dim_kx)
         self.ax1.set_ylabel(self.dim_ky)
         self.ax1.axline(
-            (0, 0), (-np.pi / np.sqrt(3) / 3.54, np.pi / 3.54), ls="--", lw=0.75, c="k"
+            (0, 0), (np.pi / 3.54, -np.pi / np.sqrt(3) / 3.54), ls="--", lw=0.75, c="w"
         )
         self.ax1.axline(
-            (0, 0), (-np.pi / np.sqrt(3) / 3.54, -np.pi / 3.54), ls="--", lw=0.75, c="k"
+            (0, 0), (-np.pi / 3.54, -np.pi / np.sqrt(3) / 3.54), ls="--", lw=0.75, c="w"
         )
 
         self.offsetpanel = QtWidgets.QWidget()
@@ -176,11 +208,11 @@ class kTool(QtWidgets.QMainWindow):
         self.spin2.setRange(-180, 180)
         self.spin3.setRange(-180, 180)
         self.spin4.setRange(-180, 180)
-        self.spin0.setSingleStep(0.1)
-        self.spin1.setSingleStep(0.1)
-        self.spin2.setSingleStep(0.1)
-        self.spin3.setSingleStep(0.1)
-        self.spin4.setSingleStep(0.1)
+        self.spin0.setSingleStep(0.01)
+        self.spin1.setSingleStep(0.01)
+        self.spin2.setSingleStep(0.01)
+        self.spin3.setSingleStep(0.01)
+        self.spin4.setSingleStep(0.01)
         self.spin0.setDecimals(3)
         self.spin1.setDecimals(3)
         self.spin2.setDecimals(3)
@@ -217,6 +249,7 @@ class kTool(QtWidgets.QMainWindow):
         gammaspin.setToolTip("Colormap Gamma")
         gammaspin.setSingleStep(0.05)
         gammaspin.setValue(0.5)
+        gammaspin.setMinimum(0.00001)
         gammaspin.valueChanged.connect(self._set_gamma)
         colormaps = QtWidgets.QComboBox()
         colormaps.setToolTip("Colormap")
@@ -294,6 +327,9 @@ class kTool(QtWidgets.QMainWindow):
         self.kxresspin.setDecimals(3)
         self.kyresspin.setDecimals(3)
 
+        if self.diff_data is not None:
+            boundstabcontent.addWidget(self.dispmode)
+
         self.tabwidget = QtWidgets.QTabWidget()
         self.tabwidget.addTab(self.offsetpanel, "Offsets")
         self.tabwidget.addTab(self.boundstab, "Bounds")
@@ -327,8 +363,8 @@ class kTool(QtWidgets.QMainWindow):
 
         self.layout.addWidget(self.canvas)
         # self.canvas.mpl_connect('draw_event', self.clear)
-        if plot_bz:
-            plot_bz_tise2(a=a, ax=self.ax1, rotate=rotate, pockets=False)
+        if plot_hex_bz:
+            plot_bz_tise2(a=a, ax=self.ax1, rotate=rotate, pockets=True)
         self.canvas.draw()
         self.spin4.setValue(np.rad2deg(data.chi))
         # self.im_r.set_visible(self.visible)
@@ -361,6 +397,10 @@ class kTool(QtWidgets.QMainWindow):
     def _set_resolution(self, ax, value):
         self.resolution[ax] = value
         self._update_kxy()
+        self._update_plots()
+
+    def _update_all(self):
+        self._update_disp()
         self._update_plots()
 
     def _set_bounds(self, ax, ind, value):
@@ -405,7 +445,10 @@ class kTool(QtWidgets.QMainWindow):
     def _set_gamma(self, gamma):
         self.gamma = gamma
         self.im_r.set_norm(colors.PowerNorm(self.gamma))
-        self.im_k.set_norm(colors.PowerNorm(self.gamma))
+        if self.diff_data is not None:
+            self.im_k.set_norm(CenteredInversePowerNorm(self.gamma))
+        else:
+            self.im_k.set_norm(colors.PowerNorm(self.gamma))
         self._update_plots()
 
     def _set_cmap(self, cmap):
@@ -424,16 +467,8 @@ class kTool(QtWidgets.QMainWindow):
         self._update_kxy()
         self._update_plots()
 
-    def _update_kxy(self):
-        self.kxy = convert_to_kspace(
-            self.data, bounds=self.bounds, resolution=self.resolution
-        ).T
-        self.im_k.set_data(self.kxy.values)
-        self._update_extent()
-        self.im_k.set_extent(self.extent)
-        self.im_k.set_norm(colors.PowerNorm(self.gamma))
-
-    def _update_extent(self):
+    @property
+    def disp_values(self):
         self.dim_ky, self.dim_kx = self.kxy.dims
         self.coord_kx, self.coord_ky = (
             self.kxy[self.dim_kx].values,
@@ -443,7 +478,43 @@ class kTool(QtWidgets.QMainWindow):
             (self.coord_kx[0], self.coord_kx[-1]),
             (self.coord_ky[0], self.coord_ky[-1]),
         )
-        self.extent = (*self.lims_kx, *self.lims_ky)
+        if self.diff_data is not None:
+            try:
+                ref = (
+                    self.diff_data.sel(
+                        eV=self.data_all.eV[self.ind_z], method="nearest"
+                    )
+                    .sel(kx=slice(*self.lims_kx), ky=slice(*self.lims_ky))
+                    .values
+                )
+                match self.dispmode.currentText():
+                    case "diff":
+                        return self.kxy.values - ref
+                    case "converted":
+                        return self.kxy.values
+                    case _:
+                        return ref
+            except ValueError:
+                pass
+        return self.kxy.values
+
+    @property
+    def extent(self):
+        return (*self.lims_kx, *self.lims_ky)
+
+    def _update_disp(self):
+        self.im_k.set_data(self.disp_values)
+        self.im_k.set_extent(self.extent)
+        if self.diff_data is not None:
+            self.im_k.set_norm(CenteredInversePowerNorm(self.gamma))
+        else:
+            self.im_k.set_norm(colors.PowerNorm(self.gamma))
+
+    def _update_kxy(self):
+        self.kxy = self.data.kspace.convert(
+            bounds=self.bounds, resolution=self.resolution
+        )
+        self._update_disp()
 
 
 def ktool(data, execute=True, *args, **kwargs):
