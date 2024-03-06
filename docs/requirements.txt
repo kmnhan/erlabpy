@@ -22,6 +22,6 @@ cmocean
 superqt
 csaps
 qtpy
--e git+https://github.com/kmnhan/igor2.git#egg=igor2
+igor2 @ git+https://github.com/kmnhan/igor2@master
 -e git+https://github.com/kmnhan/arpes.git#egg=arpes
 -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
