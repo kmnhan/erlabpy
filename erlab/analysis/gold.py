@@ -11,15 +11,21 @@ __all__ = [
     "resolution_roi",
 ]
 
-import arpes
-import arpes.fits
+from collections.abc import Sequence
+
 import lmfit.model
+import matplotlib
+import matplotlib.figure
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 import scipy.interpolate
+import xarray as xr
 from matplotlib.patches import Rectangle
 from uncertainties import ufloat
 
+import arpes
+import arpes.fits
 from erlab.analysis.fit.models import (
     ExtendedAffineBroadenedFD,
     PolynomialModel,
@@ -30,21 +36,21 @@ from erlab.plotting.general import autoscale_to, figwh
 
 
 def edge(
-    gold,
-    phi_range,
-    eV_range,
-    bin_size=(1, 1),
-    temp=None,
-    vary_temp=False,
-    fast=False,
-    method="leastsq",
-    progress=True,
-    parallel_kw=dict(),
-    return_full=False,
-    fixed_center=None,
-    scale_covar=True,
+    gold: xr.DataArray | xr.Dataset,
+    phi_range: tuple[float, float],
+    eV_range: tuple[float, float],
+    bin_size: tuple[int, int] = (1, 1),
+    temp: float | None = None,
+    vary_temp: bool = False,
+    fast: bool = False,
+    method: str = "leastsq",
+    progress: bool = True,
+    parallel_kw: dict | None = None,
+    return_full: bool = False,
+    fixed_center: float | None = None,
+    scale_covar: bool = True,
     **kwargs,
-):
+) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
     if fast:
         params = {}
         model = StepEdgeModel
@@ -55,6 +61,9 @@ def edge(
             "temp": dict(value=temp, vary=vary_temp),
         }
         model = ExtendedAffineBroadenedFD
+
+    if parallel_kw is None:
+        parallel_kw = dict()
 
     if fixed_center is not None:
         params["center"] = dict(value=fixed_center, vary=False)
@@ -101,7 +110,9 @@ def poly_from_edge(
     return modelresult
 
 
-def spline_from_edge(center, weights=None, lam=None):
+def spline_from_edge(
+    center, weights: Sequence[float] | None = None, lam: float | None = None
+) -> scipy.interpolate.BSpline:
     spl = scipy.interpolate.make_smoothing_spline(
         center.phi.values,
         center.values,
@@ -212,23 +223,23 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
 
 
 def poly(
-    gold,
-    phi_range,
-    eV_range,
-    bin_size=(1, 1),
-    temp=None,
-    vary_temp=False,
-    fast=False,
-    method="leastsq",
-    degree=4,
-    correct=False,
-    crop_correct=False,
-    parallel_kw=dict(),
-    plot=True,
-    fig=None,
-    scale_covar=True,
-    scale_covar_edge=True,
-):
+    gold: xr.DataArray | xr.Dataset,
+    phi_range: tuple[float, float],
+    eV_range: tuple[float, float],
+    bin_size: tuple[int, int] = (1, 1),
+    temp: float | None = None,
+    vary_temp: bool = False,
+    fast: bool = False,
+    method: str = "leastsq",
+    degree: int = 4,
+    correct: bool = False,
+    crop_correct: bool = False,
+    parallel_kw: dict | None = None,
+    plot: bool = True,
+    fig: matplotlib.figure.Figure | None = None,
+    scale_covar: bool = True,
+    scale_covar_edge: bool = True,
+) -> lmfit.model.ModelResult | tuple[lmfit.model.ModelResult, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
         phi_range,
@@ -263,22 +274,22 @@ def poly(
 
 
 def spline(
-    gold,
-    phi_range,
-    eV_range,
-    bin_size=(1, 1),
-    temp=None,
-    vary_temp=False,
-    fast=False,
-    method="leastsq",
-    lam=None,
-    correct=False,
-    crop_correct=False,
-    parallel_kw=dict(),
-    plot=True,
-    fig=None,
-    scale_covar_edge=True,
-):
+    gold: xr.DataArray | xr.Dataset,
+    phi_range: tuple[float, float],
+    eV_range: tuple[float, float],
+    bin_size: tuple[int, int] = (1, 1),
+    temp: float | None = None,
+    vary_temp: bool = False,
+    fast: bool = False,
+    method: str = "leastsq",
+    lam: float | None = None,
+    correct: bool = False,
+    crop_correct: bool = False,
+    parallel_kw: dict | None = None,
+    plot: bool = True,
+    fig: matplotlib.figure.Figure | None = None,
+    scale_covar_edge: bool = True,
+) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
         phi_range,
@@ -305,18 +316,18 @@ def spline(
 
 
 def resolution(
-    gold,
-    phi_range,
-    eV_range_edge,
-    eV_range_fit=None,
-    bin_size=(1, 1),
-    degree=4,
-    fast=False,
-    method="leastsq",
-    plot=True,
-    parallel_kw=dict(),
-    scale_covar=True,
-):
+    gold: xr.DataArray | xr.Dataset,
+    phi_range: tuple[float, float],
+    eV_range_edge: tuple[float, float],
+    eV_range_fit: tuple[float, float] | None = None,
+    bin_size: tuple[int, int] = (1, 1),
+    degree: int = 4,
+    fast: bool = False,
+    method: str = "leastsq",
+    plot: bool = True,
+    parallel_kw: dict | None = None,
+    scale_covar: bool = True,
+) -> lmfit.model.ModelResult:
     pol, gold_corr = poly(
         gold,
         phi_range,
@@ -371,13 +382,13 @@ def resolution(
 
 
 def resolution_roi(
-    gold_roi,
-    eV_range,
-    fix_temperature=True,
-    method="leastsq",
-    plot=True,
-    scale_covar=True,
-):
+    gold_roi: xr.DataArray,
+    eV_range: tuple[float, float],
+    fix_temperature: bool = True,
+    method: str = "leastsq",
+    plot: bool = True,
+    scale_covar: bool = True,
+) -> lmfit.model.ModelResult:
     edc_avg = gold_roi.mean("phi").sel(eV=slice(*eV_range))
 
     params = dict(
