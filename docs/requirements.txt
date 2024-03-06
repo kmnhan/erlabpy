@@ -6,6 +6,7 @@ sphinx-qt-documentation
 numpy>=1.22.0
 matplotlib>=3.8.0
 xarray
+h5netcdf
 numba>=0.56.2
 numbagg
 numba-progress
