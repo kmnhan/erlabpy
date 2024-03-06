@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python>=3.12.2
+  - pip>=19.3
   - numpy>=1.22.0
   - matplotlib>=3.8.0
   - xarray
