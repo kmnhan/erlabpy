@@ -54,7 +54,7 @@ def get_kconv_func(
     angle_params
         Dictionary of required angle parameters. If the configuration has a DA, the
         parameters should be `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they
-        should be `delta`, `xi`, `xi0`, and `beta0`, following the notation in [IS18])_.
+        should be `delta`, `xi`, `xi0`, and `beta0`, following the notation in [IS18]_.
 
     Returns
     -------
