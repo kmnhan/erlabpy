@@ -4,16 +4,46 @@ Currently only supports loading raw data from ``.dat`` files output by
 physics lab III equipment.
 
 """
+
 import re
+import os
 from io import StringIO
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 
 __all__ = ["load_resistance_physlab"]
 
 
-def load_resistance_physlab(
+def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
+    """Loads resistance measurement acquired with physics lab III
+    equipment.
+
+    Parameters
+    ----------
+    path
+        Local path to ``.dat`` file.
+
+    """
+    if os.path.splitext(path)[1] == ".dat":
+        return _load_resistance_physlab_old(path, **kwargs)
+    else:
+        return (
+            pd.read_csv(path, index_col=0, usecols=[1, 2, 3, 4])
+            .to_xarray()
+            .rename(
+                {
+                    "Elapsed Time (s)": "time",
+                    "Temperature (K)": "temp",
+                    "Resistance (Ohm)": "res",
+                    "Current (A)": "curr",
+                }
+            )
+        )
+
+
+def _load_resistance_physlab_old(
     path: str, encoding: str = "windows-1252", **kwargs
 ) -> xr.Dataset:
     """Loads resistance measurement acquired with physics lab III
@@ -63,7 +93,7 @@ def load_resistance_physlab(
         delimiter="\t",
         skip_header=3,
         usecols=[2, 3, 4, 5, 6, 7],
-        **kwargs
+        **kwargs,
     )
     ds = xr.Dataset(
         data_vars=dict(
