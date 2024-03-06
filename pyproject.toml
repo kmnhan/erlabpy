@@ -36,5 +36,8 @@ packages = [
     "erlab.plotting",
 ]
 
+[tool.setuptools.package-dir]
+erlab = "erlab"
+
 [tool.setuptools.dynamic]
 version = { attr = "erlab.__version__" }
