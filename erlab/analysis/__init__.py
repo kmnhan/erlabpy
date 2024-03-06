@@ -16,6 +16,7 @@ Modules
    transform
    interpolate
    utilities
+   kspace
 
 """
 

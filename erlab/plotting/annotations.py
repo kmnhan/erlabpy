@@ -1,18 +1,12 @@
 """Plot annotations.
-
-Attributes
-----------
-SI_PREFIXES : dict
-    Maps powers of 10 to valid SI prefix strings.
-SI_PREFIX_NAMES : tuple of str
-    Names of the SI prefixes.
-
 """
 
 from __future__ import annotations
 
 __all__ = [
     # "annotate_cuts_erlab",
+    "SI_PREFIXES",
+    "SI_PREFIX_NAMES",
     "copy_mathtext",
     "fancy_labels",
     "label_subplot_properties",
@@ -69,7 +63,7 @@ SI_PREFIXES: dict[int, str] = {
     -18: "a",
     -21: "z",
     -24: "y",
-}
+}  #: Maps powers of 10 to valid SI prefix strings.
 
 SI_PREFIX_NAMES: tuple[str, ...] = (
     "yotta",
@@ -93,7 +87,7 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
     "atto",
     "zepto",
     "yocto",
-)
+)  #: Names of the SI prefixes.
 
 
 def _alph_label(val, prefix, suffix, numeric, capital):

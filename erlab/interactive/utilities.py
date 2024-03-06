@@ -1,6 +1,7 @@
 """Various helper functions and extensions to pyqtgraph.
 
 """
+
 from __future__ import annotations
 
 import re
@@ -110,6 +111,8 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs: dict):
         generated code.
 
     """
+    if len(args) == 0 and len(kwargs) == 0:
+        return f"{funcname}()"
     tab = "    "
     code = f"{funcname}(\n"
     for v in args:
@@ -831,19 +834,21 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     @staticmethod
     def getParameterWidget(
-        qwtype: Literal[
-            "spin",
-            "dblspin",
-            "btspin",
-            "slider",
-            "dblslider",
-            "chkbox",
-            "pushbtn",
-            "chkpushbtn",
-            "combobox",
-            "fitparam",
-        ]
-        | None = None,
+        qwtype: (
+            Literal[
+                "spin",
+                "dblspin",
+                "btspin",
+                "slider",
+                "dblslider",
+                "chkbox",
+                "pushbtn",
+                "chkpushbtn",
+                "combobox",
+                "fitparam",
+            ]
+            | None
+        ) = None,
         **kwargs: dict,
     ):
         """Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.

@@ -136,22 +136,24 @@ def _check_even(arr):
 
 
 class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
-    """Faster linear multidimensional interpolation on evenly spaced coordinates.
+    """Fast linear multidimensional interpolation on evenly spaced coordinates.
 
-    This is an extension from `scipy.interpolate.RegularGridInterpolator` with
+    This is an extension from `scipy.interpolate.RegularGridInterpolator` with vast
     performance improvements and integration with `xarray`.
 
-    In case of 2D or 3D linear interpolation on uniformly spaced coordinates with
-    extrapolation disabled, parallel acceleration is applied. Otherwise,
-    `scipy.interpolate.RegularGridInterpolator` is called. The input arguments are
-    identical to `scipy.interpolate.RegularGridInterpolator` except `bounds_error`,
-    which is set to `False` by default.
+    The input arguments are identical to `scipy.interpolate.RegularGridInterpolator`
+    except `bounds_error`, which is set to `False` by default.
+
+    Performance improvements are enabled for 2D and 3D linear interpolation on uniformly
+    spaced coordinates with extrapolation disabled. Otherwise,
+    `scipy.interpolate.RegularGridInterpolator` is called. See below for more
+    information.
 
     Notes
     -----
     Parallel acceleration is only applied when all of the following are true.
 
-    * `method` is "linear".
+    * `method` is ``"linear"``.
     * Coordinates along all dimensions are evenly spaced.
     * Values are 2D or 3D.
     * Extrapolation is disabled, i.e., `fill_value` is not `None`.
@@ -164,7 +166,12 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
     """
 
     def __init__(
-        self, points, values, method="linear", bounds_error=False, fill_value=np.nan
+        self,
+        points,
+        values,
+        method="linear",
+        bounds_error=False,
+        fill_value=np.nan,
     ):
         super().__init__(
             points,
@@ -180,7 +187,11 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     @classmethod
     def from_xarray(
-        cls, data: xr.DataArray, method="linear", bounds_error=False, fill_value=np.nan
+        cls,
+        data: xr.DataArray,
+        method="linear",
+        bounds_error: bool = False,
+        fill_value: float | None = np.nan,
     ):
         """Construct an interpolator from a `xarray.DataArray`.
 
@@ -215,7 +226,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 result = _get_interp_func(self.values.ndim)(
                     *self.grid,
                     self.values,
-                    *[c.ravel() for c in xi],
+                    *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
                 ).reshape(xi[0].shape)
 
@@ -233,29 +244,27 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
 
 def interpn(
-    points: Sequence[npt.NDArray],
-    values: npt.NDArray,
-    xi: Sequence[npt.NDArray] | npt.NDArray,
+    points: Sequence[np.ndarray],
+    values: np.ndarray,
+    xi: Sequence[np.ndarray] | np.ndarray,
     method: str = "linear",
     bounds_error: bool = False,
-    fill_value: np.number = np.nan,
+    fill_value: float | None = np.nan,
 ):
     """Multidimensional interpolation on evenly spaced coordinates.
 
     This can be used as a drop-in replacement for `scipy.interpolate.interpn`.
     Performance optimization is applied in some special cases, documented in
-    `FastInterpolator`. The optimized version can be used with `xarray.Dataset.interp`
-    and `xarray.DataArray.interp` by using `linearfast` as the interpolation method.
-    Note that in most cases, the fallback to `scipy` will be silent.
+    `FastInterpolator`.
 
     Parameters
     ----------
     points
-        The points defining the regular grid in n dimensions. The points in
+        The points defining the regular grid in `n` dimensions. The points in
         each dimension (i.e. every element of the points tuple) must be strictly
         ascending.
     values
-        The data on the regular grid in n dimensions.
+        The data on the regular grid in `n` dimensions.
     xi
         The coordinates to sample the gridded data at. In addition to the
         scipy-compatible syntax, a tuple of coordinates is also acceptable.
@@ -268,6 +277,14 @@ def interpn(
     -------
     values_x : numpy.ndarray
         Interpolated values at input coordinates.
+
+
+    Notes
+    -----
+    This optimized version of linear interpolation can be used with the `xarray`
+    interpolation methods `xarray.Dataset.interp` and `xarray.DataArray.interp` by
+    supplying ``method="linearfast"``. Note that the fallback to `scipy` will be silent
+    except when a non-uniform dimension is found, when a warning will be issued.
 
     """
     interp = FastInterpolator(

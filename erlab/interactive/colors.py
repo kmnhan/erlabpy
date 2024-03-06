@@ -1,6 +1,7 @@
 """Functions for manipulating colors in Qt.
 
 """
+
 from __future__ import annotations
 
 __all__ = [
@@ -253,7 +254,6 @@ class BetterImageItem(pg.ImageItem):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
         self.sigColorChanged.emit()
-
 
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
