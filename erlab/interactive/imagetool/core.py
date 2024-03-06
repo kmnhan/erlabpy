@@ -625,7 +625,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             else:
                 conv_dims = [
                     d
-                    for d in ("phi", "theta", "beta", "alpha", "chi")
+                    for d in ("phi", "theta", "beta", "alpha", "chi", "xi")
                     if d in data.dims
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})

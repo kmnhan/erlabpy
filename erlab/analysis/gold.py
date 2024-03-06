@@ -37,7 +37,7 @@ from erlab.plotting.general import autoscale_to, figwh
 
 def edge(
     gold: xr.DataArray | xr.Dataset,
-    phi_range: tuple[float, float],
+    angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
@@ -70,20 +70,20 @@ def edge(
     weights = None
 
     if any([b != 1 for b in bin_size]):
-        gold_binned = gold.coarsen(phi=bin_size[0], eV=bin_size[1], boundary="trim")
+        gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
         gold = gold_binned.mean()
         # gold_stderr = (gold_binned.std() / np.sqrt(np.prod(bin_size))).sel(
-        #     phi=slice(*phi_range), eV=slice(*eV_range)
+        #     alpha=slice(*angle_range), eV=slice(*eV_range)
         # )
         # if (gold_stderr > 0).all():
         #     weights = 1 / gold_stderr
 
-    gold_sel = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
+    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
 
     fitresults = arpes.fits.broadcast_model(
         model,
         gold_sel,
-        "phi",
+        "alpha",
         weights=weights,
         params=params,
         method=method,
@@ -114,7 +114,7 @@ def spline_from_edge(
     center, weights: Sequence[float] | None = None, lam: float | None = None
 ) -> scipy.interpolate.BSpline:
     spl = scipy.interpolate.make_smoothing_spline(
-        center.phi.values,
+        center.alpha.values,
         center.values,
         w=np.asarray(weights),
         lam=lam,
@@ -122,7 +122,7 @@ def spline_from_edge(
     return spl
 
 
-def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, res):
+def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, res):
     if isinstance(res, lmfit.model.ModelResult):
         is_callable = False
     elif callable(res):
@@ -141,8 +141,8 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
 
     gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
     rect = Rectangle(
-        (phi_range[0], eV_range[0]),
-        np.diff(phi_range)[0],
+        (angle_range[0], eV_range[0]),
+        np.diff(angle_range)[0],
         np.diff(eV_range)[0],
         ec="w",
         alpha=0.5,
@@ -151,7 +151,7 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
     )
     ax0.add_patch(rect)
     ax0.errorbar(
-        center_arr.phi,
+        center_arr.alpha,
         center_arr,
         center_stderr,
         fmt="o",
@@ -162,24 +162,24 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
     )
 
     if is_callable:
-        ax0.plot(gold.phi, res(gold.phi), "r-", lw=0.75)
+        ax0.plot(gold.alpha, res(gold.alpha), "r-", lw=0.75)
     else:
-        ax0.plot(gold.phi, res.eval(res.params, x=gold.phi), "r-", lw=0.75)
+        ax0.plot(gold.alpha, res.eval(res.params, x=gold.alpha), "r-", lw=0.75)
     ax0.set_ylim(gold.eV[[0, -1]])
 
     data_kws = dict(lw=0.5, ms=2, mfc="w", zorder=0, c="0.4", capsize=0)
     fit_kws = dict(c="r", lw=0.75)
 
     if is_callable:
-        residuals = res(center_arr.phi.values) - center_arr.values
+        residuals = res(center_arr.alpha.values) - center_arr.values
         x_eval = np.linspace(
-            min(center_arr.phi.values),
-            max(center_arr.phi.values),
-            3 * len(center_arr.phi),
+            min(center_arr.alpha.values),
+            max(center_arr.alpha.values),
+            3 * len(center_arr.alpha),
         )
         ax1.axhline(0, **fit_kws)
         ax1.errorbar(
-            center_arr.phi,
+            center_arr.alpha,
             residuals,
             yerr=lmfit.model.propagate_err(
                 center_arr.values, center_stderr.values, "abs"
@@ -190,7 +190,7 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
         ax1.set_ylabel("residuals")
 
         ax2.errorbar(
-            center_arr.phi,
+            center_arr.alpha,
             center_arr.values,
             yerr=lmfit.model.propagate_err(
                 center_arr.values, center_stderr.values, "abs"
@@ -213,7 +213,7 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
             ax=ax2,
             data_kws=data_kws,
             fit_kws=fit_kws,
-            numpoints=3 * len(center_arr.phi),
+            numpoints=3 * len(center_arr.alpha),
         )
         ax1.set_ylim(autoscale_to(res.eval() - res.data))
         ax2.set_ylim(autoscale_to(res.data))
@@ -224,7 +224,7 @@ def _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, re
 
 def poly(
     gold: xr.DataArray | xr.Dataset,
-    phi_range: tuple[float, float],
+    angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
@@ -242,7 +242,7 @@ def poly(
 ) -> lmfit.model.ModelResult | tuple[lmfit.model.ModelResult, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
-        phi_range,
+        angle_range,
         eV_range,
         bin_size=bin_size,
         temp=temp,
@@ -262,11 +262,11 @@ def poly(
     )
     if plot:
         _plot_gold_fit(
-            fig, gold, phi_range, eV_range, center_arr, center_stderr, modelresult
+            fig, gold, angle_range, eV_range, center_arr, center_stderr, modelresult
         )
     if correct:
         if crop_correct:
-            gold = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
+            gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
         corr = correct_with_edge(gold, modelresult, plot=False)
         return modelresult, corr
     else:
@@ -275,7 +275,7 @@ def poly(
 
 def spline(
     gold: xr.DataArray | xr.Dataset,
-    phi_range: tuple[float, float],
+    angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
@@ -292,7 +292,7 @@ def spline(
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
-        phi_range,
+        angle_range,
         eV_range,
         bin_size=bin_size,
         temp=temp,
@@ -305,10 +305,10 @@ def spline(
 
     spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
     if plot:
-        _plot_gold_fit(fig, gold, phi_range, eV_range, center_arr, center_stderr, spl)
+        _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, spl)
     if correct:
         if crop_correct:
-            gold = gold.sel(phi=slice(*phi_range), eV=slice(*eV_range))
+            gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
         corr = correct_with_edge(gold, spl, plot=False)
         return spl, corr
     else:
@@ -317,7 +317,7 @@ def spline(
 
 def resolution(
     gold: xr.DataArray | xr.Dataset,
-    phi_range: tuple[float, float],
+    angle_range: tuple[float, float],
     eV_range_edge: tuple[float, float],
     eV_range_fit: tuple[float, float] | None = None,
     bin_size: tuple[int, int] = (1, 1),
@@ -330,7 +330,7 @@ def resolution(
 ) -> lmfit.model.ModelResult:
     pol, gold_corr = poly(
         gold,
-        phi_range,
+        angle_range,
         eV_range_edge,
         bin_size=bin_size,
         degree=degree,
@@ -344,8 +344,8 @@ def resolution(
     if eV_range_fit is None:
         eV_range_fit = tuple(r - np.mean(pol.best_fit) for r in eV_range_edge)
     del pol
-    gold_roi = gold_corr.sel(phi=slice(*phi_range))
-    edc_avg = gold_roi.mean("phi").sel(eV=slice(*eV_range_fit))
+    gold_roi = gold_corr.sel(alpha=slice(*angle_range))
+    edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
 
     params = dict(
         temp=dict(value=gold.S.temp, vary=False),
@@ -359,8 +359,8 @@ def resolution(
         ax = plt.gca()
         gold_corr.S.plot(ax=ax, cmap="copper", gamma=0.5)
         rect = Rectangle(
-            (phi_range[0], eV_range_fit[0]),
-            np.diff(phi_range)[0],
+            (angle_range[0], eV_range_fit[0]),
+            np.diff(angle_range)[0],
             np.diff(eV_range_fit)[0],
             ec="w",
             alpha=0.5,
@@ -389,7 +389,7 @@ def resolution_roi(
     plot: bool = True,
     scale_covar: bool = True,
 ) -> lmfit.model.ModelResult:
-    edc_avg = gold_roi.mean("phi").sel(eV=slice(*eV_range))
+    edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
     params = dict(
         temp=dict(value=gold_roi.S.temp, vary=not fix_temperature),
@@ -405,7 +405,7 @@ def resolution_roi(
         ax = plt.gca()
         gold_roi.S.plot(ax=ax, cmap="copper", gamma=0.5)
         ax.fill_between(
-            gold_roi.phi,
+            gold_roi.alpha,
             eV_range[0],
             eV_range[1],
             ec="w",

@@ -434,7 +434,7 @@ class FermiEdge2dFunc(DynamicFunction):
 
     @property
     def argnames(self) -> list[str]:
-        return ["eV", "phi"] + self.poly.argnames[1:]
+        return ["eV", "alpha"] + self.poly.argnames[1:]
 
     @property
     def kwargs(self):
@@ -446,16 +446,16 @@ class FermiEdge2dFunc(DynamicFunction):
             ("resolution", 0.02),
         ]
 
-    def pre_call(self, eV, phi, **params: dict):
+    def pre_call(self, eV, alpha, **params: dict):
         center = self.poly(
-            np.asarray(phi), *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)]
+            np.asarray(alpha), *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)]
         )
         return (params["const_bkg"] - params["offset"] + params["lin_bkg"] * eV) / (
             1 + np.exp((1.0 * eV - center) / max(TINY, params["temp"] * kb_eV))
         ) + params["offset"]
 
-    def __call__(self, eV, phi, **params: dict):
-        return do_convolve_y(eV, phi, self.pre_call, **params).flatten()
+    def __call__(self, eV, alpha, **params: dict):
+        return do_convolve_y(eV, alpha, self.pre_call, **params).flatten()
 
 
 class FermiEdge2dModel(XModelMixin):
@@ -466,25 +466,25 @@ class FermiEdge2dModel(XModelMixin):
     .. math::
 
         I = \left\{(a\omega + b)\left[1 +
-        \exp\left(\frac{\omega - \sum_{i = 0}^{n} c_i \phi^i}{k_B T}\right)\right]^{-1}
+        \exp\left(\frac{\omega - \sum_{i = 0}^{n} c_i \alpha^i}{k_B T}\right)\right]^{-1}
         + c\right\}\otimes g(\sigma)
 
     for a :math:`n` th degree polynomial edge with coefficients :math:`c_i` with a
     linear density of states described by :math:`a\omega+b` with a constant background
     :math:`c` convolved with a gaussian, where :math:`\omega` is the binding energy and
-    :math:`\phi` is the detector angle.
+    :math:`\alpha` is the detector angle.
 
     """
 
     n_dims = 2
-    dimension_order = ["eV", "phi"]
+    dimension_order = ["eV", "alpha"]
     guess_dataarray = True
     fit_flat = True
 
     def __init__(
         self,
         degree=2,
-        independent_vars=["eV", "phi"],
+        independent_vars=["eV", "alpha"],
         prefix="",
         nan_policy="raise",
         **kwargs,
@@ -499,12 +499,12 @@ class FermiEdge2dModel(XModelMixin):
         super().__init__(FermiEdge2dFunc(degree), **kwargs)
         self.name = f"FermiEdge2dModel (deg {degree})"
 
-    def guess(self, data, eV, phi, negative=False, **kwargs):
+    def guess(self, data, eV, alpha, negative=False, **kwargs):
         pars = self.make_params()
         for i in range(self.func.poly.degree + 1):
             pars[f"{self.prefix}c{i}"].set(value=0.0)
 
-        avg_edc = data.mean("phi").values
+        avg_edc = data.mean("alpha").values
         len_fit = max(round(len(eV) * 0.05), 10)
         dos0, dos1 = fit_poly_jit(
             np.asarray(eV[:len_fit], dtype=np.float64),
@@ -520,5 +520,5 @@ class FermiEdge2dModel(XModelMixin):
     def guess_fit(self, *args, **kwargs):
         return super().guess_fit(*args, **kwargs)
 
-    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'phi']")
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC

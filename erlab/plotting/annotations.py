@@ -8,6 +8,7 @@ SI_PREFIX_NAMES : tuple of str
     Names of the SI prefixes.
 
 """
+
 from __future__ import annotations
 
 __all__ = [
@@ -40,6 +41,7 @@ import matplotlib.transforms as mtransforms
 import numpy as np
 import pyclip
 import xarray as xr
+
 # from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
@@ -158,6 +160,7 @@ def name_for_dim(dim_name, escaped=True):
         "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
         "psi": (r"\ensuremath{\psi}", r"$\psi$"),
         "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+        "xi": (r"\ensuremath{\xi}", r"$\xi$"),
         "Eb": (r"\ensuremath{E}", r"$E$"),
         "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
         "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
@@ -177,16 +180,17 @@ def name_for_dim(dim_name, escaped=True):
     return name
 
 
-def unit_for_dim(dim_name, rad2deg=False):
+def unit_for_dim(dim_name, deg2rad=False):
     unit = {
         "temperature": (r"K", r"K"),
         "T": (r"K", r"K"),
-        "theta": (r"rad", r"rad"),
-        "beta": (r"rad", r"rad"),
-        "psi": (r"rad", r"rad"),
-        "chi": (r"rad", r"rad"),
-        "alpha": (r"rad", r"rad"),
-        "phi": (r"rad", r"rad"),
+        "theta": (r"deg", r"deg"),
+        "beta": (r"deg", r"deg"),
+        "psi": (r"deg", r"deg"),
+        "chi": (r"deg", r"deg"),
+        "alpha": (r"deg", r"deg"),
+        "phi": (r"deg", r"deg"),
+        "xi": (r"deg", r"deg"),
         "Eb": (r"eV", r"eV"),
         "eV": (r"eV", r"eV"),
         "hv": (r"eV", r"eV"),
@@ -200,14 +204,14 @@ def unit_for_dim(dim_name, rad2deg=False):
         unit = ""
     else:
         unit = unit[0] if plt.rcParams["text.usetex"] else unit[1]
-    if rad2deg:
-        unit = unit.replace("rad", "deg")
+    if deg2rad:
+        unit = unit.replace("deg", "rad")
     return unit
 
 
-def label_for_dim(dim_name, rad2deg=False, escaped=True):
+def label_for_dim(dim_name, deg2rad=False, escaped=True):
     name = name_for_dim(dim_name, escaped=escaped)
-    unit = unit_for_dim(dim_name, rad2deg=rad2deg)
+    unit = unit_for_dim(dim_name, deg2rad=deg2rad)
     if unit == "":
         return name
     else:
@@ -387,18 +391,18 @@ def copy_mathtext(
         pyclip.copy(buffer.getvalue())
 
 
-def fancy_labels(ax=None, rad2deg=False):
+def fancy_labels(ax=None, deg2rad=False):
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
         for ax in ax:
-            fancy_labels(ax, rad2deg)
+            fancy_labels(ax, deg2rad)
         return
 
-    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), rad2deg=rad2deg))
-    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), rad2deg=rad2deg))
+    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), deg2rad=deg2rad))
+    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), deg2rad=deg2rad))
     if hasattr(ax, "get_zlabel"):
-        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), rad2deg=rad2deg))
+        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), deg2rad=deg2rad))
 
 
 def label_subplot_properties(
@@ -500,9 +504,13 @@ def label_subplots(
         "extra bold",
         "black",
     ] = "normal",
-    fontsize: float
-    | Literal["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"]
-    | None = None,
+    fontsize: (
+        float
+        | Literal[
+            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
+        ]
+        | None
+    ) = None,
     **kwargs,
 ):
     r"""Labels subplots with automatically generated labels.
@@ -620,10 +628,12 @@ def label_subplots_nature(
         "extra bold",
         "black",
     ] = "black",
-    fontsize: float
-    | Literal[
-        "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
-    ] = 8,
+    fontsize: (
+        float
+        | Literal[
+            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
+        ]
+    ) = 8,
     **kwargs,
 ):
     r"""Labels subplots with automatically generated labels.

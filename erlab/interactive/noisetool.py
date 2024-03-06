@@ -496,25 +496,11 @@ if __name__ == "__main__":
 
     gkmk_cvs = erlab.io.load_als_bl4(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"
-    ).spectrum
-    phi_new = np.linspace(gkmk_cvs.phi[0], gkmk_cvs.phi[-1], 1000)
+    )
+    alpha_new = np.linspace(gkmk_cvs.alpha[0], gkmk_cvs.alpha[-1], 1000)
     eV_new = np.linspace(gkmk_cvs.eV[0], gkmk_cvs.eV[-1], 2000)
-    gkmk_cvs = gkmk_cvs.interp(phi=phi_new, eV=eV_new)
-    gkmk_cvs = gkmk_cvs.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
+    gkmk_cvs = gkmk_cvs.interp(alpha=alpha_new, eV=eV_new)
+    gkmk_cvs = gkmk_cvs.sel(
+        alpha=slice(*np.rad2deg((-0.25, 0.25))), eV=slice(-1.25, 0.15)
+    )
     noisetool(gkmk_cvs, bench=False)
-
-    # dose_kmk_2 = load_data(
-    #     "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/f_003_R1_S001.pxt",
-    #     location="BL4",
-    # ).spectrum
-    # gkmk_cs1 = dose_kmk_2[0, :, :]
-    # phi_new = np.linspace(gkmk_cs1.phi[0], gkmk_cs1.phi[-1], 1000)
-    # eV_new = np.linspace(gkmk_cs1.eV[0], gkmk_cs1.eV[-1], 2000)
-    # gkmk_cs1 = gkmk_cs1.interp(phi=phi_new, eV=eV_new)
-    # gkmk_cs1 = gkmk_cs1.sel(phi=slice(-0.25, 0.25), eV=slice(-1.25, 0.15))
-
-    # noisetool(gkmk_cs1, bench=False)
-    # dat = xr.open_dataarray('/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc')
-    # noisetool(dat.sel(eV=0,method='nearest'), bench=False)
-
-    # noisetool(gkmk_cs1, bench=False)

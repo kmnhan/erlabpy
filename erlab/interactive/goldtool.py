@@ -70,7 +70,7 @@ class EdgeFitter(QtCore.QThread):
         with joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
                 gold=self.data,
-                phi_range=self.x_range,
+                angle_range=self.x_range,
                 eV_range=self.y_range,
                 bin_size=(self.params["Bin x"], self.params["Bin y"]),
                 temp=self.params["T (K)"],
@@ -300,12 +300,12 @@ class goldtool(AnalysisWindow):
         self.fitter.sigIterated.connect(self.iterated)
         self.fitter.sigFinished.connect(self.post_fit)
         self.sigAbortFitting.connect(self.fitter.abort_fit)
-        
+
         # resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
-        phi_span = self.data.phi.values[-1] - self.data.phi.values[0]
-        x1 = self.data.phi.values.mean() + phi_span * 0.45
-        x0 = self.data.phi.values.mean() - phi_span * 0.45
+        ang_span = self.data.alpha.values[-1] - self.data.alpha.values[0]
+        x1 = self.data.alpha.values.mean() + ang_span * 0.45
+        x0 = self.data.alpha.values.mean() - ang_span * 0.45
         y1 = self.data.eV.values[-1] - eV_span * 0.015
         y0 = y1 - eV_span * 0.3
         self.params_roi.modify_roi(x0, y0, x1, y1)
@@ -340,9 +340,9 @@ class goldtool(AnalysisWindow):
         x0, y0, x1, y1 = self.params_roi.roi_limits
         params = self.params_edge.values
         n_total = len(
-            self.data.phi.coarsen(phi=params["Bin x"], boundary="trim")
+            self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
             .mean()
-            .sel(phi=slice(x0, x1))
+            .sel(alpha=slice(x0, x1))
         )
         self.progress.setMaximum(n_total)
         self.fitter.set_params(self.data, x0, y0, x1, y1, params)
@@ -363,7 +363,7 @@ class goldtool(AnalysisWindow):
             self.fitter.edge_stderr,
         )
 
-        xval = self.edge_center.phi.values
+        xval = self.edge_center.alpha.values
         yval = self.edge_center.values
         for i in range(2):
             self.scatterplots[i].setData(x=xval, y=yval)
@@ -383,14 +383,14 @@ class goldtool(AnalysisWindow):
                 modelresult = self._perform_spline_fit()
                 params = self.params_spl.values
         for i in range(2):
-            xval = self.data.phi.values
+            xval = self.data.alpha.values
             if i == 1 and params["Residuals"]:
                 yval = np.zeros_like(xval)
             else:
                 yval = modelresult(xval)
             self.polycurves[i].setData(x=xval, y=yval)
 
-        xval = self.edge_center.phi.values
+        xval = self.edge_center.alpha.values
         if params["Residuals"]:
             yval = modelresult(xval) - self.edge_center.values
         else:
@@ -454,7 +454,7 @@ class goldtool(AnalysisWindow):
         x0, y0, x1, y1 = self.params_roi.roi_limits
 
         arg_dict = dict(
-            phi_range=(x0, x1),
+            angle_range=(x0, x1),
             eV_range=(y0, y1),
             bin_size=(p0["Bin x"], p0["Bin y"]),
             temp=p0["T (K)"],

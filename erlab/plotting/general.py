@@ -314,9 +314,9 @@ def plot_array(
         limits of each axis. If given a single `float`, the limits are set as ``(-lim,
         lim)``.  If `None`, automatically determines the limits from the data.
     rad2deg
-        If `True`, converts some known angle coordinates to degrees. If an iterable of
-        `str` is given, only the coordinates that correspond to the given strings are
-        converted.
+        If `True`, converts some known angle coordinates from radians to degrees. If an
+        iterable of `str` is given, only the coordinates that correspond to the given
+        strings are converted.
     func
         A callable that processes the values prior to display. Its output must have the
         same shape as the input.
@@ -390,7 +390,7 @@ def plot_array(
         img = ax.imshow(arr.values, norm=norm, **improps)
     ax.set_xlabel(arr.dims[1])
     ax.set_ylabel(arr.dims[0])
-    fancy_labels(ax, rad2deg=rad2deg)
+    fancy_labels(ax)
     if xlim is not None:
         ax.set_xlim(*xlim)
     if ylim is not None:

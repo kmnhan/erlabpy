@@ -20,8 +20,9 @@ def load(filename, data_dir=None, contains=None):
             "X": "x",
             "Y": "y",
             "Z": "z",
-            "A": "chi",  # azi
-            "T": "beta",  # polar
+            "A": "delta",  # azi
+            "T": "chi",  # polar
+            "F": "xi",  # tilt
             "TA": "temperature_cryotip",  # cold head temp
             "TB": "temperature",  # sample temp
             "CreationTime": "creation_time",
@@ -46,12 +47,12 @@ def load(filename, data_dir=None, contains=None):
             "PassEnergy": "pass_energy",
             "MCP": "mcp_voltage",
             "BL_pexit": "exit_slit",
-            "YDeflection": "theta_DA",
+            "YDeflection": "beta",
         }
         coords_keys_mapping = {
             "Kinetic Energy": "eV",
-            "ThetaX": "phi",
-            "ThetaY": "theta",
+            "ThetaX": "alpha",
+            "ThetaY": "beta",
         }
         fixed_attrs = {"analyzer_type": "hemispherical"}
         attr_to_coords = ["hv"]
@@ -64,14 +65,15 @@ def load(filename, data_dir=None, contains=None):
         if compat_mode:
             attr_keys_mapping = {
                 "BL_photon_energy": "hv",
-                "a": "chi",  # azi
-                "t": "beta",  # polar
+                "a": "delta",  # azi
+                "t": "chi",  # polar
+                "f": "xi",  # tilt
                 "cryo_temperature": "temperature_cryotip",  # cold head temp
                 "cold_head_temperature": "temperature",  # sample temp
                 "creationtime": "creation_time",
                 "model": "analyzer_name",
                 "MCPVoltage": "mcp_voltage",
-                "DeflectionY": "theta_DA",
+                "DeflectionY": "beta",
             }
 
         for k, v in ncf.groups.items():
@@ -135,20 +137,33 @@ def load(filename, data_dir=None, contains=None):
             {k: v for k, v in coords_keys_mapping.items() if k in data.dims}
         )
 
-        if "theta" not in itertools.product(attrs.keys(), data.dims):
-            attrs["theta"] = 0.0
+        # if compat:
+        #     if "theta" not in itertools.product(attrs.keys(), data.dims):
+        #         attrs["theta"] = 0.0
 
-        attrs["alpha"] = 90.0
-        attrs["psi"] = 0.0
+        #     attrs["alpha"] = 90.0
+        #     attrs["psi"] = 0.0
 
-        for a in ["alpha", "beta", "theta", "theta_DA", "chi", "phi", "psi"]:
+        #     for a in ["alpha", "beta", "theta", "theta_DA", "chi", "phi", "psi"]:
+        #         try:
+        #             data = data.assign_coords({a: np.deg2rad(data[a])})
+        #         except KeyError:
+        #             try:
+        #                 data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
+        #             except KeyError:
+        #                 continue
+        
+        for a in ["chi", "xi", "alpha", "beta", "delta"]:
             try:
-                data = data.assign_coords({a: np.deg2rad(data[a])})
+                data = data.assign_coords({a: data[a]})
             except KeyError:
                 try:
-                    data = data.assign_coords({a: np.deg2rad(attrs.pop(a))})
+                    data = data.assign_coords({a: attrs.pop(a)})
                 except KeyError:
                     continue
+
+        # Assume that nobody will perform polar mapping at SSRL 5-2.
+        attrs["configuration"] = 3  # Type I with DA
 
         for c in attr_to_coords:
             data = data.assign_coords({c: attrs.pop(c)})

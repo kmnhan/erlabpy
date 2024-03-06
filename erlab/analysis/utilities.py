@@ -25,7 +25,7 @@ def correct_with_edge(
         if isinstance(modelresult.model, FermiEdge2dModel):
             edge_quad = xr.DataArray(
                 np.polynomial.polynomial.polyval(
-                    fmap.phi,
+                    fmap.alpha,
                     np.array(
                         [
                             modelresult.best_values[f"c{i}"]
@@ -33,19 +33,19 @@ def correct_with_edge(
                         ]
                     ),
                 ),
-                coords=dict(phi=fmap.phi),
+                coords=dict(alpha=fmap.alpha),
             )
         else:
-            edge_quad = modelresult.eval(x=fmap.phi)
+            edge_quad = modelresult.eval(x=fmap.alpha)
             edge_quad = xr.DataArray(
-                edge_quad, coords=dict(x=fmap.phi), dims=["phi"]
+                edge_quad, coords=dict(x=fmap.alpha), dims=["alpha"]
             )  # workaround for lmfit 1.22 coercing
     elif callable(modelresult):
         edge_quad = xr.DataArray(
-            modelresult(fmap.phi.values), coords=dict(phi=fmap.phi)
+            modelresult(fmap.alpha.values), coords=dict(alpha=fmap.alpha)
         )
     elif isinstance(modelresult, np.ndarray | xr.DataArray):
-        if len(fmap.phi) != len(modelresult):
+        if len(fmap.alpha) != len(modelresult):
             raise ValueError("incompatible modelresult dimensions")
         else:
             edge_quad = modelresult
@@ -67,7 +67,7 @@ def correct_with_edge(
 
         if fmap.ndim > 2:
             avg_dims = list(fmap.dims)[:]
-            avg_dims.remove("phi")
+            avg_dims.remove("alpha")
             avg_dims.remove("eV")
             plot_array(fmap.mean(avg_dims), ax=axes[0], **improps)
             plot_array(corrected.mean(avg_dims), ax=axes[1], **improps)

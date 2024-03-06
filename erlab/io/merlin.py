@@ -11,7 +11,22 @@ from arpes.endstations.plugin.merlin import BL403ARPESEndstation
 from erlab.io.igor import load_wave
 
 
-def load_live(filename, data_dir=None):
+def _pyarpes_compat(data: xr.Dataset, compat: bool) -> xr.Dataset | xr.DataArray:
+    if compat:
+        return data
+    else:
+        data = data.drop_vars(["alpha", "psi"])
+        for a in ["beta", "theta", "chi", "phi"]:
+            data = data.assign_coords({a: np.rad2deg(data[a])})
+        data = data.spectrum.rename(data.attrs.get("lens_mode_name", "spectrum"))
+
+        data.attrs["configuration"] = 1
+        data.attrs["sample_workfunction"] = 4.44
+
+        return data.rename(dict(phi="alpha", theta="beta", chi="delta", beta="xi"))
+
+
+def load_live(filename, data_dir=None, compat: bool = False, **kwargs):
     wave = load_wave(filename, data_dir)
     wave = wave.rename(
         {
@@ -29,13 +44,15 @@ def load_live(filename, data_dir=None):
     wave = wave.assign_coords(eV=wave["eV"] - wave.attrs["hv"])
 
     endstation = BL403ARPESEndstation()
-    return endstation.postprocess_final(
+    dat = endstation.postprocess_final(
         endstation.postprocess(xr.Dataset(dict(spectrum=wave)))
     )
+    return _pyarpes_compat(dat, compat)
 
 
-def load(filename, data_dir=None, **kwargs):
-    return arpes.io.load_data(filename, location="BL4", data_dir=data_dir, **kwargs)
+def load(filename, data_dir=None, compat: bool = False, **kwargs):
+    dat = arpes.io.load_data(filename, location="BL4", data_dir=data_dir, **kwargs)
+    return _pyarpes_compat(dat, compat)
 
 
 def folder_summary(data_dir, exclude_live=False):
@@ -78,9 +95,9 @@ def folder_summary(data_dir, exclude_live=False):
     time_list = []
     for path, name in fnames.items():
         if os.path.splitext(path)[1] == ".ibw":
-            data = load_live(path)
+            data = load_live(path, compat=True)
         else:
-            data = load(path)
+            data = load(path, compat=True)
         time_list.append(
             datetime.strptime(
                 f"{data.attrs['date']} {data.attrs['time']}", "%d/%m/%Y %I:%M:%S %p"
