@@ -103,6 +103,7 @@ def _kconv_func_type1(
     beta0: np.floating = 0.0,
 ):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
+    cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
     k_tot_sq = k_tot**2
 
@@ -111,7 +112,6 @@ def _kconv_func_type1(
 
         ca, cb = np.cos(alpha_r), np.cos(beta_r)
         sa, sb = np.sin(alpha_r), np.sin(beta_r)
-        cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
         kx = k_tot * ((sd * sb + cd * sx * cb) * ca - cd * cx * sa)
         ky = k_tot * ((-cd * sb + sd * sx * cb) * ca - sd * cx * sa)
@@ -119,8 +119,7 @@ def _kconv_func_type1(
         return kx, ky
 
     def _inverse_func(kx, ky):
-        cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
-
+        # cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
         # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
         # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
 
@@ -142,6 +141,7 @@ def _kconv_func_type2(
     beta0: np.floating = 0.0,
 ):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
+    cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
     k_tot_sq = k_tot**2
 
@@ -149,7 +149,6 @@ def _kconv_func_type2(
         alpha_r, beta_r = np.deg2rad(alpha), np.deg2rad(beta - beta0)
 
         ca, sa, sb = np.cos(alpha_r), np.sin(alpha_r), np.sin(beta_r)
-        cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
         kx = k_tot * ((sd * sx + cd * sb * cx) * ca - (sd * cx - cd * sb * sx) * sa)
         ky = k_tot * ((-cd * sx + sd * sb * cx) * ca + (cd * cx + sd * sb * sx) * sa)
@@ -157,8 +156,7 @@ def _kconv_func_type2(
         return kx, ky
 
     def _inverse_func(kx, ky):
-        cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
-
+        # cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
         # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
         # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
 
