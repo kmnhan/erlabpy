@@ -159,8 +159,8 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
 
     def __post_init__(self, execute=None):
         self.show()
-        self.activateWindow()
         self.raise_()
+        self.activateWindow()
 
         if execute is None:
             execute = True
@@ -168,6 +168,9 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
                 shell = get_ipython().__class__.__name__  # type: ignore
                 if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                     execute = False
+                    from IPython.lib.guisupport import start_event_loop_qt4
+
+                    start_event_loop_qt4(self.qapp)
             except NameError:
                 pass
         if execute:
