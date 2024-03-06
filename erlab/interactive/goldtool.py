@@ -1,15 +1,17 @@
 __all__ = ["goldtool"]
 
 import os
+import time
 
-import arpes.xarray_extensions
 import joblib
 import numpy as np
 import pyqtgraph as pg
+import uncertainties
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
+import arpes.xarray_extensions
 import erlab.analysis
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utilities import (
@@ -272,6 +274,10 @@ class goldtool(AnalysisWindow):
 
         self.axes[0].disableAutoRange()
 
+        # setup time calculation
+        self.start_time: float | None = None
+        self.step_times: list[float] = []
+
         # setup progress bar
         self.progress = QtWidgets.QProgressDialog(
             labelText="Fitting...",
@@ -280,6 +286,8 @@ class goldtool(AnalysisWindow):
             minimumDuration=0,
             windowModality=QtCore.Qt.WindowModal,
         )
+        self.pbar = QtWidgets.QProgressBar()
+        self.progress.setBar(self.pbar)
         self.progress.setFixedSize(self.progress.size())
         self.progress.setCancelButtonText("Abort!")
         self.progress.canceled.disconnect(self.progress.cancel)  # don't auto close
@@ -289,7 +297,7 @@ class goldtool(AnalysisWindow):
 
         # setup fitter
         self.fitter = EdgeFitter()
-        self.fitter.sigIterated.connect(self.progress.setValue)
+        self.fitter.sigIterated.connect(self.iterated)
         self.fitter.sigFinished.connect(self.post_fit)
         self.sigAbortFitting.connect(self.fitter.abort_fit)
 
@@ -299,8 +307,25 @@ class goldtool(AnalysisWindow):
         self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
         self.params_edge.widgets["Fix T"].setDisabled(self.params_edge.values["Fast"])
 
+    def iterated(self, n: int):
+        self.step_times.append(time.perf_counter() - self.start_time)
+        self.progress.setValue(n)
+
+        deltas = np.diff(self.step_times)
+        # avg_time = uncertainties.ufloat(np.mean(deltas), np.std(deltas))
+        timeleft = (self.progress.maximum() - (n - 1)) * np.mean(deltas)
+
+        # timeleft: str = humanize.precisedelta(datetime.timedelta(seconds=timeleft))
+        # steptime: str = humanize.precisedelta(datetime.timedelta(seconds=steptime))
+
+        self.progress.setLabelText(f"{timeleft:.1f} seconds left...")
+        self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
+
     @QtCore.Slot()
     def perform_edge_fit(self):
+        self.start_time = time.perf_counter()
+        self.step_times: list[float] = [0.0]
+
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = self.params_roi.roi_limits
