@@ -35,12 +35,25 @@ class KspaceAccessor:
         self.reset_offsets()
 
     @property
-    def has_eV(self):
+    def has_eV(self) -> bool:
         return "eV" in self._obj.dims
 
     @property
-    def has_hv(self):
+    def has_hv(self) -> bool:
         return self._obj.hv.size > 1
+
+    @property
+    def has_beta(self) -> bool:
+        return self._obj.beta.size > 1
+
+    @property
+    def momentum_axes(self) -> tuple[str, ...]:
+        if self.has_beta:
+            return ("kx", "ky")
+        elif self.has_hv:
+            return ("kp", "kz")
+        else:
+            return ("kp",)
 
     @property
     def photon_energy(self):
@@ -157,6 +170,7 @@ class KspaceAccessor:
 
     def get_bounds(self):
         # construct boundary array from meshgrid
+        # TODO: for hv-dependent cuts, return kp and kz bounds
         alpha, beta = [
             np.r_[arr[0, :-1], arr[:-1, -1], arr[-1, ::-1], arr[-2:0:-1, 0]]
             for arr in np.meshgrid(self._obj["alpha"], self._obj["beta"])
