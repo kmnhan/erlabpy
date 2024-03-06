@@ -18,9 +18,10 @@ uncertainties>=3.0.1
 pyclip
 pyqt6>=6.2.2
 cmasher
+cmocean
 superqt
 csaps
 qtpy
 -e git+https://github.com/kmnhan/igor2.git#egg=igor2
 -e git+https://github.com/kmnhan/arpes.git#egg=arpes
--e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
+-e git+https://github.com/kmnhan/erlabpy.git#egg=erlab --force-reinstall --no-deps
