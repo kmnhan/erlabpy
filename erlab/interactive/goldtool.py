@@ -300,6 +300,15 @@ class goldtool(AnalysisWindow):
         self.fitter.sigIterated.connect(self.iterated)
         self.fitter.sigFinished.connect(self.post_fit)
         self.sigAbortFitting.connect(self.fitter.abort_fit)
+        
+        # resize roi to data bounds
+        eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
+        phi_span = self.data.phi.values[-1] - self.data.phi.values[0]
+        x1 = self.data.phi.values.mean() + phi_span * 0.45
+        x0 = self.data.phi.values.mean() - phi_span * 0.45
+        y1 = self.data.eV.values[-1] - eV_span * 0.015
+        y0 = y1 - eV_span * 0.3
+        self.params_roi.modify_roi(x0, y0, x1, y1)
 
         self.__post_init__(execute=True)
 
