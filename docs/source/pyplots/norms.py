@@ -6,7 +6,7 @@ from pyqtgraph.colormap import modulatedBarData
 
 import erlab.plotting.erplot as eplt
 
-plt.style.use(["khan", "firalight"])
+plt.style.use("khan")
 
 sns.set_palette("Set2")
 
