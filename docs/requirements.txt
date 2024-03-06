@@ -1,5 +1,6 @@
 sphinx
 sphinx-autodoc-typehints
+setuptools
 nbsphinx
 furo
 sphinx-qt-documentation
@@ -19,11 +20,12 @@ tqdm
 uncertainties>=3.0.1
 pyclip
 pyqt6>=6.2.2
+qtawesome
 cmasher
 cmocean
 superqt
 csaps
 qtpy
 igor2 @ git+https://github.com/kmnhan/igor2@master
--e git+https://github.com/kmnhan/arpes.git#egg=arpes
+arpes @ git+https://github.com/kmnhan/arpes@master
 -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab

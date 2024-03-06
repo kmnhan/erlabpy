@@ -16,7 +16,6 @@ Interactive tools
    exampledata
    goldtool
    ktool
-   ktool_new
    masktool
    noisetool
    utilities
