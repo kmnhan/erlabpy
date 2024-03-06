@@ -1,549 +1,334 @@
-import copy
+"""Interactive momentum conversion tool."""
+
+import os
 import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import colors
-from matplotlib.backends.backend_qtagg import FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.backends.qt_compat import QtCore, QtWidgets
-from matplotlib.figure import Figure
-from matplotlib.patches import Circle, Ellipse
-from matplotlib.transforms import Affine2D
+import pyqtgraph as pg
+import varname
+import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.accessors
-from erlab.interactive.utilities import parse_data
-from erlab.plotting.bz import plot_hex_bz
-from erlab.plotting.colors import CenteredInversePowerNorm
+import erlab.analysis
+from erlab.interactive.colors import (
+    BetterColorBarItem,
+    BetterImageItem,
+    ColorMapComboBox,
+    ColorMapGammaWidget,
+)
+from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.utilities import array_rect, copy_to_clipboard, gen_function_code
+from erlab.plotting.bz import get_bz_edge
+
+__all__ = ["ktool"]
 
 
-def plot_bz_tise2(ax=None, a=3.54, pockets=False, aspect=1, rotate=0, **kwargs):
-    """
-    Plots a TiSe2 BZ on top of specified axis.
-    """
-    kwargs.setdefault("alpha", 1)
-    kwargs.setdefault("color", "w")
-    kwargs.setdefault("linestyle", "-")
-    kwargs.setdefault("linewidth", 0.75)
-    kwargs.setdefault("zorder", 5)
-    # kwargs.setdefault('ax',plt.gca())
+class KtoolImageItem(BetterImageItem):
 
-    # warnings.warn('Deprecated plot_bz_tise2')
-    if ax is None:
-        ax = plt.gca()
-    plot_hex_bz(a=a, rotate=rotate, ax=ax)
-    if pockets is True:
-        color = kwargs.pop("color", None)
-        kwargs["edgecolor"] = color
-        kwargs["facecolor"] = "none"
-
-        ln = 2 * np.pi / (a * 3)
-        width = 0.25
-        center = (0, np.sqrt(3) * ln)
-        offset = (0, 0)
-        for i, ang in enumerate(
-            [np.deg2rad(rotate - 30 + a) for a in [0, 60, 120, 180, 240, 300]]
-        ):
-            x = np.cos(ang) * center[0] - np.sin(ang) * center[1]
-            y = np.sin(ang) * center[0] + np.cos(ang) * center[1]
-            if aspect == 1:
-                p = Circle((x + offset[0], y + offset[1]), radius=width / 2, **kwargs)
-            else:
-                p = Ellipse(
-                    (x + offset[0], y + offset[1]),
-                    width=width,
-                    height=width * aspect,
-                    angle=np.rad2deg(ang),
-                    **kwargs,
-                )
-            ax.add_patch(p)
-
-        # p1 = Ellipse(
-        #     (0, 2 * np.pi / (np.sqrt(3) * a)),
-        #     width=0.2,
-        #     height=0.2 * pocket_length,
-        #     **kwargs
-        # )
-        # p2 = copy.deepcopy(p1)
-        # p3 = copy.deepcopy(p1)
-        # p4 = copy.deepcopy(p1)
-        # p5 = copy.deepcopy(p1)
-        # p6 = copy.deepcopy(p1)
-        # p1.set_transform(Affine2D().rotate_deg(rotate - 30 + 0) + ax.transData)
-        # p2.set_transform(Affine2D().rotate_deg(rotate - 30 + 60) + ax.transData)
-        # p3.set_transform(Affine2D().rotate_deg(rotate - 30 + 120) + ax.transData)
-        # p4.set_transform(Affine2D().rotate_deg(rotate - 30 + 180) + ax.transData)
-        # p5.set_transform(Affine2D().rotate_deg(rotate - 30 + 240) + ax.transData)
-        # p6.set_transform(Affine2D().rotate_deg(rotate - 30 + 300) + ax.transData)
-        # ax.add_patch(p1)
-        # ax.add_patch(p2)
-        # ax.add_patch(p3)
-        # ax.add_patch(p4)
-        # ax.add_patch(p5)
-        # ax.add_patch(p6)
-
-
-class kTool(QtWidgets.QMainWindow):
-    def __init__(
-        self,
-        data,
-        bounds: dict | None = None,
-        resolution: dict | None = None,
-        gamma=0.5,
-        cmap="twilight",
-        plot_hex_bz=True,
-        diff_data=None,
-        a=3.54,
-        rotate=90,
-        *args,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        if bounds is None:
-            bounds = {"kx": [-1.5, 1.5], "ky": [-1.5, 1.5], "kp": [-1.5, 1.5]}
-        if resolution is None:
-            resolution = {"kx": 0.02, "ky": 0.02}
-        self.diff_data = diff_data
-        self.data = parse_data(data)
-        _get_middle_index = lambda x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
-        self.has_eV = "eV" in self.data.dims
-        self.show_eV = self.has_eV and self.data.ndim == 3
-        if self.show_eV:
-            self.data_all = self.data.copy(deep=True)
-            self.coord_z = self.data_all["eV"].values
-            self.ind_z = _get_middle_index(self.coord_z)
-            self.data = self.data_all.isel(eV=self.ind_z)
-            self.lims_z = (self.coord_z[0], self.coord_z[-1])
-            self.inc_z = self.coord_z[1] - self.coord_z[0]
-        self.dim_x, self.dim_y = self.data.dims
-        self.coord_x, self.coord_y = (
-            self.data[self.dim_x].values,
-            self.data[self.dim_y].values,
-        )
-        self.lims_x, self.lims_y = (
-            (self.coord_x[0], self.coord_x[-1]),
-            (self.coord_y[0], self.coord_y[-1]),
-        )
-        self.vals = self.data.values
-        self.bounds = bounds
-        self.resolution = resolution
-        self.kxy = self.data.kspace.convert(
-            bounds=self.bounds, resolution=self.resolution
-        )
-        self.gamma = gamma
-        self.cmap = cmap
-        self.visible = True
-        self.background = None
-        improps = dict(
-            animated=True,
-            visible=True,
-            interpolation="none",
-            aspect="auto",
-            origin="lower",
-            norm=colors.PowerNorm(self.gamma),
-            cmap=self.cmap,
-        )
-
-        self._main = QtWidgets.QWidget()
-        self.setCentralWidget(self._main)
-        self.layout = QtWidgets.QVBoxLayout(self._main)
-
-        self.new_offsets_rad = {}
-        self.new_offsets_deg = {}
-
-        self.canvas = FigureCanvas(
-            Figure(figsize=(8, 16), dpi=100, layout="constrained")
-        )
-        self.addToolBar(
-            QtCore.Qt.BottomToolBarArea, NavigationToolbar(self.canvas, self)
-        )
-
-        gs = self.canvas.figure.add_gridspec(1, 2)
-        self.ax0 = self.canvas.figure.add_subplot(gs[0])
-        self.ax1 = self.canvas.figure.add_subplot(gs[1])
-        self.ax0.grid()
-        self.ax1.grid()
-        self.ax0.set_aspect("equal")
-        self.ax1.set_aspect("equal")
-
-        self.im_r = self.ax0.imshow(
-            self.vals, extent=(*self.lims_x, *self.lims_y), **improps
-        )
-
-        self.dispmode = QtWidgets.QComboBox()
-        self.dispmode.addItems(["diff", "converted", "reference"])
-        self.dispmode.setCurrentIndex(0)
-        self.dispmode.currentIndexChanged.connect(self._update_all)
-
-        self.im_k = self.ax1.imshow(self.disp_values, extent=self.extent, **improps)
-        self.ax0.set_xlabel(self.dim_x)
-        self.ax0.set_ylabel(self.dim_y)
-        self.ax1.set_xlabel(self.dim_kx)
-        self.ax1.set_ylabel(self.dim_ky)
-        self.ax1.axline(
-            (0, 0), (np.pi / 3.54, -np.pi / np.sqrt(3) / 3.54), ls="--", lw=0.75, c="w"
-        )
-        self.ax1.axline(
-            (0, 0), (-np.pi / 3.54, -np.pi / np.sqrt(3) / 3.54), ls="--", lw=0.75, c="w"
-        )
-
-        self.offsetpanel = QtWidgets.QWidget()
-        offsetpanelcontent = QtWidgets.QHBoxLayout()
-
-        self.offsetcoords = ["theta", "phi", "beta", "psi", "chi"]
-
-        spin0label = QtWidgets.QLabel(self.offsetcoords[0])
-        spin1label = QtWidgets.QLabel(self.offsetcoords[1])
-        spin2label = QtWidgets.QLabel(self.offsetcoords[2])
-        spin3label = QtWidgets.QLabel(self.offsetcoords[3])
-        spin4label = QtWidgets.QLabel(self.offsetcoords[4])
-
-        self.spin0 = QtWidgets.QDoubleSpinBox()
-        self.spin1 = QtWidgets.QDoubleSpinBox()
-        self.spin2 = QtWidgets.QDoubleSpinBox()
-        self.spin3 = QtWidgets.QDoubleSpinBox()
-        self.spin4 = QtWidgets.QDoubleSpinBox()
-        self.spin0.setRange(-180, 180)
-        self.spin1.setRange(-180, 180)
-        self.spin2.setRange(-180, 180)
-        self.spin3.setRange(-180, 180)
-        self.spin4.setRange(-180, 180)
-        self.spin0.setSingleStep(0.01)
-        self.spin1.setSingleStep(0.01)
-        self.spin2.setSingleStep(0.01)
-        self.spin3.setSingleStep(0.01)
-        self.spin4.setSingleStep(0.01)
-        self.spin0.setDecimals(3)
-        self.spin1.setDecimals(3)
-        self.spin2.setDecimals(3)
-        self.spin3.setDecimals(3)
-        self.spin4.setDecimals(3)
-        self.spin0.setValue(0.0)
-        self.spin1.setValue(0.0)
-        self.spin2.setValue(0.0)
-        self.spin3.setValue(0.0)
-        self.spin4.setValue(0.0)
-        self.spin0.valueChanged.connect(lambda v: self._spinchanged(0, v))
-        self.spin1.valueChanged.connect(lambda v: self._spinchanged(1, v))
-        self.spin2.valueChanged.connect(lambda v: self._spinchanged(2, v))
-        self.spin3.valueChanged.connect(lambda v: self._spinchanged(3, v))
-        self.spin4.valueChanged.connect(lambda v: self._spinchanged(4, v))
-
-        offsetpanelcontent.addWidget(spin0label)
-        offsetpanelcontent.addWidget(self.spin0)
-        offsetpanelcontent.addWidget(spin1label)
-        offsetpanelcontent.addWidget(self.spin1)
-        offsetpanelcontent.addWidget(spin2label)
-        offsetpanelcontent.addWidget(self.spin2)
-        offsetpanelcontent.addWidget(spin3label)
-        offsetpanelcontent.addWidget(self.spin3)
-        offsetpanelcontent.addWidget(spin4label)
-        offsetpanelcontent.addWidget(self.spin4)
-        offsetpanelcontent.addStretch()
-        self.offsetpanel.setLayout(offsetpanelcontent)
-
-        self.colorstab = QtWidgets.QWidget()
-        colorstabcontent = QtWidgets.QHBoxLayout()
-        gammalabel = QtWidgets.QLabel("g")
-        gammaspin = QtWidgets.QDoubleSpinBox()
-        gammaspin.setToolTip("Colormap Gamma")
-        gammaspin.setSingleStep(0.05)
-        gammaspin.setValue(0.5)
-        gammaspin.setMinimum(0.00001)
-        gammaspin.valueChanged.connect(self._set_gamma)
-        colormaps = QtWidgets.QComboBox()
-        colormaps.setToolTip("Colormap")
-        colormaps.addItems(plt.colormaps())
-        colormaps.setCurrentIndex(colormaps.findText(self.cmap))
-        colormaps.currentTextChanged.connect(self._set_cmap)
-        colorstabcontent.addWidget(gammalabel)
-        colorstabcontent.addWidget(gammaspin)
-        colorstabcontent.addWidget(colormaps)
-        colorstabcontent.addStretch()
-        self.colorstab.setLayout(colorstabcontent)
-
-        self.boundstab = QtWidgets.QWidget()
-        boundstabcontent = QtWidgets.QHBoxLayout(self.boundstab)
-        self.boundsgroup = QtWidgets.QGroupBox("Bounds")
-        self.boundsgrid = QtWidgets.QGridLayout(self.boundsgroup)
-        self.kxminlabel = QtWidgets.QLabel(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kxminlabel, 0, 0, 1, 1)
-        self.kxminspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kxminspin, 0, 1, 1, 1)
-        self.kxmaxlabel = QtWidgets.QLabel(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kxmaxlabel, 0, 2, 1, 1, QtCore.Qt.AlignHCenter)
-        self.kxmaxspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kxmaxspin, 0, 3, 1, 1)
-        self.kyminlabel = QtWidgets.QLabel(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kyminlabel, 1, 0, 1, 1)
-        self.kyminspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kyminspin, 1, 1, 1, 1)
-        self.kymaxlabel = QtWidgets.QLabel(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kymaxlabel, 1, 2, 1, 1, QtCore.Qt.AlignHCenter)
-        self.kymaxspin = QtWidgets.QDoubleSpinBox(self.boundsgroup)
-        self.boundsgrid.addWidget(self.kymaxspin, 1, 3, 1, 1)
-        boundstabcontent.addWidget(self.boundsgroup)
-        self.resolutiongroup = QtWidgets.QGroupBox("Resolution")
-        self.resgrid = QtWidgets.QGridLayout(self.resolutiongroup)
-        self.kxreslabel = QtWidgets.QLabel(self.resolutiongroup)
-        self.resgrid.addWidget(self.kxreslabel, 0, 0, 1, 1)
-        self.kxresspin = QtWidgets.QDoubleSpinBox(self.resolutiongroup)
-        self.resgrid.addWidget(self.kxresspin, 0, 1, 1, 1)
-        self.kyreslabel = QtWidgets.QLabel(self.resolutiongroup)
-        self.resgrid.addWidget(self.kyreslabel, 1, 0, 1, 1)
-        self.kyresspin = QtWidgets.QDoubleSpinBox(self.resolutiongroup)
-        self.resgrid.addWidget(self.kyresspin, 1, 1, 1, 1)
-        boundstabcontent.addWidget(self.resolutiongroup)
-        self.kxminlabel.setText("kx")
-        self.kxmaxlabel.setText("to")
-        self.kyminlabel.setText("ky")
-        self.kymaxlabel.setText("to")
-        self.kxreslabel.setText("kx")
-        self.kyreslabel.setText("ky")
-        self.kxminspin.setSingleStep(0.05)
-        self.kxmaxspin.setSingleStep(0.05)
-        self.kyminspin.setSingleStep(0.05)
-        self.kymaxspin.setSingleStep(0.05)
-        self.kxminspin.setRange(-50, 50)
-        self.kxmaxspin.setRange(-50, 50)
-        self.kyminspin.setRange(-50, 50)
-        self.kymaxspin.setRange(-50, 50)
-        self.kxminspin.setValue(self.bounds["kx"][0])
-        self.kxmaxspin.setValue(self.bounds["kx"][1])
-        self.kyminspin.setValue(self.bounds["ky"][0])
-        self.kymaxspin.setValue(self.bounds["ky"][1])
-        self.kxminspin.valueChanged.connect(lambda v: self._set_bounds("kx", 0, v))
-        self.kxmaxspin.valueChanged.connect(lambda v: self._set_bounds("kx", 1, v))
-        self.kyminspin.valueChanged.connect(lambda v: self._set_bounds("ky", 0, v))
-        self.kymaxspin.valueChanged.connect(lambda v: self._set_bounds("ky", 1, v))
-        self.kxresspin.setValue(self.resolution["kx"])
-        self.kyresspin.setValue(self.resolution["ky"])
-        self.kxresspin.setSingleStep(0.001)
-        self.kyresspin.setSingleStep(0.001)
-        self.kxresspin.setMinimum(0.001)
-        self.kyresspin.setMinimum(0.001)
-        self.kxresspin.valueChanged.connect(lambda v: self._set_resolution("kx", v))
-        self.kyresspin.valueChanged.connect(lambda v: self._set_resolution("ky", v))
-        self.kxresspin.setDecimals(3)
-        self.kyresspin.setDecimals(3)
-
-        if self.diff_data is not None:
-            boundstabcontent.addWidget(self.dispmode)
-
-        self.tabwidget = QtWidgets.QTabWidget()
-        self.tabwidget.addTab(self.offsetpanel, "Offsets")
-        self.tabwidget.addTab(self.boundstab, "Bounds")
-        self.tabwidget.addTab(self.colorstab, "Colors")
-        self.tabwidget.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Maximum
-        )
-        self.canvas.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding, QtWidgets.QSizePolicy.Expanding
-        )
-
-        self.layout.addWidget(self.tabwidget)
-        if self.show_eV:
-            zvaluepanel = QtWidgets.QWidget()
-            zvaluecontent = QtWidgets.QHBoxLayout(zvaluepanel)
-            self.zspin = QtWidgets.QDoubleSpinBox()
-            self.zspin.setSingleStep(self.inc_z)
-            self.zspin.setRange(*self.lims_z)
-            self.zspin.setValue(self.coord_z[self.ind_z])
-            self.zspin.valueChanged.connect(self._zspinchanged)
-            self.zslider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            self.zslider.setSingleStep(1)
-            self.zslider.setPageStep(10)
-            self.zslider.setMinimum(0)
-            self.zslider.setMaximum(len(self.coord_z) - 1)
-            self.zslider.setValue(self.ind_z)
-            self.zslider.valueChanged.connect(self._zsliderchanged)
-            zvaluecontent.addWidget(self.zspin)
-            zvaluecontent.addWidget(self.zslider)
-            self.layout.addWidget(zvaluepanel)
-
-        self.layout.addWidget(self.canvas)
-        # self.canvas.mpl_connect('draw_event', self.clear)
-        if plot_hex_bz:
-            plot_bz_tise2(a=a, ax=self.ax1, rotate=rotate, pockets=True)
-        self.canvas.draw()
-        self.spin4.setValue(np.rad2deg(data.chi))
-        # self.im_r.set_visible(self.visible)
-        # self.im_k.set_visible(self.visible)
-
-    def clear(self, event):
-        self.im_r.set_visible(False)
-        self.im_k.set_visible(False)
-        # self.background = self.canvas.copy_from_bbox(self.canvas.figure.bbox)
-
-    def closeEvent(self, event):
-        # do stuff
-        print("ktool closed with offsets")
-        print("in radians:")
-        print(self.new_offsets_rad)
-        print("in degrees:")
-        print(self.new_offsets_deg)
-        event.accept()
-
-    def _update_plots(self):
-        self.im_r.set_visible(self.visible)
-        self.im_k.set_visible(self.visible)
-        # if self.background is not None:
-        # self.canvas.restore_region(self.background)
-        self.ax0.draw_artist(self.im_r)
-        self.ax1.draw_artist(self.im_k)
-        # self.canvas.blit()
-        self.canvas.draw()
-
-    def _set_resolution(self, ax, value):
-        self.resolution[ax] = value
-        self._update_kxy()
-        self._update_plots()
-
-    def _update_all(self):
-        self._update_disp()
-        self._update_plots()
-
-    def _set_bounds(self, ax, ind, value):
-        self.bounds[ax][ind] = value
-        self.bounds["kp"][ind] = value
-        self._update_kxy()
-        self._update_plots()
-        if (ax == "kx") & (ind == 0):
-            self.kxmaxspin.setMinimum(value)
-        elif (ax == "kx") & (ind == 1):
-            self.kxminspin.setMaximum(value)
-        elif (ax == "ky") & (ind == 0):
-            self.kymaxspin.setMinimum(value)
-        elif (ax == "ky") & (ind == 1):
-            self.kyminspin.setMaximum(value)
-
-    def _zspinchanged(self, value):
-        self.ind_z = np.rint((value - self.lims_z[0]) / self.inc_z).astype(int)
-        self.zslider.blockSignals(True)
-        self.zslider.setValue(self.ind_z)
-        self.zslider.blockSignals(False)
-        self._update_data()
-        self._update_kxy()
-        self.im_r.set_norm(colors.PowerNorm(self.gamma))
-        self._update_plots()
-
-    def _zsliderchanged(self, value):
-        self.ind_z = value
-        self.zspin.blockSignals(True)
-        self.zspin.setValue(self.coord_z[self.ind_z])
-        self.zspin.blockSignals(False)
-        self._update_data()
-        self._update_kxy()
-        self._update_plots()
-
-    def _update_data(self):
-        self.data = self.data_all.isel(eV=self.ind_z)
-        self.vals = self.data.values
-        self.im_r.set_data(self.vals)
-        self.im_r.set_norm(colors.PowerNorm(self.gamma))
-
-    def _set_gamma(self, gamma):
-        self.gamma = gamma
-        self.im_r.set_norm(colors.PowerNorm(self.gamma))
-        if self.diff_data is not None:
-            self.im_k.set_norm(CenteredInversePowerNorm(self.gamma))
+    def setDataArray(self, data=None, **kargs):
+        rect = array_rect(data)
+        if self.axisOrder == "row-major":
+            img = np.ascontiguousarray(data.values)
         else:
-            self.im_k.set_norm(colors.PowerNorm(self.gamma))
-        self._update_plots()
+            img = np.asfortranarray(data.values.T)
+        pi = self.getPlotItem()
+        if pi is not None:
+            pi.setLabel("left", data.dims[0])
+            pi.setLabel("bottom", data.dims[1])
+        self.setImage(img, rect=rect, **kargs)
 
-    def _set_cmap(self, cmap):
-        self.cmap = cmap
-        self.im_r.set_cmap(self.cmap)
-        self.im_k.set_cmap(self.cmap)
-        self._update_plots()
-
-    def _spinchanged(self, n, value):
-        # self.data.S.apply_offsets({self.offsetcoords[n]:value*np.pi/180})
-        self.new_offsets_rad[self.offsetcoords[n]] = np.deg2rad(value)
-        self.new_offsets_deg[self.offsetcoords[n]] = np.around(value, 3)
-        self.data.S.apply_offsets(self.new_offsets_rad)
-        if self.show_eV:
-            self.data_all.S.apply_offsets(self.new_offsets_rad)
-        self._update_kxy()
-        self._update_plots()
-
-    @property
-    def disp_values(self):
-        self.dim_ky, self.dim_kx = self.kxy.dims
-        self.coord_kx, self.coord_ky = (
-            self.kxy[self.dim_kx].values,
-            self.kxy[self.dim_ky].values,
-        )
-        self.lims_kx, self.lims_ky = (
-            (self.coord_kx[0], self.coord_kx[-1]),
-            (self.coord_ky[0], self.coord_ky[-1]),
-        )
-        if self.diff_data is not None:
+    def getPlotItem(self) -> pg.PlotItem | None:
+        p = self
+        while True:
             try:
-                ref = (
-                    self.diff_data.sel(
-                        eV=self.data_all.eV[self.ind_z], method="nearest"
-                    )
-                    .sel(kx=slice(*self.lims_kx), ky=slice(*self.lims_ky))
-                    .values
-                )
-                match self.dispmode.currentText():
-                    case "diff":
-                        return self.kxy.values - ref
-                    case "converted":
-                        return self.kxy.values
-                    case _:
-                        return ref
-            except ValueError:
+                p = p.parentItem()
+            except RuntimeError:
+                return None
+            if p is None:
+                return None
+            if isinstance(p, pg.PlotItem):
+                return p
+
+
+class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))):
+    def __init__(self):
+
+        # Start the QApplication if it doesn't exist
+        self.qapp = QtCore.QCoreApplication.instance()
+        if not self.qapp:
+            self.qapp = QtWidgets.QApplication(sys.argv)
+        self.qapp.setStyle("Fusion")
+
+        # Initialize UI
+        super().__init__()
+        self.setupUi(self)
+        self.setWindowTitle("Momentum Conversion")
+
+        self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
+        self.images: tuple[KtoolImageItem] = (
+            KtoolImageItem(axisOrder="row-major"),
+            KtoolImageItem(axisOrder="row-major"),
+        )
+
+        for i, plot in enumerate(self.plotitems):
+            self.graphics_layout.addItem(plot, i, 0)
+            plot.addItem(self.images[i])
+            plot.vb.setAspectLocked(lock=True, ratio=1)
+            plot.showGrid(x=True, y=True, alpha=0.5)
+
+        # Set up colormap controls
+        self.cmap_combo.setDefaultCmap("terrain")
+        self.cmap_combo.textActivated.connect(self.update_cmap)
+        self.gamma_widget.setValue(0.5)
+        self.gamma_widget.valueChanged.connect(self.update_cmap)
+        self.invert_check.stateChanged.connect(self.update_cmap)
+        self.invert_check.setChecked(True)
+        self.contrast_check.stateChanged.connect(self.update_cmap)
+        self.update_cmap()
+
+        # Set up BZ controls
+        self.bz_group.toggled.connect(self.update_bz)
+        self.a_spin.valueChanged.connect(self.update_bz)
+        self.b_spin.valueChanged.connect(self.update_bz)
+        self.ang_spin.valueChanged.connect(self.update_bz)
+        self.rot_spin.valueChanged.connect(self.update_bz)
+        self.reciprocal_check.stateChanged.connect(self.update_bz)
+        self.points_check.stateChanged.connect(self.update_bz)
+
+        self.plotitems[0].setVisible(False)
+        self.angle_plot_check.stateChanged.connect(
+            lambda: self.plotitems[0].setVisible(self.angle_plot_check.isChecked())
+        )
+
+    def update_cmap(self):
+        name = self.cmap_combo.currentText()
+        if name == self.cmap_combo.LOAD_ALL_TEXT:
+            self.cmap_combo.load_all()
+            return
+
+        for im in self.images:
+            im.set_colormap(
+                name,
+                self.gamma_widget.value(),
+                reverse=self.invert_check.isChecked(),
+                highContrast=self.contrast_check.isChecked(),
+                update=True,
+            )
+
+    def update_bz(self):
+        self.plotitems[1].clearPlots()
+        if not self.bz_group.isChecked():
+            return
+        if self.reciprocal_check.isChecked():
+            self.a_spin.setSuffix(" Å⁻¹")
+            self.b_spin.setSuffix(" Å⁻¹")
+        else:
+            self.a_spin.setSuffix(" Å")
+            self.b_spin.setSuffix(" Å")
+
+        a, b = self.a_spin.value(), self.b_spin.value()
+        ang = np.deg2rad(self.ang_spin.value())
+        rot = np.deg2rad(self.rot_spin.value())
+
+        avec = np.array([[a, 0], [b * np.cos(ang), b * np.sin(ang)]])
+
+        lines, vertices = get_bz_edge(
+            avec, reciprocal=self.reciprocal_check.isChecked()
+        )
+
+        rotmat = np.array([[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]])
+
+        lines = [(rotmat @ line.T).T for line in lines]
+        vertices = (rotmat @ vertices.T).T
+
+        for line in lines:
+            self.plotitems[1].plot(line[:, 0], line[:, 1], pen=pg.mkPen("m", width=2))
+            vertices = np.vstack((vertices, np.mean(line, axis=0)))
+
+        if self.points_check.isChecked():
+            self.plotitems[1].plot(
+                vertices[:, 0],
+                vertices[:, 1],
+                symbol="o",
+                pen=pg.mkColor(255, 255, 255, 0),
+                symbolPen=pg.mkColor(255, 255, 255, 0),
+                symbolBrush=pg.mkColor("m"),
+                symbolSize=6,
+            )
+
+    def __post_init__(self, execute=None):
+        self.show()
+        self.activateWindow()
+        self.raise_()
+
+        if execute is None:
+            execute = True
+            try:
+                shell = get_ipython().__class__.__name__  # type: ignore
+                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                    execute = False
+            except NameError:
                 pass
-        return self.kxy.values
+        if execute:
+            self.qapp.exec()
+
+
+class ktool(ktoolGUI):
+
+    def __init__(self, data: xr.DataArray, **kwargs):
+        super().__init__()
+
+        self._argnames = dict()
+        try:
+            self._argnames["data"] = varname.argname(
+                "data", func=self.__init__, vars_only=False
+            )
+        except varname.VarnameRetrievingError:
+            self._argnames["data"] = "data"
+
+        self.data: xr.DataArray = data.copy(deep=True)
+
+        if self.data.kspace.has_eV:
+            self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
+            self.width_spin.setRange(0, self.data.eV[-1] - self.data.eV[0])
+            self.center_spin.valueChanged.connect(self.update)
+            self.width_spin.valueChanged.connect(self.update)
+        else:
+            self.energy_group.setDisabled(True)
+
+        self.bounds_group.toggled.connect(self.update)
+        self.resolution_group.toggled.connect(self.update)
+
+        self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        for k in self.data.kspace._valid_offset_keys:
+            self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
+            self._offset_spins[k].setRange(-180, 180)
+            self._offset_spins[k].setSingleStep(0.01)
+            self._offset_spins[k].setDecimals(3)
+            self._offset_spins[k].setValue(self.data.kspace.get_offset(k))
+            self._offset_spins[k].valueChanged.connect(self.update)
+            self._offset_spins[k].setSuffix("°")
+            self.offsets_group.layout().addRow(k, self._offset_spins[k])
+
+        self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        bounds = self.data.kspace.get_bounds()
+        for i, k in enumerate(self.data.kspace.momentum_axes):
+            for j in range(2):
+                name = f"{k}{j}"
+                self._bound_spins[name] = QtWidgets.QDoubleSpinBox()
+                self._bound_spins[name].setRange(-10, 10)
+                self._bound_spins[name].setSingleStep(0.01)
+                self._bound_spins[name].setDecimals(2)
+                self._bound_spins[name].setValue(bounds[i][j])
+                self._bound_spins[name].valueChanged.connect(self.update)
+                self._bound_spins[name].setSuffix(" Å⁻¹")
+                self.bounds_group.layout().addRow(name, self._bound_spins[name])
+
+            self._resolution_spins[k] = QtWidgets.QDoubleSpinBox()
+            self._resolution_spins[k].setRange(0.001, 10)
+            self._resolution_spins[k].setSingleStep(0.001)
+            self._resolution_spins[k].setDecimals(4)
+            self._resolution_spins[k].setValue(self.data.kspace.minimum_k_resolution)
+            self._resolution_spins[k].valueChanged.connect(self.update)
+            self._resolution_spins[k].setSuffix(" Å⁻¹")
+            self.resolution_group.layout().addRow(k, self._resolution_spins[k])
+
+        self.open_btn.clicked.connect(self.show_converted)
+        self.copy_btn.clicked.connect(self.copy_code)
+        self.update()
+
+        self.__post_init__()
+
+    def show_converted(self):
+        self.data.kspace.offsets = self.offset_dict
+        itool = ImageTool(
+            self.data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+        )
+        itool.show()
+
+    def copy_code(self):
+        arg_dict = dict()
+        if self.bounds is not None:
+            arg_dict["bounds"] = self.bounds
+        if self.resolution is not None:
+            arg_dict["resolution"] = self.resolution
+
+        # Detected input name must be single identifier.
+        # Otherwise the generated code will not apply offsets correctly.
+        input_name: str = str(self._argnames["data"])
+        if not input_name.isidentifier():
+            input_name = "data"
+
+        attr_code = f"{input_name}.kspace.offsets = {self.offset_dict}"
+        conv_code = gen_function_code(
+            copy=False,
+            **{f"{input_name}_kconv = {input_name}.kspace.convert": [arg_dict]},
+        )
+
+        copy_to_clipboard([attr_code, conv_code])
 
     @property
-    def extent(self):
-        return (*self.lims_kx, *self.lims_ky)
-
-    def _update_disp(self):
-        self.im_k.set_data(self.disp_values)
-        self.im_k.set_extent(self.extent)
-        if self.diff_data is not None:
-            self.im_k.set_norm(CenteredInversePowerNorm(self.gamma))
+    def bounds(self) -> dict[str, tuple[float, float]] | None:
+        if self.bounds_group.isChecked():
+            return {
+                k: tuple(self._bound_spins[f"{k}{j}"].value() for j in range(2))
+                for k in self.data.kspace.momentum_axes
+            }
         else:
-            self.im_k.set_norm(colors.PowerNorm(self.gamma))
+            return None
 
-    def _update_kxy(self):
-        self.kxy = self.data.kspace.convert(
-            bounds=self.bounds, resolution=self.resolution
-        )
-        self._update_disp()
+    @property
+    def resolution(self) -> dict[str, float] | None:
+        if self.resolution_group.isChecked():
+            return {
+                k: self._resolution_spins[k].value()
+                for k in self.data.kspace.momentum_axes
+            }
+        else:
+            return None
 
-
-def ktool(data, execute=True, *args, **kwargs):
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-    with plt.rc_context(
-        {
-            "text.usetex": False,
-            #     #  'mathtext.fontset':'stixsans',
-            "font.size": 7,
-            "font.family": "sans",
+    @property
+    def offset_dict(self) -> dict[str, float]:
+        return {
+            k: self._offset_spins[k].value()
+            for k in self.data.kspace._valid_offset_keys
         }
-    ):
-        win = kTool(data, *args, **kwargs)
-        win.show()
-        win.activateWindow()
-        win.raise_()
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore
-            if shell == "ZMQInteractiveShell":
-                execute = False
-            elif shell == "TerminalInteractiveShell":
-                execute = False
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
-    qapp.setStyle("Fusion")
-    return win
+
+    def _angle_data(self) -> xr.DataArray:
+        if self.data.kspace.has_eV:
+            center, width = self.center_spin.value(), self.width_spin.value()
+            if width == 0:
+                return self.data.sel(eV=center, method="nearest")
+            else:
+                return (
+                    self.data.sel(eV=slice(center - width / 2, center + width / 2))
+                    .mean("eV", keep_attrs=True)
+                    .assign_coords(eV=center)
+                )
+        else:
+            return self.data
+
+    def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
+        # Set angle offsets
+        data_ang = self._angle_data()
+        data_ang.kspace.offsets = self.offset_dict
+        # Convert to kspace
+        data_k = data_ang.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+        return data_ang, data_k
+
+    def update(self):
+        ang, k = self.get_data()
+        self.images[0].setDataArray(ang)
+        self.images[1].setDataArray(k)
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        del self.data
+        super().closeEvent(event)
+
+
+if __name__ == "__main__":
+    dat = erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5")
+
+    win = ktool(dat)
