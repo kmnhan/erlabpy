@@ -194,7 +194,7 @@ class ktool(ktoolGUI):
 
         if self.data.kspace.has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
-            self.width_spin.setRange(0, self.data.eV[-1] - self.data.eV[0])
+            self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.update)
             self.width_spin.valueChanged.connect(self.update)
         else:
@@ -205,7 +205,7 @@ class ktool(ktoolGUI):
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         offset_labels = dict(delta="𝛿", chi="𝜒₀", xi="𝜉₀", beta="𝛽₀")
-        for k in self.data.kspace._valid_offset_keys:
+        for k in self.data.kspace.valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-180, 180)
             self._offset_spins[k].setSingleStep(0.01)
@@ -225,7 +225,7 @@ class ktool(ktoolGUI):
                 self._bound_spins[name].setRange(-10, 10)
                 self._bound_spins[name].setSingleStep(0.01)
                 self._bound_spins[name].setDecimals(2)
-                self._bound_spins[name].setValue(bounds[i][j])
+                self._bound_spins[name].setValue(bounds[k][j])
                 self._bound_spins[name].valueChanged.connect(self.update)
                 self._bound_spins[name].setSuffix(" Å⁻¹")
                 self.bounds_group.layout().addRow(name, self._bound_spins[name])
@@ -302,7 +302,7 @@ class ktool(ktoolGUI):
     def offset_dict(self) -> dict[str, float]:
         return {
             k: self._offset_spins[k].value()
-            for k in self.data.kspace._valid_offset_keys
+            for k in self.data.kspace.valid_offset_keys
         }
 
     def _angle_data(self) -> xr.DataArray:
@@ -311,9 +311,13 @@ class ktool(ktoolGUI):
             if width == 0:
                 return self.data.sel(eV=center, method="nearest")
             else:
+                arr = self.data.eV.values
+                idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
                 return (
-                    self.data.sel(eV=slice(center - width / 2, center + width / 2))
-                    .mean("eV", keep_attrs=True)
+                    self.data.isel(
+                        eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1)
+                    )
+                    .mean("eV", skipna=True, keep_attrs=True)
                     .assign_coords(eV=center)
                 )
         else:
@@ -339,5 +343,8 @@ class ktool(ktoolGUI):
 
 if __name__ == "__main__":
     dat = erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5")
-
+    # dat = erlab.io.ssrl52.load(
+        # "/Users/khan/KAIST_12 Dropbox/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/221213 SSRL BL5-2/TiSe2/f_0027.h5"
+    # )
+    # dat = dat.assign_coords(eV=dat.eV - 106.7)
     win = ktool(dat)
