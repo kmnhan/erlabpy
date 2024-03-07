@@ -164,7 +164,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
             maximum=99.99,
             value=value,
         )
-        self.label = QtWidgets.QLabel("γ", self)
+        self.label = QtWidgets.QLabel("𝛾", self)
         self.label.setBuddy(self.spin)
         # self.label.setIndent(0)
         self.slider = slider_cls(

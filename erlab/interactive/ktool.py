@@ -204,6 +204,7 @@ class ktool(ktoolGUI):
         self.resolution_group.toggled.connect(self.update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        offset_labels = dict(delta="𝛿", chi="𝜒₀", xi="𝜉₀", beta="𝛽₀")
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-180, 180)
@@ -212,7 +213,7 @@ class ktool(ktoolGUI):
             self._offset_spins[k].setValue(self.data.kspace.get_offset(k))
             self._offset_spins[k].valueChanged.connect(self.update)
             self._offset_spins[k].setSuffix("°")
-            self.offsets_group.layout().addRow(k, self._offset_spins[k])
+            self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -246,9 +247,14 @@ class ktool(ktoolGUI):
 
     def show_converted(self):
         self.data.kspace.offsets = self.offset_dict
+        wait_dialog = QtWidgets.QDialog(self)
+        wait_dialog.setLayout(QtWidgets.QVBoxLayout())
+        wait_dialog.layout().addWidget(QtWidgets.QLabel("Converting..."))
+        wait_dialog.open()
         itool = ImageTool(
             self.data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
         )
+        wait_dialog.close()
         itool.show()
 
     def copy_code(self):
