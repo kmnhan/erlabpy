@@ -845,8 +845,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         Extra arguments to `pyqtgraph.InfiniteLine`: refer to the
         `pyqtgraph` documentation for a list of all possible arguments.
 
-    Notes
-    -----
+    Note
+    ----
     Axes indices for 2D data:
 
     .. code-block:: text

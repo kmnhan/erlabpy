@@ -149,8 +149,8 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
     `scipy.interpolate.RegularGridInterpolator` is called. See below for more
     information.
 
-    Notes
-    -----
+    Note
+    ----
     Parallel acceleration is only applied when all of the following are true.
 
     * `method` is ``"linear"``.
@@ -292,8 +292,8 @@ def interpn(
         Interpolated values at input coordinates.
 
 
-    Notes
-    -----
+    Note
+    ----
     This optimized version of linear interpolation can be used with the `xarray`
     interpolation methods `xarray.Dataset.interp` and `xarray.DataArray.interp` by
     supplying ``method="linearfast"``. Note that the fallback to `scipy` will be silent

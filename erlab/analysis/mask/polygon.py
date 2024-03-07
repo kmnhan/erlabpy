@@ -161,8 +161,8 @@ def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]):
     point
         2-tuple specifying point of interest
 
-    Notes
-    -----
+    Note
+    ----
     We shoot a horizontal ray from the point to the right and count the number of
     intersections with polygon segments. If the number of intersections is odd, the
     point is inside. We don't count intersections with horizontal segments. With

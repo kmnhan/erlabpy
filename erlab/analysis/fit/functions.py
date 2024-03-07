@@ -87,8 +87,8 @@ def gaussian_wh(
 ) -> npt.NDArray[np.float64]:
     r"""Gaussian parametrized with FWHM and peak height.
 
-    Notes
-    -----
+    Note
+    ----
     :math:`\sigma=\frac{w}{2\sqrt{2\log{2}}}`
 
     """
@@ -103,8 +103,8 @@ def lorentzian_wh(
 ) -> npt.NDArray[np.float64]:
     r"""Lorentzian parametrized with FWHM and peak height.
 
-    Notes
-    -----
+    Note
+    ----
     :math:`\sigma=w/2`
 
     """
@@ -132,8 +132,8 @@ def fermi_dirac_linbkg(
 ) -> npt.NDArray[np.float64]:
     """Fermi-dirac edge with linear backgrounds above and below the fermi level.
 
-    Notes
-    -----
+    Note
+    ----
     `back0` and `back1` corresponds to the linear background above and below EF (due to
     non-homogeneous detector efficiency or residual intensity on the phosphor screen
     during sweep mode), while `dos0` and `dos1` corresponds to the linear density of

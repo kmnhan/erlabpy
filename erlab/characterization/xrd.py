@@ -27,8 +27,8 @@ def load_xrd_itx(path: str, **kwargs: dict):
     xarray.Dataset
         Dataset object containing data from the file.
 
-    Notes
-    -----
+    Note
+    ----
     By default, the file is read with the ``'windows-1252'`` encoding. This
     behavior can be customized by supplying keyword arguments.
 

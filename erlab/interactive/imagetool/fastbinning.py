@@ -294,8 +294,8 @@ def fast_nanmean(
     numpy.ndarray or float
         The calculated mean. The output array is always C-contiguous.
 
-    Notes
-    -----
+    Note
+    ----
     Parallelization is only applied for :code:`N`-dimensional arrays with :code:`N <= 4`
     and :code:`len(axis) < N`. For bigger :code:`N`, :obj:`numbagg.nanmean` is used. For
     calculating the average of a flattened array (:code:`axis = None` or
