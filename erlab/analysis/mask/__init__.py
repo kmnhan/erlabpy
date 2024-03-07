@@ -17,6 +17,7 @@ __all__ = [
     "polygon_mask",
     "polygon_mask_points",
     "mask_with_hex_bz",
+    "hex_bz_mask_points",
 ]
 
 import numpy as np
@@ -68,9 +69,7 @@ def polygon_mask_points(vertices, x, y, invert=False):
 
 
 def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
-    """Returns array masked with a hexagonal BZ."""
-    if isinstance(kxymap, xr.Dataset):
-        kxymap = kxymap.spectrum
+    """Returns map masked with a hexagonal BZ."""
 
     if "kx" in kxymap.dims:
         dims = ("kx", "ky")
@@ -83,3 +82,23 @@ def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
         [[2 * l * np.cos(t), 2 * l * np.sin(t)] for t in np.deg2rad(ang)]
     )
     return mask_with_polygon(kxymap, vertices, dims, invert=invert)
+
+
+def hex_bz_mask_points(
+    x, y, a=3.54, rotate=0, offset=None, reciprocal=False, invert=False
+):
+    """Returns a mask for given points."""
+    if offset is None:
+        offset = (0, 0)
+    if reciprocal:
+        l = 2 * np.pi / (a * 3)
+    else:
+        l = a
+    ang = rotate + np.array([0, 60, 120, 180, 240, 300])
+    vertices = np.array(
+        [
+            [2 * l * np.cos(t) + offset[0], 2 * l * np.sin(t) + offset[1]]
+            for t in np.deg2rad(ang)
+        ]
+    )
+    return polygon_mask_points(vertices, x, y, invert)
