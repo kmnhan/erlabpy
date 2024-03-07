@@ -36,15 +36,12 @@ __all__ = [
 
 def parse_data(data):
     if isinstance(data, xr.Dataset):
-        try:
-            data = data.spectrum
-        except AttributeError:
-            raise TypeError(
-                "input argument data must be a xarray.DataArray or a "
-                "numpy.ndarray. Create an xarray.DataArray "
-                "first, either with indexing on the Dataset or by "
-                "invoking the `to_array()` method."
-            ) from None
+        raise TypeError(
+            "input argument data must be a xarray.DataArray or a "
+            "numpy.ndarray. Create an xarray.DataArray "
+            "first, either with indexing on the Dataset or by "
+            "invoking the `to_array()` method."
+        ) from None
     elif isinstance(data, np.ndarray):
         data = xr.DataArray(data)
     return data  # .astype(float, order="C")

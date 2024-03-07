@@ -19,8 +19,6 @@ def correct_with_edge(
     shift_coords=True,
     **improps,
 ):
-    if isinstance(fmap, xr.Dataset):
-        fmap = fmap.spectrum
     if isinstance(modelresult, lmfit.model.ModelResult):
         if isinstance(modelresult.model, FermiEdge2dModel):
             edge_quad = xr.DataArray(

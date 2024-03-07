@@ -7,8 +7,6 @@ import xarray as xr
 
 
 def rotateinplane(data: xr.DataArray, rotate):
-    if isinstance(data, xr.Dataset):
-        data = data.spectrum
     theta = np.radians(rotate)
     d0, d1 = data.dims
     x = xr.DataArray(data[d0] * np.cos(theta) - data[d1] * np.sin(theta))
@@ -18,8 +16,6 @@ def rotateinplane(data: xr.DataArray, rotate):
 
 
 def rotatestackinplane(data: xr.DataArray, rotate):
-    if isinstance(data, xr.Dataset):
-        data = data.spectrum
     theta = np.radians(rotate)
     d0, d1, _ = data.dims
     x = xr.DataArray(data[d0] * np.cos(theta) - data[d1] * np.sin(theta))

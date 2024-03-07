@@ -335,9 +335,7 @@ def plot_array(
     if func_args is None:
         func_args = dict()
 
-    if isinstance(arr, xr.Dataset):
-        arr = arr.spectrum
-    elif isinstance(arr, np.ndarray):
+    if isinstance(arr, np.ndarray):
         arr = xr.DataArray(arr)
     if ax is None:
         ax = plt.gca()
