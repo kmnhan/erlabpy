@@ -158,6 +158,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
     * Values are 2D or 3D.
     * Extrapolation is disabled, i.e., `fill_value` is not `None`.
     * The dimension of coordinates `xi` matches the number of dimensions of the values.
+      Also, each coordinate array in `xi` must have the same shape.
 
     See Also
     --------
@@ -222,7 +223,21 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             if isinstance(xi, np.ndarray):
                 xi = tuple(xi.take(i, axis=-1) for i in range(xi.shape[-1]))
 
-            if len(xi) == self.values.ndim:
+            xi_shapes = [x.shape for x in xi]
+            if not all(s == xi_shapes[0] for s in xi_shapes):
+                warnings.warn(
+                    f"Not all coordinate arrays have the same shape, "
+                    "falling back to scipy.",
+                    RuntimeWarning,
+                )
+            elif len(xi) != self.values.ndim:
+                warnings.warn(
+                    f"Number of input dimensions ({len(xi)}) does not match "
+                    "the input data dimensions, "
+                    "falling back to scipy.",
+                    RuntimeWarning,
+                )
+            else:
                 result = _get_interp_func(self.values.ndim)(
                     *self.grid,
                     self.values,
@@ -231,8 +246,6 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 ).reshape(xi[0].shape)
 
                 return result
-            else:
-                is_linear = False
 
         if is_linear:
             warnings.warn(
