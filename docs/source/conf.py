@@ -5,12 +5,13 @@
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
+import erlab
 
 project = "ERLabPy"
 copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
-release = "0.1"
-
+release = erlab.__version__
+version = erlab.__version__
 # Documentation build dependencies
 # sphinx, sphinx-autodoc-typehints, furo
 # pypi: sphinx-qt-documentation
@@ -29,7 +30,8 @@ os.environ["QT_API"] = "pyqt6"
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
-    # "sphinx.ext.viewcode",
+    # "sphinx_autodoc_typehints",
+    "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
     "matplotlib.sphinxext.plot_directive",
     "matplotlib.sphinxext.figmpl_directive",
@@ -37,7 +39,6 @@ extensions = [
     # "IPython.sphinxext.ipython_console_highlighting",
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
-    "sphinx_autodoc_typehints",
     #   'sphinx.ext.doctest',
     # "sphinx.ext.inheritance_diagram",
     "sphinx_qt_documentation",
@@ -53,19 +54,21 @@ exclude_patterns = []
 
 default_role = "obj"
 add_function_parentheses = True
-add_module_names = False
+add_module_names = True
 toc_object_entries = True
 toc_object_entries_show_parents = "domain"
 
-nitpicky = False
-nitpick_ignore = [("py:class", "numpy.float64")]
+# nitpicky = False
+# nitpick_ignore = [("py:class", "numpy.float64")]
 
 
 autosummary_generate = True
 autosummary_generate_overwrite = True
 
 autodoc_inherit_docstrings = False
-autodoc_typehints = "both"
+autodoc_typehints = "description"
+autodoc_typehints_format = "short"
+autodoc_class_signature = "mixed"
 autodoc_member_order = "bysource"
 autodoc_default_options = {
     "members": True,
@@ -73,7 +76,7 @@ autodoc_default_options = {
     # "exclude-members":("sigDataChanged",),
     "show-inheritance": False,
 }
-# autodoc_typehints_description_target = "all"
+autodoc_typehints_description_target = "all"
 
 # autodoc_type_aliases = {
 # "numpy.float64": "float",
@@ -83,26 +86,23 @@ autodoc_default_options = {
 # Napoleon settings
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
-napoleon_include_init_with_doc = False
-napoleon_include_private_with_doc = False
+# napoleon_include_init_with_doc = False
+# napoleon_include_private_with_doc = False
 napoleon_include_special_with_doc = True
-napoleon_use_admonition_for_examples = False
-napoleon_use_admonition_for_notes = False
-napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+# napoleon_use_admonition_for_examples = False
+# napoleon_use_admonition_for_notes = False
+# napoleon_use_admonition_for_references = False
+# napoleon_use_ivar = False
 napoleon_use_param = True
-napoleon_use_rtype = True
+# napoleon_use_rtype = True
 napoleon_preprocess_types = True
-napoleon_type_aliases = {
-    "array-like": "ndarray <numpy.ndarray>",
-    "numpy.float64": "float",
-    "float64": "float",
-}
+# napoleon_type_aliases = {
+#     "array-like": "ndarray <numpy.ndarray>",
+#     "numpy.float64": "float",
+#     "float64": "float",
+# }
 napoleon_attr_annotations = True
 napoleon_custom_sections = [("Signals", "params_style")]
-# napoleon_custom_sections = [("Signals", "Methods")]
-# napoleon_custom_sections = [("Signals", "Attributes")]
-
 
 qt_documentation = "PyQt6"
 intersphinx_mapping = {

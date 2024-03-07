@@ -10,6 +10,7 @@ Modules
    :toctree: generated
    
    annotations
+   atoms
    bz
    colors
    erplot
@@ -20,6 +21,7 @@ Modules
 
 __all__ = [
     "annotations",
+    "atoms",
     "bz",
     "colors",
     "general",
