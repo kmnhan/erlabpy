@@ -74,7 +74,6 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
         for i, plot in enumerate(self.plotitems):
             self.graphics_layout.addItem(plot, i, 0)
             plot.addItem(self.images[i])
-            plot.vb.setAspectLocked(lock=True, ratio=1)
             plot.showGrid(x=True, y=True, alpha=0.5)
 
         # Set up colormap controls
@@ -239,6 +238,9 @@ class ktool(ktoolGUI):
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
+        for pi in self.plotitems:
+            if self.data.kspace.has_beta and not self.data.kspace.has_hv:
+                pi.vb.setAspectLocked(lock=True, ratio=1)
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
@@ -301,8 +303,7 @@ class ktool(ktoolGUI):
     @property
     def offset_dict(self) -> dict[str, float]:
         return {
-            k: self._offset_spins[k].value()
-            for k in self.data.kspace.valid_offset_keys
+            k: self._offset_spins[k].value() for k in self.data.kspace.valid_offset_keys
         }
 
     def _angle_data(self) -> xr.DataArray:
@@ -328,13 +329,15 @@ class ktool(ktoolGUI):
         data_ang = self._angle_data()
         data_ang.kspace.offsets = self.offset_dict
         # Convert to kspace
-        data_k = data_ang.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+        data_k = data_ang.kspace.convert(
+            bounds=self.bounds, resolution=self.resolution, silent=True
+        )
         return data_ang, data_k
 
     def update(self):
         ang, k = self.get_data()
-        self.images[0].setDataArray(ang)
-        self.images[1].setDataArray(k)
+        self.images[0].setDataArray(ang.T)
+        self.images[1].setDataArray(k.T)
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         del self.data
@@ -344,7 +347,7 @@ class ktool(ktoolGUI):
 if __name__ == "__main__":
     dat = erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5")
     # dat = erlab.io.ssrl52.load(
-        # "/Users/khan/KAIST_12 Dropbox/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/221213 SSRL BL5-2/TiSe2/f_0027.h5"
+    # "/Users/khan/KAIST_12 Dropbox/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/221213 SSRL BL5-2/TiSe2/f_0027.h5"
     # )
     # dat = dat.assign_coords(eV=dat.eV - 106.7)
     win = ktool(dat)
