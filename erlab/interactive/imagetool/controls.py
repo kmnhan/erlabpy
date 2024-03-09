@@ -402,14 +402,13 @@ class ItoolCrosshairControls(ItoolControlsBase):
             else:
                 self.label_dim[i].setText(str(self.data.dims[i]))
 
-            label_width = max(
-                label_width,
+            lw = (
                 self.label_dim[i]
                 .fontMetrics()
                 .boundingRect(self.label_dim[i].text())
                 .width()
-                + 15,
             )
+            self.label_dim[i].setMaximumWidth(lw + 15)
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
@@ -432,10 +431,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.spin_dat.setValue(
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
-
-        for lab in self.label_dim:
-            # resize buttons to match dimension label length
-            lab.setMaximumWidth(label_width)
 
     def update_spins(self, *, axes=None):
         if axes is None:
