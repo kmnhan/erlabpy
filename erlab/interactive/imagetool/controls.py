@@ -322,9 +322,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
             for grp in self.values_groups[1:]
         )
 
-        self.btn_transpose = tuple(
-            IconButton(on=f"transpose_{i}") for i in range(self.data.ndim)
-        )
+        if self.data.ndim <= 3:
+            icons = [f"transpose_{i}" for i in range(self.data.ndim)]
+        else:
+            icons = [f"transpose_{i}" for i in (0, 1, 3, 2)]
+        self.btn_transpose = tuple(IconButton(on=i) for i in icons)
 
         # add and connect info widgets
         for i in range(self.data.ndim):
@@ -355,9 +357,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def _transpose_axes(self, idx):
         if self.data.ndim == 4:
             if idx == 3:
-                self.slicer_area.swap_axes(2, 3)
+                self.slicer_area.swap_axes(0, 2)
             else:
-                self.slicer_area.swap_axes(idx, (idx + 1) % 3)
+                self.slicer_area.swap_axes(idx, (idx + 1) % 4)
         else:
             self.slicer_area.swap_axes(idx, (idx + 1) % self.data.ndim)
 
