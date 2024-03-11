@@ -2,26 +2,32 @@
 #
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
+# -- Imports -----------------------------------------------------------------
+
+import os
+
+import pybtex.plugin
+import pybtex.style.formatting
+import pybtex.style.formatting.unsrt
+import pybtex.style.template
+
+import erlab
+
+# Build docs with PyQt6 since PySide6 is broken
+# https://bugreports.qt.io/browse/PYSIDE-1884
+
+os.environ["QT_API"] = "pyqt6"
+
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-import erlab
+
 
 project = "ERLabPy"
 copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
 release = erlab.__version__
 version = erlab.__version__
-# Documentation build dependencies
-# sphinx, sphinx-autodoc-typehints, furo
-# pypi: sphinx-qt-documentation
-
-
-# build docs with PyQt6 since PySide6 is broken
-# https://bugreports.qt.io/browse/PYSIDE-1884
-import os
-
-os.environ["QT_API"] = "pyqt6"
 
 
 # -- General configuration ---------------------------------------------------
@@ -41,16 +47,15 @@ extensions = [
     "sphinx.ext.intersphinx",
     #   'sphinx.ext.doctest',
     # "sphinx.ext.inheritance_diagram",
+    "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
     "sphinx_copybutton",
     "nbsphinx",
 ]
 
-plot_srcset = ["2x"]
 
 templates_path = ["_templates"]
 exclude_patterns = []
-
 
 default_role = "obj"
 add_function_parentheses = True
@@ -61,6 +66,8 @@ toc_object_entries_show_parents = "domain"
 # nitpicky = False
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
+
+# -- Autosummary and autodoc settings ----------------------------------------
 
 autosummary_generate = True
 autosummary_generate_overwrite = True
@@ -83,7 +90,8 @@ autodoc_typehints_description_target = "all"
 # "float64": "float",
 # }
 
-# Napoleon settings
+# -- Napoleon settings -------------------------------------------------------
+
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 # napoleon_include_init_with_doc = False
@@ -104,6 +112,8 @@ napoleon_preprocess_types = True
 napoleon_attr_annotations = True
 napoleon_custom_sections = [("Signals", "params_style")]
 
+# -- Qt documentation & intersphinx ------------------------------------------
+
 qt_documentation = "PyQt6"
 intersphinx_mapping = {
     "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),
@@ -121,10 +131,133 @@ intersphinx_mapping = {
 }
 
 
-# plot configs
+# -- Plot configuration ------------------------------------------------------
+
 plot_formats = ["pdf"]
 plot_basedir = "pyplots"
 plot_html_show_formats = False
+plot_srcset = ["2x"]
+
+# -- Misc. settings ----------------------------------------------------------
+
+copybutton_exclude = ".linenos, .gp, .go"
+
+# -- Bibliography settings ---------------------------------------------------
+
+pybtex.style.formatting.unsrt.date = pybtex.style.template.words(sep="")[
+    "(", pybtex.style.template.field("year"), ")"
+]
+
+
+class ApsStyle(pybtex.style.formatting.unsrt.Style):
+    """
+    APS style for BibTeX formatting, adapted from the conf.py file of the `mitiq
+    library<https://github.com/unitaryfund/mitiq>`_.
+    """
+
+    def format_title(self, e, which_field, as_sentence=True):
+        formatted_title = pybtex.style.template.field(
+            which_field, apply_func=lambda text: text.capitalize()
+        )
+        formatted_title = pybtex.style.template.tag("em")[formatted_title]
+        if as_sentence:
+            return pybtex.style.template.sentence[formatted_title]
+        else:
+            return formatted_title
+
+    def get_article_template(self, e):
+        volume_and_pages = pybtex.style.template.first_of[
+            # volume and pages
+            pybtex.style.template.optional[
+                pybtex.style.template.join[
+                    " ",
+                    pybtex.style.template.tag("strong")[
+                        pybtex.style.template.field("volume")
+                    ],
+                    ", ",
+                    pybtex.style.template.field(
+                        "pages",
+                        apply_func=pybtex.style.formatting.unsrt.dashify,
+                    ),
+                ],
+            ],
+            # pages only
+            pybtex.style.template.words[
+                "pages",
+                pybtex.style.template.field(
+                    "pages", apply_func=pybtex.style.formatting.unsrt.dashify
+                ),
+            ],
+        ]
+        template = pybtex.style.formatting.toplevel[
+            self.format_names("author"),
+            self.format_title(e, "title"),
+            pybtex.style.template.sentence(sep=" ")[
+                pybtex.style.template.field("journal"),
+                pybtex.style.template.optional[volume_and_pages],
+                pybtex.style.formatting.unsrt.date,
+            ],
+            self.format_web_refs(e),
+        ]
+        return template
+
+    def get_book_template(self, e):
+        template = pybtex.style.formatting.toplevel[
+            self.format_author_or_editor(e),
+            self.format_btitle(e, "title"),
+            self.format_volume_and_series(e),
+            pybtex.style.template.sentence(sep=" ")[
+                pybtex.style.template.sentence(add_period=False)[
+                    pybtex.style.template.field("publisher"),
+                    pybtex.style.template.optional_field("address"),
+                    self.format_edition(e),
+                ],
+                pybtex.style.formatting.unsrt.date,
+            ],
+            pybtex.style.template.optional[
+                pybtex.style.template.sentence[self.format_isbn(e)]
+            ],
+            pybtex.style.template.sentence[
+                pybtex.style.template.optional_field("note")
+            ],
+            self.format_web_refs(e),
+        ]
+        return template
+
+    def get_incollection_template(self, e):
+        template = pybtex.style.formatting.toplevel[
+            pybtex.style.template.sentence[self.format_names("author")],
+            self.format_title(e, "title"),
+            pybtex.style.template.words[
+                "In",
+                pybtex.style.template.sentence[
+                    pybtex.style.template.optional[
+                        self.format_editor(e, as_sentence=False)
+                    ],
+                    self.format_btitle(e, "booktitle", as_sentence=False),
+                    self.format_volume_and_series(e, as_sentence=False),
+                    self.format_chapter_and_pages(e),
+                ],
+            ],
+            pybtex.style.template.sentence(sep=" ")[
+                pybtex.style.template.sentence(add_period=False)[
+                    pybtex.style.template.optional_field("publisher"),
+                    pybtex.style.template.optional_field("address"),
+                    self.format_edition(e),
+                ],
+                pybtex.style.formatting.unsrt.date,
+            ],
+            self.format_web_refs(e),
+        ]
+        return template
+
+
+pybtex.plugin.register_plugin("pybtex.style.formatting", "apsstyle", ApsStyle)
+
+bibtex_bibfiles = ["refs.bib"]
+bibtex_default_style = "apsstyle"
+bibtex_footbibliography_header = ".. rubric:: References"
+
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
@@ -133,11 +266,6 @@ html_theme = "furo"
 language = "en"
 
 html_static_path = ["_static"]
-# html_theme_options = {
-#     "repository_url": "https://github.com/kmnhan/erlabpy",
-#     "use_repository_button": True,
-#     "use_source_button": True,
-# }
 html_css_files = ["pied-piper-admonition.css"]
 html_theme_options: dict[str, object] = {
     "footer_icons": [
@@ -161,5 +289,5 @@ latex_engine = "lualatex"
 latex_table_style = ["booktabs"]
 latex_elements = dict(
     fontpkg=r"""\usepackage{fontspec,unicode-math}
-\setsansfont{Helvetica Neue}""",
+""",
 )

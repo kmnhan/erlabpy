@@ -13,3 +13,4 @@ ERLabPy documentation
    userguide
    reference
    development
+   bibliography

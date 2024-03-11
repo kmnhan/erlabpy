@@ -26,6 +26,8 @@ dependencies:
   - sphinx
   - sphinx-autodoc-typehints
   - sphinx-copybutton
+  - sphinxcontrib-bibtex
+  - pybtex
   - nbsphinx
   - furo
   - pip:
