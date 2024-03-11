@@ -21,9 +21,14 @@ __all__ = ["itool", "ImageTool"]
 
 import gc
 import sys
+from collections.abc import Sequence
+
+import numpy as np
+import numpy.typing as npt
+import xarray as xr
+from qtpy import QtCore, QtWidgets
 
 import erlab.io
-import xarray as xr
 from erlab.interactive.imagetool.controls import (
     ItoolBinningControls,
     ItoolColormapControls,
@@ -32,17 +37,57 @@ from erlab.interactive.imagetool.controls import (
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
-from qtpy import QtCore, QtWidgets
 
 
 def itool(
-    data,
-    *args,
+    data: (
+        Sequence[xr.DataArray | npt.ArrayLike[np.floating]]
+        | xr.DataArray
+        | npt.ArrayLike[np.floating]
+    ),
     link: bool = False,
     link_colors: bool = True,
     execute: bool | None = None,
     **kwargs,
 ):
+    """Create and display an ImageTool window.
+
+    Parameters
+    ----------
+    data
+        Array-like object or a sequence of such object with 2 to 4 dimensions. See
+        notes.
+    link
+        Whether to enable linking between multiple ImageTool windows, by default
+        `False`.
+    link_colors
+        Whether to link the color maps between multiple linked ImageTool windows, by
+        default `True`.
+    execute
+        Whether to execute the Qt event loop and display the window, by default `None`.
+        If `None`, the execution is determined based on the current IPython shell.
+    **kwargs
+        Additional keyword arguments to be passed onto the underlying slicer area. For a full list of supported
+        arguments, see the `erlab.interactive.imagetool.core.ImageSlicerArea`
+        documentation.
+
+    Returns
+    -------
+    ImageTool or tuple of ImageTool
+        The created ImageTool window(s).
+
+    Notes
+    -----
+    - If `data` is a sequence of valid data, multiple ImageTool windows will be created
+      and displayed.
+    - If `link` is True, the ImageTool windows will be synchronized.
+
+    Examples
+    --------
+    >>> itool(data, cmap='gray', gamma=0.5)
+    >>> itool(data_list, link=True)
+    """
+
     qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -51,7 +96,7 @@ def itool(
     if isinstance(data, (list, tuple)):
         win = tuple()
         for d in data:
-            win += (ImageTool(d, *args, **kwargs),)
+            win += (ImageTool(d, **kwargs),)
         for w in win:
             w.show()
         win[-1].activateWindow()
@@ -62,7 +107,7 @@ def itool(
                 *[w.slicer_area for w in win], link_colors=link_colors
             )
     else:
-        win = ImageTool(data, *args, **kwargs)
+        win = ImageTool(data, **kwargs)
         win.show()
         win.raise_()
         win.activateWindow()

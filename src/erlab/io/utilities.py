@@ -117,8 +117,7 @@ def find_first_file(file, data_dir=None, contains=None, allow_soft_match=False):
 
 
 def fix_attr_format(da: xr.DataArray):
-    """Discards attributes that are incompatible with the ``netCDF4`` file
-    format.
+    """Discards attributes that are incompatible with the ``netCDF4`` file format.
 
     Parameters
     ----------

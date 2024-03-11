@@ -49,8 +49,53 @@ def edge(
     return_full: bool = False,
     fixed_center: float | None = None,
     scale_covar: bool = True,
-    **kwargs,
+    **kwargs: dict,
 ) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
+    """
+    Fit a Fermi edge to the given gold data.
+
+    Parameters
+    ----------
+    gold
+        The gold data to fit the edge model to.
+    angle_range
+        The range of alpha values to consider.
+    eV_range
+        The range of eV values to consider.
+    bin_size
+        The bin size for coarsening the gold data, by default (1, 1).
+    temp
+        The temperature in Kelvins. If `None`, the temperature is inferred from the
+        attributes, by default `None`
+    vary_temp
+        Whether to fit the temperature value during fitting, by default `False`.
+    fast
+        Whether to use the Gaussian-broadeded step function to fit the edge, by default
+        `False`.
+    method
+        The fitting method to use, by default ``"leastsq"``.
+    progress
+        Whether to display the fitting progress, by default `True`.
+    parallel_kw
+        Additional keyword arguments for parallel fitting, by default `None`.
+    return_full
+        Whether to return the full fit results, by default `False`.
+    fixed_center
+        The fixed center value. If provided, the Fermi level will be fixed at the given
+        value, by default `None`.
+    scale_covar
+        Whether to scale the covariance matrix, by default `True`.
+    **kwargs
+        Additional keyword arguments to fitting.
+
+    Returns
+    -------
+    center_arr, center_stderr
+        The fitted center values and their standard errors, returned when `return_full` `False`.
+    fitresults
+        A dataset containing the full fit results, returned when `return_full` `True`.
+
+    """
     if fast:
         params = {}
         model = StepEdgeModel

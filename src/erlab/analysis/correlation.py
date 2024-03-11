@@ -9,14 +9,29 @@ import itertools
 
 import joblib
 import numpy as np
+import numpy.typing as npt
 import scipy.signal
 import xarray as xr
 
 
 def autocorrelate(arr, *args, **kwargs):
+    """Calculate the autocorrelation of a N-dimensional array, normalized to 1.
+
+    Parameters
+    ----------
+    arr
+        Input array to calculate the autocorrelation.
+    *args, **kwargs
+        Additional arguments and keyword arguments to be passed to `scipy.signal.correlate`.
+
+    Returns
+    -------
+    autocorr
+        Autocorrelation of the input array.
+
+    """
     acf = scipy.signal.correlate(arr, arr, *args, **kwargs)
-    m, n = [s // 2 for s in acf.shape]
-    return acf / acf[m, n]
+    return acf / acf[tuple(s // 2 for s in acf.shape)]
 
 
 def autocorrelation_lags(in_len, *args, **kwargs):
@@ -35,6 +50,41 @@ def nanacf(arr, *args, **kwargs):
 
 
 def acf2(arr, mode: str = "full", method: str = "fft"):
+    """
+    Calculate the autocorrelation function (ACF) of a two-dimensional array including
+    nan values.
+
+    Parameters
+    ----------
+    arr
+        The input array for which the ACF needs to be calculated.
+    mode
+        The mode of the ACF calculation, by default ``"full"``. For more information,
+        see `scipy.signal.correlate`.
+    method
+        The method used for ACF calculation, by default ``"fft"``. For more information,
+        see `scipy.signal.correlate`.
+
+    Returns
+    -------
+    xarray.DataArray
+        The ACF of the input array.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import xarray as xr
+    >>> np.random.seed(0)  # Set the random seed for reproducibility
+    >>> arr = xr.DataArray(np.random.rand(10, 10), dims=("kx", "ky"))
+    >>> acf = acf2(arr)
+    >>> acf
+    <xarray.DataArray (qx: 19, qy: 19)> Size: 3kB
+    8.403e-05 0.01495 0.01979 0.02734 0.03215 ... 0.02734 0.01979 0.01495 8.403e-05
+    Coordinates:
+    * qx       (qx) int64 152B -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9
+    * qy       (qy) int64 152B -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9
+
+    """
     out = arr.copy(deep=True)
     acf = nanacf(out.values, mode=mode, method=method)
     coords = [out[d].values for d in out.dims]
