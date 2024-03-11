@@ -1,13 +1,18 @@
 """
-`xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_
+Some `xarray accessors
+<https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_ for convenient
+data analysis and visualization.
 
 .. currentmodule:: erlab.accessors
 
 """
 
+__all__ = ["MomentumAccessor"]
+
 import functools
 import warnings
 from collections.abc import Callable, Iterable, Sequence
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -25,7 +30,7 @@ class ERLabAccessor:
         self._obj = xarray_obj
 
 
-@xr.register_dataset_accessor("er")
+@xr.register_dataarray_accessor("er")
 class ERLabDataArrayAccessor(ERLabAccessor):
     def show(self, *args, **kwargs):
         return itool(self._obj, *args, **kwargs)
@@ -55,12 +60,46 @@ def only_angles(method: Callable | None = None):
 
 @xr.register_dataarray_accessor("kspace")
 class MomentumAccessor:
+
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
         self.reset_offsets()
 
     @property
+    def configuration(self) -> AxesConfiguration:
+        """Returns the experimental configuration.
+
+        For a properly implemented data loader, the configuration attribute must be set
+        on data import. See :class:`erlab.analysis.kspace.AxesConfiguration` for
+        details.
+        """
+        if "configuration" not in self._obj.attrs:
+            raise ValueError(
+                "Configuration not found in data attributes! "
+                "Data attributes may have been discarded since initial import."
+            )
+        return AxesConfiguration(int(self._obj.attrs.get("configuration")))
+
+    @property
     def inner_potential(self) -> float:
+        """Inner potential of the sample in eV.
+
+        The inner potential is stored in the ``inner_potential`` attribute of the data. If
+        the inner potential is not set, a warning is issued and a default value of 10.0
+        eV is assumed.
+
+        Note
+        ----
+        This property provides a setter method that takes a float value and sets the
+        data attribute accordingly.
+
+        Example
+        -------
+        >>> data.kspace.inner_potential = 13.0
+        >>> data.kspace.inner_potential
+        13.0
+        """
+
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
         else:
@@ -75,6 +114,24 @@ class MomentumAccessor:
 
     @property
     def work_function(self) -> float:
+        """Work function of the sample in eV.
+
+        The work function is stored in the ``sample_workfunction`` attribute of the data.
+        If the work function is not set, a warning is issued and a default value of 4.5
+        eV is assumed.
+
+        Note
+        ----
+        This property provides a setter method that takes a float value and sets the
+        data attribute accordingly.
+
+        Example
+        -------
+        >>> data.kspace.work_function = 4.5
+        >>> data.kspace.work_function
+        4.5
+        """
+
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
         else:
@@ -86,18 +143,34 @@ class MomentumAccessor:
         self._obj.attrs["sample_workfunction"] = float(value)
 
     @property
-    def has_eV(self) -> bool:
-        """Returns `True` if object has an energy axis."""
-        return "eV" in self._obj.dims
+    def angle_resolution(self) -> float:
+        """Angular resolution of the data in degrees.
 
-    @property
-    def has_hv(self) -> bool:
-        """Returns `True` for photon energy dependent data."""
-        return self._obj["hv"].size > 1
+        The angular resolution is stored in the ``angle_resolution`` attribute of the
+        data. If it is not set, a default value of 0.1° is silently used.
+        """
+
+        try:
+            return float(self._obj.attrs["angle_resolution"])
+        except KeyError:
+            # warnings.warn(
+            #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
+            # )
+            return 0.1
+
+    @angle_resolution.setter
+    def angle_resolution(self, value: float):
+        self._obj.attrs["angle_resolution"] = float(value)
 
     @property
     def slit_axis(self) -> str:
-        """Returns the momentum axis parallel to the slit."""
+        """Returns the momentum axis parallel to the slit.
+
+        Returns
+        -------
+        str
+            Returns ``'kx'`` for type 1 configurations, ``'ky'`` otherwise.
+        """
         if (
             self.configuration == AxesConfiguration.Type1
             or self.configuration == AxesConfiguration.Type1DA
@@ -108,28 +181,15 @@ class MomentumAccessor:
 
     @property
     @only_angles
-    def has_beta(self) -> bool:
-        """
-        Returns `True` iff the size of the coordinate array for :math:`β` is greater
-        than 1.
-
-        Notes
-        -----
-        This may be `True` for data that are not maps. For instance,
-        :math:`hν`-dependent cuts with an in-plane momentum offset may have a
-        :math:`hν`-dependent :math:`β` offset.
-
-        """
-        return self._obj.beta.size > 1
-
-    @property
-    @only_angles
     def momentum_axes(self) -> tuple[str, ...]:
         """Returns the momentum axes of the data.
 
-        For photon energy dependent scans, it returns the slit axis and ``'kz'``. For
-        maps, it returns ``'kx'`` and ``'ky'``. Otherwise, it returns only the slit
-        axis.
+        Returns
+        -------
+        tuple
+            For photon energy dependent scans, it returns the slit axis and ``'kz'``.
+            For maps, it returns ``'kx'`` and ``'ky'``. Otherwise, it returns only the
+            slit axis.
 
         """
         if self.has_hv:
@@ -138,6 +198,24 @@ class MomentumAccessor:
             return ("kx", "ky")
         else:
             return (self.slit_axis,)
+
+    @property
+    def angle_params(self) -> dict[str, float]:
+        """Parameters passed to :func:`erlab.analysis.kspace.get_kconv_func`."""
+        params = dict(
+            delta=self.get_offset("delta"),
+            xi=float(self._obj["xi"].values),
+            xi0=self.get_offset("xi"),
+        )
+        if (
+            self.configuration == AxesConfiguration.Type1
+            or self.configuration == AxesConfiguration.Type2
+        ):
+            params["beta0"] = self.get_offset("beta")
+        else:
+            params["chi"] = float(self._obj["chi"].values)
+            params["chi0"] = self.get_offset("chi")
+        return params
 
     @property
     def _photon_energy(self) -> npt.NDArray[np.floating] | float:
@@ -201,18 +279,47 @@ class MomentumAccessor:
         return self._photon_energy - self.work_function + self._binding_energy
 
     @property
+    def has_eV(self) -> bool:
+        """Returns `True` if object has an energy axis."""
+        return "eV" in self._obj.dims
+
+    @property
+    @only_angles
+    def has_hv(self) -> bool:
+        """Returns `True` for photon energy dependent data."""
+        return self._obj["hv"].size > 1
+
+    @property
+    @only_angles
+    def has_beta(self) -> bool:
+        """Check if the coordinate array for :math:`β` has more than one element.
+
+        Returns
+        -------
+        bool
+            Returns `True` if the size of the coordinate array for :math:`β` is greater
+            than 1, `False` otherwise.
+
+        Note
+        ----
+        This may be `True` for data that are not maps. For instance,
+        :math:`hν`-dependent cuts with an in-plane momentum offset may have a
+        :math:`hν`-dependent :math:`β` offset.
+
+        """
+        return self._obj.beta.size > 1
+
+    @property
     def valid_offset_keys(self) -> tuple[str, ...]:
         """
-        Return the valid offset angles based on the current experimental configuration.
+        Get valid offset angles based on the experimental configuration.
 
         Returns
         -------
         tuple
-            A tuple containing the valid offset keys. The keys depend on the current
-            configuration. For configurations with a deflector, the valid keys are
-            ``("delta", "chi", "xi")``. Otherwise, the valid keys are ``("delta", "xi",
-            "beta")``.
-
+            A tuple containing the valid offset keys. For configurations with a
+            deflector, returns ``("delta", "chi", "xi")``. Otherwise, returns
+            ``("delta", "xi", "beta")``.
         """
         if (
             self.configuration == AxesConfiguration.Type1
@@ -224,6 +331,28 @@ class MomentumAccessor:
 
     @property
     def offsets(self) -> dict[str, float]:
+        """Angle offsets used in momentum conversion.
+
+        Returns
+        -------
+        dict
+            A mapping between valid offset keys and their corresponding offsets.
+
+        Note
+        ----
+        This property provides a setter method that takes a dictionary of valid offset
+        keys and their corresponding offsets. Assigning new offsets will reset all
+        previous offsets including the ones not specified in the new dictionary. To
+        update only a subset of the offsets, use the :meth:`set_offsets` method.
+
+        Example
+        -------
+        >>> data.kspace.offsets
+        {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+        >>> data.kspace.offsets = dict(delta=1.5, xi=2.7)
+        >>> data.kspace.offsets
+        {'delta': 1.5, 'xi': 2.7, 'beta': 0.0}
+        """
         return {k: self.get_offset(k) for k in self.valid_offset_keys}
 
     @offsets.setter
@@ -231,39 +360,8 @@ class MomentumAccessor:
         self.reset_offsets()
         self.set_offsets(**offset_dict)
 
-    @property
-    def angle_params(self) -> dict[str, float]:
-        """Parameters passed to `get_kconv_func`."""
-        params = dict(
-            delta=self.get_offset("delta"),
-            xi=float(self._obj["xi"].values),
-            xi0=self.get_offset("xi"),
-        )
-        if (
-            self.configuration == AxesConfiguration.Type1
-            or self.configuration == AxesConfiguration.Type2
-        ):
-            params["beta0"] = self.get_offset("beta")
-        else:
-            params["chi"] = float(self._obj["chi"].values)
-            params["chi0"] = self.get_offset("chi")
-        return params
-
-    @property
-    def configuration(self) -> AxesConfiguration:
-        """
-        Returns the experimental configuration from the data attributes. For a properly
-        implemented data loader, The configuration attribute must be set on data import.
-        See :class:`erlab.analysis.kspace.AxesConfiguration` for details.
-        """
-        if "configuration" not in self._obj.attrs:
-            raise ValueError(
-                "Configuration not found in data attributes! "
-                "Data attributes may have been discarded since initial import."
-            )
-        return AxesConfiguration(int(self._obj.attrs.get("configuration")))
-
-    def reset_offsets(self):
+    def reset_offsets(self) -> None:
+        """Reset all angle offsets to zero."""
         for k in self.valid_offset_keys:
             self._obj.attrs[k + "_offset"] = 0.0
 
@@ -272,15 +370,16 @@ class MomentumAccessor:
         Retrieve the offset for the specified angle coordinate. Valid keys differ based
         on the experimental configuration.
 
-
         See :attr:`valid_offset_keys` for details.
         """
         return float(self._obj.attrs[axis + "_offset"])
 
-    def set_offsets(self, **kwargs):
-        """
-        Set the offsets for specified angle coordinates. Valid keys differ based on the
-        experimental configuration. See :attr:`valid_offset_keys` for details.
+    def set_offsets(self, **kwargs) -> None:
+        """Set the offsets for specified angle coordinates.
+
+        Valid keys differ based on the experimental configuration. See
+        :attr:`valid_offset_keys` for details.
+
         """
         for k, v in kwargs.items():
             if k in self.valid_offset_keys:
@@ -330,62 +429,73 @@ class MomentumAccessor:
 
             return dict(kx=(kx.min(), kx.max()), ky=(ky.min(), ky.max()))
 
-    @property
-    def angle_resolution(self) -> float:
-        try:
-            return float(self._obj.attrs["angle_resolution"])
-        except KeyError:
-            # warnings.warn(
-            #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
-            # )
-            return 0.1
-
-    @angle_resolution.setter
-    def angle_resolution(self, value: float):
-        self._obj.attrs["angle_resolution"] = float(value)
-
     @only_angles
     def estimate_resolution(
         self,
-        axis: str,
+        axis: Literal["kx", "ky", "kz"],
         lims: tuple[float, float] | None = None,
         from_numpoints: bool = False,
-    ) -> np.floating:
-        if axis.startswith("k"):
-            if from_numpoints and (lims is None):
-                lims = self.estimate_bounds()[axis]
+    ) -> float:
+        """Estimate the resolution for a given momentum axis.
 
-            if axis == self.slit_axis:
-                if from_numpoints:
-                    return (lims[1] - lims[0]) / len(self._obj["alpha"])
-                else:
-                    return self.minimum_kp_resolution
-            elif axis == "kz":
-                if self.has_hv:
-                    if from_numpoints:
-                        return (lims[1] - lims[0]) / len(self._obj["hv"])
-                    else:
-                        # ~ 1 / λ
-                        kin = np.amax(self._kinetic_energy)
-                        c1, c2 = 143.0, 0.054
-                        imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
-                        return float(1 / imfp)
-                else:
-                    raise ValueError("No photon energy axis found.")
+        Parameters
+        ----------
+        axis
+            Axis to estimate the resolution for.
+        lims
+            The limits of the axis used when `from_numpoints` is `True`. If not
+            provided, reasonable limits will be calculated by :meth:`estimate_bounds`,
+            by default `None`
+        from_numpoints
+            If `True`, estimate the resolution from the number of points in the relevant
+            axis. If `False`, estimate the resolution based on the data, by default
+            `False`
+
+        Returns
+        -------
+        float
+            The estimated resolution.
+
+        Raises
+        ------
+        ValueError
+            If no photon energy axis is found in data for axis ``'kz'``.
+
+        """
+        if from_numpoints and (lims is None):
+            lims = self.estimate_bounds()[axis]
+
+        if axis == self.slit_axis:
+            dim = "alpha"
+
+        elif axis == "kz":
+            dim = "hv"
+
+            if not self.has_hv:
+                raise ValueError("No photon energy axis found.")
+
+        else:
+            dim = "beta"
+
+        if from_numpoints:
+            return float((lims[1] - lims[0]) / len(self._obj[dim]))
+        else:
+            if axis == "kz":
+                return self.best_kz_resolution
             else:
-                if from_numpoints:
-                    return (lims[1] - lims[0]) / len(self._obj["beta"])
-                else:
-                    return self.minimum_kp_resolution
+                return self.best_kp_resolution
 
     @property
     @only_angles
-    def minimum_kp_resolution(self) -> float:
-        """
+    def best_kp_resolution(self) -> float:
+        r"""
         Estimates the minimum in-plane momentum resolution based on the kinetic energy
-        and angular resolution.
+        and angular resolution:
+
+        .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
+
         """
-        min_Ek = np.min(self._kinetic_energy)
+        min_Ek = np.amin(self._kinetic_energy)
         max_angle = max(np.abs(self._obj["alpha"].values))
         return (
             rel_kconv
@@ -393,6 +503,23 @@ class MomentumAccessor:
             * np.cos(np.deg2rad(max_angle))
             * np.deg2rad(self.angle_resolution)
         )
+
+    @property
+    @only_angles
+    def best_kz_resolution(self) -> float:
+        r"""
+        Estimates the minimum out-of-plane momentum resolution based on the mean free
+        path\ :footcite:p:`SD79` and the kinetic energy.
+
+        .. math:: \Delta k_z \sim 1/\lambda
+
+        .. footbibliography::
+        
+        """
+        kin = self._kinetic_energy.flatten()
+        c1, c2 = 641.0, 0.096
+        imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
+        return np.amin(1 / imfp)
 
     def _forward_func_raw(self, alpha, beta):
         return get_kconv_func(
