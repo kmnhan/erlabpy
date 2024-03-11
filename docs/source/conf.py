@@ -26,7 +26,7 @@ os.environ["QT_API"] = "pyqt6"
 project = "ERLabPy"
 copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
-release = erlab.__version__
+release = ".".join(erlab.__version__.split(".")[:-1])
 version = erlab.__version__
 
 
@@ -35,17 +35,16 @@ version = erlab.__version__
 
 extensions = [
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     # "sphinx_autodoc_typehints",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
+    "sphinx.ext.intersphinx",
     "matplotlib.sphinxext.plot_directive",
     "matplotlib.sphinxext.figmpl_directive",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
-    "sphinx.ext.autosummary",
-    "sphinx.ext.intersphinx",
-    #   'sphinx.ext.doctest',
     # "sphinx.ext.inheritance_diagram",
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
@@ -58,10 +57,6 @@ templates_path = ["_templates"]
 exclude_patterns = []
 
 default_role = "obj"
-add_function_parentheses = True
-add_module_names = True
-toc_object_entries = True
-toc_object_entries_show_parents = "domain"
 
 # nitpicky = False
 # nitpick_ignore = [("py:class", "numpy.float64")]
