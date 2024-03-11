@@ -4,14 +4,13 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 # -- Imports -----------------------------------------------------------------
 
+import importlib.metadata
 import os
 
 import pybtex.plugin
 import pybtex.style.formatting
 import pybtex.style.formatting.unsrt
 import pybtex.style.template
-
-import erlab
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -26,8 +25,8 @@ os.environ["QT_API"] = "pyqt6"
 project = "ERLabPy"
 copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
-release = ".".join(erlab.__version__.split(".")[:-1])
-version = erlab.__version__
+release = importlib.metadata.version("erlab")
+version = release
 
 
 # -- General configuration ---------------------------------------------------
