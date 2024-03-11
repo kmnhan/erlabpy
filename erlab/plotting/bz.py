@@ -7,6 +7,7 @@ __all__ = ["get_bz_edge", "plot_hex_bz"]
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import itertools
 import scipy.spatial
 from matplotlib.patches import RegularPolygon
 
@@ -20,32 +21,43 @@ abbrv_kws = dict(
 
 
 def get_bz_edge(
-    basis: npt.NDArray[np.float64], reciprocal: bool = True
+    basis: npt.NDArray[np.float64],
+    reciprocal: bool = True,
+    extend: tuple[int, int, int] | tuple[int, int] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
 
     Parameters
     ----------
     basis
-        2 x 2 or 3 x 3 numpy array with each row containing the lattice
-        vectors.
+        ``(N, N)`` numpy array where ``N = 2``or ``3`` with each row containing the
+        lattice vectors.
     reciprocal
-        If False, the `basis` are given in real space lattice vectors.
+        If `False`, the `basis` are given in real space lattice vectors.
+    extend
+        Tuple of positive integers specifying the number of times to extend the BZ in
+        each direction. If `None`, only the first BZ is returned (equivalent to ``(1,) *
+        N``).
 
     Returns
     -------
     lines : array-like
-        Endpoints of the lines that make up the BZ edge.
+        ``(M, 2, N)`` array that specifies the endpoints of the ``M`` lines that make up
+        the BZ edge, where ``N = len(basis)``.
     vertices : array-like
         Vertices of the BZ.
 
     """
     if not (basis.shape == (2, 2) or basis.shape == (3, 3)):
-        raise ValueError("Shape of `basis` must be (2, 2) or (3, 3).")
+        raise ValueError("Shape of `basis` must be (N, N) where N = 2 or 3.")
     if not reciprocal:
         basis = 2 * np.pi * np.linalg.inv(basis).T
 
     ndim = basis.shape[-1]
+
+    if extend is None:
+        extend = (1,) * ndim
+
     points = (
         np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=[0, 0])
         .reshape((ndim, 3**ndim))
@@ -62,6 +74,17 @@ def get_bz_edge(
             lines.append(vor.vertices[simplex + [simplex[0]]])
             valid_indices += simplex
     vertices = vor.vertices[valid_indices]
+
+    additional_lines = []
+    additional_verts = []
+    for vals in itertools.product(*[range(-n + 1, n) for n in extend]):
+        if vals != (0,) * ndim:
+            displacement = np.dot(vals, basis)
+            additional_lines.append(lines + displacement)
+            additional_verts.append(vertices + displacement)
+
+    lines = np.r_[lines, *additional_lines]
+    vertices = np.r_[vertices, *additional_verts]
 
     # remove duplicates
     lines_new = []
