@@ -1,7 +1,7 @@
 """Momentum conversion functions.
 
 Typically, the user will not have to call this module directly, but will instead use the
-:func:`erlab.accessors.KSpaceAccessor.convert` method.
+:func:`erlab.accessors.MomentumAccessor.convert` method.
 
 Angle conventions and function forms are based on [IS18]_.
 

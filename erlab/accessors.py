@@ -5,13 +5,13 @@
 
 """
 
+import functools
 import warnings
+from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
-import functools
 import numpy.typing as npt
 import xarray as xr
-from collections.abc import Iterable, Sequence, Callable
 
 import erlab.interactive
 from erlab.analysis.interpolate import interpn
@@ -54,7 +54,7 @@ def only_angles(method: Callable | None = None):
 
 
 @xr.register_dataarray_accessor("kspace")
-class KspaceAccessor:
+class MomentumAccessor:
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
         self.reset_offsets()
@@ -270,8 +270,8 @@ class KspaceAccessor:
     def get_offset(self, axis: str) -> float:
         """
         Retrieve the offset for the specified angle coordinate. Valid keys differ based
-        on the experimental configuration. 
-        
+        on the experimental configuration.
+
 
         See :attr:`valid_offset_keys` for details.
         """
@@ -344,8 +344,43 @@ class KspaceAccessor:
     def angle_resolution(self, value: float):
         self._obj.attrs["angle_resolution"] = float(value)
 
+    @only_angles
+    def estimate_resolution(
+        self,
+        axis: str,
+        lims: tuple[float, float] | None = None,
+        from_numpoints: bool = False,
+    ) -> np.floating:
+        if axis.startswith("k"):
+            if from_numpoints and (lims is None):
+                lims = self.estimate_bounds()[axis]
+
+            if axis == self.slit_axis:
+                if from_numpoints:
+                    return (lims[1] - lims[0]) / len(self._obj["alpha"])
+                else:
+                    return self.minimum_kp_resolution
+            elif axis == "kz":
+                if self.has_hv:
+                    if from_numpoints:
+                        return (lims[1] - lims[0]) / len(self._obj["hv"])
+                    else:
+                        # ~ 1 / λ
+                        kin = np.amax(self._kinetic_energy)
+                        c1, c2 = 143.0, 0.054
+                        imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
+                        return float(1 / imfp)
+                else:
+                    raise ValueError("No photon energy axis found.")
+            else:
+                if from_numpoints:
+                    return (lims[1] - lims[0]) / len(self._obj["beta"])
+                else:
+                    return self.minimum_kp_resolution
+
     @property
-    def minimum_k_resolution(self) -> float:
+    @only_angles
+    def minimum_kp_resolution(self) -> float:
         """
         Estimates the minimum in-plane momentum resolution based on the kinetic energy
         and angular resolution.
@@ -446,10 +481,15 @@ class KspaceAccessor:
             representing the lower and upper bounds of the axis. If not
             provided, the bounds will be estimated based on the data.
         resolution
-            A dictionary specifying the resolution for each coordinate axis.
-            The keys are the names of the axes, and the values are floats
-            representing the desired resolution of the axis. If not provided,
-            the resolution will be estimated based on the data.
+            A dictionary specifying the resolution for each momentum axis. The keys are
+            the names of the axes, and the values are floats representing the desired
+            resolution of the axis. If not provided, the resolution will be estimated
+            based on the data. For in-plane momentum, the resolution is estimated from
+            the angle resolution and kinetic energy. For out-of-plane momentum, two
+            values are calculated. One is based on the number of photon energy points,
+            and the other is estimated as the inverse of the photoelectron inelastic mean
+            free path given by the universal curve. The resolution is estimated as the
+            smaller of the two values.
         silent
             If `True`, suppresses printing, by default `False`.
 
@@ -505,10 +545,10 @@ class KspaceAccessor:
             if k in self.momentum_axes:
                 lims = bounds.get(k, lims)
 
+                res = self.estimate_resolution(k, lims, from_numpoints=False)
                 if k == "kz":
-                    res = (lims[1] - lims[0]) / len(self._obj["hv"])
-                else:
-                    res = self.minimum_k_resolution
+                    res_n = self.estimate_resolution(k, lims, from_numpoints=True)
+                    res = min(res, res_n)
                 res = resolution.get(k, res)
 
                 new_size[k] = round((lims[1] - lims[0]) / res + 1)

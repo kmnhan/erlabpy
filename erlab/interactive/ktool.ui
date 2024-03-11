@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>805</width>
-    <height>499</height>
+    <height>727</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -30,7 +30,7 @@
        <enum>QTabWidget::Rounded</enum>
       </property>
       <property name="currentIndex">
-       <number>0</number>
+       <number>1</number>
       </property>
       <widget class="QWidget" name="tab">
        <attribute name="title">
@@ -78,7 +78,7 @@
          </widget>
         </item>
         <item>
-         <widget class="QGroupBox" name="resolution_group">
+         <widget class="QGroupBox" name="resolution_supergroup">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
             <horstretch>0</horstretch>
@@ -94,7 +94,46 @@
           <property name="checked">
            <bool>false</bool>
           </property>
-          <layout class="QFormLayout" name="formLayout_3"/>
+          <layout class="QVBoxLayout" name="verticalLayout_5">
+           <item>
+            <widget class="QWidget" name="resolution_group" native="true">
+             <layout class="QFormLayout" name="formLayout_3">
+              <property name="leftMargin">
+               <number>0</number>
+              </property>
+              <property name="topMargin">
+               <number>0</number>
+              </property>
+              <property name="rightMargin">
+               <number>0</number>
+              </property>
+              <property name="bottomMargin">
+               <number>0</number>
+              </property>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="res_btn">
+             <property name="toolTip">
+              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Estimate momentum resolution from the data.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             </property>
+             <property name="text">
+              <string>Estimate</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="res_npts_check">
+             <property name="toolTip">
+              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, the resolution is estimated from the number of points along each axis.&lt;/p&gt;&lt;p&gt;Otherwise, it is inferred from the kinetic energy and angular resolution.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             </property>
+             <property name="text">
+              <string>From # points</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
          </widget>
         </item>
         <item>
@@ -131,7 +170,7 @@
           </property>
           <layout class="QVBoxLayout" name="verticalLayout_3">
            <item>
-            <layout class="QFormLayout" name="formLayout_4">
+            <layout class="QFormLayout" name="bz_form">
              <item row="0" column="0">
               <widget class="QLabel" name="label">
                <property name="text">
@@ -141,6 +180,9 @@
              </item>
              <item row="0" column="1">
               <widget class="QDoubleSpinBox" name="a_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
                <property name="suffix">
                 <string> Å</string>
                </property>
@@ -164,6 +206,9 @@
              </item>
              <item row="1" column="1">
               <widget class="QDoubleSpinBox" name="b_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
                <property name="suffix">
                 <string> Å</string>
                </property>
@@ -178,15 +223,11 @@
                </property>
               </widget>
              </item>
-             <item row="2" column="0">
-              <widget class="QLabel" name="label_3">
-               <property name="text">
-                <string>ang</string>
-               </property>
-              </widget>
-             </item>
              <item row="2" column="1">
               <widget class="QDoubleSpinBox" name="ang_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
                <property name="suffix">
                 <string>°</string>
                </property>
@@ -204,15 +245,70 @@
                </property>
               </widget>
              </item>
-             <item row="3" column="0">
-              <widget class="QLabel" name="label_4">
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_3">
                <property name="text">
-                <string>rot</string>
+                <string>ang</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="label_13">
+               <property name="text">
+                <string>𝒄</string>
                </property>
               </widget>
              </item>
              <item row="3" column="1">
+              <widget class="QDoubleSpinBox" name="c_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string> Å</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>0.001000000000000</double>
+               </property>
+               <property name="value">
+                <double>6.008000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QDoubleSpinBox" name="ab_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string> Å</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>0.001000000000000</double>
+               </property>
+               <property name="value">
+                <double>3.540000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="0">
+              <widget class="QLabel" name="label_14">
+               <property name="text">
+                <string>𝒂 or 𝒃</string>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="1">
               <widget class="QDoubleSpinBox" name="rot_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
                <property name="suffix">
                 <string>°</string>
                </property>
@@ -220,13 +316,48 @@
                 <number>1</number>
                </property>
                <property name="minimum">
-                <double>0.000000000000000</double>
+                <double>-360.000000000000000</double>
                </property>
                <property name="maximum">
                 <double>360.000000000000000</double>
                </property>
                <property name="value">
                 <double>0.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="0">
+              <widget class="QLabel" name="label_4">
+               <property name="text">
+                <string>rot</string>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="1">
+              <widget class="QSpinBox" name="n1_spin">
+               <property name="minimum">
+                <number>1</number>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="0">
+              <widget class="QLabel" name="label_11">
+               <property name="text">
+                <string>n1</string>
+               </property>
+              </widget>
+             </item>
+             <item row="7" column="1">
+              <widget class="QSpinBox" name="n2_spin">
+               <property name="minimum">
+                <number>1</number>
+               </property>
+              </widget>
+             </item>
+             <item row="7" column="0">
+              <widget class="QLabel" name="label_12">
+               <property name="text">
+                <string>n2</string>
                </property>
               </widget>
              </item>
@@ -328,6 +459,9 @@
            </item>
            <item row="0" column="1">
             <widget class="QDoubleSpinBox" name="center_spin">
+             <property name="keyboardTracking">
+              <bool>false</bool>
+             </property>
              <property name="suffix">
               <string> eV</string>
              </property>
