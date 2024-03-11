@@ -32,12 +32,13 @@ packages = [
     "erlab",
     "erlab.analysis",
     "erlab.characterization",
+    "erlab.interactive",
     "erlab.io",
     "erlab.plotting",
 ]
 
 [tool.setuptools.package-dir]
-erlab = "erlab"
+erlab = "src/erlab"
 
 [tool.setuptools.dynamic]
 version = { attr = "erlab.__version__" }
