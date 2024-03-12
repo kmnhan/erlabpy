@@ -28,17 +28,7 @@ dependencies = [
 dynamic = ["version"]
 
 [tool.setuptools]
-packages = [
-    "erlab",
-    "erlab.analysis",
-    "erlab.characterization",
-    "erlab.interactive",
-    "erlab.io",
-    "erlab.plotting",
-]
-
-[tool.setuptools.package-dir]
-erlab = "src/erlab"
+package-dir = { "" = "src" }
 
 [tool.setuptools.dynamic]
 version = { attr = "erlab.__version__" }
