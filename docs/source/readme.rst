@@ -1,3 +1,3 @@
 .. include:: ../../README.rst
 
-For the list of packages and modules provided by ERLabPy, see :doc:`reference`.
+For a full list of modules provided by ERLabPy, see the :doc:`reference`.

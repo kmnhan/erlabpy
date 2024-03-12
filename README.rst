@@ -5,7 +5,7 @@ Getting Started
 Installing
 ==========
 
-Installation requires `git` and `conda`. 
+Installation requires `git` and `conda` (or `mamba`). 
 
 Installing Git
 --------------
@@ -28,21 +28,36 @@ Installing Git
 Installing Conda
 ----------------
 
-* `Install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_ 
-* Miniconda is recommended to save disk space.
+- `Install conda
+  <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_
+  or `install mamba
+  <https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html>`_.
+
+  - When using conda, miniconda is recommended to save disk space.
+  - `Mamba <https://mamba.readthedocs.io/en/latest/>`_ is a faster alternative
+    to conda with additional features.
+  - Installing `miniforge <https://github.com/conda-forge/miniforge>`_ will
+    install both conda and mamba.
+
+    - On a mac, miniforge can be installed with `homebrew <https://brew.sh>`_:
+
+      .. code-block:: bash
+
+        brew install miniforge
+
+
+- Configure channels. 
+
+  .. code-block:: bash
+
+    conda config --prepend channels conda-forge
+    conda config --set channel_priority strict
+
 
 Editable Installation from Source
 ---------------------------------
 
-1. Configure conda channels.
-
-   .. code-block:: bash
-
-      conda config --prepend channels conda-forge
-      conda config --set channel_priority strict
-
-
-2. Clone the repository to your preferred directory (:code:`my/directory`).
+1. Clone the repository to your preferred directory (:code:`my/directory`).
 
    .. code-block:: bash
 
@@ -50,7 +65,7 @@ Editable Installation from Source
       git clone https://github.com/kmnhan/erlabpy.git
 
 
-3. Create a conda environment and activate it.
+2. Create a conda environment and activate it.
    Here, replace :code:`envname` with the environment name you prefer.
    If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
 
@@ -61,7 +76,7 @@ Editable Installation from Source
       conda activate envname
 
 
-4. Install the repository.
+3. Install the repository.
    
    .. code-block:: bash
 
@@ -74,7 +89,10 @@ Editable Installation from Source
 Core Dependencies
 =================
 
-ERLabPy relies on some python libraries. Some key packages and links to their documentation are listed below, ordered by importance. In particular, this documentation assumes familiarity with the first four packages, which are sufficient for ARPES data analysis. 
+ERLabPy is installed with many different python libraries. Some key packages and
+links to their documentation are listed below, ordered by importance. In
+particular, this documentation assumes familiarity with the first four packages,
+which are sufficient for ARPES data analysis.
 
 .. list-table::
     :header-rows: 1
