@@ -1,5 +1,4 @@
-﻿==================================
-Constants (:mod:`erlab.constants`)
+﻿Constants (:mod:`erlab.constants`)
 ==================================
 
 
@@ -14,6 +13,8 @@ Constants (:mod:`erlab.constants`)
       e
       c
       m_e
+      mcsq
+      mcsq_eV
       h
       hc
       hbar
@@ -25,6 +26,7 @@ Constants (:mod:`erlab.constants`)
       hbarsq_eV
       rel_eV_nm
       rel_kconv
+      rel_kzconv
       kb
       kb_eV
    

@@ -1,5 +1,4 @@
-﻿=========================
-Data IO (:mod:`erlab.io`)
+﻿Data IO (:mod:`erlab.io`)
 =========================
 
 .. automodule:: erlab.io

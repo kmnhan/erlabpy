@@ -1,5 +1,4 @@
-﻿===============================
-Lattices (:mod:`erlab.lattice`)
+﻿Lattices (:mod:`erlab.lattice`)
 ===============================
 
 .. automodule:: erlab.lattice

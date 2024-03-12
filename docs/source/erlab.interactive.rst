@@ -1,5 +1,4 @@
-﻿======================================
-Interactive (:mod:`erlab.interactive`)
+﻿Interactive (:mod:`erlab.interactive`)
 ======================================
 
 .. automodule:: erlab.interactive

@@ -1,5 +1,4 @@
-﻿=============================================
-Extensions to xarray (:mod:`erlab.accessors`)
+﻿Extensions to xarray (:mod:`erlab.accessors`)
 =============================================
 
 .. automodule:: erlab.accessors

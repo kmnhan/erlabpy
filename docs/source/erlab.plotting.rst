@@ -1,5 +1,4 @@
-﻿================================
-Plotting (:mod:`erlab.plotting`)
+﻿Plotting (:mod:`erlab.plotting`)
 ================================
 
 .. automodule:: erlab.plotting

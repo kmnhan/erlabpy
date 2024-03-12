@@ -1,5 +1,4 @@
-﻿================================================
-Characterization (:mod:`erlab.characterization`)
+﻿Characterization (:mod:`erlab.characterization`)
 ================================================
 
 .. automodule:: erlab.characterization
