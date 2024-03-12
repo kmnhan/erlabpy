@@ -30,6 +30,7 @@ dependencies:
   - pybtex
   - nbsphinx
   - furo
+  - sphinx-design
   - pip:
     - pyqt6>=6.2.2
     - csaps

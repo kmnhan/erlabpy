@@ -1,6 +1,6 @@
-=================
+*****************
 Development Guide
-=================
+*****************
 
 Code style
 ==========
@@ -12,31 +12,22 @@ ERLabPy uses numpy style docstrings. However, the attribute, parameter, and retu
 Documentation
 =============
 
-Documentation is automatically generated using `Sphinx <https://www.sphinx-doc.org/en/master/>`_.
+Documentation is generated using `Sphinx <https://www.sphinx-doc.org/en/master/>`_. It is automatically updated by Read the Docs when a new commit is pushed to the repository.
 
---------------------------
-Building the documentation
---------------------------
 
-Install requirements
---------------------
+Building the documentation locally
+----------------------------------
 
-.. code-block:: bash
+* Check whether all documentation dependencies are installed.
 
-   conda activate envname
-   conda install sphinx, sphinx-autodoc-typehints, nbsphinx furo -y
-   pip install sphinx-qt-documentation
+  .. code-block:: bash
 
-Build
------
+      pip install -r docs/requirements.txt
 
-.. code-block:: bash
+* Build html and pdf documentation.
+  
+  .. code-block:: bash
 
-   cd my/directory/erlabpy
-
-.. code-block:: bash
-
-   cd docs
-   make clean
-   make html && make latexpdf
-   cd ..
+      cd my/directory/erlabpy/docs
+      make clean
+      make html && make latexpdf

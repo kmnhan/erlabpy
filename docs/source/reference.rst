@@ -1,6 +1,6 @@
-=============
+*************
 API Reference
-=============
+*************
 
 ERLabPy is organized into multiple subpackages and submodules.
 

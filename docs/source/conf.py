@@ -49,6 +49,7 @@ extensions = [
     "sphinx_qt_documentation",
     "sphinx_copybutton",
     "nbsphinx",
+    "sphinx_design",
 ]
 
 
@@ -257,6 +258,7 @@ bibtex_footbibliography_header = ".. rubric:: References"
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = "furo"
+pygments_dark_style = "monokai"
 language = "en"
 
 html_static_path = ["_static"]
@@ -274,6 +276,14 @@ html_theme_options: dict[str, object] = {
             "class": "",
         },
     ],
+    "light_css_variables": {
+        "color-brand-primary": "#6d50bf",
+        "color-brand-content": "#6d50bf",
+    },
+    "dark_css_variables": {
+        "color-brand-primary": "#a180ff",
+        "color-brand-content": "#a180ff",
+    },
 }
 
 # -- LaTeX options -----------------------------------------------------------

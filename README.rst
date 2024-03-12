@@ -1,20 +1,9 @@
-=======
-ERLabPy
-=======
-
-
-Python macros for ERLab.
-
-===============
+***************
 Getting Started
-===============
+***************
 
 Installing
 ==========
-
--------------
-Prerequisites
--------------
 
 Installation requires `git` and `conda`. 
 
@@ -42,13 +31,8 @@ Installing Conda
 * `Install conda <https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html>`_ 
 * Miniconda is recommended to save disk space.
 
-------------
-Installation
-------------
-
 Editable Installation from Source
 ---------------------------------
-
 
 1. Configure conda channels.
 
@@ -87,7 +71,6 @@ Editable Installation from Source
       pip install -e . --config-settings editable_mode=compat
 
 
-=================
 Core Dependencies
 =================
 

@@ -3,6 +3,7 @@ sphinx-autodoc-typehints
 setuptools
 nbsphinx
 furo
+sphinx-design
 sphinx-qt-documentation
 sphinx-copybutton
 sphinxcontrib-bibtex
