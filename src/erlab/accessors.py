@@ -171,13 +171,11 @@ class MomentumAccessor:
         str
             Returns ``'kx'`` for type 1 configurations, ``'ky'`` otherwise.
         """
-        if (
-            self.configuration == AxesConfiguration.Type1
-            or self.configuration == AxesConfiguration.Type1DA
-        ):
-            return "kx"
-        else:
-            return "ky"
+        match self.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type1DA:
+                return "kx"
+            case _:
+                return "ky"
 
     @property
     @only_angles
@@ -207,14 +205,12 @@ class MomentumAccessor:
             xi=float(self._obj["xi"].values),
             xi0=self.get_offset("xi"),
         )
-        if (
-            self.configuration == AxesConfiguration.Type1
-            or self.configuration == AxesConfiguration.Type2
-        ):
-            params["beta0"] = self.get_offset("beta")
-        else:
-            params["chi"] = float(self._obj["chi"].values)
-            params["chi0"] = self.get_offset("chi")
+        match self.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+                params["beta0"] = self.get_offset("beta")
+            case _:
+                params["chi"] = float(self._obj["chi"].values)
+                params["chi0"] = self.get_offset("chi")
         return params
 
     @property
@@ -321,13 +317,11 @@ class MomentumAccessor:
             deflector, returns ``("delta", "chi", "xi")``. Otherwise, returns
             ``("delta", "xi", "beta")``.
         """
-        if (
-            self.configuration == AxesConfiguration.Type1
-            or self.configuration == AxesConfiguration.Type2
-        ):
-            return ("delta", "xi", "beta")
-        else:
-            return ("delta", "chi", "xi")
+        match self.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+                return ("delta", "xi", "beta")
+            case _:
+                return ("delta", "chi", "xi")
 
     @property
     def offsets(self) -> dict[str, float]:

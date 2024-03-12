@@ -81,6 +81,11 @@ def get_kconv_func(
         returns :math:`(α, β)`. If :math:`k_z` is given, it will return the angles
         broadcasted to :math:`k_z` instead of the provided kinetic energy.
 
+    Raises
+    ------
+    ValueError
+        If the given configuration is not valid.
+
     Note
     ----
     The only requirement for the input parameters is that the shape of the input angles
@@ -98,12 +103,18 @@ def get_kconv_func(
 
     """
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
-    func = (
-        _kconv_func_type1,
-        _kconv_func_type2,
-        _kconv_func_type1_da,
-        _kconv_func_type2_da,
-    )[int(configuration) - 1]
+
+    match configuration:
+        case AxesConfiguration.Type1:
+            func = _kconv_func_type1
+        case AxesConfiguration.Type2:
+            func = _kconv_func_type2
+        case AxesConfiguration.Type1DA:
+            func = _kconv_func_type1_da
+        case AxesConfiguration.Type2DA:
+            func = _kconv_func_type2_da
+        case _:
+            ValueError(f"Invalid configuration {configuration}")
 
     return func(k_tot, **angle_params)
 
