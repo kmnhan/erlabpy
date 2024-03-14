@@ -39,7 +39,9 @@ Installing Conda
   - Installing `miniforge <https://github.com/conda-forge/miniforge>`_ will
     install both conda and mamba.
 
-    - On a mac, miniforge can be installed with `homebrew <https://brew.sh>`_:
+    .. hint::
+      
+      On a mac, miniforge can be installed with `homebrew <https://brew.sh>`_:
 
       .. code-block:: bash
 
@@ -61,27 +63,62 @@ Editable Installation from Source
 
    .. code-block:: bash
 
-      cd my/directory
-      git clone https://github.com/kmnhan/erlabpy.git
+     cd my/directory
+     git clone https://github.com/kmnhan/erlabpy.git
 
 
-2. Create a mamba environment and activate it. If using conda, replace
-   :code:`mamba` with :code:`conda`. Here, replace :code:`<envname>` with the
-   environment name you prefer. If on Apple silicon, replace
-   :code:`environment.yml` with :code:`environment_apple.yml`.
+2. Create a mamba environment and activate it.
+
+   .. note::
+
+     Replace :code:`<envname>`  with the environment name you prefer.
+
+   .. hint::
+     
+     | If using conda, replace :code:`mamba` with :code:`conda`.
+     | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
 
    .. code-block:: bash
 
-      cd erlabpy
-      mamba env create -f environment.yml -n <envname>
-      mamba activate <envname>
+     cd erlabpy
+     mamba env create -f environment.yml -n <envname>
+     mamba activate <envname>
 
 
 3. Install the repository.
    
    .. code-block:: bash
 
-      pip install -e . --config-settings editable_mode=compat
+     pip install -e . --config-settings editable_mode=compat
+ 
+
+Updating ERLabPy
+----------------
+
+* For minor updates with editable installs, it is sufficient to just navigate to the
+  repository and pull the latest changes.
+
+  .. code-block:: bash
+
+    git pull
+
+* When there are changes to the dependencies, update the environment after pulling.
+
+  .. hint::
+
+    | If using conda, replace :code:`mamba` with :code:`conda`.
+    | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+
+  .. code-block:: bash
+
+    mamba env update -f environment.yml -n <envname>
+
+* In case of major changes, it is recommended to reinstall ERLabPy.
+
+  .. code-block:: bash
+
+    mamba activate <envname>
+    pip install -e . --force-reinstall --no-deps --config-settings editable_mode=compat
 
 
 Core Dependencies
