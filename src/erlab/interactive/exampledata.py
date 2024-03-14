@@ -35,7 +35,7 @@ def spectral_function(w, bareband, Sreal, Simag):
 def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
     if temp != 0:
         image *= fermi_dirac(eV - efermi, temp)[None, None, :]
-    image += 1e-6
+    image += 0.5e-6
     image /= image.max()
     image *= count / np.mean(image)
 
@@ -146,21 +146,21 @@ def generate_data(
 
 
 def generate_data_angles(
-    shape: tuple[int, int, int] = (250, 250, 300),
+    shape: tuple[int, int, int] = (500, 60, 500),
     angrange: float | tuple[float, float] | dict[str, tuple[float, float]] = 15.0,
-    Erange: tuple[float, float] = (-0.45, 0.09),
-    hv: float = 30.0,
+    Erange: tuple[float, float] = (-0.45, 0.12),
+    hv: float = 50.0,
     configuration: (
         erlab.analysis.kspace.AxesConfiguration | int
-    ) = erlab.analysis.kspace.AxesConfiguration.Type1DA,
+    ) = erlab.analysis.kspace.AxesConfiguration.Type1,
     temp: float = 20.0,
     a: float = 6.97,
     t: float = 0.43,
     bandshift: float = -0.2,
     Sreal: float = 0.0,
     Simag: float = 0.03,
-    angres: float = 0.01,
-    Eres: float = 2.0e-3,
+    angres: float = 0.1,
+    Eres: float = 10.0e-3,
     noise: bool = True,
     count: int = 10000,
     ccd_sigma: float = 0.6,
@@ -177,7 +177,7 @@ def generate_data_angles(
         the range, or a dictionary with ``alpha`` and ``beta`` keys mapping to tuples
         representing the range for each dimension, by default 15.0
     Erange
-        Binding energy range in electronvolts, by default (-0.45, 0.09)
+        Binding energy range in electronvolts, by default (-0.45, 0.12)
     hv
         The photon energy in eV. Note that the sample work function is assumed to be 4.5
         eV, by default 30.0
@@ -229,7 +229,7 @@ def generate_data_angles(
 
     eV = np.linspace(*Erange, shape[2])
 
-    Ekin = hv - 4.5 + eV[None, :]
+    Ekin = hv - 4.5 + eV[None, None, :]
     forward_func, _ = erlab.analysis.kspace.get_kconv_func(
         Ekin, configuration=configuration, angle_params=dict()
     )
@@ -237,15 +237,16 @@ def generate_data_angles(
     dE = eV[1] - eV[0]
     dalpha, dbeta = (alpha[1] - alpha[0]), (beta[1] - beta[0])
 
-    point_iter = np.array(np.meshgrid(alpha, beta)).T.reshape(-1, 2).T
-    point_iter = np.dstack(forward_func(point_iter[0][:, None], point_iter[1][:, None]))
+    a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
+    kxv, kyv = forward_func(a_mesh[:, :, None], b_mesh[:, :, None])
+    point_iter = np.stack([kxv, kyv], axis=3)
 
-    Eij = band(point_iter, t, a).reshape(shape)
+    Eij = band(point_iter, t, a)
 
     Akw_p = spectral_function(eV, Eij + bandshift, Sreal, Simag)
     Akw_m = spectral_function(eV, -Eij + bandshift, Sreal, Simag)
 
-    phase = np.angle(func(point_iter, a)).reshape(shape)
+    phase = np.angle(func(point_iter, a))
     Akw_p *= 1 + np.cos(phase)
     Akw_m *= 1 - np.cos(phase)
     out = Akw_p + Akw_m
@@ -256,17 +257,17 @@ def generate_data_angles(
         rng = np.random.default_rng()
         out = rng.poisson(out).astype(float)
 
-    broadened = scipy.ndimage.gaussian_filter(
+    out = scipy.ndimage.gaussian_filter(
         out,
         sigma=[angres / dalpha, angres / dbeta, Eres / dE],
         truncate=10.0,
     )
     if noise:
-        broadened = scipy.ndimage.gaussian_filter(
-            rng.poisson(broadened).astype(float), ccd_sigma, truncate=10.0
+        out = scipy.ndimage.gaussian_filter(
+            rng.poisson(out).astype(float), ccd_sigma, truncate=10.0, axes=(0, 2)
         )
 
-    out = xr.DataArray(broadened, coords=dict(alpha=alpha, beta=beta, eV=eV))
+    out = xr.DataArray(out, coords=dict(alpha=alpha, beta=beta, eV=eV))
     out = out.assign_coords(xi=0.0, delta=0.0, hv=hv)
 
     match configuration:
@@ -293,16 +294,9 @@ if __name__ == "__main__":
     #     count=1000,
     #     noise=True,
     # )
-    out = generate_data_angles(
-        shape=(300, 30, 500),
-        # krange=1.4,
-        hv=55,
-        Erange=(-0.45, 0.09),
-        temp=30,
-        bandshift=-0.2,
-        count=1000,
-        noise=True,
-    )
+    out = generate_data_angles()
     import arpes.xarray_extensions
+    import erlab.accessors
+    import erlab.plotting.erplot as eplt
 
-    out.S.show()
+    eplt.itool([out, out.kspace.convert()])
