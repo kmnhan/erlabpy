@@ -10,6 +10,7 @@ data analysis and visualization.
 __all__ = ["MomentumAccessor"]
 
 import functools
+import time
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import Literal
@@ -726,6 +727,7 @@ class MomentumAccessor:
 
         if not silent:
             print(f"Converting {old_dim_order}  ->  {new_dim_order}")
+            t_start = time.perf_counter()
 
         out = xr.DataArray(
             interpn(
@@ -739,5 +741,7 @@ class MomentumAccessor:
         )
         out = out.assign_attrs(self._obj.attrs)
         out = out.assign_coords(other_coords)
+        if not silent:
+            print(f"Converted in {time.perf_counter() - t_start:.3f} seconds")
 
         return out
