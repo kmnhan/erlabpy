@@ -46,7 +46,7 @@ Installing Conda
         brew install miniforge
 
 
-- Configure channels. 
+- If using conda, configure channels to use conda-forge.
 
   .. code-block:: bash
 
@@ -65,24 +65,22 @@ Editable Installation from Source
       git clone https://github.com/kmnhan/erlabpy.git
 
 
-2. Create a conda environment and activate it.
-   Here, replace :code:`envname` with the environment name you prefer.
-   If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+2. Create a mamba environment and activate it. If using conda, replace
+   :code:`mamba` with :code:`conda`. Here, replace :code:`<envname>` with the
+   environment name you prefer. If on Apple silicon, replace
+   :code:`environment.yml` with :code:`environment_apple.yml`.
 
    .. code-block:: bash
 
       cd erlabpy
-      conda env create -f environment.yml -n envname
-      conda activate envname
+      mamba env create -f environment.yml -n <envname>
+      mamba activate <envname>
 
 
 3. Install the repository.
    
    .. code-block:: bash
 
-      cd src
-      git clone https://github.com/kmnhan/erlabpy.git
-      cd erlabpy
       pip install -e . --config-settings editable_mode=compat
 
 
