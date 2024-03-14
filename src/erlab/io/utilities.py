@@ -1,3 +1,4 @@
+from genericpath import isfile
 import os
 import re
 import warnings
@@ -30,6 +31,7 @@ def showfitsinfo(path: str | os.PathLike):
 
     """
     from astropy.io import fits
+
     with fits.open(path, ignore_missing_end=True) as hdul:
         hdul.verify("silentfix+warn")
         hdul.info()
@@ -58,6 +60,12 @@ def files_for_search(directory, contains=None):
 
 
 def find_first_file(file, data_dir=None, contains=None, allow_soft_match=False):
+    if data_dir is None:
+        if os.path.isfile(file):
+            return file
+    elif os.path.isfile(os.path.join(data_dir, file)):
+        return os.path.join(data_dir, file)
+
     workspace = arpes.config.CONFIG["WORKSPACE"]
     if data_dir is None:
         data_dir = "data"
