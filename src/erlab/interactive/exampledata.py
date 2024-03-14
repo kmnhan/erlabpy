@@ -276,9 +276,11 @@ def generate_data_angles(
         ):
             out = out.assign_coords(chi=0.0)
 
-    out.attrs["configuration"] = int(configuration)
-    out.attrs["sample_temperature"] = temp
-    out.attrs["sample_workfunction"] = 4.5
+    return out.assign_attrs(
+        configuration=int(configuration),
+        sample_temperature=temp,
+        sample_workfunction=4.5,
+    )
 
 
 if __name__ == "__main__":
