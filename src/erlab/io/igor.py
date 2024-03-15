@@ -201,15 +201,7 @@ def load_wave(
                     v = float(v)
                 except ValueError:
                     pass
-            attrs[k.lower().replace(" ", "_")] = v
-    keys_dict = {
-        "sample_x": "x",
-        "sample_y_(vert)": "y",
-        "sample_y": "y",
-        "sample_z": "z",
-        "bl_energy": "hv",
-    }
-    attrs = {keys_dict[k] if k in keys_dict else k: v for k, v in attrs.items()}
+            attrs[k] = v
 
     return xr.DataArray(
         d["wData"], dims=coords.keys(), coords=coords, attrs=attrs
