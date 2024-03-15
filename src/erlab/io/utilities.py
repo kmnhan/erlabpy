@@ -1,15 +1,16 @@
-from genericpath import isfile
 import os
 import re
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
+
+import numpy as np
+import xarray as xr
 
 import arpes
 import arpes.config
 import arpes.endstations
 import arpes.io
-import numpy as np
-import xarray as xr
 
 __all__ = [
     "showfitsinfo",
@@ -42,7 +43,7 @@ def showfitsinfo(path: str | os.PathLike):
 
 
 def get_files(
-    directory, contains: str | None = None, extensions: list[str] = None
+    directory, contains: str | None = None, extensions: Sequence[str] = None
 ) -> list[str]:
     """Returns a list of files in a directory with the given extensions.
 
