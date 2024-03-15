@@ -246,8 +246,8 @@ class PolynomialModel(XModelMixin):
 
 class MultiPeakFunction(DynamicFunction):
     PEAK_SHAPES: dict[Callable, list[str]] = {
-        gaussian_wh: ["lorentzian", "lor", "l"],
-        lorentzian_wh: ["gaussian", "gauss", "g"],
+        lorentzian_wh: ["lorentzian", "lor", "l"],
+        gaussian_wh: ["gaussian", "gauss", "g"],
     }
 
     DEFAULT_PEAK: str = "lorentzian"
@@ -448,7 +448,8 @@ class FermiEdge2dFunc(DynamicFunction):
 
     def pre_call(self, eV, alpha, **params: dict):
         center = self.poly(
-            np.asarray(alpha), *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)]
+            np.asarray(alpha),
+            *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)],
         )
         return (params["const_bkg"] - params["offset"] + params["lin_bkg"] * eV) / (
             1 + np.exp((1.0 * eV - center) / max(TINY, params["temp"] * kb_eV))
