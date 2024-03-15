@@ -13,6 +13,7 @@ import xarray as xr
 
 __all__ = [
     "showfitsinfo",
+    "get_files",
     "find_first_file",
     "open_hdf5",
     "load_hdf5",
@@ -38,6 +39,36 @@ def showfitsinfo(path: str | os.PathLike):
         for i in range(len(hdul)):
             # print(f'\nColumns in {i:d}: {hdul[i].columns.names!r}')
             print(f"\nHeaders in {i:d}:\n{hdul[i].header!r}")
+
+
+def get_files(
+    directory, contains: str | None = None, extensions: list[str] = None
+) -> list[str]:
+    """Returns a list of files in a directory with the given extensions.
+
+    Parameters
+    ----------
+    directory
+        Target directory.
+    contains
+        String to filter for in the file names.
+    extensions
+        List of extensions to filter for. If not provided, all files are returned.
+
+    Returns
+    -------
+    list
+        List of files in the directory.
+
+    """
+    files = os.listdir(directory)
+    if extensions is not None:
+        files = [f for f in files if os.path.splitext(f)[1] in extensions]
+
+    if contains is not None:
+        files = [f for f in files if contains in f]
+
+    return files
 
 
 def files_for_search(directory, contains=None):
