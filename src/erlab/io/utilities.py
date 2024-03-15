@@ -69,6 +69,8 @@ def get_files(
     if contains is not None:
         files = [f for f in files if contains in f]
 
+    files = [os.path.join(directory, f) for f in files]
+
     return files
 
 
