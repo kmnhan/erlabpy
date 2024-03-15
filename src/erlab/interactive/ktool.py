@@ -345,7 +345,8 @@ class ktool(ktoolGUI):
     @property
     def offset_dict(self) -> dict[str, float]:
         return {
-            k: self._offset_spins[k].value() for k in self.data.kspace.valid_offset_keys
+            k: np.round(self._offset_spins[k].value(), 5)
+            for k in self.data.kspace.valid_offset_keys
         }
 
     def _angle_data(self) -> xr.DataArray:
