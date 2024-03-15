@@ -186,7 +186,7 @@ class PlotPeakPosition(pg.InfiniteLine):
 
 
 class edctool(QtWidgets.QMainWindow):
-    def __init__(self, data, n_bands:int=1, parameters=None, *args, **kwargs):
+    def __init__(self, data, n_bands: int = 1, parameters=None, *args, **kwargs):
         self.data = data
 
         self.qapp = QtCore.QCoreApplication.instance()
@@ -402,6 +402,8 @@ class edctool(QtWidgets.QMainWindow):
         print(res.best_values)
         self.fitplot.setData(x=self.xdata, y=res.best_fit)
         self.set_params(res.best_values)
+        
+        self.result = res
 
     def set_params(self, params: dict):
         params = copy.deepcopy(params)
@@ -442,10 +444,11 @@ class edctool(QtWidgets.QMainWindow):
 
 if __name__ == "__main__":
     data = xr.open_dataarray(
-        "~/Documents/ERLab/TiSe2/220922_ALS_BL4/TS2_testedc_2209ALS.nc"
+        "~/Library/CloudStorage/Dropbox-KAIST_12/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/220922 ALS BL4/TS2_testedc_2209ALS.nc"
     )
     edctool(
-        data, 3,
+        data,
+        3,
         parameters={
             "p0_center": -0.11933563574455268,
             "p0_width": 0.1678003093053242,
