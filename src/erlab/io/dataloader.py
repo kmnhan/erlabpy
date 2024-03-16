@@ -55,7 +55,10 @@ class LoaderBase:
     """
 
     coordinate_attrs: tuple[str, ...] = tuple()
-    """Names of attributes (after renaming) that should be treated as coordinates."""
+    """
+    Names of attributes (after renaming) that should be treated as coordinates. These
+    attrs (including the ones before renaming) will be removed from attrs.
+    """
 
     additional_attrs: dict[str, str | int | float] = {}
     """Additional attributes to be added to the data."""
@@ -325,14 +328,23 @@ class LoaderBase:
                 data[k] = self.post_process(v)
             return data
 
-    def post_process(self, data: xr.DataArray) -> xr.DataArray:
+    def process_keys(self, data: xr.DataArray) -> xr.DataArray:
         # Rename coordinates
         data = data.rename(
             {k: v for k, v in self.rename_keys.items() if k in data.coords}
         )
 
-        # Rename attributes
-        data.attrs = {self.rename_keys.get(k, k): v for k, v in data.attrs.items()}
+        # For attributes, keep original attribute and add new with renamed keys
+        new_attrs = {}
+        for k, v in dict(data.attrs).items():
+            if k in self.rename_keys:
+                new_key = self.rename_keys[k]
+                if new_key in self.coordinate_attrs and new_key in data.coords:
+                    # Renamed attribute is already a coordinate, remove
+                    del data.attrs[k]
+                else:
+                    new_attrs[new_key] = v
+        data = data.assign_attrs(new_attrs)
 
         # Move from attrs to coordinate if coordinate is not found
         data = data.assign_coords(
@@ -342,8 +354,11 @@ class LoaderBase:
                 if a in data.attrs and a not in data.coords
             }
         )
-        data = data.assign_attrs(self.additional_attrs)
+        return data
 
+    def post_process(self, data: xr.DataArray) -> xr.DataArray:
+        data = self.process_keys(data)
+        data = data.assign_attrs(self.additional_attrs)
         return data
 
     @classmethod

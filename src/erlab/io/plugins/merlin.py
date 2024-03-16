@@ -50,26 +50,10 @@ class BL403Loader(LoaderBase):
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         data = load_experiment(file_path)
-        data = data.data_vars[list(data.data_vars.keys())[0]]
+        # One file always corresponds to single region, so assume only one data variable
+        data: xr.DataArray = data.data_vars[list(data.data_vars.keys())[0]]
 
-        # Rename coordinates
-        data = data.rename(
-            {k: v for k, v in self.rename_keys.items() if k in data.coords}
-        )
-
-        # Rename attributes
-        data.attrs = {self.rename_keys.get(k, k): v for k, v in data.attrs.items()}
-
-        # Move from attrs to coordinate if coordinate is not found
-        data = data.assign_coords(
-            {
-                a: data.attrs.pop(a)
-                for a in self.coordinate_attrs
-                if a in data.attrs and a not in data.coords
-            }
-        )
-
-        return data
+        return self.process_keys(data)
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
