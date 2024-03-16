@@ -43,7 +43,10 @@ def showfitsinfo(path: str | os.PathLike):
 
 
 def get_files(
-    directory, contains: str | None = None, extensions: Sequence[str] = None
+    directory,
+    extensions: Sequence[str] | None = None,
+    contains: str | None = None,
+    notcontains: str | None = None,
 ) -> list[str]:
     """Returns a list of files in a directory with the given extensions.
 
@@ -51,25 +54,30 @@ def get_files(
     ----------
     directory
         Target directory.
-    contains
-        String to filter for in the file names.
     extensions
         List of extensions to filter for. If not provided, all files are returned.
+    contains
+        String to filter for in the file names.
+    notcontains
+        String to filter out of the file names.
 
     Returns
     -------
-    list
+    files : list of str
         List of files in the directory.
 
     """
-    files = os.listdir(directory)
-    if extensions is not None:
-        files = [f for f in files if os.path.splitext(f)[1] in extensions]
 
-    if contains is not None:
-        files = [f for f in files if contains in f]
+    files = []
 
-    files = [os.path.join(directory, f) for f in files]
+    for f in os.listdir(directory):
+        if extensions is not None and os.path.splitext(f)[1] not in extensions:
+            continue
+        if contains is not None and contains not in f:
+            continue
+        if notcontains is not None and notcontains in f:
+            continue
+        files.append(os.path.join(directory, f))
 
     return files
 
