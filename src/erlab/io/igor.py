@@ -1,13 +1,12 @@
 import os
 
 import h5netcdf
-import igor2.record
-import igor2.binarywave
-import igor2.packed
 import numpy as np
 import xarray as xr
 
-from erlab.io.utilities import find_first_file
+import igor2.binarywave
+import igor2.packed
+import igor2.record
 
 __all__ = ["load_experiment", "load_h5", "load_wave", "load_pxp", "load_ibw"]
 
@@ -122,7 +121,30 @@ def load_h5(filename):
 def load_wave(
     wave: dict | igor2.record.WaveRecord | str | os.PathLike,
     data_dir: str | os.PathLike | None = None,
-):
+) -> xr.DataArray:
+    """Load a wave from Igor binary format.
+
+    Parameters
+    ----------
+    wave
+        The wave to load. It can be provided as a dictionary, an instance of
+        `igor2.record.WaveRecord`, or a string representing the path to the wave file.
+    data_dir
+        The directory where the wave file is located. This parameter is only used if
+        `wave` is a string or `PathLike` object. If `None`, `wave` must be a valid path.
+    Returns
+    -------
+    xarray.DataArray
+        The loaded wave.
+
+    Raises
+    ------
+    ValueError
+        If the wave file cannot be found or loaded.
+    TypeError
+        If the wave argument is of an unsupported type.
+
+    """
     DEFAULT_DIMS = ["W", "X", "Y", "Z"]
     _MAXDIM = 4
 
@@ -131,11 +153,8 @@ def load_wave(
     elif isinstance(wave, igor2.record.WaveRecord):
         wave_dict = wave.wave
     else:
-        try:
-            wave = find_first_file(wave, data_dir=data_dir)
-        except (ValueError, TypeError):
-            if data_dir is not None:
-                wave = os.path.join(data_dir, wave)
+        if data_dir is not None:
+            wave = os.path.join(data_dir, wave)
         wave_dict = igor2.binarywave.load(wave)
 
     d = wave_dict["wave"]
