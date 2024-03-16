@@ -56,8 +56,13 @@ class LoaderBase:
 
     coordinate_attrs: tuple[str, ...] = tuple()
     """
-    Names of attributes (after renaming) that should be treated as coordinates. These
-    attrs (including the ones before renaming) will be removed from attrs.
+    Names of attributes (after renaming) that should be treated as coordinates.
+    
+    Note
+    ----
+    Although the data loader tries to preserve the original attributes, the attributes
+    given here, both before and after renaming, will be removed from attrs for
+    consistency.
     """
 
     additional_attrs: dict[str, str | int | float] = {}
@@ -271,6 +276,11 @@ class LoaderBase:
         index
             The inferred index if found, otherwise None.
 
+        Note
+        ----
+        This method is used to determine all files for a given scan. Hence, for loaders
+        with `always_single` set to `True`, this method does not have to be implemented.
+
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
@@ -328,17 +338,20 @@ class LoaderBase:
                 data[k] = self.post_process(v)
             return data
 
-    def process_keys(self, data: xr.DataArray) -> xr.DataArray:
+    def process_keys(
+        self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
+    ) -> xr.DataArray:
+        if key_mapping is None:
+            key_mapping = self.rename_keys
+
         # Rename coordinates
-        data = data.rename(
-            {k: v for k, v in self.rename_keys.items() if k in data.coords}
-        )
+        data = data.rename({k: v for k, v in key_mapping.items() if k in data.coords})
 
         # For attributes, keep original attribute and add new with renamed keys
         new_attrs = {}
         for k, v in dict(data.attrs).items():
-            if k in self.rename_keys:
-                new_key = self.rename_keys[k]
+            if k in key_mapping:
+                new_key = key_mapping[k]
                 if new_key in self.coordinate_attrs and new_key in data.coords:
                     # Renamed attribute is already a coordinate, remove
                     del data.attrs[k]
