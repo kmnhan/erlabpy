@@ -36,32 +36,6 @@ class ValidationError(Exception):
     pass
 
 
-def reverse_mapping(mapping: dict[str, str | Iterable[str]]) -> dict[str, str]:
-    """Reverse the given mapping dictionary to form a one-to-one mapping.
-
-    Parameters
-    ----------
-    mapping
-        The mapping dictionary to be reversed.
-
-    Example
-    -------
-
-    >>> mapping = {'a': '1', 'b': ['2', '3']}
-    >>> reverse_mapping(mapping)
-    {'1': 'a', '2': 'b', '3': 'b'}
-
-    """
-    out: dict[str, str] = {}
-    for k, v in mapping.items():
-        if isinstance(v, str):
-            out[v] = k
-        else:
-            for vi in v:
-                out[vi] = k
-    return out
-
-
 class LoaderBase:
     """Base class for all data loaders."""
 
@@ -114,9 +88,35 @@ class LoaderBase:
         if not cls.name.startswith("_"):
             LoaderRegistry.instance().register(cls)
 
+    @staticmethod
+    def reverse_mapping(mapping: dict[str, str | Iterable[str]]) -> dict[str, str]:
+        """Reverse the given mapping dictionary to form a one-to-one mapping.
+
+        Parameters
+        ----------
+        mapping
+            The mapping dictionary to be reversed.
+
+        Example
+        -------
+
+        >>> mapping = {'a': '1', 'b': ['2', '3']}
+        >>> reverse_mapping(mapping)
+        {'1': 'a', '2': 'b', '3': 'b'}
+
+        """
+        out: dict[str, str] = {}
+        for k, v in mapping.items():
+            if isinstance(v, str):
+                out[v] = k
+            else:
+                for vi in v:
+                    out[vi] = k
+        return out
+
     @property
     def name_map_reversed(self) -> dict[str, str]:
-        return reverse_mapping(self.name_map)
+        return self.reverse_mapping(self.name_map)
 
     def load(
         self,
