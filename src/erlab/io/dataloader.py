@@ -203,14 +203,30 @@ class LoaderBase:
 
         """
         pkl_path = os.path.join(data_dir, ".summary.pkl")
+        df = None
         if usecache:
             try:
-                return pd.read_pickle(pkl_path)
+                df = pd.read_pickle(pkl_path)
             except FileNotFoundError:
                 pass
-        summary = self.generate_summary(data_dir, **kwargs)
-        summary.to_pickle(pkl_path)
-        return summary
+
+        if df is None:
+            df = self.generate_summary(data_dir, **kwargs)
+            df.to_pickle(pkl_path)
+
+        try:
+            shell = get_ipython().__class__.__name__  # type: ignore
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                from IPython.display import display
+
+                with pd.option_context(
+                    "display.max_rows", len(df), "display.max_columns", len(df.columns)
+                ):
+                    display(df.head(len(df)))
+        except NameError:
+            pass
+
+        return df
 
     def load_single(
         self, file_path: str | os.PathLike
