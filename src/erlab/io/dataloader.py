@@ -9,7 +9,7 @@ implementation of `LoaderBase.validate` for details.
 
 For any data loader plugin subclassing `LoaderBase`, the following attributes and
 methods must be defined: `LoaderBase.name`, `LoaderBase.aliases`,
-`LoaderBase.rename_keys`, `LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
+`LoaderBase.name_mapping`, `LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
 `LoaderBase.always_single`, `LoaderBase.skip_validate`, :func:`LoaderBase.load_single`,
 :func:`LoaderBase.identify`, :func:`LoaderBase.infer_index`, and
 :func:`LoaderBase.generate_summary`.
@@ -36,6 +36,32 @@ class ValidationError(Exception):
     pass
 
 
+def reverse_mapping(mapping: dict[str, str | Iterable[str]]) -> dict[str, str]:
+    """Reverse the given mapping dictionary to form a one-to-one mapping.
+
+    Parameters
+    ----------
+    mapping
+        The mapping dictionary to be reversed.
+
+    Example
+    -------
+
+    >>> mapping = {'a': '1', 'b': ['2', '3']}
+    >>> reverse_mapping(mapping)
+    {'1': 'a', '2': 'b', '3': 'b'}
+
+    """
+    out: dict[str, str] = {}
+    for k, v in mapping.items():
+        if isinstance(v, str):
+            out[v] = k
+        else:
+            for vi in v:
+                out[vi] = k
+    return out
+
+
 class LoaderBase:
     """Base class for all data loaders."""
 
@@ -48,10 +74,11 @@ class LoaderBase:
     aliases: list[str] | None = None
     """List of alternative names for the loader."""
 
-    rename_keys: dict[str, str] = {}
+    name_map: dict[str, str | Iterable[str]] = {}
     """
-    Dictionary mapping original coordinate or attribute names to new coordinate or
-    attribute names.
+    Dictionary that maps **new** coordinate or attribute names to **original** coordinate
+    or attribute names. If there are multiple possible names for a single attribute, the
+    value can be passed as an iterable.
     """
 
     coordinate_attrs: tuple[str, ...] = tuple()
@@ -86,6 +113,10 @@ class LoaderBase:
 
         if not cls.name.startswith("_"):
             LoaderRegistry.instance().register(cls)
+
+    @property
+    def name_map_reversed(self) -> dict[str, str]:
+        return reverse_mapping(self.name_map)
 
     def load(
         self,
@@ -358,7 +389,7 @@ class LoaderBase:
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
     ) -> xr.DataArray:
         if key_mapping is None:
-            key_mapping = self.rename_keys
+            key_mapping = self.name_map_reversed
 
         # Rename coordinates
         data = data.rename({k: v for k, v in key_mapping.items() if k in data.coords})

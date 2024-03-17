@@ -19,19 +19,18 @@ class BL403Loader(LoaderBase):
     name: str = "merlin"
     aliases: list[str] = ["ALS_BL4", "als_bl4", "BL403", "bl403"]
 
-    rename_keys: dict[str, str] = {
-        "deg": "alpha",
-        "Polar": "beta",
-        "Polar Compens": "beta",
-        "Azimuth": "delta",
-        "Tilt": "xi",
-        "Sample X": "x",
-        "Sample Y (Vert)": "y",
-        "Sample Z": "z",
-        "BL Energy": "hv",
-        "EPU POL": "polarization",
-        "Temperature Sensor B": "temp_sample",
-        "Mesh Current": "photon_flux",
+    name_map: dict[str, str | list[str]] = {
+        "alpha": "deg",
+        "beta": ["Polar", "Polar Compens"],
+        "delta": "Azimuth",
+        "xi": "Tilt",
+        "x": "Sample X",
+        "y": "Sample Y (Vert)",
+        "z": "Sample Z",
+        "hv": "BL Energy",
+        "polarization": "EPU POL",
+        "temp_sample": "Temperature Sensor B",
+        "photon_flux": "Mesh Current",
     }
     coordinate_attrs: tuple[str, ...] = (
         "beta",
@@ -87,7 +86,7 @@ class BL403Loader(LoaderBase):
                 coord_arr = coord_arr.reshape(-1, 1)
 
             for i, hdr in enumerate(header):
-                key = self.rename_keys.get(hdr, hdr)
+                key = self.name_map_reversed.get(hdr, hdr)
                 coord_dict[key] = coord_arr[: len(files), i].astype(np.float64)
 
         if len(files) == 0:
