@@ -676,8 +676,8 @@ class LoaderRegistry(RegistryBase):
         return out
 
     def _repr_html_(self) -> str:
-        out = "<h3>Registered data loaders</h3>"
-        out += "<table>"
+        out = ""
+        out += "<table><thead>"
         out += (
             "<tr>"
             "<th style='text-align:left;'><b>Name</b></th>"
@@ -685,6 +685,7 @@ class LoaderRegistry(RegistryBase):
             "<th style='text-align:left;'><b>Loader class</b></th>"
             "</tr>"
         )
+        out += "</thead><tbody>"
         for k, v in self.loaders.items():
             aliases = ", ".join(v.aliases) if v.aliases is not None else ""
 
@@ -696,12 +697,12 @@ class LoaderRegistry(RegistryBase):
 
             out += (
                 "<tr>"
-                f"<tr><td style='text-align:left;'>{k}</td>"
+                f"<td style='text-align:left;'>{k}</td>"
                 f"<td style='text-align:left;'>{aliases}</td>"
                 f"<td style='text-align:left;'>{cls_name}</td>"
                 "</tr>"
             )
-        out += "</table>"
+        out += "</tbody></table>"
 
         return out
 
