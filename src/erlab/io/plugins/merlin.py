@@ -152,25 +152,26 @@ class BL403Loader(LoaderBase):
                     path = os.path.join(data_dir, file)
                     files[data_name] = path
 
-        summary_attrs = {
+        summary_attrs: dict[str, str] = {
             "Lens Mode": "Lens Mode",
-            "Acquisition Mode": "Scan Type",
-            "temp_sample": "T(K)",
-            "Pass Energy": "Pass E",
-            "Slit Plate": "Analyzer Slit",
-            "polarization": "Polarization",
+            "Scan Type": "Acquisition Mode",
+            "T(K)": "temp_sample",
+            "Pass E": "Pass Energy",
+            "Analyzer Slit": "Slit Plate",
+            "Polarization": "polarization",
             "hv": "hv",
             "Entrance Slit": "Entrance Slit",
             "Exit Slit": "Exit Slit",
             "x": "x",
             "y": "y",
             "z": "z",
-            "xi": "tilt",
-            "delta": "azi",
+            "tilt": "xi",
+            "azi": "delta",
         }
 
-        cols = ["File Name", "Type"] + list(summary_attrs.values())
+        cols = ["File Name", "Type"] + list(summary_attrs.keys())
 
+        data: list[dict] = []
         data_info = []
         time_list = []
 
@@ -195,26 +196,32 @@ class BL403Loader(LoaderBase):
             )
             data_info.append([name, data_type])
 
-            for k in summary_attrs.keys():
+            for k, v in summary_attrs.items():
                 try:
-                    val = data.attrs[k]
+                    val = data.attrs[v]
                 except KeyError:
                     try:
-                        val = data.coords[k].values
+                        val = data.coords[v].values
                     except KeyError:
                         val = ""
+
                 if k == "Lens Mode":
                     val = val.replace("Angular", "A")
+
                 elif k in ("Entrance Slit", "Exit Slit"):
                     val = round(val)
-                elif k == "polarization":
+
+                elif k == "Polarization":
                     if np.iterable(val):
                         val = np.asarray(val).astype(int)
                     else:
                         val = [int(val)]
-                    val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}[v] for v in val]
+
+                    val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}[vi] for vi in val]
+
                     if len(val) == 1:
                         val = val[0]
+
                 data_info[-1].append(val)
             del data
 
