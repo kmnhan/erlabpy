@@ -505,7 +505,7 @@ class RegistryBase:
 
 
 class LoaderRegistry(RegistryBase):
-    loaders: dict[str, LoaderBase] = dict()
+    loaders: dict[str, LoaderBase | type[LoaderBase]] = dict()
     """Registered loaders \n\n:meta hide-value:"""
 
     alias_mapping: dict[str, str] = dict()
@@ -526,7 +526,7 @@ class LoaderRegistry(RegistryBase):
         for alias in loader_class.aliases:
             self.alias_mapping[alias] = loader_class.name
 
-    def get(self, key: str) -> type[LoaderBase]:
+    def get(self, key: str) -> LoaderBase:
         try:
             loader_name = self.alias_mapping.get(key)
             loader = self.loaders.get(loader_name)
@@ -541,7 +541,10 @@ class LoaderRegistry(RegistryBase):
         except KeyError:
             raise ValueError(f"Loader for {key} not found")
 
-    def __getitem__(self, key: str) -> type[LoaderBase]:
+    def __getitem__(self, key: str) -> LoaderBase:
+        return self.get(key)
+
+    def __getattr__(self, key: str) -> LoaderBase:
         return self.get(key)
 
     def set_loader(self, loader: str | LoaderBase):
