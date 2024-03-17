@@ -15,7 +15,6 @@ Modules
    dataloader
    utilities
    igor
-   ssrl52
    
 
 For a single session, it is very common to use only one type of loader for a single
@@ -47,10 +46,10 @@ __all__ = [
     "loader_context",
     "set_data_dir",
     "load",
+    "summarize",
     "load_experiment",
     "load_wave",
     "da30",
-    "load_ssrl",
     "load_live",
     "open_hdf5",
     "load_hdf5",
@@ -59,11 +58,10 @@ __all__ = [
 ]
 
 import warnings
-
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 from erlab.io.igor import load_experiment, load_wave
 
-from erlab.io import ssrl52, da30
+from erlab.io import da30
 from erlab.io.dataloader import (
     loaders,
     set_loader,
@@ -73,9 +71,11 @@ from erlab.io.dataloader import (
     summarize,
 )
 
-merlin = loaders["merlin"]
+# Import plugins last
+import erlab.io.plugins
 
-load_ssrl = ssrl52.load
+merlin = loaders["merlin"]
+ssrl52 = loaders["ssrl52"]
 
 
 def load_igor_ibw(*args, **kwargs):

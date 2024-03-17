@@ -210,9 +210,9 @@ class LoaderBase:
         self, data_dir: str | os.PathLike, usecache: bool = True, **kwargs
     ) -> pd.DataFrame:
         """
-        Takes a path to a directory and summarizes the data in the directory to a pandas
-        DataFrame, much like a log file. This is useful for quickly inspecting the
-        contents of a directory.
+        Takes a path to a directory and summarizes the data in the directory to a
+        `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
+        the contents of a directory.
 
         Results are cached in a pickle file in the directory. If the pickle file is not
         found, the summary is generated with `generate_summary` and cached.

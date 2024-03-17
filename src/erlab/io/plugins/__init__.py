@@ -9,6 +9,7 @@ Modules
    :toctree:
    
    merlin
+   ssrl52
 
 """
 
