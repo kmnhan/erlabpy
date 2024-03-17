@@ -192,7 +192,7 @@ class LoaderBase:
                 if new_identifier is not None:
                     # On success, load with the index
                     new_dir: str = os.path.dirname(identifier)
-                    return self.load(new_identifier, new_dir, single, **kwargs)
+                    return self.load(new_identifier, new_dir, single=single, **kwargs)
                 else:
                     # On failure, assume single file
                     single = True
