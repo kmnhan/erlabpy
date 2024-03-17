@@ -141,8 +141,10 @@ class BL403Loader(LoaderBase):
         files: dict[str, str] = dict()
 
         for pth in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
-            base_name = os.path.splitext(os.path.basename(pth))[0]
-            data_name: str = re.match(r"(.*?_\d{3})(?:_S\d{3})?", base_name).group(1)
+            data_name = os.path.splitext(os.path.basename(pth))[0]
+            name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
+            if name_match is not None:
+                data_name = name_match.group(1)
             files[data_name] = pth
 
         if not exclude_live:
@@ -165,6 +167,7 @@ class BL403Loader(LoaderBase):
             "x": "x",
             "y": "y",
             "z": "z",
+            "polar": "beta",
             "tilt": "xi",
             "azi": "delta",
         }
