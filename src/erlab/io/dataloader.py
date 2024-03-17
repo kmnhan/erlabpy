@@ -533,8 +533,8 @@ class LoaderRegistry(RegistryBase):
 
             if type(loader) == type:
                 # If not an instance, create one
-                self.loaders[key] = loader()
-                loader = self.loaders[key]
+                self.loaders[loader_name] = loader()
+                loader = self.loaders[loader_name]
 
             return loader
 
