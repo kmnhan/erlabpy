@@ -1,3 +1,8 @@
+"""Some general functions and utilities used in fitting.
+
+Many functions are `numba`-compiled for speed.
+"""
+
 __all__ = [
     "TINY",
     "do_convolve",
@@ -168,6 +173,10 @@ def fermi_dirac_linbkg_broad(
     dos0: float,
     dos1: float,
 ) -> npt.NDArray[np.float64]:
+    """
+    Resolution-broadened Fermi-dirac edge with linear backgrounds above and below the
+    fermi level.
+    """
     return do_convolve(
         x,
         fermi_dirac_linbkg,
