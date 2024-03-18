@@ -1,3 +1,16 @@
+__all__ = [
+    "TINY",
+    "do_convolve",
+    "do_convolve_y",
+    "gaussian_wh",
+    "lorentzian_wh",
+    "fermi_dirac",
+    "fermi_dirac_linbkg",
+    "fermi_dirac_linbkg_broad",
+    "step_linbkg_broad",
+    "step_broad",
+]
+
 from typing import Callable
 
 import numba
@@ -7,7 +20,8 @@ import scipy.special
 
 from erlab.constants import kb_eV
 
-TINY: float = 1.0e-15  #: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
+#: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
+TINY: float = 1.0e-15
 
 
 @numba.njit(cache=True)
@@ -23,8 +37,7 @@ def _gen_kernel(
     gauss = (
         delta_x
         * np.exp(
-            -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2)
-            / max(TINY, 2 * sigma**2)
+            -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / max(TINY, 2 * sigma**2)
         )
         / max(TINY, np.sqrt(2 * np.pi) * sigma)
     )
@@ -36,7 +49,7 @@ def do_convolve(
     func: Callable,
     resolution: float,
     pad: int = 5,
-    **kwargs: dict
+    **kwargs: dict,
 ) -> npt.NDArray[np.float64]:
     r"""Convolves `func` with gaussian of FWHM `resolution` in `x`.
 
@@ -66,7 +79,7 @@ def do_convolve_y(
     func: Callable,
     resolution: float,
     pad: int = 5,
-    **kwargs: dict
+    **kwargs: dict,
 ) -> npt.NDArray[np.float64]:
     xn, g = _gen_kernel(
         np.asarray(np.squeeze(x), dtype=np.float64), resolution, pad=pad
@@ -168,6 +181,20 @@ def fermi_dirac_linbkg_broad(
     )
 
 
+def step_broad(
+    x: npt.NDArray[np.float64],
+    center: float = 0.0,
+    sigma: float = 1.0,
+    amplitude: float = 1.0,
+):
+    """Step function convolved with a Gaussian."""
+    return (
+        amplitude
+        * 0.5
+        * scipy.special.erfc((1.0 * x - center) / max(TINY, np.sqrt(2) * sigma))
+    )
+
+
 def step_linbkg_broad(
     x: npt.NDArray[np.float64],
     center: float,
@@ -184,18 +211,4 @@ def step_linbkg_broad(
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) * (
         step_broad(x, center, sigma, 1.0)
-    )
-
-
-def step_broad(
-    x: npt.NDArray[np.float64],
-    center: float = 0.0,
-    sigma: float = 1.0,
-    amplitude: float = 1.0,
-):
-    """Step function convolved with a Gaussian."""
-    return (
-        amplitude
-        * 0.5
-        * scipy.special.erfc((1.0 * x - center) / max(TINY, np.sqrt(2) * sigma))
     )
