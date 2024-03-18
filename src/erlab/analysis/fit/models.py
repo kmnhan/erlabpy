@@ -31,19 +31,48 @@ from erlab.analysis.fit.functions import (
 from erlab.constants import kb_eV
 
 
-def get_args_kwargs(func) -> tuple[list[str], dict[str, int | float]]:
-    pos_args = []
-    kw_args = {}
+def get_args_kwargs(func) -> tuple[list[str], dict[str, object]]:
+    """Get all argument names and default values from a function signature.
+
+    Parameters
+    ----------
+    func
+        The function to inspect.
+
+    Returns
+    -------
+    args : list of str
+        A list of argument names with no default value.
+    args_default : dict
+        A dictionary of keyword arguments with their default values.
+
+
+    Note
+    ----
+    This function does not support function signatures containing varargs.
+
+    Example
+    -------
+
+    >>> def my_func(a, b=10):
+    ...     pass
+    >>> get_args_kwargs(my_func)
+    (['a'], {'b': 10})
+
+    """
+    args = []
+    args_default = {}
     sig = inspect.signature(func)
     for fnam, fpar in sig.parameters.items():
-        if fpar.kind == fpar.POSITIONAL_OR_KEYWORD:
-            if fpar.default == fpar.empty:
-                pos_args.append(fnam)
-            else:
-                kw_args[fnam] = fpar.default
-        elif fpar.kind == fpar.VAR_POSITIONAL:
+        if fpar.kind == fpar.VAR_POSITIONAL or fpar.kind == fpar.VAR_KEYWORD:
             raise ValueError(f"varargs '*{fnam}' is not supported")
-    return pos_args, kw_args
+        else:
+            if fpar.default == fpar.empty:
+                args.append(fnam)
+            else:
+                args_default[fnam] = fpar.default
+
+    return args, args_default
 
 
 @numba.njit("f8[:,:](f8[:], i8)", cache=True)
@@ -66,14 +95,49 @@ def _fit_x(a, b):
 
 
 @numba.njit("f8[:](f8[:], f8[:], i8)", cache=True)
-def fit_poly_jit(x, y, deg):
+def fit_poly_jit(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], deg: np.int64):
+    """`numba`-accelerated polynomial fitting.
+
+    Parameters
+    ----------
+    x
+        The x-coordinates of the data points.
+    y
+        The y-coordinates of the data points.
+    deg
+        The degree of the polynomial to fit.
+
+    Returns
+    -------
+    p : ndarray
+        1D array of polynomial coefficients (including coefficients equal to zero) from
+        the constant term to the highest degree.
+
+    """
     a = _coeff_mat(x, deg)
     p = _fit_x(a, y)
     return p
 
 
-def fit_edges_linear(x, data, len_fit):
-    """Fit y = mx + n to each edge of the data."""
+def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
+    """Fit :math:`y = mx + n` to each edge of the data.
+
+    Parameters
+    ----------
+    x
+        The x-coordinates of the data points.
+    data
+        The y-coordinates of the data points.
+    len_fit
+        The number of data points to use for fitting the edges.
+
+    Returns
+    -------
+    n0, m0
+        The coefficients of the linear fit for the left edge.
+    n1, m1
+        The coefficients of the linear fit for the right edge.
+    """
     n0, m0 = fit_poly_jit(
         np.array(x[:len_fit], dtype=np.float64),
         np.array(data[:len_fit], dtype=np.float64),
@@ -205,7 +269,16 @@ class DynamicFunction:
 
 
 class PolyFunc(DynamicFunction):
-    def __init__(self, degree=1) -> None:
+    """A callable class for a arbitrary degree polynomial.
+
+    Parameters
+    ----------
+    degree
+        The degree of the polynomial.
+
+    """
+
+    def __init__(self, degree: int = 1) -> None:
         super().__init__()
         self.degree = degree
 
@@ -245,6 +318,29 @@ class PolynomialModel(XModelMixin):
 
 
 class MultiPeakFunction(DynamicFunction):
+    """A callable class for a multi-peak model.
+
+    Parameters
+    ----------
+    npeaks
+        The number of peaks to fit.
+    peak_shapes
+        The shape(s) of the peaks in the model. If a list of strings is provided, each
+        string represents the shape of a peak. If a single string is provided, it will
+        be split by spaces to create a list of peak shapes. If not provided, the default
+        peak shape will be used for all peaks.
+    fd
+        Flag indicating whether the model should be multiplied by the Fermi-Dirac
+        distribution. This adds three parameters to the model: `efermi`, `temp`, and
+        `offset`, each corresponding to the Fermi level, temperature in K, and constant
+        background.
+    convolve
+        Flag indicating whether the model should be convolved with a gaussian kernel. If
+        `True`, adds a `resolution` parameter to the model, corresponding to the FWHM of
+        the gaussian kernel.
+
+    """
+
     PEAK_SHAPES: dict[Callable, list[str]] = {
         lorentzian_wh: ["lorentzian", "lor", "l"],
         gaussian_wh: ["gaussian", "gauss", "g"],
@@ -259,11 +355,6 @@ class MultiPeakFunction(DynamicFunction):
         fd: bool = True,
         convolve: bool = True,
     ):
-        """
-
-        space-separated string 'l l g l'
-
-        """
         super().__init__()
         self.npeaks = npeaks
         self.fd = fd
