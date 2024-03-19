@@ -13,6 +13,8 @@ e: float = 1.602176634e-19
 c: float = 299792458.0
 #: Electron mass :math:`m_e` (kg) (±0.000 000 0028e-31)
 m_e: float = 9.1093837015e-31
+#: Neutron mass :math:`m_n` (kg) (±0.000 000 000 95e-27)
+m_n: float = 1.67492749804e-27
 
 #: Electron rest energy :math:`m_e c^2` (J) (±0.000 000 0025e-14)
 mcsq: float = 8.1871057769e-14
