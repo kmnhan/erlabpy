@@ -138,7 +138,7 @@ class SSRL52Loader(LoaderBase):
         for file in target_files:
             match = re.match(r"(.*?)_" + str(num).zfill(4) + r".h5", file)
             if match is not None:
-                return [os.path.join(data_dir, file)], dict()
+                return [file], dict()
 
         raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
 
