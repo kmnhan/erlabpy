@@ -58,7 +58,9 @@ class EdgeFitter(QtCore.QThread):
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
-        self.parallel_obj = joblib.Parallel(n_jobs=self.params["# CPU"])
+        self.parallel_obj = joblib.Parallel(
+            n_jobs=self.params["# CPU"], max_nbytes=None
+        )
 
     @QtCore.Slot()
     def abort_fit(self):
