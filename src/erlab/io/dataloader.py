@@ -643,7 +643,7 @@ class LoaderRegistry(RegistryBase):
         return loader.load(identifier, data_dir=data_dir, **kwargs)
 
     def summarize(
-        self, data_dir: str | os.PathLike, usecache: bool = True, **kwargs
+        self, data_dir: str | os.PathLike | None = None, usecache: bool = True, **kwargs
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
 
         loader, default_dir = self._get_current_defaults()
