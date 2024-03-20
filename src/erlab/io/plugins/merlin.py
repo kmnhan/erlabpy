@@ -172,11 +172,10 @@ class BL403Loader(LoaderBase):
             "azi": "delta",
         }
 
-        cols = ["File Name", "Type"] + list(summary_attrs.keys())
+        cols = ["Time", "File Name", "Type"] + list(summary_attrs.keys())
 
         data: list[dict] = []
         data_info = []
-        time_list = []
 
         for name, path in files.items():
             if os.path.splitext(path)[1] == ".ibw":
@@ -192,12 +191,16 @@ class BL403Loader(LoaderBase):
                 if "hv" in data.dims:
                     data_type = "hvdep"
 
-            time_list.append(
-                datetime.datetime.strptime(
-                    f"{data.attrs['Date']} {data.attrs['Time']}", "%d/%m/%Y %I:%M:%S %p"
-                )  # .replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+            data_info.append(
+                [
+                    datetime.datetime.strptime(
+                        f"{data.attrs['Date']} {data.attrs['Time']}",
+                        "%d/%m/%Y %I:%M:%S %p",
+                    ),
+                    name,
+                    data_type,
+                ]
             )
-            data_info.append([name, data_type])
 
             for k, v in summary_attrs.items():
                 try:
@@ -205,6 +208,8 @@ class BL403Loader(LoaderBase):
                 except KeyError:
                     try:
                         val = data.coords[v].values
+                        if val.size == 1:
+                            val = val.item()
                     except KeyError:
                         val = ""
 
@@ -218,14 +223,18 @@ class BL403Loader(LoaderBase):
                     if np.iterable(val):
                         val = np.asarray(val).astype(int)
                     else:
-                        val = [int(val)]
-
-                    val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}[vi] for vi in val]
+                        val = [round(val)]
+                    val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(v, v) for v in val]
 
                     if len(val) == 1:
                         val = val[0]
 
                 data_info[-1].append(val)
+
             del data
 
-        return pd.DataFrame(data_info, index=time_list, columns=cols).sort_index()
+        return (
+            pd.DataFrame(data_info, columns=cols)
+            .sort_values("Time")
+            .set_index("File Name")
+        )

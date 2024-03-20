@@ -173,8 +173,8 @@ class SSRL52Loader(LoaderBase):
             files[base_name] = pth
 
         summary_attrs: dict[str, str] = {
-            "Lens Mode": "LensModeName",
             "Type": "Description",
+            "Lens Mode": "LensModeName",
             "Region": "RegionName",
             "T(K)": "temp_sample",
             "Pass E": "PassEnergy",
@@ -191,19 +191,17 @@ class SSRL52Loader(LoaderBase):
             "DA": "beta",
         }
 
-        cols = ["File Name"] + list(summary_attrs.keys())
+        cols = ["Time", "File Name"] + list(summary_attrs.keys())
 
         data_info = []
-        time_list = []
 
         for name, path in files.items():
 
             data = self.load(path)
 
-            time_list.append(
-                datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"])
+            data_info.append(
+                [datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]), name]
             )
-            data_info.append([name])
 
             for k, v in summary_attrs.items():
                 try:
@@ -211,19 +209,34 @@ class SSRL52Loader(LoaderBase):
                 except KeyError:
                     try:
                         val = data.coords[v].values
+                        if val.size == 1:
+                            val = val.item()
                     except KeyError:
                         val = ""
-                # if k in ("Entrance Slit", "Exit Slit"):
-                #     val = round(val)
-                # elif k == "polarization":
-                #     if np.iterable(val):
-                #         val = np.asarray(val).astype(int)
-                #     else:
-                #         val = [int(val)]
-                #     val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}[v] for v in val]
-                #     if len(val) == 1:
-                #         val = val[0]
+
+                if k == "Pass E":
+                    val = round(val)
+
+                elif k == "Polarization":
+                    pass
+                    if np.iterable(val):
+                        val = np.round(np.asarray(val), 3).astype(float)
+                    else:
+                        val = [float(np.round(val, 3))]
+                    val = [
+                        {0.0: "LH", 0.5: "LV", 0.25: "RC", -0.25: "LC"}.get(v, v)
+                        for v in val
+                    ]
+
+                    if len(val) == 1:
+                        val = val[0]
+
                 data_info[-1].append(val)
+
             del data
 
-        return pd.DataFrame(data_info, index=time_list, columns=cols).sort_index()
+        return (
+            pd.DataFrame(data_info, columns=cols)
+            .sort_values("Time")
+            .set_index("File Name")
+        )
