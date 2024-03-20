@@ -30,7 +30,7 @@ from collections.abc import Iterable, Sequence
 import joblib
 import numpy as np
 import numpy.typing as npt
-import pandas as pd
+import pandas
 import xarray as xr
 
 
@@ -268,11 +268,22 @@ class LoaderBase:
             return val
 
     @classmethod
-    def get_styler(cls, df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
         """Return a styled version of the given dataframe.
 
         This method, along with `formatter`, determines the display formatting of the
         summary dataframe. Override this method to change the display style.
+
+        Parameters
+        ----------
+        df
+            Summary dataframe as returned by `generate_summary`.
+
+        Returns
+        -------
+        pandas.io.formats.style.Styler
+            The styler to be displayed.
+
         """
         style = df.style.format(cls.formatter)
         if "Time" in df.columns:
@@ -369,14 +380,15 @@ class LoaderBase:
 
     def summarize(
         self, data_dir: str | os.PathLike, usecache: bool = True, **kwargs
-    ) -> pd.DataFrame:
+    ) -> pandas.DataFrame:
         """
         Takes a path to a directory and summarizes the data in the directory to a
         `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
         the contents of a directory.
 
-        Results are cached in a pickle file in the directory. If the pickle file is not
-        found, the summary is generated with `generate_summary` and cached.
+        The dataframe is formatted using `get_styler` and displayed in the IPython
+        shell. Results are cached in a pickle file in the directory. If the pickle file
+        is not found, the summary is generated with `generate_summary` and cached.
 
         Parameters
         ----------
@@ -398,7 +410,7 @@ class LoaderBase:
         df = None
         if usecache:
             try:
-                df = pd.read_pickle(pkl_path)
+                df = pandas.read_pickle(pkl_path)
             except FileNotFoundError:
                 pass
 
@@ -413,7 +425,7 @@ class LoaderBase:
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 from IPython.display import display
 
-                with pd.option_context(
+                with pandas.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
                     display(self.get_styler(df))
@@ -494,7 +506,7 @@ class LoaderBase:
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
-    def generate_summary(self, data_dir: str | os.PathLike) -> pd.DataFrame:
+    def generate_summary(self, data_dir: str | os.PathLike) -> pandas.DataFrame:
         """Takes a path to a directory and summarizes the data in the directory to a
         pandas DataFrame, much like a log file. This is useful for quickly inspecting
         the contents of a directory.
