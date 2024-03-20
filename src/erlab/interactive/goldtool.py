@@ -6,7 +6,6 @@ import time
 import joblib
 import numpy as np
 import pyqtgraph as pg
-import uncertainties
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -323,7 +322,6 @@ class goldtool(AnalysisWindow):
         self.progress.setValue(n)
 
         deltas = np.diff(self.step_times)
-        # avg_time = uncertainties.ufloat(np.mean(deltas), np.std(deltas))
         timeleft = (self.progress.maximum() - (n - 1)) * np.mean(deltas)
 
         # timeleft: str = humanize.precisedelta(datetime.timedelta(seconds=timeleft))
@@ -339,7 +337,7 @@ class goldtool(AnalysisWindow):
 
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
-        x0, y0, x1, y1 = self.params_roi.roi_limits
+        x0, y0, x1, y1 = [np.round(x, 3) for x in self.params_roi.roi_limits]
         params = self.params_edge.values
         n_total = len(
             self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
@@ -453,7 +451,7 @@ class goldtool(AnalysisWindow):
                 p1 = self.params_poly.values
             case "spl":
                 p1 = self.params_spl.values
-        x0, y0, x1, y1 = self.params_roi.roi_limits
+        x0, y0, x1, y1 = [np.round(x, 3) for x in self.params_roi.roi_limits]
 
         arg_dict = dict(
             angle_range=(x0, x1),
@@ -514,13 +512,3 @@ class goldtool(AnalysisWindow):
                     ],
                 },
             )
-
-
-if __name__ == "__main__":
-    import erlab.io
-
-    dt = goldtool(
-        erlab.io.load_als_bl4(
-            "/Users/khan/Documents/ERLab/TiSe2/220630_ALS_BL4/data/csvsb2_gold.pxt"
-        )
-    )
