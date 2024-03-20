@@ -9,7 +9,7 @@ implementation of `LoaderBase.validate` for details.
 
 For any data loader plugin subclassing `LoaderBase`, the following attributes and
 methods must be defined: `LoaderBase.name`, `LoaderBase.aliases`,
-`LoaderBase.name_mapping`, `LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
+`LoaderBase.name_map`, `LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
 `LoaderBase.always_single`, `LoaderBase.skip_validate`, :func:`LoaderBase.load_single`,
 :func:`LoaderBase.identify`, :func:`LoaderBase.infer_index`, and
 :func:`LoaderBase.generate_summary`.
@@ -22,12 +22,26 @@ can be extended to include the necessary functionality.
 from __future__ import annotations
 
 import contextlib
+import datetime
+import itertools
 import os
-from collections.abc import Sequence, Iterable
+from collections.abc import Iterable, Sequence
 
 import joblib
-import xarray as xr
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
+import xarray as xr
+
+
+def _is_uniform(arr: npt.NDArray) -> bool:
+    dif = np.diff(arr)
+    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
+
+
+def _is_monotonic(arr: npt.NDArray) -> bool:
+    dif = np.diff(arr)
+    return np.all(dif >= 0) or np.all(dif <= 0)
 
 
 class ValidationError(Exception):
@@ -78,15 +92,10 @@ class LoaderBase:
     skip_validate: bool = False
     """If `True`, validation checks will be skipped."""
 
-    @classmethod
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-
-        if not hasattr(cls, "name"):
-            raise NotImplementedError("name attribute must be defined in the subclass")
-
-        if not cls.name.startswith("_"):
-            LoaderRegistry.instance().register(cls)
+    @property
+    def name_map_reversed(self) -> dict[str, str]:
+        """A reversed version of the name_map dictionary."""
+        return self.reverse_mapping(self.name_map)
 
     @staticmethod
     def reverse_mapping(mapping: dict[str, str | Iterable[str]]) -> dict[str, str]:
@@ -114,9 +123,161 @@ class LoaderBase:
                     out[vi] = k
         return out
 
-    @property
-    def name_map_reversed(self) -> dict[str, str]:
-        return self.reverse_mapping(self.name_map)
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+        if not hasattr(cls, "name"):
+            raise NotImplementedError("name attribute must be defined in the subclass")
+
+        if not cls.name.startswith("_"):
+            LoaderRegistry.instance().register(cls)
+
+    @classmethod
+    def formatter(cls, val: object):
+        """Format the given value based on its type.
+
+        This method is used when formtting the cells of the summary dataframe.
+
+        Parameters
+        ----------
+        val
+            The value to be formatted.
+
+        Returns
+        -------
+        str or object
+            The formatted value.
+
+        Note
+        ----
+        This function formats the given value based on its type. It supports formatting
+        for various types including numpy arrays, lists of strings, floating-point
+        numbers, integers, and datetime objects.
+
+        The function also tries to replace the Unicode hyphen-minus sign "-" (U+002D)
+        with the better-looking Unicode minus sign "−" (U+2212) in most cases.
+
+        - For numpy arrays:
+            - If the array has a size of 1, the value is recursively formatted using
+              `formatter(val.item())`.
+            - If the array can be squeezed to a 1-dimensional array, the following are
+              applied.
+
+                - If the array is evenly spaced, the start, end, and step values are
+                  formatted and returned as a string in the format "start→end (step)".
+                - If the array is monotonic increasing or decreasing but not evenly
+                  spaced, the start and end values are formatted and returned as a
+                  string in the format "start→end".
+                - If all elements are equal, the value is recursively formatted using
+                  `formatter(val[0])`.
+                - If the array is not monotonic, the mean and standard deviation values
+                  are formatted and returned as a string in the format "mean±std".
+
+            - For other dimensions, the array is returned as is.
+
+        - For lists:
+            The list is grouped by consecutive equal elements, and the count of each
+            element is formatted and returned as a string in the format
+            "[element]×count".
+
+        - For floating-point numbers:
+            - If the number is an integer, it is formatted as an integer using
+              `formatter(np.int64(val))`.
+            - Otherwise, it is formatted as a floating-point number with 4 decimal
+              places and returned as a string.
+
+        - For integers:
+            The integer is returned as a string.
+
+        - For datetime objects:
+            The datetime object is formatted as a string in the format "%Y-%m-%d
+            %H:%M:%S".
+
+        - For other types:
+            The value is returned as is.
+
+        Examples
+        --------
+
+        >>> formatter(np.array([0.1, 0.15, 0.2]))
+        '0.1→0.2 (0.05)'
+
+        >>> formatter(np.array([1.0, 2.0, 2.1]))
+        '1→2.1'
+
+        >>> formatter(np.array([1.0, 2.1, 2.0]))
+        '1.7±0.4967'
+
+        >>> formatter([1, 1, 2, 2, 2, 3, 3, 3, 3])
+        '[1]×2, [2]×3, [3]×4'
+
+        >>> formatter(3.14159)
+        '3.1416'
+
+        >>> formatter(42)
+        '42'
+
+        >>> formatter(datetime.datetime(2024, 1, 1, 12, 0, 0, 0))
+        '2024-01-01 12:00:00'
+        """
+        if isinstance(val, np.ndarray):
+            if val.size == 1:
+                return cls.formatter(val.item())
+
+            elif val.squeeze().ndim == 1:
+                val = val.squeeze()
+
+                if _is_uniform(val):
+                    start, end, step = tuple(
+                        cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
+                    )
+                    return f"{start}→{end} ({step})".replace("-", "−")
+
+                elif _is_monotonic(val):
+                    if val[0] == val[-1]:
+                        return cls.formatter(val[0])
+
+                    return f"{cls.formatter(val[0])}→{cls.formatter(val[-1])}"
+
+                else:
+                    return f"{cls.formatter(np.mean(val))}±{cls.formatter(np.std(val))}"
+
+            else:
+                return val
+
+        elif isinstance(val, list):
+            return ", ".join(
+                [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
+            )
+
+        elif np.issubdtype(type(val), np.floating):
+            if val.is_integer():
+                return cls.formatter(np.int64(val))
+            else:
+                return np.format_float_positional(val, precision=4, trim="-").replace(
+                    "-", "−"
+                )
+        elif np.issubdtype(type(val), np.integer):
+            return str(val).replace("-", "−")
+
+        elif isinstance(val, datetime.datetime):
+            return val.strftime("%Y-%m-%d %H:%M:%S")
+
+        else:
+            return val
+
+    @classmethod
+    def get_styler(cls, df: pd.DataFrame) -> pd.io.formats.style.Styler:
+        """Return a styled version of the given dataframe.
+
+        This method, along with `formatter`, determines the display formatting of the
+        summary dataframe. Override this method to change the display style.
+        """
+        style = df.style.format(cls.formatter)
+        if "Time" in df.columns:
+            style = style.hide(["Time"], axis="columns")
+        return style
 
     def load(
         self,
@@ -241,6 +402,8 @@ class LoaderBase:
             except FileNotFoundError:
                 pass
 
+        df = df.head(len(df))
+
         if df is None:
             df = self.generate_summary(data_dir, **kwargs)
             df.to_pickle(pkl_path)
@@ -253,7 +416,7 @@ class LoaderBase:
                 with pd.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
-                    display(df.head(len(df)))
+                    display(self.get_styler(df))
         except NameError:
             pass
 
