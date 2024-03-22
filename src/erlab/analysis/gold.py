@@ -13,19 +13,19 @@ __all__ = [
 
 from collections.abc import Sequence
 
+import arpes
+import arpes.fits
 import lmfit.model
 import matplotlib
 import matplotlib.figure
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
+import uncertainties
 import xarray as xr
-from matplotlib.patches import Rectangle
-from uncertainties import ufloat
 
-import arpes
-import arpes.fits
 from erlab.analysis.fit.models import (
     ExtendedAffineBroadenedFD,
     PolynomialModel,
@@ -185,7 +185,7 @@ def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, 
     ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
 
     gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
-    rect = Rectangle(
+    rect = mpatches.Rectangle(
         (angle_range[0], eV_range[0]),
         np.diff(angle_range)[0],
         np.diff(eV_range)[0],
@@ -403,7 +403,7 @@ def resolution(
         plt.show()
         ax = plt.gca()
         gold_corr.S.plot(ax=ax, cmap="copper", gamma=0.5)
-        rect = Rectangle(
+        rect = mpatches.Rectangle(
             (angle_range[0], eV_range_fit[0]),
             np.diff(angle_range)[0],
             np.diff(eV_range_fit)[0],
@@ -420,8 +420,10 @@ def resolution(
             fit_kws=dict(c="r", lw=1.5),
         )
 
-    center_uf = ufloat(fit.params["center"], fit.params["center"].stderr)
-    res_uf = ufloat(fit.params["resolution"], fit.params["resolution"].stderr)
+    center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
+    res_uf = uncertainties.ufloat(
+        fit.params["resolution"], fit.params["resolution"].stderr
+    )
     print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
     return fit
 
@@ -465,7 +467,9 @@ def resolution_roi(
             fit_kws=dict(c="r", lw=1.5),
         )
 
-    center_uf = ufloat(fit.params["center"], fit.params["center"].stderr)
-    res_uf = ufloat(fit.params["resolution"], fit.params["resolution"].stderr)
+    center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
+    res_uf = uncertainties.ufloat(
+        fit.params["resolution"], fit.params["resolution"].stderr
+    )
     print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
     return fit
