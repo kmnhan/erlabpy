@@ -332,7 +332,7 @@ figure.constrained_layout.wspace: 0.0
 # ***************************************************************************
 image.aspect: auto
 image.interpolation: none
-image.cmap: terrain_r
+image.cmap: cet_CET_L20
 image.lut: 256
 image.origin: lower
 image.resample: True
@@ -346,7 +346,6 @@ contour.negative_linestyle: dashed
 contour.corner_mask: True
 contour.linewidth: None
 contour.algorithm: mpl2014
-
 
 # ***************************************************************************
 # * ERRORBAR PLOTS                                                          *
@@ -395,7 +394,7 @@ savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight
 savefig.pad_inches: 0.02
-savefig.transparent: True
+savefig.transparent: False
 savefig.orientation: portrait
 
 ## ps backend params
