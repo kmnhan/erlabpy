@@ -3,14 +3,16 @@ __all__ = ["goldtool"]
 import os
 import time
 
+import arpes.xarray_extensions
 import joblib
+import lmfit
 import numpy as np
 import pyqtgraph as pg
+import scipy.interpolate
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
-import arpes.xarray_extensions
 import erlab.analysis
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utilities import (
@@ -279,11 +281,11 @@ class goldtool(AnalysisWindow):
 
         self.axes[0].disableAutoRange()
 
-        # setup time calculation
+        # Setup time calculation
         self.start_time: float | None = None
         self.step_times: list[float] = []
 
-        # setup progress bar
+        # Setup progress bar
         self.progress = QtWidgets.QProgressDialog(
             labelText="Fitting...",
             minimum=0,
@@ -300,13 +302,14 @@ class goldtool(AnalysisWindow):
         self.progress.setAutoReset(False)
         self.progress.cancel()
 
-        # setup fitter
+        # Setup fitter thread
+        # This allows the GUI to remain responsive during fitting so it can be aborted
         self.fitter = EdgeFitter()
         self.fitter.sigIterated.connect(self.iterated)
         self.fitter.sigFinished.connect(self.post_fit)
         self.sigAbortFitting.connect(self.fitter.abort_fit)
 
-        # resize roi to data bounds
+        # Resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
         ang_span = self.data.alpha.values[-1] - self.data.alpha.values[0]
         x1 = self.data.alpha.values.mean() + ang_span * 0.45
@@ -314,6 +317,9 @@ class goldtool(AnalysisWindow):
         y1 = self.data.eV.values[-1] - eV_span * 0.015
         y0 = y1 - eV_span * 0.3
         self.params_roi.modify_roi(x0, y0, x1, y1)
+
+        # Initialize fit result
+        self.result: scipy.interpolate.BSpline | lmfit.model.ModelResult | None = None
 
         self.__post_init__(execute=True)
 
@@ -381,22 +387,22 @@ class goldtool(AnalysisWindow):
     def perform_fit(self, mode="poly"):
         match mode:
             case "poly":
-                modelresult = self._perform_poly_fit()
+                edgefunc = self._perform_poly_fit()
                 params = self.params_poly.values
             case "spl":
-                modelresult = self._perform_spline_fit()
+                edgefunc = self._perform_spline_fit()
                 params = self.params_spl.values
         for i in range(2):
             xval = self.data.alpha.values
             if i == 1 and params["Residuals"]:
                 yval = np.zeros_like(xval)
             else:
-                yval = modelresult(xval)
+                yval = edgefunc(xval)
             self.polycurves[i].setData(x=xval, y=yval)
 
         xval = self.edge_center.alpha.values
         if params["Residuals"]:
-            yval = modelresult(xval) - self.edge_center.values
+            yval = edgefunc(xval) - self.edge_center.values
         else:
             yval = self.edge_center.values
         self.errorbars[1].setData(x=xval, y=yval)
@@ -409,7 +415,7 @@ class goldtool(AnalysisWindow):
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
-        modelresult = erlab.analysis.gold.poly_from_edge(
+        self.result = erlab.analysis.gold.poly_from_edge(
             center=self.edge_center,
             weights=1 / self.edge_stderr,
             degree=params["Degree"],
@@ -421,15 +427,15 @@ class goldtool(AnalysisWindow):
         else:
             target = self.data_corr
         self.corrected = erlab.analysis.correct_with_edge(
-            target, modelresult, plot=False, shift_coords=params["Shift coords"]
+            target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
-        return lambda x: modelresult.eval(modelresult.params, x=x)
+        return lambda x: self.result.eval(self.result.params, x=x)
 
     def _perform_spline_fit(self):
         params = self.params_spl.values
         if params["Auto"]:
             params["lambda"] = None
-        modelresult = erlab.analysis.gold.spline_from_edge(
+        self.result = erlab.analysis.gold.spline_from_edge(
             center=self.edge_center,
             weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
@@ -440,9 +446,9 @@ class goldtool(AnalysisWindow):
         else:
             target = self.data_corr
         self.corrected = erlab.analysis.correct_with_edge(
-            target, modelresult, plot=False, shift_coords=params["Shift coords"]
+            target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
-        return modelresult
+        return self.result
 
     def open_itool(self):
         self.itool = ImageTool(self.corrected)
