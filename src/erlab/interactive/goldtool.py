@@ -204,7 +204,11 @@ class goldtool(AnalysisWindow):
             **{
                 "Auto": dict(qwtype="chkbox", checked=True),
                 "lambda": dict(
-                    qwtype="dblspin", minimum=0, singleStep=0.001, decimals=4
+                    qwtype="dblspin",
+                    minimum=0,
+                    maximum=10000,
+                    singleStep=0.001,
+                    decimals=4,
                 ),
                 "Residuals": dict(qwtype="chkbox", checked=False),
                 "Corrected": dict(qwtype="chkbox", checked=False),
@@ -327,7 +331,7 @@ class goldtool(AnalysisWindow):
         # timeleft: str = humanize.precisedelta(datetime.timedelta(seconds=timeleft))
         # steptime: str = humanize.precisedelta(datetime.timedelta(seconds=steptime))
 
-        self.progress.setLabelText(f"{timeleft:.1f} seconds left...")
+        self.progress.setLabelText(f"{round(timeleft)} seconds left...")
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
     @QtCore.Slot()
