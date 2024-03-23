@@ -98,14 +98,14 @@ def edge(
     """
     if fast:
         params = {}
-        model = StepEdgeModel
+        model_cls = StepEdgeModel
     else:
         if temp is None:
             temp = gold.S.temp
         params = {
             "temp": dict(value=temp, vary=vary_temp),
         }
-        model = ExtendedAffineBroadenedFD
+        model_cls = ExtendedAffineBroadenedFD
 
     if parallel_kw is None:
         parallel_kw = dict()
@@ -126,7 +126,7 @@ def edge(
     gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
 
     fitresults = arpes.fits.broadcast_model(
-        model,
+        model_cls,
         gold_sel,
         "alpha",
         weights=weights,
