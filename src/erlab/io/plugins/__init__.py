@@ -1,5 +1,12 @@
 """Data loading plugins.
 
+The modules in this package provide data loaders for various beamlines and laboratories.
+Each module contains a class that subclasses :class:`erlab.io.dataloader.LoaderBase`,
+which can be accessed through :attr:`erlab.io.loaders`.
+
+See :doc:`/generated/erlab.io.dataloader` for more information on how to write a custom
+loader.
+
 .. currentmodule:: erlab.io.plugins
 
 Modules

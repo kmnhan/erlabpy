@@ -37,6 +37,10 @@ ERLabPy documentation
          The development guide contains information on how to contribute to the
          project.
 
+.. image:: images/imagetool_light.png
+    :align: center
+    :alt: Imagetool 
+
 .. toctree::
    :maxdepth: 3
    :hidden:
