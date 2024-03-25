@@ -18,6 +18,7 @@ numbagg
 numba-progress
 joblib
 lmfit>=1.2.0
+iminuit>=2.25.2
 seaborn
 pyqtgraph>=0.13.1
 tqdm
