@@ -33,12 +33,10 @@ Laboratory (ERLab) at Korea Advanced Institute of Science and Technology
   types of data, including broadened Fermi-Dirac distributions, momentum
   distribution curves (MDCs), and energy distribution curves (EDCs).
 - **Interactive Data Visualization**: ERLabPy includes many interactive plotting
-  routines that resemble `panels` in Igor Pro that are very responsive and easy
-  to use. See screenshots below.
+  routines that resemble panels in Igor Pro that are very responsive and easy to
+  use. See screenshots below.
 - **Active Development**: ERLabPy is actively developed and maintained, with new
   features and improvements being added regularly.
-
-constant energy contours (CECs). as well as interactive plots using `pyqtgraph`.
 
 ## Screenshots
 
@@ -47,6 +45,7 @@ constant energy contours (CECs). as well as interactive plots using `pyqtgraph`.
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/imagetool_light.png?raw=true">
   <img alt="Imagetool in action." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/imagetool_light.png?raw=true">
 </picture>
+Try enabling/disabling dark mode in your browser!
 
 ## Documentation
 
