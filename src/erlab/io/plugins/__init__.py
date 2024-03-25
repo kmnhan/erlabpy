@@ -10,6 +10,8 @@ Modules
 
    merlin
    ssrl52
+   da30
+   kriss
 
 """
 
@@ -25,5 +27,6 @@ for fname in os.listdir(os.path.dirname(os.path.abspath(__file__))):
     ):
         try:
             importlib.import_module(__name__ + "." + os.path.splitext(fname)[0])
-        except Exception:
+        except Exception as e:
+            print(e)
             traceback.print_exc()

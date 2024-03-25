@@ -49,7 +49,6 @@ __all__ = [
     "summarize",
     "load_experiment",
     "load_wave",
-    "da30",
     "load_live",
     "open_hdf5",
     "load_hdf5",
@@ -60,8 +59,6 @@ __all__ = [
 import warnings
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 from erlab.io.igor import load_experiment, load_wave
-
-from erlab.io import da30
 from erlab.io.dataloader import (
     loaders,
     set_loader,
