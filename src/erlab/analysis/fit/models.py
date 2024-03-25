@@ -153,7 +153,7 @@ class ExtendedAffineBroadenedFD(XModelMixin):
             except AttributeError:
                 pass
 
-        pars[f"{self.prefix}center"].set(value=efermi)
+        pars[f"{self.prefix}center"].set(value=efermi, min=x.min(), max=x.max())
         pars[f"{self.prefix}back0"].set(value=back0)
         pars[f"{self.prefix}back1"].set(value=back1)
         pars[f"{self.prefix}dos0"].set(value=dos0)
@@ -266,19 +266,19 @@ class MultiPeakModel(XModelMixin):
             pars[f"{self.prefix}offset"].set(value=data[x >= 0].mean())
 
         poly1 = PolynomialModel(1).guess(data, x)
-        pars[f"{self.prefix}lin_bkg"].set(poly1["c1"])
-        pars[f"{self.prefix}const_bkg"].set(poly1["c0"])
+        pars[f"{self.prefix}lin_bkg"].set(poly1["c1"].value)
+        pars[f"{self.prefix}const_bkg"].set(poly1["c0"].value)
 
         # for i, func in enumerate(self.func.peak_funcs):
         # self.func.peak_argnames
-        # for i in range(self.func.npeaks):  # Number of peaks
-        #     pars[f"{self.prefix}c_real_{i}"].set(value=-0.15)
-        #     pars[f"{self.prefix}c_imag_{i}"].set(value=-0.01)
-        #     for j in range(self.norder):  # Number of order
-        #         pars[f"{self.prefix}A_real_{i}_{j}"].set(
-        #             value=-data.max() if self.norder == 1 else 0
-        #         )
-        #         pars[f"{self.prefix}A_imag_{i}_{j}"].set(value=0)
+
+        xrange = x.max() - x.min()
+
+        for i in range(self.func.npeaks):  # Number of peaks
+            pars[f"{self.prefix}p{i}_center"].set(value=0.0)
+            pars[f"{self.prefix}p{i}_height"].set(value=data.mean())
+            pars[f"{self.prefix}p{i}_width"].set(value=0.1 * xrange)
+
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
