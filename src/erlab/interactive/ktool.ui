@@ -399,7 +399,14 @@
           </property>
           <layout class="QVBoxLayout" name="verticalLayout">
            <item>
-            <widget class="ColorMapComboBox" name="cmap_combo"/>
+            <widget class="ColorMapComboBox" name="cmap_combo">
+             <property name="maximumSize">
+              <size>
+               <width>175</width>
+               <height>16777215</height>
+              </size>
+             </property>
+            </widget>
            </item>
            <item>
             <widget class="ColorMapGammaWidget" name="gamma_widget" native="true">

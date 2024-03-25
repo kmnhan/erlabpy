@@ -208,7 +208,7 @@ class ktool(ktoolGUI):
             self._offset_spins[k].setRange(-180, 180)
             self._offset_spins[k].setSingleStep(0.01)
             self._offset_spins[k].setDecimals(3)
-            self._offset_spins[k].setValue(self.data.kspace.get_offset(k))
+            self._offset_spins[k].setValue(self.data.kspace.offsets[k])
             self._offset_spins[k].valueChanged.connect(self.update)
             self._offset_spins[k].setSuffix("°")
             self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
