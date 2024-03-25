@@ -7,7 +7,7 @@ data analysis and visualization.
 
 """
 
-__all__ = ["MomentumAccessor"]
+__all__ = ["MomentumAccessor", "OffsetView"]
 
 import functools
 import time
@@ -59,14 +59,77 @@ def only_angles(method: Callable | None = None):
     return wrapper
 
 
+class OffsetView:
+
+    def __init__(self, xarray_obj: xr.DataArray):
+        self._obj = xarray_obj
+        for k in self._obj.kspace.valid_offset_keys:
+            if k + "_offset" not in self._obj.attrs:
+                self[k] = 0.0
+
+    def __len__(self) -> int:
+        return len(self._obj.kspace.valid_offset_keys)
+
+    def __iter__(self):
+        for key in self._obj.kspace.valid_offset_keys:
+            yield key, self.__getitem__(key)
+
+    def __getitem__(self, key: str) -> float:
+        if key in self._obj.kspace.valid_offset_keys:
+            return float(self._obj.attrs[key + "_offset"])
+        else:
+            raise KeyError(
+                f"Invalid offset key `{key}` for experimental configuration {self._obj.kspace.configuration}"
+            )
+
+    def __setitem__(self, key: str, value: float) -> None:
+        if key in self._obj.kspace.valid_offset_keys:
+            self._obj.attrs[key + "_offset"] = float(value)
+
+    def __eq__(self, other: object) -> bool:
+        return dict(self) == dict(other)
+
+    def __repr__(self) -> str:
+        return dict(self).__repr__()
+
+    def _repr_html_(self) -> str:
+        out = ""
+        out += "<table><tbody>"
+        for k, v in self.items():
+            out += (
+                "<tr>"
+                f"<td style='text-align:left;'><b>{k}</b></td>"
+                f"<td style='text-align:left;'>{v}</td>"
+                "</tr>"
+            )
+        out += "</tbody></table>"
+        return out
+
+    def update(
+        self,
+        other: dict | Iterable[tuple[str, float]] = None,
+        **kwargs: dict[str, float],
+    ):
+        if other is not None:
+            for k, v in other.items() if isinstance(other, dict) else other:
+                self[k] = v
+        for k, v in kwargs.items():
+            self[k] = v
+
+    def items(self):
+        return dict(self).items()
+
+    def reset(self):
+        """Reset all angle offsets to zero."""
+        for k in self._obj.kspace.valid_offset_keys:
+            self[k] = 0.0
+
+
 @xr.register_dataarray_accessor("kspace")
 class MomentumAccessor:
 
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
-        for k in self.valid_offset_keys:
-            if k + "_offset" not in self._obj.attrs:
-                self._obj.attrs[k + "_offset"] = 0.0
 
     @property
     def configuration(self) -> AxesConfiguration:
@@ -204,16 +267,16 @@ class MomentumAccessor:
     def angle_params(self) -> dict[str, float]:
         """Parameters passed to :func:`erlab.analysis.kspace.get_kconv_func`."""
         params = dict(
-            delta=self.get_offset("delta"),
+            delta=self.offsets["delta"],
             xi=float(self._obj["xi"].values),
-            xi0=self.get_offset("xi"),
+            xi0=self.offsets["xi"],
         )
         match self.configuration:
             case AxesConfiguration.Type1 | AxesConfiguration.Type2:
-                params["beta0"] = self.get_offset("beta")
+                params["beta0"] = self.offsets["beta"]
             case _:
                 params["chi"] = float(self._obj["chi"].values)
-                params["chi0"] = self.get_offset("chi")
+                params["chi0"] = self.offsets["chi"]
         return params
 
     @property
@@ -327,60 +390,44 @@ class MomentumAccessor:
                 return ("delta", "chi", "xi")
 
     @property
-    def offsets(self) -> dict[str, float]:
+    def offsets(self) -> OffsetView:
         """Angle offsets used in momentum conversion.
 
         Returns
         -------
-        dict
+        OffsetView
             A mapping between valid offset keys and their corresponding offsets.
 
-        Note
-        ----
-        This property provides a setter method that takes a dictionary of valid offset
-        keys and their corresponding offsets. Assigning new offsets will reset all
-        previous offsets including the ones not specified in the new dictionary. To
-        update only a subset of the offsets, use the :meth:`set_offsets` method.
-
-        Example
-        -------
+        Examples
+        --------
         >>> data.kspace.offsets
         {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+        >>> data.kspace.offsets['beta']
+        0.0
+        >>> data.kspace.offsets['beta'] = 3.0
+        >>> data.kspace.offsets
+        {'delta': 0.0, 'xi': 0.0, 'beta': 3.0}
         >>> data.kspace.offsets = dict(delta=1.5, xi=2.7)
         >>> data.kspace.offsets
         {'delta': 1.5, 'xi': 2.7, 'beta': 0.0}
+        >>> data.kspace.offsets.update(beta=0.1, xi=0.0)
+        >>> data.kspace.offsets
+        {'delta': 1.5, 'xi': 0.0, 'beta': 0.1}
+        >>> data.kspace.offsets.reset()
+        {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
         """
-        return {k: self.get_offset(k) for k in self.valid_offset_keys}
+        if not hasattr(self, "_offsetview"):
+            self._offsetview = OffsetView(self._obj)
+
+        return self._offsetview
 
     @offsets.setter
     def offsets(self, offset_dict: dict[str, float]):
-        self.reset_offsets()
-        self.set_offsets(**offset_dict)
+        if not hasattr(self, "_offsetview"):
+            self._offsetview = OffsetView(self._obj)
 
-    def reset_offsets(self) -> None:
-        """Reset all angle offsets to zero."""
-        for k in self.valid_offset_keys:
-            self._obj.attrs[k + "_offset"] = 0.0
-
-    def get_offset(self, axis: str) -> float:
-        """
-        Retrieve the offset for the specified angle coordinate. Valid keys differ based
-        on the experimental configuration.
-
-        See :attr:`valid_offset_keys` for details.
-        """
-        return float(self._obj.attrs[axis + "_offset"])
-
-    def set_offsets(self, **kwargs) -> None:
-        """Set the offsets for specified angle coordinates.
-
-        Valid keys differ based on the experimental configuration. See
-        :attr:`valid_offset_keys` for details.
-
-        """
-        for k, v in kwargs.items():
-            if k in self.valid_offset_keys:
-                self._obj.attrs[k + "_offset"] = float(v)
+        self._offsetview.reset()
+        self._offsetview.update(offset_dict)
 
     def estimate_bounds(self) -> dict[str, tuple[float, float]]:
         """
