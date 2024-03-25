@@ -243,7 +243,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     self.values,
                     *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
-                ).reshape(xi[0].shape)
+                ).reshape(xi[0].shape + self.values.shape[self.values.ndim:])
 
                 return result
 
