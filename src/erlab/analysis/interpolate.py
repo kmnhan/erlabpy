@@ -6,7 +6,7 @@ __all__ = ["FastInterpolator", "interpn"]
 
 import math
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
 import numba
 import numpy as np
@@ -16,17 +16,17 @@ import xarray as xr
 import xarray.core.missing
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _do_interp1(x, v0, v1):
     return v0 * (1 - x) + v1 * x
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _do_interp2(x, y, v0, v1, v2, v3):
     return _do_interp1(y, _do_interp1(x, v0, v1), _do_interp1(x, v2, v3))
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
     return _do_interp1(
         z, _do_interp2(x, y, v0, v1, v2, v3), _do_interp2(x, y, v4, v5, v6, v7)
@@ -46,7 +46,7 @@ def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
 #     )
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _calc_interp2(values, v0, v1):
     i0, i1 = math.floor(v0), math.floor(v1)
     n0, n1 = values.shape
@@ -61,7 +61,7 @@ def _calc_interp2(values, v0, v1):
     )
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _calc_interp3(values, v0, v1, v2):
     i0, i1, i2 = math.floor(v0), math.floor(v1), math.floor(v2)
     n0, n1, n2 = values.shape
@@ -81,7 +81,7 @@ def _calc_interp3(values, v0, v1, v2):
     )
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, inline="always")
 def _val2ind(val, coord):
     if val > coord[-1] or val < coord[0]:
         return np.nan
@@ -226,7 +226,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             xi_shapes = [x.shape for x in xi]
             if not all(s == xi_shapes[0] for s in xi_shapes):
                 warnings.warn(
-                    f"Not all coordinate arrays have the same shape, "
+                    "Not all coordinate arrays have the same shape, "
                     "falling back to scipy.",
                     RuntimeWarning,
                 )
@@ -243,7 +243,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     self.values,
                     *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
-                ).reshape(xi[0].shape + self.values.shape[self.values.ndim:])
+                ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
 
                 return result
 
