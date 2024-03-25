@@ -836,7 +836,7 @@ class LoaderRegistry(RegistryBase):
         return self.current_loader, self.default_data_dir
 
     def __repr__(self) -> str:
-        out = "Registered data loaders\n====================\n\n"
+        out = "Registered data loaders\n=======================\n\n"
         out += "Loaders\n-------\n" + "\n".join(
             [f"{k}: {v}" for k, v in self.loaders.items()]
         )
