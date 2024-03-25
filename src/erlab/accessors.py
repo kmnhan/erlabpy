@@ -12,7 +12,7 @@ __all__ = ["MomentumAccessor", "OffsetView"]
 import functools
 import time
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, ItemsView, Iterable, Iterator
 from typing import Literal
 
 import numpy as np
@@ -60,6 +60,40 @@ def only_angles(method: Callable | None = None):
 
 
 class OffsetView:
+    r"""A class representing an offset view for an `xarray.DataArray`.
+
+    This class provides a convenient way to access and manipulate angle offsets
+    associated with the given data.
+
+    Parameters
+    ----------
+    xarray_obj
+        The `xarray.DataArray` for which the offset view is created.
+
+    Methods
+    -------
+    __len__() -> int:
+        Returns the number of valid offset keys.
+
+    __iter__() -> Iterator[str, float]:
+        Returns an iterator over the valid offset keys and their corresponding values.
+
+    __getitem__(key: str) -> float:
+        Returns the offset value associated with the given key.
+
+    __setitem__(key: str, value: float) -> None:
+        Sets the offset value for the given key.
+
+    __eq__(other: object) -> bool:
+        Compares the offset view with another object for equality. `True` if the
+        dictionary representation is equal, `False` otherwise.
+
+    __repr__() -> str:
+        Returns a string representation of the offset view.
+
+    _repr_html_() -> str:
+        Returns an HTML representation of the offset view.
+    """
 
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
@@ -70,7 +104,7 @@ class OffsetView:
     def __len__(self) -> int:
         return len(self._obj.kspace.valid_offset_keys)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str, float]:
         for key in self._obj.kspace.valid_offset_keys:
             yield key, self.__getitem__(key)
 
@@ -109,17 +143,19 @@ class OffsetView:
         self,
         other: dict | Iterable[tuple[str, float]] = None,
         **kwargs: dict[str, float],
-    ):
+    ) -> None:
+        """Updates the offset view with the provided key-value pairs."""
         if other is not None:
             for k, v in other.items() if isinstance(other, dict) else other:
                 self[k] = v
         for k, v in kwargs.items():
             self[k] = v
 
-    def items(self):
+    def items(self) -> ItemsView[str, float]:
+        """Returns a view of the offset view as a list of (key, value) pairs."""
         return dict(self).items()
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset all angle offsets to zero."""
         for k in self._obj.kspace.valid_offset_keys:
             self[k] = 0.0
@@ -246,7 +282,7 @@ class MomentumAccessor:
     @property
     @only_angles
     def momentum_axes(self) -> tuple[str, ...]:
-        """Returns the momentum axes of the data.
+        """Returns the momentum axes of the data after conversion.
 
         Returns
         -------
@@ -704,6 +740,9 @@ class MomentumAccessor:
         if resolution is None:
             resolution = dict()
 
+        if not silent:
+            print("Estimating bounds and resolution")
+
         calculated_bounds: dict[str, tuple[float, float]] = self.estimate_bounds()
 
         new_size: dict[str, int] = dict()
@@ -728,6 +767,9 @@ class MomentumAccessor:
                 if not silent and lims[1] - lims[0] > 0.001:
                     print(f"Data spans about {lims[1] - lims[0]:.3f} Å⁻¹ of {k}.")
                 other_coords[k] = np.array([(lims[0] + lims[1]) / 2])
+
+        if not silent:
+            print("Calculating destination coordinates")
 
         target_dict = self._inverse(
             (interp_coords | other_coords).get("kx"),
@@ -791,6 +833,6 @@ class MomentumAccessor:
         out = out.assign_attrs(self._obj.attrs)
         out = out.assign_coords(other_coords)
         if not silent:
-            print(f"Converted in {time.perf_counter() - t_start:.3f} seconds")
+            print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
 
         return out

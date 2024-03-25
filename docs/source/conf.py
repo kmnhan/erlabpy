@@ -68,7 +68,7 @@ autosummary_generate = True
 autosummary_generate_overwrite = True
 
 autodoc_inherit_docstrings = False
-autodoc_typehints = "description"
+autodoc_typehints = "both"
 autodoc_typehints_format = "short"
 autodoc_class_signature = "mixed"
 autodoc_member_order = "bysource"
