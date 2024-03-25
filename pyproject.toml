@@ -7,7 +7,7 @@ name = "erlab"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.rst"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["ARPES"]
 license = { text = "BSD-3-Clause" }
 classifiers = [
