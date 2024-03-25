@@ -5,7 +5,9 @@ import scipy.interpolate
 import xarray as xr
 
 
-def xcsaps(arr: xr.DataArray, **kwargs: dict) -> tuple[xr.DataArray, csaps.ISmoothingSpline]:
+def xcsaps(
+    arr: xr.DataArray, **kwargs: dict
+) -> tuple[xr.DataArray, csaps.ISmoothingSpline]:
     """`xarray` compatible `csaps.csaps`.
 
     Parameters
@@ -14,7 +16,7 @@ def xcsaps(arr: xr.DataArray, **kwargs: dict) -> tuple[xr.DataArray, csaps.ISmoo
         Input array for smoothing spline calculation.
     **kwargs
         Keyword arguments for :func:`csaps.csaps`. `normalizedsmooth` is set to `True` by
-        default. 
+        default.
 
     Returns
     -------

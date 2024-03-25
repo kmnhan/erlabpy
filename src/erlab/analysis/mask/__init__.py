@@ -76,10 +76,10 @@ def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
     elif "qx" in kxymap.dims:
         dims = ("kx", "ky")
 
-    l = 2 * np.pi / (a * 3)
+    d = 2 * np.pi / (a * 3)
     ang = rotate + np.array([0, 60, 120, 180, 240, 300])
     vertices = np.array(
-        [[2 * l * np.cos(t), 2 * l * np.sin(t)] for t in np.deg2rad(ang)]
+        [[2 * d * np.cos(t), 2 * d * np.sin(t)] for t in np.deg2rad(ang)]
     )
     return mask_with_polygon(kxymap, vertices, dims, invert=invert)
 

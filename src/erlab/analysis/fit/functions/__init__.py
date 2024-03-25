@@ -7,7 +7,7 @@ Modules
 
 .. autosummary::
    :toctree:
-   
+
    dynamic
    general
 

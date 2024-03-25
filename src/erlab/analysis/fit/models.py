@@ -261,7 +261,7 @@ class MultiPeakModel(XModelMixin):
 
     def guess(self, data, x=None, **kwargs):
         pars = self.make_params()
-        #!TODO: better guesses
+        # !TODO: better guesses
         if self.func.fd:
             pars[f"{self.prefix}offset"].set(value=data[x >= 0].mean())
 
