@@ -52,6 +52,7 @@ dependencies:
   - qtawesome
   - numbagg
   - numba-progress
+  - iminuit>=2.3
   - pip:
     - pyqt6>=6.2.2
     - csaps
