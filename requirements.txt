@@ -1,26 +1,27 @@
 numpy>=1.22.0
-matplotlib>=3.8.0
-xarray
-h5netcdf
-varname
 numba>=0.56.2
 numbagg
 numba-progress
 joblib
+scipy>=1.8.0
 lmfit>=1.2.0
-iminuit>=2.25.2
-seaborn
-pyqtgraph>=0.13.1
-tqdm
 uncertainties>=3.0.1
-pyclip
-pyqt6>=6.2.2
-qtawesome
+iminuit>=2.25.2
+csaps
+matplotlib>=3.8.0
+seaborn
 cmasher
 cmocean
-superqt
-csaps
+colorcet
+xarray
+h5netcdf
+varname
+tqdm
+pyclip
+pyqt6>=6.2.2
 qtpy
+pyqtgraph>=0.13.1
+qtawesome
+superqt
 igor2 @ git+https://github.com/kmnhan/igor2@master
 arpes @ git+https://github.com/kmnhan/arpes@master
-erlab @ git+https://github.com/kmnhan/erlabpy@master
