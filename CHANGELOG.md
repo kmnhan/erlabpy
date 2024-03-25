@@ -2,6 +2,22 @@
 
 
 
+## v1.3.1 (2024-03-25)
+
+### Documentation
+
+* docs: update documentation
+
+- Move rst README contents to docs, replace with newly written markdown.
+- Add screenshot images to  documentation and README ([`69a02fa`](https://github.com/kmnhan/erlabpy/commit/69a02fa3591720cf79b01289fd9dfb9cf55c26db))
+
+* docs: update README ([`15f61bf`](https://github.com/kmnhan/erlabpy/commit/15f61bfe7a1734cece17479064c6d7946e2701f9))
+
+### Fix
+
+* fix: fixes #12 ([`02b49a1`](https://github.com/kmnhan/erlabpy/commit/02b49a1da7550ae2b07819e6ccde3dcf750fc527))
+
+
 ## v1.3.0 (2024-03-25)
 
 ### Chore
