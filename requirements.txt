@@ -23,4 +23,4 @@ csaps
 qtpy
 igor2 @ git+https://github.com/kmnhan/igor2@master
 arpes @ git+https://github.com/kmnhan/arpes@master
--e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
+erlab @ git+https://github.com/kmnhan/erlabpy@master
