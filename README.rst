@@ -2,6 +2,18 @@
 Getting Started
 ***************
 
+.. image:: https://github.com/kmnhan/erlabpy/actions/workflows/test.yml/badge.svg
+    :target: https://github.com/kmnhan/erlabpy/actions/workflows/test.yml
+    :alt: Documentation Status
+
+.. image:: https://readthedocs.org/projects/erlabpy/badge/?version=latest
+    :target: https://erlabpy.readthedocs.io/en/latest/
+    :alt: Workflow Status
+
+.. image:: https://img.shields.io/badge/code%20style-black-000000.svg
+   :target: https://github.com/psf/black
+   :alt: Code Style: black
+
 Installing
 ==========
 
