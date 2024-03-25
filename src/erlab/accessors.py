@@ -64,7 +64,9 @@ class MomentumAccessor:
 
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
-        self.reset_offsets()
+        for k in self.valid_offset_keys:
+            if k + "_offset" not in self._obj.attrs:
+                self._obj.attrs[k + "_offset"] = 0.0
 
     @property
     def configuration(self) -> AxesConfiguration:
