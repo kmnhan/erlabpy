@@ -5,6 +5,7 @@
     Use `erlab.interactive.imagetool` instead.
 
 """
+
 import colorsys
 import enum
 import sys
@@ -646,7 +647,7 @@ class ItoolAxisItem(pg.AxisItem):
     def resizeEvent(self, ev=None):
         # s = self.size()
 
-        ## Set the position of the label
+        # Set the position of the label
         # match self.label_mode:
         #     case self.LabelType.TextLabel:
         #         nudge = 5
@@ -2341,7 +2342,7 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
         lines = fast_isocurve_lines(data, level, index, extendToEdge)
 
     if not path:
-        return lines  ## a list of pairs of points
+        return lines  # a list of pairs of points
 
     path = QtGui.QPainterPath()
     for line in lines:
@@ -2863,7 +2864,6 @@ class itoolColorControls(QtWidgets.QWidget):
             value=self.gamma_scale(self.itool.gamma),
             orientation=QtCore.Qt.Horizontal,
         )
-        # self._gamma_slider = QtWidgets.QDial(self, value=self.gamma_scale(self.itool.gamma), wrapping=True, notchesVisible=False, fixedHeight=self._gamma_spin.height()-2, fixedWidth=self._gamma_spin.height()-2)
         self._gamma_slider.setRange(
             int(self.gamma_scale(self._gamma_spin.minimum())),
             int(self.gamma_scale(self._gamma_spin.maximum())),
@@ -3227,40 +3227,3 @@ def itool_(data, execute=None, *args, **kwargs):
     if execute:
         qapp.exec()
     return win
-
-
-if __name__ == "__main__":
-    # from pyimagetool import RegularDataArray, imagetool
-    # from erlab.plotting import ximagetool
-    # from arpes.io import load_data
-    # from guppy import hpy
-    # h=hpy()
-    # import sys
-
-    # dat = xr.open_dataarray('~/Documents/ERLab/TiSe2/kxy10.nc')
-    dat = xr.open_dataarray(
-        # "~/Documents/ERLab/TiSe2/kxy10.nc"
-        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
-        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d.nc"
-    )  # .sel(eV=-0.15, method="nearest")
-    # dat = xr.open_dataarray(
-    # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc"
-    # )
-    # dat = dat.sel(ky=slice(None, 1.452), eV=slice(-1.281, 0.2), kx=slice(-1.23, None))
-    # dat10 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00010.fits',
-    # location='BL1001-ERLab').spectrum
-    # dat16 = load_data('~/Documents/ERLab/TiSe2/data/20211212_00016.fits',
-    # location='BL1001-ERLab').spectrum
-    # print(sys.getsizeof(dat.values))
-    print(dat.nbytes * 2**-20)
-    # print(round(sys.getsizeof(dat) / 1024 / 1024, 2))
-    itool_(dat, bench=False)
-    # print(h.heap())
-    # from erlab.plotting.imagetool_mpl import itoolmpl
-    # itoolmpl(dat)
-    # gkmk_cvs = load_data('~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt',location="BL4").spectrum
-    # itool([gkmk_cvs, dat])
-    # itool([dat10, dat16])
-    # itool(dat, bench=False)
-    # itool(dat.sel(eV=0,method='nearest'), bench=False)s
-    # imagetool(dat)

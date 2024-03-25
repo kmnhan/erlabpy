@@ -43,7 +43,7 @@ def projected_length(
     ax: mpl_toolkits.mplot3d.Axes3D, length: np.float64 | Sequence[np.float64]
 ):
     if np.iterable(length):
-        return np.asarray([projected_length(ax, l) for l in np.asarray(length).flat])
+        return np.asarray([projected_length(ax, d) for d in np.asarray(length).flat])
 
     # rc = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()]).sum(1) / 2
 

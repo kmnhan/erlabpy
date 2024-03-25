@@ -10,7 +10,6 @@ from collections.abc import Sequence
 
 import numba
 import numpy as np
-import numpy.typing as npt
 import scipy.interpolate
 import xarray as xr
 import xarray.core.missing

@@ -706,7 +706,7 @@ class LoaderRegistry(RegistryBase):
             loader_name = self.alias_mapping.get(key)
             loader = self.loaders.get(loader_name)
 
-            if type(loader) == type:
+            if not isinstance(loader, LoaderBase):
                 # If not an instance, create one
                 self.loaders[loader_name] = loader()
                 loader = self.loaders[loader_name]
@@ -865,7 +865,7 @@ class LoaderRegistry(RegistryBase):
             aliases = ", ".join(v.aliases) if v.aliases is not None else ""
 
             # May be either a class or an instance
-            if type(v) != type:
+            if isinstance(v, LoaderBase):
                 v = type(v)
 
             cls_name = f"{v.__module__}.{v.__qualname__}"

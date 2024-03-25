@@ -72,7 +72,7 @@ def sample_plot(norms, labels, kw0, kw1, cmap):
             0.5,
             1,
             "o",
-            c=f"k",
+            c="k",
             mew=0.5,
             ms=5,
             mfc=f"C{i}",

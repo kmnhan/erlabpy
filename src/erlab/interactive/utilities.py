@@ -420,8 +420,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                 # sys.excepthook(*sys.exc_info())
                 ret = QtGui.QValidator.State.Invalid
 
-        ## note: if text is invalid, we don't change the textValid flag
-        ## since the text will be forced to its previous state anyway
+        # note: if text is invalid, we don't change the textValid flag since the text
+        # will be forced to its previous state anyway
         return (ret, strn, pos)
 
     def editingFinishedEvent(self):
@@ -477,7 +477,7 @@ class BetterAxisItem(pg.AxisItem):
             if self.labelUnits == "" and prefix in [
                 "k",
                 "m",
-            ]:  ## If we are not showing units, wait until 1e6 before scaling.
+            ]:  # If we are not showing units, wait until 1e6 before scaling.
                 scale = 1.0
                 prefix = ""
             self.autoSIPrefixScale = scale

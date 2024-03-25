@@ -55,7 +55,10 @@ __all__ = ["noisetool"]
 
 
 def laplacian_O3(f, *varargs):
-    """Third order accurate, 5-point formula. Not really laplacian, but second derivative along each axis. Sum the outputs to get laplacian."""
+    """
+    Third order accurate, 5-point formula. Not really laplacian, but second derivative
+    along each axis. Sum the outputs to get laplacian.
+    """
     N = len(f.shape)  # number of dimensions
     n = len(varargs)
     if n == 0:

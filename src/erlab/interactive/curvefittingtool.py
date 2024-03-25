@@ -118,7 +118,7 @@ class PlotPeakItem(pg.PlotCurveItem):
         self._pen_width = self.opts["pen"].width()
 
     def setMouseHover(self, hover):
-        ## Inform the item that the mouse is (not) hovering over it
+        # Inform the item that the mouse is (not) hovering over it
         # if self.mouseHovering == hover:
         # return
         # self.mouseHovering = hover
@@ -402,7 +402,7 @@ class edctool(QtWidgets.QMainWindow):
         print(res.best_values)
         self.fitplot.setData(x=self.xdata, y=res.best_fit)
         self.set_params(res.best_values)
-        
+
         self.result = res
 
     def set_params(self, params: dict):
@@ -444,7 +444,8 @@ class edctool(QtWidgets.QMainWindow):
 
 if __name__ == "__main__":
     data = xr.open_dataarray(
-        "~/Library/CloudStorage/Dropbox-KAIST_12/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/220922 ALS BL4/TS2_testedc_2209ALS.nc"
+        "~/Library/CloudStorage/Dropbox-KAIST_12/Kimoon Han/ERLab/Projects/TiSe2 Chiral"
+        "/Experiment/220922 ALS BL4/TS2_testedc_2209ALS.nc"
     )
     edctool(
         data,

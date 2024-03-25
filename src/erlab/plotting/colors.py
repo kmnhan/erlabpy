@@ -5,8 +5,8 @@ Colormaps
 
 In addition `matplotlib
 <https://matplotlib.org/stable/tutorials/colors/colormaps.html>`_ colormaps, `cmasher
-<https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_,
-and `colorcet <https://colorcet.holoviz.org>`_ are included.
+<https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_, and
+`colorcet <https://colorcet.holoviz.org>`_ are included.
 
 Colormap Normalization
 ----------------------
@@ -19,7 +19,7 @@ Colormap Normalization
     :width: 50 %
     :caption: Demonstration of :class:`CenteredPowerNorm <erlab.plotting.colors.CenteredPowerNorm>` and :class:`CenteredInversePowerNorm <erlab.plotting.colors.CenteredInversePowerNorm>`.
 
-"""
+"""  # noqa: E501
 
 __all__ = [
     "InversePowerNorm",
@@ -511,7 +511,8 @@ def proportional_colorbar(
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
     **kwargs: dict,
 ) -> matplotlib.colorbar.Colorbar:
-    r"""Replaces the current colorbar or creates a new colorbar with proportional spacing.
+    """
+    Replaces the current colorbar or creates a new colorbar with proportional spacing.
 
     The default behavior of colorbars in `matplotlib` does not support colors
     proportional to data in different norms. This function circumvents this behavior.
@@ -529,7 +530,8 @@ def proportional_colorbar(
         one Axes, the function will try to infer the mappable from the
         first one.
     **kwargs
-        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the `matplotlib` documentation for a list of all possible arguments.
+        Extra arguments to `matplotlib.pyplot.colorbar`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
 
     Returns
     -------
