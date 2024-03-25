@@ -1,4 +1,5 @@
 """Helper functions for fast slicing :class:`xarray.DataArray` objects."""
+
 from __future__ import annotations
 
 __all__ = ["ArraySlicer"]
@@ -123,15 +124,15 @@ class ArraySlicer(QtCore.QObject):
     Note
     ----
     The original intent of this class was a xarray accessor. This is why `ArraySlicer`
-    does not depend on a `ImageSlicerArea` but rather on the underlying `xarray.DataArray`.
-    Originally, when loading a different array, a different instance of `ArraySlicer`
-    had to be created. This was a terrible design choice since it messed up signals
-    every time the instance was replaced. Hence, the behaviour was modified (23/06/19)
-    so that the underlying `xarray.DataArray` of `ArraySlicer` could be swapped. As a
-    consequence, each instance of `ImageSlicerArea` now corresponds to exactly one
-    instance of `ArraySlicer`, regardless of the data. In the future, `ArraySlicer`
-    might be changed so that it relies on its one-to-one correspondence with
-    `ImageSlicerArea` for the signals.
+    does not depend on a `ImageSlicerArea` but rather on the underlying
+    `xarray.DataArray`. Originally, when loading a different array, a different instance
+    of `ArraySlicer` had to be created. This was a terrible design choice since it
+    messed up signals every time the instance was replaced. Hence, the behaviour was
+    modified (23/06/19) so that the underlying `xarray.DataArray` of `ArraySlicer` could
+    be swapped. As a consequence, each instance of `ImageSlicerArea` now corresponds to
+    exactly one instance of `ArraySlicer`, regardless of the data. In the future,
+    `ArraySlicer` might be changed so that it relies on its one-to-one correspondence
+    with `ImageSlicerArea` for the signals.
 
     """
 
@@ -154,9 +155,11 @@ class ArraySlicer(QtCore.QObject):
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
         if self._nonuniform_axes:
             return tuple(
-                self.values_of_dim(str(dim)[:-4])
-                if i in self._nonuniform_axes
-                else self.values_of_dim(dim)
+                (
+                    self.values_of_dim(str(dim)[:-4])
+                    if i in self._nonuniform_axes
+                    else self.values_of_dim(dim)
+                )
                 for i, dim in enumerate(self._obj.dims)
             )
         else:
@@ -178,9 +181,11 @@ class ArraySlicer(QtCore.QObject):
     def lims(self) -> tuple[tuple[np.float32, np.float32], ...]:
         if self._nonuniform_axes:
             return tuple(
-                (min(coord), max(coord))
-                if i in self._nonuniform_axes
-                else (coord[0], coord[-1])
+                (
+                    (min(coord), max(coord))
+                    if i in self._nonuniform_axes
+                    else (coord[0], coord[-1])
+                )
                 for i, coord in enumerate(self.coords)
             )
         else:
@@ -581,9 +586,7 @@ class ArraySlicer(QtCore.QObject):
         return self._obj.isel(**slices).squeeze()
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
-    def slice_with_coord(
-        self, cursor: int, disp: Sequence[int]
-    ) -> tuple[
+    def slice_with_coord(self, cursor: int, disp: Sequence[int]) -> tuple[
         tuple[np.float32, np.float32, np.float32, np.float32] | npt.NDArray[np.float32],
         npt.NDArray[np.float32] | np.float32,
     ]:

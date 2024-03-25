@@ -39,9 +39,11 @@ class ERLabDataArrayAccessor(ERLabAccessor):
 
 def only_angles(method: Callable | None = None):
     """
-    A decorator that ensures the data is in angle space before executing the decorated method.
+    A decorator that ensures the data is in angle space before executing the decorated
+    method.
 
-    If the data is not in angle space (i.e., if "kx" or "ky" dimensions are present), a `ValueError` is raised.
+    If the data is not in angle space (i.e., if "kx" or "ky" dimensions are present), a
+    `ValueError` is raised.
 
     """
 
@@ -113,7 +115,8 @@ class OffsetView:
             return float(self._obj.attrs[key + "_offset"])
         else:
             raise KeyError(
-                f"Invalid offset key `{key}` for experimental configuration {self._obj.kspace.configuration}"
+                f"Invalid offset key `{key}` for experimental configuration "
+                f"{self._obj.kspace.configuration}"
             )
 
     def __setitem__(self, key: str, value: float) -> None:
@@ -186,9 +189,9 @@ class MomentumAccessor:
     def inner_potential(self) -> float:
         """Inner potential of the sample in eV.
 
-        The inner potential is stored in the ``inner_potential`` attribute of the data. If
-        the inner potential is not set, a warning is issued and a default value of 10.0
-        eV is assumed.
+        The inner potential is stored in the ``inner_potential`` attribute of the data.
+        If the inner potential is not set, a warning is issued and a default value of
+        10.0 eV is assumed.
 
         Note
         ----
@@ -218,9 +221,9 @@ class MomentumAccessor:
     def work_function(self) -> float:
         """Work function of the sample in eV.
 
-        The work function is stored in the ``sample_workfunction`` attribute of the data.
-        If the work function is not set, a warning is issued and a default value of 4.5
-        eV is assumed.
+        The work function is stored in the ``sample_workfunction`` attribute of the
+        data. If the work function is not set, a warning is issued and a default value
+        of 4.5 eV is assumed.
 
         Note
         ----
@@ -574,7 +577,7 @@ class MomentumAccessor:
 
         .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
-        """
+        """  # noqa: E501
         min_Ek = np.amin(self._kinetic_energy)
         max_angle = max(np.abs(self._obj["alpha"].values))
         return (
@@ -681,10 +684,10 @@ class MomentumAccessor:
         Parameters
         ----------
         bounds
-            A dictionary specifying the bounds for each coordinate axis.
-            The keys are the names of the axes, and the values are tuples
-            representing the lower and upper bounds of the axis. If not
-            provided, the bounds will be estimated based on the data.
+            A dictionary specifying the bounds for each coordinate axis. The keys are
+            the names of the axes, and the values are tuples representing the lower and
+            upper bounds of the axis. If not provided, the bounds will be estimated
+            based on the data.
         resolution
             A dictionary specifying the resolution for each momentum axis. The keys are
             the names of the axes, and the values are floats representing the desired
@@ -692,9 +695,9 @@ class MomentumAccessor:
             based on the data. For in-plane momentum, the resolution is estimated from
             the angle resolution and kinetic energy. For out-of-plane momentum, two
             values are calculated. One is based on the number of photon energy points,
-            and the other is estimated as the inverse of the photoelectron inelastic mean
-            free path given by the universal curve. The resolution is estimated as the
-            smaller of the two values.
+            and the other is estimated as the inverse of the photoelectron inelastic
+            mean free path given by the universal curve. The resolution is estimated as
+            the smaller of the two values.
         silent
             If `True`, suppresses printing, by default `False`.
 
@@ -705,12 +708,12 @@ class MomentumAccessor:
 
         Note
         ----
-        This method converts the data to a new coordinate system specified
-        by the provided bounds and resolution. It uses interpolation to
-        map the data from the original coordinate system to the new one.
+        This method converts the data to a new coordinate system specified by the
+        provided bounds and resolution. It uses interpolation to map the data from the
+        original coordinate system to the new one.
 
-        The converted data is returned as a DataArray object with updated
-        coordinates and dimensions.
+        The converted data is returned as a DataArray object with updated coordinates
+        and dimensions.
 
         Examples
         --------

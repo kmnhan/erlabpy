@@ -75,7 +75,7 @@ class masktool(AnalysisWindow):
 
     def update_cursor(self, change):
         # dim_z = change[-1]
-        update_only_values = True
+        # update_only_values = True
 
         cursor_params = self.cursor.values
 
@@ -85,7 +85,7 @@ class masktool(AnalysisWindow):
             self.cursor.widgets["slider"].setMaximum(len(self.data[dim_z]) - 1)
             self.cursor.widgets["slider"].setValue(0)
             self.cursor.blockSignals(False)
-            update_only_values = False
+            # update_only_values = False
 
         new_arr = self.data.isel({dim_z: self.cursor.widgets["slider"].value()})
         # if update_only_values:

@@ -1,4 +1,4 @@
-"""Extensions to mplot3d. 
+"""Extensions to mplot3d.
 
 """
 

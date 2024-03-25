@@ -7,7 +7,7 @@ Modules
 
 .. autosummary::
    :toctree:
-   
+
    merlin
    ssrl52
 

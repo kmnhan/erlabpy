@@ -22,7 +22,8 @@ def autocorrelate(arr, *args, **kwargs):
     arr
         Input array to calculate the autocorrelation.
     *args, **kwargs
-        Additional arguments and keyword arguments to be passed to `scipy.signal.correlate`.
+        Additional arguments and keyword arguments to be passed to
+        `scipy.signal.correlate`.
 
     Returns
     -------

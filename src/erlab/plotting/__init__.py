@@ -8,7 +8,7 @@ Modules
 
 .. autosummary::
    :toctree: generated
-   
+
    annotations
    atoms
    bz

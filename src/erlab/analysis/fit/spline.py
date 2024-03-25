@@ -15,8 +15,8 @@ def xcsaps(
     arr
         Input array for smoothing spline calculation.
     **kwargs
-        Keyword arguments for :func:`csaps.csaps`. `normalizedsmooth` is set to `True` by
-        default.
+        Keyword arguments for :func:`csaps.csaps`. `normalizedsmooth` is set to `True`
+        by default.
 
     Returns
     -------

@@ -291,9 +291,8 @@ class FermiEdge2dModel(XModelMixin):
 
     .. math::
 
-        I = \left\{(a\omega + b)\left[1 +
-        \exp\left(\frac{\omega - \sum_{i = 0}^{n} c_i \alpha^i}{k_B T}\right)\right]^{-1}
-        + c\right\}\otimes g(\sigma)
+        I = \left\{(a\omega + b)\left[1 + \exp\left(\frac{\omega - \sum_{i = 0}^{n} c_i
+        \alpha^i}{k_B T}\right)\right]^{-1} + c\right\}\otimes g(\sigma)
 
     for a :math:`n` th degree polynomial edge with coefficients :math:`c_i` with a
     linear density of states described by :math:`a\omega+b` with a constant background

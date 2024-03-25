@@ -77,8 +77,8 @@ def projected_length_pos(ax: mpl_toolkits.mplot3d.Axes3D, length, position):
             length = np.ones(len(position)) * length
         return np.asarray(
             [
-                projected_length_pos(ax, l, p)
-                for l, p in zip(np.asarray(length).flat, np.asarray(position))
+                projected_length_pos(ax, d, p)
+                for d, p in zip(np.asarray(length).flat, np.asarray(position))
             ]
         )
     rc = np.asarray(position).reshape(-1, 1)
@@ -176,12 +176,14 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
                 matplotlib.collections.Collection.draw(self, renderer)
 
     # def draw(self, renderer):
-    #         # Note: unlike in the 2D case, where we can enforce equal
-    #         #       aspect ratio, this (currently) does not work with
-    #         #       3D plots in matplotlib. As an approximation, we
-    #         #       thus scale with the average of the x- and y-axis
-    #         #       transformation.
-    #     self._factor = self._sz_real * ((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi
+    #     # Note: unlike in the 2D case, where we can enforce equal
+    #     #       aspect ratio, this (currently) does not work with
+    #     #       3D plots in matplotlib. As an approximation, we
+    #     #       thus scale with the average of the x- and y-axis
+    #     #       transformation.
+    #     self._factor = (
+    #         self._sz_real * ((args[0] + args[3]) / 2) * 72.0 / self.figure.dpi
+    #     )
     #     super().draw(renderer)
 
 
@@ -276,7 +278,8 @@ class CrystalProperty:
             colored with the current matplotlib prop_cycle in the order they are given
             in `atom_pos`.
         repeat
-            Number of times to repeat the crystal in each direction, by default (1, 1, 1)
+            Number of times to repeat the crystal in each direction, by default (1, 1,
+            1)
         bounds
             A dictionary of bounds for the crystal in each direction. Atoms that exceed
             the bounds will not be plotted

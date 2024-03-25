@@ -91,9 +91,11 @@ def edge(
     Returns
     -------
     center_arr, center_stderr
-        The fitted center values and their standard errors, returned when `return_full` `False`.
+        The fitted center values and their standard errors, returned when `return_full`
+        is `False`.
     fitresults
-        A dataset containing the full fit results, returned when `return_full` `True`.
+        A dataset containing the full fit results, returned when `return_full` is
+        `True`.
 
     """
     if fast:

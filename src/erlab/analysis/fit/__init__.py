@@ -7,7 +7,7 @@ Modules
 
 .. autosummary::
    :toctree:
-   
+
    functions
    models
    spline

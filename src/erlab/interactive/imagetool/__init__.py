@@ -67,9 +67,9 @@ def itool(
         Whether to execute the Qt event loop and display the window, by default `None`.
         If `None`, the execution is determined based on the current IPython shell.
     **kwargs
-        Additional keyword arguments to be passed onto the underlying slicer area. For a full list of supported
-        arguments, see the `erlab.interactive.imagetool.core.ImageSlicerArea`
-        documentation.
+        Additional keyword arguments to be passed onto the underlying slicer area. For a
+        full list of supported arguments, see the
+        `erlab.interactive.imagetool.core.ImageSlicerArea` documentation.
 
     Returns
     -------
@@ -103,7 +103,7 @@ def itool(
         win[-1].raise_()
 
         if link:
-            linker = SlicerLinkProxy(
+            linker = SlicerLinkProxy(  # noqa: F841
                 *[w.slicer_area for w in win], link_colors=link_colors
             )
     else:
@@ -471,7 +471,8 @@ if __name__ == "__main__":
     #     for index, stat in enumerate(top_stats[:limit], 1):
     #         frame = stat.traceback[0]
     #         print(
-    #             f"#{index} {stat.traceback.total_nframe}: {frame.filename}:{frame.lineno}: {stat.size/1024:.1f} KiB"
+    #             f"#{index} {stat.traceback.total_nframe}: "
+    #             f"{frame.filename}:{frame.lineno}: {stat.size/1024:.1f} KiB"
     #         )
     #         line = linecache.getline(frame.filename, frame.lineno).strip()
     #         if line:

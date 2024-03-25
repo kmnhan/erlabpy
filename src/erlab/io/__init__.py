@@ -10,12 +10,12 @@ Modules
 
 .. autosummary::
    :toctree: generated
-   
+
    plugins
    dataloader
    utilities
    igor
-   
+
 
 For a single session, it is very common to use only one type of loader for a single
 folder with all your data. Hence, the module provides a way to set a default loader for

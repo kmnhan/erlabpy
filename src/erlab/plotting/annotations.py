@@ -788,8 +788,8 @@ def mark_points_outside(
         Sequence of label strings indicating a high symmetry point. Must be the same
         length as `points`.
     axis
-        If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points along
-        the vertical axis.
+        If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points
+        along the vertical axis.
     roman
         If ``False``, *True*, itallic fonts are used.
     bar
@@ -1051,7 +1051,8 @@ def sizebar(
     frameon
         If True, draw a box around the horizontal bar and label.
     **kwargs
-        Keyword arguments forwarded to `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
+        Keyword arguments forwarded to
+        `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
 
     """
 

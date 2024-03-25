@@ -8,7 +8,7 @@ Interactive tools
 
 .. autosummary::
    :toctree: generated
-   
+
    imagetool
    bzplot
    colors

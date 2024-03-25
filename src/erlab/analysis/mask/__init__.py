@@ -7,7 +7,7 @@ Modules
 
 .. autosummary::
    :toctree:
-   
+
    polygon
 
 """
@@ -91,13 +91,13 @@ def hex_bz_mask_points(
     if offset is None:
         offset = (0, 0)
     if reciprocal:
-        l = 2 * np.pi / (a * 3)
+        d = 2 * np.pi / (a * 3)
     else:
-        l = a
+        d = a
     ang = rotate + np.array([0, 60, 120, 180, 240, 300])
     vertices = np.array(
         [
-            [2 * l * np.cos(t) + offset[0], 2 * l * np.sin(t) + offset[1]]
+            [2 * d * np.cos(t) + offset[0], 2 * d * np.sin(t) + offset[1]]
             for t in np.deg2rad(ang)
         ]
     )

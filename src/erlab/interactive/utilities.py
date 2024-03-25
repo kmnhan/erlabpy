@@ -393,18 +393,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.textChanged.emit(self.text())
 
     def fixup(self, input):
-        #     # fixup is called when the spinbox loses focus with an invalid or intermediate string
-        #     self.lineEdit().setText(self.text())
-
-        #     # support both PyQt APIs (for Python 2 and 3 respectively)
-        #     # http://pyqt.sourceforge.net/Docs/PyQt4/python_v3.html#qvalidator
-
-        #     print(input)
-        #     try:
-        #         input.clear()
-        #         input.append(self.lineEdit().text())
-        #     except AttributeError:
-        # print("fixup called ", input)
+        # Called when the spinbox loses focus with an invalid or intermediate string
         return self.textFromValue(self._lastvalue)
 
     def validate(self, strn, pos):
@@ -848,7 +837,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
         ) = None,
         **kwargs: dict,
     ):
-        """Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
+        """
+        Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
 
         Parameters
         ----------
@@ -1551,7 +1541,7 @@ if __name__ == "__main__":
 
     dat = (
         xr.open_dataarray(
-            "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
+            "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"  # noqa: E501
         )
         .sel(eV=-0.15, method="nearest")
         .fillna(0)

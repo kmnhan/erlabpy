@@ -105,7 +105,10 @@ class kTool(QtWidgets.QMainWindow):
             resolution = {"kx": 0.02, "ky": 0.02}
         self.diff_data = diff_data
         self.data = parse_data(data)
-        _get_middle_index = lambda x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
+
+        def _get_middle_index(x):
+            return len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
+
         self.has_eV = "eV" in self.data.dims
         self.show_eV = self.has_eV and self.data.ndim == 3
         if self.show_eV:

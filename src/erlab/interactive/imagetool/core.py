@@ -240,7 +240,7 @@ class SlicerLinkProxy:
                         source, target, axis, index, steps
                     )
 
-        args["__slicer_skip_sync"]: bool = True  # passed onto the decorator
+        args["__slicer_skip_sync"] = True  # passed onto the decorator
         return args
 
     @staticmethod
@@ -315,7 +315,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("g"),
         pg.mkColor("r"),
         pg.mkColor("b"),
-    ]  #: List of :class:`PySide6.QtGui.QColor` that contains colors for multiple cursors.
+    ]  #: List of :class:`PySide6.QtGui.QColor` containing colors for multiple cursors.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
@@ -1256,8 +1256,10 @@ class ItoolPlotItem(pg.PlotItem):
                 self._next_queue.append(1 / (self._time_start - self._time_end))
             print(
                 "\x1b[2K\x1b[1A\x1b[2K"
-                f"SingleUpdate\t{np.mean(self._single_queue):.1f} ± {np.std(self._single_queue):.1f}",
-                f"NextUpdate\t{np.mean(self._next_queue):.1f} ± {np.std(self._next_queue):.1f}",
+                f"SingleUpdate\t{np.mean(self._single_queue):.1f}"
+                f" ± {np.std(self._single_queue):.1f}",
+                f"NextUpdate\t{np.mean(self._next_queue):.1f}"
+                f" ± {np.std(self._next_queue):.1f}",
                 sep="\t",
             )
             self._time_start = time.perf_counter()

@@ -438,8 +438,4 @@ class ktool(ktoolGUI):
 
 if __name__ == "__main__":
     dat = erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5")
-    # dat = erlab.io.ssrl52.load(
-    # "/Users/khan/KAIST_12 Dropbox/Kimoon Han/ERLab/Projects/TiSe2 Chiral/Experiment/221213 SSRL BL5-2/TiSe2/f_0027.h5"
-    # )
-    # dat = dat.assign_coords(eV=dat.eV - 106.7)
     win = ktool(dat)

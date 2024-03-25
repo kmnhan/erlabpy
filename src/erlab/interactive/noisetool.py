@@ -32,7 +32,11 @@ from scipy.ndimage import gaussian_filter, uniform_filter
 #         pad_width[axis] = (0, w_list[axis] + 1)
 #         slicer[axis] = slice(w_list[axis], -1)
 #     a = np.pad(a, pad_width, constant_values=np.nan)
-#     val = move_mean(a, numba.typed.List(window_list), numba.typed.List(min_count_list))
+#     val = move_mean(
+#         a,
+#         numba.typed.List(window_list),
+#         numba.typed.List(min_count_list),
+#     )
 #     return val[tuple(slicer)]
 
 
@@ -150,7 +154,12 @@ class NoiseToolNew(AnalysisWidgetBase):
     #             out = data.copy(deep=True)
     #             vals = data.values
     #             for _ in range(num):
-    #                 vals = uniform_filter(vals, amount, mode="constant", origin=(0, 0))
+    #                 vals = uniform_filter(
+    #                     vals,
+    #                     amount,
+    #                     mode="constant",
+    #                     origin=(0, 0),
+    #                 )
     #             out.values = vals
     #             return out
     #     elif method == "gaussian":
@@ -498,7 +507,7 @@ if __name__ == "__main__":
     import erlab.io
 
     gkmk_cvs = erlab.io.load_als_bl4(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"
+        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"  # noqa: E501
     )
     alpha_new = np.linspace(gkmk_cvs.alpha[0], gkmk_cvs.alpha[-1], 1000)
     eV_new = np.linspace(gkmk_cvs.eV[0], gkmk_cvs.eV[-1], 2000)

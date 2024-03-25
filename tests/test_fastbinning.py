@@ -10,5 +10,6 @@ def test_fast_nanmean():
                 axis = tuple(axis)
             if not np.allclose(np.nanmean(x, axis), fast_nanmean(x, axis)):
                 raise AssertionError(
-                    f"fast_nanmean failed for {nd}D array with axis {axis} using {func}."
+                    f"fast_nanmean failed for {nd}D array "
+                    f"with axis {axis} using {func}."
                 )

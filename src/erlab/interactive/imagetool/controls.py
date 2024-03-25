@@ -391,7 +391,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
             clear_layout(self.layout())
             self.initialize_widgets()
 
-        label_width = 0
         for i in range(self.data.ndim):
             self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)

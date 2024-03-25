@@ -64,15 +64,15 @@ class LoaderBase:
 
     name_map: dict[str, str | Iterable[str]] = {}
     """
-    Dictionary that maps **new** coordinate or attribute names to **original** coordinate
-    or attribute names. If there are multiple possible names for a single attribute, the
-    value can be passed as an iterable.
+    Dictionary that maps **new** coordinate or attribute names to **original**
+    coordinate or attribute names. If there are multiple possible names for a single
+    attribute, the value can be passed as an iterable.
     """
 
     coordinate_attrs: tuple[str, ...] = tuple()
     """
     Names of attributes (after renaming) that should be treated as coordinates.
-    
+
     Note
     ----
     Although the data loader tries to preserve the original attributes, the attributes
@@ -437,7 +437,7 @@ class LoaderBase:
     def load_single(
         self, file_path: str | os.PathLike
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-        """Load a single file and return it in applicable format.
+        r"""Load a single file and return it in applicable format.
 
         Any scan-specific postprocessing should be implemented in this method. When the
         single file contains many regions, the method should return a single dataset
@@ -534,7 +534,7 @@ class LoaderBase:
             try:
                 # Try to merge the data without conflicts
                 return xr.merge(data_list)
-            except:
+            except:  # noqa: E722
                 # On failure, return a list
                 return data_list
         else:
