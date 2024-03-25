@@ -111,9 +111,7 @@ class BL403Loader(LoaderBase):
         else:
             return None
 
-    def post_process(
-        self, data: xr.DataArray | xr.Dataset
-    ) -> xr.DataArray | xr.Dataset:
+    def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
 
         if "eV" in data.coords:
