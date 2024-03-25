@@ -415,17 +415,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
         self.qapp.aboutToQuit.connect(self.on_close)
 
+        cmap_reversed = False
+
+        if isinstance(cmap, str):
+            if cmap.endswith("_r"):
+                cmap = cmap[:-2]
+                cmap_reversed = True
+            if cmap.startswith("cet_CET"):
+                cmap = cmap[4:]
+
         self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = dict(
             cmap=cmap,
             gamma=gamma,
-            reversed=False,
+            reversed=cmap_reversed,
             highContrast=False,
             zeroCentered=zeroCentered,
         )
-        if isinstance(cmap, str):
-            if cmap.endswith("_r"):
-                self.colormap_properties["cmap"] = cmap[:-2]
-                self.colormap_properties["reversed"] = True
 
         self._data: xr.DataArray | None = None
         self.current_cursor: int = 0
