@@ -120,7 +120,7 @@ def get_kconv_func(
 
 
 def _kperp_func(k_tot_sq, kx, ky):
-    """:math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
+    r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
     return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
 
 
