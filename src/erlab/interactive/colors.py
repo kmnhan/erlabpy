@@ -37,9 +37,9 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         w, h = 64, 16
         self.setIconSize(QtCore.QSize(w, h))
         # for name in pg_colormap_names("local"):
-        for name in pg_colormap_names("mpl"):
+        for name in pg_colormap_names("all", exclude_local=True):
             self.addItem(name)
-        self.insertItem(0, self.LOAD_ALL_TEXT)
+        # self.insertItem(0, self.LOAD_ALL_TEXT)
         self.thumbnails_loaded = False
         self.currentIndexChanged.connect(self.load_thumbnail)
         self.default_cmap = None
@@ -59,7 +59,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     def load_all(self):
         self.clear()
-        for name in pg_colormap_names("all"):
+        for name in pg_colormap_names("all", exclude_local=True):
             self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
         self.resetCmap()
         self.showPopup()
@@ -254,6 +254,7 @@ class BetterImageItem(pg.ImageItem):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
         self.sigColorChanged.emit()
+
 
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
@@ -528,7 +529,7 @@ def color_to_QColor(
 
 
 def pg_colormap_names(
-    source: Literal["local", "all", "matplotlib"] = "all"
+    source: Literal["local", "all", "matplotlib"] = "all", exclude_local: bool = False
 ) -> list[str]:
     """Get all valid :obj:`pyqtgraph` colormap names.
 
@@ -558,10 +559,17 @@ def pg_colormap_names(
             # if (_mpl != []) and (cet != []):
             # local = []
             # _mpl_r = []
-            all_cmaps = local + cet + _mpl  # + _mpl_r
+
+            if exclude_local:
+                all_cmaps = cet + _mpl
+            else:
+                all_cmaps = local + cet + _mpl  # + _mpl_r
         else:
-            all_cmaps = local + _mpl
-    return list({value: None for value in all_cmaps})
+            if exclude_local:
+                all_cmaps = _mpl
+            else:
+                all_cmaps = local + _mpl
+    return list(dict.fromkeys(all_cmaps))
 
 
 def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
