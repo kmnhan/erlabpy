@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import itertools
+from multiprocessing import Value
 import os
 from collections.abc import Iterable, Sequence
 
@@ -702,25 +703,27 @@ class LoaderRegistry(RegistryBase):
             self.alias_mapping[alias] = loader_class.name
 
     def get(self, key: str) -> LoaderBase:
-        try:
-            loader_name = self.alias_mapping.get(key)
-            loader = self.loaders.get(loader_name)
+        loader_name = self.alias_mapping.get(key)
+        loader = self.loaders.get(loader_name)
 
-            if not isinstance(loader, LoaderBase):
-                # If not an instance, create one
-                self.loaders[loader_name] = loader()
-                loader = self.loaders[loader_name]
+        if loader is None:
+            raise KeyError(f"Loader for {key} not found")
 
-            return loader
+        if not isinstance(loader, LoaderBase):
+            # If not an instance, create one
+            self.loaders[loader_name] = loader()
+            loader = self.loaders[loader_name]
 
-        except KeyError:
-            raise ValueError(f"Loader for {key} not found")
+        return loader
 
     def __getitem__(self, key: str) -> LoaderBase:
         return self.get(key)
 
     def __getattr__(self, key: str) -> LoaderBase:
-        return self.get(key)
+        try:
+            return self.get(key)
+        except KeyError:
+            raise AttributeError(f"Loader for {key} not found")
 
     def set_loader(self, loader: str | LoaderBase):
         """Set the current data loader.
