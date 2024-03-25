@@ -112,18 +112,15 @@ def edge(
 
     if fixed_center is not None:
         params["center"] = dict(value=fixed_center, vary=False)
-    weights = None
 
     if any([b != 1 for b in bin_size]):
         gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
         gold = gold_binned.mean()
-        # gold_stderr = (gold_binned.std() / np.sqrt(np.prod(bin_size))).sel(
-        #     alpha=slice(*angle_range), eV=slice(*eV_range)
-        # )
-        # if (gold_stderr > 0).all():
-        #     weights = 1 / gold_stderr
 
     gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+
+    # Assuming Poisson noise, the weights are the square root of the counts.
+    weights = np.sqrt(gold.sum("eV"))
 
     fitresults = arpes.fits.broadcast_model(
         model_cls,
