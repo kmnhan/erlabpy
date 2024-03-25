@@ -2,7 +2,7 @@
 
 __all__ = [
     "ExtendedAffineBroadenedFD",
-    "LinearBroadStep",
+    "StepEdgeModel",
     "PolynomialModel",
     "MultiPeakModel",
     "FermiEdge2dModel",
