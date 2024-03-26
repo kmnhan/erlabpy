@@ -2,8 +2,8 @@
 Getting Started
 ***************
 
-.. image:: https://github.com/kmnhan/erlabpy/actions/workflows/test.yml/badge.svg
-    :target: https://github.com/kmnhan/erlabpy/actions/workflows/test.yml
+.. image:: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg
+    :target: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml
     :alt: Workflow Status
 .. image:: https://readthedocs.org/projects/erlabpy/badge/?version=latest
     :target: https://erlabpy.readthedocs.io/en/latest/
