@@ -2,6 +2,15 @@
 
 
 
+## v1.4.1 (2024-03-26)
+
+### Fix
+
+* fix: update package metadata
+
+This should be classified as chore, but commiting as a fix to trigger CI ([`ecfb88f`](https://github.com/kmnhan/erlabpy/commit/ecfb88f2c23a7681e12d6f2dedcc316a28aa22c7))
+
+
 ## v1.4.0 (2024-03-26)
 
 ### Chore
