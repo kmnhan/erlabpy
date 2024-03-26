@@ -1,11 +1,7 @@
 import sys
 
-import arpes.xarray_extensions
-import numpy as np
-import os
-import varname
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 
 from erlab.interactive.imagetool import ImageTool

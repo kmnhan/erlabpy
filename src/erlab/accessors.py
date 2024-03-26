@@ -592,7 +592,7 @@ class MomentumAccessor:
     def best_kz_resolution(self) -> float:
         r"""
         Estimates the minimum out-of-plane momentum resolution based on the mean free
-        path :cite:p:`SD79` and the kinetic energy.
+        path :cite:p:`Seah1979` and the kinetic energy.
 
         .. math:: \Delta k_z \sim 1/\lambda
 

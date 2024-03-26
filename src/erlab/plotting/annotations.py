@@ -975,8 +975,8 @@ def scale_units(
 def set_titles(axes, labels, order="C", **kwargs):
     axlist = np.array(axes, dtype=object).flatten(order=order)
     labels = np.asarray(labels)
-    for ax, l in zip(axlist.flat, labels.flat):
-        ax.set_title(l, **kwargs)
+    for ax, label in zip(axlist.flat, labels.flat):
+        ax.set_title(label, **kwargs)
 
 
 def set_xlabels(axes, labels, order="C", **kwargs):

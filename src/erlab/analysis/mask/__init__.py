@@ -1,5 +1,9 @@
 """Functions related to masking.
 
+Polygon masking is adapted from the `CGAL
+<https://doc.cgal.org/5.3.2/Polygon/index.html>`_ library. More information on
+point-in-polygon strategies can be found in Ref. :cite:p:`Schirra2008`.
+
 .. currentmodule:: erlab.analysis.mask
 
 Modules

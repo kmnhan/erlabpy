@@ -33,6 +33,25 @@ TINY: float = 1.0e-15
 def _gen_kernel(
     x: npt.NDArray[np.float64], resolution: float, pad: int = 5
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Generate a Gaussian kernel for convolution.
+
+    Parameters
+    ----------
+    x
+        The input array of x values.
+    resolution
+        The resolution of the kernel given as FWHM.
+    pad
+        Multiples of the standard deviation :math:`\sigma` to truncate the kernel at.
+
+    Returns
+    -------
+    extended
+        The domain of the kernel.
+    gauss
+        The gaussian kernel defined on `extended`.
+
+    """
     delta_x = x[1] - x[0]
     sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
     n_pad = int(sigma * pad / delta_x + 0.5)
@@ -156,7 +175,6 @@ def fermi_dirac_linbkg(
     non-homogeneous detector efficiency or residual intensity on the phosphor screen
     during sweep mode), while `dos0` and `dos1` corresponds to the linear density of
     states below EF including the linear background.
-
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (
         1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV))
@@ -216,7 +234,6 @@ def step_linbkg_broad(
     """
     A linear density of states multiplied with a resolution broadened step function with
     a linear background.
-
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) * (
         step_broad(x, center, sigma, 1.0)

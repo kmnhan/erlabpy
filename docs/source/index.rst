@@ -39,7 +39,13 @@ ERLabPy documentation
 
 .. image:: images/imagetool_light.png
     :align: center
-    :alt: Imagetool 
+    :alt: Imagetool
+    :class: only-light
+
+.. image:: images/imagetool_dark.png
+    :align: center
+    :alt: Imagetool
+    :class: only-dark
 
 .. toctree::
    :maxdepth: 3
