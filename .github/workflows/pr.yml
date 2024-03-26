@@ -1,8 +1,11 @@
-name: Release
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Test
 
 on:
-  push:
-    branches: [ "main" ]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -57,40 +60,3 @@ jobs:
           # exit-zero treats all errors as warnings.
           flake8 . --count --extend-ignore=E203,F401 --exit-zero --max-line-length=88 --statistics --exclude _deprecated
 
-  release:
-    name: Release
-    runs-on: ubuntu-latest
-    concurrency: push
-    needs: [test, lint]
-    environment:
-      name: pypi
-      url: https://pypi.org/p/erlab
-    permissions:
-      id-token: write
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Python Semantic Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish package distributions to PyPI
-        id: pypi-publish
-        if: steps.release.outputs.released == 'true'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
-
-      - name: Publish package distributions to GitHub Releases
-        id: github-release
-        if: steps.release.outputs.released == 'true'
-        uses: python-semantic-release/upload-to-gh-release@main
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.release.outputs.tag }}
