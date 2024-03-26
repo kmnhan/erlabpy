@@ -2,6 +2,38 @@
 
 
 
+## v1.4.0 (2024-03-26)
+
+### Chore
+
+* chore: update workflow triggers ([`fb158f3`](https://github.com/kmnhan/erlabpy/commit/fb158f3a6b6ded4ed2d573f4d33f85fbd36809b5))
+
+* chore: update build command ([`a22b8e5`](https://github.com/kmnhan/erlabpy/commit/a22b8e58bb744d02c2e0214af6185da8c66cbe29))
+
+* chore: update CI/CD badge urls ([`db61b29`](https://github.com/kmnhan/erlabpy/commit/db61b29fa0d92f54f7134ce5bd1c021aacfae647))
+
+* chore: make pyproject.toml compatible
+
+README file link fixed, and remove direct dependencies.
+Add build command for automatic building ([`959f687`](https://github.com/kmnhan/erlabpy/commit/959f6874f421ddd7bdf816f96c78d1533081b24d))
+
+* chore: update workflows to upload to pypi ([`2902b68`](https://github.com/kmnhan/erlabpy/commit/2902b683051ce651be6d5e38c6bdf6e55a9681f1))
+
+### Documentation
+
+* docs: update docstring and apply linter suggestions ([`de3ee01`](https://github.com/kmnhan/erlabpy/commit/de3ee01dd35973186d69125f24d9527cfa8abd94))
+
+* docs: update README ([`8bd239f`](https://github.com/kmnhan/erlabpy/commit/8bd239f562d2d2345178c339a455ec23a5aa8082))
+
+### Feature
+
+* feat: calculate kz in MomentumAccessor
+
+Add method that calculates kz array from given photon energy float ([`46979f9`](https://github.com/kmnhan/erlabpy/commit/46979f907b120e5a4a88fdacd7d74a4b9dd41d6d))
+
+* feat: make momentum conversion functions xarray compatible ([`a7aa34b`](https://github.com/kmnhan/erlabpy/commit/a7aa34ba983d3159c555ed66579d46eaf9e993aa))
+
+
 ## v1.3.1 (2024-03-25)
 
 ### Documentation
