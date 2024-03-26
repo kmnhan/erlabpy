@@ -10,7 +10,6 @@ Angle conventions and function forms are based on Ref. :cite:p:`Ishida2018`.
 import enum
 from collections.abc import Callable
 
-import numba
 import numpy as np
 import numpy.typing as npt
 
@@ -32,7 +31,6 @@ class AxesConfiguration(enum.IntEnum):
     Type2DA = 4
 
 
-@numba.njit
 def _sinc(x):
     return np.sin(x) / (x + 1e-15)
 
@@ -88,13 +86,17 @@ def get_kconv_func(
 
     Note
     ----
-    The only requirement for the input parameters is that the shape of the input angles
-    must be broadcastable with each other, and with the shape of the kinetic energy
-    array. This means that the shape of the output array can be controlled By adjusting
-    the shape of the input arrays. For instance, if the kinetic energy is given as a (L,
-    1, 1) array, :math:`k_x` as a (1, M, 1) array, and :math:`k_y` as a (1, 1, N) array,
-    the output angle arrays :math:`α` and :math:`β` will each be broadcasted to a (L, M,
-    N) array which can be directly used for interpolation.
+    - The only requirement for the input parameters of the returned functions is that
+      the shape of the input angles must be broadcastable with each other, and with the
+      shape of the kinetic energy array. This means that the shape of the output array
+      can be controlled By adjusting the shape of the input arrays. For instance, if the
+      kinetic energy is given as a (L, 1, 1) array, :math:`k_x` as a (1, M, 1) array,
+      and :math:`k_y` as a (1, 1, N) array, the output angle arrays :math:`α` and
+      :math:`β` will each be broadcasted to a (L, M, N) array which can be directly used
+      for interpolation.
+    - However, the user will not have to worry about the shape of the input arrays,
+      because using `xarray.DataArray` objects as the input will most likely broadcast
+      the arrays automatically!
 
     See Also
     --------
