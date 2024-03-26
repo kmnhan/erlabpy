@@ -44,14 +44,40 @@ def only_angles(method: Callable | None = None):
 
     If the data is not in angle space (i.e., if "kx" or "ky" dimensions are present), a
     `ValueError` is raised.
-
     """
 
     def wrapper(method: Callable):
         @functools.wraps(method)
         def _impl(self, *args, **kwargs):
             if "kx" in self._obj.dims or "ky" in self._obj.dims:
-                raise ValueError("Data is in momentum space.")
+                raise ValueError(
+                    f"`{method.__name__}` cannot be called for data in momentum space."
+                )
+            return method(self, *args, **kwargs)
+
+        return _impl
+
+    if method is not None:
+        return wrapper(method)
+    return wrapper
+
+
+def only_momentum(method: Callable | None = None):
+    """
+    A decorator that ensures the data is in momentum space before executing the
+    decorated method.
+
+    If the data is not in momentum space (i.e., if "kx" nor "ky" dimensions are
+    present), a `ValueError` is raised.
+    """
+
+    def wrapper(method: Callable):
+        @functools.wraps(method)
+        def _impl(self, *args, **kwargs):
+            if not ("kx" in self._obj.dims or "ky" in self._obj.dims):
+                raise ValueError(
+                    f"`{method.__name__}` cannot be called for data in angle space."
+                )
             return method(self, *args, **kwargs)
 
         return _impl
@@ -839,3 +865,34 @@ class MomentumAccessor:
             print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
 
         return out
+
+    @only_momentum
+    def hv_to_kz(self, hv: float) -> xr.DataArray:
+        """Returns :math:`k_z` for a given photon energy.
+
+        Useful when creating overlays on :math:`hν`-dependent data.
+
+        Parameters
+        ----------
+        hv
+            Photon energy in eV.
+
+        Note
+        ----
+        This will be inexact for hv-dependent cuts that do not pass through the BZ
+        center since we lost the exact angle values, i.e. the exact momentum
+        perpendicular to the slit, during momentum conversion.
+        """
+        # Get kinetic energies for the given photon energy
+        kinetic = hv - self.work_function + self._obj.eV
+
+        # Get momentum conversion functions
+        ang2k, k2ang = get_kconv_func(kinetic, self.configuration, self.angle_params)
+
+        # Transformation yields in-plane momentum at given photon energy
+        kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
+
+        # Calculate kz
+        kz = kz_func(kinetic, self.inner_potential, kx, ky)
+
+        return kz
