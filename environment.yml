@@ -2,7 +2,7 @@ name: erlab
 channels:
   - conda-forge
 dependencies:
-  - python>=3.10
+  - python>=3.11
   - ipython
   - pip>=19.3
   - setuptools
@@ -53,6 +53,5 @@ dependencies:
   - pip:
     - pyqt6>=6.2.2
     - csaps
-    - -e git+https://github.com/kmnhan/igor2.git#egg=igor2
-    - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
-    - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
+    - igor2 @ git+https://github.com/kmnhan/igor2@master
+    - arpes @ git+https://github.com/kmnhan/arpes@master

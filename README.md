@@ -2,7 +2,8 @@
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab.svg)](https://pypi.org/project/erlab/)
 [![Workflow Status](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg)](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml)
-[![Documentation Status](https://readthedocs.org/projects/erlabpy/badge/?version=latest)](https://erlabpy.readthedocs.io/en/latest/)
+[![Documentation Status](https://readthedocs.org/projects/erlabpy/badge/)](https://erlabpy.readthedocs.io/)
+[![License](https://img.shields.io/pypi/l/erlab)](https://pypi.org/project/erlab/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 Welcome to *ERLabPy*, a Python library designed to simplify and streamline the
@@ -17,8 +18,8 @@ spectroscopy (ARPES) experiments.
 existing scientific Python workflows. It is also designed to be extensible,
 allowing users to easily add custom functionality and analysis tools.
 
-*ERLabPy* is developed and maintained by the Electronic structure Research
-Laboratory (ERLab) at Korea Advanced Institute of Science and Technology
+*ERLabPy* is developed and maintained by the electronic structure research
+laboratory at Korea Advanced Institute of Science and Technology
 (KAIST).
 
 ## Features
@@ -50,11 +51,11 @@ Try enabling/disabling dark mode in your browser!
 
 ## Documentation
 
-The full documentation for ERLabPy is available at [Read the Docs](https://erlabpy.readthedocs.io/en/latest/).
+The full documentation for ERLabPy is available at [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Getting Started
 
-To get started with ERLab, follow the [installation instructions](https://erlabpy.readthedocs.io/en/latest/readme.html).
+To get started with ERLab, follow the [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
 
 Then, you can import the `erlab` module in your Python scripts and start analyzing your data.
 
@@ -65,7 +66,7 @@ import erlab
 ## Contributing
 
 Contributions are welcome! Please open an issue or pull request if you have any
-suggestions or improvements.
+suggestions or improvements. For more information on contributing, see the [development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
 
 ## License
 

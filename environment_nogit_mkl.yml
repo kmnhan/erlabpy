@@ -2,7 +2,7 @@ name: erlab
 channels:
   - conda-forge
 dependencies:
-  - python>=3.10
+  - python>=3.11
   - ipython
   - pip>=19.3
   - setuptools
