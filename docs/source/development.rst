@@ -73,35 +73,18 @@ Installing conda
 ----------------
 
 Before starting any development, you'll need to create an isolated environment
-under a package manager like conda:
+under a package manager like conda. If you don't have conda installed, `install
+conda <https://docs.conda.io/projects/conda/en/stable/user-guide/install/>`_ or
+`install mamba
+<https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html>`_.
 
-- `Install conda
-  <https://docs.conda.io/projects/conda/en/stable/user-guide/install/>`_
-  or `install mamba
-  <https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html>`_.
-
+.. hint::
+  
   - When using conda, miniconda is recommended to save disk space.
   - `Mamba <https://mamba.readthedocs.io>`_ is a faster alternative
     to conda with additional features.
   - Installing `miniforge <https://github.com/conda-forge/miniforge>`_ will
-    install both conda and mamba.
-
-    .. hint::
-      
-      On a mac, miniforge can be installed with `homebrew <https://brew.sh>`_:
-
-      .. code-block:: sh
-
-        brew install miniforge
-
-
-- If using conda, configure channels to use conda-forge.
-
-  .. code-block:: sh
-
-    conda config --prepend channels conda-forge
-    conda config --set channel_priority strict
-
+    install both conda and mamba, and is recommended.
 
 Editable installation from source
 ---------------------------------
@@ -110,7 +93,7 @@ An editable installation allows you to make changes to the code and see the chan
 
 - Make sure you have `cloned the repository <#cloning-the-repository>`_.
 - Make sure you have :ref:`installed conda or mamba <Installing Conda>`.
-- ``cd`` to the *erlabpy* source directory
+- ``cd`` to the *erlabpy* source directory.
 
 1. Create and activate a mamba (or conda) environment.
 
@@ -133,9 +116,9 @@ An editable installation allows you to make changes to the code and see the chan
    
    .. note::
     
-     ``editable_mode=compat`` enables static analysis tools to work with the
-     package. See `this issue <https://github.com/pypa/setuptools/issues/3518>`_
-     for more information.
+      The ``editable_mode=compat`` setting enables static analysis tools to work with
+      the package. See `this issue <https://github.com/pypa/setuptools/issues/3518>`_
+      for more information.
 
    .. code-block:: sh
 

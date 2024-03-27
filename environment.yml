@@ -6,11 +6,8 @@ dependencies:
   - ipython
   - pip>=19.3
   - setuptools
-  - packaging
   - h5netcdf
   - varname
-  - cmocean
-  - cmasher
   - numpy>=1.22.0
   - scipy>=1.8.0
   - matplotlib>=3.7.0
@@ -28,7 +25,6 @@ dependencies:
   - bokeh>=2.0.0
   - bottleneck>=1.3.2
   - colorama
-  - colorcet
   - imageio
   - ipywidgets>=7.0.1
   - joblib

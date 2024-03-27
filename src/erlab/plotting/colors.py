@@ -3,23 +3,27 @@
 Colormaps
 ---------
 
-In addition `matplotlib
+In addition to the default `matplotlib
 <https://matplotlib.org/stable/tutorials/colors/colormaps.html>`_ colormaps, `cmasher
 <https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_, and
-`colorcet <https://colorcet.holoviz.org>`_ are included.
+`colorcet <https://colorcet.holoviz.org>`_ packages can be installed to extend the
+available colormaps. If these packages are installed, they will be automatically
+imported upon importing `erlab.plotting`.
 
 Colormap Normalization
 ----------------------
 
 .. plot:: norms.py example_1
-    :width: 50 %
-    :caption: Demonstration of :class:`InversePowerNorm <erlab.plotting.colors.InversePowerNorm>`.
+   :width: 65 %
+
+   Demonstration of `InversePowerNorm`. 
 
 .. plot:: norms.py example_2
-    :width: 50 %
-    :caption: Demonstration of :class:`CenteredPowerNorm <erlab.plotting.colors.CenteredPowerNorm>` and :class:`CenteredInversePowerNorm <erlab.plotting.colors.CenteredInversePowerNorm>`.
+   :width: 65 %
+   
+   Demonstration of `CenteredPowerNorm` and `CenteredInversePowerNorm`.
 
-"""  # noqa: E501
+"""
 
 __all__ = [
     "InversePowerNorm",

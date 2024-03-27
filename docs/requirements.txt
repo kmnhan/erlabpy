@@ -19,15 +19,12 @@ numba-progress
 joblib
 lmfit>=1.2.0
 iminuit>=2.25.2
-seaborn
 pyqtgraph>=0.13.1
 tqdm
 uncertainties>=3.0.1
 pyperclip
 pyqt6>=6.2.2
 qtawesome
-cmasher
-cmocean
 superqt
 csaps
 qtpy

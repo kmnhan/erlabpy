@@ -1,5 +1,4 @@
 import numpy as np
-import seaborn as sns
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from pyqtgraph.colormap import modulatedBarData
@@ -7,8 +6,6 @@ from pyqtgraph.colormap import modulatedBarData
 import erlab.plotting.erplot as eplt
 
 plt.style.use("khan")
-
-sns.set_palette("Set2")
 
 gamma = 0.3
 

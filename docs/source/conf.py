@@ -132,7 +132,6 @@ intersphinx_mapping = {
 plot_formats = ["pdf"]
 plot_basedir = "pyplots"
 plot_html_show_formats = False
-plot_srcset = ["2x"]
 
 # -- Misc. settings ----------------------------------------------------------
 

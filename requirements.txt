@@ -9,10 +9,6 @@ uncertainties>=3.0.1
 iminuit>=2.25.2
 csaps
 matplotlib>=3.8.0
-seaborn
-cmasher
-cmocean
-colorcet
 xarray
 h5netcdf
 varname

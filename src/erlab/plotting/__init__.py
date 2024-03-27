@@ -28,20 +28,26 @@ __all__ = [
     "plot3d",
 ]
 
-import os
+import importlib
 import io
+import os
 import pkgutil
 
-import cmasher
-import cmocean
-import colorcet
 import matplotlib
-import matplotlib.style
 import matplotlib.colors
 import matplotlib.font_manager
+import matplotlib.style
 import numpy as np
 
 import erlab.io
+
+# Import colormaps if available
+if importlib.util.find_spec("cmasher"):
+    importlib.import_module("cmasher")
+if importlib.util.find_spec("cmocean"):
+    importlib.import_module("cmocean")
+if importlib.util.find_spec("colorcet"):
+    importlib.import_module("colorcet")
 
 
 def load_igor_ct(fname, name):
