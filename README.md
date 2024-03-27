@@ -6,12 +6,9 @@
 [![License](https://img.shields.io/pypi/l/erlab)](https://pypi.org/project/erlab/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-Welcome to *ERLabPy*, a Python library designed to simplify and streamline the
-process of analyzing data from condensed matter physics experiments.
-
-This library provides a set of tools and utilities to handle, manipulate, and
-visualize data, with a focus on data from angle-resolved photoemission
-spectroscopy (ARPES) experiments.
+A library that provides a set of tools and utilities to handle, manipulate, and
+visualize data from condensed matter physics experiments, with a focus on
+angle-resolved photoemission spectroscopy (ARPES).
 
 *ERLabPy* is built on top of the popular scientific computing libraries `numpy`,
 `scipy`, and `xarray`, and is designed to be easy to use and integrate with
@@ -19,18 +16,17 @@ existing scientific Python workflows. It is also designed to be extensible,
 allowing users to easily add custom functionality and analysis tools.
 
 *ERLabPy* is developed and maintained by the electronic structure research
-laboratory at Korea Advanced Institute of Science and Technology
-(KAIST).
+laboratory at Korea Advanced Institute of Science and Technology (KAIST).
 
 ## Features
 
 - **Data Loading**: A flexible and extensible data loading system is included,
   capable of handling various data formats.
-- **Data Manipulation**: A set of tools for manipulating and
-  transforming data, including interpolation, masking and symmetrization is provided.
-- **Plotting**: ERLabPy provides many different plotting functions for visualizing
-  image data, including 2D and 3D plots. Publication-quality plots can be
-  generated with minimal effort.
+- **Data Manipulation**: A set of tools for manipulating and transforming data,
+  including interpolation, masking and symmetrization is provided.
+- **Plotting**: ERLabPy provides many different plotting functions for
+  visualizing image data, including 2D and 3D plots. Publication-quality plots
+  can be generated with minimal effort.
 - **Fitting**: Several functions and models are implemented for fitting various
   types of data, including broadened Fermi-Dirac distributions, momentum
   distribution curves (MDCs), and energy distribution curves (EDCs).
@@ -51,22 +47,17 @@ Try enabling/disabling dark mode in your browser!
 
 ## Documentation
 
-The full documentation for ERLabPy is available at [Read the Docs](https://erlabpy.readthedocs.io/).
+The full documentation for ERLabPy is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Getting Started
 
 To get started with ERLab, follow the [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
 
-Then, you can import the `erlab` module in your Python scripts and start analyzing your data.
-
-```python
-import erlab
-```
-
 ## Contributing
 
 Contributions are welcome! Please open an issue or pull request if you have any
-suggestions or improvements. For more information on contributing, see the [development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
+suggestions or improvements. For more information on contributing, see the
+[development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
 
 ## License
 
@@ -74,5 +65,5 @@ This project is licensed under the terms of the [GPL-3.0 License](LICENSE).
 
 ## Contact
 
-If you have any questions, issues, or suggestions, please open an issue on this
-repository. We appreciate your feedback!
+If you have any questions, issues, or suggestions, please open an issue
+[here](https://github.com/kmnhan/erlabpy/issues). We appreciate your feedback!

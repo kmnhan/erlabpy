@@ -22,7 +22,7 @@ os.environ["QT_API"] = "pyqt6"
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 
-project = "ERLabPy"
+project = "ERLab"
 copyright = "2023, Kimoon Han"
 author = "Kimoon Han"
 release = importlib.metadata.version("erlab")
