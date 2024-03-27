@@ -19,7 +19,6 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
-import erlab.interactive
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
