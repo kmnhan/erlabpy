@@ -24,6 +24,7 @@ from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
 from erlab.interactive.imagetool import itool
+from erlab.interactive.ktool import ktool
 
 
 class ERLabAccessor:
@@ -865,6 +866,12 @@ class MomentumAccessor:
             print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
 
         return out
+
+    def interactive(self, **kwargs) -> ktool:
+        """Open the interactive momentum space conversion tool."""
+        if self._obj.ndim < 3:
+            raise ValueError("Interactive tool requires three-dimensional data.")
+        return ktool(self._obj, **kwargs)
 
     @only_momentum
     def hv_to_kz(self, hv: float) -> xr.DataArray:
