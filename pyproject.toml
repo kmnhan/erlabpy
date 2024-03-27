@@ -40,7 +40,7 @@ dependencies = [
     "h5netcdf",
     "varname",
     "tqdm",
-    "pyclip",
+    "pyperclip",
     "pyqt6>=6.2.2",
     "qtpy",
     "pyqtgraph>=0.13.1",

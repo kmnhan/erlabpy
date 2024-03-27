@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.transforms as mtransforms
 import numpy as np
-import pyclip
+import pyperclip
 import xarray as xr
 
 # from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
@@ -382,7 +382,7 @@ def copy_mathtext(
             rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
             with plt.rc_context(rcparams):
                 fig.canvas.print_pdf(buffer)
-        pyclip.copy(buffer.getvalue())
+        pyperclip.copy(buffer.getvalue().decode("utf-8"))
 
 
 def fancy_labels(ax=None, deg2rad=False):

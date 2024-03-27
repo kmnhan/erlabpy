@@ -23,7 +23,7 @@ seaborn
 pyqtgraph>=0.13.1
 tqdm
 uncertainties>=3.0.1
-pyclip
+pyperclip
 pyqt6>=6.2.2
 qtawesome
 cmasher

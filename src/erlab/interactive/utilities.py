@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
-import pyclip
+import pyperclip
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
@@ -74,7 +74,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     """
     if isinstance(content, list):
         content = "\n".join(content)
-    pyclip.copy(content)
+    pyperclip.copy(content)
     return content
 
 
@@ -1260,7 +1260,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         cb = QtWidgets.QApplication.instance().clipboard()
         if cb.text(cb.Mode.Clipboard) != "":
-            pyclip.copy(cb.text(cb.Mode.Clipboard))
+            pyperclip.copy(cb.text(cb.Mode.Clipboard))
         return super().closeEvent(event)
 
 

@@ -53,10 +53,10 @@ dependencies:
   - numbagg
   - numba-progress
   - iminuit>=2.3
+  - pyperclip
   - pip:
     - pyqt6>=6.2.2
     - csaps
-    - pyclip
     - -e git+https://github.com/kmnhan/igor2.git#egg=igor2
     - -e git+https://github.com/kmnhan/igorpy.git#egg=igor
     - -e git+https://github.com/kmnhan/arpes.git#egg=arpes
