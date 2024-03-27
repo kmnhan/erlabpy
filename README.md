@@ -1,5 +1,5 @@
 # ERLabPy
-[![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab)](https://pypi.org/project/vaex-core/)
+[![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab.svg)](https://pypi.org/project/erlab/)
 [![Workflow Status](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg)](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml)
 [![Documentation Status](https://readthedocs.org/projects/erlabpy/badge/?version=latest)](https://erlabpy.readthedocs.io/en/latest/)
