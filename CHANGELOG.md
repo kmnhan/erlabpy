@@ -2,6 +2,43 @@
 
 
 
+## v1.5.0 (2024-03-27)
+
+### Chore
+
+* chore: remove unnecessary dependency on colorcet, cmasher, cmocean and seaborn ([`5fd2d61`](https://github.com/kmnhan/erlabpy/commit/5fd2d614f97e8bba4f34a9277c70835214a95be7))
+
+* chore: add isort profile to project configuration ([`df269a9`](https://github.com/kmnhan/erlabpy/commit/df269a990e642135c76a60bfd19e0a6767974a40))
+
+* chore: update dependencies and environment files
+
+Fix python version and remove editable installs ([`6ec32dd`](https://github.com/kmnhan/erlabpy/commit/6ec32ddedb342d0556aacec0625c889b01f18b62))
+
+* chore: change pyclip dependency to pyperclip
+
+Although pyclip supports copying bytes, it&#39;s not on conda-forge. Using pyperclip instead. ([`db78f8e`](https://github.com/kmnhan/erlabpy/commit/db78f8e5a8be47ca4f23aa560e8aef88efb58c5b))
+
+### Documentation
+
+* docs: add momentum conversion documentation draft ([`5410763`](https://github.com/kmnhan/erlabpy/commit/54107632edd5a7a911a1c8d06c663fc48d5217a0))
+
+* docs: add installation and contribution information ([`93a4e7c`](https://github.com/kmnhan/erlabpy/commit/93a4e7c4f43a8133f3f2149eb638261a9d56cfe6))
+
+* docs: fix typo in README ([`2b5e2cf`](https://github.com/kmnhan/erlabpy/commit/2b5e2cf3d5dd9e93d34da578e5689f14d490405b))
+
+### Feature
+
+* feat: add interactive tool to kspace accessor ([`fb91cdb`](https://github.com/kmnhan/erlabpy/commit/fb91cdb50229154c070df8dfaa80cddc8520ae6d))
+
+### Refactor
+
+* refactor: accessors are now registered upon package import ([`d79fee2`](https://github.com/kmnhan/erlabpy/commit/d79fee2a28dd5ee59bfc6bd1ce224a44c5f40a24))
+
+### Style
+
+* style: apply linter suggestions ([`fe35da9`](https://github.com/kmnhan/erlabpy/commit/fe35da9a3494af28420ead2d8d40c5339788ac80))
+
+
 ## v1.4.1 (2024-03-26)
 
 ### Fix
