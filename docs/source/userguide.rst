@@ -23,8 +23,10 @@ Data in ERLabPy are mostly represented by :mod:`xarray` objects. The user guide 
    notebooks/io
    notebooks/indexing
    notebooks/plotting
+   notebooks/kconv
 
 Further Reading
 ===============
 
+- `Lectures on scientific computing with Python <https://github.com/jrjohansson/scientific-python-lectures>`_
 - `The beginner's guide to numpy <https://numpy.org/doc/stable/user/absolute_beginners.html>`_
