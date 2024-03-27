@@ -45,12 +45,6 @@ __all__ = [
     "noisetool",
 ]
 
-
-from collections.abc import Iterable, Sequence
-from typing import Literal
-
-import matplotlib.backends.backend_pdf
-import matplotlib.backends.backend_svg
 import numpy as np
 
 from erlab.interactive.goldtool import goldtool

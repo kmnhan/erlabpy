@@ -3,15 +3,7 @@ import sys
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-
-from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utilities import (
-    AnalysisWindow,
-    ParameterGroup,
-    ROIControls,
-    gen_function_code,
-)
-
+from erlab.interactive.utilities import AnalysisWindow, ParameterGroup
 
 __all__ = ["masktool"]
 

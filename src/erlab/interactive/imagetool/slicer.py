@@ -5,7 +5,7 @@ from __future__ import annotations
 __all__ = ["ArraySlicer"]
 
 import functools
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Sequence
 
 import numba
 import numpy as np

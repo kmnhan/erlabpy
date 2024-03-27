@@ -279,7 +279,7 @@ def generate_data_angles(
 
     return out.assign_attrs(
         configuration=int(configuration),
-        sample_temperature=temp,
+        temp_sample=temp,
         sample_workfunction=4.5,
     )
 
@@ -295,8 +295,6 @@ if __name__ == "__main__":
     #     noise=True,
     # )
     out = generate_data_angles()
-    import arpes.xarray_extensions
-    import erlab.accessors
     import erlab.plotting.erplot as eplt
 
     eplt.itool([out, out.kspace.convert()])

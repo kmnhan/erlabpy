@@ -449,7 +449,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if hasattr(self, "_data"):
             self._data.close()
             del self._data
-        # gc.collect()
+        gc.collect()
 
     def connect_axes_signals(self):
         for ax in self.axes:

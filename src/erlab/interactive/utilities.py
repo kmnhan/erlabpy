@@ -1532,7 +1532,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
 
 
 if __name__ == "__main__":
-    from scipy.ndimage import gaussian_filter, uniform_filter
+    from scipy.ndimage import gaussian_filter#, uniform_filter
 
     qapp = QtWidgets.QApplication.instance()
     if not qapp:

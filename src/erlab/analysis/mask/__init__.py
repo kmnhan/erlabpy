@@ -25,7 +25,6 @@ __all__ = [
 ]
 
 import numpy as np
-import numpy.typing as npt
 import numba
 import xarray as xr
 

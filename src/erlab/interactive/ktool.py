@@ -2,7 +2,6 @@
 
 import os
 import sys
-from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -11,13 +10,12 @@ import varname
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
-import erlab.accessors
 import erlab.analysis
 from erlab.interactive.colors import (
-    BetterColorBarItem,
-    BetterImageItem,
-    ColorMapComboBox,
-    ColorMapGammaWidget,
+    BetterColorBarItem,  # noqa: F401
+    BetterImageItem,  # noqa: F401
+    ColorMapComboBox,  # noqa: F401
+    ColorMapGammaWidget,  # noqa: F401
 )
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utilities import array_rect, copy_to_clipboard, gen_function_code
@@ -177,16 +175,20 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
 
 class ktool(ktoolGUI):
 
-    def __init__(self, data: xr.DataArray, **kwargs):
+    def __init__(self, data: xr.DataArray, data_name: str | None = None, **kwargs):
         super().__init__()
 
         self._argnames = dict()
-        try:
-            self._argnames["data"] = varname.argname(
-                "data", func=self.__init__, vars_only=False
-            )
-        except varname.VarnameRetrievingError:
-            self._argnames["data"] = "data"
+
+        if data_name is None:
+            try:
+                self._argnames["data"] = varname.argname(
+                    "data", func=self.__init__, vars_only=False
+                )
+            except varname.VarnameRetrievingError:
+                self._argnames["data"] = "data"
+        else:
+            self._argnames["data"] = data_name
 
         self.data: xr.DataArray = data.copy(deep=True)
 

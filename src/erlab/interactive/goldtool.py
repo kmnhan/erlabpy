@@ -3,7 +3,6 @@ __all__ = ["goldtool"]
 import os
 import time
 
-import arpes.xarray_extensions
 import joblib
 import lmfit
 import numpy as np
@@ -146,9 +145,9 @@ class goldtool(AnalysisWindow):
         self.hists[2].setVisible(False)
 
         try:
-            temp = data.S.temp
-        except AttributeError:
-            temp = 30
+            temp = float(data.attrs["temp_sample"])
+        except KeyError:
+            temp = 30.0
 
         self.params_roi = ROIControls(self.add_roi(0))
         self.params_edge = ParameterGroup(

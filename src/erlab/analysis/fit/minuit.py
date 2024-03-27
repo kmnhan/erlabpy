@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import io
 from collections.abc import Iterable, Sequence
-from typing import Callable
 
 import iminuit.cost
 import iminuit.util
@@ -197,6 +195,7 @@ class Minuit(iminuit.Minuit):
 
                 with _TempFig(*erlab.plotting.general.figwh()):
                     self.visualize()
+                    # import io
                     # with io.StringIO() as io:
                     # plt.savefig(io, format="svg", dpi=10)
                     # io.seek(0)

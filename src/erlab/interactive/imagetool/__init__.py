@@ -125,7 +125,7 @@ def itool(
     if execute:
         qapp.exec()
         del win
-        # gc.collect()
+        gc.collect()
 
         return
     return win

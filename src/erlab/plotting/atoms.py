@@ -9,7 +9,7 @@ Some of the projection code was adapted from kwant.
 import contextlib
 import functools
 import itertools
-from collections.abc import Callable, Sequence, Iterable
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 import matplotlib.collections

@@ -1,4 +1,3 @@
-import copy
 import sys
 
 import matplotlib.pyplot as plt
@@ -9,9 +8,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from matplotlib.backends.qt_compat import QtCore, QtWidgets
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Ellipse
-from matplotlib.transforms import Affine2D
 
-import erlab.accessors
 from erlab.interactive.utilities import parse_data
 from erlab.plotting.bz import plot_hex_bz
 from erlab.plotting.colors import CenteredInversePowerNorm

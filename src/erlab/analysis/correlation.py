@@ -9,7 +9,6 @@ import itertools
 
 import joblib
 import numpy as np
-import numpy.typing as npt
 import scipy.signal
 import xarray as xr
 
@@ -93,8 +92,8 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     out = xr.DataArray(
         acf,
         {
-            d: autocorrelation_lags(l, mode) * s
-            for s, l, d in zip(steps, arr.shape, out.dims)
+            d: autocorrelation_lags(n, mode) * s
+            for s, n, d in zip(steps, arr.shape, out.dims)
         },
         attrs=out.attrs,
     )

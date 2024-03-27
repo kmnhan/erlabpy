@@ -1,6 +1,6 @@
 __all__ = ["correct_with_edge"]
 
-import arpes.xarray_extensions
+import arpes.xarray_extensions # noqa: F401
 import lmfit
 import matplotlib.pyplot as plt
 import numpy as np

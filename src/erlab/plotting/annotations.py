@@ -34,9 +34,6 @@ import matplotlib.ticker
 import matplotlib.transforms as mtransforms
 import numpy as np
 import pyperclip
-import xarray as xr
-
-# from arpes.utilities.conversion.forward import convert_coordinates_to_kspace_forward
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from erlab.plotting.colors import axes_textcolor
@@ -755,11 +752,11 @@ def mark_points(
         if not np.iterable(y):
             y = [y] * len(points)
         with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, l in zip(points, y, labels):
+            for xi, yi, label in zip(points, y, labels):
                 ax.text(
                     xi,
                     yi,
-                    l if literal else parse_point_labels(l, roman, bar),
+                    label if literal else parse_point_labels(label, roman, bar),
                     transform=ax.transData
                     + mtransforms.ScaledTranslation(
                         pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
@@ -984,8 +981,8 @@ def set_xlabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, l in zip(axlist.flat, labels.flat):
-        ax.set_xlabel(l, **kwargs)
+    for ax, label in zip(axlist.flat, labels.flat):
+        ax.set_xlabel(label, **kwargs)
 
 
 def set_ylabels(axes, labels, order="C", **kwargs):
@@ -993,8 +990,8 @@ def set_ylabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, l in zip(axlist.flat, labels.flat):
-        ax.set_ylabel(l, **kwargs)
+    for ax, label in zip(axlist.flat, labels.flat):
+        ax.set_ylabel(label, **kwargs)
 
 
 def sizebar(
