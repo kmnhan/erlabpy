@@ -107,6 +107,12 @@ napoleon_preprocess_types = True
 napoleon_attr_annotations = True
 napoleon_custom_sections = [("Signals", "params_style")]
 
+# -- nbsphinx options --------------------------------------------------------
+
+nbsphinx_execute_arguments = [
+    "--InlineBackend.figure_formats={'svg', 'pdf'}",
+]
+
 # -- Qt documentation & intersphinx ------------------------------------------
 
 qt_documentation = "PyQt6"
