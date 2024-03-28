@@ -23,7 +23,7 @@ from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
 from erlab.interactive.imagetool import itool
-from erlab.interactive.ktool import ktool
+from erlab.interactive.kspace import ktool
 
 
 class ERLabAccessor:
