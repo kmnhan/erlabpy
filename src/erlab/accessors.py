@@ -702,10 +702,10 @@ class MomentumAccessor:
         self,
         bounds: dict[str, tuple[float, float]] | None = None,
         resolution: dict[str, float] | None = None,
+        *,
         silent: bool = False,
     ) -> xr.DataArray:
-        """
-        Convert to momentum space.
+        """Convert to momentum space.
 
         Parameters
         ----------
@@ -794,7 +794,7 @@ class MomentumAccessor:
             else:
                 # Take the mean for axes that will not appear in converted data
                 if not silent and lims[1] - lims[0] > 0.001:
-                    print(f"Data spans about {lims[1] - lims[0]:.3f} Å⁻¹ of {k}.")
+                    print(f"Data spans about {lims[1] - lims[0]:.3f} Å⁻¹ of {k}")
                 other_coords[k] = np.array([(lims[0] + lims[1]) / 2])
 
         if not silent:
