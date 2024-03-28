@@ -170,9 +170,10 @@ upstream changes from GitHub: ::
 
 This will combine your commits with the latest *erlabpy* git ``main``. If this
 leads to merge conflicts, you must resolve these before submitting your pull
-request. If you have uncommitted changes, you will need to ``git stash`` them
-prior to updating. This will effectively store your changes, which can be
-reapplied after updating with ``git stash apply``.
+request. Remember to follow the commit message guidelines. If you have
+uncommitted changes, you will need to ``git stash`` them prior to updating. This
+will effectively store your changes, which can be reapplied after updating with
+``git stash apply``. 
 
 
 Create a new feature branch
