@@ -2,6 +2,45 @@
 
 
 
+## v1.5.1 (2024-03-28)
+
+### Documentation
+
+* docs: update README screenshots ([`04d6b44`](https://github.com/kmnhan/erlabpy/commit/04d6b443dc077cbf056dae9b2bf9630284e707ee))
+
+* docs: use svg plots ([`aaa4842`](https://github.com/kmnhan/erlabpy/commit/aaa48420f69c71eb08180934ef2051819df92c03))
+
+* docs: improve momentum conversion documentation ([`c315a1a`](https://github.com/kmnhan/erlabpy/commit/c315a1a6e4d6365a6cc02e861dae84daf9e0cc14))
+
+* docs: update dev docs ([`7406308`](https://github.com/kmnhan/erlabpy/commit/740630899108d562bcc542bd6ae9d147b893c27d))
+
+### Fix
+
+* fix: restore argname detection that was broken with namespace changes ([`863b702`](https://github.com/kmnhan/erlabpy/commit/863b702b6373f9a219a1e770aa49c71145371681))
+
+* fix: namespace collision ([`10edcdc`](https://github.com/kmnhan/erlabpy/commit/10edcdc8b06425c380ca6caa2d3f5f2be5c13733))
+
+* fix: followup namespace change ([`4c5222c`](https://github.com/kmnhan/erlabpy/commit/4c5222cc93196f0b6a75a0101107a37e73748eeb))
+
+### Refactor
+
+* refactor: allow offsetview upate chaining
+
+This also means that _repr_html_ is automatically displayed when update or reset is called. ([`8d5ca4f`](https://github.com/kmnhan/erlabpy/commit/8d5ca4f5b12c7d7060ea444773a9851f23db9850))
+
+* refactor: improve consistency in accessors
+
+Added setter method for configuration too. ([`9596fd7`](https://github.com/kmnhan/erlabpy/commit/9596fd723206f3e992fe00990f73364a61604cd6))
+
+* refactor: make prints consistent ([`0021302`](https://github.com/kmnhan/erlabpy/commit/002130224e3efc01615948a6443516e29d333cf5))
+
+* refactor: change module names to prevent conflict with function names
+
+Cleanup erplot namespace and move tools to interactive. ([`493a5aa`](https://github.com/kmnhan/erlabpy/commit/493a5aab19c0d66851ca068e286a6aec92131e33))
+
+* refactor: follow class naming conventions ([`efb9610`](https://github.com/kmnhan/erlabpy/commit/efb9610a864ef637f424c2f1b2871add7324b090))
+
+
 ## v1.5.0 (2024-03-27)
 
 ### Chore
