@@ -211,6 +211,10 @@ class MomentumAccessor:
             )
         return AxesConfiguration(int(self._obj.attrs.get("configuration")))
 
+    @configuration.setter
+    def configuration(self, value: AxesConfiguration | int):
+        self._obj.attrs["configuration"] = int(value)
+
     @property
     def inner_potential(self) -> float:
         """Inner potential of the sample in eV.
