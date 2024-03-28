@@ -376,6 +376,8 @@ class LoaderBase:
         if not self.skip_validate:
             self.validate(data)
 
+        data.attrs["data_loader_name"] = str(self.name)
+
         return data
 
     def summarize(

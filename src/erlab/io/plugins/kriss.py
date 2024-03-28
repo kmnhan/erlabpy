@@ -12,6 +12,7 @@ from erlab.io.plugins.da30 import DA30Loader
 
 class KRISSLoader(DA30Loader):
     name: str = "kriss"
+
     aliases: list[str] = ["KRISS"]
 
     coordinate_attrs: tuple[str, ...] = ("beta", "chi", "xi", "hv", "x", "y", "z")
