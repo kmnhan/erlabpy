@@ -1,5 +1,7 @@
 """Interactive momentum conversion tool."""
 
+__all__ = ["ktool"]
+
 import os
 import sys
 
@@ -11,20 +13,16 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
-from erlab.interactive.colors import (
-    BetterColorBarItem,  # noqa: F401
-    BetterImageItem,  # noqa: F401
-    ColorMapComboBox,  # noqa: F401
-    ColorMapGammaWidget,  # noqa: F401
-)
+from erlab.interactive.colors import BetterColorBarItem  # noqa: F401
+from erlab.interactive.colors import BetterImageItem  # noqa: F401
+from erlab.interactive.colors import ColorMapComboBox  # noqa: F401
+from erlab.interactive.colors import ColorMapGammaWidget  # noqa: F401
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utilities import array_rect, copy_to_clipboard, gen_function_code
 from erlab.plotting.bz import get_bz_edge
 
-__all__ = ["ktool"]
 
-
-class KtoolImageItem(BetterImageItem):
+class KspaceToolImageItem(BetterImageItem):
 
     def setDataArray(self, data=None, **kargs):
         rect = array_rect(data)
@@ -51,7 +49,7 @@ class KtoolImageItem(BetterImageItem):
                 return p
 
 
-class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))):
+class KspaceToolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))):
     def __init__(self):
 
         # Start the QApplication if it doesn't exist
@@ -66,9 +64,9 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
-        self.images: tuple[KtoolImageItem] = (
-            KtoolImageItem(axisOrder="row-major"),
-            KtoolImageItem(axisOrder="row-major"),
+        self.images: tuple[KspaceToolImageItem] = (
+            KspaceToolImageItem(axisOrder="row-major"),
+            KspaceToolImageItem(axisOrder="row-major"),
         )
 
         for i, plot in enumerate(self.plotitems):
@@ -173,7 +171,7 @@ class ktoolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui
             self.qapp.exec()
 
 
-class ktool(ktoolGUI):
+class KspaceTool(KspaceToolGUI):
 
     def __init__(self, data: xr.DataArray, data_name: str | None = None, **kwargs):
         super().__init__()
@@ -436,6 +434,11 @@ class ktool(ktoolGUI):
     def closeEvent(self, event: QtGui.QCloseEvent):
         del self.data
         super().closeEvent(event)
+
+
+def ktool(data: xr.DataArray, data_name: str | None = None, **kwargs) -> KspaceTool:
+    """Interactive momentum conversion tool."""
+    return KspaceTool(data, data_name, **kwargs)
 
 
 if __name__ == "__main__":

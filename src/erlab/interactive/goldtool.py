@@ -86,7 +86,7 @@ class EdgeFitter(QtCore.QThread):
         self.sigFinished.emit()
 
 
-class goldtool(AnalysisWindow):
+class GoldTool(AnalysisWindow):
     """Interactive gold edge fitting.
 
     Parameters
@@ -521,3 +521,20 @@ class goldtool(AnalysisWindow):
                     ],
                 },
             )
+
+
+def goldtool(
+    data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict
+) -> GoldTool:
+    """Interactive gold edge fitting.
+
+    Parameters
+    ----------
+    data
+        The data to perform Fermi edge fitting on.
+    data_corr
+        The data to correct with the edge. Defaults to `data`.
+    **kwargs
+        Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
+    """
+    return GoldTool(data, data_corr, **kwargs)
