@@ -172,22 +172,24 @@ class OffsetView:
         self,
         other: dict | Iterable[tuple[str, float]] = None,
         **kwargs: dict[str, float],
-    ) -> None:
+    ) -> "OffsetView":
         """Updates the offset view with the provided key-value pairs."""
         if other is not None:
             for k, v in other.items() if isinstance(other, dict) else other:
                 self[k] = v
         for k, v in kwargs.items():
             self[k] = v
+        return self
 
     def items(self) -> ItemsView[str, float]:
         """Returns a view of the offset view as a list of (key, value) pairs."""
         return dict(self).items()
 
-    def reset(self) -> None:
+    def reset(self) -> "OffsetView":
         """Reset all angle offsets to zero."""
         for k in self._obj.kspace.valid_offset_keys:
             self[k] = 0.0
+        return self
 
 
 @xr.register_dataarray_accessor("kspace")
@@ -469,21 +471,43 @@ class MomentumAccessor:
 
         Examples
         --------
-        >>> data.kspace.offsets
-        {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
-        >>> data.kspace.offsets['beta']
-        0.0
-        >>> data.kspace.offsets['beta'] = 3.0
-        >>> data.kspace.offsets
-        {'delta': 0.0, 'xi': 0.0, 'beta': 3.0}
-        >>> data.kspace.offsets = dict(delta=1.5, xi=2.7)
-        >>> data.kspace.offsets
-        {'delta': 1.5, 'xi': 2.7, 'beta': 0.0}
-        >>> data.kspace.offsets.update(beta=0.1, xi=0.0)
-        >>> data.kspace.offsets
-        {'delta': 1.5, 'xi': 0.0, 'beta': 0.1}
-        >>> data.kspace.offsets.reset()
-        {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        - View all offsets
+
+          >>> data.kspace.offsets
+          {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        - View single offset
+
+          >>> data.kspace.offsets['beta']
+          0.0
+
+        - Offsets to dictionary
+
+          >>> dict(data.kspace.offsets)
+          {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        - Set single offset
+
+          >>> data.kspace.offsets['beta'] = 3.0
+          >>> data.kspace.offsets
+          {'delta': 0.0, 'xi': 0.0, 'beta': 3.0}
+
+        - Overwrite offsets with dictionary
+
+          >>> data.kspace.offsets = dict(delta=1.5, xi=2.7)
+          >>> data.kspace.offsets
+          {'delta': 1.5, 'xi': 2.7, 'beta': 0.0}
+
+        - Update offsets
+
+          >>> data.kspace.offsets.update(beta=0.1, xi=0.0)
+          {'delta': 1.5, 'xi': 0.0, 'beta': 0.1}
+
+        - Reset all offsets
+
+          >>> data.kspace.offsets.reset()
+          {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
         """
         if not hasattr(self, "_offsetview"):
             self._offsetview = OffsetView(self._obj)
