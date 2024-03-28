@@ -39,20 +39,11 @@ __all__ = [
     "plot_array_2d",
     "gradient_fill",
     "plot_slices",
-    "goldtool",
-    "itool",
-    "ktool",
-    "noisetool",
 ]
 
 import numpy as np
 
-from erlab.interactive.goldtool import goldtool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.ktool import ktool
-from erlab.interactive.noisetool import noisetool
-from erlab.plotting.annotations import (
-    # annotate_cuts_erlab,
+from erlab.plotting.annotations import (  # annotate_cuts_erlab,
     copy_mathtext,
     fancy_labels,
     label_subplot_properties,

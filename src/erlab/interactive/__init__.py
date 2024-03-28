@@ -14,14 +14,17 @@ Interactive tools
    colors
    curvefittingtool
    exampledata
-   goldtool
-   ktool
+   fermiedge
+   kspace
    masktool
    noisetool
    utilities
 
 """
 
-import os
+__all__ = ["goldtool", "itool", "ktool", "noisetool"]
 
-os.environ["QT_API"] = "pyqt6"
+from erlab.interactive.fermiedge import goldtool
+from erlab.interactive.imagetool import itool
+from erlab.interactive.kspace import ktool
+from erlab.interactive.derivative import noisetool
