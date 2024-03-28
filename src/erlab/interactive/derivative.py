@@ -51,7 +51,7 @@ from scipy.ndimage import gaussian_filter, uniform_filter
 
 # pg.setConfigOption('useNumba', True)
 
-__all__ = ["noisetool"]
+__all__ = ["dtool"]
 
 
 # def boxcarfilt2(array, window_list, min_count_list=None):
@@ -174,7 +174,7 @@ class NoiseToolNew(AnalysisWidgetBase):
     #     return func
 
 
-class NoiseTool(QtWidgets.QMainWindow):
+class DerivativeTool(QtWidgets.QMainWindow):
     def __init__(self, data=None, *args, **kwargs):
         super().__init__()
 
@@ -490,12 +490,12 @@ class NoiseTool(QtWidgets.QMainWindow):
         # rect=self._lims_to_rect(1, 0))
 
 
-def noisetool(data, *args, **kwargs):
+def dtool(data, *args, **kwargs):
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setApplicationName("Dispersive features analysis")
-    app = NoiseTool(data, *args, **kwargs)
+    app = DerivativeTool(data, *args, **kwargs)
     qapp.setStyle("Fusion")
     app.show()
     app.activateWindow()
@@ -515,4 +515,4 @@ if __name__ == "__main__":
     gkmk_cvs = gkmk_cvs.sel(
         alpha=slice(*np.rad2deg((-0.25, 0.25))), eV=slice(-1.25, 0.15)
     )
-    noisetool(gkmk_cvs, bench=False)
+    dtool(gkmk_cvs, bench=False)
