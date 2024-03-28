@@ -95,6 +95,9 @@ class GoldTool(AnalysisWindow):
         The data to perform Fermi edge fitting on.
     data_corr
         The data to correct with the edge. Defaults to `data`.
+    data_name
+        Name of the data used in generating the code snipped copied to the clipboard.
+        Overrides automatic detection.
     **kwargs
         Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
 
@@ -111,7 +114,12 @@ class GoldTool(AnalysisWindow):
     sigAbortFitting = QtCore.Signal()  #: :meta private:
 
     def __init__(
-        self, data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict
+        self,
+        data: xr.DataArray,
+        data_corr: xr.DataArray | None = None,
+        *,
+        data_name: str | None = None,
+        **kwargs: dict,
     ):
         super().__init__(
             data,
@@ -121,13 +129,17 @@ class GoldTool(AnalysisWindow):
             num_ax=3,
             **kwargs,
         )
+
         self._argnames = dict()
-        try:
-            self._argnames["data"] = varname.argname(
-                "data", func=self.__init__, vars_only=False
-            )
-        except varname.VarnameRetrievingError:
-            self._argnames["data"] = "gold"
+        if data_name is None:
+            try:
+                self._argnames["data"] = varname.argname(
+                    "data", func=self.__init__, vars_only=False
+                )
+            except varname.VarnameRetrievingError:
+                self._argnames["data"] = "gold"
+        else:
+            self._argnames["data"] = data_name
 
         if data_corr is not None:
             try:
@@ -524,7 +536,11 @@ class GoldTool(AnalysisWindow):
 
 
 def goldtool(
-    data: xr.DataArray, data_corr: xr.DataArray | None = None, **kwargs: dict
+    data: xr.DataArray,
+    data_corr: xr.DataArray | None = None,
+    *,
+    data_name: str | None = None,
+    **kwargs: dict,
 ) -> GoldTool:
     """Interactive gold edge fitting.
 
@@ -534,7 +550,15 @@ def goldtool(
         The data to perform Fermi edge fitting on.
     data_corr
         The data to correct with the edge. Defaults to `data`.
+    data_name
+        Name of the data used in generating the code snipped copied to the clipboard.
+        Overrides automatic detection.
     **kwargs
         Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
     """
-    return GoldTool(data, data_corr, **kwargs)
+    if data_name is None:
+        try:
+            data_name = varname.argname("data", func=goldtool, vars_only=False)
+        except varname.VarnameRetrievingError:
+            data_name = "data"
+    return GoldTool(data, data_corr, data_name=data_name, **kwargs)

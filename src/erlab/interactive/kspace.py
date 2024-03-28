@@ -49,7 +49,9 @@ class KspaceToolImageItem(BetterImageItem):
                 return p
 
 
-class KspaceToolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))):
+class KspaceToolGUI(
+    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))
+):
     def __init__(self):
 
         # Start the QApplication if it doesn't exist
@@ -173,7 +175,7 @@ class KspaceToolGUI(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "kto
 
 class KspaceTool(KspaceToolGUI):
 
-    def __init__(self, data: xr.DataArray, data_name: str | None = None, **kwargs):
+    def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
         super().__init__()
 
         self._argnames = dict()
@@ -436,9 +438,14 @@ class KspaceTool(KspaceToolGUI):
         super().closeEvent(event)
 
 
-def ktool(data: xr.DataArray, data_name: str | None = None, **kwargs) -> KspaceTool:
+def ktool(data: xr.DataArray, *, data_name: str | None = None) -> KspaceTool:
     """Interactive momentum conversion tool."""
-    return KspaceTool(data, data_name, **kwargs)
+    if data_name is None:
+        try:
+            data_name = varname.argname("data", func=ktool, vars_only=False)
+        except varname.VarnameRetrievingError:
+            data_name = "data"
+    return KspaceTool(data, data_name=data_name)
 
 
 if __name__ == "__main__":
