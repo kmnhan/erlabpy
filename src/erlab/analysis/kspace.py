@@ -36,7 +36,6 @@ def _sinc(x):
 
 
 def kz_func_inv(kz, inner_potential, kx, ky):
-
     k_perp_sq = kx**2 + ky**2
     k_z_sq = kz**2
     return k_perp_sq + k_z_sq - inner_potential / erlab.constants.rel_kzconv

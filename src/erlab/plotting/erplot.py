@@ -1,6 +1,4 @@
-"""Convenient access to various plotting functions.
-
-"""
+"""Convenient access to various plotting functions."""
 
 __all__ = [
     "copy_mathtext",

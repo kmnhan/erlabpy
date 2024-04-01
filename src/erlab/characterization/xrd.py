@@ -3,6 +3,7 @@
 Currently only supports loading raw data from igor ``.itx`` files.
 
 """
+
 __all__ = ["load_xrd_itx"]
 
 import ast
@@ -36,7 +37,7 @@ def load_xrd_itx(path: str, **kwargs: dict):
     --------
     Load from file:
 
-    >>> xrd_data = load_xrd_itx('/path/to/example_data.itx')
+    >>> xrd_data = load_xrd_itx("/path/to/example_data.itx")
     >>> xrd_data
     <xarray.Dataset>
     Dimensions:   (twotheta: 6701)

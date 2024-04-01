@@ -23,7 +23,6 @@ from erlab.plotting.bz import get_bz_edge
 
 
 class KspaceToolImageItem(BetterImageItem):
-
     def setDataArray(self, data=None, **kargs):
         rect = array_rect(data)
         if self.axisOrder == "row-major":
@@ -53,7 +52,6 @@ class KspaceToolGUI(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))
 ):
     def __init__(self):
-
         # Start the QApplication if it doesn't exist
         self.qapp = QtCore.QCoreApplication.instance()
         if not self.qapp:
@@ -174,7 +172,6 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
-
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
         super().__init__()
 
@@ -391,7 +388,6 @@ class KspaceTool(KspaceToolGUI):
     def get_bz_lines(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-
         if self.data.kspace.has_hv:
             # Out-of-plane BZ
             a, c = self.ab_spin.value(), self.c_spin.value()

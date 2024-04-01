@@ -1,6 +1,4 @@
-"""Macros for correlation analysis.
-
-"""
+"""Macros for correlation analysis."""
 
 __all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
 

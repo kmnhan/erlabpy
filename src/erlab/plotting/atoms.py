@@ -238,7 +238,6 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 
 
 class CrystalProperty:
-
     def __init__(
         self,
         atom_pos: dict[
@@ -311,9 +310,9 @@ class CrystalProperty:
         )
         self.mask: Callable | None = mask
 
-        self.segments: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = (
-            []
-        )
+        self.segments: list[
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]
+        ] = []
         self._bond_lw: list[float] = []
         self._bond_c: list[str | tuple[float, ...]] = []
 

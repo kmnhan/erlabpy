@@ -1,6 +1,4 @@
-"""Functions for manipulating colors in Qt.
-
-"""
+"""Functions for manipulating colors in Qt."""
 
 from __future__ import annotations
 

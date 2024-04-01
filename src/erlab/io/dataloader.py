@@ -109,7 +109,7 @@ class LoaderBase:
         Example
         -------
 
-        >>> mapping = {'a': '1', 'b': ['2', '3']}
+        >>> mapping = {"a": "1", "b": ["2", "3"]}
         >>> reverse_mapping(mapping)
         {'1': 'a', '2': 'b', '3': 'b'}
 
@@ -531,7 +531,6 @@ class LoaderBase:
         data_list: list[xr.DataArray | xr.Dataset],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset]:
-
         if len(coord_dict) == 0:
             try:
                 # Try to merge the data without conflicts
@@ -809,7 +808,6 @@ class LoaderRegistry(RegistryBase):
         data_dir: str | os.PathLike | None = None,
         **kwargs: dict,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-
         loader, default_dir = self._get_current_defaults()
 
         if data_dir is None:
@@ -824,7 +822,6 @@ class LoaderRegistry(RegistryBase):
     def summarize(
         self, data_dir: str | os.PathLike | None = None, usecache: bool = True, **kwargs
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-
         loader, default_dir = self._get_current_defaults()
 
         if data_dir is None:

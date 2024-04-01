@@ -63,7 +63,7 @@ def shift(
 
     >>> import xarray as xr
     >>> darr = xr.DataArray(
-    ...    np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float), dims=["x", "y"]
+    ...     np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float), dims=["x", "y"]
     ... )
     >>> shift_arr = xr.DataArray([1, 0, 2], dims=["x"])
     >>> shifted = erlab.analysis.utilities.shift(darr, shift_arr, along="y")
@@ -122,7 +122,6 @@ def shift(
         out = out.assign_coords({along: new_along})
 
     for idxs in itertools.product(*[range(darr.shape[i]) for i in domain_indices]):
-
         # Construct slices for indexing
         slices = [slice(None)] * darr.ndim
         for domain_index, i in zip(domain_indices, idxs):

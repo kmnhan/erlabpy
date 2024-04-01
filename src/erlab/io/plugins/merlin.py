@@ -57,7 +57,6 @@ class BL403Loader(LoaderBase):
     def identify(
         self, num: int, data_dir: str | os.PathLike
     ) -> tuple[list[str], dict[str, npt.NDArray[np.float64]]]:
-
         coord_dict: dict[str, npt.NDArray[np.float64]] = {}
 
         # Look for scans
@@ -135,7 +134,6 @@ class BL403Loader(LoaderBase):
     def generate_summary(
         self, data_dir: str | os.PathLike, exclude_live: bool = False
     ) -> pd.DataFrame:
-
         files: dict[str, str] = dict()
 
         for pth in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):

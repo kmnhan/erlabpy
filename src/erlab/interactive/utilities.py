@@ -1,6 +1,4 @@
-"""Various helper functions and extensions to pyqtgraph.
-
-"""
+"""Various helper functions and extensions to pyqtgraph."""
 
 from __future__ import annotations
 

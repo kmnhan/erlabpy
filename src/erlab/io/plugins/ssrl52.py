@@ -50,7 +50,6 @@ class SSRL52Loader(LoaderBase):
     skip_validate: bool = True
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
-
         with h5netcdf.File(file_path, mode="r", phony_dims="sort") as ncf:
             attrs = dict(ncf.attrs)
             compat_mode = "data" in ncf.groups  # Compatibility with older data
@@ -125,7 +124,6 @@ class SSRL52Loader(LoaderBase):
         data_dir: str | os.PathLike,
         zap: bool = False,
     ) -> tuple[list[str], dict[str, npt.NDArray[np.float64]]]:
-
         if zap:
             target_files = erlab.io.utilities.get_files(
                 data_dir, extensions=(".h5",), contains="zap"
@@ -158,7 +156,6 @@ class SSRL52Loader(LoaderBase):
     def generate_summary(
         self, data_dir: str | os.PathLike, exclude_zap: bool = False
     ) -> pd.DataFrame:
-
         files: dict[str, str] = dict()
 
         if exclude_zap:
@@ -196,7 +193,6 @@ class SSRL52Loader(LoaderBase):
         data_info = []
 
         for name, path in files.items():
-
             data = self.load(path)
 
             data_info.append(

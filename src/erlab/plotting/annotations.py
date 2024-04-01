@@ -1,5 +1,4 @@
-"""Plot annotations.
-"""
+"""Plot annotations."""
 
 from __future__ import annotations
 

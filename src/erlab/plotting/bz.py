@@ -1,6 +1,4 @@
-"""Utilities for plotting Brillouin zones.
-
-"""
+"""Utilities for plotting Brillouin zones."""
 
 __all__ = ["get_bz_edge", "plot_hex_bz"]
 

@@ -11,7 +11,6 @@ k_tot = np.array([1.0, 2.0, 3.0])
 
 
 def _generate_funclist() -> list[tuple[Callable, Callable]]:
-
     funcs = []
 
     for kconv_func in (
@@ -42,7 +41,6 @@ def _generate_funclist() -> list[tuple[Callable, Callable]]:
 
 def test_transform():
     for forward_func, inverse_func in _generate_funclist():
-
         alpha, beta = inverse_func(*forward_func(10.0, 20.0))
         assert alpha.size == beta.size == k_tot.size
         assert np.allclose(alpha, 10.0)

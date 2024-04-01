@@ -3,6 +3,7 @@ Polygon mask generation code adapted from the `CGAL C++ library
 <https://doc.cgal.org/5.3.2/Polygon/index.html>`_.
 
 """
+
 from __future__ import annotations
 
 from typing import Annotated, Literal

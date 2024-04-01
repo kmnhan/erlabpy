@@ -1,6 +1,4 @@
-"""General plotting utilities.
-
-"""
+"""General plotting utilities."""
 
 from __future__ import annotations
 
@@ -707,9 +705,7 @@ def plot_slices(
         # Two maps: map1, map2
         # Create a figure with a 3 by 2 grid.
 
-        fig, axes = plot_slices([map1, map2],
-                                 eV=[0, -0.1, -0.2],
-                                 eV_width=0.05)
+        fig, axes = plot_slices([map1, map2], eV=[0, -0.1, -0.2], eV_width=0.05)
 
     """
     if isinstance(maps, xr.DataArray):

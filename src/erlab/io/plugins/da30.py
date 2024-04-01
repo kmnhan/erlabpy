@@ -110,7 +110,6 @@ def load_zip(
 
 
 def parse_ini(filename: str | os.PathLike) -> dict:
-
     parser = configparser.ConfigParser(strict=False)
     out = dict()
     with open(filename) as f:

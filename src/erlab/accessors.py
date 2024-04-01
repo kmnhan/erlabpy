@@ -634,7 +634,7 @@ class MomentumAccessor:
 
         - View single offset
 
-          >>> data.kspace.offsets['beta']
+          >>> data.kspace.offsets["beta"]
           0.0
 
         - Offsets to dictionary
@@ -644,7 +644,7 @@ class MomentumAccessor:
 
         - Set single offset
 
-          >>> data.kspace.offsets['beta'] = 3.0
+          >>> data.kspace.offsets["beta"] = 3.0
           >>> data.kspace.offsets
           {'delta': 0.0, 'xi': 0.0, 'beta': 3.0}
 
@@ -691,7 +691,6 @@ class MomentumAccessor:
 
         """
         if self.has_hv:
-
             # hv dependent cut
             kx, ky = self._forward_func_raw(self._alpha, self._beta)
             kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
@@ -703,7 +702,6 @@ class MomentumAccessor:
             )
 
         elif self.has_beta:
-
             # kxy map
             # construct boundary array from meshgrid
             alpha, beta = (
@@ -930,7 +928,7 @@ class MomentumAccessor:
 
         .. code-block:: python
 
-            data.kspace.offsets = {'delta': 0.1, 'xi': 0.0, 'beta': 0.3}
+            data.kspace.offsets = {"delta": 0.1, "xi": 0.0, "beta": 0.3}
             data.kspace.work_function = 4.3
             data.kspace.inner_potential = 12.0
             converted_data = data.kspace.convert()
@@ -940,8 +938,8 @@ class MomentumAccessor:
 
         .. code-block:: python
 
-            bounds = {'kx': (0.0, 1.0), 'ky': (-1.0, 1.0)}
-            resolution = {'kx': 0.01, 'ky': 0.01}
+            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)}
+            resolution = {"kx": 0.01, "ky": 0.01}
             converted_data = data.kspace.convert(bounds, resolution)
 
         """

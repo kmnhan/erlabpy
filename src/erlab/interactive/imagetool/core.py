@@ -1475,6 +1475,7 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             for i, item in enumerate(self.slicer_data_items):
                 item.setVisible(i == index)
+
     def save_current_data(self, fileName=None):
         if fileName is None:
             self.fileDialog = QtWidgets.QFileDialog()

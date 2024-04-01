@@ -68,7 +68,7 @@ def _load_resistance_physlab_old(
     --------
     Load from file:
 
-    >>> data = load_resistance_physlab('/path/to/example_data.dat')
+    >>> data = load_resistance_physlab("/path/to/example_data.dat")
     >>> data
     <xarray.Dataset>
     Dimensions:  (temp: 1087)
@@ -92,7 +92,7 @@ def _load_resistance_physlab_old(
             "\\g<1>\\t \\g<2>",
             file.read(),
             count=0,
-            flags=re.MULTILINE
+            flags=re.MULTILINE,
         )
     content = content.replace("-1.#IO", "   nan")
     data = np.genfromtxt(

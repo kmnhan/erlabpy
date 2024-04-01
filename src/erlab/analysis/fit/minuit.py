@@ -21,7 +21,6 @@ class LeastSq(iminuit.cost.LeastSquares):
     ) -> tuple[
         tuple[npt.NDArray, npt.NDArray, npt.NDArray], tuple[npt.NDArray, npt.NDArray]
     ]:
-
         if self._ndim > 1:
             raise ValueError("visualize is not implemented for multi-dimensional data")
 
@@ -104,7 +103,6 @@ class Minuit(iminuit.Minuit):
         return_cost: bool = False,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
-
         if len(model.independent_vars) == 1:
             if len(ivars) != 1:
                 ivars = [ivars]

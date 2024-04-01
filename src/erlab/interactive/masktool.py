@@ -14,7 +14,6 @@ class PolyLineROIControls(ParameterGroup):
 
 
 class masktool(AnalysisWindow):
-
     # sigProgressUpdated = QtCore.Signal(int)
 
     def __init__(self, data, *args, **kwargs):

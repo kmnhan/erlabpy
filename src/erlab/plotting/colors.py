@@ -551,10 +551,15 @@ def proportional_colorbar(
         import matplotlib.colors as colors
 
         # Create example data and plot
-        X, Y = np.mgrid[0:3:complex(0, 100), 0:2:complex(0, 100)]
-        pcm = plt.pcolormesh(X, Y, (1 + np.sin(Y * 10.)) * X**2,
-                             norm=mcolors.PowerNorm(gamma=0.5),
-                             cmap='Blues_r', shading='auto')
+        X, Y = np.mgrid[0 : 3 : complex(0, 100), 0 : 2 : complex(0, 100)]
+        pcm = plt.pcolormesh(
+            X,
+            Y,
+            (1 + np.sin(Y * 10.0)) * X**2,
+            norm=mcolors.PowerNorm(gamma=0.5),
+            cmap="Blues_r",
+            shading="auto",
+        )
 
         # Plot evenly spaced colorbar
         proportional_colorbar()
@@ -634,12 +639,14 @@ def _size_to_bounds(ax, width, height, loc):
 def _refresh_pads(ax, cax, pads, loc):
     ref = _size_to_bounds(ax, 0, 0, loc)[:2]
     bbox = ax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
-    x0, y0 = bbox.x0 + ref[0] * (bbox.x1 - bbox.x0), bbox.y1 + ref[1] * (
-        bbox.y1 - bbox.y0
+    x0, y0 = (
+        bbox.x0 + ref[0] * (bbox.x1 - bbox.x0),
+        bbox.y1 + ref[1] * (bbox.y1 - bbox.y0),
     )
     bbox = cax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
-    x1, y1 = bbox.x0 + ref[0] * (bbox.x1 - bbox.x0), bbox.y1 + ref[1] * (
-        bbox.y1 - bbox.y0
+    x1, y1 = (
+        bbox.x0 + ref[0] * (bbox.x1 - bbox.x0),
+        bbox.y1 + ref[1] * (bbox.y1 - bbox.y0),
     )
 
     pads[0] += x1 - x0
