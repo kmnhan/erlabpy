@@ -215,7 +215,6 @@ class SSRL52Loader(LoaderBase):
                     val = round(val)
 
                 elif k == "Polarization":
-                    pass
                     if np.iterable(val):
                         val = np.round(np.asarray(val), 3).astype(float)
                     else:

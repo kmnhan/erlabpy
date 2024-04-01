@@ -47,8 +47,6 @@ def _is_monotonic(arr: npt.NDArray) -> bool:
 class ValidationError(Exception):
     """This exception is raised when the loaded data fails validation checks."""
 
-    pass
-
 
 class LoaderBase:
     """Base class for all data loaders."""
