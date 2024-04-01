@@ -89,7 +89,7 @@ def fix_attr_format(da: xr.DataArray):
 
     """
     valid_dtypes = ["S1", "i1", "u1", "i2", "u2", "i4", "u4", "i8", "u8", "f4", "f8"]
-    for key in da.attrs.keys():
+    for key in da.attrs:
         isValid = 0
         for dt in valid_dtypes:
             isValid += np.array(da.attrs[key]).dtype == np.dtype(dt)
@@ -203,4 +203,4 @@ def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs: di
 
 def save_as_fits():
     # TODO
-    raise NotImplementedError()
+    raise NotImplementedError

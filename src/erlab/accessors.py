@@ -136,7 +136,7 @@ class SelectionAccessor(ERLabAccessor):
         # Bin widths for each dimension, zero if width not specified
         bin_widths: dict[str, float] = {}
 
-        for dim in indexers.keys():
+        for dim in indexers:
             if not dim.endswith("_width"):
                 bin_widths[dim] = indexers.get(f"{dim}_width", 0.0)
                 if dim not in self._obj.dims:
@@ -860,7 +860,7 @@ class MomentumAccessor:
         if self.has_eV:
             # Ensure all arrays have the same shape
             binding = self._binding_energy * np.ones_like(alpha)
-            for k in out_dict.keys():
+            for k in out_dict:
                 out_dict[k] = out_dict[k] * np.ones_like(binding)
             out_dict["eV"] = binding
 

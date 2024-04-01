@@ -25,13 +25,16 @@ import contextlib
 import datetime
 import itertools
 import os
-from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import joblib
 import numpy as np
 import numpy.typing as npt
 import pandas
 import xarray as xr
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 def _is_uniform(arr: npt.NDArray) -> bool:

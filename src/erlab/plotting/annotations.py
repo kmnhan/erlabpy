@@ -23,8 +23,7 @@ __all__ = [
 
 import io
 import re
-from collections.abc import Iterable, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -35,6 +34,9 @@ import pyperclip
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from erlab.plotting.colors import axes_textcolor
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",

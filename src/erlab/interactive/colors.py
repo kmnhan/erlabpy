@@ -462,7 +462,7 @@ class BetterColorBarItem(pg.PlotItem):
             return
         cmap = self.primary_image()._colorMap
         lut = cmap.getStops()[1]
-        if not self._colorbar.image.shape[0] == lut.shape[0]:
+        if self._colorbar.image.shape[0] != lut.shape[0]:
             self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
         self._colorbar._colorMap = cmap
         self._colorbar.setLookupTable(lut, update=True)

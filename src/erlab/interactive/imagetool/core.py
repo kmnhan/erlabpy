@@ -11,15 +11,12 @@ import inspect
 import os
 import time
 import weakref
-from collections.abc import Callable, Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import xarray as xr
-from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
-from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import (
@@ -29,6 +26,12 @@ from erlab.interactive.colors import (
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import BetterAxisItem
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
+
+    from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
+    from pyqtgraph.GraphicsScene import mouseEvents
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -226,8 +229,8 @@ class SlicerLinkProxy:
         steps: bool,
     ):
         if indices:
-            axis: int | None = args.get("axis", None)
-            index: int | None = args.get("value", None)
+            axis: int | None = args.get("axis")
+            index: int | None = args.get("value")
 
             if index is not None:
                 if axis is None:
@@ -925,7 +928,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 axes.setYLink(self.get_axes(0))
 
         # reserve space, only hide plotItem
-        self.get_axes(3).setVisible(not self.data.ndim == 2)
+        self.get_axes(3).setVisible(self.data.ndim != 2)
 
         self._colorbar.set_dimensions(
             width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size

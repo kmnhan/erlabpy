@@ -416,9 +416,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def keyPressEvent(self, evt):
         if evt == QtGui.QKeySequence.StandardKey.Copy:
-            if not evt.isAutoRepeat():
-                if self.lineEdit().hasSelectedText():
-                    copy_to_clipboard(self.lineEdit().selectedText())
+            if (not evt.isAutoRepeat()) and self.lineEdit().hasSelectedText():
+                copy_to_clipboard(self.lineEdit().selectedText())
         else:
             super().keyPressEvent(evt)
 
@@ -537,7 +536,7 @@ class BetterAxisItem(pg.AxisItem):
         if len(args) > 0:
             self.labelStyle = args
         # Account empty string and `None` for units and text
-        visible = True if (text or units) else False
+        visible = bool(text or units)
         if text == units == "":
             visible = True
         self.showLabel(visible)
@@ -853,7 +852,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             if not isinstance(widget, QtWidgets.QWidget):
                 raise ValueError("widget is not a valid QWidget")
             return widget
-        elif qwtype not in ParameterGroup.VALID_QWTYPE.keys():
+        elif qwtype not in ParameterGroup.VALID_QWTYPE:
             raise ValueError(
                 f"qwtype must be one of {list(ParameterGroup.VALID_QWTYPE.keys())}"
             )

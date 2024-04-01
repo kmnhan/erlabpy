@@ -1023,10 +1023,7 @@ def color_distance(c1, c2):
 def close_to_white(c):
     c2k = color_distance(c, (0, 0, 0))
     c2w = color_distance(c, (1, 1, 1))
-    if c2k > c2w:
-        return True
-    else:
-        return False
+    return bool(c2k > c2w)
 
 
 def prominent_color(im):

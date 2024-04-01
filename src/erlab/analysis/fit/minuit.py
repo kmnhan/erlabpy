@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import iminuit.cost
 import iminuit.util
-import lmfit
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from iminuit.util import _detect_log_spacing, _smart_sampling
 
 import erlab.plotting.general
+
+if TYPE_CHECKING:
+    import lmfit
 
 
 class LeastSq(iminuit.cost.LeastSquares):

@@ -74,9 +74,7 @@ def polygon_mask_points(vertices, x, y, invert=False):
 def mask_with_hex_bz(kxymap: xr.DataArray, a=3.54, rotate=0, invert=False):
     """Returns map masked with a hexagonal BZ."""
 
-    if "kx" in kxymap.dims:
-        dims = ("kx", "ky")
-    elif "qx" in kxymap.dims:
+    if "kx" in kxymap.dims or "qx" in kxymap.dims:
         dims = ("kx", "ky")
 
     d = 2 * np.pi / (a * 3)

@@ -5,15 +5,19 @@ from __future__ import annotations
 __all__ = ["ArraySlicer"]
 
 import functools
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numba
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
 from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    import xarray as xr
 
 VALID_NDIM = (2, 3, 4)
 
@@ -586,9 +590,7 @@ class ArraySlicer(QtCore.QObject):
         return self._obj.isel(**slices).squeeze()
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
-    def slice_with_coord(
-        self, cursor: int, disp: Sequence[int]
-    ) -> tuple[
+    def slice_with_coord(self, cursor: int, disp: Sequence[int]) -> tuple[
         tuple[np.float32, np.float32, np.float32, np.float32] | npt.NDArray[np.float32],
         npt.NDArray[np.float32] | np.float32,
     ]:

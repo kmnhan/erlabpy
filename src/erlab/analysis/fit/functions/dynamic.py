@@ -191,14 +191,14 @@ class MultiPeakFunction(DynamicFunction):
     @functools.cached_property
     def peak_all_args(self) -> dict[Callable, dict[str, list | dict]]:
         res = {}
-        for func in self.PEAK_SHAPES.keys():
+        for func in self.PEAK_SHAPES:
             res[func] = dict(zip(("args", "kwargs"), get_args_kwargs(func)))
         return res
 
     @functools.cached_property
     def peak_argnames(self) -> dict[Callable, list[str]]:
         res = {}
-        for func in self.PEAK_SHAPES.keys():
+        for func in self.PEAK_SHAPES:
             res[func] = self.peak_all_args[func]["args"][1:] + list(
                 self.peak_all_args[func]["kwargs"].keys()
             )

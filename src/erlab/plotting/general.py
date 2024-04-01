@@ -17,8 +17,7 @@ __all__ = [
 
 import contextlib
 import copy
-from collections.abc import Callable, Iterable, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import matplotlib
 import matplotlib.colors as mcolors
@@ -39,6 +38,9 @@ from erlab.plotting.colors import (
     gen_2d_colormap,
     nice_colorbar,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
 
 figure_width_ref = {
     "aps": [3.4, 7.0],
@@ -354,14 +356,14 @@ def plot_array(
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
     norm_kw = {}
-    if "vmin" in improps.keys():
+    if "vmin" in improps:
         norm_kw["vmin"] = improps.pop("vmin")
-        if "vmax" in improps.keys():
+        if "vmax" in improps:
             norm_kw["vmax"] = improps.pop("vmax")
             colorbar_kw.setdefault("extend", "both")
         else:
             colorbar_kw.setdefault("extend", "min")
-    elif "vmax" in improps.keys():
+    elif "vmax" in improps:
         norm_kw["vmax"] = improps.pop("vmax")
         colorbar_kw.setdefault("extend", "max")
 
@@ -742,7 +744,7 @@ def plot_slices(
         slice_width = None
 
     else:
-        slice_dim = [k for k in slice_kw.keys() if not k.endswith("_width")][0]
+        slice_dim = [k for k in slice_kw if not k.endswith("_width")][0]
         slice_levels = slice_kw[slice_dim]
         slice_width = kwargs.pop(slice_dim + "_width", None)
 

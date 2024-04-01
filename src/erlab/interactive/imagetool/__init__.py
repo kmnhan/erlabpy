@@ -21,10 +21,8 @@ __all__ = ["itool", "ImageTool"]
 
 import gc
 import sys
-from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-import numpy as np
-import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
@@ -35,8 +33,15 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    import numpy as np
+    import numpy.typing as npt
+
+    from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
 def itool(
@@ -342,9 +347,9 @@ class ItoolMenuBar(DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *,
-                ax=self.slicer_area.main_image.display_axis[axis],
-                d=amount: self.slicer_area.step_index(ax, d),
+                "triggered": lambda *, ax=self.slicer_area.main_image.display_axis[
+                    axis
+                ], d=amount: self.slicer_area.step_index(ax, d),
             }
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
@@ -375,9 +380,9 @@ class ItoolMenuBar(DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *,
-                ax=self.slicer_area.main_image.display_axis[axis],
-                d=amount: self.slicer_area.step_index_all(ax, d),
+                "triggered": lambda *, ax=self.slicer_area.main_image.display_axis[
+                    axis
+                ], d=amount: self.slicer_area.step_index_all(ax, d),
             }
         return menu_kwargs
 

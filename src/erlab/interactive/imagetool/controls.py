@@ -7,16 +7,21 @@ __all__ = [
     "ItoolBinningControls",
 ]
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
-from erlab.interactive.imagetool.core import ImageSlicerArea
-from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utilities import BetterSpinBox
+
+if TYPE_CHECKING:
+    import xarray as xr
+
+    from erlab.interactive.imagetool.core import ImageSlicerArea
+    from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
 class IconButton(QtWidgets.QPushButton):

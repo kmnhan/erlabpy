@@ -2,12 +2,11 @@ __all__ = ["goldtool"]
 
 import os
 import time
+from typing import TYPE_CHECKING
 
 import joblib
-import lmfit
 import numpy as np
 import pyqtgraph as pg
-import scipy.interpolate
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -21,6 +20,10 @@ from erlab.interactive.utilities import (
     gen_function_code,
 )
 from erlab.parallel import joblib_progress_qt
+
+if TYPE_CHECKING:
+    import lmfit
+    import scipy.interpolate
 
 LMFIT_METHODS = [
     "leastsq",

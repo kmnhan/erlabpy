@@ -67,7 +67,7 @@ class masktool(AnalysisWindow):
         cursor_params = self.cursor.values
 
         dim_z = cursor_params["Z dim"]
-        if "Z dim" in change.keys():
+        if "Z dim" in change:
             self.cursor.blockSignals(True)
             self.cursor.widgets["slider"].setMaximum(len(self.data[dim_z]) - 1)
             self.cursor.widgets["slider"].setValue(0)
