@@ -6,13 +6,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
+from erlab.analysis.fit.models import FermiEdge2dModel
 from erlab.plotting.colors import proportional_colorbar
 from erlab.plotting.general import plot_array
-from erlab.analysis.fit.models import FermiEdge2dModel
+
 
 
 def correct_with_edge(
-    fmap: xr.DataArray,
+    darr: xr.DataArray,
     modelresult,
     plot=False,
     zero_nans=False,
@@ -23,7 +24,7 @@ def correct_with_edge(
         if isinstance(modelresult.model, FermiEdge2dModel):
             edge_quad = xr.DataArray(
                 np.polynomial.polynomial.polyval(
-                    fmap.alpha,
+                    darr.alpha,
                     np.array(
                         [
                             modelresult.best_values[f"c{i}"]
@@ -31,19 +32,19 @@ def correct_with_edge(
                         ]
                     ),
                 ),
-                coords=dict(alpha=fmap.alpha),
+                coords=dict(alpha=darr.alpha),
             )
         else:
-            edge_quad = modelresult.eval(x=fmap.alpha)
+            edge_quad = modelresult.eval(x=darr.alpha)
             edge_quad = xr.DataArray(
-                edge_quad, coords=dict(x=fmap.alpha), dims=["alpha"]
+                edge_quad, coords=dict(x=darr.alpha), dims=["alpha"]
             )  # workaround for lmfit 1.22 coercing
     elif callable(modelresult):
         edge_quad = xr.DataArray(
-            modelresult(fmap.alpha.values), coords=dict(alpha=fmap.alpha)
+            modelresult(darr.alpha.values), coords=dict(alpha=darr.alpha)
         )
     elif isinstance(modelresult, np.ndarray | xr.DataArray):
-        if len(fmap.alpha) != len(modelresult):
+        if len(darr.alpha) != len(modelresult):
             raise ValueError("incompatible modelresult dimensions")
         else:
             edge_quad = modelresult
@@ -54,7 +55,7 @@ def correct_with_edge(
             "and np.ndarray or a callable"
         )
 
-    corrected = fmap.G.shift_by(
+    corrected = darr.G.shift_by(
         edge_quad, "eV", zero_nans=zero_nans, shift_coords=shift_coords
     )
 
@@ -63,19 +64,15 @@ def correct_with_edge(
 
         improps.setdefault("cmap", "copper")
 
-        if fmap.ndim > 2:
-            avg_dims = list(fmap.dims)[:]
+        if darr.ndim > 2:
+            avg_dims = list(darr.dims)[:]
             avg_dims.remove("alpha")
             avg_dims.remove("eV")
-            plot_array(fmap.mean(avg_dims), ax=axes[0], **improps)
+            plot_array(darr.mean(avg_dims), ax=axes[0], **improps)
             plot_array(corrected.mean(avg_dims), ax=axes[1], **improps)
-            # fmap.mean(avg_dims).S.plot(ax=axes[0], **improps)
-            # corrected.mean(avg_dims).S.plot(ax=axes[1], **improps)
         else:
-            plot_array(fmap, ax=axes[0], **improps)
+            plot_array(darr, ax=axes[0], **improps)
             plot_array(corrected, ax=axes[1], **improps)
-            # fmap.S.plot(ax=axes[0], **improps)
-            # corrected.S.plot(ax=axes[1], **improps)
         edge_quad.plot(ax=axes[0], ls="--", color="0.35")
 
         proportional_colorbar(ax=axes[0])
