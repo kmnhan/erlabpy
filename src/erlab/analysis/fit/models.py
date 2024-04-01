@@ -149,8 +149,8 @@ class ExtendedAffineBroadenedFD(XModelMixin):
         temp = 30
         if isinstance(data, xr.DataArray):
             try:
-                temp = data.S.temp
-            except AttributeError:
+                temp = data.attrs["temp_sample"]
+            except KeyError:
                 pass
 
         pars[f"{self.prefix}center"].set(value=efermi, min=x.min(), max=x.max())
@@ -338,7 +338,7 @@ class FermiEdge2dModel(XModelMixin):
         )
         pars[f"{self.prefix}const_bkg"].set(value=dos0)
         pars[f"{self.prefix}lin_bkg"].set(value=dos1)
-        pars[f"{self.prefix}temp"].set(value=data.S.temp)
+        pars[f"{self.prefix}temp"].set(value=data.attrs["temp_sample"])
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 

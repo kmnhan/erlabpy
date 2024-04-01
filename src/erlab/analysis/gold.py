@@ -103,7 +103,7 @@ def edge(
         model_cls = StepEdgeModel
     else:
         if temp is None:
-            temp = gold.S.temp
+            temp = gold.attrs["temp_sample"]
         params = {
             "temp": dict(value=temp, vary=vary_temp),
         }
@@ -183,7 +183,7 @@ def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, 
     plt.tick_params("x", labelbottom=False)
     ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
 
-    gold.S.plot(ax=ax0, cmap="copper", gamma=0.5)
+    gold.qplot(ax=ax0, cmap="copper", gamma=0.5)
     rect = mpatches.Rectangle(
         (angle_range[0], eV_range[0]),
         np.diff(angle_range)[0],
@@ -392,7 +392,7 @@ def resolution(
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
 
     params = dict(
-        temp=dict(value=gold.S.temp, vary=False),
+        temp=dict(value=gold.attrs["temp_sample"], vary=False),
         resolution=dict(value=0.1, vary=True, min=0),
     )
     fit = ExtendedAffineBroadenedFD().guess_fit(
@@ -401,7 +401,7 @@ def resolution(
     if plot:
         plt.show()
         ax = plt.gca()
-        gold_corr.S.plot(ax=ax, cmap="copper", gamma=0.5)
+        gold_corr.qplot(ax=ax, cmap="copper", gamma=0.5)
         rect = mpatches.Rectangle(
             (angle_range[0], eV_range_fit[0]),
             np.diff(angle_range)[0],
@@ -438,7 +438,7 @@ def resolution_roi(
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
     params = dict(
-        temp=dict(value=gold_roi.S.temp, vary=not fix_temperature),
+        temp=dict(value=gold_roi.attrs["temp_sample"], vary=not fix_temperature),
         resolution=dict(value=0.1, vary=True, min=0),
     )
     fit = ExtendedAffineBroadenedFD().guess_fit(
@@ -449,7 +449,7 @@ def resolution_roi(
     )
     if plot:
         ax = plt.gca()
-        gold_roi.S.plot(ax=ax, cmap="copper", gamma=0.5)
+        gold_roi.qplot(ax=ax, cmap="copper", gamma=0.5)
         ax.fill_between(
             gold_roi.alpha,
             eV_range[0],
