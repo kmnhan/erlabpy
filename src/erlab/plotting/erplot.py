@@ -3,7 +3,6 @@
 """
 
 __all__ = [
-    # "annotate_cuts_erlab",
     "copy_mathtext",
     "fancy_labels",
     "label_subplot_properties",
@@ -43,7 +42,7 @@ __all__ = [
 
 import numpy as np
 
-from erlab.plotting.annotations import (  # annotate_cuts_erlab,
+from erlab.plotting.annotations import (
     copy_mathtext,
     fancy_labels,
     label_subplot_properties,
