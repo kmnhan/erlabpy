@@ -47,8 +47,8 @@ class PlotAccessor(ERLabAccessor):
 
     def __call__(self, *args, **kwargs):
         """
-        Plot the data. For supported shapes, :func:`plot_array
-        <erlab.plotting.general.plot_array>` is used. Otherwise, it is
+        Plot the data. If a 2D data array is provided, it is plotted using
+        :func:`plot_array <erlab.plotting.general.plot_array>`. Otherwise, it is
         equivalent to calling :meth:`xarray.DataArray.plot`.
 
         Parameters
@@ -57,11 +57,10 @@ class PlotAccessor(ERLabAccessor):
             Positional arguments to be passed to the plotting function.
         **kwargs
             Keyword arguments to be passed to the plotting function.
-        """
 
+        """
         if len(self._obj.dims) == 2:
             return eplt.plot_array(self._obj, *args, **kwargs)
-
         else:
             return self._obj.plot(*args, **kwargs)
 
