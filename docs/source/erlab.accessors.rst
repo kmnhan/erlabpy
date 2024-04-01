@@ -8,6 +8,9 @@
 
    .. autosummary::
 
+      PlotAccessor
+      ImageToolAccessor
+      SelectionAccessor
       MomentumAccessor
 
 
