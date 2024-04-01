@@ -1,4 +1,5 @@
 import sys
+from typing import Literal
 
 import mpl_toolkits
 import numpy as np
@@ -17,20 +18,20 @@ class BZPlotter(QtWidgets.QMainWindow):
     def __init__(
         self,
         params: tuple[float, ...] | npt.NDArray[np.float64] | None = None,
-        type="bvec",
+        param_type: Literal["lattice", "avec", "bvec"] | None = None,
     ) -> None:
         """
         Parameters
         ----------
         params :
-            Input parameter for plotting. If `type` is 'lattice', it must be a 6-tuple
-            containing the lengths a, b, c and angles alpha, beta, gamma. Otherwise, it
-            must be a 3 by 3 numpy array with each row vector containing each
-            real/reciprocal lattice vector. If not provided, a hexagonal lattice is
+            Input parameter for plotting. If `param_type` is 'lattice', it must be a
+            6-tuple containing the lengths a, b, c and angles alpha, beta, gamma.
+            Otherwise, it must be a 3 by 3 numpy array with each row vector containing
+            each real/reciprocal lattice vector. If not provided, a hexagonal lattice is
             shown by default.
-        type : str, default: 'bvec'
-            Specifies the type of the input parameters. Valid types are 'lattice',
-            'avec', 'bvec'.
+        param_type
+            Specifies the param_type of the input parameters. Valid param_types are
+            `'lattice'`, `'avec'`, `'bvec'`. By default, `'bvec'` is assumed.
         """
         self.qapp = QtCore.QCoreApplication.instance()
         if not self.qapp:
@@ -45,13 +46,13 @@ class BZPlotter(QtWidgets.QMainWindow):
                     [0.0, 0.0, 1.04510734],
                 ]
             )
-            type = "bvec"
+            param_type = "bvec"
 
-        if type == "lattice":
+        if param_type == "lattice":
             bvec = to_reciprocal(abc2avec(*params))
-        elif type == "avec":
+        elif param_type == "avec":
             bvec = to_reciprocal(params)
-        elif type == "bvec":
+        elif param_type == "bvec":
             bvec = params
 
         self.controls = None

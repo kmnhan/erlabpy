@@ -63,31 +63,26 @@ def get_bz_edge(
         .reshape((ndim, 3**ndim))
         .T
     )
+
+    # Get index of origin
     zero_ind = np.where((points == 0).all(axis=1))[0][0]
 
     vor = scipy.spatial.Voronoi(points)
 
     lines = []
-    valid_indices = []
+    vertices = []
+
     for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices):
+        simplex = np.asarray(simplex)
         if zero_ind in pointidx:
-            lines.append(vor.vertices[simplex + [simplex[0]]])
-            valid_indices += simplex
-    vertices = vor.vertices[valid_indices]
+            # If the origin is included in the ridge, add the vertices
+            lines.append(vor.vertices[np.r_[simplex, simplex[0]]])
+            vertices.append(vor.vertices[simplex])
 
-    additional_lines = []
-    additional_verts = []
-    for vals in itertools.product(*[range(-n + 1, n) for n in extend]):
-        if vals != (0,) * ndim:
-            displacement = np.dot(vals, basis)
-            additional_lines.append(lines + displacement)
-            additional_verts.append(vertices + displacement)
-
-    lines = np.r_[lines, *additional_lines]
-    vertices = np.r_[vertices, *additional_verts]
-
-    # remove duplicates
+    # Remove duplicates
     lines_new = []
+    vertices_new = []
+
     for line in lines:
         for i in range(line.shape[0] - 1):
             if not any(
@@ -96,13 +91,25 @@ def get_bz_edge(
                 for line_new in lines_new
             ):
                 lines_new.append(line[i : i + 2])
-
-    vertices_new = []
-    for v in vertices:
+    for v in np.r_[*vertices]:
         if not any(np.allclose(v, vn) for vn in vertices_new):
             vertices_new.append(v)
 
-    return np.asarray(lines_new), np.asarray(vertices_new)
+    lines = np.asarray(lines_new)
+    vertices = np.asarray(vertices_new)
+
+    # Extend the BZ
+    additional_lines = []
+    additional_verts = []
+    for vals in itertools.product(*[range(-n + 1, n) for n in extend]):
+        if vals != (0,) * ndim:
+            displacement = np.dot(vals, basis)
+            additional_lines.append(lines + displacement)
+            additional_verts.append(vertices + displacement)
+    lines = np.r_[lines, *additional_lines]
+    vertices = np.r_[vertices, *additional_verts]
+
+    return lines, vertices
 
 
 def plot_hex_bz(
