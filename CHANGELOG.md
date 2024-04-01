@@ -2,6 +2,47 @@
 
 
 
+## v1.5.2 (2024-04-01)
+
+### Documentation
+
+* docs: update user guide notebooks ([`80ab771`](https://github.com/kmnhan/erlabpy/commit/80ab7717539e95c2cfe4a15f0713f259dfe04da3))
+
+* docs: update docstring ([`b262765`](https://github.com/kmnhan/erlabpy/commit/b2627651648066dc8b98f023c5028c11f2929426))
+
+* docs: update documentation ([`9051ed8`](https://github.com/kmnhan/erlabpy/commit/9051ed8d406c06ae4a037b65ed648a16843a0655))
+
+### Fix
+
+* fix: set values after setting bounds ([`ab6d682`](https://github.com/kmnhan/erlabpy/commit/ab6d682d0afafefcaec4c1ab6d673a39a75f40a6))
+
+* fix: proper patch all interpolator selection functions ([`b91834e`](https://github.com/kmnhan/erlabpy/commit/b91834e1b0be200bafb86ed3581f08cf1a5d42ef))
+
+* fix: make bz voronoi robust ([`8259760`](https://github.com/kmnhan/erlabpy/commit/8259760249be45892cd32f143b1b83aefe166c49))
+
+### Refactor
+
+* refactor: remove debug print statement in FastInterpolator class ([`712bd2c`](https://github.com/kmnhan/erlabpy/commit/712bd2ce90ad3534212d8a63c3fe10d780e243f5))
+
+* refactor: add edge correction ([`87adcef`](https://github.com/kmnhan/erlabpy/commit/87adceffda2364f404de0860bfe8bf36b4cc1394))
+
+* refactor: change variable name ([`b68949e`](https://github.com/kmnhan/erlabpy/commit/b68949ec59fd6bd7d7dad4ff9cc232b0e1ce4fba))
+
+* refactor: make rotation transformations try fast interpolator first ([`e0a7908`](https://github.com/kmnhan/erlabpy/commit/e0a790833025f0c7e952ad17d120f46de3100555))
+
+* refactor: update warning message ([`af67c1a`](https://github.com/kmnhan/erlabpy/commit/af67c1a507be35348b58862b6b51b92fac52781b))
+
+* refactor: add several new accessors ([`664e92a`](https://github.com/kmnhan/erlabpy/commit/664e92a3e171512be26ea957df945e84134c880a))
+
+* refactor: use new accessors and attrs ([`8e1dee2`](https://github.com/kmnhan/erlabpy/commit/8e1dee22d9d716f7e9bce29a1be3e68311494aa1))
+
+* refactor: add qplot accessor ([`cb9aa01`](https://github.com/kmnhan/erlabpy/commit/cb9aa017bebd2ee6661f4eb87b988509d28a37a5))
+
+* refactor: remove annotate_cuts ([`004ee80`](https://github.com/kmnhan/erlabpy/commit/004ee808dab13073cb3d2021d331767f6c28388a))
+
+* refactor: dataloader cleanup ([`fd97780`](https://github.com/kmnhan/erlabpy/commit/fd977800a504256afd6018e9991b2d1e996277df))
+
+
 ## v1.5.1 (2024-03-28)
 
 ### Documentation
