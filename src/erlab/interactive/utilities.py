@@ -885,6 +885,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
         fixedWidth = kwargs.pop("fixedWidth", None)
         fixedHeight = kwargs.pop("fixedHeight", None)
 
+        value = kwargs.pop("value", None)
+
         widget = widget_class(**kwargs)
 
         if qwtype == "combobox":
@@ -919,6 +921,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.setFixedHeight(fixedHeight)
         if policy is not None:
             widget.setSizePolicy(*policy)
+
+        if value is not None:
+            widget.setValue(value)
 
         return widget
 
@@ -1532,7 +1537,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
 
 
 if __name__ == "__main__":
-    from scipy.ndimage import gaussian_filter#, uniform_filter
+    from scipy.ndimage import gaussian_filter  # , uniform_filter
 
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
