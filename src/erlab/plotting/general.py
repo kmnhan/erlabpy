@@ -744,7 +744,7 @@ def plot_slices(
         slice_width = None
 
     else:
-        slice_dim = [k for k in slice_kw if not k.endswith("_width")][0]
+        slice_dim = next(k for k in slice_kw if not k.endswith("_width"))
         slice_levels = slice_kw[slice_dim]
         slice_width = kwargs.pop(slice_dim + "_width", None)
 

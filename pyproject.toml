@@ -164,8 +164,22 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "B", "C4", "FA", "ICN", "PIE", "RSE", "TCH", "PL"]
-ignore = ["B905", "ICN001"]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "B",
+    "C4",
+    "FA",
+    "ICN",
+    "PIE",
+    "RSE",
+    "TCH",
+    "NPY",
+    "RUF",
+]
+ignore = ["B905", "ICN001", "RUF001", "RUF002", "RUF003", "RUF012"]
 extend-select = [
     "UP", # pyupgrade
 ]

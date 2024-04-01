@@ -508,7 +508,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def images(self) -> tuple[ItoolPlotItem, ...]:
-        return (self.main_image,) + self.slices
+        return (self.main_image, *self.slices)
 
     @property
     def axes(self) -> tuple[ItoolPlotItem, ...]:
@@ -621,7 +621,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 try:
                     data = data.spectrum
                 except AttributeError:
-                    data = data[list(data.data_vars.keys())[0]]
+                    data = data[next(iter(data.data_vars.keys()))]
             else:
                 data = xr.DataArray(np.asarray(data))
 
@@ -1190,9 +1190,9 @@ class ItoolPlotItem(pg.PlotItem):
         dim_list = [self.slicer_area.data.dims[ax] for ax in self.display_axis]
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
-                dim_list = [None] + dim_list
+                dim_list = [None, *dim_list]
             else:
-                dim_list = dim_list + [None]
+                dim_list = [*dim_list, None]
         return dim_list
 
     @property
@@ -1368,7 +1368,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def index_of_line(self, line: ItoolCursorLine) -> int:
         for i, line_dict in enumerate(self.cursor_lines):
-            for _, v in line_dict.items():
+            for v in line_dict.values():
                 if v == line:
                     return i
         raise ValueError("`line` is not a valid cursor.")

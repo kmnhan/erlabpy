@@ -545,7 +545,7 @@ class LoaderBase:
                     {k: v[i] for k, v in coord_dict.items()}
                 )
             return xr.concat(
-                data_list, dim=list(coord_dict.keys())[0], coords="different"
+                data_list, dim=next(iter(coord_dict.keys())), coords="different"
             )
 
     def post_process_general(
@@ -644,7 +644,7 @@ class LoaderBase:
                 # print(f"Invalid configuration {data.attrs['configuration']}")
             elif "chi" not in data.coords:
                 raise ValidationError("Missing coordinate chi")
-                    # print("Missing coordinate chi")
+                # print("Missing coordinate chi")
 
     def _load_multiple_parallel(
         self, file_paths: list[str]

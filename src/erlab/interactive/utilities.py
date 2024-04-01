@@ -1550,7 +1550,7 @@ if __name__ == "__main__":
 
     dat = (
         xr.open_dataarray(
-            "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"  # noqa: E501
+            "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc"
         )
         .sel(eV=-0.15, method="nearest")
         .fillna(0)

@@ -14,7 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
 from erlab.interactive.colors import BetterColorBarItem  # noqa: F401
-from erlab.interactive.colors import BetterImageItem  # noqa: F401
+from erlab.interactive.colors import BetterImageItem
 from erlab.interactive.colors import ColorMapComboBox  # noqa: F401
 from erlab.interactive.colors import ColorMapGammaWidget  # noqa: F401
 from erlab.interactive.imagetool import ImageTool

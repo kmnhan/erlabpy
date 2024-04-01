@@ -311,7 +311,7 @@ class OffsetView:
 
     def update(
         self,
-        other: dict | Iterable[tuple[str, float]] = None,
+        other: dict | Iterable[tuple[str, float]] | None = None,
         **kwargs: dict[str, float],
     ) -> "OffsetView":
         """Updates the offset view with the provided key-value pairs."""
@@ -783,7 +783,7 @@ class MomentumAccessor:
 
         .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
-        """  # noqa: E501
+        """
         min_Ek = np.amin(self._kinetic_energy)
         max_angle = max(np.abs(self._obj["alpha"].values))
         return (
@@ -998,8 +998,8 @@ class MomentumAccessor:
             new_dim_order = (self.slit_axis,)
 
         if self.has_eV:
-            old_dim_order = ("eV",) + old_dim_order
-            new_dim_order = ("eV",) + new_dim_order
+            old_dim_order = ("eV", *old_dim_order)
+            new_dim_order = ("eV", *new_dim_order)
             new_size["eV"] = len(self._binding_energy)
             interp_coords["eV"] = np.squeeze(self._binding_energy)
 

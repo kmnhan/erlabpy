@@ -137,8 +137,8 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self,
         parent: QtWidgets.QWidget = None,
         value: float = 1.0,
-        slider_cls: type = None,
-        spin_cls: type = None,
+        slider_cls: type | None = None,
+        spin_cls: type | None = None,
     ):
         super().__init__(parent=parent)
         self.setLayout(QtWidgets.QHBoxLayout(self))

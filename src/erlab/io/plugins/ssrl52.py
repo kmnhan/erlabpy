@@ -188,7 +188,7 @@ class SSRL52Loader(LoaderBase):
             "DA": "beta",
         }
 
-        cols = ["Time", "File Name"] + list(summary_attrs.keys())
+        cols = ["Time", "File Name", *summary_attrs.keys()]
 
         data_info = []
 

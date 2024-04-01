@@ -582,7 +582,7 @@ class ArraySlicer(QtCore.QObject):
             self._obj.dims[ax]: self._bin_slice(cursor, ax, int_if_one=True)
             for ax in axis
         }
-        return f".isel(**{str(slice_dict)}).squeeze()"
+        return f".isel(**{slice_dict!s}).squeeze()"
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
         axis = sorted(set(range(self._obj.ndim)) - set(disp))

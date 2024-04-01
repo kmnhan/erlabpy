@@ -51,7 +51,7 @@ class BL403Loader(LoaderBase):
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         data = load_experiment(file_path)
         # One file always corresponds to single region, so assume only one data variable
-        data: xr.DataArray = data.data_vars[list(data.data_vars.keys())[0]]
+        data: xr.DataArray = data.data_vars[next(iter(data.data_vars.keys()))]
 
         return self.process_keys(data)
 
@@ -169,7 +169,7 @@ class BL403Loader(LoaderBase):
             "azi": "delta",
         }
 
-        cols = ["Time", "File Name", "Type"] + list(summary_attrs.keys())
+        cols = ["Time", "File Name", "Type", *summary_attrs.keys()]
 
         data: list[dict] = []
         data_info = []
