@@ -56,7 +56,7 @@ def avec2abc(
     avec: npt.NDArray[np.float64],
 ) -> tuple[float, float, float, float, float, float]:
     """Determines lattice parameters from lattice vectors."""
-    a, b, c = [np.linalg.norm(x) for x in avec]
+    a, b, c = (np.linalg.norm(x) for x in avec)
     alpha = angle_between(avec[1] / b, avec[2] / c)
     beta = angle_between(avec[2] / c, avec[0] / a)
     gamma = angle_between(avec[0] / a, avec[1] / b)

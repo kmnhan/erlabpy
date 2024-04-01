@@ -16,7 +16,7 @@ __all__ = [
     "step_broad",
 ]
 
-from typing import Callable
+from collections.abc import Callable
 
 import numba
 import numpy as np

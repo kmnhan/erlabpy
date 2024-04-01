@@ -942,9 +942,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.gamma = 1.0
             self.cmap = "bwr"
         # cursor_c = pg.mkColor(0.5)
-        cursor_c, cursor_c_hover, span_c, span_c_edge = [
+        cursor_c, cursor_c_hover, span_c, span_c_edge = (
             pg.mkColor("gray") for _ in range(4)
-        ]
+        )
         cursor_c.setAlphaF(0.75)
         cursor_c_hover.setAlphaF(0.95)
         span_c.setAlphaF(0.15)

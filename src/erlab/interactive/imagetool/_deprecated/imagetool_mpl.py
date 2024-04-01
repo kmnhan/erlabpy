@@ -979,7 +979,7 @@ class mpl_itool(Widget):
         fps2 = 1.0 / dt
         self.lastupdate = now
         self.fps = self.fps * 0.9 + fps2 * 0.1
-        tx = "Mean Frame Rate:  {fps:.3f} FPS".format(fps=self.fps)
+        tx = f"Mean Frame Rate:  {self.fps:.3f} FPS"
         print(tx, end="\r")
 
     def set_data(self, i):

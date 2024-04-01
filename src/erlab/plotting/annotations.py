@@ -240,9 +240,9 @@ def parse_point_labels(name: str, roman=True, bar=False):
     name = format_str.format(parse_special_point(name))
 
     if bar:
-        name = r"$\overline{{{}}}$".format(name)
+        name = rf"$\overline{{{name}}}$"
     else:
-        name = r"${}$".format(name)
+        name = rf"${name}$"
 
     return name
 

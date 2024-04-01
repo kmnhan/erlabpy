@@ -113,7 +113,7 @@ def parse_ini(filename: str | os.PathLike) -> dict:
 
     parser = configparser.ConfigParser(strict=False)
     out = dict()
-    with open(filename, "r") as f:
+    with open(filename) as f:
         parser.read_file(f)
         for section in parser.sections():
             out[section] = dict(parser.items(section))

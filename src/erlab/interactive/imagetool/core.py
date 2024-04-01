@@ -1031,7 +1031,7 @@ class ItoolCursorSpan(pg.LinearRegionItem):
             super().setRegion(rgn)
 
 
-class ItoolDisplayObject(object):
+class ItoolDisplayObject:
     def __init__(self, axes, cursor: int | None = None):
         self.axes = axes
         if cursor is None:

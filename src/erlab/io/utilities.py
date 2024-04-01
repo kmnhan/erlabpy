@@ -163,7 +163,7 @@ def find_first_file(file, data_dir=None, contains=None, allow_soft_match=False):
             str(file)[1:], scan_desc, allow_soft_match=allow_soft_match
         )
 
-    raise ValueError("Could not find file associated to {}".format(file))
+    raise ValueError(f"Could not find file associated to {file}")
 
 
 def fix_attr_format(da: xr.DataArray):

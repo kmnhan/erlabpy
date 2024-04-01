@@ -383,7 +383,7 @@ class BZPlotWidget(QtWidgets.QWidget):
     def _update_canvas(self):
         for i, b in enumerate(self.bvec):
             self._bvecs[i][0].set_data_3d(*[(0, bi) for bi in b])
-            self._bvecs[i][1].set_position_3d((b + 0.15 * b / np.linalg.norm(b)))
+            self._bvecs[i][1].set_position_3d(b + 0.15 * b / np.linalg.norm(b))
 
         self._lc.set_segments(self.lines)
         self._plot.set_data_3d(

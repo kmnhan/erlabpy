@@ -79,7 +79,7 @@ class BL403Loader(LoaderBase):
             )
 
             coord_arr = np.loadtxt(motor_file, skiprows=1)
-            with open(motor_file, "r") as f:
+            with open(motor_file) as f:
                 header = f.readline().strip().split("\t")
 
             if coord_arr.ndim == 1:

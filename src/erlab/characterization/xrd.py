@@ -54,7 +54,7 @@ def load_xrd_itx(path: str, **kwargs: dict):
 
     """
     kwargs.setdefault("encoding", "windows-1252")
-    with open(path, "r", **kwargs) as file:
+    with open(path, **kwargs) as file:
         content = file.read()
     head, data = re.search(
         r"IGOR\nWAVES/O\s(.*?)\nBEGIN\n(.+?)\nEND", content, re.DOTALL

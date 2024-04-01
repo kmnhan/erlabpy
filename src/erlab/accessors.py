@@ -699,10 +699,10 @@ class MomentumAccessor:
 
             # kxy map
             # construct boundary array from meshgrid
-            alpha, beta = [
+            alpha, beta = (
                 np.r_[arr[0, :-1], arr[:-1, -1], arr[-1, ::-1], arr[-2:0:-1, 0]]
                 for arr in np.meshgrid(self._obj["alpha"], self._obj["beta"])
-            ]
+            )
 
             kx, ky = self._forward_func_raw(alpha[np.newaxis, :], beta[np.newaxis, :])
 
