@@ -76,11 +76,10 @@ class SSRL52Loader(LoaderBase):
                             ds = ds.rename_vars(counts="spectrum", exposure="time")
                         else:
                             ds = ds.rename_vars(counts="spectrum")
+                    elif "Time" in ds.variables:
+                        ds = ds.rename_vars(Count="spectrum", Time="time")
                     else:
-                        if "Time" in ds.variables:
-                            ds = ds.rename_vars(Count="spectrum", Time="time")
-                        else:
-                            ds = ds.rename_vars(Count="spectrum")
+                        ds = ds.rename_vars(Count="spectrum")
 
                     # List of dicts containing scale and label info for each axis
                     axes: list[dict[str, float | int | str]] = [

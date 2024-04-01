@@ -642,10 +642,8 @@ class LoaderBase:
                     f"Invalid configuration {data.attrs['configuration']}"
                 )
                 # print(f"Invalid configuration {data.attrs['configuration']}")
-            else:
-                # Configuration with deflector, check for chi coordinate
-                if "chi" not in data.coords:
-                    raise ValidationError("Missing coordinate chi")
+            elif "chi" not in data.coords:
+                raise ValidationError("Missing coordinate chi")
                     # print("Missing coordinate chi")
 
     def _load_multiple_parallel(

@@ -348,11 +348,10 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     0,
                 )
             )
+        elif steps > 0:
+            self.setValue(min(inc * steps + self.value(), self.maximum()))
         else:
-            if steps > 0:
-                self.setValue(min(inc * steps + self.value(), self.maximum()))
-            else:
-                self.setValue(max(inc * steps + self.value(), self.minimum()))
+            self.setValue(max(inc * steps + self.value(), self.minimum()))
 
     def stepEnabled(self):
         if self.isReadOnly():
@@ -904,9 +903,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
             if qwtype == "chkpushbtn":
                 if toggled is not None:
                     widget.toggled.connect(toggled)
-            else:
-                if clicked is not None:
-                    widget.clicked.connect(clicked)
+            elif clicked is not None:
+                widget.clicked.connect(clicked)
 
         if newrange is not None:
             widget.setRange(*newrange)

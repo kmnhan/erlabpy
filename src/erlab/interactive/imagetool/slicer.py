@@ -620,11 +620,10 @@ class ArraySlicer(QtCore.QObject):
         if self.get_binned(cursor)[axis]:
             window = self.get_bins(cursor)[axis]
             return slice(center - window // 2, center + (window - 1) // 2 + 1)
+        elif int_if_one:
+            return center
         else:
-            if int_if_one:
-                return center
-            else:
-                return slice(center, center + 1)
+            return slice(center, center + 1)
 
     def _bin_along_axis(
         self, cursor: int, axis: int

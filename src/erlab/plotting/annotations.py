@@ -232,11 +232,10 @@ def parse_point_labels(name: str, roman=True, bar=False):
             format_str = r"\mathdefault{{{}}}\prime"
         else:
             format_str = r"{}\prime"
+    elif roman:
+        format_str = r"\mathdefault{{{}}}"
     else:
-        if roman:
-            format_str = r"\mathdefault{{{}}}"
-        else:
-            format_str = r"{}"
+        format_str = r"{}"
 
     name = format_str.format(parse_special_point(name))
 

@@ -769,11 +769,10 @@ class MomentumAccessor:
 
         if from_numpoints:
             return float((lims[1] - lims[0]) / len(self._obj[dim]))
+        elif axis == "kz":
+            return self.best_kz_resolution
         else:
-            if axis == "kz":
-                return self.best_kz_resolution
-            else:
-                return self.best_kp_resolution
+            return self.best_kp_resolution
 
     @property
     @only_angles

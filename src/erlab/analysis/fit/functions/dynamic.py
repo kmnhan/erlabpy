@@ -64,11 +64,10 @@ def get_args_kwargs(func) -> tuple[list[str], dict[str, object]]:
     for fnam, fpar in sig.parameters.items():
         if fpar.kind == fpar.VAR_POSITIONAL or fpar.kind == fpar.VAR_KEYWORD:
             raise ValueError(f"varargs '*{fnam}' is not supported")
+        elif fpar.default == fpar.empty:
+            args.append(fnam)
         else:
-            if fpar.default == fpar.empty:
-                args.append(fnam)
-            else:
-                args_default[fnam] = fpar.default
+            args_default[fnam] = fpar.default
 
     return args, args_default
 

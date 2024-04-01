@@ -499,9 +499,8 @@ class GoldTool(AnalysisWindow):
         if p0["Fast"]:
             arg_dict["fast"] = True
             del arg_dict["temp"]
-        else:
-            if not p0["Fix T"]:
-                arg_dict["vary_temp"] = True
+        elif not p0["Fix T"]:
+            arg_dict["vary_temp"] = True
 
         if not p0["Scale cov"]:
             arg_dict["scale_covar_edge"] = False

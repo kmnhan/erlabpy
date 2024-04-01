@@ -180,11 +180,10 @@ def _diverging_powernorm_inv(value, gamma, vmin, vmax, vcenter):
             np.ma.power(2 * val_u - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
         )
         return np.ma.asarray(val_)
+    elif value < 0.5:
+        return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
     else:
-        if value < 0.5:
-            return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
-        else:
-            return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+        return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
 
 
 def _diverging_inversepowernorm(result, gamma, vmin, vmax, vcenter):
@@ -223,11 +222,10 @@ def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
         val_[val < 0.5] = np.ma.power(2 * val_l, gamma) * (vcenter - vmin) + vmin
         val_[val >= 0.5] = np.ma.power(2 - 2 * val_u, gamma) * (vcenter - vmax) + vmax
         return np.ma.asarray(val_)
+    elif value < 0.5:
+        return pow(2 * value, gamma) * (vcenter - vcenter) + vmin
     else:
-        if value < 0.5:
-            return pow(2 * value, gamma) * (vcenter - vcenter) + vmin
-        else:
-            return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
+        return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
 
 
 class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
@@ -572,17 +570,15 @@ def proportional_colorbar(
             ax = plt.gca()
             if mappable is None:
                 mappable = get_mappable(ax)
-    else:
-        if isinstance(ax, np.ndarray):
-            i = 0
-            while mappable is None and i < len(ax.flat):
-                mappable = get_mappable(
-                    ax.flatten()[i], silent=(i != (len(ax.flat) - 1))
-                )
-                i += 1
-        else:
-            if mappable is None:
-                mappable = get_mappable(ax)
+    elif isinstance(ax, np.ndarray):
+        i = 0
+        while mappable is None and i < len(ax.flat):
+            mappable = get_mappable(
+                ax.flatten()[i], silent=(i != (len(ax.flat) - 1))
+            )
+            i += 1
+    elif mappable is None:
+        mappable = get_mappable(ax)
 
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)

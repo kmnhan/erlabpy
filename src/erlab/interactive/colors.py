@@ -562,11 +562,10 @@ def pg_colormap_names(
                 all_cmaps = cet + _mpl
             else:
                 all_cmaps = local + cet + _mpl  # + _mpl_r
+        elif exclude_local:
+            all_cmaps = _mpl
         else:
-            if exclude_local:
-                all_cmaps = _mpl
-            else:
-                all_cmaps = local + _mpl
+            all_cmaps = local + _mpl
     return list(dict.fromkeys(all_cmaps))
 
 
