@@ -27,14 +27,35 @@ from erlab.interactive.kspace import ktool
 
 
 class ERLabAccessor:
+    """Base class for accessors."""
+
     def __init__(self, xarray_obj: xr.DataArray | xr.Dataset):
         self._obj = xarray_obj
 
 
-@xr.register_dataarray_accessor("er")
-class ERLabDataArrayAccessor(ERLabAccessor):
-    def show(self, *args, **kwargs):
-        return itool(self._obj, *args, **kwargs)
+@xr.register_dataarray_accessor("qplot")
+class PlotAccessor(ERLabAccessor):
+    """`xarray.DataArray.qplot` accessor for plotting data."""
+
+    def __call__(self, *args, **kwargs):
+        """
+        Plot the data. If a 2D data array is provided, it is plotted using
+        :func:`plot_array <erlab.plotting.general.plot_array>`. Otherwise, it is
+        equivalent to calling :meth:`xarray.DataArray.plot`.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments to be passed to the plotting function.
+        **kwargs
+            Keyword arguments to be passed to the plotting function.
+
+        """
+        if len(self._obj.dims) == 2:
+            return eplt.plot_array(self._obj, *args, **kwargs)
+        else:
+            return self._obj.plot(*args, **kwargs)
+
 
 
 def only_angles(method: Callable | None = None):
