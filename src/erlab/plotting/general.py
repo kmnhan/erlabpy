@@ -413,7 +413,7 @@ def plot_array_2d(
     cax: matplotlib.axes.Axes | None = None,
     colorbar_kw: dict | None = None,
     imshow_kw: dict | None = None,
-    **fatsel_kw: dict,
+    **indexers_kwargs: dict,
 ):
     if lnorm is None:
         lnorm = plt.Normalize()
@@ -438,8 +438,8 @@ def plot_array_2d(
     if ax is None:
         ax = plt.gca()
 
-    larr = larr.S.fat_sel(**fatsel_kw).copy(deep=True)
-    carr = carr.S.fat_sel(**fatsel_kw).copy(deep=True)
+    larr = larr.qsel(**indexers_kwargs).copy(deep=True)
+    carr = carr.qsel(**indexers_kwargs).copy(deep=True)
     sel_kw = {}
     if xlim is not None:
         if not np.iterable(xlim):
@@ -711,29 +711,37 @@ def plot_slices(
     """
     if isinstance(maps, xr.DataArray):
         maps = [maps]
+
     if transpose:
         maps = [m.T for m in maps]
+
     if cmap_order is None:
         cmap_order = order
+
     if norm_order is None:
         norm_order = cmap_order
+
     if gradient_kw is None:
         gradient_kw = dict()
+
     if subplot_kw is None:
         subplot_kw = dict()
+
     if annotate_kw is None:
         annotate_kw = dict()
+
     if colorbar_kw is None:
         colorbar_kw = dict()
 
     dims = maps[0].dims
-
     kwargs = {k: v for k, v in values.items() if k not in dims}
     slice_kw = {k: v for k, v in values.items() if k not in kwargs}
+
     if len(slice_kw) == 0:
         slice_dim = None
         slice_levels = [None]
         slice_width = None
+
     else:
         slice_dim = [k for k in slice_kw.keys() if not k.endswith("_width")][0]
         slice_levels = slice_kw[slice_dim]
@@ -749,6 +757,7 @@ def plot_slices(
 
     if xlim is not None and not np.iterable(xlim):
         xlim = (-xlim, xlim)
+
     if ylim is not None and not np.iterable(ylim):
         ylim = (-ylim, ylim)
 
@@ -762,6 +771,7 @@ def plot_slices(
 
     if order == "F":
         nrow, ncol = len(slice_levels), len(maps)
+
     elif order == "C":
         nrow, ncol = len(maps), len(slice_levels)
 
@@ -769,36 +779,42 @@ def plot_slices(
     cmap_norm = norm
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
+
     else:
         fig = axes.flat[0].get_figure()
+
     if nrow == 1:
         axes = axes[:, np.newaxis].reshape(1, -1)
+
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
 
+    qsel_kw = dict()
+
+    if crop:
+        if len(plot_dims) == 1:
+            if transpose and (ylim is not None):
+                qsel_kw[plot_dims[0]] = slice(*ylim)
+
+            elif xlim is not None:
+                qsel_kw[plot_dims[0]] = slice(*xlim)
+
+        elif len(plot_dims) == 2:
+            if xlim is not None:
+                qsel_kw[plot_dims[1]] = slice(*xlim)
+
+            if ylim is not None:
+                qsel_kw[plot_dims[0]] = slice(*ylim)
+
+    if slice_width is not None:
+        qsel_kw[slice_dim + "_width"] = slice_width
+
     for i in range(len(slice_levels)):
-        fatsel_kw = dict()
-        sel_kw = dict()
-        if crop:
-            if len(plot_dims) == 1:
-                if transpose and (ylim is not None):
-                    sel_kw[plot_dims[0]] = slice(*ylim)
-                elif xlim is not None:
-                    sel_kw[plot_dims[0]] = slice(*xlim)
-            elif len(plot_dims) == 2:
-                if xlim is not None:
-                    sel_kw[plot_dims[1]] = slice(*xlim)
-                if ylim is not None:
-                    sel_kw[plot_dims[0]] = slice(*ylim)
         if slice_dim is not None:
-            fatsel_kw[slice_dim] = slice_levels[i]
-        if slice_width is not None:
-            fatsel_kw[slice_dim + "_width"] = slice_width
-            if slice_width == 0:
-                fatsel_kw["method"] = "nearest"
+            qsel_kw[slice_dim] = slice_levels[i]
 
         for j in range(len(maps)):
-            dat_sel = maps[j].copy(deep=True).sel(**sel_kw).S.fat_sel(**fatsel_kw)
+            dat_sel = maps[j].copy(deep=True).qsel(**qsel_kw)
 
             if order == "F":
                 ax = axes[i, j]
@@ -829,6 +845,7 @@ def plot_slices(
                     ax.plot(dat_sel.values, dat_sel[plot_dims[0]], **kwargs)
                     ax.set_xlabel(dat_sel.name)
                     ax.set_ylabel(plot_dims[0])
+
                     if gradient:
                         gradient_fill(
                             dat_sel.values,
@@ -837,9 +854,11 @@ def plot_slices(
                             transpose=True,
                             **gradient_kw,
                         )
+
                 else:
                     dat_sel.plot(ax=ax, **kwargs)
                     ax.set_title("")
+
                     if gradient:
                         gradient_fill(
                             dat_sel[plot_dims[0]], dat_sel.values, ax=ax, **gradient_kw
@@ -852,6 +871,7 @@ def plot_slices(
                             norm = cmap_norm[i][j]
                         except TypeError:
                             norm = cmap_norm[i]
+
                     elif norm_order == "C":
                         try:
                             norm = cmap_norm[j][i]

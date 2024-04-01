@@ -7,7 +7,13 @@ data analysis and visualization.
 
 """
 
-__all__ = ["MomentumAccessor", "OffsetView"]
+__all__ = [
+    "PlotAccessor",
+    "ImageToolAccessor",
+    "SelectionAccessor",
+    "MomentumAccessor",
+    "OffsetView",
+]
 
 import functools
 import time
@@ -18,11 +24,13 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
+from xarray.core.utils import either_dict_or_kwargs
 
+import erlab.plotting.erplot as eplt
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.kspace import ktool
 
 
@@ -39,8 +47,8 @@ class PlotAccessor(ERLabAccessor):
 
     def __call__(self, *args, **kwargs):
         """
-        Plot the data. If a 2D data array is provided, it is plotted using
-        :func:`plot_array <erlab.plotting.general.plot_array>`. Otherwise, it is
+        Plot the data. For supported shapes, :func:`plot_array
+        <erlab.plotting.general.plot_array>` is used. Otherwise, it is
         equivalent to calling :meth:`xarray.DataArray.plot`.
 
         Parameters
@@ -49,13 +57,123 @@ class PlotAccessor(ERLabAccessor):
             Positional arguments to be passed to the plotting function.
         **kwargs
             Keyword arguments to be passed to the plotting function.
-
         """
+
         if len(self._obj.dims) == 2:
             return eplt.plot_array(self._obj, *args, **kwargs)
+
         else:
             return self._obj.plot(*args, **kwargs)
 
+
+@xr.register_dataarray_accessor("qshow")
+class ImageToolAccessor(ERLabAccessor):
+    """`xarray.DataArray.qshow` accessor for interactive visualization."""
+
+    def __call__(self, *args, **kwargs) -> ImageTool:
+        if len(self._obj.dims) >= 2:
+            return itool(self._obj, *args, **kwargs)
+        else:
+            raise ValueError("Data must have at leasst two dimensions.")
+
+
+@xr.register_dataarray_accessor("qsel")
+class SelectionAccessor(ERLabAccessor):
+    """`xarray.DataArray.qsel` accessor for conveniently selecting and averaging data."""
+
+    def __call__(
+        self,
+        indexers: dict[str, float | slice] | None = None,
+        *,
+        verbose: bool = False,
+        **indexers_kwargs: dict[str, float | slice],
+    ):
+        """Select and average data along specified dimensions.
+
+        Parameters
+        ----------
+        indexers
+            Dictionary specifying the dimensions and their values or slices.
+            Position along a dimension can be specified in three ways:
+
+            - As a scalar value: `alpha=-1.2`
+
+              If no width is specified, the data is selected along the nearest value. It
+              is equivalent to `xarray.DataArray.sel` with `method='nearest'`.
+
+            - As a value and width: `alpha=5, alpha_width=0.5`
+
+              The data is *averaged* over a slice of width `alpha_width`, centered at
+              `alpha`.
+
+            - As a slice: `alpha=slice(-10, 10)`
+
+              The data is selected over the specified slice. No averaging is performed.
+
+            One of `indexers` or `indexers_kwargs` must be provided.
+        verbose
+            If `True`, print information about the selected data and averaging process.
+            Default is `False`.
+        **indexers_kwargs
+            The keyword arguments form of `indexers`. One of `indexers` or
+            `indexers_kwargs` must be provided.
+
+        Returns
+        -------
+        xarray.DataArray
+            The selected and averaged data.
+
+        Raises
+        ------
+        ValueError
+            If a specified dimension is not present in the data.
+        """
+
+        indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
+
+        # Bin widths for each dimension, zero if width not specified
+        bin_widths: dict[str, float] = {}
+
+        for dim in indexers.keys():
+            if not dim.endswith("_width"):
+                bin_widths[dim] = indexers.get(f"{dim}_width", 0.0)
+                if dim not in self._obj.dims:
+                    raise ValueError(f"Dimension `{dim}` not found in data.")
+
+        scalars: dict[str, float] = {}
+        slices: dict[str, slice] = {}
+        avg_dims: list[str] = []
+
+        for dim, width in bin_widths.items():
+            if width == 0.0:
+                if isinstance(indexers[dim], slice):
+                    slices[dim] = indexers[dim]
+                else:
+                    scalars[dim] = float(indexers[dim])
+            else:
+                slices[dim] = slice(
+                    indexers[dim] - width / 2, indexers[dim] + width / 2
+                )
+                avg_dims.append(dim)
+
+        if len(scalars) >= 1:
+            out = self._obj.sel(**scalars, method="nearest")
+        else:
+            out = self._obj
+
+        if len(slices) >= 1:
+            out = out.sel(**slices)
+
+            lost_coords = {k: out[k].mean() for k in avg_dims}
+            out = out.mean(dim=avg_dims, keep_attrs=True)
+            out = out.assign_coords(lost_coords)
+
+        if verbose:
+            print(
+                f"Selected data with {scalars} and {slices}, averaging over {avg_dims}"
+            )
+
+        return out
 
 
 def only_angles(method: Callable | None = None):
@@ -215,6 +333,14 @@ class OffsetView:
 
 @xr.register_dataarray_accessor("kspace")
 class MomentumAccessor:
+    """`xarray.DataArray.kspace` accessor for momentum conversion related utilities.
+
+    This class provides convenient access to various momentum-related properties of a
+    data object. It allows getting and setting properties such as configuration, inner
+    potential, work function, angle resolution, slit axis, momentum axes, angle
+    parameters, and offsets.
+
+    """
 
     def __init__(self, xarray_obj: xr.DataArray):
         self._obj = xarray_obj
@@ -305,7 +431,9 @@ class MomentumAccessor:
         """Angular resolution of the data in degrees.
 
         The angular resolution is stored in the ``angle_resolution`` attribute of the
-        data. If it is not set, a default value of 0.1° is silently used.
+        data. If it is not set, a default value of 0.1° is silently used. It is used in
+        `best_kp_resolution` when automatically estimating momentum steps through
+        `estimate_resolution`.
         """
 
         try:
