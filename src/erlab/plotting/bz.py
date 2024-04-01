@@ -11,11 +11,11 @@ from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
 
-abbrv_kws = dict(
-    facecolor=["fc", "none"],
-    linestyle=["ls", "--"],
-    linewidth=["lw", 0.5],
-)
+abbrv_kws = {
+    "facecolor": ["fc", "none"],
+    "linestyle": ["ls", "--"],
+    "linewidth": ["lw", 0.5],
+}
 
 
 def get_bz_edge(

@@ -31,20 +31,20 @@ class masktool(AnalysisWindow):
 
         self.cursor = self.addParameterGroup(
             **{
-                "Z dim": dict(
-                    qwtype="combobox",
-                    items=self.data.dims,
-                    currentText=self.data.dims[-1],
-                ),
-                "slider": dict(
-                    qwtype="slider",
-                    orientation=QtCore.Qt.Horizontal,
-                    showlabel=False,
-                    value=0,
-                    minimum=0,
-                    maximum=self.data.shape[-1] - 1,
-                ),
-                "Transpose": dict(qwtype="chkbox"),
+                "Z dim": {
+                    "qwtype": "combobox",
+                    "items": self.data.dims,
+                    "currentText": self.data.dims[-1],
+                },
+                "slider": {
+                    "qwtype": "slider",
+                    "orientation": QtCore.Qt.Horizontal,
+                    "showlabel": False,
+                    "value": 0,
+                    "minimum": 0,
+                    "maximum": self.data.shape[-1] - 1,
+                },
+                "Transpose": {"qwtype": "chkbox"},
             }
         )
         self.images[0].setDataArray(self.data[:, :, 0])

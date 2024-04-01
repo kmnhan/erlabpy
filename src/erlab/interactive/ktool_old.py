@@ -132,15 +132,15 @@ class kTool(QtWidgets.QMainWindow):
         self.cmap = cmap
         self.visible = True
         self.background = None
-        improps = dict(
-            animated=True,
-            visible=True,
-            interpolation="none",
-            aspect="auto",
-            origin="lower",
-            norm=colors.PowerNorm(self.gamma),
-            cmap=self.cmap,
-        )
+        improps = {
+            "animated": True,
+            "visible": True,
+            "interpolation": "none",
+            "aspect": "auto",
+            "origin": "lower",
+            "norm": colors.PowerNorm(self.gamma),
+            "cmap": self.cmap,
+        }
 
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)

@@ -46,7 +46,7 @@ def _link_splitters(
         sizes[0] = s1.sizes()[-1]
     else:
         sizes[0] = s1.sizes()[0]
-    if all([x == 0 for x in sizes[1:]]) and sizes[0] != total:
+    if all(x == 0 for x in sizes[1:]) and sizes[0] != total:
         sizes[1:] = [1] * len(sizes[1:])
     try:
         factor = (total - sizes[0]) / sum(sizes[1:])
@@ -392,7 +392,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.layout().addWidget(self._colorbar)
         self._colorbar.setVisible(False)
 
-        pkw = dict(image_cls=image_cls, plotdata_cls=plotdata_cls)
+        pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str | list[float]] = {}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
@@ -424,13 +424,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if cmap.startswith("cet_CET"):
                 cmap = cmap[4:]
 
-        self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = dict(
-            cmap=cmap,
-            gamma=gamma,
-            reversed=cmap_reversed,
-            highContrast=False,
-            zeroCentered=zeroCentered,
-        )
+        self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = {
+            "cmap": cmap,
+            "gamma": gamma,
+            "reversed": cmap_reversed,
+            "highContrast": False,
+            "zeroCentered": zeroCentered,
+        }
 
         self._data: xr.DataArray | None = None
         self.current_cursor: int = 0
@@ -482,7 +482,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
         if self.data.ndim == 2:
-            return tuple()
+            return ()
         elif self.data.ndim == 3:
             return tuple(self.get_axes(ax) for ax in (4, 5))
         elif self.data.ndim == 4:
@@ -905,7 +905,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.data.ndim == 4:
             sizes[3] = (0, 0, (r0 + r1 - d))
         for split, sz in zip(self._splitters, sizes):
-            split.setSizes(tuple(map(lambda s: round(s * scale), sz)))
+            split.setSizes(tuple(round(s * scale) for s in sz))
 
         for i, sel in enumerate(valid_axis):
             self.get_axes_widget(i).setVisible(i not in invalid)

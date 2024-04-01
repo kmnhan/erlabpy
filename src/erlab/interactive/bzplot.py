@@ -96,94 +96,104 @@ class LatticeWidget(QtWidgets.QTabWidget):
         self.params_latt = ParameterGroup(
             ncols=3,
             **{
-                "a": dict(qwtype="btspin", value=1, showlabel="𝑎", decimals=5),
-                "b": dict(qwtype="btspin", value=1, showlabel="𝑏", decimals=5),
-                "c": dict(qwtype="btspin", value=1, showlabel="𝑐", decimals=5),
-                "alpha": dict(
-                    qwtype="btspin",
-                    value=90.0,
-                    minimum=0,
-                    maximum=180,
-                    showlabel="𝛼",
-                    decimals=5,
-                ),
-                "beta": dict(
-                    qwtype="btspin",
-                    value=90.0,
-                    minimum=0,
-                    maximum=180,
-                    showlabel="𝛽",
-                    decimals=5,
-                ),
-                "gamma": dict(
-                    qwtype="btspin",
-                    value=90.0,
-                    minimum=0,
-                    maximum=180,
-                    showlabel="𝛾",
-                    decimals=5,
-                ),
-                "apply": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Apply",
-                    colspan="ncols",
-                    clicked=self.latt_changed,
-                ),
+                "a": {"qwtype": "btspin", "value": 1, "showlabel": "𝑎", "decimals": 5},
+                "b": {"qwtype": "btspin", "value": 1, "showlabel": "𝑏", "decimals": 5},
+                "c": {"qwtype": "btspin", "value": 1, "showlabel": "𝑐", "decimals": 5},
+                "alpha": {
+                    "qwtype": "btspin",
+                    "value": 90.0,
+                    "minimum": 0,
+                    "maximum": 180,
+                    "showlabel": "𝛼",
+                    "decimals": 5,
+                },
+                "beta": {
+                    "qwtype": "btspin",
+                    "value": 90.0,
+                    "minimum": 0,
+                    "maximum": 180,
+                    "showlabel": "𝛽",
+                    "decimals": 5,
+                },
+                "gamma": {
+                    "qwtype": "btspin",
+                    "value": 90.0,
+                    "minimum": 0,
+                    "maximum": 180,
+                    "showlabel": "𝛾",
+                    "decimals": 5,
+                },
+                "apply": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Apply",
+                    "colspan": "ncols",
+                    "clicked": self.latt_changed,
+                },
             },
         )
         self.params_avec = ParameterGroup(
             ncols=4,
             **{
-                "_0": dict(widget=QtWidgets.QWidget(), showlabel=False, notrack=True),
-                "_1": dict(
-                    widget=QtWidgets.QLabel(
+                "_0": {
+                    "widget": QtWidgets.QWidget(),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_1": {
+                    "widget": QtWidgets.QLabel(
                         "𝑥", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "_2": dict(
-                    widget=QtWidgets.QLabel(
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_2": {
+                    "widget": QtWidgets.QLabel(
                         "𝑦", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "_3": dict(
-                    widget=QtWidgets.QLabel(
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_3": {
+                    "widget": QtWidgets.QLabel(
                         "𝑧", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "a1": dict(
-                    widget=QtWidgets.QLabel("𝑎₁"), showlabel=False, notrack=True
-                ),
-                "a1x": dict(qwtype="btspin", value=1, showlabel=False),
-                "a1y": dict(qwtype="btspin", value=1, showlabel=False),
-                "a1z": dict(qwtype="btspin", value=1, showlabel=False),
-                "a2": dict(
-                    widget=QtWidgets.QLabel("𝑎₂"), showlabel=False, notrack=True
-                ),
-                "a2x": dict(qwtype="btspin", value=1, showlabel=False),
-                "a2y": dict(qwtype="btspin", value=1, showlabel=False),
-                "a2z": dict(qwtype="btspin", value=1, showlabel=False),
-                "a3": dict(
-                    widget=QtWidgets.QLabel("𝑎₃"), showlabel=False, notrack=True
-                ),
-                "a3x": dict(qwtype="btspin", value=1, showlabel=False),
-                "a3y": dict(qwtype="btspin", value=1, showlabel=False),
-                "a3z": dict(qwtype="btspin", value=1, showlabel=False),
-                "apply": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Apply",
-                    colspan="ncols",
-                    clicked=self.avec_changed,
-                ),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "a1": {
+                    "widget": QtWidgets.QLabel("𝑎₁"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "a1x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a1y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a1z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a2": {
+                    "widget": QtWidgets.QLabel("𝑎₂"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "a2x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a2y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a2z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a3": {
+                    "widget": QtWidgets.QLabel("𝑎₃"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "a3x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a3y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "a3z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "apply": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Apply",
+                    "colspan": "ncols",
+                    "clicked": self.avec_changed,
+                },
             },
         )
         for i in range(8):
@@ -191,54 +201,64 @@ class LatticeWidget(QtWidgets.QTabWidget):
         self.params_bvec = ParameterGroup(
             ncols=4,
             **{
-                "_0": dict(widget=QtWidgets.QWidget(), showlabel=False, notrack=True),
-                "_1": dict(
-                    widget=QtWidgets.QLabel(
+                "_0": {
+                    "widget": QtWidgets.QWidget(),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_1": {
+                    "widget": QtWidgets.QLabel(
                         "𝑥", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "_2": dict(
-                    widget=QtWidgets.QLabel(
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_2": {
+                    "widget": QtWidgets.QLabel(
                         "𝑦", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "_3": dict(
-                    widget=QtWidgets.QLabel(
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "_3": {
+                    "widget": QtWidgets.QLabel(
                         "𝑧", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
                     ),
-                    showlabel=False,
-                    notrack=True,
-                ),
-                "b1": dict(
-                    widget=QtWidgets.QLabel("𝑏₁"), showlabel=False, notrack=True
-                ),
-                "b1x": dict(qwtype="btspin", value=1, showlabel=False),
-                "b1y": dict(qwtype="btspin", value=1, showlabel=False),
-                "b1z": dict(qwtype="btspin", value=1, showlabel=False),
-                "b2": dict(
-                    widget=QtWidgets.QLabel("𝑏₂"), showlabel=False, notrack=True
-                ),
-                "b2x": dict(qwtype="btspin", value=1, showlabel=False),
-                "b2y": dict(qwtype="btspin", value=1, showlabel=False),
-                "b2z": dict(qwtype="btspin", value=1, showlabel=False),
-                "b3": dict(
-                    widget=QtWidgets.QLabel("𝑏₃"), showlabel=False, notrack=True
-                ),
-                "b3x": dict(qwtype="btspin", value=1, showlabel=False),
-                "b3y": dict(qwtype="btspin", value=1, showlabel=False),
-                "b3z": dict(qwtype="btspin", value=1, showlabel=False),
-                "apply": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Apply",
-                    colspan="ncols",
-                    clicked=self.bvec_changed,
-                ),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "b1": {
+                    "widget": QtWidgets.QLabel("𝑏₁"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "b1x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b1y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b1z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b2": {
+                    "widget": QtWidgets.QLabel("𝑏₂"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "b2x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b2y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b2z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b3": {
+                    "widget": QtWidgets.QLabel("𝑏₃"),
+                    "showlabel": False,
+                    "notrack": True,
+                },
+                "b3x": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b3y": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "b3z": {"qwtype": "btspin", "value": 1, "showlabel": False},
+                "apply": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Apply",
+                    "colspan": "ncols",
+                    "clicked": self.bvec_changed,
+                },
             },
         )
         for i in range(8):

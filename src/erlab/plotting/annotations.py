@@ -471,7 +471,7 @@ def label_subplots(
         values = np.array(values).flatten(order=order)
         if not (axlist.size == values.size):
             raise IndexError(
-                "The number of given values must match the number" " of given axes."
+                "The number of given values must match the number of given axes."
             )
 
     for i in range(len(axlist)):
@@ -591,7 +591,7 @@ def label_subplots_nature(
         values = np.array(values).flatten(order=order)
         if not (axlist.size == values.size):
             raise IndexError(
-                "The number of given values must match the number" " of given axes."
+                "The number of given values must match the number of given axes."
             )
 
     for i in range(len(axlist)):
@@ -657,7 +657,7 @@ def mark_points(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
-        for k, v in dict(ha="center", va="baseline", fontsize="small").items():
+        for k, v in {"ha": "center", "va": "baseline", "fontsize": "small"}.items():
             kwargs.setdefault(k, v)
         if not np.iterable(y):
             y = [y] * len(points)

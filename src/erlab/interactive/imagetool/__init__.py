@@ -94,7 +94,7 @@ def itool(
     qapp.setStyle("Fusion")
 
     if isinstance(data, list | tuple):
-        win = tuple()
+        win = ()
         for d in data:
             win += (ImageTool(d, **kwargs),)
         for w in win:
@@ -226,100 +226,101 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     def _generate_menu_kwargs(self) -> dict:
-        menu_kwargs = dict(
-            fileMenu=dict(
-                title="&File",
-                actions={
-                    "&Open...": dict(
-                        shortcut="Ctrl+O",
-                        triggered=self._open_file,
-                    ),
-                    "&Save As...": dict(
-                        shortcut="Ctrl+Shift+S",
-                        triggered=self._export_file,
-                    ),
-                    "&Copy Cursor Values": dict(
-                        shortcut="Ctrl+C",
-                        triggered=self._copy_cursor_val,
-                    ),
-                    "&Copy Cursor Indices": dict(
-                        shortcut="Ctrl+Alt+C",
-                        triggered=self._copy_cursor_idx,
-                    ),
+        menu_kwargs = {
+            "fileMenu": {
+                "title": "&File",
+                "actions": {
+                    "&Open...": {
+                        "shortcut": "Ctrl+O",
+                        "triggered": self._open_file,
+                    },
+                    "&Save As...": {
+                        "shortcut": "Ctrl+Shift+S",
+                        "triggered": self._export_file,
+                    },
+                    "&Copy Cursor Values": {
+                        "shortcut": "Ctrl+C",
+                        "triggered": self._copy_cursor_val,
+                    },
+                    "&Copy Cursor Indices": {
+                        "shortcut": "Ctrl+Alt+C",
+                        "triggered": self._copy_cursor_idx,
+                    },
                 },
-            ),
-            viewMenu=dict(
-                title="&View",
-                actions=dict(
-                    viewAllAct=dict(
-                        text="View &All",
-                        shortcut="Ctrl+A",
-                        triggered=self.slicer_area.view_all,
-                    ),
-                    transposeAct=dict(
-                        text="&Transpose Main Image",
-                        shortcut="T",
-                        triggered=lambda: self.slicer_area.swap_axes(0, 1),
-                        sep_after=True,
-                    ),
-                    addCursorAct=dict(
-                        text="&Add New Cursor",
-                        shortcut="Shift+A",
-                        triggered=self.slicer_area.add_cursor,
-                    ),
-                    remCursorAct=dict(
-                        text="&Remove Current Cursor",
-                        shortcut="Shift+R",
-                        triggered=self.slicer_area.remove_current_cursor,
-                    ),
-                    snapCursorAct=dict(
-                        text="&Snap to Pixels",
-                        shortcut="S",
-                        triggered=self.slicer_area.toggle_snap,
-                        checkable=True,
-                    ),
-                    cursorMoveMenu=dict(
-                        title="Cursor Control",
-                        actions=dict(),
-                    ),
-                    colorInvertAct=dict(
-                        text="Invert",
-                        shortcut="R",
-                        checkable=True,
-                        toggled=self._set_colormap_options,
-                        sep_before=True,
-                    ),
-                    highContrastAct=dict(
-                        text="High Contrast",
-                        checkable=True,
-                        toggled=self._set_colormap_options,
-                    ),
-                    zeroCenterAct=dict(
-                        text="Center At Zero",
-                        checkable=True,
-                        toggled=self._set_colormap_options,
-                        sep_after=True,
-                    ),
-                ),
-            ),
-            helpMenu=dict(
-                title="&Help",
-                actions=dict(
-                    helpAction=dict(text="DataSlicer Help (WIP)"),
-                    shortcutsAction=dict(
-                        text="Keyboard Shortcuts Reference (WIP)", sep_before=True
-                    ),
-                ),
-            ),
-        )
+            },
+            "viewMenu": {
+                "title": "&View",
+                "actions": {
+                    "viewAllAct": {
+                        "text": "View &All",
+                        "shortcut": "Ctrl+A",
+                        "triggered": self.slicer_area.view_all,
+                    },
+                    "transposeAct": {
+                        "text": "&Transpose Main Image",
+                        "shortcut": "T",
+                        "triggered": lambda: self.slicer_area.swap_axes(0, 1),
+                        "sep_after": True,
+                    },
+                    "addCursorAct": {
+                        "text": "&Add New Cursor",
+                        "shortcut": "Shift+A",
+                        "triggered": self.slicer_area.add_cursor,
+                    },
+                    "remCursorAct": {
+                        "text": "&Remove Current Cursor",
+                        "shortcut": "Shift+R",
+                        "triggered": self.slicer_area.remove_current_cursor,
+                    },
+                    "snapCursorAct": {
+                        "text": "&Snap to Pixels",
+                        "shortcut": "S",
+                        "triggered": self.slicer_area.toggle_snap,
+                        "checkable": True,
+                    },
+                    "cursorMoveMenu": {
+                        "title": "Cursor Control",
+                        "actions": {},
+                    },
+                    "colorInvertAct": {
+                        "text": "Invert",
+                        "shortcut": "R",
+                        "checkable": True,
+                        "toggled": self._set_colormap_options,
+                        "sep_before": True,
+                    },
+                    "highContrastAct": {
+                        "text": "High Contrast",
+                        "checkable": True,
+                        "toggled": self._set_colormap_options,
+                    },
+                    "zeroCenterAct": {
+                        "text": "Center At Zero",
+                        "checkable": True,
+                        "toggled": self._set_colormap_options,
+                        "sep_after": True,
+                    },
+                },
+            },
+            "helpMenu": {
+                "title": "&Help",
+                "actions": {
+                    "helpAction": {"text": "DataSlicer Help (WIP)"},
+                    "shortcutsAction": {
+                        "text": "Keyboard Shortcuts Reference (WIP)",
+                        "sep_before": True,
+                    },
+                },
+            },
+        }
 
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerCursorAct"
-        ] = dict(
-            text="&Center Current Cursor",
-            shortcut="Shift+C",
-            triggered=lambda: self.slicer_area.center_cursor(),
-        )
+        ] = {
+            "text": "&Center Current Cursor",
+            "shortcut": "Shift+C",
+            "triggered": lambda: self.slicer_area.center_cursor(),
+        }
         for i, ((t, s), axis, amount) in enumerate(
             zip(
                 (
@@ -338,21 +339,21 @@ class ItoolMenuBar(DictMenuBar):
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
                 f"ShiftCursorAct{i}"
-            ] = dict(
-                text=t,
-                shortcut=s,
-                triggered=lambda *,
+            ] = {
+                "text": t,
+                "shortcut": s,
+                "triggered": lambda *,
                 ax=self.slicer_area.main_image.display_axis[axis],
                 d=amount: self.slicer_area.step_index(ax, d),
-            )
+            }
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
-        ] = dict(
-            text="&Center All Cursors",
-            shortcut="Alt+Shift+C",
-            triggered=lambda: self.slicer_area.center_all_cursors(),
-            sep_before=True,
-        )
+        ] = {
+            "text": "&Center All Cursors",
+            "shortcut": "Alt+Shift+C",
+            "triggered": lambda: self.slicer_area.center_all_cursors(),
+            "sep_before": True,
+        }
         for i, ((t, s), axis, amount) in enumerate(
             zip(
                 (
@@ -371,13 +372,13 @@ class ItoolMenuBar(DictMenuBar):
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
                 f"ShiftAllCursorAct{i}"
-            ] = dict(
-                text=t,
-                shortcut=s,
-                triggered=lambda *,
+            ] = {
+                "text": t,
+                "shortcut": s,
+                "triggered": lambda *,
                 ax=self.slicer_area.main_image.display_axis[axis],
                 d=amount: self.slicer_area.step_index_all(ax, d),
-            )
+            }
         return menu_kwargs
 
     def createMenus(self):
@@ -416,12 +417,12 @@ class ItoolMenuBar(DictMenuBar):
 
     def _open_file(self):
         valid_files = {
-            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, dict(engine="h5netcdf")),
-            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.merlin.load, dict()),
-            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.merlin.load_live, dict()),
-            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.da30.load, dict()),
-            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.ssrl52.load, dict()),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, dict()),
+            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.merlin.load, {}),
+            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.merlin.load_live, {}),
+            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.da30.load, {}),
+            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.ssrl52.load, {}),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
 
         dialog = QtWidgets.QFileDialog(self)

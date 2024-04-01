@@ -96,7 +96,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
         attrs=out.attrs,
     )
     if all(i in out.dims for i in ["kx", "ky"]):
-        out = out.rename(dict(kx="qx", ky="qy"))
+        out = out.rename({"kx": "qx", "ky": "qy"})
     return out
 
 
@@ -114,14 +114,14 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 
         out_list = joblib.Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
             joblib.delayed(nanacf)(
-                np.squeeze(arr.isel({s: v for s, v in zip(stack_dims, vals)}).values),
+                np.squeeze(arr.isel(dict(zip(stack_dims, vals))).values),
                 mode,
                 method,
             )
             for vals in itertools.product(*stack_iter)
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
-        acf_sizes = {d: s for d, s in zip(acf_dims, out_list[0].shape)}
+        acf_sizes = dict(zip(acf_dims, out_list[0].shape))
         acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
 
         out_sizes = stack_sizes | acf_sizes
@@ -146,7 +146,7 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
             }
         )
         if all(i in out.dims for i in ["kx", "ky"]):
-            out = out.rename(dict(kx="qx", ky="qy"))
+            out = out.rename({"kx": "qx", "ky": "qy"})
     return out
 
 

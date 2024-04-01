@@ -59,27 +59,27 @@ class SinglePeakWidget(ParameterGroup):
         self.peak_index = peak_index
         super().__init__(
             **{
-                "Peak Shape": dict(qwtype="combobox", items=self.VALID_LINESHAPE),
-                "height": dict(
-                    qwtype="fitparam",
-                    showlabel="Intensity",
-                    name="height",
-                    spin_kw=dict(value=0.001, minimumWidth=100),
-                ),
-                "center": dict(
-                    qwtype="fitparam",
-                    showlabel="Position",
-                    name="center",
-                    spin_kw=dict(value=0.001, minimumWidth=100),
-                ),
-                "width": dict(
-                    qwtype="fitparam",
-                    showlabel="FWHM",
-                    name="width",
-                    spin_kw=dict(value=0.03, minimumWidth=100),
-                ),
+                "Peak Shape": {"qwtype": "combobox", "items": self.VALID_LINESHAPE},
+                "height": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Intensity",
+                    "name": "height",
+                    "spin_kw": {"value": 0.001, "minimumWidth": 100},
+                },
+                "center": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Position",
+                    "name": "center",
+                    "spin_kw": {"value": 0.001, "minimumWidth": 100},
+                },
+                "width": {
+                    "qwtype": "fitparam",
+                    "showlabel": "FWHM",
+                    "name": "width",
+                    "spin_kw": {"value": 0.03, "minimumWidth": 100},
+                },
             },
-            groupbox_kw=dict(flat=True, objectName=f"PeakWidget{self.peak_index}"),
+            groupbox_kw={"flat": True, "objectName": f"PeakWidget{self.peak_index}"},
         )
 
         self.setStyleSheet("QGroupBox#" + self.objectName() + " {border:0;}")
@@ -199,72 +199,75 @@ class edctool(QtWidgets.QMainWindow):
         self._options_layout = QtWidgets.QVBoxLayout(self._options)
         self._params_init = ParameterGroup(
             **{
-                "n_bands": dict(
-                    showlabel="# Bands",
-                    qwtype="btspin",
-                    integer=True,
-                    value=n_bands,
-                    minimum=1,
-                    fixedWidth=60,
-                    notrack=True,
-                    valueChanged=self.refresh_n_peaks,
-                ),
-                "lin_bkg": dict(
-                    qwtype="fitparam",
-                    showlabel="Linear Background",
-                    name="lin_bkg",
-                    spin_kw=dict(value=0.0, minimumWidth=200),
-                ),
-                "const_bkg": dict(
-                    qwtype="fitparam",
-                    showlabel="Constant Background",
-                    name="const_bkg",
-                    spin_kw=dict(value=0.0, minimumWidth=200),
-                ),
-                "offset": dict(
-                    qwtype="fitparam",
-                    showlabel="Offset",
-                    name="offset",
-                    spin_kw=dict(value=0.0, minimumWidth=200),
-                ),
-                "resolution": dict(
-                    qwtype="fitparam",
-                    showlabel="Total Resolution",
-                    name="resolution",
-                    spin_kw=dict(
-                        value=0.01, singleStep=0.0001, decimals=4, minimumWidth=200
-                    ),
-                ),
-                "temp": dict(
-                    qwtype="fitparam",
-                    showlabel="Temperature",
-                    name="temp",
-                    fixed=True,
-                    spin_kw=dict(value=30, minimum=0, minimumWidth=200),
-                ),
-                "efermi": dict(
-                    qwtype="fitparam",
-                    showlabel="Fermi Level",
-                    name="efermi",
-                    fixed=True,
-                    spin_kw=dict(value=0, minimum=0, minimumWidth=200),
-                ),
+                "n_bands": {
+                    "showlabel": "# Bands",
+                    "qwtype": "btspin",
+                    "integer": True,
+                    "value": n_bands,
+                    "minimum": 1,
+                    "fixedWidth": 60,
+                    "notrack": True,
+                    "valueChanged": self.refresh_n_peaks,
+                },
+                "lin_bkg": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Linear Background",
+                    "name": "lin_bkg",
+                    "spin_kw": {"value": 0.0, "minimumWidth": 200},
+                },
+                "const_bkg": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Constant Background",
+                    "name": "const_bkg",
+                    "spin_kw": {"value": 0.0, "minimumWidth": 200},
+                },
+                "offset": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Offset",
+                    "name": "offset",
+                    "spin_kw": {"value": 0.0, "minimumWidth": 200},
+                },
+                "resolution": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Total Resolution",
+                    "name": "resolution",
+                    "spin_kw": {
+                        "value": 0.01,
+                        "singleStep": 0.0001,
+                        "decimals": 4,
+                        "minimumWidth": 200,
+                    },
+                },
+                "temp": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Temperature",
+                    "name": "temp",
+                    "fixed": True,
+                    "spin_kw": {"value": 30, "minimum": 0, "minimumWidth": 200},
+                },
+                "efermi": {
+                    "qwtype": "fitparam",
+                    "showlabel": "Fermi Level",
+                    "name": "efermi",
+                    "fixed": True,
+                    "spin_kw": {"value": 0, "minimum": 0, "minimumWidth": 200},
+                },
                 # "Fix T": dict(qwtype="chkbox", checked=True),
                 # "Bin x": dict(qwtype="spin", value=1, minimum=1),
                 # "Bin y": dict(qwtype="spin", value=1, minimum=1),
-                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
+                "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
                 # "# CPU": dict(
                 #     qwtype="spin",
                 #     value=os.cpu_count(),
                 #     minimum=1,
                 #     maximum=os.cpu_count(),
                 # ),
-                "go": dict(
-                    qwtype="pushbtn",
-                    showlabel=False,
-                    text="Go",
-                    clicked=self.do_fit,
-                ),
+                "go": {
+                    "qwtype": "pushbtn",
+                    "showlabel": False,
+                    "text": "Go",
+                    "clicked": self.do_fit,
+                },
             }
         )
         #

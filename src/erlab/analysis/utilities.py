@@ -210,7 +210,7 @@ def correct_with_edge(
 
     if isinstance(edge_quad, np.ndarray):
         edge_quad = xr.DataArray(
-            edge_quad, coords=dict(alpha=darr.alpha), dims=["alpha"]
+            edge_quad, coords={"alpha": darr.alpha}, dims=["alpha"]
         )
 
     corrected = shift(darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs)

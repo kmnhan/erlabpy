@@ -201,7 +201,7 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.toggled.connect(self.update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        offset_labels = dict(delta="𝛿", chi="𝜒₀", xi="𝜉₀", beta="𝛽₀")
+        offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
         for k in self.data.kspace.valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-180, 180)

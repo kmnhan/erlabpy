@@ -69,7 +69,7 @@ class LoaderBase:
     attribute, the value can be passed as an iterable.
     """
 
-    coordinate_attrs: tuple[str, ...] = tuple()
+    coordinate_attrs: tuple[str, ...] = ()
     """
     Names of attributes (after renaming) that should be treated as coordinates.
 

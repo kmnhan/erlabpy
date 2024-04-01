@@ -297,7 +297,7 @@ html_theme_options: dict[str, object] = {
 
 latex_engine = "lualatex"
 latex_table_style = ["booktabs"]
-latex_elements = dict(
-    fontpkg=r"""\usepackage{fontspec,unicode-math}
+latex_elements = {
+    "fontpkg": r"""\usepackage{fontspec,unicode-math}
 """,
-)
+}

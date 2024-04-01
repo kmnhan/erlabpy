@@ -142,7 +142,7 @@ def generate_data(
             rng.poisson(broadened).astype(float), ccd_sigma, truncate=10.0
         )
 
-    return xr.DataArray(broadened, coords=dict(kx=kx, ky=ky, eV=eV))
+    return xr.DataArray(broadened, coords={"kx": kx, "ky": ky, "eV": eV})
 
 
 def generate_data_angles(
@@ -231,7 +231,7 @@ def generate_data_angles(
 
     Ekin = hv - 4.5 + eV[None, None, :]
     forward_func, _ = erlab.analysis.kspace.get_kconv_func(
-        Ekin, configuration=configuration, angle_params=dict()
+        Ekin, configuration=configuration, angle_params={}
     )
 
     dE = eV[1] - eV[0]
@@ -267,7 +267,7 @@ def generate_data_angles(
             rng.poisson(out).astype(float), ccd_sigma, truncate=10.0, axes=(0, 2)
         )
 
-    out = xr.DataArray(out, coords=dict(alpha=alpha, beta=beta, eV=eV))
+    out = xr.DataArray(out, coords={"alpha": alpha, "beta": beta, "eV": eV})
     out = out.assign_coords(xi=0.0, delta=0.0, hv=hv)
 
     match configuration:

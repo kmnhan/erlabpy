@@ -19,8 +19,8 @@ def example_1():
             f"matplotlib.colors.PowerNorm ($\\gamma={gamma}$)",
             f"InversePowerNorm ($\\gamma={gamma}$)",
         ],
-        dict(vmin=0, vmax=1),
-        [dict(), dict(gamma=gamma), dict(gamma=gamma)],
+        {"vmin": 0, "vmax": 1},
+        [{}, {"gamma": gamma}, {"gamma": gamma}],
         cmap,
     )
 
@@ -34,11 +34,11 @@ def example_2():
             f"CenteredPowerNorm ($\\gamma={gamma}$)",
             f"CenteredInversePowerNorm ($\\gamma={gamma}$)",
         ],
-        [dict(halfrange=0.5), dict(halfrange=0.5), dict(halfrange=0.5)],
+        [{"halfrange": 0.5}, {"halfrange": 0.5}, {"halfrange": 0.5}],
         [
-            dict(vcenter=0.5),
-            dict(gamma=gamma, vcenter=0.5),
-            dict(gamma=gamma, vcenter=0.5),
+            {"vcenter": 0.5},
+            {"gamma": gamma, "vcenter": 0.5},
+            {"gamma": gamma, "vcenter": 0.5},
         ],
         cmap,
     )

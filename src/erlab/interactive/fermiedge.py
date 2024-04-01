@@ -164,25 +164,25 @@ class GoldTool(AnalysisWindow):
         self.params_roi = ROIControls(self.add_roi(0))
         self.params_edge = ParameterGroup(
             **{
-                "T (K)": dict(qwtype="dblspin", value=temp, range=(0.0, 400.0)),
-                "Fix T": dict(qwtype="chkbox", checked=True),
-                "Bin x": dict(qwtype="spin", value=1, minimum=1),
-                "Bin y": dict(qwtype="spin", value=1, minimum=1),
-                "Fast": dict(qwtype="chkbox", checked=False),
-                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
-                "Scale cov": dict(qwtype="chkbox", checked=True),
-                "# CPU": dict(
-                    qwtype="spin",
-                    value=os.cpu_count(),
-                    minimum=1,
-                    maximum=os.cpu_count(),
-                ),
-                "go": dict(
-                    qwtype="pushbtn",
-                    showlabel=False,
-                    text="Go",
-                    clicked=self.perform_edge_fit,
-                ),
+                "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
+                "Fix T": {"qwtype": "chkbox", "checked": True},
+                "Bin x": {"qwtype": "spin", "value": 1, "minimum": 1},
+                "Bin y": {"qwtype": "spin", "value": 1, "minimum": 1},
+                "Fast": {"qwtype": "chkbox", "checked": False},
+                "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
+                "Scale cov": {"qwtype": "chkbox", "checked": True},
+                "# CPU": {
+                    "qwtype": "spin",
+                    "value": os.cpu_count(),
+                    "minimum": 1,
+                    "maximum": os.cpu_count(),
+                },
+                "go": {
+                    "qwtype": "pushbtn",
+                    "showlabel": False,
+                    "text": "Go",
+                    "clicked": self.perform_edge_fit,
+                },
             }
         )
 
@@ -190,56 +190,56 @@ class GoldTool(AnalysisWindow):
 
         self.params_poly = ParameterGroup(
             **{
-                "Degree": dict(qwtype="spin", value=4, range=(1, 20)),
-                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
-                "Scale cov": dict(qwtype="chkbox", checked=True),
-                "Residuals": dict(qwtype="chkbox", checked=False),
-                "Corrected": dict(qwtype="chkbox", checked=False),
-                "Shift coords": dict(qwtype="chkbox", checked=True),
-                "itool": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Open in ImageTool",
-                    clicked=self.open_itool,
-                ),
-                "copy": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Copy to clipboard",
-                    clicked=lambda: self.gen_code("poly"),
-                ),
+                "Degree": {"qwtype": "spin", "value": 4, "range": (1, 20)},
+                "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
+                "Scale cov": {"qwtype": "chkbox", "checked": True},
+                "Residuals": {"qwtype": "chkbox", "checked": False},
+                "Corrected": {"qwtype": "chkbox", "checked": False},
+                "Shift coords": {"qwtype": "chkbox", "checked": True},
+                "itool": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Open in ImageTool",
+                    "clicked": self.open_itool,
+                },
+                "copy": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Copy to clipboard",
+                    "clicked": lambda: self.gen_code("poly"),
+                },
             }
         )
 
         self.params_spl = ParameterGroup(
             **{
-                "Auto": dict(qwtype="chkbox", checked=True),
-                "lambda": dict(
-                    qwtype="dblspin",
-                    minimum=0,
-                    maximum=10000,
-                    singleStep=0.001,
-                    decimals=4,
-                ),
-                "Residuals": dict(qwtype="chkbox", checked=False),
-                "Corrected": dict(qwtype="chkbox", checked=False),
-                "Shift coords": dict(qwtype="chkbox", checked=True),
-                "itool": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Open in ImageTool",
-                    clicked=self.open_itool,
-                ),
-                "copy": dict(
-                    qwtype="pushbtn",
-                    notrack=True,
-                    showlabel=False,
-                    text="Copy to clipboard",
-                    clicked=lambda: self.gen_code("spl"),
-                ),
+                "Auto": {"qwtype": "chkbox", "checked": True},
+                "lambda": {
+                    "qwtype": "dblspin",
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "singleStep": 0.001,
+                    "decimals": 4,
+                },
+                "Residuals": {"qwtype": "chkbox", "checked": False},
+                "Corrected": {"qwtype": "chkbox", "checked": False},
+                "Shift coords": {"qwtype": "chkbox", "checked": True},
+                "itool": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Open in ImageTool",
+                    "clicked": self.open_itool,
+                },
+                "copy": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Copy to clipboard",
+                    "clicked": lambda: self.gen_code("spl"),
+                },
             }
         )
         self.params_spl.widgets["lambda"].setDisabled(
@@ -474,13 +474,13 @@ class GoldTool(AnalysisWindow):
                 p1 = self.params_spl.values
         x0, y0, x1, y1 = (np.round(x, 3) for x in self.params_roi.roi_limits)
 
-        arg_dict = dict(
-            angle_range=(x0, x1),
-            eV_range=(y0, y1),
-            bin_size=(p0["Bin x"], p0["Bin y"]),
-            temp=p0["T (K)"],
-            method=p0["Method"],
-        )
+        arg_dict = {
+            "angle_range": (x0, x1),
+            "eV_range": (y0, y1),
+            "bin_size": (p0["Bin x"], p0["Bin y"]),
+            "temp": p0["T (K)"],
+            "method": p0["Method"],
+        }
 
         match mode:
             case "poly":
@@ -529,7 +529,7 @@ class GoldTool(AnalysisWindow):
                     "corrected = era.correct_with_edge": [
                         f"|{self._argnames['data_corr']}|",
                         "|modelresult|",
-                        dict(shift_coords=p1["Shift coords"]),
+                        {"shift_coords": p1["Shift coords"]},
                     ],
                 },
             )

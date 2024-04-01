@@ -25,7 +25,7 @@ class DA30Loader(LoaderBase):
         "beta": ["Thetay [deg]"],
         "hv": ["BL Energy", "Excitation Energy"],
     }
-    coordinate_attrs: tuple[str, ...] = tuple()
+    coordinate_attrs: tuple[str, ...] = ()
     additional_attrs: dict[str, str | int | float] = {}
     always_single: bool = True
     skip_validate: bool = True

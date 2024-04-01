@@ -492,11 +492,11 @@ class MomentumAccessor:
     @property
     def angle_params(self) -> dict[str, float]:
         """Parameters passed to :func:`erlab.analysis.kspace.get_kconv_func`."""
-        params = dict(
-            delta=self.offsets["delta"],
-            xi=float(self._obj["xi"].values),
-            xi0=self.offsets["xi"],
-        )
+        params = {
+            "delta": self.offsets["delta"],
+            "xi": float(self._obj["xi"].values),
+            "xi0": self.offsets["xi"],
+        }
         match self.configuration:
             case AxesConfiguration.Type1 | AxesConfiguration.Type2:
                 params["beta0"] = self.offsets["beta"]
@@ -695,11 +695,11 @@ class MomentumAccessor:
             kx, ky = self._forward_func_raw(self._alpha, self._beta)
             kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
 
-            return dict(
-                kx=(kx.min(), kx.max()),
-                ky=(ky.min(), ky.max()),
-                kz=(kz.min(), kz.max()),
-            )
+            return {
+                "kx": (kx.min(), kx.max()),
+                "ky": (ky.min(), ky.max()),
+                "kz": (kz.min(), kz.max()),
+            }
 
         elif self.has_beta:
             # kxy map
@@ -711,13 +711,13 @@ class MomentumAccessor:
 
             kx, ky = self._forward_func_raw(alpha[np.newaxis, :], beta[np.newaxis, :])
 
-            return dict(kx=(kx.min(), kx.max()), ky=(ky.min(), ky.max()))
+            return {"kx": (kx.min(), kx.max()), "ky": (ky.min(), ky.max())}
 
         else:
             # just cut
             kx, ky = self._forward_func_raw(self._alpha, self._beta)
 
-            return dict(kx=(kx.min(), kx.max()), ky=(ky.min(), ky.max()))
+            return {"kx": (kx.min(), kx.max()), "ky": (ky.min(), ky.max())}
 
     @only_angles
     def estimate_resolution(
@@ -855,7 +855,7 @@ class MomentumAccessor:
 
         alpha, beta = self._inverse_func_raw(kxval, kyval, kzval)
 
-        out_dict = dict(alpha=alpha, beta=beta)
+        out_dict = {"alpha": alpha, "beta": beta}
 
         if self.has_eV:
             # Ensure all arrays have the same shape

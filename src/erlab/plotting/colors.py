@@ -920,7 +920,7 @@ def flatten_transparency(rgba, background: Sequence[float] | None = None):
 def _is_segment_iterable(cmap: mcolors.Colormap) -> bool:
     if not isinstance(cmap, mcolors.LinearSegmentedColormap):
         return False
-    if any([callable(cmap._segmentdata[c]) for c in ["red", "green", "blue"]]):
+    if any(callable(cmap._segmentdata[c]) for c in ["red", "green", "blue"]):
         return False
     return True
 

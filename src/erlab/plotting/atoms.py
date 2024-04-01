@@ -296,7 +296,7 @@ class CrystalProperty:
 
         if radii is None:
             radii = [1.0] * len(self.atoms)
-        self.atom_radii: dict[str, float] = {k: v for k, v in zip(self.atoms, radii)}
+        self.atom_radii: dict[str, float] = dict(zip(self.atoms, radii))
 
         if colors is None:
             colors = [f"C{i}" for i in range(len(self.atoms))]
@@ -306,7 +306,7 @@ class CrystalProperty:
 
         self.repeat: tuple[int, int, int] = repeat
         self._bounds: dict[Literal["x", "y", "z"], tuple[float, float]] = (
-            dict() if bounds is None else bounds
+            {} if bounds is None else bounds
         )
         self.mask: Callable | None = mask
 
@@ -403,7 +403,7 @@ class CrystalProperty:
 
     @property
     def _atom_pos_array(self) -> npt.NDArray[np.float64]:
-        return np.r_[*[v for v in self.atom_pos.values()]]
+        return np.r_[*list(self.atom_pos.values())]
 
     def clear_bonds(self) -> None:
         self.segments.clear()

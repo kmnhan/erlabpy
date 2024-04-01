@@ -90,7 +90,7 @@ class DynamicFunction:
 
     @property
     def kwargs(self) -> dict[str, int | float]:
-        return dict()
+        return {}
 
     def __call__(self, x: npt.NDArray[np.float64], **params) -> npt.NDArray[np.float64]:
         raise NotImplementedError("Must be overloaded in child classes")
@@ -192,9 +192,7 @@ class MultiPeakFunction(DynamicFunction):
     def peak_all_args(self) -> dict[Callable, dict[str, list | dict]]:
         res = {}
         for func in self.PEAK_SHAPES.keys():
-            res[func] = {
-                k: v for k, v in zip(("args", "kwargs"), get_args_kwargs(func))
-            }
+            res[func] = dict(zip(("args", "kwargs"), get_args_kwargs(func)))
         return res
 
     @functools.cached_property

@@ -17,7 +17,7 @@ class KRISSLoader(DA30Loader):
 
     coordinate_attrs: tuple[str, ...] = ("beta", "chi", "xi", "hv", "x", "y", "z")
 
-    additional_attrs: dict[str, str | int | float] = dict(configuration=4)
+    additional_attrs: dict[str, str | int | float] = {"configuration": 4}
 
     @property
     def name_map(self):
@@ -35,6 +35,6 @@ class KRISSLoader(DA30Loader):
                 )
 
             if match is not None:
-                return [file], dict()
+                return [file], {}
 
         raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")

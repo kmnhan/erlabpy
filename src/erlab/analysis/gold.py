@@ -103,7 +103,7 @@ def edge(
         if temp is None:
             temp = gold.attrs["temp_sample"]
         params = {
-            "temp": dict(value=temp, vary=vary_temp),
+            "temp": {"value": temp, "vary": vary_temp},
         }
         model_cls = ExtendedAffineBroadenedFD
 
@@ -111,9 +111,9 @@ def edge(
         parallel_kw = {}
 
     if fixed_center is not None:
-        params["center"] = dict(value=fixed_center, vary=False)
+        params["center"] = {"value": fixed_center, "vary": False}
 
-    if any([b != 1 for b in bin_size]):
+    if any(b != 1 for b in bin_size):
         gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
         gold = gold_binned.mean()
 
@@ -209,8 +209,8 @@ def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, 
         ax0.plot(gold.alpha, res.eval(res.params, x=gold.alpha), "r-", lw=0.75)
     ax0.set_ylim(gold.eV[[0, -1]])
 
-    data_kws = dict(lw=0.5, ms=2, mfc="w", zorder=0, c="0.4", capsize=0)
-    fit_kws = dict(c="r", lw=0.75)
+    data_kws = {"lw": 0.5, "ms": 2, "mfc": "w", "zorder": 0, "c": "0.4", "capsize": 0}
+    fit_kws = {"c": "r", "lw": 0.75}
 
     if is_callable:
         residuals = res(center_arr.alpha.values) - center_arr.values
@@ -389,10 +389,10 @@ def resolution(
     gold_roi = gold_corr.sel(alpha=slice(*angle_range))
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
 
-    params = dict(
-        temp=dict(value=gold.attrs["temp_sample"], vary=False),
-        resolution=dict(value=0.1, vary=True, min=0),
-    )
+    params = {
+        "temp": {"value": gold.attrs["temp_sample"], "vary": False},
+        "resolution": {"value": 0.1, "vary": True, "min": 0},
+    }
     fit = ExtendedAffineBroadenedFD().guess_fit(
         edc_avg, params=params, method=method, scale_covar=scale_covar
     )
@@ -413,15 +413,15 @@ def resolution(
         ax.set_ylim(gold_corr.eV[[0, -1]])
 
         fit.plot(
-            data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
-            fit_kws=dict(c="r", lw=1.5),
+            data_kws={"lw": 0.75, "ms": 4, "mfc": "w", "zorder": 0, "c": "0.4"},
+            fit_kws={"c": "r", "lw": 1.5},
         )
 
     center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
     res_uf = uncertainties.ufloat(
         fit.params["resolution"], fit.params["resolution"].stderr
     )
-    print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
+    print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
     return fit
 
 
@@ -435,10 +435,10 @@ def resolution_roi(
 ) -> lmfit.model.ModelResult:
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
-    params = dict(
-        temp=dict(value=gold_roi.attrs["temp_sample"], vary=not fix_temperature),
-        resolution=dict(value=0.1, vary=True, min=0),
-    )
+    params = {
+        "temp": {"value": gold_roi.attrs["temp_sample"], "vary": not fix_temperature},
+        "resolution": {"value": 0.1, "vary": True, "min": 0},
+    }
     fit = ExtendedAffineBroadenedFD().guess_fit(
         edc_avg,
         params=params,
@@ -460,13 +460,13 @@ def resolution_roi(
         ax.set_ylim(gold_roi.eV[[0, -1]])
 
         fit.plot(
-            data_kws=dict(lw=0.75, ms=4, mfc="w", zorder=0, c="0.4"),
-            fit_kws=dict(c="r", lw=1.5),
+            data_kws={"lw": 0.75, "ms": 4, "mfc": "w", "zorder": 0, "c": "0.4"},
+            fit_kws={"c": "r", "lw": 1.5},
         )
 
     center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
     res_uf = uncertainties.ufloat(
         fit.params["resolution"], fit.params["resolution"].stderr
     )
-    print(f"center = {center_uf:S} eV\n" f"resolution = {res_uf:.4S} eV")
+    print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
     return fit

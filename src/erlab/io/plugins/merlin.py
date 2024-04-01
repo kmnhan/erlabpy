@@ -43,9 +43,10 @@ class BL403Loader(LoaderBase):
         "polarization",
         "photon_flux",
     )
-    additional_attrs: dict[str, str | int | float] = dict(
-        configuration=1, sample_workfunction=4.44
-    )
+    additional_attrs: dict[str, str | int | float] = {
+        "configuration": 1,
+        "sample_workfunction": 4.44,
+    }
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         data = load_experiment(file_path)

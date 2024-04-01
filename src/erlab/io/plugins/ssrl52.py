@@ -42,9 +42,10 @@ class SSRL52Loader(LoaderBase):
         "y",
         "z",
     )
-    additional_attrs: dict[str, str | int | float] = dict(
-        configuration=3, sample_workfunction=4.5
-    )
+    additional_attrs: dict[str, str | int | float] = {
+        "configuration": 3,
+        "sample_workfunction": 4.5,
+    }
 
     always_single: bool = True
     skip_validate: bool = True
@@ -136,7 +137,7 @@ class SSRL52Loader(LoaderBase):
         for file in target_files:
             match = re.match(r"(.*?)_" + str(num).zfill(4) + r".h5", file)
             if match is not None:
-                return [file], dict()
+                return [file], {}
 
         raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
 

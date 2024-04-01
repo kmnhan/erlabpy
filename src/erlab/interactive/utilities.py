@@ -144,7 +144,7 @@ def gen_function_code(copy: bool = True, **kwargs: dict):
     code_list = []
     for k, v in kwargs.items():
         if not isinstance(v[-1], dict):
-            v.append(dict())
+            v.append({})
         code_list.append(gen_single_function_code(k, *v[:-1], **v[-1]))
 
     code_str = "\n".join(code_list)
@@ -654,7 +654,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
 
     @property
     def param_dict(self):
-        param_info = dict(value=self.value())
+        param_info = {"value": self.value()}
         if self.checkable():
             param_info["vary"] = not self.fixed()
         if np.isfinite(self.minimum()):
@@ -1019,7 +1019,11 @@ class ROIControls(ParameterGroup):
         x0, y0, x1, y1 = self.roi_limits
         xm, ym, xM, yM = self.roi.maxBounds.getCoords()
 
-        default_properties = dict(decimals=3, singleStep=0.002, keyboardTracking=False)
+        default_properties = {
+            "decimals": 3,
+            "singleStep": 0.002,
+            "keyboardTracking": False,
+        }
         for k, v in default_properties.items():
             spinbox_kw.setdefault(k, v)
 
@@ -1056,12 +1060,12 @@ class ROIControls(ParameterGroup):
                 maximum=yM,
                 **spinbox_kw,
             ),
-            drawbtn=dict(
-                qwtype="chkpushbtn",
-                toggled=self.draw_mode,
-                showlabel=False,
-                text="Draw",
-            ),
+            drawbtn={
+                "qwtype": "chkpushbtn",
+                "toggled": self.draw_mode,
+                "showlabel": False,
+                "text": "Draw",
+            },
             **kwargs,
         )
         self.draw_button = self.widgets["drawbtn"]
@@ -1567,19 +1571,19 @@ if __name__ == "__main__":
 
     # layout.addWidget(win)
     win.addParameterGroup(
-        sigma_x=dict(
-            qwtype="btspin",
-            minimum=0,
-            maximum=10,
-            valueChanged=lambda x: win.aw.set_main_function_args(sx=x),
-        ),
-        sigma_y=dict(
-            qwtype="btspin",
-            minimum=0,
-            maximum=10,
-            valueChanged=lambda x: win.aw.set_main_function_args(sy=x),
-        ),
-        b=dict(qwtype="combobox", items=["item1", "item2", "item3"]),
+        sigma_x={
+            "qwtype": "btspin",
+            "minimum": 0,
+            "maximum": 10,
+            "valueChanged": lambda x: win.aw.set_main_function_args(sx=x),
+        },
+        sigma_y={
+            "qwtype": "btspin",
+            "minimum": 0,
+            "maximum": 10,
+            "valueChanged": lambda x: win.aw.set_main_function_args(sy=x),
+        },
+        b={"qwtype": "combobox", "items": ["item1", "item2", "item3"]},
     )
 
     win.__post_init__(execute=True)

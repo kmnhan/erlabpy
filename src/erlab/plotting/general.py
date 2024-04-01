@@ -40,11 +40,11 @@ from erlab.plotting.colors import (
     nice_colorbar,
 )
 
-figure_width_ref = dict(
-    aps=[3.4, 7.0],
-    aip=[3.37, 6.69],
-    nature=[88 / 25.4, 180 / 25.4],
-)
+figure_width_ref = {
+    "aps": [3.4, 7.0],
+    "aip": [3.37, 6.69],
+    "nature": [88 / 25.4, 180 / 25.4],
+}
 
 
 def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=True):
@@ -140,17 +140,17 @@ class LabeledCursor(AxesWidget):
         lcolor = lineprops.pop("color", lineprops.pop("c", "0.35"))
         ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
         lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.5))
-        lineprops.update(dict(color=lcolor, ls=ls, lw=lw, visible=False))
+        lineprops.update({"color": lcolor, "ls": ls, "lw": lw, "visible": False})
 
         tcolor = textprops.pop("color", textprops.pop("c", lcolor))
         textprops.update(
-            dict(
-                color=tcolor,
-                visible=False,
-                horizontalalignment="right",
-                verticalalignment="top",
-                transform=ax.transAxes,
-            )
+            {
+                "color": tcolor,
+                "visible": False,
+                "horizontalalignment": "right",
+                "verticalalignment": "top",
+                "transform": ax.transAxes,
+            }
         )
 
         self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
@@ -368,13 +368,13 @@ def plot_array(
     if norm is None:
         norm = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
 
-    improps_default = dict(
-        interpolation="none",
-        extent=array_extent(arr),
-        aspect="auto",
-        origin="lower",
-        rasterized=True,
-    )
+    improps_default = {
+        "interpolation": "none",
+        "extent": array_extent(arr),
+        "aspect": "auto",
+        "origin": "lower",
+        "rasterized": True,
+    }
     for k, v in improps_default.items():
         improps.setdefault(k, v)
 
@@ -428,12 +428,12 @@ def plot_array_2d(
         colorbar_kw = {}
     if imshow_kw is None:
         imshow_kw = {}
-    improps_default = dict(
-        interpolation="none",
-        aspect="equal",
-        origin="lower",
-        rasterized=True,
-    )
+    improps_default = {
+        "interpolation": "none",
+        "aspect": "equal",
+        "origin": "lower",
+        "rasterized": True,
+    }
     for k, v in improps_default.items():
         imshow_kw.setdefault(k, v)
     if ax is None:
@@ -765,7 +765,7 @@ def plot_slices(
     if hide_colorbar_ticks:
         colorbar_kw["ticks"] = []
 
-    for k, v in dict(sharex="col", sharey="row", layout="constrained").items():
+    for k, v in {"sharex": "col", "sharey": "row", "layout": "constrained"}.items():
         subplot_kw.setdefault(k, v)
 
     if order == "F":

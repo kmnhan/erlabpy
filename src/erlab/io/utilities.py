@@ -170,7 +170,7 @@ def save_as_hdf5(
     data.to_netcdf(
         filename,
         encoding={
-            var: dict(compression="gzip", compression_opts=9) for var in data.coords
+            var: {"compression": "gzip", "compression_opts": 9} for var in data.coords
         },
         **kwargs,
     )
@@ -196,7 +196,7 @@ def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs: di
     kwargs.setdefault("engine", "h5netcdf")
     fix_attr_format(data).to_netcdf(
         filename,
-        encoding={var: dict(zlib=True, complevel=5) for var in data.coords},
+        encoding={var: {"zlib": True, "complevel": 5} for var in data.coords},
         **kwargs,
     )
 
