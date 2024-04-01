@@ -573,9 +573,7 @@ def proportional_colorbar(
     elif isinstance(ax, np.ndarray):
         i = 0
         while mappable is None and i < len(ax.flat):
-            mappable = get_mappable(
-                ax.flatten()[i], silent=(i != (len(ax.flat) - 1))
-            )
+            mappable = get_mappable(ax.flatten()[i], silent=(i != (len(ax.flat) - 1)))
             i += 1
     elif mappable is None:
         mappable = get_mappable(ax)

@@ -347,9 +347,9 @@ class ItoolMenuBar(DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *, ax=self.slicer_area.main_image.display_axis[
-                    axis
-                ], d=amount: self.slicer_area.step_index(ax, d),
+                "triggered": lambda *,
+                ax=self.slicer_area.main_image.display_axis[axis],
+                d=amount: self.slicer_area.step_index(ax, d),
             }
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
@@ -380,9 +380,9 @@ class ItoolMenuBar(DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *, ax=self.slicer_area.main_image.display_axis[
-                    axis
-                ], d=amount: self.slicer_area.step_index_all(ax, d),
+                "triggered": lambda *,
+                ax=self.slicer_area.main_image.display_axis[axis],
+                d=amount: self.slicer_area.step_index_all(ax, d),
             }
         return menu_kwargs
 

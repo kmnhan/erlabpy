@@ -590,7 +590,9 @@ class ArraySlicer(QtCore.QObject):
         return self._obj.isel(**slices).squeeze()
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
-    def slice_with_coord(self, cursor: int, disp: Sequence[int]) -> tuple[
+    def slice_with_coord(
+        self, cursor: int, disp: Sequence[int]
+    ) -> tuple[
         tuple[np.float32, np.float32, np.float32, np.float32] | npt.NDArray[np.float32],
         npt.NDArray[np.float32] | np.float32,
     ]:
