@@ -38,8 +38,8 @@ def _load_experiment_raw(
     folder = [n.encode() for n in folder]
 
     expt = expt["root"]
-    for dir in folder:
-        expt = expt[dir]
+    for dirname in folder:
+        expt = expt[dirname]
 
     def unpack_folders(expt):
         for name, record in expt.items():

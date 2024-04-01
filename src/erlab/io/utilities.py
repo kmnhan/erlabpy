@@ -1,21 +1,13 @@
 import os
-import re
 import warnings
 from collections.abc import Sequence
-from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
-import arpes
-import arpes.config
-import arpes.endstations
-import arpes.io
-
 __all__ = [
     "showfitsinfo",
     "get_files",
-    "find_first_file",
     "open_hdf5",
     "load_hdf5",
     "save_as_hdf5",
@@ -80,90 +72,6 @@ def get_files(
         files.append(os.path.join(directory, f))
 
     return files
-
-
-def files_for_search(directory, contains=None):
-    """Filters files in a directory for candidate scans.
-
-    Here, this just means collecting the ones with extensions acceptable to the loader.
-    """
-    endbase = arpes.endstations.EndstationBase
-    if contains is not None:
-        return [
-            f
-            for f in os.listdir(directory)
-            if os.path.splitext(f)[1] in endbase._TOLERATED_EXTENSIONS and contains in f
-        ]
-    return [
-        f
-        for f in os.listdir(directory)
-        if os.path.splitext(f)[1] in endbase._TOLERATED_EXTENSIONS and "zap" not in f
-    ]
-
-
-def find_first_file(file, data_dir=None, contains=None, allow_soft_match=False):
-    if data_dir is None:
-        if os.path.isfile(file):
-            return file
-    elif os.path.isfile(os.path.join(data_dir, file)):
-        return os.path.join(data_dir, file)
-
-    workspace = arpes.config.CONFIG["WORKSPACE"]
-    if data_dir is None:
-        data_dir = "data"
-    try:
-        workspace_path = os.path.join(workspace["path"], data_dir)
-        workspace = workspace["name"]
-    except KeyError:
-        workspace_path = os.path.join(str(os.getcwd()), data_dir)
-        workspace = "default"
-
-    endbase = arpes.endstations.EndstationBase
-    try:
-        file = int(str(file))
-    except ValueError:
-        file = str(Path(file).absolute())
-    scan_desc = {
-        "file": file,
-    }
-
-    base_dir = workspace_path or os.path.join(arpes.config.DATA_PATH, workspace)
-    dir_options = [
-        os.path.join(base_dir, option) for option in endbase._SEARCH_DIRECTORIES
-    ]
-    patterns = [re.compile(m.format(file)) for m in endbase._SEARCH_PATTERNS]
-
-    for dir in dir_options:
-        try:
-            files = files_for_search(dir, contains=contains)
-
-            if endbase._USE_REGEX:
-                for p in patterns:
-                    for f in files:
-                        m = p.match(os.path.splitext(f)[0])
-                        if m is not None:
-                            if m.string == os.path.splitext(f)[0]:
-                                return os.path.join(dir, f)
-            else:
-                for f in files:
-                    if os.path.splitext(file)[0] == os.path.splitext(f)[0]:
-                        return os.path.join(dir, f)
-                    if allow_soft_match:
-                        matcher = os.path.splitext(f)[0].split("_")[-1]
-                        try:
-                            if int(matcher) == int(file):
-                                return os.path.join(dir, f)  # soft match
-                        except ValueError:
-                            pass
-        except FileNotFoundError:
-            pass
-
-    if str(file) and str(file)[0] == "f":  # try trimming the f off
-        return find_first_file(
-            str(file)[1:], scan_desc, allow_soft_match=allow_soft_match
-        )
-
-    raise ValueError(f"Could not find file associated to {file}")
 
 
 def fix_attr_format(da: xr.DataArray):
