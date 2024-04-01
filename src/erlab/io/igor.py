@@ -236,7 +236,7 @@ load_ibw = load_wave
 
 # def load_pxp_old(filename, recursive=False, silent=False, **kwargs):
 #     expt = load_pxt.read_experiment(filename, **kwargs)
-#     waves = dict()
+#     waves = {}
 
 #     def process_wave(arr):
 #         arr = arr.where(arr != 0)

@@ -945,19 +945,19 @@ class MomentumAccessor:
         """
 
         if bounds is None:
-            bounds = dict()
+            bounds = {}
 
         if resolution is None:
-            resolution = dict()
+            resolution = {}
 
         if not silent:
             print("Estimating bounds and resolution")
 
         calculated_bounds: dict[str, tuple[float, float]] = self.estimate_bounds()
 
-        new_size: dict[str, int] = dict()
-        interp_coords: dict[str, np.ndarray] = dict()
-        other_coords: dict[str, np.ndarray] = dict()
+        new_size: dict[str, int] = {}
+        interp_coords: dict[str, np.ndarray] = {}
+        other_coords: dict[str, np.ndarray] = {}
 
         for k, lims in calculated_bounds.items():
             if k in self.momentum_axes:

@@ -777,13 +777,13 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     def __init__(self, ncols: int = 1, groupbox_kw: dict | None = None, **kwargs: dict):
         if groupbox_kw is None:
-            groupbox_kw = dict()
+            groupbox_kw = {}
         super().__init__(**groupbox_kw)
         self.setLayout(QtWidgets.QGridLayout(self))
 
         self.labels = []
         self.untracked = []
-        self.widgets: dict[str, QtWidgets.QWidget] = dict()
+        self.widgets: dict[str, QtWidgets.QWidget] = {}
 
         j = 0
         for i, (k, v) in enumerate(kwargs.items()):
@@ -1014,7 +1014,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 class ROIControls(ParameterGroup):
     def __init__(self, roi: pg.ROI, spinbox_kw: dict | None = None, **kwargs):
         if spinbox_kw is None:
-            spinbox_kw = dict()
+            spinbox_kw = {}
         self.roi = roi
         x0, y0, x1, y1 = self.roi_limits
         xm, ym, xM, yM = self.roi.maxBounds.getCoords()
@@ -1382,8 +1382,8 @@ class ComparisonWidget(AnalysisWidgetBase):
         self.mainfunc = lambda x: x
         self.prefunc_only_values = False
         self.mainfunc_only_values = False
-        self.prefunc_kwargs = dict()
-        self.mainfunc_kwargs = dict()
+        self.prefunc_kwargs = {}
+        self.mainfunc_kwargs = {}
 
     def call_prefunc(self, x):
         if self.prefunc_only_values:
@@ -1453,8 +1453,8 @@ class DictMenuBar(QtWidgets.QMenuBar):
     def __init__(self, parent: QtWidgets.QWidget | None = ..., **kwargs) -> None:
         super().__init__(parent)
 
-        self.menu_dict: dict[str, QtWidgets.QMenu] = dict()
-        self.action_dict: dict[str, QtWidgets.QAction] = dict()
+        self.menu_dict: dict[str, QtWidgets.QMenu] = {}
+        self.action_dict: dict[str, QtWidgets.QAction] = {}
 
         self.add_items(**kwargs)
 

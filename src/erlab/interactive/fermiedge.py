@@ -130,7 +130,7 @@ class GoldTool(AnalysisWindow):
             **kwargs,
         )
 
-        self._argnames = dict()
+        self._argnames = {}
         if data_name is None:
             try:
                 self._argnames["data"] = varname.argname(

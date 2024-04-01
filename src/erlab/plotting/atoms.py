@@ -471,9 +471,9 @@ class CrystalProperty:
             ax.set_ymargin(0)
 
         if bond_kw is None:
-            bond_kw = dict()
+            bond_kw = {}
         if atom_kw is None:
-            atom_kw = dict()
+            atom_kw = {}
 
         bond_kw.setdefault("linewidths", self._bond_lw)
         bond_kw.setdefault("colors", self._bond_c)

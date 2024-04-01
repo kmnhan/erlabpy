@@ -27,7 +27,7 @@ class masktool(AnalysisWindow):
             data_is_input=False,
             **kwargs,
         )
-        self._argnames = dict()
+        self._argnames = {}
 
         self.cursor = self.addParameterGroup(
             **{

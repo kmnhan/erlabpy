@@ -175,7 +175,7 @@ class KspaceTool(KspaceToolGUI):
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
         super().__init__()
 
-        self._argnames = dict()
+        self._argnames = {}
 
         if data_name is None:
             try:
@@ -292,7 +292,7 @@ class KspaceTool(KspaceToolGUI):
         itool.show()
 
     def copy_code(self):
-        arg_dict = dict()
+        arg_dict = {}
         if self.bounds is not None:
             arg_dict["bounds"] = self.bounds
         if self.resolution is not None:

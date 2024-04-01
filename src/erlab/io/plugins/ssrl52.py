@@ -156,7 +156,7 @@ class SSRL52Loader(LoaderBase):
     def generate_summary(
         self, data_dir: str | os.PathLike, exclude_zap: bool = False
     ) -> pd.DataFrame:
-        files: dict[str, str] = dict()
+        files: dict[str, str] = {}
 
         if exclude_zap:
             target_files = erlab.io.utilities.get_files(

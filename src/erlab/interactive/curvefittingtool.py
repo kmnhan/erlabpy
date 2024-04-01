@@ -326,7 +326,7 @@ class edctool(QtWidgets.QMainWindow):
 
     @property
     def params_dict(self):
-        out = dict()
+        out = {}
         for k in ("efermi", "temp", "lin_bkg", "const_bkg", "offset", "resolution"):
             out = out | self._params_init.widgets[k].param_dict
         for i in range(self.n_bands):

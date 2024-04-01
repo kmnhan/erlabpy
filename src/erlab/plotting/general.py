@@ -122,7 +122,7 @@ class LabeledCursor(AxesWidget):
         super().__init__(ax)
 
         if textprops is None:
-            textprops = dict()
+            textprops = {}
 
         self.connect_event("motion_notify_event", self.onmove)
         self.connect_event("draw_event", self.clear)
@@ -332,9 +332,9 @@ def plot_array(
 
     """
     if colorbar_kw is None:
-        colorbar_kw = dict()
+        colorbar_kw = {}
     if func_args is None:
-        func_args = dict()
+        func_args = {}
 
     if isinstance(arr, np.ndarray):
         arr = xr.DataArray(arr)
@@ -353,7 +353,7 @@ def plot_array(
             ]
         arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
-    norm_kw = dict()
+    norm_kw = {}
     if "vmin" in improps.keys():
         norm_kw["vmin"] = improps.pop("vmin")
         if "vmax" in improps.keys():
@@ -721,16 +721,16 @@ def plot_slices(
         norm_order = cmap_order
 
     if gradient_kw is None:
-        gradient_kw = dict()
+        gradient_kw = {}
 
     if subplot_kw is None:
-        subplot_kw = dict()
+        subplot_kw = {}
 
     if annotate_kw is None:
-        annotate_kw = dict()
+        annotate_kw = {}
 
     if colorbar_kw is None:
-        colorbar_kw = dict()
+        colorbar_kw = {}
 
     dims = maps[0].dims
     kwargs = {k: v for k, v in values.items() if k not in dims}
@@ -788,7 +788,7 @@ def plot_slices(
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
 
-    qsel_kw = dict()
+    qsel_kw = {}
 
     if crop:
         if len(plot_dims) == 1:

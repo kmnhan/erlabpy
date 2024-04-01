@@ -134,7 +134,7 @@ class BL403Loader(LoaderBase):
     def generate_summary(
         self, data_dir: str | os.PathLike, exclude_live: bool = False
     ) -> pd.DataFrame:
-        files: dict[str, str] = dict()
+        files: dict[str, str] = {}
 
         for pth in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
             data_name = os.path.splitext(os.path.basename(pth))[0]

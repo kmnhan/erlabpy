@@ -83,7 +83,7 @@ def load_zip(
                 )
 
             shape = []
-            coords = dict()
+            coords = {}
             for d in ("depth", "height", "width"):
                 n = int(region_info[d])
                 offset = float(region_info[f"{d}offset"])
@@ -111,7 +111,7 @@ def load_zip(
 
 def parse_ini(filename: str | os.PathLike) -> dict:
     parser = configparser.ConfigParser(strict=False)
-    out = dict()
+    out = {}
     with open(filename) as f:
         parser.read_file(f)
         for section in parser.sections():

@@ -393,7 +393,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(False)
 
         pkw = dict(image_cls=image_cls, plotdata_cls=plotdata_cls)
-        self.manual_limits: dict[str | list[float]] = dict()
+        self.manual_limits: dict[str | list[float]] = {}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
@@ -1449,7 +1449,7 @@ class ItoolPlotItem(pg.PlotItem):
                 if self.getAxis(a).isVisible()
             }
         else:
-            label_kw = dict()
+            label_kw = {}
 
             if self.slicer_data_items[-1].is_vertical:
                 valid_ax = ("left", "right")

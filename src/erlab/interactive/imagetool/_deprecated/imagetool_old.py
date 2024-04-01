@@ -2326,7 +2326,7 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
     # make four sub-fields and compute indexes for grid cells
     if connected:
         lines = fast_isocurve_lines_connected(data, level, index, extendToEdge)
-        points = dict()
+        points = {}
         for a, b in lines:
             if a[1] not in points:
                 points[a[1]] = [[a, b]]

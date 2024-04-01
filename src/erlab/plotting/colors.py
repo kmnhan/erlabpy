@@ -939,7 +939,7 @@ def combined_cmap(
         cmap2 = matplotlib.colormaps[cmap2]
 
     if all(_is_segment_iterable(c) for c in (cmap1, cmap2)):
-        segnew = dict()
+        segnew = {}
         for c in ["red", "green", "blue"]:
             seg1_c, seg2_c = (
                 np.asarray(cmap1._segmentdata[c]),

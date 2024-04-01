@@ -108,7 +108,7 @@ def edge(
         model_cls = ExtendedAffineBroadenedFD
 
     if parallel_kw is None:
-        parallel_kw = dict()
+        parallel_kw = {}
 
     if fixed_center is not None:
         params["center"] = dict(value=fixed_center, vary=False)

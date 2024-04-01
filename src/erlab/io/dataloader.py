@@ -681,10 +681,10 @@ class RegistryBase:
 
 
 class LoaderRegistry(RegistryBase):
-    loaders: dict[str, LoaderBase | type[LoaderBase]] = dict()
+    loaders: dict[str, LoaderBase | type[LoaderBase]] = {}
     """Registered loaders \n\n:meta hide-value:"""
 
-    alias_mapping: dict[str, str] = dict()
+    alias_mapping: dict[str, str] = {}
     """Mapping of aliases to loader names \n\n:meta hide-value:"""
 
     current_loader: LoaderBase | None = None
