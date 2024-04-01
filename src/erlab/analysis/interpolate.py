@@ -243,7 +243,6 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
                 ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
-                print("fast!")
                 return result
 
         if (len(self.uneven_dims) != 0) and is_linear:
