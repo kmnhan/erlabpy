@@ -246,7 +246,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
                 return result
 
-        if is_linear:
+        if (len(self.uneven_dims) != 0) and is_linear:
             warnings.warn(
                 f"Dimension(s) {self.uneven_dims} are not uniform, "
                 "falling back to scipy.",
