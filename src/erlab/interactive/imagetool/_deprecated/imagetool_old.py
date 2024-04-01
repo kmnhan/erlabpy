@@ -19,7 +19,6 @@ import numbagg
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
-import xarray as xr
 from matplotlib import colors as mcolors
 from matplotlib import figure, rc_context
 from matplotlib.backends import backend_agg, backend_svg
@@ -403,7 +402,7 @@ class ItoolDockLabel(DockLabel):
         super().__init__(*args, **kwargs)
 
     def dim_color(self, color, l_factor=1.0, s_factor=1.0):
-        h, l, s = colorsys.rgb_to_hls(*mcolors.to_rgb(color))
+        h, l, s = colorsys.rgb_to_hls(*mcolors.to_rgb(color))  # noqa: E741
         return QtGui.QColor.fromRgbF(
             *colorsys.hls_to_rgb(h, min(1, l * l_factor), min(1, s * s_factor))
         ).name()
