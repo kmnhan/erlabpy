@@ -243,7 +243,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
                 ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
-
+                print("fast!")
                 return result
 
         if (len(self.uneven_dims) != 0) and is_linear:
@@ -306,6 +306,13 @@ def interpn(
 
 
 _get_interpolator_nd_original = xarray.core.missing._get_interpolator_nd
+_get_interpolator_original = xarray.core.missing._get_interpolator
+
+
+def _get_interpolator_fast(method, **kwargs):
+    if method == "linearfast":
+        method = "linear"
+    return _get_interpolator_original(method, **kwargs)
 
 
 def _get_interpolator_nd_fast(method, **kwargs):
@@ -315,4 +322,5 @@ def _get_interpolator_nd_fast(method, **kwargs):
         return _get_interpolator_nd_original(method, **kwargs)
 
 
+xarray.core.missing._get_interpolator = _get_interpolator_fast
 xarray.core.missing._get_interpolator_nd = _get_interpolator_nd_fast
