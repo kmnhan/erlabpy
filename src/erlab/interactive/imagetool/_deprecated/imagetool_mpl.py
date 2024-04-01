@@ -157,7 +157,7 @@ class ColorButton(QtWidgets.QPushButton):
     colorChanged = QtCore.Signal(object)
 
     def __init__(self, *args, color=None, **kwargs):
-        super(ColorButton, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self._color = None
         self._default = color
@@ -196,7 +196,7 @@ class ColorButton(QtWidgets.QPushButton):
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.RightButton:
             self.setColor(self._default)
-        return super(ColorButton, self).mousePressEvent(e)
+        return super().mousePressEvent(e)
 
 
 class mpl_itool(Widget):
@@ -227,8 +227,9 @@ class mpl_itool(Widget):
     **self.cursorprops
         `matplotlib.lines.Line2D` properties that control the appearance of the lines.
         See also `matplotlib.axes.Axes.axhline`.
-    
+
     """
+
     # Notes
     # -----
     # Axes indices for 3D data:
@@ -260,7 +261,7 @@ class mpl_itool(Widget):
         cursorprops={},
         lineprops={},
         fermilineprops={},
-        **improps
+        **improps,
     ):
         self.canvas = canvas
         self.axes = axes
@@ -362,7 +363,7 @@ class mpl_itool(Widget):
                     self.vals_T,
                     extent=(*self.lims[0], *self.lims[1]),
                     label="Main Image",
-                    **self.improps
+                    **self.improps,
                 ),
             )
             self.hists = (
@@ -370,13 +371,13 @@ class mpl_itool(Widget):
                     self.coords[0],
                     self.vals[:, mids[1]],
                     label="X Profile",
-                    **self.lineprops
+                    **self.lineprops,
                 )[0],
                 self.axes[2].plot(
                     self.vals[mids[0], :],
                     self.coords[1],
                     label="Y Profile",
-                    **self.lineprops
+                    **self.lineprops,
                 )[0],
             )
             self.cursors = (
@@ -399,13 +400,13 @@ class mpl_itool(Widget):
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
                         label="X Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[1].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
                         label="X Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                 ),
                 (
@@ -413,13 +414,13 @@ class mpl_itool(Widget):
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
                         label="Y Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[2].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
                         label="Y Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                 ),
             )
@@ -436,19 +437,19 @@ class mpl_itool(Widget):
                     self.vals_T[:, mids[2], :],
                     extent=(*self.lims[0], *self.lims[1]),
                     label="Main Image",
-                    **self.improps
+                    **self.improps,
                 ),
                 self.axes[4].imshow(
                     self.vals_T[mids[1], :, :],
                     extent=(*self.lims[0], *self.lims[2]),
                     label="Horiz Slice",
-                    **self.improps
+                    **self.improps,
                 ),
                 self.axes[5].imshow(
                     self.vals_T[:, :, mids[0]],
                     extent=(*self.lims[2], *self.lims[1]),
                     label="Vert Slice",
-                    **self.improps
+                    **self.improps,
                 ),
             )
             self.hists = (
@@ -456,19 +457,19 @@ class mpl_itool(Widget):
                     self.coords[0],
                     self.vals[:, mids[1], mids[2]],
                     label="X Profile",
-                    **self.lineprops
+                    **self.lineprops,
                 )[0],
                 self.axes[2].plot(
                     self.vals[mids[0], :, mids[2]],
                     self.coords[1],
                     label="Y Profile",
-                    **self.lineprops
+                    **self.lineprops,
                 )[0],
                 self.axes[3].plot(
                     self.coords[2],
                     self.vals[mids[0], mids[1], :],
                     label="Z Profile",
-                    **self.lineprops
+                    **self.lineprops,
                 )[0],
             )
             self.cursors = (
@@ -506,19 +507,19 @@ class mpl_itool(Widget):
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
                         label="X Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[1].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
                         label="X Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[4].axvspan(
                         self.coords[0][self._last_ind[0]],
                         self.coords[0][self._last_ind[0]],
                         label="X Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                 ),
                 (
@@ -526,19 +527,19 @@ class mpl_itool(Widget):
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
                         label="Y Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[2].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
                         label="Y Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[5].axhspan(
                         self.coords[1][self._last_ind[1]],
                         self.coords[1][self._last_ind[1]],
                         label="Y Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                 ),
                 (
@@ -546,19 +547,19 @@ class mpl_itool(Widget):
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
                         label="Z Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[5].axvspan(
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
                         label="Z Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                     self.axes[4].axhspan(
                         self.coords[2][self._last_ind[2]],
                         self.coords[2][self._last_ind[2]],
                         label="Z Span",
-                        **self.spanprops
+                        **self.spanprops,
                     ),
                 ),
             )

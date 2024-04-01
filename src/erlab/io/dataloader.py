@@ -672,7 +672,7 @@ class RegistryBase:
 
     def __new__(cls):
         if not isinstance(cls.__instance, cls):
-            cls.__instance = super(RegistryBase, cls).__new__(cls)
+            cls.__instance = super().__new__(cls)
         return cls.__instance
 
     @classmethod

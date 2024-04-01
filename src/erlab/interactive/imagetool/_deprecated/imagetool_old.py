@@ -164,7 +164,7 @@ class FlowLayout(QtWidgets.QLayout):
         return height
 
     def setGeometry(self, rect):
-        super(FlowLayout, self).setGeometry(rect)
+        super().setGeometry(rect)
         self._do_layout(rect, False)
 
     def sizeHint(self):
@@ -348,7 +348,7 @@ class ColorButton(QtWidgets.QPushButton):
     colorChanged = QtCore.Signal(object)
 
     def __init__(self, *args, color=None, **kwargs):
-        super(ColorButton, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self._color = None
         self._default = color
@@ -387,7 +387,7 @@ class ColorButton(QtWidgets.QPushButton):
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.RightButton:
             self.setColor(self._default)
-        return super(ColorButton, self).mousePressEvent(e)
+        return super().mousePressEvent(e)
 
 
 class ItoolImageItem(xImageItem):
@@ -618,9 +618,9 @@ class ItoolAxisItem(pg.AxisItem):
             else:
                 units = "(x%g)" % (1.0 / self.autoSIPrefixScale)
         else:
-            units = "(%s%s)" % (self.labelUnitPrefix, self.labelUnits)
+            units = f"({self.labelUnitPrefix}{self.labelUnits})"
 
-        s = "%s %s" % (self.labelText, units)
+        s = f"{self.labelText} {units}"
 
         match self.label_mode:
             case self.LabelType.SvgLabel:
@@ -2437,7 +2437,7 @@ class ItoolColorBar(ItoolPlotItem):
         *args,
         **kwargs,
     ):
-        super(ItoolColorBar, self).__init__(itool, *args, **kwargs)
+        super().__init__(itool, *args, **kwargs)
         self.setDefaultPadding(0)
         self.cbar = ItoolImageItem(self.itool, axisOrder="row-major")
         self.npts = 4096
@@ -3199,7 +3199,7 @@ def itool_(data, execute=None, *args, **kwargs):
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
 
-    if isinstance(data, (list, tuple)):
+    if isinstance(data, list | tuple):
         win = tuple()
         for d in data:
             win += (ImageTool(d, *args, **kwargs),)

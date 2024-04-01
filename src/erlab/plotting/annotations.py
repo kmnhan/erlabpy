@@ -88,7 +88,7 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
 
 def _alph_label(val, prefix, suffix, numeric, capital):
     """Generate labels from string or integer."""
-    if isinstance(val, (int, np.integer)) or val.isdigit():
+    if isinstance(val, int | np.integer) or val.isdigit():
         if numeric:
             val = str(val)
         else:
@@ -352,7 +352,7 @@ def label_subplot_properties(
 
     strlist = []
     for k, v in values.items():
-        if not isinstance(v, (tuple, list, np.ndarray)):
+        if not isinstance(v, tuple | list | np.ndarray):
             v = [v]
         else:
             v = np.array(v).flatten(order=order)
@@ -730,7 +730,7 @@ def mark_points_outside(
 def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
     if ax is None:
         ax = plt.gca()
-    if not isinstance(ax, (tuple, list, np.ndarray)):
+    if not isinstance(ax, tuple | list | np.ndarray):
         ax = [ax]
     for a in np.array(ax, dtype=object).flatten():
         label_ax = a.twinx()

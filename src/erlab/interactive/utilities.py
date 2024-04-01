@@ -939,12 +939,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget = self.widgets[widget]
         if isinstance(
             widget,
-            (
-                QtWidgets.QSpinBox,
-                QtWidgets.QDoubleSpinBox,
-                BetterSpinBox,
-                FittingParameterWidget,
-            ),
+            QtWidgets.QSpinBox | QtWidgets.QDoubleSpinBox | BetterSpinBox | FittingParameterWidget,
         ):
             return widget.value()
         elif isinstance(widget, QtWidgets.QAbstractSpinBox):
@@ -966,7 +961,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     def widget_change_signal(self, widget):
         if isinstance(
-            widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox, BetterSpinBox)
+            widget, QtWidgets.QSpinBox | QtWidgets.QDoubleSpinBox | BetterSpinBox
         ):
             return widget.valueChanged
         elif isinstance(widget, FittingParameterWidget):

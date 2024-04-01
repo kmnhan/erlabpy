@@ -1043,7 +1043,7 @@ def axes_textcolor(ax, light="k", dark="w"):
     mappable = get_mappable(ax, silent=True)
     if mappable is not None:
         if isinstance(
-            mappable, (matplotlib.image._ImageBase, matplotlib.collections.QuadMesh)
+            mappable, matplotlib.image._ImageBase | matplotlib.collections.QuadMesh
         ):
             if not image_is_light(mappable):
                 c = dark

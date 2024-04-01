@@ -93,7 +93,7 @@ def itool(
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
 
-    if isinstance(data, (list, tuple)):
+    if isinstance(data, list | tuple):
         win = tuple()
         for d in data:
             win += (ImageTool(d, **kwargs),)

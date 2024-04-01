@@ -189,7 +189,7 @@ class LabeledCursor(AxesWidget):
             return
         self.linev.set_xdata((event.xdata, event.xdata))
         self.lineh.set_ydata((event.ydata, event.ydata))
-        self.label.set_text("(%1.3f, %1.3f)" % (event.xdata, event.ydata))
+        self.label.set_text(f"({event.xdata:1.3f}, {event.ydata:1.3f})")
         self.linev.set_visible(self.visible and self.vertOn)
         self.lineh.set_visible(self.visible and self.horizOn)
         self.label.set_visible(self.visible and self.textOn)
