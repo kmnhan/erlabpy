@@ -16,11 +16,11 @@ Colormap Normalization
 .. plot:: norms.py example_1
    :width: 65 %
 
-   Demonstration of `InversePowerNorm`. 
+   Demonstration of `InversePowerNorm`.
 
 .. plot:: norms.py example_2
    :width: 65 %
-   
+
    Demonstration of `CenteredPowerNorm` and `CenteredInversePowerNorm`.
 
 """
@@ -787,7 +787,6 @@ def nice_colorbar(
     orientation: Literal["vertical", "horizontal"] = "vertical",
     floating=False,
     ticklabels: Sequence[str] | None = None,
-    *args,
     **kwargs: dict,
 ):
     r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
@@ -841,7 +840,6 @@ def nice_colorbar(
             ax=ax,
             cax=_gen_cax(parent, width, aspect, pad, is_horizontal),
             orientation=orientation,
-            *args,
             **kwargs,
         )
 
@@ -878,7 +876,6 @@ def nice_colorbar(
             aspect=aspect,
             panchor=(0, 1),
             orientation=orientation,
-            *args,
             **kwargs,
         )
 

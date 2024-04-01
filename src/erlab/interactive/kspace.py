@@ -234,7 +234,7 @@ class KspaceTool(KspaceToolGUI):
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         bounds = self.data.kspace.estimate_bounds()
-        for i, k in enumerate(self.data.kspace.momentum_axes):
+        for k in self.data.kspace.momentum_axes:
             for j in range(2):
                 name = f"{k}{j}"
                 self._bound_spins[name] = QtWidgets.QDoubleSpinBox()

@@ -136,8 +136,8 @@ def get_si_str(si: int) -> str:
     else:
         try:
             return SI_PREFIXES[si]
-        except KeyError:
-            raise ValueError("Invalid SI prefix.")
+        except KeyError as e:
+            raise ValueError("Invalid SI prefix.") from e
 
 
 def name_for_dim(dim_name, escaped=True):
@@ -253,13 +253,15 @@ def copy_mathtext(
     fontproperties=None,
     outline=False,
     svg=False,
-    rcparams=dict(),
+    rcparams: dict | None = None,
     **mathtext_rc,
 ):
     if fontproperties is None:
         fontproperties = matplotlib.font_manager.FontProperties(size=fontsize)
     else:
         fontproperties.set_size(fontsize)
+    if rcparams is None:
+        rcparams = {}
     parser = matplotlib.mathtext.MathTextParser("path")
     width, height, depth, _, _ = parser.parse(s, dpi=72, prop=fontproperties)
     fig = matplotlib.figure.Figure(figsize=(width / 72, height / 72))
@@ -295,8 +297,8 @@ def fancy_labels(ax=None, deg2rad=False):
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
-        for ax in ax:
-            fancy_labels(ax, deg2rad)
+        for axi in ax:
+            fancy_labels(axi, deg2rad)
         return
 
     ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), deg2rad=deg2rad))

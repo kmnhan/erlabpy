@@ -552,13 +552,15 @@ class FittingParameterWidget(QtWidgets.QWidget):
     def __init__(
         self,
         name: str,
-        spin_kw=dict(),
+        spin_kw: dict | None = None,
         checkable: bool = True,
         fixed: bool = False,
         label: str | None = None,
         show_label: bool = True,
     ):
         super().__init__()
+        if spin_kw is None:
+            spin_kw = {}
         self.layout = QtWidgets.QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
@@ -775,7 +777,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)  #: :meta private:
 
-    def __init__(self, ncols: int = 1, groupbox_kw: dict = dict(), **kwargs: dict):
+    def __init__(self, ncols: int = 1, groupbox_kw: dict | None = None, **kwargs: dict):
+        if groupbox_kw is None:
+            groupbox_kw = dict()
         super().__init__(**groupbox_kw)
         self.setLayout(QtWidgets.QGridLayout(self))
 
@@ -939,7 +943,10 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget = self.widgets[widget]
         if isinstance(
             widget,
-            QtWidgets.QSpinBox | QtWidgets.QDoubleSpinBox | BetterSpinBox | FittingParameterWidget,
+            QtWidgets.QSpinBox
+            | QtWidgets.QDoubleSpinBox
+            | BetterSpinBox
+            | FittingParameterWidget,
         ):
             return widget.value()
         elif isinstance(widget, QtWidgets.QAbstractSpinBox):
@@ -984,7 +991,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         for k, v in self.widgets.items():
             if k not in self.untracked:
                 self.widget_change_signal(v).connect(
-                    lambda x=None: self.sigParameterChanged.emit({k: x})
+                    lambda x=None, name=k: self.sigParameterChanged.emit({name: x})
                 )
 
     def widgets_of_type(self, widgetclass):
@@ -1007,7 +1014,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
 
 class ROIControls(ParameterGroup):
-    def __init__(self, roi: pg.ROI, spinbox_kw=dict(), **kwargs):
+    def __init__(self, roi: pg.ROI, spinbox_kw: dict | None = None, **kwargs):
+        if spinbox_kw is None:
+            spinbox_kw = dict()
         self.roi = roi
         x0, y0, x1, y1 = self.roi_limits
         xm, ym, xM, yM = self.roi.maxBounds.getCoords()
@@ -1462,6 +1471,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
             warnings.warn(
                 f"Menu or Action '{__name}' called as an attribute",
                 PendingDeprecationWarning,
+                stacklevel=2,
             )
             return out
 

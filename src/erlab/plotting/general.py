@@ -118,10 +118,13 @@ class LabeledCursor(AxesWidget):
         vertOn: bool = True,
         textOn: bool = True,
         useblit: bool = True,
-        textprops: dict = {},
+        textprops: dict | None = None,
         **lineprops: dict,
     ):
         super().__init__(ax)
+
+        if textprops is None:
+            textprops = dict()
 
         self.connect_event("motion_notify_event", self.onmove)
         self.connect_event("draw_event", self.clear)

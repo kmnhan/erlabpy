@@ -309,7 +309,7 @@ class FermiEdge2dModel(XModelMixin):
     def __init__(
         self,
         degree=2,
-        independent_vars=["eV", "alpha"],
+        independent_vars=("eV", "alpha"),
         prefix="",
         nan_policy="raise",
         **kwargs,

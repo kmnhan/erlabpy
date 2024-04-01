@@ -1473,18 +1473,8 @@ class ItoolPlotItem(pg.PlotItem):
 
     def set_active_cursor(self, index: int):
         if self.is_image:
-            for i, (item, cursors) in enumerate(
-                zip(self.slicer_data_items, self.cursor_lines)
-            ):
+            for i, item in enumerate(self.slicer_data_items):
                 item.setVisible(i == index)
-                # for line in cursors.values():
-                # line.setMovable(i == index)
-        else:
-            pass
-            # for i, cursors in enumerate(self.cursor_lines):
-            # for line in cursors.values():
-            # line.setMovable(i == index)
-
     def save_current_data(self, fileName=None):
         if fileName is None:
             self.fileDialog = QtWidgets.QFileDialog()

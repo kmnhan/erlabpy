@@ -228,6 +228,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     "Not all coordinate arrays have the same shape, "
                     "falling back to scipy.",
                     RuntimeWarning,
+                    stacklevel=1,
                 )
             elif len(xi) != self.values.ndim:
                 warnings.warn(
@@ -235,6 +236,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     "the input data dimensions, "
                     "falling back to scipy.",
                     RuntimeWarning,
+                    stacklevel=1,
                 )
             else:
                 result = _get_interp_func(self.values.ndim)(
@@ -250,6 +252,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 f"Dimension(s) {self.uneven_dims} are not uniform, "
                 "falling back to scipy.",
                 RuntimeWarning,
+                stacklevel=1,
             )
         return super().__call__(xi, method)
 

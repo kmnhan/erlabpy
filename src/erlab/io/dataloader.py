@@ -723,8 +723,8 @@ class LoaderRegistry(RegistryBase):
     def __getattr__(self, key: str) -> LoaderBase:
         try:
             return self.get(key)
-        except KeyError:
-            raise AttributeError(f"Loader for {key} not found")
+        except KeyError as e:
+            raise AttributeError(f"Loader for {key} not found") from e
 
     def set_loader(self, loader: str | LoaderBase):
         """Set the current data loader.

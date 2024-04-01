@@ -191,12 +191,14 @@ def fix_attr_format(da: xr.DataArray):
                 warnings.warn(
                     f"The attribute {key} with invalid type {dt}"
                     " will be converted to string"
+                    , stacklevel=1
                 )
             except TypeError:
                 # this is VERY unprobable...
                 da = da.assign_attrs({key: ""})
                 warnings.warn(
                     f"The attribute {key} with invalid type {dt} will be removed"
+                    , stacklevel=1
                 )
     return da
 

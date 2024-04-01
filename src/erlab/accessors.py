@@ -78,7 +78,10 @@ class ImageToolAccessor(ERLabAccessor):
 
 @xr.register_dataarray_accessor("qsel")
 class SelectionAccessor(ERLabAccessor):
-    """`xarray.DataArray.qsel` accessor for conveniently selecting and averaging data."""
+    """
+    `xarray.DataArray.qsel` accessor for conveniently selecting and averaging
+    data.
+    """
 
     def __call__(
         self,
@@ -387,7 +390,8 @@ class MomentumAccessor:
             return float(self._obj.attrs["inner_potential"])
         else:
             warnings.warn(
-                "Inner potential not found in data attributes, assuming 10 eV"
+                "Inner potential not found in data attributes, assuming 10 eV",
+                stacklevel=1,
             )
             return 10.0
 
@@ -418,7 +422,10 @@ class MomentumAccessor:
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
         else:
-            warnings.warn("Work function not found in data attributes, assuming 4.5 eV")
+            warnings.warn(
+                "Work function not found in data attributes, assuming 4.5 eV",
+                stacklevel=1,
+            )
             return 4.5
 
     @work_function.setter

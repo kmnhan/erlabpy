@@ -102,7 +102,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     return out
 
 
-def acf2stack(arr, stack_dims=["eV"], mode: str = "full", method: str = "fft"):
+def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
     if arr.ndim == 2:
         return acf2(arr, mode, method)
     elif arr.ndim >= 3:

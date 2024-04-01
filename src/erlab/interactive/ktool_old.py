@@ -38,9 +38,7 @@ def plot_bz_tise2(ax=None, a=3.54, pockets=False, aspect=1, rotate=0, **kwargs):
         width = 0.25
         center = (0, np.sqrt(3) * ln)
         offset = (0, 0)
-        for i, ang in enumerate(
-            [np.deg2rad(rotate - 30 + a) for a in [0, 60, 120, 180, 240, 300]]
-        ):
+        for ang in [np.deg2rad(rotate - 30 + a) for a in [0, 60, 120, 180, 240, 300]]:
             x = np.cos(ang) * center[0] - np.sin(ang) * center[1]
             y = np.sin(ang) * center[0] + np.cos(ang) * center[1]
             if aspect == 1:

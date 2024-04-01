@@ -33,7 +33,7 @@ TINY: float = 1.0e-15
 def _gen_kernel(
     x: npt.NDArray[np.float64], resolution: float, pad: int = 5
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Generate a Gaussian kernel for convolution.
+    r"""Generate a Gaussian kernel for convolution.
 
     Parameters
     ----------

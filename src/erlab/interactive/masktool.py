@@ -9,7 +9,7 @@ __all__ = ["masktool"]
 
 
 class PolyLineROIControls(ParameterGroup):
-    def __init__(self, roi: pg.PolyLineROI, spinbox_kw=dict(), **kwargs):
+    def __init__(self, roi: pg.PolyLineROI, spinbox_kw=None, **kwargs):
         pass
 
 

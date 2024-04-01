@@ -88,7 +88,11 @@ def _load_resistance_physlab_old(
     """
     with open(path, encoding=encoding) as file:
         content = re.sub(
-            r"(e[-+]\d{3}) {2,3}(-?)", "\\g<1>\\t \\g<2>", file.read(), 0, re.MULTILINE
+            r"(e[-+]\d{3}) {2,3}(-?)",
+            "\\g<1>\\t \\g<2>",
+            file.read(),
+            count=0,
+            flags=re.MULTILINE
         )
     content = content.replace("-1.#IO", "   nan")
     data = np.genfromtxt(
