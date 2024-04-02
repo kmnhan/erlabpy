@@ -84,7 +84,7 @@ text.kerning_factor: 0
 # For more information on LaTeX properties, see
 # https://matplotlib.org/tutorials/text/usetex.html
 text.usetex: False
-text.latex.preamble: 
+text.latex.preamble:
 
 # The following settings allow you to select the fonts in math mode.
 mathtext.fontset: stix

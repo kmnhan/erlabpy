@@ -62,6 +62,6 @@ are sufficient for most use cases.
     * - `lmfit <https://lmfit.github.io/lmfit-py/>`_
       - Optimization problems including curve fitting
     * - `pyqtgraph <https://pyqtgraph.readthedocs.io/en/latest/>`_
-      - Interactive plotting (i.e., imagetool) 
+      - Interactive plotting (i.e., imagetool)
 
 See the :doc:`userguide` to start using ERLabPy!

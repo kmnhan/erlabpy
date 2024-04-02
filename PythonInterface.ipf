@@ -16,30 +16,30 @@ End
 
 Function LoadPythonArray([outName, pathName, fileName])
 	// Load .h5 files saved from python
-	
+
 	String outName	 // Name of loaded wave
 	String pathName	 // Name of symbolic path
 	String fileName	 // Name of HDF5 file
-	
+
 	if( ParamIsDefault(pathName) )
 		pathName = ""
 	endif
-	
+
 	if( ParamIsDefault(fileName) )
 		fileName = ""
 	endif
-	
+
 	Variable fileID	// HDF5 file ID will be stored here
-	
+
 	// Open the HDF5 file.
 	HDF5OpenFile /P=$pathName /R fileID as fileName
-	
+
 	// Load the HDF5 dataset.
 	HDF5LoadData /O /Q /IGOR=-1 fileID, "__xarray_dataarray_variable__"
-	
+
 	// Close the HDF5 file.
 	HDF5CloseFile fileID
-	
+
 	if( ParamIsDefault(outName) )
 		outName = RemoveEnding(S_fileName, ".h5")
 		Prompt outName, "Name: "
@@ -48,11 +48,10 @@ Function LoadPythonArray([outName, pathName, fileName])
       	return -1
 		endif
 	endif
-	
+
 	// Rename the loaded wave.
 	Duplicate /O '__xarray_dataarray_variable__', $outName; KillWaves '__xarray_dataarray_variable__'
-	
-	Print "Loaded Python DataArray as " + outName + " from " + S_path + S_fileName
-	
-End
 
+	Print "Loaded Python DataArray as " + outName + " from " + S_path + S_fileName
+
+End

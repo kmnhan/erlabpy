@@ -12,5 +12,3 @@
       ImageToolAccessor
       SelectionAccessor
       MomentumAccessor
-
-

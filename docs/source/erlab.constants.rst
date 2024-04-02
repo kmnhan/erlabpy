@@ -4,12 +4,12 @@
 
 .. automodule:: erlab.constants
 
-   
-   
+
+
    .. rubric:: Module Attributes
 
    .. autosummary::
-   
+
       e
       c
       m_e
@@ -29,27 +29,14 @@
       rel_kzconv
       kb
       kb_eV
-   
-   
 
-   
-   
+
+
+
+
    .. rubric:: Functions
 
    .. autosummary::
-   
+
       conv_eV_nm
       conv_watt_photons
-   
-   
-
-   
-   
-   
-
-   
-   
-   
-
-
-

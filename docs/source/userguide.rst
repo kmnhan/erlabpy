@@ -7,7 +7,7 @@ User Guide
 
    The user guide is incomplete. For the full list of packages and modules provided by ERLabPy, see :doc:`reference`.
 
-This section contains some examples for getting started with ARPES data analysis and visualization. 
+This section contains some examples for getting started with ARPES data analysis and visualization.
 
 
 Introduction

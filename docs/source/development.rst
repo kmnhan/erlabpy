@@ -13,21 +13,21 @@ Development Guide
 Creating a development environment
 ==================================
 
-First, you will need to install `git` and `conda` (or `mamba`). 
+First, you will need to install `git` and `conda` (or `mamba`).
 
 Installing git
 --------------
 
 Below are some quick instructions for installing git on various operating systems. For more detailed instructions, see the `git installation guide <https://git-scm.com/book/en/v2/Getting-Started-Installing-Git>`_.
 
-* macOS (Intel & ARM): get Xcode Command Line Tools by running in your terminal window: 
+* macOS (Intel & ARM): get Xcode Command Line Tools by running in your terminal window:
 
   .. code-block:: sh
 
       xcode-select --install
 
 * Windows 10 1709 (build 16299) or later: run in command prompt or PowerShell:
-  
+
   .. code-block:: sh
 
       winget install --id Git.Git -e --source winget
@@ -52,7 +52,7 @@ Cloning the repository
 1. `Create an account <https://github.com/>`_ on GitHub if you do not already
    have one.
 
-2. You will need your own copy of erlabpy (aka fork) to work on the code. 
+2. You will need your own copy of erlabpy (aka fork) to work on the code.
    Go to the `erlabpy repository <https://github.com/kmnhan/erlabpy>`_ and hit
    the ``Fork`` button near the top of the page. This creates a copy of the code
    under your account on the GitHub server.
@@ -79,7 +79,7 @@ conda <https://docs.conda.io/projects/conda/en/stable/user-guide/install/>`_ or
 <https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html>`_.
 
 .. hint::
-  
+
   - When using conda, miniconda is recommended to save disk space.
   - `Mamba <https://mamba.readthedocs.io>`_ is a faster alternative
     to conda with additional features.
@@ -102,9 +102,9 @@ An editable installation allows you to make changes to the code and see the chan
      Replace :code:`<envname>`  with the environment name you prefer.
 
    .. hint::
-      
+
      | If using conda, replace :code:`mamba` with :code:`conda`.
-     | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml` to use `Accelerate <https://developer.apple.com/accelerate/>`_ instead of `OpenBLAS <https://en.wikipedia.org/wiki/OpenBLAS>`_. 
+     | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml` to use `Accelerate <https://developer.apple.com/accelerate/>`_ instead of `OpenBLAS <https://en.wikipedia.org/wiki/OpenBLAS>`_.
 
    .. code-block:: sh
 
@@ -113,9 +113,9 @@ An editable installation allows you to make changes to the code and see the chan
 
 
 2. Install the repository.
-   
+
    .. note::
-    
+
       The ``editable_mode=compat`` setting enables static analysis tools to work with
       the package. See `this issue <https://github.com/pypa/setuptools/issues/3518>`_
       for more information.
@@ -173,7 +173,7 @@ leads to merge conflicts, you must resolve these before submitting your pull
 request. Remember to follow the commit message guidelines. If you have
 uncommitted changes, you will need to ``git stash`` them prior to updating. This
 will effectively store your changes, which can be reapplied after updating with
-``git stash apply``. 
+``git stash apply``.
 
 
 Create a new feature branch
@@ -335,7 +335,7 @@ or
     mamba env update -f docs/environment.yml -n <envname>
 
 then build the documentation by running:
-  
+
 .. code-block:: sh
 
     cd docs/

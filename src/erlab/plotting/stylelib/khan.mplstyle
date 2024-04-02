@@ -389,7 +389,7 @@ path.sketch: None
 # e.g., you may want a higher resolution, or to make the figure
 # background white
 savefig.dpi: 600
-savefig.facecolor: auto 
+savefig.facecolor: auto
 savefig.edgecolor: auto
 savefig.format: pdf
 savefig.bbox: tight

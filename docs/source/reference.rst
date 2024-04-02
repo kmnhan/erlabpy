@@ -21,7 +21,7 @@ Subpackage                 Description
 
 .. toctree::
    :hidden:
-   
+
    erlab.analysis
    erlab.io
    erlab.plotting
@@ -42,7 +42,7 @@ Submodule           Description
 
 .. toctree::
    :hidden:
-   
+
    erlab.lattice
    erlab.constants
    erlab.accessors

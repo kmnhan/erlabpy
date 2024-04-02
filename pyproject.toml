@@ -160,7 +160,6 @@ exclude = [
     "node_modules",
     "site-packages",
     "venv",
-    "_deprecated",
 ]
 
 [tool.ruff.lint]
