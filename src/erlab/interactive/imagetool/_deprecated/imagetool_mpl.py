@@ -79,10 +79,10 @@ def move_mean_centered_multiaxis(
     a,
     window_list,
     min_count_list=None,
-    axis_list=[
-        -1,
-    ],
+    axis_list=None,
 ):
+    if axis_list is None:
+        axis_list = [-1]
     if not isinstance(axis_list, list):
         axis_list = [
             axis_list,
@@ -258,11 +258,17 @@ class mpl_itool(Widget):
         useblit=True,
         parallel=False,
         bench=False,
-        cursorprops={},
-        lineprops={},
-        fermilineprops={},
+        cursorprops=None,
+        lineprops=None,
+        fermilineprops=None,
         **improps,
     ):
+        if fermilineprops is None:
+            fermilineprops = {}
+        if lineprops is None:
+            lineprops = {}
+        if cursorprops is None:
+            cursorprops = {}
         self.canvas = canvas
         self.axes = axes
         self.data = parse_data(data)
@@ -279,58 +285,58 @@ class mpl_itool(Widget):
                 "If running in ipython, add `%matplotlib qt`."
             )
         for ax in self.axes:
-            for loc, spine in ax.spines.items():
+            for _loc, spine in ax.spines.items():
                 spine.set_position(("outward", 1))
         self.cursorprops = cursorprops
         self.lineprops = lineprops
         self.fermilineprops = fermilineprops
         self.improps = improps
         self.cursorprops.update(
-            dict(
-                linestyle="-",
-                linewidth=0.8,
-                color=colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=0.5),
-                animated=self.useblit,
-                visible=True,
-            )
+            {
+                "linestyle": "-",
+                "linewidth": 0.8,
+                "color": colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=0.5),
+                "animated": self.useblit,
+                "visible": True,
+            }
         )
         self.lineprops.update(
-            dict(
-                linestyle="-",
-                linewidth=0.8,
-                color=colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=1),
-                animated=self.useblit,
-                visible=True,
-            )
+            {
+                "linestyle": "-",
+                "linewidth": 0.8,
+                "color": colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=1),
+                "animated": self.useblit,
+                "visible": True,
+            }
         )
         self.fermilineprops.update(
-            dict(
-                linestyle="--",
-                linewidth=0.8,
-                color=colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=1),
-                animated=False,
-            )
+            {
+                "linestyle": "--",
+                "linewidth": 0.8,
+                "color": colors.to_rgba(plt.rcParams.get("axes.edgecolor"), alpha=1),
+                "animated": False,
+            }
         )
         self.improps.update(
-            dict(
-                animated=self.useblit,
-                visible=True,
-                interpolation="none",
-                aspect="auto",
-                origin="lower",
-                norm=colors.PowerNorm(self.gamma),
-                cmap=self.cmap,
-                rasterized=True,
-            )
+            {
+                "animated": self.useblit,
+                "visible": True,
+                "interpolation": "none",
+                "aspect": "auto",
+                "origin": "lower",
+                "norm": colors.PowerNorm(self.gamma),
+                "cmap": self.cmap,
+                "rasterized": True,
+            }
         )
-        self.spanprops = dict(
+        self.spanprops = {
             # edgecolor=plt.rcParams.get('axes.edgecolor'),
             # lw=0.5, ls='--',
-            facecolor=colors.to_rgba(self.cursorprops["color"], alpha=1),
-            alpha=0.15,
-            animated=self.useblit,
-            visible=True,
-        )
+            "facecolor": colors.to_rgba(self.cursorprops["color"], alpha=1),
+            "alpha": 0.15,
+            "animated": self.useblit,
+            "visible": True,
+        }
         self._get_middle_index = lambda x: len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
 
         self.vals = self.data.values
@@ -724,17 +730,17 @@ class mpl_itool(Widget):
 
     def labelify(self, dim):
         """Prettify some frequently used axis labels."""
-        labelformats = dict(
-            kx="$k_x$",
-            ky="$k_y$",
-            kz="$k_z$",
-            alpha="$\\alpha$",
-            beta="$\\beta$",
-            theta="$\\theta$",
-            phi="$\\phi$",
-            chi="$\\chi$",
-            eV="$E$",
-        )
+        labelformats = {
+            "kx": "$k_x$",
+            "ky": "$k_y$",
+            "kz": "$k_z$",
+            "alpha": "$\\alpha$",
+            "beta": "$\\beta$",
+            "theta": "$\\theta$",
+            "phi": "$\\phi$",
+            "chi": "$\\chi$",
+            "eV": "$E$",
+        }
         try:
             return labelformats[dim]
         except KeyError:
@@ -1045,7 +1051,7 @@ class ImageToolNavBar(NavigationToolbar2QT):
         and relative to Matplotlib's "images" data directory.
         """
         name = name.replace(".png", "")
-        icons_dict = dict(
+        icons_dict = {
             # back = qta.icon('ph.arrow-arc-left-fill'),
             # forward = qta.icon('ph.arrow-arc-right-fill'),
             # filesave = qta.icon('ph.floppy-disk-fill'),
@@ -1054,20 +1060,20 @@ class ImageToolNavBar(NavigationToolbar2QT):
             # qt4_editor_options = qta.icon('ph.palette-fill'),
             # zoom_to_rect = qta.icon('ph.crop-fill'),
             # subplots = qta.icon('ph.squares-four-fill'),
-            back=qta.icon("msc.chevron-left"),
-            forward=qta.icon("msc.chevron-right"),
-            filesave=qta.icon("msc.save"),
-            home=qta.icon("msc.debug-step-back"),
-            move=qta.icon("msc.move"),
-            qt4_editor_options=qta.icon("msc.graph-line"),
-            zoom_to_rect=qta.icon("msc.search"),
-            subplots=qta.icon("msc.editor-layout"),
-        )
+            "back": qta.icon("msc.chevron-left"),
+            "forward": qta.icon("msc.chevron-right"),
+            "filesave": qta.icon("msc.save"),
+            "home": qta.icon("msc.debug-step-back"),
+            "move": qta.icon("msc.move"),
+            "qt4_editor_options": qta.icon("msc.graph-line"),
+            "zoom_to_rect": qta.icon("msc.search"),
+            "subplots": qta.icon("msc.editor-layout"),
+        }
         try:
             return icons_dict[name]
-        except BaseException:
+        except BaseException as e:
             print(name)
-            raise Exception
+            raise Exception from e
         # name = name.replace('.png', '_large.png')
         # pm = QtGui.QPixmap(str(cbook._get_data_path('images', name)))
         # _setDevicePixelRatio(pm, _devicePixelRatioF(self))
@@ -1220,11 +1226,11 @@ class ImageTool(QtWidgets.QMainWindow):
             QtCore.Qt.BottomToolBarArea, self.NavBar(self.main_canvas, self)
         )
 
-        self.icons = dict(
-            swap=qta.icon("msc.arrow-swap"),
-            lock=qta.icon("msc.lock"),
-            unlock=qta.icon("msc.unlock"),
-        )
+        self.icons = {
+            "swap": qta.icon("msc.arrow-swap"),
+            "lock": qta.icon("msc.lock"),
+            "unlock": qta.icon("msc.unlock"),
+        }
 
         self.cursortab = QtWidgets.QWidget()
         cursortab_content = QtWidgets.QHBoxLayout(self.cursortab)

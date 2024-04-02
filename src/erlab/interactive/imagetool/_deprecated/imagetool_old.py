@@ -45,29 +45,29 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
-ICON_NAME = dict(
-    invert="mdi6.invert-colors",
-    invert_off="mdi6.invert-colors-off",
-    contrast="mdi6.contrast-box",
-    lock="mdi6.lock",
-    unlock="mdi6.lock-open-variant",
-    colorbar="mdi6.gradient-vertical",
-    transpose_0="mdi6.arrow-left-right",
-    transpose_1="mdi6.arrow-top-left-bottom-right",
-    transpose_2="mdi6.arrow-up-down",
-    transpose_3="mdi6.arrow-up-down",
-    snap="mdi6.grid",
-    snap_off="mdi6.grid-off",
-    palette="mdi6.palette-advanced",
-    styles="mdi6.palette-swatch",
-    layout="mdi6.page-layout-body",
-    zero_center="mdi6.format-vertical-align-center",
-    table_eye="mdi6.table-eye",
-)
+ICON_NAME = {
+    "invert": "mdi6.invert-colors",
+    "invert_off": "mdi6.invert-colors-off",
+    "contrast": "mdi6.contrast-box",
+    "lock": "mdi6.lock",
+    "unlock": "mdi6.lock-open-variant",
+    "colorbar": "mdi6.gradient-vertical",
+    "transpose_0": "mdi6.arrow-left-right",
+    "transpose_1": "mdi6.arrow-top-left-bottom-right",
+    "transpose_2": "mdi6.arrow-up-down",
+    "transpose_3": "mdi6.arrow-up-down",
+    "snap": "mdi6.grid",
+    "snap_off": "mdi6.grid-off",
+    "palette": "mdi6.palette-advanced",
+    "styles": "mdi6.palette-swatch",
+    "layout": "mdi6.page-layout-body",
+    "zero_center": "mdi6.format-vertical-align-center",
+    "table_eye": "mdi6.table-eye",
+}
 
 
 class IconButton(QtWidgets.QPushButton):
-    def __init__(self, *args, on: str = None, off: str = None, **kwargs):
+    def __init__(self, *args, on: str | None = None, off: str | None = None, **kwargs):
         self.icon_key_on = None
         self.icon_key_off = None
         if on is not None:
@@ -908,18 +908,29 @@ class pg_itool(pg.GraphicsLayoutWidget):
         cmap="magma",
         reverse=False,
         bench=False,
-        plot_kw={},
-        cursor_kw={},
-        image_kw={},
-        profile_kw={},
-        span_kw={},
-        fermi_kw={},
+        plot_kw=None,
+        cursor_kw=None,
+        image_kw=None,
+        profile_kw=None,
+        span_kw=None,
+        fermi_kw=None,
         zero_centered=False,
         rad2deg=False,
-        *args,
         **kwargs,
     ):
-        super().__init__(show=True, *args, **kwargs)
+        if fermi_kw is None:
+            fermi_kw = {}
+        if span_kw is None:
+            span_kw = {}
+        if profile_kw is None:
+            profile_kw = {}
+        if image_kw is None:
+            image_kw = {}
+        if cursor_kw is None:
+            cursor_kw = {}
+        if plot_kw is None:
+            plot_kw = {}
+        super().__init__(show=True, **kwargs)
         self.qapp = QtCore.QCoreApplication.instance()
         self.screen = self.qapp.primaryScreen()
         self.snap = snap
@@ -953,12 +964,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # span_c_hover.setAlphaF(0.5)
 
         self.cursor_kw.update(
-            dict(
-                pen=pg.mkPen(cursor_c, width=2.25),
-                hoverPen=pg.mkPen(cursor_c_hover, width=2.5),
-            )
+            {
+                "pen": pg.mkPen(cursor_c, width=2.25),
+                "hoverPen": pg.mkPen(cursor_c_hover, width=2.5),
+            }
         )
-        self.plot_kw.update(dict(defaultPadding=0.0, clipToView=False))
+        self.plot_kw.update({"defaultPadding": 0.0, "clipToView": False})
         # self.profile_kw.update(dict(
         #     linestyle='-', linewidth=.8,
         #     color=colors.to_rgba(plt.rcParams.get('axes.edgecolor'),
@@ -972,17 +983,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
         #     animated=False,
         # ))
         self.image_kw.update(
-            dict(
-                autoDownsample=False,
-                axisOrder="row-major",
-            )
+            {
+                "autoDownsample": False,
+                "axisOrder": "row-major",
+            }
         )
         self.span_kw.update(
-            dict(
-                movable=False,
-                pen=pg.mkPen(span_c_edge, width=1),
-                brush=pg.mkBrush(span_c),
-            )
+            {
+                "movable": False,
+                "pen": pg.mkPen(span_c_edge, width=1),
+                "brush": pg.mkBrush(span_c),
+            }
         )
         # self.cursor_pos = None
         self.data = None
@@ -1339,7 +1350,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             ref_dims = ((1, 0, 1, 1), (0, 0, 1, 1), (1, 1, 1, 1))
             top_left = (1,)
             bottom_right = (2,)
-            top_right = tuple()
+            top_right = ()
         elif self.data_ndim == 3:
             ref_dims = (
                 (2, 0, 1, 1),
@@ -1576,17 +1587,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def labelify(self, text):
         """Prettify some frequently used axis labels."""
-        labelformats = dict(
-            kx="$k_x$",
-            ky="$k_y$",
-            kz="$k_z$",
-            alpha="$\\alpha$",
-            beta="$\\beta$",
-            theta="$\\theta$",
-            phi="$\\phi$",
-            chi="$\\chi$",
-            eV="$E$",
-        )
+        labelformats = {
+            "kx": "$k_x$",
+            "ky": "$k_y$",
+            "kz": "$k_z$",
+            "alpha": "$\\alpha$",
+            "beta": "$\\beta$",
+            "theta": "$\\theta$",
+            "phi": "$\\phi$",
+            "chi": "$\\chi$",
+            "eV": "$E$",
+        }
         try:
             return labelformats[text]
         except KeyError:
@@ -2432,11 +2443,15 @@ class ItoolColorBar(ItoolPlotItem):
         vert_pad=30,
         inner_pad=5,
         font_size=10,
-        curve_kw={},
-        line_kw={"pen": "cyan"},
+        curve_kw=None,
+        line_kw=None,
         *args,
         **kwargs,
     ):
+        if line_kw is None:
+            line_kw = {"pen": "cyan"}
+        if curve_kw is None:
+            curve_kw = {}
         super().__init__(itool, *args, **kwargs)
         self.setDefaultPadding(0)
         self.cbar = ItoolImageItem(self.itool, axisOrder="row-major")
@@ -3200,7 +3215,7 @@ def itool_(data, execute=None, *args, **kwargs):
     qapp.setStyle("Fusion")
 
     if isinstance(data, list | tuple):
-        win = tuple()
+        win = ()
         for d in data:
             win += (ImageTool(d, *args, **kwargs),)
         for w in win:
