@@ -447,55 +447,43 @@ class mdctool(QtWidgets.QMainWindow):
         self._options = QtWidgets.QWidget(self)
         self._options_layout = QtWidgets.QVBoxLayout(self._options)
         self._params_init = ParameterGroup(
-            **{
-                "n_bands": dict(
-                    showlabel="# Bands",
-                    qwtype="btspin",
-                    integer=True,
-                    value=n_bands,
-                    minimum=1,
-                    fixedWidth=60,
-                    notrack=True,
-                    valueChanged=self.refresh_n_peaks,
+            n_bands=dict(
+                showlabel="# Bands",
+                qwtype="btspin",
+                integer=True,
+                value=n_bands,
+                minimum=1,
+                fixedWidth=60,
+                notrack=True,
+                valueChanged=self.refresh_n_peaks,
+            ),
+            lin_bkg=dict(
+                qwtype="fitparam",
+                showlabel="Linear Background",
+                name="lin_bkg",
+                spin_kw=dict(value=0.0, minimumWidth=200),
+            ),
+            const_bkg=dict(
+                qwtype="fitparam",
+                showlabel="Constant Background",
+                name="const_bkg",
+                spin_kw=dict(value=0.0, minimumWidth=200),
+            ),
+            resolution=dict(
+                qwtype="fitparam",
+                showlabel="Total Resolution",
+                name="resolution",
+                spin_kw=dict(
+                    value=0.01, singleStep=0.0001, decimals=4, minimumWidth=200
                 ),
-                "lin_bkg": dict(
-                    qwtype="fitparam",
-                    showlabel="Linear Background",
-                    name="lin_bkg",
-                    spin_kw=dict(value=0.0, minimumWidth=200),
-                ),
-                "const_bkg": dict(
-                    qwtype="fitparam",
-                    showlabel="Constant Background",
-                    name="const_bkg",
-                    spin_kw=dict(value=0.0, minimumWidth=200),
-                ),
-                "resolution": dict(
-                    qwtype="fitparam",
-                    showlabel="Total Resolution",
-                    name="resolution",
-                    spin_kw=dict(
-                        value=0.01, singleStep=0.0001, decimals=4, minimumWidth=200
-                    ),
-                ),
-                
-                # "Fix T": dict(qwtype="chkbox", checked=True),
-                # "Bin x": dict(qwtype="spin", value=1, minimum=1),
-                # "Bin y": dict(qwtype="spin", value=1, minimum=1),
-                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
-                # "# CPU": dict(
-                #     qwtype="spin",
-                #     value=os.cpu_count(),
-                #     minimum=1,
-                #     maximum=os.cpu_count(),
-                # ),
-                "go": dict(
-                    qwtype="pushbtn",
-                    showlabel=False,
-                    text="Go",
-                    clicked=self.do_fit,
-                ),
-            }
+            ),
+            Method=dict(qwtype="combobox", items=LMFIT_METHODS),
+            go=dict(
+                qwtype="pushbtn",
+                showlabel=False,
+                text="Go",
+                clicked=self.do_fit,
+            ),
         )
         #
 
@@ -557,7 +545,7 @@ class mdctool(QtWidgets.QMainWindow):
     @property
     def params_dict(self):
         out = dict()
-        for k in ("lin_bkg", "const_bkg","resolution"):
+        for k in ("lin_bkg", "const_bkg", "resolution"):
             out = out | self._params_init.widgets[k].param_dict
         for i in range(self.n_bands):
             peak_widget = self._params_peak.widget(i)
@@ -575,7 +563,7 @@ class mdctool(QtWidgets.QMainWindow):
             peak_shapes=[
                 self._params_peak.widget(i).peak_shape for i in range(self.n_bands)
             ],
-            fd=False
+            fd=False,
         )
 
     def refresh_n_peaks(self):
@@ -631,7 +619,7 @@ class mdctool(QtWidgets.QMainWindow):
         print(res.best_values)
         self.fitplot.setData(x=self.xdata, y=res.best_fit)
         self.set_params(res.best_values)
-        
+
         self.result = res
 
     def set_params(self, params: dict):
@@ -666,9 +654,6 @@ class mdctool(QtWidgets.QMainWindow):
                 pass
         if execute:
             self.qapp.exec()
-
-
-
 
 
 if __name__ == "__main__":
