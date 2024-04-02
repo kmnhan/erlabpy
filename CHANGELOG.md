@@ -2,6 +2,69 @@
 
 
 
+## v1.6.0 (2024-04-02)
+
+### Ci
+
+* ci: speedup tests ([`618851e`](https://github.com/kmnhan/erlabpy/commit/618851e74d94301ec4f85a46facd46d3b6272571))
+
+* ci: parallelize tests ([`232301a`](https://github.com/kmnhan/erlabpy/commit/232301a0ab26c9c32a355af11b5458395a1cd832))
+
+* ci: migrate from pylint to ruff ([`2acd5e3`](https://github.com/kmnhan/erlabpy/commit/2acd5e3177f97f196d94644d75e3566a2714bf40))
+
+* ci: add pre-commit configuration ([`063067d`](https://github.com/kmnhan/erlabpy/commit/063067dfdedefefc47e55096d310a4df54a5b999))
+
+### Documentation
+
+* docs: add pre-commit ci status badge ([`ae39d3d`](https://github.com/kmnhan/erlabpy/commit/ae39d3dbb0a058b59493b97507f88576f6b1737a))
+
+* docs: add pre-commit badges ([`1b6702b`](https://github.com/kmnhan/erlabpy/commit/1b6702b9615c9881afb86883466f3e8846a2db12))
+
+* docs: replace black with ruff ([`cb1a4b5`](https://github.com/kmnhan/erlabpy/commit/cb1a4b56a1b11b6d4630e5a36307befc48270294))
+
+### Feature
+
+* feat: add mdctool ([`a4976f9`](https://github.com/kmnhan/erlabpy/commit/a4976f93cde51a41d667321a93dc2a90f23bddc3))
+
+### Refactor
+
+* refactor: remove deprecated function and dependencies ([`4b9c7b1`](https://github.com/kmnhan/erlabpy/commit/4b9c7b1629d99fbf0108ca33791d1bfd59632199))
+
+### Style
+
+* style: remove unnecessary dict call ([`ea0e0e8`](https://github.com/kmnhan/erlabpy/commit/ea0e0e822f8487ec5238b651f3d72aafac5c6bcb))
+
+* style: apply formatting ([`12e3a16`](https://github.com/kmnhan/erlabpy/commit/12e3a1649ce03792f79df8220f70572ff0ecc97a))
+
+* style: remove implicit optionals and apply more linter suggestions ([`798508c`](https://github.com/kmnhan/erlabpy/commit/798508c6a65ac439be70f9b7cc32c801ae8632cb))
+
+* style: reduce indentation ([`274a330`](https://github.com/kmnhan/erlabpy/commit/274a33037b0155b82d8f9eb5ec542568c54da1db))
+
+* style: move imports to type-checking block ([`e1f4005`](https://github.com/kmnhan/erlabpy/commit/e1f400516dcbc220979346f25a7dcfe4018df906))
+
+* style: cleanup kwargs and unnecessary pass statements ([`7867623`](https://github.com/kmnhan/erlabpy/commit/7867623e779636531cdf1e0675846d22d0045249))
+
+* style: make collections literal ([`74a8878`](https://github.com/kmnhan/erlabpy/commit/74a887853c2e84f315d45e52844a9c0fa7b46e28))
+
+* style: rewrite unnecessary dict calls as literal ([`10637f6`](https://github.com/kmnhan/erlabpy/commit/10637f622b29703a02b4666c5712e8cf03a96066))
+
+* style: format with ruff ([`64f3fed`](https://github.com/kmnhan/erlabpy/commit/64f3fed42e4766c1fe70d6a9488b75179a905314))
+
+* style: fix flake8-bugbear violations ([`4aade97`](https://github.com/kmnhan/erlabpy/commit/4aade97013cea63e20895fb39b43c04953a67984))
+
+* style: apply ruff unsafe fixes ([`a1a7d9a`](https://github.com/kmnhan/erlabpy/commit/a1a7d9ae79d3afa88cffe7423bb942aca29bfd09))
+
+* style: lint with pyupgrade and ruff ([`244e053`](https://github.com/kmnhan/erlabpy/commit/244e05305ce2e0b72c54e3eb7c96befb97762f87))
+
+* style: apply linter suggestions ([`7295cbc`](https://github.com/kmnhan/erlabpy/commit/7295cbc5b08065d75447f80ab1d84eb1c15255f3))
+
+### Unknown
+
+* [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+for more information, see https://pre-commit.ci ([`b86c995`](https://github.com/kmnhan/erlabpy/commit/b86c9952be94b4b7f5e5918ed28cbf39b750ef09))
+
+
 ## v1.5.2 (2024-04-01)
 
 ### Documentation
