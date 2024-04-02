@@ -432,6 +432,245 @@ class edctool(QtWidgets.QMainWindow):
             self.qapp.exec()
 
 
+class mdctool(QtWidgets.QMainWindow):
+    def __init__(self, data, n_bands: int = 1, parameters=None, *args, **kwargs):
+        self.data = data
+
+        self.qapp = QtCore.QCoreApplication.instance()
+        if not self.qapp:
+            self.qapp = QtWidgets.QApplication(sys.argv)
+        self.qapp.setStyle("Fusion")
+        super().__init__()
+        self.resize(720, 360)
+
+        self._dock0 = QtWidgets.QDockWidget("Parameters", self)
+        self._options = QtWidgets.QWidget(self)
+        self._options_layout = QtWidgets.QVBoxLayout(self._options)
+        self._params_init = ParameterGroup(
+            **{
+                "n_bands": dict(
+                    showlabel="# Bands",
+                    qwtype="btspin",
+                    integer=True,
+                    value=n_bands,
+                    minimum=1,
+                    fixedWidth=60,
+                    notrack=True,
+                    valueChanged=self.refresh_n_peaks,
+                ),
+                "lin_bkg": dict(
+                    qwtype="fitparam",
+                    showlabel="Linear Background",
+                    name="lin_bkg",
+                    spin_kw=dict(value=0.0, minimumWidth=200),
+                ),
+                "const_bkg": dict(
+                    qwtype="fitparam",
+                    showlabel="Constant Background",
+                    name="const_bkg",
+                    spin_kw=dict(value=0.0, minimumWidth=200),
+                ),
+                "resolution": dict(
+                    qwtype="fitparam",
+                    showlabel="Total Resolution",
+                    name="resolution",
+                    spin_kw=dict(
+                        value=0.01, singleStep=0.0001, decimals=4, minimumWidth=200
+                    ),
+                ),
+                
+                # "Fix T": dict(qwtype="chkbox", checked=True),
+                # "Bin x": dict(qwtype="spin", value=1, minimum=1),
+                # "Bin y": dict(qwtype="spin", value=1, minimum=1),
+                "Method": dict(qwtype="combobox", items=LMFIT_METHODS),
+                # "# CPU": dict(
+                #     qwtype="spin",
+                #     value=os.cpu_count(),
+                #     minimum=1,
+                #     maximum=os.cpu_count(),
+                # ),
+                "go": dict(
+                    qwtype="pushbtn",
+                    showlabel=False,
+                    text="Go",
+                    clicked=self.do_fit,
+                ),
+            }
+        )
+        #
+
+        # label_width = 0
+        # for w in self._params_init.widgets_of_type(FittingParameterWidget):
+        #     label_width = max(
+        #         label_width,
+        #         w.label.fontMetrics().boundingRect(w.label.text()).width() + 5,
+        #     )
+        # for w in self._params_init.widgets_of_type(FittingParameterWidget):
+        #     w.label.setFixedWidth(label_width)
+
+        self._options_layout.addWidget(self._params_init)
+
+        self._params_peak = QtWidgets.QTabWidget()
+
+        self._options_layout.addWidget(self._params_peak)
+
+        self._dock0.setWidget(self._options)
+        self._dock0.setFloating(False)
+
+        self.plotwidget = pg.PlotWidget(self)
+        self.rawplot = self.plotwidget.plot()
+        self.rawplot.setData(x=self.xdata, y=self.ydata)
+
+        self.modelplot = self.plotwidget.plot()
+        self.modelplot.setPen(pg.mkPen("y"))
+
+        self.fitplot = self.plotwidget.plot()
+        self.fitplot.setPen(pg.mkPen("c"))
+
+        self.peakcurves = []
+        self.peaklines = []
+
+        self.refresh_n_peaks()
+
+        self._params_init.sigParameterChanged.connect(self._refresh_plot_peaks)
+
+        self.setCentralWidget(self.plotwidget)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._dock0)
+        self.setWindowTitle("MDC Fitting")
+
+        if parameters is not None:
+            self.set_params(parameters)
+        self.__post_init__(execute=True)
+
+    @property
+    def xdata(self):
+        return self.data[self.data.dims[0]].values
+
+    @property
+    def ydata(self):
+        return self.data.values
+
+    @property
+    def n_bands(self):
+        return self._params_init.values["n_bands"]
+
+    @property
+    def params_dict(self):
+        out = dict()
+        for k in ("lin_bkg", "const_bkg","resolution"):
+            out = out | self._params_init.widgets[k].param_dict
+        for i in range(self.n_bands):
+            peak_widget = self._params_peak.widget(i)
+            out = out | peak_widget.param_dict
+        return out
+
+    @property
+    def params(self):
+        return {k: v["value"] for k, v in self.params_dict.items()}
+
+    @property
+    def model(self):
+        return MultiPeakModel(
+            self.n_bands,
+            peak_shapes=[
+                self._params_peak.widget(i).peak_shape for i in range(self.n_bands)
+            ],
+            fd=False
+        )
+
+    def refresh_n_peaks(self):
+        current = int(self._params_peak.count())
+        if self.n_bands > current:
+            while self.n_bands > self._params_peak.count():
+                self._params_peak.addTab(SinglePeakWidget(current), f"Peak {current}")
+                self._params_peak.widget(current).sigParameterChanged.connect(
+                    self._refresh_plot_peaks
+                )
+                current += 1
+        elif self.n_bands == current:
+            return
+        else:
+            while self.n_bands < self._params_peak.count():
+                current -= 1
+                self._params_peak.removeTab(current)
+
+        self._refresh_plot_peaks()
+
+    def _refresh_plot_peaks(self):
+        model = self.model
+        params = self.params
+        for i in range(self.n_bands):
+            peak_widget = self._params_peak.widget(i)
+            try:
+                curve = self.peakcurves[i]
+                line = self.peaklines[i]
+
+            except IndexError:
+                curve = PlotPeakItem(peak_widget)
+                self.plotwidget.addItem(curve)
+                curve.setPen(pg.mkPen("r"))
+                self.peakcurves.append(curve)
+
+                line = PlotPeakPosition(peak_widget, curve)
+                self.plotwidget.addItem(line)
+                line.setPen(pg.mkPen("r"))
+                line.setHoverPen(pg.mkPen("r", width=2))
+                self.peaklines.append(line)
+
+            curve.setData(x=self.xdata, y=model.func.eval_peak(i, self.xdata, **params))
+            line.refresh_pos()
+
+        self.modelplot.setData(x=self.xdata, y=model.eval(x=self.xdata, **params))
+
+    def do_fit(self):
+        res = self.model.guess_fit(
+            self.data,
+            params=self.params_dict,
+            method=self._params_init.values["Method"],
+        )
+        print(res.best_values)
+        self.fitplot.setData(x=self.xdata, y=res.best_fit)
+        self.set_params(res.best_values)
+        
+        self.result = res
+
+    def set_params(self, params: dict):
+        params = copy.deepcopy(params)
+        self._params_init.set_values(
+            **{
+                k: params[k]
+                for k in (
+                    "lin_bkg",
+                    "const_bkg",
+                    "resolution",
+                )
+            }
+        )
+        for i in range(self.n_bands):
+            self._params_peak.widget(i).set_values(
+                **{k[3:]: v for k, v in params.items() if k.startswith(f"p{i}")}
+            )
+
+    def __post_init__(self, execute=None):
+        self.show()
+        self.activateWindow()
+        # self.raise_()
+
+        if execute is None:
+            execute = True
+            try:
+                shell = get_ipython().__class__.__name__  # type: ignore
+                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                    execute = False
+            except NameError:
+                pass
+        if execute:
+            self.qapp.exec()
+
+
+
+
+
 if __name__ == "__main__":
     data = xr.open_dataarray(
         "~/Library/CloudStorage/Dropbox-KAIST_12/Kimoon Han/ERLab/Projects/TiSe2 Chiral"
