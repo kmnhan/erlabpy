@@ -21,9 +21,9 @@ ERLabPy
    .. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json
        :target: https://github.com/astral-sh/ruff
        :alt: Ruff
-   .. image:: https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit
-       :target: https://github.com/pre-commit/pre-commit
-       :alt: pre-commit
+   .. image:: https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg
+       :target: https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main
+       :alt: pre-commit.ci status
 
 A library that provides a set of tools and utilities to handle, manipulate, and
 visualize data from condensed matter physics experiments, with a focus on
