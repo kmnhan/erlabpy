@@ -53,7 +53,7 @@ Issues = "https://github.com/kmnhan/erlabpy/issues"
 Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest", "python-semantic-release"]
+dev = ["pytest", "python-semantic-release", "ruff"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
