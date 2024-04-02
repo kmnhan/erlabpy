@@ -447,43 +447,46 @@ class mdctool(QtWidgets.QMainWindow):
         self._options = QtWidgets.QWidget(self)
         self._options_layout = QtWidgets.QVBoxLayout(self._options)
         self._params_init = ParameterGroup(
-            n_bands=dict(
-                showlabel="# Bands",
-                qwtype="btspin",
-                integer=True,
-                value=n_bands,
-                minimum=1,
-                fixedWidth=60,
-                notrack=True,
-                valueChanged=self.refresh_n_peaks,
-            ),
-            lin_bkg=dict(
-                qwtype="fitparam",
-                showlabel="Linear Background",
-                name="lin_bkg",
-                spin_kw=dict(value=0.0, minimumWidth=200),
-            ),
-            const_bkg=dict(
-                qwtype="fitparam",
-                showlabel="Constant Background",
-                name="const_bkg",
-                spin_kw=dict(value=0.0, minimumWidth=200),
-            ),
-            resolution=dict(
-                qwtype="fitparam",
-                showlabel="Total Resolution",
-                name="resolution",
-                spin_kw=dict(
-                    value=0.01, singleStep=0.0001, decimals=4, minimumWidth=200
-                ),
-            ),
-            Method=dict(qwtype="combobox", items=LMFIT_METHODS),
-            go=dict(
-                qwtype="pushbtn",
-                showlabel=False,
-                text="Go",
-                clicked=self.do_fit,
-            ),
+            n_bands={
+                "showlabel": "# Bands",
+                "qwtype": "btspin",
+                "integer": True,
+                "value": n_bands,
+                "minimum": 1,
+                "fixedWidth": 60,
+                "notrack": True,
+                "valueChanged": self.refresh_n_peaks,
+            },
+            lin_bkg={
+                "qwtype": "fitparam",
+                "showlabel": "Linear Background",
+                "name": "lin_bkg",
+                "spin_kw": {"value": 0.0, "minimumWidth": 200},
+            },
+            const_bkg={
+                "qwtype": "fitparam",
+                "showlabel": "Constant Background",
+                "name": "const_bkg",
+                "spin_kw": {"value": 0.0, "minimumWidth": 200},
+            },
+            resolution={
+                "qwtype": "fitparam",
+                "showlabel": "Total Resolution",
+                "name": "resolution",
+                "spin_kw": {
+                    "value": 0.01,
+                    "singleStep": 0.0001,
+                    "decimals": 4,
+                    "minimumWidth": 200,
+                },
+            },
+            Method={"qwtype": "combobox", "items": LMFIT_METHODS},
+            go={
+                "qwtype": "pushbtn",
+                "showlabel": False,
+                "text": "Go",
+                "clicked": self.do_fit,
+            },
         )
         #
 
@@ -544,7 +547,7 @@ class mdctool(QtWidgets.QMainWindow):
 
     @property
     def params_dict(self):
-        out = dict()
+        out = {}
         for k in ("lin_bkg", "const_bkg", "resolution"):
             out = out | self._params_init.widgets[k].param_dict
         for i in range(self.n_bands):
