@@ -260,14 +260,11 @@ review.
 Code standards
 ==============
 
-Make sure to format your code using `black
-<https://black.readthedocs.io/en/stable/>`_ while sorting imports using `isort
-<https://pycqa.github.io/isort/>`_. These are also offered as VS Code extensions
-`ms-python.black-formatter
-<https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter>`_
-and `ms-python.isort
-<https://marketplace.visualstudio.com/items?itemName=ms-python.isort>`_.
-
+Import sorting, formatting, and linting are enforced with `Ruff
+<https://github.com/astral-sh/ruff>`_. If you wish to contribute, using
+`pre-commit <https://pre-commit.com>`_ is recommended. This will ensure that
+your code is properly formatted before you commit it. A pre-commit configuration
+file for ruff is included in the repository.
 
 Documentation
 =============

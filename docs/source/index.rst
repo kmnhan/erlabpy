@@ -18,9 +18,9 @@ ERLabPy
    .. image:: https://readthedocs.org/projects/erlabpy/badge/?version=latest
        :target: https://erlabpy.readthedocs.io/en/latest/
        :alt: Documentation Status
-   .. image:: https://img.shields.io/badge/code%20style-black-000000.svg
-      :target: https://github.com/psf/black
-      :alt: Code Style: black
+   .. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json
+      :target: https://github.com/astral-sh/ruff
+      :alt: Ruff
 
 A library that provides a set of tools and utilities to handle, manipulate, and
 visualize data from condensed matter physics experiments, with a focus on
