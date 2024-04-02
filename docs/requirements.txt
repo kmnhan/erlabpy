@@ -1,3 +1,4 @@
+ipykernel
 sphinx
 sphinx-autodoc-typehints
 setuptools

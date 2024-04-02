@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python>=3.11
   - pip>=19.3
+  - ipykernel
   - numpy>=1.22.0
   - matplotlib>=3.8.0
   - hvplot
