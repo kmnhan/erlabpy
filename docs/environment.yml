@@ -6,6 +6,7 @@ dependencies:
   - pip>=19.3
   - numpy>=1.22.0
   - matplotlib>=3.8.0
+  - hvplot
   - xarray
   - h5netcdf
   - varname
