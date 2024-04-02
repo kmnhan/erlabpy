@@ -4,7 +4,7 @@ from erlab.interactive.imagetool.fastbinning import nanmean_funcs, fast_nanmean
 
 def test_fast_nanmean():
     for nd, funcs in nanmean_funcs.items():
-        x = np.random.RandomState(42).randn(*((30,) * nd))
+        x = np.random.RandomState(42).randn(*((10,) * nd))
         for axis, func in funcs.items():
             if isinstance(axis, frozenset):
                 axis = tuple(axis)
