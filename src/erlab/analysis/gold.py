@@ -9,10 +9,9 @@ __all__ = [
     "resolution_roi",
 ]
 
+import importlib
 from collections.abc import Sequence
 
-import arpes
-import arpes.fits
 import lmfit.model
 import matplotlib
 import matplotlib.figure
@@ -31,6 +30,9 @@ from erlab.analysis.fit.models import (
 )
 from erlab.analysis.utilities import correct_with_edge
 from erlab.plotting.general import autoscale_to, figwh
+
+if importlib.util.find_spec("arpes"):
+    import arpes.fits
 
 
 def edge(

@@ -9,20 +9,26 @@ __all__ = [
 ]
 
 
+import importlib
+
 import lmfit
 import numba
 import numpy as np
 import numpy.typing as npt
 import scipy.ndimage
 import xarray as xr
-from arpes.fits import XModelMixin
+
+if importlib.util.find_spec("arpes"):
+    from arpes.fits import XModelMixin
+else:
+    from lmfit.models import Model as XModelMixin
 
 from erlab.analysis.fit.functions import (
+    FermiEdge2dFunc,
+    MultiPeakFunction,
+    PolyFunc,
     fermi_dirac_linbkg_broad,
     step_linbkg_broad,
-    PolyFunc,
-    MultiPeakFunction,
-    FermiEdge2dFunc,
 )
 
 

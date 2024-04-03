@@ -24,7 +24,11 @@ Interactive tools
 
 __all__ = ["goldtool", "itool", "ktool", "dtool"]
 
+import importlib
+
 from erlab.interactive.fermiedge import goldtool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.kspace import ktool
-from erlab.interactive.derivative import dtool
+
+if importlib.util.find_spec("arpes"):
+    from erlab.interactive.derivative import dtool
