@@ -4,9 +4,19 @@ import h5netcdf
 import numpy as np
 import xarray as xr
 
-import igor2.binarywave
-import igor2.packed
-import igor2.record
+try:
+    import igor2.binarywave
+    import igor2.packed
+    import igor2.record
+
+except ImportError:
+    import warnings
+
+    warnings.warn(
+        "igor2 is not installed. Some functions may not work.",
+        ImportWarning,
+        stacklevel=1,
+    )
 
 __all__ = ["load_experiment", "load_h5", "load_wave", "load_pxp", "load_ibw"]
 
