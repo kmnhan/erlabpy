@@ -2,6 +2,45 @@
 
 
 
+## v1.6.1 (2024-04-03)
+
+### Chore
+
+* chore(deps): add pre-commit to dev dependency ([`3a2fccd`](https://github.com/kmnhan/erlabpy/commit/3a2fccd978d23d806d2088ebd9ef60c7a2b20902))
+
+* chore: make csaps optional ([`db31b06`](https://github.com/kmnhan/erlabpy/commit/db31b064c1f46edef7743fdd1c3ab7984e170b3c))
+
+* chore: update issue templates ([`dfc2ab0`](https://github.com/kmnhan/erlabpy/commit/dfc2ab0fdfcf1fd5ab83dac2c9d6473b4d2cb7e1))
+
+### Ci
+
+* ci(github): remove linting, let pre-commit handle it ([`b209ecb`](https://github.com/kmnhan/erlabpy/commit/b209ecbb3c0a35d2bbeba8155bea3da9ffa58fe1))
+
+* ci(pre-commit): add hooks ([`9b401c3`](https://github.com/kmnhan/erlabpy/commit/9b401c328bb3ff18dddcce40b935afa2b6e2624a))
+
+### Documentation
+
+* docs: rephrase kconv guide ([`dd2c022`](https://github.com/kmnhan/erlabpy/commit/dd2c022e42e692c2af640a1fc8d21c3e429781b2))
+
+* docs: add ipykernel dependency to resolve failing builds ([`e5774a5`](https://github.com/kmnhan/erlabpy/commit/e5774a51c14ef6df190eb9f6198c274d2061cdd5))
+
+* docs: add hvplot example ([`6997020`](https://github.com/kmnhan/erlabpy/commit/69970208ba6658f15e900ee6b9367177fcd86d29))
+
+### Fix
+
+* fix: remove all pypi dependencies from pyproject.toml ([`1b2fd55`](https://github.com/kmnhan/erlabpy/commit/1b2fd5594f00bba8367419cd00919eba45cde5a7))
+
+### Refactor
+
+* refactor: remove ktool_old ([`18ea072`](https://github.com/kmnhan/erlabpy/commit/18ea0723fdf538bdbf2789ca73b2b962839ca3e5))
+
+### Style
+
+* style: apply ruff to deprecated imagetools ([`b2c7596`](https://github.com/kmnhan/erlabpy/commit/b2c7596ed12d89edaa2be3fe2923388014c68007))
+
+* style: apply pre-commit fixes ([`12b6441`](https://github.com/kmnhan/erlabpy/commit/12b6441419ed6c4ff4da921790c57a599032dba7))
+
+
 ## v1.6.0 (2024-04-02)
 
 ### Ci
