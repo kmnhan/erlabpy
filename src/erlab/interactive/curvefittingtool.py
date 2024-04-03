@@ -1,6 +1,7 @@
 import copy
 import sys
 
+import lmfit
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -161,7 +162,7 @@ class PlotPeakPosition(pg.InfiniteLine):
 
         elif QtCore.Qt.MouseButton.RightButton in ev.buttons():
             if ev.isStart():
-                self._start_width = self.param_widget.widgets["width"].value()
+                self._start_width = self.param_widgÏet.widgets["width"].value()
             ev.accept()
 
             val = self.mapToParent(ev.buttonDownPos() - ev.pos()).y()
@@ -384,9 +385,13 @@ class edctool(QtWidgets.QMainWindow):
         self.modelplot.setData(x=self.xdata, y=model.eval(x=self.xdata, **params))
 
     def do_fit(self):
-        res = self.model.guess_fit(
-            self.data,
-            params=self.params_dict,
+        params = lmfit.create_params(**self.params_dict)
+        model = self.model
+        params = model.guess(self.data, self.data[self.data.dims[0]]).update(params)
+        res = self.model.fit(
+            self.ydata,
+            x=self.xdata,
+            params=params,
             method=self._params_init.values["Method"],
         )
         print(res.best_values)
@@ -614,9 +619,13 @@ class mdctool(QtWidgets.QMainWindow):
         self.modelplot.setData(x=self.xdata, y=model.eval(x=self.xdata, **params))
 
     def do_fit(self):
-        res = self.model.guess_fit(
-            self.data,
-            params=self.params_dict,
+        params = lmfit.create_params(**self.params_dict)
+        model = self.model
+        params = model.guess(self.data, self.data[self.data.dims[0]]).update(params)
+        res = self.model.fit(
+            self.ydata,
+            x=self.xdata,
+            params=params,
             method=self._params_init.values["Method"],
         )
         print(res.best_values)
