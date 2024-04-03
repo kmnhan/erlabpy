@@ -48,6 +48,5 @@ dependencies:
   - pyperclip
   - pip:
     - pyqt6>=6.2.2
-    - csaps
     - igor2 @ git+https://github.com/kmnhan/igor2@master
     - arpes @ git+https://github.com/kmnhan/arpes@master

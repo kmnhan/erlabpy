@@ -1,5 +1,12 @@
-import csaps
 import xarray as xr
+
+try:
+    import csaps
+except ImportError as e:
+    raise ImportError(
+        "The `csaps` package is required for this module. "
+        "Please install it using `pip install csaps`."
+    ) from e
 
 
 def xcsaps(

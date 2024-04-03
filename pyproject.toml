@@ -30,7 +30,6 @@ dependencies = [
     "lmfit>=1.2.0",
     "uncertainties>=3.0.1",
     "iminuit>=2.25.2",
-    "csaps",
     "matplotlib>=3.8.0",
     "xarray",
     "h5netcdf",

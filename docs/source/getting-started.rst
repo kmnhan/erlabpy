@@ -64,4 +64,31 @@ are sufficient for most use cases.
     * - `pyqtgraph <https://pyqtgraph.readthedocs.io/en/latest/>`_
       - Interactive plotting (i.e., imagetool)
 
+For the full list of dependencies, see the `requirements.txt` file.
+
 See the :doc:`userguide` to start using ERLabPy!
+
+
+Optional dependencies
+---------------------
+
+The following packages are optional dependencies that are not installed by
+default. They are used in only specific functions, or is not used at all but is
+listed just for convenience.
+
+.. list-table::
+    :header-rows: 1
+    :stub-columns: 1
+    :widths: auto
+
+    * - Package
+      - Description
+    * - `csaps <https://github.com/espdev/csaps>`_
+      - Multidimensional smoothing splines
+    * - `hvplot <https://github.com/holoviz/hvplot>`_ and `bokeh
+        <https://github.com/bokeh/bokeh>`_
+      - Interactive plotting
+    * - `cmasher <https://cmasher.readthedocs.io>`_,
+        `cmocean <https://matplotlib.org/cmocean/>`_, and
+        `colorcet <https://colorcet.holoviz.org>`_
+      - More colormaps!
