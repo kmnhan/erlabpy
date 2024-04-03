@@ -9,9 +9,9 @@ __all__ = [
     "resolution_roi",
 ]
 
-import importlib
 from collections.abc import Sequence
 
+import joblib
 import lmfit.model
 import matplotlib
 import matplotlib.figure
@@ -29,10 +29,8 @@ from erlab.analysis.fit.models import (
     StepEdgeModel,
 )
 from erlab.analysis.utilities import correct_with_edge
+from erlab.parallel import joblib_progress
 from erlab.plotting.general import autoscale_to, figwh
-
-if importlib.util.find_spec("arpes"):
-    import arpes.fits
 
 
 def edge(
@@ -46,6 +44,7 @@ def edge(
     method: str = "leastsq",
     progress: bool = True,
     parallel_kw: dict | None = None,
+    parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
     fixed_center: float | None = None,
     scale_covar: bool = True,
@@ -78,6 +77,9 @@ def edge(
         Whether to display the fitting progress, by default `True`.
     parallel_kw
         Additional keyword arguments for parallel fitting, by default `None`.
+    parallel_obj
+        The `joblib.Parallel` object to use for fitting, by default `None`. If provided,
+        `parallel_kw` will be ignored.
     return_full
         Whether to return the full fit results, by default `False`.
     fixed_center
@@ -99,21 +101,21 @@ def edge(
 
     """
     if fast:
-        params = {}
+        params = lmfit.create_params()
         model_cls = StepEdgeModel
     else:
         if temp is None:
             temp = gold.attrs["temp_sample"]
-        params = {
-            "temp": {"value": temp, "vary": vary_temp},
-        }
+        params = lmfit.create_params(temp={"value": temp, "vary": vary_temp})
         model_cls = ExtendedAffineBroadenedFD
+
+    model = model_cls()
 
     if parallel_kw is None:
         parallel_kw = {}
 
     if fixed_center is not None:
-        params["center"] = {"value": fixed_center, "vary": False}
+        params["center"].set(value=fixed_center, vary=False)
 
     if any(b != 1 for b in bin_size):
         gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
@@ -122,34 +124,76 @@ def edge(
     gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
 
     # Assuming Poisson noise, the weights are the square root of the counts.
-    weights = np.sqrt(gold.sum("eV"))
+    weights = 1 / np.sqrt(gold_sel.sum("eV").values)
 
-    fitresults = arpes.fits.broadcast_model(
-        model_cls,
-        gold_sel,
-        "alpha",
-        weights=weights,
-        params=params,
-        method=method,
-        progress=progress,
-        parallel_kw=parallel_kw,
-        scale_covar=scale_covar,
-        **kwargs,
-    )
+    n_fits = len(gold_sel.alpha)
+
+    if parallel_obj is None:
+        if n_fits > 20:
+            parallel_kw.setdefault("n_jobs", -1)
+        else:
+            parallel_kw.setdefault("n_jobs", 1)
+        parallel_obj = joblib.Parallel(**parallel_kw)
+
+    def _fit(data, w):
+        pars = model.guess(data, x=data["eV"]).update(params)
+
+        res = model.fit(
+            data,
+            x=data["eV"],
+            params=pars,
+            method=method,
+            scale_covar=scale_covar,
+            weights=w,
+        )
+        return res
+
+    if progress:
+        with joblib_progress(desc="Fitting", total=n_fits) as _:
+            fitresults = parallel_obj(
+                joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                for i in range(n_fits)
+            )
+    else:
+        fitresults = parallel_obj(
+            joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+            for i in range(n_fits)
+        )
+
     if return_full:
         return fitresults
 
-    center_arr, center_stderr = fitresults.F.p("center"), fitresults.F.s("center")
-    center_arr = center_arr.where(~center_stderr.isnull(), drop=True)
-    center_stderr = center_stderr.where(~center_stderr.isnull(), drop=True)
-    return center_arr, center_stderr
+    xval = []
+    res_vals = []
+
+    for i, r in enumerate(fitresults):
+        center_ufloat = r.uvars["center"]
+
+        if not np.isnan(center_ufloat.std_dev):
+            xval.append(gold_sel.alpha.values[i])
+            res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
+
+    xval = np.asarray(xval)
+    yval, yerr = np.asarray(res_vals).T
+
+    return (
+        xr.DataArray(yval, coords={"alpha": xval}),
+        xr.DataArray(yerr, coords={"alpha": xval}),
+    )
 
 
 def poly_from_edge(
     center, weights=None, degree=4, method="leastsq", scale_covar=True
 ) -> lmfit.model.ModelResult:
-    modelresult = PolynomialModel(degree=degree).guess_fit(
-        center, weights=weights, method=method, scale_covar=scale_covar
+    model = PolynomialModel(degree=degree)
+    pars = model.guess(center.values, x=center[center.dims[0]].values)
+    modelresult = model.fit(
+        center,
+        x=center[center.dims[0]].values,
+        params=pars,
+        weights=weights,
+        method=method,
+        scale_covar=scale_covar,
     )
     return modelresult
 
@@ -391,12 +435,14 @@ def resolution(
     gold_roi = gold_corr.sel(alpha=slice(*angle_range))
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
 
-    params = {
-        "temp": {"value": gold.attrs["temp_sample"], "vary": False},
-        "resolution": {"value": 0.1, "vary": True, "min": 0},
-    }
-    fit = ExtendedAffineBroadenedFD().guess_fit(
-        edc_avg, params=params, method=method, scale_covar=scale_covar
+    params = lmfit.create_params(
+        temp={"value": gold_roi.attrs["temp_sample"], "vary": False},
+        resolution={"value": 0.1, "vary": True, "min": 0},
+    )
+    model = ExtendedAffineBroadenedFD()
+    params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
+    fit = ExtendedAffineBroadenedFD().fit(
+        edc_avg, x=edc_avg["eV"], params=params, method=method, scale_covar=scale_covar
     )
     if plot:
         plt.show()
@@ -437,12 +483,15 @@ def resolution_roi(
 ) -> lmfit.model.ModelResult:
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
-    params = {
-        "temp": {"value": gold_roi.attrs["temp_sample"], "vary": not fix_temperature},
-        "resolution": {"value": 0.1, "vary": True, "min": 0},
-    }
-    fit = ExtendedAffineBroadenedFD().guess_fit(
+    params = lmfit.create_params(
+        temp={"value": gold_roi.attrs["temp_sample"], "vary": not fix_temperature},
+        resolution={"value": 0.1, "vary": True, "min": 0},
+    )
+    model = ExtendedAffineBroadenedFD()
+    params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
+    fit = model.fit(
         edc_avg,
+        x=edc_avg["eV"],
         params=params,
         method=method,
         scale_covar=scale_covar,  # weights=1 / edc_stderr

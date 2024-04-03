@@ -8,20 +8,12 @@ __all__ = [
     "FermiEdge2dModel",
 ]
 
-
-import importlib
-
 import lmfit
 import numba
 import numpy as np
 import numpy.typing as npt
 import scipy.ndimage
 import xarray as xr
-
-if importlib.util.find_spec("arpes"):
-    from arpes.fits import XModelMixin
-else:
-    from lmfit.models import Model as XModelMixin
 
 from erlab.analysis.fit.functions import (
     FermiEdge2dFunc,
@@ -108,58 +100,51 @@ def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
     return n0, m0, n1, m1
 
 
-class ExtendedAffineBroadenedFD(XModelMixin):
+class ExtendedAffineBroadenedFD(lmfit.Model):
     """
     Fermi-dirac function with linear background above and below the fermi level,
     convolved with a gaussian kernel.
     """
 
-    guess_dataarray = True
-
     @staticmethod
     def LinearBroadFermiDirac(
         x,
-        center=0,
-        temp=30,
+        center=0.0,
+        temp=30.0,
         resolution=0.02,
-        back0=1,
-        back1=0,
-        dos0=1,
-        dos1=0,
+        back0=0.0,
+        back1=0.0,
+        dos0=1.0,
+        dos1=0.0,
     ):
         return fermi_dirac_linbkg_broad(
             x, center, temp, resolution, back0, back1, dos0, dos1
         )
 
-    def __init__(
-        self, independent_vars=("x",), prefix="", missing="raise", name=None, **kwargs
-    ):
-        """Defer to lmfit for initialization."""
-        kwargs.update(
-            {"prefix": prefix, "missing": missing, "independent_vars": independent_vars}
-        )
+    def __init__(self, **kwargs):
         super().__init__(self.LinearBroadFermiDirac, **kwargs)
         self.set_param_hint("temp", min=0.0)
         self.set_param_hint("resolution", min=0.0)
 
     def guess(self, data, x, **kwargs):
-        """Make some heuristic guesses."""
         pars = self.make_params()
 
         len_fit = max(round(len(x) * 0.05), 10)
         dos0, dos1, back0, back1 = fit_edges_linear(x, data, len_fit)
-        efermi = x[
+        efermi = np.asarray(x)[
             np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
         ]
 
-        temp = 30
+        temp = 30.0
         if isinstance(data, xr.DataArray):
             try:
-                temp = data.attrs["temp_sample"]
+                temp = float(data.attrs["temp_sample"])
             except KeyError:
                 pass
 
-        pars[f"{self.prefix}center"].set(value=efermi, min=x.min(), max=x.max())
+        pars[f"{self.prefix}center"].set(
+            value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()
+        )
         pars[f"{self.prefix}back0"].set(value=back0)
         pars[f"{self.prefix}back1"].set(value=back1)
         pars[f"{self.prefix}dos0"].set(value=dos0)
@@ -173,13 +158,8 @@ class ExtendedAffineBroadenedFD(XModelMixin):
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
 
 
-class StepEdgeModel(XModelMixin):
-    guess_dataarray = True
-
-    def __init__(
-        self, independent_vars=("x",), prefix="", missing="raise", name=None, **kwargs
-    ):
-        """Defer to lmfit for initialization."""
+class StepEdgeModel(lmfit.Model):
+    def __init__(self, independent_vars=("x",), prefix="", missing="raise", **kwargs):
         kwargs.update(
             {"prefix": prefix, "missing": missing, "independent_vars": independent_vars}
         )
@@ -187,7 +167,6 @@ class StepEdgeModel(XModelMixin):
         self.set_param_hint("sigma", min=0.0)
 
     def guess(self, data, x, **kwargs):
-        """Make some heuristic guesses."""
         pars = self.make_params()
 
         len_fit = max(round(len(x) * 0.05), 10)
@@ -209,7 +188,7 @@ class StepEdgeModel(XModelMixin):
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
 
 
-class PolynomialModel(XModelMixin):
+class PolynomialModel(lmfit.Model):
     def __init__(self, degree=9, **kwargs):
         kwargs.setdefault("name", f"Poly{degree}")
         super().__init__(PolyFunc(degree), **kwargs)
@@ -230,11 +209,11 @@ class PolynomialModel(XModelMixin):
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
 
 
-class MultiPeakModel(XModelMixin):
+class MultiPeakModel(lmfit.Model):
     """Model for fitting multiple Gaussian or Lorentzian peaks.
 
-    Most input parameters are passed to the
-    `erlab.analysis.fit.functions.MultiPeakFunction` constructor.
+    Most input parameters are passed to the :class:`MultiPeakFunction
+    <erlab.analysis.fit.functions.MultiPeakFunction>` constructor.
     """
 
     def __init__(
@@ -243,23 +222,13 @@ class MultiPeakModel(XModelMixin):
         peak_shapes: list[str] | str | None = None,
         fd: bool = True,
         convolve: bool = True,
-        independent_vars=None,
-        param_names=None,
-        nan_policy="raise",
-        prefix="",
-        name=None,
-        **kws,
+        **kwargs,
     ):
         super().__init__(
             MultiPeakFunction(
                 npeaks, peak_shapes=peak_shapes, fd=fd, convolve=convolve
             ),
-            independent_vars,
-            param_names,
-            nan_policy,
-            prefix,
-            name,
-            **kws,
+            **kwargs,
         )
 
         if self.func.convolve:
@@ -290,7 +259,7 @@ class MultiPeakModel(XModelMixin):
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
 
 
-class FermiEdge2dModel(XModelMixin):
+class FermiEdge2dModel(lmfit.Model):
     r"""A 2D model for a polynomial Fermi edge with a linear density of states.
 
     The model function can be written as
@@ -307,30 +276,17 @@ class FermiEdge2dModel(XModelMixin):
 
     """
 
-    n_dims = 2
-    dimension_order = ["eV", "alpha"]
-    guess_dataarray = True
-    fit_flat = True
-
     def __init__(
         self,
-        degree=2,
+        degree: int = 2,
         independent_vars=("eV", "alpha"),
-        prefix="",
-        nan_policy="raise",
         **kwargs,
     ):
-        kwargs.update(
-            {
-                "prefix": prefix,
-                "nan_policy": nan_policy,
-                "independent_vars": independent_vars,
-            }
-        )
+        kwargs.update({"independent_vars": independent_vars})
         super().__init__(FermiEdge2dFunc(degree), **kwargs)
         self.name = f"FermiEdge2dModel (deg {degree})"
 
-    def guess(self, data, eV, alpha, negative=False, **kwargs):
+    def guess(self, data, eV, alpha, **kwargs):
         pars = self.make_params()
         for i in range(self.func.poly.degree + 1):
             pars[f"{self.prefix}c{i}"].set(value=0.0)
@@ -348,8 +304,11 @@ class FermiEdge2dModel(XModelMixin):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    def guess_fit(self, *args, **kwargs):
-        return super().guess_fit(*args, **kwargs)
+    def fit(self, data, *args, **kwargs):
+        if isinstance(data, xr.DataArray):
+            data = data.transpose("eV", "alpha").values
+        # Ensure flat fit
+        return super().fit(data.ravel(), *args, **kwargs)
 
     __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
