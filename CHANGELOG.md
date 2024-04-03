@@ -2,6 +2,13 @@
 
 
 
+## v1.6.4 (2024-04-03)
+
+### Fix
+
+* fix: load colormaps only when igor2 is  available ([`7927c7d`](https://github.com/kmnhan/erlabpy/commit/7927c7db264bedb1a27b980d820d352f779b64c9))
+
+
 ## v1.6.3 (2024-04-03)
 
 ### Fix
