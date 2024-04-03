@@ -36,7 +36,6 @@ dependencies = [
     "varname",
     "tqdm",
     "pyperclip",
-    "pyqt6>=6.2.2",
     "qtpy",
     "pyqtgraph>=0.13.1",
     "qtawesome",
