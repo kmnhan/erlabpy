@@ -40,7 +40,6 @@ dependencies = [
     "pyqtgraph>=0.13.1",
     "qtawesome",
     "superqt",
-    'importlib-metadata; python_version>="3.11"',
 ]
 dynamic = ["version"]
 
