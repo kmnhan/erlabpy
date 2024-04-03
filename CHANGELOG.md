@@ -2,6 +2,13 @@
 
 
 
+## v1.6.3 (2024-04-03)
+
+### Fix
+
+* fix: leave out type annotation for passing tests ([`eb25008`](https://github.com/kmnhan/erlabpy/commit/eb2500838820172529ee751b5d8a624c950f66d2))
+
+
 ## v1.6.2 (2024-04-03)
 
 ### Fix
