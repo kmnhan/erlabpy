@@ -129,7 +129,7 @@ def load_h5(filename):
 
 
 def load_wave(
-    wave: dict | igor2.record.WaveRecord | str | os.PathLike,
+    wave,  #: dict | igor2.record.WaveRecord | str | os.PathLike,
     data_dir: str | os.PathLike | None = None,
 ) -> xr.DataArray:
     """Load a wave from Igor binary format.
