@@ -2,6 +2,13 @@
 
 
 
+## v1.6.2 (2024-04-03)
+
+### Fix
+
+* fix: igor2 does not have to be installed on import time ([`186727a`](https://github.com/kmnhan/erlabpy/commit/186727ac8d50b662efeba8bee567cf1013ca936a))
+
+
 ## v1.6.1 (2024-04-03)
 
 ### Chore
