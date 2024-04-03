@@ -2,6 +2,13 @@
 
 
 
+## v1.6.5 (2024-04-03)
+
+### Fix
+
+* fix: make imports work without optional pip dependencies ([`b8ac11d`](https://github.com/kmnhan/erlabpy/commit/b8ac11d8fb4379f70a39c817332382c352391a64))
+
+
 ## v1.6.4 (2024-04-03)
 
 ### Fix
