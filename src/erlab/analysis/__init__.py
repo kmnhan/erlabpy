@@ -12,6 +12,7 @@ Modules
    fit
    mask
    correlation
+   derivative
    gold
    interpolate
    kspace
