@@ -17,7 +17,10 @@ def gradient_magnitude(
     mode: str = "nearest",
     cval: float = 0.0,
 ) -> npt.NDArray[np.float64]:
-    """Calculate the gradient magnitude of an input array using a given dx and dy.
+    """Calculate the gradient magnitude of an input array.
+
+    The gradient magnitude is calculated as defined in Ref. :cite:p:`He2017`, using
+    given :math:`\Delta x` and :math:`\Delta y` values.
 
     Parameters
     ----------
@@ -27,16 +30,20 @@ def gradient_magnitude(
         Step size in the x-direction.
     dy
         Step size in the y-direction.
-    mode, cval
-        Arguments to be passed to `scipy.ndimage.generic_filter`.
+    mode
+        The mode parameter controls how the gradient is calculated at the boundaries.
+        Default is 'nearest'. See `scipy.ndimage.generic_filter` for more information.
+    cval
+        The value to use for points outside the boundaries when mode is 'constant'.
+        Default is 0.0. See `scipy.ndimage.generic_filter` for more information.
 
     Returns
     -------
     output : ndarray
         Gradient magnitude of the input array. Has the same shape as `input`.
 
-    Notes
-    -----
+    Note
+    ----
     This function calculates the gradient magnitude of an input array by applying a
     filter to the input array using the given dx and dy values. The filter is defined by
     a kernel function that computes the squared difference between each element of the
@@ -76,17 +83,16 @@ def gradient_magnitude(
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
-    """Minimum gradient method for detecting dispersive features in 2D data as described
-    in Ref. :cite:p:`He2017`.
+    """Minimum gradient method for detecting dispersive features in 2D data.
 
     Parameters
     ----------
-    darr : xr.DataArray
+    darr
         The 2D DataArray for which to calculate the minimum gradient.
-    mode : str, optional
+    mode
         The mode parameter controls how the gradient is calculated at the boundaries.
         Default is 'nearest'. See `scipy.ndimage.generic_filter` for more information.
-    cval : float, optional
+    cval
         The value to use for points outside the boundaries when mode is 'constant'.
         Default is 0.0. See `scipy.ndimage.generic_filter` for more information.
 
@@ -100,10 +106,11 @@ def minimum_gradient(
     ValueError
         If the input DataArray is not 2D.
 
-    Notes
-    -----
-    The minimum gradient is calculated by dividing the input DataArray by the gradient
-    magnitude. Any zero gradient values are replaced with NaN.
+    Note
+    ----
+    - The minimum gradient is calculated by dividing the input DataArray by the gradient
+      magnitude. See Ref. :cite:p:`He2017`.
+    - Any zero gradient values are replaced with NaN.
     """
 
     if darr.ndim != 2:
