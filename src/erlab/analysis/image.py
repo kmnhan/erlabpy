@@ -122,6 +122,8 @@ def minimum_gradient(
     dx = xvals[1] - xvals[0]
     dy = yvals[1] - yvals[0]
 
-    grad = gradient_magnitude(darr.values, dx, dy, mode=mode, cval=cval)
+    grad = gradient_magnitude(
+        darr.values.astype(np.float64), dx, dy, mode=mode, cval=cval
+    )
     grad[grad == 0] = np.nan
     return darr / grad
