@@ -1308,7 +1308,7 @@ class ItoolPlotItem(pg.PlotItem):
             item = self.image_cls(
                 self,
                 cursor=new_cursor,
-                autoDownsample=True,
+                autoDownsample=False,
                 axisOrder="row-major",
                 **self._item_kw,
             )
