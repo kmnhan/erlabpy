@@ -274,7 +274,9 @@ class BetterColorBarItem(pg.PlotItem):
         self.vb.setMouseEnabled(x=False, y=True)
 
         self._colorbar = pg.ImageItem(
-            np.linspace(0, 1, 4096).reshape((-1, 1)), axisOrder="row-major"
+            np.linspace(0, 1, 4096).reshape((-1, 1)),
+            axisOrder="row-major",
+            autoDownsample=False,
         )
         self.addItem(self._colorbar)
 
