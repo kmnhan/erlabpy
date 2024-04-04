@@ -1,4 +1,6 @@
-"""Tools for visualizing dispersive features."""
+"""
+Various image processing functions including tools for visualizing dispersive features.
+"""
 
 import numpy as np
 import numpy.typing as npt
@@ -74,7 +76,8 @@ def gradient_magnitude(
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
-    """Minimum gradient method of a 2D DataArray.
+    """Minimum gradient method for detecting dispersive features in 2D data as described
+    in Ref. :cite:p:`He2017`.
 
     Parameters
     ----------
