@@ -1,177 +1,14 @@
+__all__ = ["dtool"]
+
 import sys
+
 import numpy as np
 import pyqtgraph as pg
-
 from arpes.analysis.derivative import curvature, minimum_gradient
-from erlab.interactive.utilities import parse_data, AnalysisWidgetBase
-
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
-# def move_mean_centered(a, window, min_count=None, axis=-1):
-#     w = (window - 1) // 2
-#     shift = w + 1
-#     if min_count is None:
-#         min_count = w + 1
-#     pad_width = [(0, 0)] * a.ndim
-#     pad_width[axis] = (0, shift)
-#     a = np.pad(a, pad_width, constant_values=np.nan)
-#     val = bn.move_mean(a, window, min_count=min_count, axis=axis)
-#     return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
-
-
-# def move_mean_centered_multiaxis(a, window_list, min_count_list=None):
-#     w_list = [(window - 1) // 2 for window in window_list]
-#     pad_width = [(0, 0)] * a.ndim
-#     slicer = [
-#         slice(None),
-#     ] * a.ndim
-#     if min_count_list is None:
-#         min_count_list = [w + 1 for w in w_list]
-#     for axis in range(a.ndim):
-#         pad_width[axis] = (0, w_list[axis] + 1)
-#         slicer[axis] = slice(w_list[axis], -1)
-#     a = np.pad(a, pad_width, constant_values=np.nan)
-#     val = move_mean(
-#         a,
-#         numba.typed.List(window_list),
-#         numba.typed.List(min_count_list),
-#     )
-#     return val[tuple(slicer)]
-
-
-# def move_mean(a, window, min_count):
-#     if a.ndim == 3:
-#         return move_mean3d(a, window, min_count)
-#     elif a.ndim == 2:
-#         return move_mean2d(a, window, min_count)
-#     else:
-#         raise NotImplementedError
-
-
-# pg.setConfigOption('useNumba', True)
-
-__all__ = ["dtool"]
-
-
-# def boxcarfilt2(array, window_list, min_count_list=None):
-#     return move_mean_centered_multiaxis(array, window_list, min_count_list)
-
-
-def laplacian_O3(f, *varargs):
-    """
-    Third order accurate, 5-point formula. Not really laplacian, but second derivative
-    along each axis. Sum the outputs to get laplacian.
-    """
-    N = len(f.shape)  # number of dimensions
-    n = len(varargs)
-    if n == 0:
-        dx = [1.0] * N
-    elif n == 1:
-        dx = [varargs[0]] * N
-    elif n == N:
-        dx = list(varargs)
-    else:
-        raise SyntaxError("invalid number of arguments")
-
-    # use central differences on interior and first differences on endpoints
-
-    # print dx
-    outvals = []
-
-    # create slice objects --- initially all are [:, :, ..., :]
-    slice0 = [slice(None)] * N
-    slice1 = [slice(None)] * N
-    slice2 = [slice(None)] * N
-    slice3 = [slice(None)] * N
-    slice4 = [slice(None)] * N
-
-    otype = f.dtype.char
-    if otype not in ["f", "d", "F", "D"]:
-        otype = "d"
-
-    for axis in range(N):
-        # select out appropriate parts for this dimension
-        out = np.zeros(f.shape, f.dtype.char)
-
-        # http://www.sitmo.com/eq/262 (3rd order accurate)
-        slice0[axis] = slice(2, -2)
-        slice1[axis] = slice(None, -4)
-        slice2[axis] = slice(1, -3)
-        slice3[axis] = slice(3, -1)
-        slice4[axis] = slice(4, None)
-        # 1D equivalent -- out[2:-2] = (-f[:-4] + 16*f[1:-3] + -30*f[2:-2] +
-        # 16*f[3:-1] - f[4:])/12.0
-        out[slice0] = (
-            -f[slice1]
-            + 16.0 * f[slice2]
-            - 30.0 * f[slice0]
-            + 16.0 * f[slice3]
-            - f[slice4]
-        ) / 12.0
-
-        # http://www.sitmo.com/eq/260 (2nd order accurate; there's also a 3rd
-        # order accurate that requires 5 points)
-        slice0[axis] = slice(None, 2)
-        slice1[axis] = slice(3, 5)
-        slice2[axis] = slice(2, 4)
-        slice3[axis] = slice(1, 3)
-        # 1D equivalent -- out[0:2] = 2*f[0:2] - 5*f[1:3] + 4*f[2:4] - f[3:5]
-        out[slice0] = 2.0 * f[slice0] - 5.0 * f[slice3] + 4.0 * f[slice2] - f[slice1]
-
-        slice0[axis] = slice(-2, None)
-        slice1[axis] = slice(-5, -3)
-        slice2[axis] = slice(-4, -2)
-        slice3[axis] = slice(-3, -1)
-        # 1D equivalent -- out[0:2] = 2*f[0:2] - 5*f[1:3] + 4*f[2:4] - f[3:5]
-        out[slice0] = 2.0 * f[slice0] - 5.0 * f[slice3] + 4.0 * f[slice2] - f[slice1]
-
-        # divide by step size
-        axis_dx = dx[axis]
-        outvals.append(out / (axis_dx * axis_dx))
-
-        # reset the slice object in this dimension to ":"
-        slice0[axis] = slice(None)
-        slice1[axis] = slice(None)
-        slice2[axis] = slice(None)
-        slice3[axis] = slice(None)
-        slice4[axis] = slice(None)
-
-    if N == 1:
-        return outvals[0]
-    else:
-        return outvals
-
-
-class NoiseToolNew(AnalysisWidgetBase):
-    def __init__(self, data, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.set_input(data)
-
-    # def get_smoothfunc(self, amount, num, method="boxcar"):
-    #     if method == "boxcar":
-    #         def func(data):
-    #             out = data.copy(deep=True)
-    #             vals = data.values
-    #             for _ in range(num):
-    #                 vals = uniform_filter(
-    #                     vals,
-    #                     amount,
-    #                     mode="constant",
-    #                     origin=(0, 0),
-    #                 )
-    #             out.values = vals
-    #             return out
-    #     elif method == "gaussian":
-    #         def func(data):
-    #             out = data.copy(deep=True)
-    #             vals = data.values
-    #             sigma = [(amount[0] - 1) / 3, (amount[1] - 1) / 3]
-    #             for _ in range(num):
-    #                 vals = gaussian_filter(vals, sigma=sigma)
-    #             out.values = vals
-    #             return out
-    #     return func
+from erlab.interactive.utilities import parse_data
 
 
 class DerivativeTool(QtWidgets.QMainWindow):
@@ -506,7 +343,7 @@ def dtool(data, *args, **kwargs):
 if __name__ == "__main__":
     import erlab.io
 
-    gkmk_cvs = erlab.io.load_als_bl4(
+    gkmk_cvs = erlab.io.merlin.load(
         "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"
     )
     alpha_new = np.linspace(gkmk_cvs.alpha[0], gkmk_cvs.alpha[-1], 1000)
