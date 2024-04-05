@@ -68,7 +68,7 @@ autosummary_generate = True
 autosummary_generate_overwrite = True
 
 autodoc_inherit_docstrings = False
-autodoc_typehints = "both"
+autodoc_typehints = "description"
 autodoc_typehints_format = "short"
 autodoc_class_signature = "mixed"
 autodoc_member_order = "bysource"
@@ -78,7 +78,7 @@ autodoc_default_options = {
     # "exclude-members":("sigDataChanged",),
     "show-inheritance": False,
 }
-autodoc_typehints_description_target = "all"
+autodoc_typehints_description_target = "documented"
 
 # autodoc_type_aliases = {
 # "numpy.float64": "float",
