@@ -356,7 +356,8 @@ def minimum_gradient(
 
     Note
     ----
-    Any zero gradient values are replaced with NaN.
+    - The input array is assumed to be regularly spaced.
+    - Any zero gradient values are replaced with NaN.
     """
 
     if darr.ndim != 2:
@@ -373,3 +374,72 @@ def minimum_gradient(
     )
     grad[grad == 0] = np.nan
     return darr / grad
+
+
+def scaled_laplace(
+    darr,
+    factor: float = 1.0,
+    mode: str | Sequence[str] | dict[str, str] = "nearest",
+    cval: float = 0.0,
+) -> xr.DataArray:
+    r"""Calculate the Laplacian of a 2D DataArray with different scaling for each axis.
+
+    This function calculates the Laplacian of the given array using approximate second
+    derivatives, taking the different scaling for each axis into account.
+
+    .. math::
+        \Delta f \sim \frac{\partial^2 f}{\partial x^2} \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    factor
+        The factor by which to scale the x-axis derivative. Default is 1.0. Negative
+        values will scale the y-axis derivative instead.
+    mode
+        The mode parameter determines how the input array is extended beyond its
+        boundaries. If a dictionary, the keys should be dimension names and the values
+        should be the corresponding modes, and every dimension in the DataArray must be
+        present. Otherwise, it retains the same behavior as in
+        `scipy.ndimage.generic_laplace`. Default is 'nearest'.
+    cval
+        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+
+    Returns
+    -------
+    scaled_laplace : xarray.DataArray
+        The filtered array with the same shape as the input DataArray.
+
+    See Also
+    --------
+    :func:`scipy.ndimage.generic_laplace` : The underlying function used to apply the
+        filter.
+    """
+    if darr.ndim != 2:
+        raise ValueError("DataArray must be 2D")
+
+    xvals = darr[darr.dims[1]].values
+    yvals = darr[darr.dims[0]].values
+
+    dx = xvals[1] - xvals[0]
+    dy = yvals[1] - yvals[0]
+    weight = (dx / dy) ** 2
+
+    if factor > 0:
+        weight *= factor
+    elif factor < 0:
+        weight /= abs(factor)
+
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in darr.dims)
+
+    def d2_scaled(input, axis, output, mode, cval):
+        out = scipy.ndimage.correlate1d(input, [1, -2, 1], axis, output, mode, cval, 0)
+        if axis == 1:
+            out *= weight
+        return out
+
+    return darr.copy(
+        data=scipy.ndimage.generic_laplace(darr.values, d2_scaled, mode=mode, cval=cval)
+    )
