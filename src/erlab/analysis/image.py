@@ -2,12 +2,109 @@
 Various image processing functions including tools for visualizing dispersive features.
 """
 
+from collections.abc import Sequence
 import numpy as np
 import numpy.typing as npt
 import scipy
 import scipy.ndimage
 import xarray as xr
 from numba import carray, cfunc, types
+
+
+def gaussian_filter(
+    darr: xr.DataArray,
+    sigma: float | dict[str, float] | Sequence[float],
+    order: int | Sequence[int] | dict[str, int] = 0,
+    mode: str | Sequence[str] | dict[str, str] = "nearest",
+    cval: float = 0.0,
+    truncate: float = 4.0,
+    *,
+    radius: None | float | Sequence[float] | dict[str, float] = None,
+):
+    if np.isscalar(sigma):
+        sigma = {d: sigma for d in darr.dims}
+    elif not isinstance(sigma, dict):
+        sigma = dict(zip(darr.dims, sigma))
+
+    if radius is not None:
+        if len(radius) != len(sigma):
+            raise ValueError("`radius` does not match dimensions of `sigma`")
+
+        if np.isscalar(radius):
+            radius = {d: radius for d in sigma.keys()}
+        elif not isinstance(radius, dict):
+            radius = dict(zip(sigma.keys(), radius))
+
+        radius: tuple[int, ...] = tuple(
+            round(r / (darr[d].values[1] - darr[d].values[0]))
+            for d, r in radius.items()
+        )
+
+    # Calculate sigma in pixels
+    sigma: tuple[float, ...] = tuple(
+        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
+    )
+
+    if isinstance(order, dict):
+        order = tuple(order.get(d, 0) for d in sigma.keys())
+
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in sigma.keys())
+
+    axes = tuple(darr.get_axis_num(d) for d in sigma.keys())
+
+    return darr.copy(
+        data=scipy.ndimage.gaussian_filter(
+            darr.values,
+            sigma=sigma,
+            order=order,
+            mode=mode,
+            cval=cval,
+            truncate=truncate,
+            radius=radius,
+            axes=axes,
+        )
+    )
+
+
+def gaussian_laplace(
+    darr: xr.DataArray,
+    sigma: float | dict[str, float] | Sequence[float],
+    mode: str | Sequence[str] | dict[str, str] = "nearest",
+    cval: float = 0.0,
+    **kwargs,
+):
+    if np.isscalar(sigma):
+        sigma = {d: sigma for d in darr.dims}
+    elif not isinstance(sigma, dict):
+        sigma = dict(zip(darr.dims, sigma))
+
+    if len(sigma) != darr.ndim:
+        raise ValueError(
+            "`sigma` must be provided for every dimension of the DataArray"
+        )
+
+    # Calculate sigma in pixels
+    sigma = tuple(
+        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
+    )
+
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in sigma.keys())
+
+    return darr.copy(
+        data=scipy.ndimage.gaussian_laplace(
+            darr.values, sigma=sigma, mode=mode, cval=cval, **kwargs
+        )
+    )
+
+
+def laplace(
+    darr, mode: str | Sequence[str] | dict[str, str] = "nearest", cval: float = 0.0
+):
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in darr.dims)
+    return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
 def gradient_magnitude(
