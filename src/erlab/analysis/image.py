@@ -228,7 +228,7 @@ def gradient_magnitude(
     mode: str = "nearest",
     cval: float = 0.0,
 ) -> npt.NDArray[np.float64]:
-    """Calculate the gradient magnitude of an input array.
+    r"""Calculate the gradient magnitude of an input array.
 
     The gradient magnitude is calculated as defined in Ref. :cite:p:`He2017`, using
     given :math:`\Delta x` and :math:`\Delta y` values.
