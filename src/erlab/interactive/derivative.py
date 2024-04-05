@@ -4,10 +4,10 @@ import sys
 
 import numpy as np
 import pyqtgraph as pg
-from arpes.analysis.derivative import curvature, minimum_gradient
 from qtpy import QtCore, QtWidgets
 from scipy.ndimage import gaussian_filter, uniform_filter
 
+from erlab.analysis.image import curvature, minimum_gradient
 from erlab.interactive.utilities import parse_data
 
 
@@ -110,17 +110,26 @@ class DerivativeTool(QtWidgets.QMainWindow):
         self._curv_group = QtWidgets.QGroupBox("Curvature")
         curv_layout = QtWidgets.QGridLayout(self._curv_group)
         self._curv_alpha_spin = QtWidgets.QDoubleSpinBox(self._curv_group)
-        self._curv_alpha_spin.setRange(-30, 30)
-        self._curv_alpha_spin.setValue(0)
-        self._curv_alpha_spin.setSingleStep(0.05)
+        self._curv_alpha_spin.setRange(0, 100)
+        self._curv_alpha_spin.setDecimals(4)
+        self._curv_alpha_spin.setValue(1.0)
+        self._curv_alpha_spin.setSingleStep(0.001)
+        self._curv_factor_spin = QtWidgets.QDoubleSpinBox(self._curv_group)
+        self._curv_factor_spin.setRange(-1, 1)
+        self._curv_factor_spin.setDecimals(4)
+        self._curv_factor_spin.setValue(1.0)
+        self._curv_factor_spin.setSingleStep(0.0001)
         curv_layout.addWidget(self._curv_alpha_spin, 0, 0)
+        curv_layout.addWidget(self._curv_factor_spin, 1, 0)
 
         self._mingrad_group = QtWidgets.QGroupBox("Minimum Gradient")
         mingrad_layout = QtWidgets.QGridLayout(self._mingrad_group)
-        self._mingrad_delta_spin = QtWidgets.QSpinBox(self._mingrad_group)
-        self._mingrad_delta_spin.setRange(1, 100)
-        self._mingrad_delta_spin.setValue(1)
-        mingrad_layout.addWidget(self._mingrad_delta_spin, 0, 0)
+        self._mingrad_btn = QtWidgets.QPushButton("Calculate")
+        # self._mingrad_delta_spin = QtWidgets.QSpinBox(self._mingrad_group)
+        # self._mingrad_delta_spin.setRange(1, 100)
+        # self._mingrad_delta_spin.setValue(1)
+        # mingrad_layout.addWidget(self._mingrad_delta_spin, 0, 0)
+        mingrad_layout.addWidget(self._mingrad_btn, 0, 0)
 
         self._deriv_tab = QtWidgets.QWidget()
         deriv_content = QtWidgets.QGridLayout(self._deriv_tab)
@@ -168,12 +177,12 @@ class DerivativeTool(QtWidgets.QMainWindow):
         self._smooth2_y_spin.valueChanged.connect(lambda: self.deriv_data())
         self._smooth2_n_spin.valueChanged.connect(self.set_smooth2_num)
         self._deriv_axis_combo.currentTextChanged.connect(self.deriv_data)
-        self._curv_alpha_spin.valueChanged.connect(
-            lambda beta: self.curv_data(beta=beta)
-        )
-        self._mingrad_delta_spin.valueChanged.connect(
-            lambda delta: self.mingrad_data(delta=delta)
-        )
+        self._curv_alpha_spin.valueChanged.connect(self.curv_data)
+        self._curv_factor_spin.valueChanged.connect(self.curv_data)
+        self._mingrad_btn.clicked.connect(lambda: self.mingrad_data())
+        # self._mingrad_delta_spin.valueChanged.connect(
+        #     lambda delta: self.mingrad_data(delta=delta)
+        # )
         for s in self._color_range_spin:
             s.valueChanged.connect(self._result_update_lims)
 
@@ -222,23 +231,27 @@ class DerivativeTool(QtWidgets.QMainWindow):
         self.smooth2_num = n
         self.deriv_data()
 
-    def mingrad_data(self, delta=1):
+    # def mingrad_data(self, delta=1):
+    def mingrad_data(self):
         self.use_curv = False
         self.use_mingrad = True
         self.use_deriv = False
         # self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d = -minimum_gradient(self.data_s, delta=delta)
+        # self.data_s_d = -minimum_gradient(self.data_s, delta=delta)
+        self.data_s_d = -minimum_gradient(self.data_s)
         self._result_update_lims()
 
-    def curv_data(self, alpha=1, beta=None):
+    def curv_data(self):
         self.use_curv = True
         self.use_deriv = False
         self.use_mingrad = False
-        if beta is None:
-            beta = self._curv_alpha_spin.value()
-        self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d.values = curvature(
-            self.data_s / self.data_s.max(), alpha=alpha, beta=beta, values=True
+
+        # self.data_s_d = self.data_s.copy(deep=True)
+        self.data_s_d = curvature(
+            # self.data_s / self.data_s.max(), alpha=alpha, beta=beta, values=True
+            self.data_s,
+            a0=self._curv_alpha_spin.value(),
+            factor=self._curv_factor_spin.value(),
         )
         # m = self.data_s_d.max()
         # self.data_s_d /= m
