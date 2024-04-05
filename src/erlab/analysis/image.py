@@ -26,6 +26,14 @@ def gaussian_filter(
     elif not isinstance(sigma, dict):
         sigma = dict(zip(darr.dims, sigma))
 
+    axes = tuple(darr.get_axis_num(d) for d in sigma.keys())
+
+    if isinstance(order, dict):
+        order = tuple(order.get(d, 0) for d in sigma.keys())
+
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in sigma.keys())
+
     if radius is not None:
         if len(radius) != len(sigma):
             raise ValueError("`radius` does not match dimensions of `sigma`")
@@ -44,14 +52,6 @@ def gaussian_filter(
     sigma: tuple[float, ...] = tuple(
         val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
     )
-
-    if isinstance(order, dict):
-        order = tuple(order.get(d, 0) for d in sigma.keys())
-
-    if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in sigma.keys())
-
-    axes = tuple(darr.get_axis_num(d) for d in sigma.keys())
 
     return darr.copy(
         data=scipy.ndimage.gaussian_filter(
@@ -84,13 +84,13 @@ def gaussian_laplace(
             "`sigma` must be provided for every dimension of the DataArray"
         )
 
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in sigma.keys())
+
     # Calculate sigma in pixels
     sigma = tuple(
         val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
     )
-
-    if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in sigma.keys())
 
     return darr.copy(
         data=scipy.ndimage.gaussian_laplace(
