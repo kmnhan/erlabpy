@@ -29,12 +29,12 @@ def shift(
     darr
         The array to shift.
     shift
-        The amount of shift to be applied along the specified dimension. If `shift` is a
-        DataArray, different shifts can be applied to different coordinates. The
-        dimensions of `shift` must be a subset of the dimensions of `darr`. For more
-        information, see the note below. If `shift` is a `float`, the same shift is
-        applied to all values along dimension `along`. This is equivalent to providing a
-        0-dimensional DataArray.
+        The amount of shift to be applied along the specified dimension. If
+        :code:`shift` is a DataArray, different shifts can be applied to different
+        coordinates. The dimensions of :code:`shift` must be a subset of the dimensions
+        of `darr`. For more information, see the note below. If :code:`shift` is a
+        `float`, the same shift is applied to all values along dimension `along`. This
+        is equivalent to providing a 0-dimensional DataArray.
     along
         Name of the dimension along which the shift is applied.
     shift_coords
@@ -149,7 +149,7 @@ def correct_with_edge(
     **shift_kwargs,
 ):
     """
-    Corrects the given data array `darr` using the edge correction method.
+    Corrects the given data array `darr` with the given values or fit result.
 
     Parameters
     ----------
@@ -157,20 +157,24 @@ def correct_with_edge(
         The input data array to be corrected.
     modelresult
         The model result that contains the fermi edge information. It can be an instance
-        of `lmfit.model.ModelResult`, a numpy array, or a callable function that takes
-        an array of angles and returns the corresponding energy value.
+        of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
+        angle, or a callable function that takes an array of angles and returns the
+        corresponding energy value.
     shift_coords
-        Whether to shift the coordinates of the data array. Defaults to True.
+        If `True`, the coordinates of the output data will be changed so that the output
+        contains all the values of the original data. If `False`, the coordinates and
+        shape of the original data will be retained, and only the data will be shifted.
+        Defaults to `False`.
     plot
-        Whether to plot the original and corrected data arrays. Defaults to False.
+        Whether to plot the original and corrected data arrays. Defaults to `False`.
     plot_kw
-        Additional keyword arguments for the plot. Defaults to None.
+        Additional keyword arguments for the plot. Defaults to `None`.
     **shift_kwargs
-        Additional keyword arguments to `shift`.
+        Additional keyword arguments to `erlab.analysis.utilities.shift`.
 
     Returns
     -------
-    xarray.DataArray
+    corrected : xarray.DataArray
         The edge corrected data.
     """
     if plot_kw is None:
