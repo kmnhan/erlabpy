@@ -2,53 +2,31 @@ name: erlab
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
-  - ipython
-  - pip>=19.3
-  - setuptools
+  - h5netcdf>=1.2.0
+  - iminuit>=2.25.2
+  - ipykernel
+  - joblib>=1.3.2
   - libblas=*=*accelerate
   - libcblas=*=*accelerate
   - liblapack=*=*accelerate
   - liblapacke=*=*accelerate
-  - h5netcdf
-  - varname
-  - numpy>=1.22.0
-  - scipy>=1.8.0
-  - matplotlib>=3.7.0
-  - h5py>=3.2.1
-  - netCDF4>=1.5.0
-  - astropy
-  - superqt>=0.3.1
-  - dill
-  - llvm-openmp>=13.0.0
-  - llvmlite
-  - asteval>=0.9.22
-  - xarray>=0.16.1
-  - numba>=0.56.2
-  - ase>=3.17.0
-  - bokeh>=2.0.0
-  - bottleneck>=1.3.2
-  - colorama
-  - imageio
-  - ipywidgets>=7.0.1
-  - joblib
   - lmfit>=1.2.0
-  - pandas
-  - pint
-  - psutil
-  - pygments
+  - matplotlib>=3.8.0
+  - numba-progress>=1.0.0
+  - numba>=0.59.0
+  - numbagg>=0.8.1
+  - numpy>=1.26.0
+  - pip>=19.3
+  - pyperclip>=1.8.2
   - pyqtgraph>=0.13.1
-  - rx
-  - scikit-image
-  - scikit-learn>=0.24.0
-  - tbb
-  - titlecase
-  - tqdm
+  - python>=3.11
+  - qtawesome>=1.3.1
+  - qtpy>=2.4.1
+  - scipy>=1.12.0
+  - superqt>=0.6.2
+  - tqdm>=4.66.2
   - uncertainties>=3.0.1
-  - qtawesome
-  - numbagg
-  - numba-progress
-  - iminuit>=2.3
-  - pyperclip
+  - varname>=0.13.0
+  - xarray>=2024.02.0
   - pip:
     - pyqt6>=6.2.2
