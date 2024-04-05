@@ -1,5 +1,10 @@
 """
 Various image processing functions including tools for visualizing dispersive features.
+
+Note
+----
+For scipy-based filter functions, the default value of the `mode` argument is 'nearest',
+unlike the scipy default of 'reflect'.
 """
 
 from collections.abc import Sequence
@@ -20,20 +25,92 @@ def gaussian_filter(
     truncate: float = 4.0,
     *,
     radius: None | float | Sequence[float] | dict[str, float] = None,
-):
+) -> xr.DataArray:
+    """Coordinate-aware wrapper around `scipy.ndimage.gaussian_filter`.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    sigma
+        The standard deviation(s) of the Gaussian filter in data dimensions. If a float,
+        the same value is used for all dimensions, each scaled by the data step. If a
+        dict, the value can be specified for each dimension using dimension names as
+        keys. The filter is only applied to the dimensions specified in the dict. If a
+        sequence, the values are used in the same order as the dimensions of the
+        DataArray.
+    order
+        The order of the filter along each dimension. If an int, the same order is used
+        for all dimensions. See Notes below for other options. Defaults to 0.
+    mode
+        The boundary mode used for the filter. If a str, the same mode is used for all
+        dimensions. See Notes below for other options. Defaults to 'nearest'.
+    cval
+        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+    truncate
+        The truncation value used for the Gaussian filter. Defaults to 4.0.
+    radius
+        The radius of the Gaussian filter in data units. See Notes below. Defaults to
+        None.
+
+    Returns
+    -------
+    gaussian_filter : xarray.DataArray
+        The filtered array with the same shape as the input DataArray.
+
+    Note
+    ----
+    - The `sigma` and `radius` values should be in data coordinates, not pixels.
+    - The input array is assumed to be regularly spaced.
+    - `order`, `mode`, and `radius` can be specified for each dimension using a dict or
+      a sequence. If a dict, the value can be specified for each dimension using
+      dimension names as keys. If a sequence and `sigma` is given as a dictionary, the
+      order is assumed to be the same as the keys in `sigma`. If `sigma` is not a
+      dictionary, the order is assumed to be the same as the dimensions of the
+      DataArray.
+
+    See Also
+    --------
+    :func:`scipy.ndimage.gaussian_filter` : The underlying function used to apply the
+        filter.
+
+    Example
+    -------
+    >>> import numpy as np
+    >>> import xarray as xr
+    >>> import erlab.analysis as era
+    >>> darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
+    >>> darr
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[ 0,  2,  4,  6,  8],
+        [10, 12, 14, 16, 18],
+        [20, 22, 24, 26, 28],
+        [30, 32, 34, 36, 38],
+        [40, 42, 44, 46, 48]])
+    Dimensions without coordinates: x, y
+    >>> era.image.gaussian_filter(darr, sigma=dict(x=1.0, y=1.0))
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[ 3,  5,  7,  8, 10],
+        [10, 12, 14, 15, 17],
+        [20, 22, 24, 25, 27],
+        [29, 31, 33, 34, 36],
+        [36, 38, 40, 41, 43]])
+    Dimensions without coordinates: x, y
+
+    """
     if np.isscalar(sigma):
         sigma = {d: sigma for d in darr.dims}
     elif not isinstance(sigma, dict):
         sigma = dict(zip(darr.dims, sigma))
 
+    # Get the axis indices to apply the filter
     axes = tuple(darr.get_axis_num(d) for d in sigma.keys())
 
+    # Convert arguments to tuples acceptable by scipy
     if isinstance(order, dict):
         order = tuple(order.get(d, 0) for d in sigma.keys())
-
     if isinstance(mode, dict):
         mode = tuple(mode[d] for d in sigma.keys())
-
     if radius is not None:
         if len(radius) != len(sigma):
             raise ValueError("`radius` does not match dimensions of `sigma`")
@@ -43,6 +120,7 @@ def gaussian_filter(
         elif not isinstance(radius, dict):
             radius = dict(zip(sigma.keys(), radius))
 
+        # Calculate radius in pixels
         radius: tuple[int, ...] = tuple(
             round(r / (darr[d].values[1] - darr[d].values[0]))
             for d, r in radius.items()
@@ -73,7 +151,49 @@ def gaussian_laplace(
     mode: str | Sequence[str] | dict[str, str] = "nearest",
     cval: float = 0.0,
     **kwargs,
-):
+) -> xr.DataArray:
+    """Coordinate-aware wrapper around `scipy.ndimage.gaussian_laplace`.
+
+    This function calculates the Laplacian of the given array using Gaussian second
+    derivatives.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    sigma
+        The standard deviation(s) of the Gaussian filter in data dimensions. If a float,
+        the same value is used for all dimensions, each scaled by the data step. If a
+        dict, the value can be specified for each dimension using dimension names as
+        keys. If a sequence, the values are used in the same order as the dimensions of
+        the DataArray.
+    mode
+        The mode parameter determines how the input array is extended beyond its
+        boundaries. If a string, the same mode is used for all dimensions. If a
+        sequence, the values should be the modes for each dimension in the same order as
+        the dimensions in the DataArray. If a dictionary, the keys should be dimension
+        names and the values should be the corresponding modes, and every dimension in
+        the DataArray must be present. Default is "nearest".
+    cval
+        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+    **kwargs
+        Additional keyword arguments to `scipy.ndimage.gaussian_filter`.
+
+    Returns
+    -------
+    gaussian_laplace : xarray.DataArray
+        The filtered array with the same shape as the input DataArray.
+
+    Note
+    ----
+    - `sigma` should be in data coordinates, not pixels.
+    - The input array is assumed to be regularly spaced.
+
+    See Also
+    --------
+    :func:`scipy.ndimage.gaussian_laplace` : The underlying function used to apply the
+        filter.
+    """
     if np.isscalar(sigma):
         sigma = {d: sigma for d in darr.dims}
     elif not isinstance(sigma, dict):
@@ -84,11 +204,12 @@ def gaussian_laplace(
             "`sigma` must be provided for every dimension of the DataArray"
         )
 
+    # Convert mode to tuple acceptable by scipy
     if isinstance(mode, dict):
         mode = tuple(mode[d] for d in sigma.keys())
 
     # Calculate sigma in pixels
-    sigma = tuple(
+    sigma: tuple[float, ...] = tuple(
         val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
     )
 
@@ -97,14 +218,6 @@ def gaussian_laplace(
             darr.values, sigma=sigma, mode=mode, cval=cval, **kwargs
         )
     )
-
-
-def laplace(
-    darr, mode: str | Sequence[str] | dict[str, str] = "nearest", cval: float = 0.0
-):
-    if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in darr.dims)
-    return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
 def gradient_magnitude(
@@ -136,8 +249,8 @@ def gradient_magnitude(
 
     Returns
     -------
-    output : ndarray
-        Gradient magnitude of the input array. Has the same shape as `input`.
+    gradient_magnitude : numpy.ndarray
+        Gradient magnitude of the input array. Has the same shape as :code:`input`.
 
     Note
     ----
@@ -177,10 +290,48 @@ def gradient_magnitude(
     return scipy.ndimage.generic_filter(input, func, size=(3, 3), mode=mode, cval=cval)
 
 
+def laplace(
+    darr, mode: str | Sequence[str] | dict[str, str] = "nearest", cval: float = 0.0
+) -> xr.DataArray:
+    """Coordinate-aware wrapper around `scipy.ndimage.laplace`.
+
+    This function calculates the Laplacian of the given array using approximate second
+    derivatives.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    mode
+        The mode parameter determines how the input array is extended beyond its
+        boundaries. If a dictionary, the keys should be dimension names and the values
+        should be the corresponding modes, and every dimension in the DataArray must be
+        present. Otherwise, it retains the same behavior as in `scipy.ndimage.laplace`.
+        Default is 'nearest'.
+    cval
+        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+
+    Returns
+    -------
+    laplace : xarray.DataArray
+        The filtered array with the same shape as the input DataArray.
+
+    See Also
+    --------
+    :func:`scipy.ndimage.laplace` : The underlying function used to apply the filter.
+    """
+    if isinstance(mode, dict):
+        mode = tuple(mode[d] for d in darr.dims)
+    return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
+
+
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
     """Minimum gradient method for detecting dispersive features in 2D data.
+
+    The minimum gradient is calculated by dividing the input DataArray by the gradient
+    magnitude. See Ref. :cite:p:`He2017`.
 
     Parameters
     ----------
@@ -195,8 +346,8 @@ def minimum_gradient(
 
     Returns
     -------
-    xarray.DataArray
-        The minimum gradient of the input DataArray. Has the same shape as `input`.
+    minimum_gradient : xarray.DataArray
+        The minimum gradient of the input DataArray. Has the same shape as :code:`input`.
 
     Raises
     ------
@@ -205,9 +356,7 @@ def minimum_gradient(
 
     Note
     ----
-    - The minimum gradient is calculated by dividing the input DataArray by the gradient
-      magnitude. See Ref. :cite:p:`He2017`.
-    - Any zero gradient values are replaced with NaN.
+    Any zero gradient values are replaced with NaN.
     """
 
     if darr.ndim != 2:
