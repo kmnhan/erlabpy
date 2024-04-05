@@ -8,6 +8,7 @@ unlike the scipy default of 'reflect'.
 """
 
 from collections.abc import Sequence
+
 import numpy as np
 import numpy.typing as npt
 import scipy
@@ -390,13 +391,15 @@ def scaled_laplace(
     .. math::
         \Delta f \sim \frac{\partial^2 f}{\partial x^2} \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
 
+    See Ref. :cite:p:`Zhang2011` for more information.
+
     Parameters
     ----------
     darr
-        The input DataArray.
+        The 2D DataArray for which to calculate the scaled Laplacian.
     factor
-        The factor by which to scale the x-axis derivative. Default is 1.0. Negative
-        values will scale the y-axis derivative instead.
+        The factor by which to scale the x-axis derivative. Negative values will scale
+        the y-axis derivative instead. Default is 1.0.
     mode
         The mode parameter determines how the input array is extended beyond its
         boundaries. If a dictionary, the keys should be dimension names and the values
@@ -410,6 +413,15 @@ def scaled_laplace(
     -------
     scaled_laplace : xarray.DataArray
         The filtered array with the same shape as the input DataArray.
+
+    Raises
+    ------
+    ValueError
+        If the input DataArray is not 2D.
+
+    Note
+    ----
+    The input array is assumed to be regularly spaced.
 
     See Also
     --------
@@ -443,3 +455,67 @@ def scaled_laplace(
     return darr.copy(
         data=scipy.ndimage.generic_laplace(darr.values, d2_scaled, mode=mode, cval=cval)
     )
+
+
+def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
+    """2D curvature method for detecting dispersive features.
+
+    The curvature is calculated as defined by :cite:t:`Zhang2011`.
+
+    Parameters
+    ----------
+    darr
+        The 2D DataArray for which to calculate the minimum gradient.
+    a0
+        The regularization constant. Reasonable values range from 0.001 to 10. Default
+        is 1.0.
+    factor
+        The factor by which to scale the x-axis curvature. Negative values will scale
+        the y-axis curvature instead. Default is 1.0.
+
+    Returns
+    -------
+    curvature : xarray.DataArray
+        The 2D curvature of the input DataArray. Has the same shape as :code:`input`.
+
+    Raises
+    ------
+    ValueError
+        If the input DataArray is not 2D.
+
+    Note
+    ----
+    The input array is assumed to be regularly spaced.
+    """
+
+    if darr.ndim != 2:
+        raise ValueError("DataArray must be 2D")
+
+    xvals = darr[darr.dims[1]].values
+    yvals = darr[darr.dims[0]].values
+
+    dx = xvals[1] - xvals[0]
+    dy = yvals[1] - yvals[0]
+    weight = (dx / dy) ** 2
+
+    if factor > 0:
+        weight *= factor
+    elif factor < 0:
+        weight /= abs(factor)
+
+    dfdx, dfdy = np.gradient(darr.values, axis=(1, 0))
+    d2fdx2, d2fdydx = np.gradient(dfdx, axis=(1, 0))
+    d2fdy2 = np.gradient(dfdy, axis=0)
+
+    max_abs_dfdx_sq: float = np.max(np.abs(dfdx)) ** 2
+    max_abs_dfdy_sq: float = np.max(np.abs(dfdy)) ** 2
+
+    c0 = a0 * max(max_abs_dfdy_sq, weight * max_abs_dfdx_sq)
+
+    curv = (
+        (c0 + weight * dfdx**2) * d2fdy2
+        - 2 * weight * dfdx * dfdy * d2fdydx
+        + weight * (c0 + dfdy**2) * d2fdx2
+    ) / (c0 + weight * dfdx**2 + dfdy**2) ** 1.5
+
+    return darr.copy(data=curv)
