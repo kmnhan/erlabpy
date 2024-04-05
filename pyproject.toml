@@ -40,7 +40,6 @@ dependencies = [
     "uncertainties>=3.0.1",
     "varname>=0.13.0",
     "xarray>=2024.02.0",
-    'importlib-metadata; python_version>="3.11"',
 ]
 dynamic = ["version"]
 
