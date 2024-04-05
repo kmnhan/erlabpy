@@ -30,5 +30,5 @@ qtawesome
 superqt
 csaps
 qtpy
-igor2 @ git+https://github.com/kmnhan/igor2@master
+igor2>=0.5.6
 -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab

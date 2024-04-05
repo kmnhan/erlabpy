@@ -18,4 +18,4 @@ qtpy
 pyqtgraph>=0.13.1
 qtawesome
 superqt
-igor2 @ git+https://github.com/kmnhan/igor2@master
+igor2>=0.5.6
