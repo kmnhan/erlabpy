@@ -416,6 +416,7 @@ def plot_array_2d(
     cax: matplotlib.axes.Axes | None = None,
     colorbar_kw: dict | None = None,
     imshow_kw: dict | None = None,
+    N: int = 256,
     **indexers_kwargs: dict,
 ):
     if lnorm is None:
@@ -456,7 +457,13 @@ def plot_array_2d(
     carr = carr.sel(**sel_kw)
 
     cmap_img, img = gen_2d_colormap(
-        larr.values, carr.values, cmap, lnorm=lnorm, cnorm=cnorm, background=background
+        larr.values,
+        carr.values,
+        cmap,
+        lnorm=lnorm,
+        cnorm=cnorm,
+        background=background,
+        N=N,
     )
 
     if colorbar:
