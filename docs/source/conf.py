@@ -149,21 +149,62 @@ pybtex.style.formatting.unsrt.date = pybtex.style.template.words(sep="")[
 ]
 
 
-class ApsStyle(pybtex.style.formatting.unsrt.Style):
+class APSStyle(pybtex.style.formatting.unsrt.Style):
     """
     APS style for BibTeX formatting, adapted from the conf.py file of the `mitiq
     library<https://github.com/unitaryfund/mitiq>`_.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.abbreviate_names = True
+
     def format_title(self, e, which_field, as_sentence=True):
         formatted_title = pybtex.style.template.field(
             which_field, apply_func=lambda text: text.capitalize()
         )
+
         formatted_title = pybtex.style.template.tag("em")[formatted_title]
         if as_sentence:
             return pybtex.style.template.sentence[formatted_title]
         else:
             return formatted_title
+
+    def format_editor(self, e, as_sentence=True):
+        editors = self.format_names("editor", as_sentence=False)
+        if "editor" not in e.persons:
+            return editors
+        result = pybtex.style.template.join(sep=" ")["edited by", editors]
+        if as_sentence:
+            return pybtex.style.template.sentence[result]
+        else:
+            return result
+
+    def format_address_organization_publisher_date(self, e, include_organization=True):
+        if include_organization:
+            organization = pybtex.style.template.optional_field("organization")
+        else:
+            organization = None
+        return pybtex.style.template.first_of[
+            pybtex.style.template.optional[
+                pybtex.style.template.join(sep=", ")[
+                    pybtex.style.template.sentence(add_period=False, sep=", ")[
+                        organization, pybtex.style.template.optional_field("publisher")
+                    ],
+                    pybtex.style.template.join(sep=", ")[
+                        pybtex.style.template.sentence(add_period=False)[
+                            pybtex.style.template.optional_field("address")
+                        ],
+                        pybtex.style.template.field("year"),
+                    ],
+                ]
+            ],
+            pybtex.style.template.join(sep=", ")[
+                organization,
+                pybtex.style.template.optional_field("publisher"),
+                pybtex.style.template.field("year"),
+            ],
+        ]
 
     def get_article_template(self, e):
         volume_and_pages = pybtex.style.template.first_of[
@@ -251,8 +292,38 @@ class ApsStyle(pybtex.style.formatting.unsrt.Style):
         ]
         return template
 
+    def get_inproceedings_template(self, e):
+        template = pybtex.style.formatting.toplevel[
+            pybtex.style.template.sentence[self.format_names("author")],
+            self.format_title(e, "title"),
+            pybtex.style.template.words[
+                "in",
+                pybtex.style.template.sentence[
+                    self.format_btitle(e, "booktitle", as_sentence=False),
+                    # self.format_volume_and_series(e, as_sentence=False),
+                    # self.format_chapter_and_pages(e),
+                    pybtex.style.template.field("year"),
+                    pybtex.style.template.sentence(add_period=False, sep=" ")[
+                        pybtex.style.template.optional[
+                            self.format_editor(e, as_sentence=False)
+                        ],
+                        pybtex.style.template.words(sep="")[
+                            "(", self.format_address_organization_publisher_date(e), ")"
+                        ],
+                    ],
+                    pybtex.style.template.sentence(add_period=True, sep=". ")[
+                        "p",
+                        pybtex.style.formatting.unsrt.pages,
+                        pybtex.style.template.optional_field("note"),
+                    ],
+                ],
+            ],
+            self.format_web_refs(e),
+        ]
+        return template
 
-pybtex.plugin.register_plugin("pybtex.style.formatting", "apsstyle", ApsStyle)
+
+pybtex.plugin.register_plugin("pybtex.style.formatting", "apsstyle", APSStyle)
 
 bibtex_bibfiles = ["refs.bib"]
 bibtex_default_style = "apsstyle"
