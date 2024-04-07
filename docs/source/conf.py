@@ -366,8 +366,13 @@ html_theme_options: dict[str, object] = {
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options
 
 latex_engine = "lualatex"
-latex_table_style = ["booktabs"]
+latex_show_pagerefs = True
+latex_show_urls = "footnote"
+latex_table_style = ["booktabs", "colorrows"]
 latex_elements = {
     "fontpkg": r"""\usepackage{fontspec,unicode-math}
-""",
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+"""
 }
