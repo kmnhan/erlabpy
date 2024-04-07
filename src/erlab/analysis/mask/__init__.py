@@ -2,7 +2,7 @@
 
 Polygon masking is adapted from the `CGAL
 <https://doc.cgal.org/5.3.2/Polygon/index.html>`_ library. More information on
-point-in-polygon strategies can be found in Ref. :cite:p:`Schirra2008`.
+point-in-polygon strategies can be found in Ref. :cite:p:`schirra2008polygon`.
 
 .. currentmodule:: erlab.analysis.mask
 

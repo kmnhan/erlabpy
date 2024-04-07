@@ -230,8 +230,8 @@ def gradient_magnitude(
 ) -> npt.NDArray[np.float64]:
     r"""Calculate the gradient magnitude of an input array.
 
-    The gradient magnitude is calculated as defined in Ref. :cite:p:`He2017`, using
-    given :math:`\Delta x` and :math:`\Delta y` values.
+    The gradient magnitude is calculated as defined in Ref. :cite:p:`he2017mingrad`,
+    using given :math:`\Delta x` and :math:`\Delta y` values.
 
     Parameters
     ----------
@@ -332,7 +332,7 @@ def minimum_gradient(
     """Minimum gradient method for detecting dispersive features in 2D data.
 
     The minimum gradient is calculated by dividing the input DataArray by the gradient
-    magnitude. See Ref. :cite:p:`He2017`.
+    magnitude. See Ref. :cite:p:`he2017mingrad`.
 
     Parameters
     ----------
@@ -348,7 +348,8 @@ def minimum_gradient(
     Returns
     -------
     minimum_gradient : xarray.DataArray
-        The minimum gradient of the input DataArray. Has the same shape as :code:`input`.
+        The minimum gradient of the input DataArray. Has the same shape as
+        :code:`input`.
 
     Raises
     ------
@@ -391,7 +392,7 @@ def scaled_laplace(
     .. math::
         \Delta f \sim \frac{\partial^2 f}{\partial x^2} \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
 
-    See Ref. :cite:p:`Zhang2011` for more information.
+    See Ref. :cite:p:`zhang2011curvature` for more information.
 
     Parameters
     ----------
@@ -460,7 +461,7 @@ def scaled_laplace(
 def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
     """2D curvature method for detecting dispersive features.
 
-    The curvature is calculated as defined by :cite:t:`Zhang2011`.
+    The curvature is calculated as defined by :cite:t:`zhang2011curvature`.
 
     Parameters
     ----------

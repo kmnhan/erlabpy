@@ -3,7 +3,7 @@
 Typically, the user will not have to call this module directly, but will instead use the
 :func:`erlab.accessors.MomentumAccessor.convert` method.
 
-Angle conventions and function forms are based on Ref. :cite:p:`Ishida2018`.
+Angle conventions and function forms are based on Ref. :cite:p:`ishida2018kconv`.
 
 """
 
@@ -21,7 +21,7 @@ import erlab.lattice
 class AxesConfiguration(enum.IntEnum):
     """
     Enum class representing different types of axes configurations. See Ref.
-    :cite:p:`Ishida2018`.
+    :cite:p:`ishida2018kconv`.
 
     """
 
@@ -67,7 +67,7 @@ def get_kconv_func(
         Dictionary of required angle parameters. If the configuration has a DA, the
         parameters should be `delta`, `chi`, `chi0`, `xi`, and `xi0`. Otherwise, they
         should be `delta`, `xi`, `xi0`, and `beta0`, following the notation in Ref.
-        :cite:p:`Ishida2018`.
+        :cite:p:`ishida2018kconv`.
 
     Returns
     -------
