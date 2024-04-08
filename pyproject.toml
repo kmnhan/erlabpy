@@ -59,6 +59,8 @@ package-dir = { "" = "src" }
 [tool.setuptools.dynamic]
 version = { attr = "erlab.__version__" }
 
+[tool.setuptools_scm]
+
 [tool.semantic_release]
 assets = []
 build_command = "pip install build && python -m build"
