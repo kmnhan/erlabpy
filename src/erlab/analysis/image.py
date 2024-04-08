@@ -466,7 +466,7 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     Parameters
     ----------
     darr
-        The 2D DataArray for which to calculate the minimum gradient.
+        The 2D DataArray for which to calculate the curvature.
     a0
         The regularization constant. Reasonable values range from 0.001 to 10. Default
         is 1.0.
