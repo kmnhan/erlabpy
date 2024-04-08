@@ -263,6 +263,9 @@ class MultiPeakFunction(DynamicFunction):
     def __call__(
         self, x: npt.NDArray[np.float64], **params: dict
     ) -> npt.NDArray[np.float64]:
+        if isinstance(x, xr.DataArray):
+            return x * 0.0 + self.__call__(x.values, **params)
+
         if self.convolve:
             if "resolution" not in params:
                 raise TypeError(
@@ -302,6 +305,15 @@ class FermiEdge2dFunction(DynamicFunction):
         ) + params["offset"]
 
     def __call__(self, eV, alpha, **params: dict):
+        if isinstance(eV, xr.DataArray) and isinstance(alpha, xr.DataArray):
+            out = eV * alpha * 0.0
+            return out + self.__call__(eV.values, alpha.values, **params).reshape(
+                out.shape
+            )
+        if isinstance("eV", xr.DataArray):
+            eV = eV.values
+        if isinstance("alpha", xr.DataArray):
+            alpha = alpha.values
         if "resolution" not in params:
             raise TypeError("Missing parameter `resolution` required for convolution")
         return do_convolve_y(eV, alpha, self.pre_call, **params).flatten()
