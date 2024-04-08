@@ -576,18 +576,81 @@ class ArraySlicer(QtCore.QObject):
         else:
             return _index_of_value_nonuniform(self.coords[axis], value)
 
-    def gen_selection_code(self, cursor: int, disp: Sequence[int]) -> str:
+    def isel_args(
+        self, cursor: int, disp: Sequence[int], int_if_one: bool = False
+    ) -> dict[str, slice | int]:
         axis = sorted(set(range(self._obj.ndim)) - set(disp))
-        slice_dict = {
-            self._obj.dims[ax]: self._bin_slice(cursor, ax, int_if_one=True)
-            for ax in axis
+        return {
+            self._obj.dims[ax]: self._bin_slice(cursor, ax, int_if_one) for ax in axis
         }
-        return f".isel(**{slice_dict!s}).squeeze()"
+
+    def qsel_args(self, cursor: int, disp: Sequence[int]) -> dict:
+        out: dict[str, float] = {}
+        binned = self.get_binned(cursor)
+
+        for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
+            inc = self.incs[self._obj.dims.index(dim)]
+            order = int(-np.floor(np.log10(inc)) + 1)
+
+            if binned[self._obj.dims.index(dim)]:
+                coord = self._obj[dim][selector].values
+
+                out[dim] = np.round(coord.mean(), order)
+                width = np.round(abs(coord[-1] - coord[0]) + inc, order)
+
+                if not np.allclose(
+                    self._obj[dim]
+                    .sel({dim: slice(out[dim] - width / 2, out[dim] + width / 2)})
+                    .values,
+                    coord,
+                ):
+                    raise ValueError(
+                        "Bin does not contain the same values as the original data."
+                    )
+
+                out[dim + "_width"] = width
+
+            else:
+                out[dim] = np.round(self._obj[dim].values[selector], order)
+
+        return out
+
+    def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
+        if self._nonuniform_axes:
+            # Has non-uniform axes, fallback to isel
+            return self.isel_code(cursor, disp)
+
+        try:
+            qsel_kw = self.qsel_args(cursor, disp)
+        except ValueError:
+            return self.isel_code(cursor, disp)
+
+        dict_repr: str = ""
+        for k, v in qsel_kw.items():
+            dict_repr += f"{k}={v!s}, "
+        dict_repr = dict_repr.rstrip(", ")
+        return f".qsel({dict_repr})"
+
+    def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
+        dict_repr: str = ""
+        for k, v in self.isel_args(cursor, disp, int_if_one=True).items():
+            dict_repr += f"{k}={v!s}, "
+        dict_repr = dict_repr.rstrip(", ")
+        return f".isel({dict_repr})"
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
-        axis = sorted(set(range(self._obj.ndim)) - set(disp))
-        slices = {self._obj.dims[ax]: self._bin_slice(cursor, ax) for ax in axis}
-        return self._obj.isel(**slices).squeeze()
+        isel_kw: dict[str, slice] = self.isel_args(cursor, disp, int_if_one=False)
+        binned_coord_average: dict[str, xr.DataArray] = {
+            k: self._obj[k][isel_kw[k]].mean()
+            for k, v in zip(self._obj.dims, self.get_binned(cursor))
+            if v
+        }
+        return (
+            self._obj.isel(**isel_kw)
+            .squeeze()
+            .mean(binned_coord_average.keys())
+            .assign_coords(**binned_coord_average)
+        )
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(
