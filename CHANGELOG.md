@@ -100,7 +100,6 @@
 
 * tests: reduce test time by specifying explicit path ([`60fb0d0`](https://github.com/kmnhan/erlabpy/commit/60fb0d0cedd9f0aaeca7101dddf0848f8872ccc3))
 
-  
   This will not trigger directory recursion, so tests will run a bit faster
 
 * tests: add tests for fitting functions ([`4992251`](https://github.com/kmnhan/erlabpy/commit/499225149346e970d00b60dcb5ca39af5e5ddb47))
@@ -235,7 +234,6 @@
 
 * [pre-commit.ci] auto fixes from pre-commit.com hooks ([`b86c995`](https://github.com/kmnhan/erlabpy/commit/b86c9952be94b4b7f5e5918ed28cbf39b750ef09))
 
-  
   for more information, see https://pre-commit.ci
 
 
