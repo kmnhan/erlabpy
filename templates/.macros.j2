@@ -1,0 +1,23 @@
+{% macro render_single_commit(commit) -%}
+* {% if commit["scope"] is not none %}**{{ commit["scope"] }}** {% endif %}{{ commit["descriptions"][0].rstrip() }} ([`{{commit.short_hash }}`]({{ commit.hexsha | commit_hash_url }}))
+{% for line in commit["descriptions"][1:] %}
+{{ line | indent(2, first=True, blank=True) -}}
+{% endfor %}
+{%- endmacro %}
+
+{% macro render_unknown_commit(commit) -%}
+* {{ commit.message.rstrip().split("\n")[0] }} ([`{{ commit.short_hash }}`]({{ commit.hexsha | commit_hash_url }}))
+{% for line in commit.message.rstrip().split("\n")[1:] %}
+{{ line | indent(2, first=True, blank=True) -}}
+{% endfor %}
+{%- endmacro %}
+
+{%- macro render_elements(elements) -%}
+{% for type_, commits in elements | dictsort %}
+### {{ type_ | capitalize }}
+{% for commit in commits -%}{% if type_ != "unknown" %}
+{{ render_single_commit(commit).rstrip() }}
+{% else %}
+{{ render_unknown_commit(commit).rstrip() }}
+{% endif %}{%- endfor %}{% endfor %}
+{%- endmacro -%}

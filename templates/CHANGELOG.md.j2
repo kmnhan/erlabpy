@@ -1,0 +1,12 @@
+# CHANGELOG
+{% import ".macros.j2" as macros -%}
+{% if context.history.unreleased | length > 0 %}
+{# UNRELEASED #}
+## Unreleased
+{{ macros.render_elements(context.history.unreleased) -}}
+{% endif %}
+{% for version, release in context.history.released.items() %}
+{# RELEASED #}
+## {{ version.as_semver_tag() }} ({{ release.tagged_date.strftime("%Y-%m-%d") }})
+{{ macros.render_elements(release["elements"]) -}}
+{% endfor %}
