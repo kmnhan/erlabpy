@@ -119,7 +119,9 @@ class PolynomialFunction(DynamicFunction):
         if isinstance(x, np.ndarray):
             return np.polynomial.polynomial.polyval(x, coeffs)
         else:
-            coeffs = xr.DataArray(coeffs, coords={"degree": np.arange(self.degree + 1)})
+            coeffs = xr.DataArray(
+                np.asarray(coeffs), coords={"degree": np.arange(self.degree + 1)}
+            )
             return xr.polyval(x, coeffs)
 
 
@@ -262,6 +264,10 @@ class MultiPeakFunction(DynamicFunction):
         self, x: npt.NDArray[np.float64], **params: dict
     ) -> npt.NDArray[np.float64]:
         if self.convolve:
+            if "resolution" not in params:
+                raise TypeError(
+                    "Missing parameter `resolution` required for convolution"
+                )
             return do_convolve(x, self.pre_call, **params)
         else:
             return self.pre_call(x, **params)
@@ -296,4 +302,6 @@ class FermiEdge2dFunction(DynamicFunction):
         ) + params["offset"]
 
     def __call__(self, eV, alpha, **params: dict):
+        if "resolution" not in params:
+            raise TypeError("Missing parameter `resolution` required for convolution")
         return do_convolve_y(eV, alpha, self.pre_call, **params).flatten()
