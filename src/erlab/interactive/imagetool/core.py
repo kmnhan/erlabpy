@@ -6,7 +6,6 @@ __all__ = ["ImageSlicerArea"]
 
 import collections
 import functools
-import gc
 import inspect
 import os
 import time
@@ -25,7 +24,7 @@ from erlab.interactive.colors import (
     pg_colormap_powernorm,
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utilities import BetterAxisItem
+from erlab.interactive.utilities import BetterAxisItem, copy_to_clipboard
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -452,7 +451,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if hasattr(self, "_data"):
             self._data.close()
             del self._data
-        gc.collect()
 
     def connect_axes_signals(self):
         for ax in self.axes:
@@ -1152,6 +1150,9 @@ class ItoolPlotItem(pg.PlotItem):
         save_action = self.vb.menu.addAction("Save data as HDF5")
         save_action.triggered.connect(lambda: self.save_current_data())
 
+        copy_code_action = self.vb.menu.addAction("Copy selection code")
+        copy_code_action.triggered.connect(self.copy_selection_code)
+
         for i in (0, 1):
             self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
             self.getViewBoxMenu().ctrl[i].label.setVisible(False)
@@ -1507,6 +1508,14 @@ class ItoolPlotItem(pg.PlotItem):
         erlab.io.save_as_hdf5(
             self.slicer_data_items[self.slicer_area.current_cursor].sliced_data,
             fileName,
+        )
+
+    @QtCore.Slot()
+    def copy_selection_code(self):
+        copy_to_clipboard(
+            self.array_slicer.qsel_code(
+                self.slicer_area.current_cursor, self.display_axis
+            )
         )
 
     @property
