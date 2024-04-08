@@ -16,9 +16,9 @@ import scipy.ndimage
 import xarray as xr
 
 from erlab.analysis.fit.functions import (
-    FermiEdge2dFunc,
+    FermiEdge2dFunction,
     MultiPeakFunction,
-    PolyFunc,
+    PolynomialFunction,
     fermi_dirac_linbkg_broad,
     step_linbkg_broad,
 )
@@ -191,7 +191,7 @@ class StepEdgeModel(lmfit.Model):
 class PolynomialModel(lmfit.Model):
     def __init__(self, degree=9, **kwargs):
         kwargs.setdefault("name", f"Poly{degree}")
-        super().__init__(PolyFunc(degree), **kwargs)
+        super().__init__(PolynomialFunction(degree), **kwargs)
 
     def guess(self, data, x=None, **kwargs):
         pars = self.make_params()
@@ -283,7 +283,7 @@ class FermiEdge2dModel(lmfit.Model):
         **kwargs,
     ):
         kwargs.update({"independent_vars": independent_vars})
-        super().__init__(FermiEdge2dFunc(degree), **kwargs)
+        super().__init__(FermiEdge2dFunction(degree), **kwargs)
         self.name = f"FermiEdge2dModel (deg {degree})"
 
     def guess(self, data, eV, alpha, **kwargs):

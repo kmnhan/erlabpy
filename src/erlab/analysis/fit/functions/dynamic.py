@@ -7,9 +7,9 @@ complex models.
 __all__ = [
     "get_args_kwargs",
     "DynamicFunction",
-    "PolyFunc",
+    "PolynomialFunction",
     "MultiPeakFunction",
-    "FermiEdge2dFunc",
+    "FermiEdge2dFunction",
 ]
 import functools
 import inspect
@@ -95,7 +95,7 @@ class DynamicFunction:
         raise NotImplementedError("Must be overloaded in child classes")
 
 
-class PolyFunc(DynamicFunction):
+class PolynomialFunction(DynamicFunction):
     """A callable class for a arbitrary degree polynomial.
 
     Parameters
@@ -267,10 +267,10 @@ class MultiPeakFunction(DynamicFunction):
             return self.pre_call(x, **params)
 
 
-class FermiEdge2dFunc(DynamicFunction):
+class FermiEdge2dFunction(DynamicFunction):
     def __init__(self, degree=1) -> None:
         super().__init__()
-        self.poly = PolyFunc(degree)
+        self.poly = PolynomialFunction(degree)
 
     @property
     def argnames(self) -> list[str]:
