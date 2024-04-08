@@ -5,6 +5,7 @@ dependencies:
   - python>=3.11
   - pip>=19.3
   - ipykernel
+  - igor2>=0.5.6
   - numpy>=1.22.0
   - matplotlib>=3.8.0
   - hvplot
@@ -34,6 +35,5 @@ dependencies:
   - pip:
     - pyqt6>=6.2.2
     - csaps
-    - igor2 @ git+https://github.com/kmnhan/igor2@master
     - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
     - sphinx-qt-documentation
