@@ -190,3 +190,6 @@ docstring-code-line-length = "dynamic"
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+testpaths = "tests"
