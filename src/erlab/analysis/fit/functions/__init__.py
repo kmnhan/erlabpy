@@ -24,9 +24,9 @@ __all__ = [
     "fermi_dirac_linbkg_broad",
     "step_linbkg_broad",
     "step_broad",
-    "PolyFunc",
+    "PolynomialFunction",
     "MultiPeakFunction",
-    "FermiEdge2dFunc",
+    "FermiEdge2dFunction",
 ]
 
 from erlab.analysis.fit.functions.general import (
@@ -43,7 +43,7 @@ from erlab.analysis.fit.functions.general import (
 )
 
 from erlab.analysis.fit.functions.dynamic import (
-    PolyFunc,
+    PolynomialFunction,
     MultiPeakFunction,
-    FermiEdge2dFunc,
+    FermiEdge2dFunction,
 )
