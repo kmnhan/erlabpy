@@ -264,7 +264,7 @@ def gradient_magnitude(
     """
 
     dxy = np.sqrt(dx**2 + dy**2)
-    dist = np.array([[dxy, dy, dxy], [dx, 1.0, dx], [dxy, dy, dxy]]).flatten()
+    dist = np.array([[dxy, dy, dxy], [dx, 0.0, dx], [dxy, dy, dxy]]).flatten()
 
     @cfunc(
         types.intc(
@@ -368,14 +368,14 @@ def minimum_gradient(
     xvals = darr[darr.dims[1]].values
     yvals = darr[darr.dims[0]].values
 
-    dx = xvals[1] - xvals[0]
-    dy = yvals[1] - yvals[0]
+    dx = abs(xvals[1] - xvals[0])
+    dy = abs(yvals[1] - yvals[0])
 
     grad = gradient_magnitude(
         darr.values.astype(np.float64), dx, dy, mode=mode, cval=cval
     )
-    grad[grad == 0] = np.nan
-    return darr / grad
+    grad[np.isclose(grad, 0.0)] = np.nan
+    return darr / darr.max(skipna=True) / grad
 
 
 def scaled_laplace(
