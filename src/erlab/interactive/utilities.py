@@ -15,7 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
 
-from erlab.interactive.colors import pg_colormap_powernorm
+from erlab.interactive.colors import pg_colormap_powernorm, BetterImageItem
 
 __all__ = [
     "parse_data",
@@ -662,7 +662,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         return {self.prefix() + self.param_name: param_info}
 
 
-class xImageItem(pg.ImageItem):
+class xImageItem(BetterImageItem):
     """
     :class:`pyqtgraph.ImageItem` with additional functionality, including
     :class:`xarray.DataArray` support and auto limits based on histogram analysis.
@@ -685,7 +685,7 @@ class xImageItem(pg.ImageItem):
     def __init__(self, image: npt.NDArray | None = None, **kwargs):
         super().__init__(image, **kwargs)
         self.cut_tolerance = (30, 30)
-        self.data_array = None
+        self.data_array: None | xr.DataArray = None
 
     def set_cut_tolerance(self, cut_tolerance):
         try:
@@ -715,15 +715,60 @@ class xImageItem(pg.ImageItem):
         if cut_to_data:
             kargs["levels"] = self.data_cut_levels(data=image)
         super().setImage(image=image, autoLevels=autoLevels, **kargs)
+        self.data_array = None
 
-    def setDataArray(self, data=None, **kargs):
-        self.data_array = parse_data(data)
-        rect = array_rect(self.data_array)
+    def setDataArray(self, data: xr.DataArray, update_labels: bool = True, **kargs):
+        rect = array_rect(data)
         if self.axisOrder == "row-major":
-            img = np.ascontiguousarray(self.data_array.values)
+            img = np.ascontiguousarray(data.values)
         else:
-            img = np.asfortranarray(self.data_array.values.T)
+            img = np.asfortranarray(data.values.T)
+
+        if update_labels:
+            pi = self.getPlotItem()
+            if pi is not None:
+                pi.setLabel("left", data.dims[0])
+                pi.setLabel("bottom", data.dims[1])
+
         self.setImage(img, rect=rect, **kargs)
+        self.data_array = data
+
+    def getMenu(self):
+        if self.menu is None:
+            if not self.removable:
+                self.menu = QtWidgets.QMenu()
+            else:
+                super().getMenu()
+            if self.menu is not None:
+                itoolAct = QtGui.QAction("Open in ImageTool", self.menu)
+                itoolAct.triggered.connect(self.open_itool)
+                self.menu.addAction(itoolAct)
+                self.menu.itoolAct = itoolAct
+        return self.menu
+
+    def getPlotItem(self) -> pg.PlotItem | None:
+        p = self
+        while True:
+            try:
+                p = p.parentItem()
+            except RuntimeError:
+                return None
+            if p is None:
+                return None
+            if isinstance(p, pg.PlotItem):
+                return p
+
+    def open_itool(self):
+        from erlab.interactive.imagetool import ImageTool
+
+        if self.data_array is None:
+            if self.image is None:
+                return
+            da = xr.DataArray(np.asarray(self.image))
+        else:
+            da = self.data_array
+        self._itool = ImageTool(da)
+        self._itool.show()
 
 
 class ParameterGroup(QtWidgets.QGroupBox):

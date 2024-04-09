@@ -13,39 +13,14 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
-from erlab.interactive.colors import BetterColorBarItem  # noqa: F401
-from erlab.interactive.colors import BetterImageItem
-from erlab.interactive.colors import ColorMapComboBox  # noqa: F401
-from erlab.interactive.colors import ColorMapGammaWidget  # noqa: F401
+from erlab.interactive.colors import (
+    BetterColorBarItem,  # noqa: F401
+    ColorMapComboBox,  # noqa: F401
+    ColorMapGammaWidget,  # noqa: F401
+)
 from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utilities import array_rect, copy_to_clipboard, gen_function_code
+from erlab.interactive.utilities import copy_to_clipboard, gen_function_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
-
-
-class KspaceToolImageItem(BetterImageItem):
-    def setDataArray(self, data=None, **kargs):
-        rect = array_rect(data)
-        if self.axisOrder == "row-major":
-            img = np.ascontiguousarray(data.values)
-        else:
-            img = np.asfortranarray(data.values.T)
-        pi = self.getPlotItem()
-        if pi is not None:
-            pi.setLabel("left", data.dims[0])
-            pi.setLabel("bottom", data.dims[1])
-        self.setImage(img, rect=rect, **kargs)
-
-    def getPlotItem(self) -> pg.PlotItem | None:
-        p = self
-        while True:
-            try:
-                p = p.parentItem()
-            except RuntimeError:
-                return None
-            if p is None:
-                return None
-            if isinstance(p, pg.PlotItem):
-                return p
 
 
 class KspaceToolGUI(
@@ -64,9 +39,9 @@ class KspaceToolGUI(
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
-        self.images: tuple[KspaceToolImageItem] = (
-            KspaceToolImageItem(axisOrder="row-major"),
-            KspaceToolImageItem(axisOrder="row-major"),
+        self.images: tuple[xImageItem, xImageItem] = (
+            xImageItem(axisOrder="row-major"),
+            xImageItem(axisOrder="row-major"),
         )
 
         for i, plot in enumerate(self.plotitems):
