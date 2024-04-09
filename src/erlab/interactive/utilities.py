@@ -119,9 +119,17 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs: dict):
         code += f"{tab}{v},\n"
     for k, v in kwargs.items():
         if isinstance(v, str):
-            v = f'"{v}"'
+            if v.startswith("|") and v.endswith("|"):
+                v = v[1:-1]
+            else:
+                v = f'"{v}"'
         code += f"{tab}{k}={v},\n"
     code += ")"
+
+    if len(code.replace("\n", "")) <= 88:
+        # If code fits in one line, remove newlines
+        code = " ".join([s.strip() for s in code.split("\n")])
+        code = code.replace(", )", ")").replace("( ", "(")
     return code
 
 
@@ -764,9 +772,9 @@ class xImageItem(BetterImageItem):
         if self.data_array is None:
             if self.image is None:
                 return
-            da = xr.DataArray(np.asarray(self.image))
+            da = xr.DataArray(np.asarray(self.image)).T
         else:
-            da = self.data_array
+            da = self.data_array.T
         self._itool = ImageTool(da)
         self._itool.show()
 
