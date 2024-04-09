@@ -25,6 +25,7 @@ import contextlib
 import datetime
 import itertools
 import os
+import warnings
 from typing import TYPE_CHECKING
 
 import joblib
@@ -49,6 +50,10 @@ def _is_monotonic(arr: npt.NDArray) -> bool:
 
 class ValidationError(Exception):
     """This exception is raised when the loaded data fails validation checks."""
+
+
+class ValidationWarning(UserWarning):
+    """This warning is issued when the loaded data fails validation checks."""
 
 
 class LoaderBase:
@@ -92,6 +97,12 @@ class LoaderBase:
 
     skip_validate: bool = False
     """If `True`, validation checks will be skipped."""
+
+    strict_validation: bool = False
+    """
+    If `True`, validation check will raise a `ValidationError` on the first failure
+    instead of warning. Useful for debugging data loaders.
+    """
 
     @property
     def name_map_reversed(self) -> dict[str, str]:
@@ -310,12 +321,12 @@ class LoaderBase:
             Where to look for the data. If `None`, the default data directory will be
             used.
         single
-            For some endstations, data for a single scan is saved over multiple files.
-            This argument only has effect for such endstations. When a single file
-            within a multiple file scan is provided to `identifier`, the default
-            behavior when `single` is `False` is to infer the coordinates and return a
-            single concatenated array that contains data from all files. If `single` is
-            set to `True`, only the data from the file given is returned.
+            For some setups, data for a single scan is saved over multiple files. This
+            argument is only used for such setups. When `identifier` is resolved to a
+            single file within a multiple file scan, the default behavior when `single`
+            is `False` is to return a single concatenated array that contains data from
+            all files in the same scan. If `single` is set to `True`, only the data from
+            the file given is returned.
         **kwargs
             Additional keyword arguments are passed to `identify`.
 
@@ -603,7 +614,8 @@ class LoaderBase:
         """Validate the input data to ensure it is in the correct format.
 
         Checks for the presence of all required coordinates and attributes. If the data
-        does not pass validation, a `ValidationError` is raised. Validation is skipped
+        does not pass validation, a `ValidationError` is raised or a warning is issued,
+        depending on the value of the `strict_validation` flag. Validation is skipped
         for loaders with attribute `skip_validate` set to `True`.
 
         Parameters
@@ -628,23 +640,26 @@ class LoaderBase:
 
         for c in ("alpha", "beta", "delta", "xi", "hv"):
             if c not in data.coords:
-                raise ValidationError(f"Missing coordinate {c}")
-                # print(f"Missing coordinate {c}")
+                cls._raise_or_warn(f"Missing coordinate {c}")
 
         for a in ("configuration", "temp_sample"):
             if a not in data.attrs:
-                raise ValidationError(f"Missing attribute {c}")
-                # print(f"Missing attribute {a}")
+                cls._raise_or_warn(f"Missing attribute {c}")
 
         if data.attrs["configuration"] not in (1, 2):
             if data.attrs["configuration"] not in (3, 4):
-                raise ValidationError(
+                cls._raise_or_warn(
                     f"Invalid configuration {data.attrs['configuration']}"
                 )
-                # print(f"Invalid configuration {data.attrs['configuration']}")
             elif "chi" not in data.coords:
-                raise ValidationError("Missing coordinate chi")
-                # print("Missing coordinate chi")
+                cls._raise_or_warn("Missing coordinate chi")
+
+    @classmethod
+    def _raise_or_warn(cls, msg: str):
+        if cls.strict_validation:
+            raise ValidationError(msg)
+        else:
+            warnings.warn(msg, ValidationWarning, stacklevel=2)
 
     def _load_multiple_parallel(
         self, file_paths: list[str]
