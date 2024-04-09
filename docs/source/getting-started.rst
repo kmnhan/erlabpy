@@ -5,36 +5,34 @@ Getting Started
 Installing
 ==========
 
-It is recommended to use a virtual environment to avoid conflicts with other
-packages. If you do not have conda installed, :ref:`install it <Installing
-conda>` before following the instructions below.
+The recommended way to install ERLabPy is via `conda
+<https://docs.conda.io/en/latest/>`_. If you do not have conda installed, follow
+the :ref:`installation instructions <Installing conda>`. Once you have a working
+conda environment, you can install ERLabPy with the conda command line tool: ::
 
-1. Download `environment.yml <https://github.com/kmnhan/erlabpy/blob/main/environment.yml>`_.
+  conda install -c conda-forge erlab
 
-2. ``cd`` to the directory containing the file.
+.. hint::
 
-3. Create and activate a new virtual environment:
+  If you are using macOS, you might experience degraded performance with the
+  default BLAS and LAPACK libraries. For Apple Silicon macs, use `Accelerate
+  <https://developer.apple.com/accelerate/>`_: ::
 
-   .. hint::
+    conda install "libblas=*=*accelerate"
 
-     If on Apple silicon, use `environment_apple.yml
-     <https://github.com/kmnhan/erlabpy/blob/main/environment_apple.yml>`_
-     instead to use BLAS and LAPACK implementations from `Accelerate
-     <https://developer.apple.com/accelerate/>`_.
+  For Intel macs, use `MKL
+  <https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl.html>`_:
+  ::
 
-   .. note::
+    conda install "libblas=*=mkl"
 
-     Replace :code:`<envname>` with the environment name you prefer.
+  To prevent conda from switching back to the default libraries, see the
+  `conda-forge documentation
+  <https://conda-forge.org/docs/maintainer/knowledge_base/#switching-blas-implementation>`_.
 
-   .. code-block:: sh
+If you don’t use conda, you can install ERLabPy with pip: ::
 
-     conda env create -f environment.yml -n <envname>
-     conda activate <envname>
-
-4. Install the package from PyPI: ::
-
-    pip install erlab
-
+  pip install erlab
 
 Dependencies
 ============

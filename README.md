@@ -1,6 +1,7 @@
 # ERLabPy
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab.svg)](https://pypi.org/project/erlab/)
+[![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab.svg)](https://anaconda.org/conda-forge/erlab)
 [![Workflow Status](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg)](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml)
 [![Documentation Status](https://readthedocs.org/projects/erlabpy/badge/)](https://erlabpy.readthedocs.io/)
 [![License](https://img.shields.io/pypi/l/erlab)](https://github.com/kmnhan/erlabpy/blob/main/LICENSE)
@@ -55,25 +56,24 @@ browser with dark mode enabled will show the dark mode screenshots.
 </picture>
 
 
+## Getting Started
+
+To get started, see [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+
 ## Documentation
 
 The full documentation for ERLabPy is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
-## Getting Started
-
-To get started with ERLab, follow the [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
-
 ## Contributing
 
-Contributions are welcome! Please open an issue or pull request if you have any
-suggestions or improvements. For more information on contributing, see the
-[development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
+ERLabPy is an open-source project and we welcome contributions from the
+community. If you find any bugs, issues, or have any suggestions, please open an
+issue [here](https://github.com/kmnhan/erlabpy/issues). If you would like to add
+a new feature or fix a bug yourself, we would love to have your contribution.
+Feel free to fork the repository and submit a pull request with your changes.
+
+For more information on contributing, see the [development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
 
 ## License
 
 This project is licensed under the terms of the [GPL-3.0 License](LICENSE).
-
-## Contact
-
-If you have any questions, issues, or suggestions, please open an issue
-[here](https://github.com/kmnhan/erlabpy/issues). We appreciate your feedback!

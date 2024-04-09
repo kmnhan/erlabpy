@@ -12,6 +12,9 @@ ERLabPy
    .. image:: https://img.shields.io/pypi/v/erlab.svg
        :target: https://pypi.org/project/erlab/
        :alt: PyPi
+   .. image:: https://img.shields.io/conda/vn/conda-forge/erlab.svg
+       :target: https://anaconda.org/conda-forge/erlab
+       :alt: Conda Version
    .. image:: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg
        :target: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml
        :alt: Workflow Status
