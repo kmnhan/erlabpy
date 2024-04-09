@@ -62,7 +62,10 @@ are sufficient for most use cases.
     * - `pyqtgraph <https://pyqtgraph.readthedocs.io/en/latest/>`_
       - Interactive plotting (i.e., imagetool)
 
-For the full list of dependencies, see the `requirements.txt` file.
+ERLabPy also requires a Qt library such as PyQt5, PyQt6, PySide2, or PySide6. To
+ensure compatibility and keep the namespace clean, ERLabPy imports Qt bindings
+from `qtpy <https://github.com/spyder-ide/qtpy>`_, which will automatically
+select the appropriate library based on what is installed.
 
 See the :doc:`userguide` to start using ERLabPy!
 
@@ -90,3 +93,11 @@ listed just for convenience.
         `cmocean <https://matplotlib.org/cmocean/>`_, and
         `colorcet <https://colorcet.holoviz.org>`_
       - More colormaps!
+
+For a full list of dependencies and optional dependencies, take a look at the ``[project]`` and ``[project.optional-dependencies]`` section in
+``pyproject.toml``:
+
+.. literalinclude:: ../../pyproject.toml
+   :language: toml
+   :start-at: dependencies = [
+   :end-before: [project.urls]

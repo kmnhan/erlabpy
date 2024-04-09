@@ -260,11 +260,38 @@ review.
 Code standards
 ==============
 
-Import sorting, formatting, and linting are enforced with `Ruff
-<https://github.com/astral-sh/ruff>`_. If you wish to contribute, using
-`pre-commit <https://pre-commit.com>`_ is recommended. This will ensure that
-your code is properly formatted before you commit it. A pre-commit configuration
-file for ruff is included in the repository.
+- Import sorting, formatting, and linting are enforced with `Ruff
+  <https://github.com/astral-sh/ruff>`_.
+
+- If you wish to contribute, using `pre-commit <https://pre-commit.com>`_ is
+  recommended. This will ensure that your code is properly formatted before you
+  commit it. A pre-commit configuration file for ruff is included in the
+  repository.
+
+- When writing code that uses Qt, please adhere to the following rules:
+
+  * Import all Qt bindings from `qtpy <https://github.com/spyder-ide/qtpy>`_,
+    and only import the top level modules: ::
+
+      from qtpy import QtWidgets, QtCore, QtGui
+
+  * Use fully qualified enum names from Qt6 instead of the short-form enums from
+    Qt5, i. e., ``QtCore.Qt.CheckState.Checked`` instead of
+    ``QtCore.Qt.Checked``.
+
+  * Use the signal and slot syntax from PySide6 (``QtCore.Signal`` and
+    ``QtCore.Slot`` instead of ``QtCore.pyqtSignal`` and ``QtCore.pyqtSlot``)
+
+  * When using Qt Designer, place ``.ui`` files in the same directory as the
+    Python file that   uses them. The files must be imported using the
+    ``loadUiType`` function from ``qtpy.uic``. For example: ::
+
+      from qtpy import uic
+
+      class MyWidget(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "mywidget.ui"))):
+          def __init__(self):
+              super().__init__()
+              self.setupUi(self)
 
 Documentation
 =============
@@ -278,7 +305,7 @@ well.
 
 Some other important things to know about the docs:
 
-- The *erlabpy* documentation consists of two parts: the docstrings in the code
+- The documentation consists of two parts: the docstrings in the code
   itself and the docs in this folder ``erlabpy/docs/source/``.
 
   The docstrings are meant to provide a clear explanation of the usage of the

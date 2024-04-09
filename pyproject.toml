@@ -20,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
 ]
+dynamic = ["version"]
 dependencies = [
     "h5netcdf>=1.2.0",
     "igor2>=0.5.6",
@@ -42,16 +43,32 @@ dependencies = [
     "varname>=0.13.0",
     "xarray>=2024.02.0",
 ]
-dynamic = ["version"]
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "sphinxcontrib-bibtex",
+    "pybtex",
+    "nbsphinx",
+    "furo",
+    "sphinx-design",
+]
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "python-semantic-release",
+    "ruff",
+    "pre-commit",
+]
+viz = ["cmasher", "cmocean", "colorcet", "hvplot"]
 
 [project.urls]
 Documentation = "https://erlabpy.readthedocs.io"
 Repository = "https://github.com/kmnhan/erlabpy.git"
 Issues = "https://github.com/kmnhan/erlabpy/issues"
 Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
-
-[project.optional-dependencies]
-dev = ["pytest", "python-semantic-release", "ruff", "pre-commit"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
