@@ -1,7 +1,12 @@
 # CHANGELOG
 
 
-## Unreleased
+
+## v2.1.0 (2024-04-09)
+
+### Chore
+
+* update changelog template ([`46a79e5`](https://github.com/kmnhan/erlabpy/commit/46a79e53c3bd6ce358d0fbf1a632d947671444c1))
 
 ### Ci
 
@@ -9,9 +14,49 @@
 
   [pre-commit.ci] pre-commit autoupdate
 
+### Documentation
+
+* improve io guide ([`28a2961`](https://github.com/kmnhan/erlabpy/commit/28a296131752e1df07d80c778e324adc2ef3746c))
+
+* add docstring for undocumented io functions ([`3583aad`](https://github.com/kmnhan/erlabpy/commit/3583aadbb1c707f11842ec4c154e8bcb99723056))
+
+* change directory structure, rename contributing guide ([`0b3d734`](https://github.com/kmnhan/erlabpy/commit/0b3d734b4f92cb9497bdfa7f133cbc66e6d99fb1))
+
+* update development documentation ([`38efae6`](https://github.com/kmnhan/erlabpy/commit/38efae6c591aa90dc6e1d280565df5c1dd1a004c))
+
+* update installation instructions to include conda-forge ([`c0ca81d`](https://github.com/kmnhan/erlabpy/commit/c0ca81d4c17fd7d97d1d684f4be8e5a4d49cc271))
+
+### Feature
+
+* (**interactive**) overhaul dtool ([`8e5ec38`](https://github.com/kmnhan/erlabpy/commit/8e5ec3827dd2bd52475d454d5c5ef8aef7d665aa))
+
+  Now supports interpolation, copying code, opening in imagetool, and 2D laplacian method.
+
+* (**interactive**) improve code generation ([`7cbe857`](https://github.com/kmnhan/erlabpy/commit/7cbe8572272f6c84a486599a990098ce8e3ff754))
+
+  Automatically shortens code and allows literals in kwargs
+
+* (**interactive**) extend xImageItem, add right-click menu to open imagetool ([`2b5bb2d`](https://github.com/kmnhan/erlabpy/commit/2b5bb2dfc3d4173d950135306b3b30a018c6d389))
+
+### Fix
+
+* sign error in minimum gradient ([`c45be0c`](https://github.com/kmnhan/erlabpy/commit/c45be0cf1a025c67e8af959ff83a9339cddbaaaa))
+
+* (**analysis.image**) normalize data for mingrad output for numerical stability ([`0fc3711`](https://github.com/kmnhan/erlabpy/commit/0fc3711a521ffb0cbb4f5206c06d923eced1200c))
+
+### Refactor
+
+* (**io**) validation now defaults to warning instead of raising an error ([`8867a07`](https://github.com/kmnhan/erlabpy/commit/8867a07304129beda749fa82d3909bf920fdb975))
+
 ### Style
 
+* sort imports with ruff ([`81efec9`](https://github.com/kmnhan/erlabpy/commit/81efec9d3937d3ef9be1287d6275246682de296d))
+
 * avoid trailing whitespace in changelog ([`aafc441`](https://github.com/kmnhan/erlabpy/commit/aafc441003cb679624ee4521f97da8c490ebdcf4))
+
+### Test
+
+* fix tests according to minimum gradient behaviour change ([`41290f2`](https://github.com/kmnhan/erlabpy/commit/41290f210557ce48e029c9c4926f7a61f09bdd97))
 
 ### Unknown
 
@@ -19,7 +64,6 @@
 
   updates:
   - [github.com/pre-commit/pre-commit-hooks: v4.5.0 → v4.6.0](https://github.com/pre-commit/pre-commit-hooks/compare/v4.5.0...v4.6.0)
-
 
 
 ## v2.0.0 (2024-04-08)
@@ -116,15 +160,15 @@
 
 * (**dtool**) cleanup unused code ([`f4abd34`](https://github.com/kmnhan/erlabpy/commit/f4abd34bbf3130c0ec0fd2f9c830c8da43849f13))
 
-### Unknown
+### Tests
 
-* tests: reduce test time by specifying explicit path ([`60fb0d0`](https://github.com/kmnhan/erlabpy/commit/60fb0d0cedd9f0aaeca7101dddf0848f8872ccc3))
+* reduce test time by specifying explicit path ([`60fb0d0`](https://github.com/kmnhan/erlabpy/commit/60fb0d0cedd9f0aaeca7101dddf0848f8872ccc3))
 
   This will not trigger directory recursion, so tests will run a bit faster
 
-* tests: add tests for fitting functions ([`4992251`](https://github.com/kmnhan/erlabpy/commit/499225149346e970d00b60dcb5ca39af5e5ddb47))
+* add tests for fitting functions ([`4992251`](https://github.com/kmnhan/erlabpy/commit/499225149346e970d00b60dcb5ca39af5e5ddb47))
 
-* tests: add tests for image and shift ([`7e4daeb`](https://github.com/kmnhan/erlabpy/commit/7e4daeb5aea9689aadfe3eedb561d313e217684c))
+* add tests for image and shift ([`7e4daeb`](https://github.com/kmnhan/erlabpy/commit/7e4daeb5aea9689aadfe3eedb561d313e217684c))
 
 
 ## v1.6.5 (2024-04-03)
