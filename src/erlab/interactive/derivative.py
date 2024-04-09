@@ -1,368 +1,339 @@
+"""Interactive tool for visualizing dispersive data."""
+
 __all__ = ["dtool"]
 
+import functools
+import os
 import sys
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy import QtCore, QtWidgets
-from scipy.ndimage import gaussian_filter, uniform_filter
+import varname
+import xarray as xr
+from qtpy import QtCore, QtWidgets, uic
 
-from erlab.analysis.image import curvature, minimum_gradient
-from erlab.interactive.utilities import parse_data
+import erlab.analysis
+from erlab.analysis.image import (
+    curvature,
+    gaussian_filter,
+    minimum_gradient,
+    scaled_laplace,
+)
+from erlab.interactive.utilities import (
+    copy_to_clipboard,
+    gen_function_code,
+    parse_data,
+    xImageItem,
+)
 
 
-class DerivativeTool(QtWidgets.QMainWindow):
-    def __init__(self, data=None, *args, **kwargs):
+class DerivativeTool(
+    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))
+):
+    def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
+        if data_name is None:
+            try:
+                data_name = varname.argname("data", func=self.__init__, vars_only=False)
+            except varname.VarnameRetrievingError:
+                data_name = "data"
+
+        self.data_name: str = data_name
+
+        # Initialize UI
         super().__init__()
+        self.setupUi(self)
+        self.setWindowTitle("")
 
-        self._main = QtWidgets.QWidget()
-        self.setCentralWidget(self._main)
-        self.layout = QtWidgets.QGridLayout(self._main)
-        plotwidget = pg.GraphicsLayoutWidget(show=True)
+        if data.ndim != 2:
+            raise ValueError("Input DataArray must be 2D")
 
-        self.hists = [
+        self.data: xr.DataArray = parse_data(data)
+        self._result: xr.DataArray = self.data.copy()
+
+        self.xdim: str = self.data.dims[1]
+        self.ydim: str = self.data.dims[0]
+
+        self.xinc: float = abs(float(self.data[self.xdim][1] - self.data[self.xdim][0]))
+        self.yinc: float = abs(float(self.data[self.ydim][1] - self.data[self.ydim][0]))
+
+        self.sx_spin.setRange(0.1 * self.xinc, 50 * self.xinc)
+        self.sy_spin.setRange(0.1 * self.yinc, 50 * self.yinc)
+
+        self.sx_spin.setSingleStep(self.xinc / 2)
+        self.sy_spin.setSingleStep(self.yinc / 2)
+
+        self.reset_smooth()
+        self.reset_interp()
+
+        self.interp_group.setChecked(False)
+
+        self.images: tuple[xImageItem, xImageItem] = (
+            xImageItem(axisOrder="row-major"),
+            xImageItem(axisOrder="row-major"),
+        )
+        self.hists: tuple[pg.HistogramLUTItem, pg.HistogramLUTItem] = (
             pg.HistogramLUTItem(),
             pg.HistogramLUTItem(),
-        ]
-        self.ax1 = plotwidget.addPlot(0, 0, 1, 1)
-        plotwidget.addItem(self.hists[0])
-        plotwidget.nextRow()
-        self.ax2 = plotwidget.addPlot(1, 0, 1, 1)
-        plotwidget.addItem(self.hists[1])
-        self.axes = [self.ax1, self.ax2]
-        self.ax2.setYLink(self.ax1)
-        self.ax2.setXLink(self.ax1)
-
-        self.images = [
-            pg.ImageItem(axisOrder="row-major"),
-            pg.ImageItem(axisOrder="row-major"),
-        ]
-        for i, img in enumerate(self.images):
-            self.axes[i].addItem(img)
-            self.hists[i].setImageItem(img)
-            # img.sigImageChanged.connect()
-
-        self.use_gaussfilt = False
-
-        self.win_list = [1, 1]
-        self.smooth_num = 1
-        self.smooth2_num = 1
-
-        self._smooth_group = QtWidgets.QGroupBox("Smoothing")
-        smooth_layout = QtWidgets.QGridLayout(self._smooth_group)
-        self._smooth_mode_check = QtWidgets.QCheckBox(self._smooth_group)
-        self._smooth_mode_check.setChecked(self.use_gaussfilt)
-        smooth_mode_label = QtWidgets.QLabel("Gaussian filter")
-        smooth_mode_label.setBuddy(self._smooth_mode_check)
-        self._smooth_x_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_y_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_n_spin = QtWidgets.QSpinBox(self._smooth_group)
-        self._smooth_n_spin.setRange(1, 100)
-        smooth_x_spin_label = QtWidgets.QLabel("x")
-        smooth_y_spin_label = QtWidgets.QLabel("y")
-        smooth_n_spin_label = QtWidgets.QLabel("n")
-        smooth_layout.addWidget(smooth_mode_label, 0, 0)
-        smooth_layout.addWidget(self._smooth_mode_check, 0, 1)
-        smooth_layout.addWidget(smooth_x_spin_label, 1, 0)
-        smooth_layout.addWidget(self._smooth_x_spin, 1, 1)
-        smooth_layout.addWidget(smooth_y_spin_label, 2, 0)
-        smooth_layout.addWidget(self._smooth_y_spin, 2, 1)
-        smooth_layout.addWidget(smooth_n_spin_label, 3, 0)
-        smooth_layout.addWidget(self._smooth_n_spin, 3, 1)
-
-        self._color_group = QtWidgets.QGroupBox("Color")
-        color_layout = QtWidgets.QGridLayout(self._color_group)
-        self._color_range_spin = (
-            QtWidgets.QDoubleSpinBox(self._smooth_group),
-            QtWidgets.QDoubleSpinBox(self._smooth_group),
         )
-        for i, s in enumerate(self._color_range_spin):
-            s.setRange(0, 100)
-            s.setValue(10)
-            s.setSingleStep(0.1)
-            s.setSuffix(" %")
-            s.setDecimals(1)
-            color_layout.addWidget(s, i, 0)
-        self._color_range_spin[1].setValue(1)
+        self.plots: list[pg.PlotItem] = []
 
-        self._smooth2_group = QtWidgets.QGroupBox("2nd Smoothing")
-        smooth2_layout = QtWidgets.QGridLayout(self._smooth2_group)
-        self._smooth2_x_spin = QtWidgets.QSpinBox(self._smooth2_group)
-        self._smooth2_y_spin = QtWidgets.QSpinBox(self._smooth2_group)
-        self._smooth2_n_spin = QtWidgets.QSpinBox(self._smooth2_group)
-        self._smooth2_x_spin_label = QtWidgets.QLabel("x")
-        self._smooth2_y_spin_label = QtWidgets.QLabel("y")
-        self._smooth2_n_spin_label = QtWidgets.QLabel("n")
-        self._smooth2_n_spin.setRange(1, 100)
-        smooth2_layout.addWidget(self._smooth2_x_spin_label, 1, 0)
-        smooth2_layout.addWidget(self._smooth2_x_spin, 1, 1)
-        smooth2_layout.addWidget(self._smooth2_y_spin_label, 2, 0)
-        smooth2_layout.addWidget(self._smooth2_y_spin, 2, 1)
-        smooth2_layout.addWidget(self._smooth2_n_spin_label, 3, 0)
-        smooth2_layout.addWidget(self._smooth2_n_spin, 3, 1)
+        for i in range(2):
+            plot = self.graphics_layout.addPlot(i, 0, 1, 1)
+            self.plots.append(plot)
+            self.graphics_layout.addItem(self.hists[i], i, 1)
+            plot.addItem(self.images[i])
+            self.hists[i].setImageItem(self.images[i])
+            # plot.showGrid(x=True, y=True, alpha=0.5)
 
-        self._deriv_group = QtWidgets.QGroupBox("Derivative")
-        deriv_layout = QtWidgets.QGridLayout(self._deriv_group)
-        self._deriv_axis_combo = QtWidgets.QComboBox(self._deriv_group)
-        self._deriv_axis_combo.addItems(["x", "y"])
-        deriv_layout.addWidget(self._deriv_axis_combo, 0, 0)
+        self.plots[0].setXLink(self.plots[1])
+        self.plots[0].setYLink(self.plots[1])
 
-        self._curv_group = QtWidgets.QGroupBox("Curvature")
-        curv_layout = QtWidgets.QGridLayout(self._curv_group)
-        self._curv_alpha_spin = QtWidgets.QDoubleSpinBox(self._curv_group)
-        self._curv_alpha_spin.setRange(0, 100)
-        self._curv_alpha_spin.setDecimals(4)
-        self._curv_alpha_spin.setValue(1.0)
-        self._curv_alpha_spin.setSingleStep(0.001)
-        self._curv_factor_spin = QtWidgets.QDoubleSpinBox(self._curv_group)
-        self._curv_factor_spin.setRange(-1, 1)
-        self._curv_factor_spin.setDecimals(4)
-        self._curv_factor_spin.setValue(1.0)
-        self._curv_factor_spin.setSingleStep(0.0001)
-        curv_layout.addWidget(self._curv_alpha_spin, 0, 0)
-        curv_layout.addWidget(self._curv_factor_spin, 1, 0)
+        self.interp_rst_btn.clicked.connect(self.reset_interp)
+        self.smooth_rst_btn.clicked.connect(self.reset_smooth)
 
-        self._mingrad_group = QtWidgets.QGroupBox("Minimum Gradient")
-        mingrad_layout = QtWidgets.QGridLayout(self._mingrad_group)
-        self._mingrad_btn = QtWidgets.QPushButton("Calculate")
-        # self._mingrad_delta_spin = QtWidgets.QSpinBox(self._mingrad_group)
-        # self._mingrad_delta_spin.setRange(1, 100)
-        # self._mingrad_delta_spin.setValue(1)
-        # mingrad_layout.addWidget(self._mingrad_delta_spin, 0, 0)
-        mingrad_layout.addWidget(self._mingrad_btn, 0, 0)
+        self.interp_group.toggled.connect(self.update_preprocess)
+        self.smooth_group.toggled.connect(self.update_preprocess)
+        self.nx_spin.valueChanged.connect(self.update_preprocess)
+        self.ny_spin.valueChanged.connect(self.update_preprocess)
+        self.sx_spin.valueChanged.connect(self.update_preprocess)
+        self.sy_spin.valueChanged.connect(self.update_preprocess)
+        self.sn_spin.valueChanged.connect(self.update_preprocess)
 
-        self._deriv_tab = QtWidgets.QWidget()
-        deriv_content = QtWidgets.QGridLayout(self._deriv_tab)
-        deriv_content.addWidget(self._smooth2_group, 0, 0)
-        deriv_content.addWidget(self._deriv_group, 0, 1)
+        self.hi_spin.valueChanged.connect(self.update_image)
+        self.lo_spin.valueChanged.connect(self.update_image)
 
-        self._curv_tab = QtWidgets.QWidget()
-        curv_content = QtWidgets.QGridLayout(self._curv_tab)
-        curv_content.addWidget(self._curv_group, 0, 0)
+        self.tab_widget.currentChanged.connect(self.update_result)
+        self.x_radio.clicked.connect(self.update_result)
+        self.y_radio.clicked.connect(self.update_result)
+        self.lapl_factor_spin.valueChanged.connect(self.update_result)
+        self.curv_a0_spin.valueChanged.connect(self.update_result)
+        self.curv_factor_spin.valueChanged.connect(self.update_result)
 
-        self._mingrad_tab = QtWidgets.QWidget()
-        mingrad_content = QtWidgets.QGridLayout(self._mingrad_tab)
-        mingrad_content.addWidget(self._mingrad_group, 0, 0)
+        self.copy_btn.clicked.connect(self.copy_code)
 
-        self.tabwidget = QtWidgets.QTabWidget()
-        self.tabwidget.addTab(self._deriv_tab, "Derivative")
-        self.tabwidget.addTab(self._curv_tab, "Curvature")
-        self.tabwidget.addTab(self._mingrad_tab, "Minimum Gradient")
-        self.tabwidget.setSizePolicy(
-            QtWidgets.QSizePolicy.MinimumExpanding,
-            QtWidgets.QSizePolicy.Maximum,
+        self.update_result()
+
+    @QtCore.Slot()
+    def reset_smooth(self):
+        self.sx_spin.setValue(self.xinc)
+        self.sy_spin.setValue(self.yinc)
+
+    @QtCore.Slot()
+    def reset_interp(self):
+        self.nx_spin.setValue(self.data.sizes[self.xdim])
+        self.ny_spin.setValue(self.data.sizes[self.ydim])
+
+    @property
+    def result(self) -> xr.DataArray:
+        return self._result
+
+    @result.setter
+    def result(self, value: xr.DataArray):
+        self._result = value
+        self.update_image()
+
+    @functools.cached_property
+    def processed_data(self) -> xr.DataArray:
+        out = self.data
+        if self.interp_group.isChecked():
+            out = self.data.interp(
+                {
+                    self.xdim: np.linspace(
+                        *self.data[self.xdim][[0, -1]], self.nx_spin.value()
+                    ),
+                    self.ydim: np.linspace(
+                        *self.data[self.ydim][[0, -1]], self.ny_spin.value()
+                    ),
+                }
+            )
+        if self.smooth_group.isChecked():
+            for _ in range(self.sn_spin.value()):
+                out = gaussian_filter(
+                    out,
+                    sigma={
+                        self.xdim: np.round(
+                            self.sx_spin.value(), self.sx_spin.decimals()
+                        ),
+                        self.ydim: np.round(
+                            self.sy_spin.value(), self.sy_spin.decimals()
+                        ),
+                    },
+                )
+        self.images[0].setDataArray(out)
+        return out
+
+    @QtCore.Slot()
+    def update_image(self):
+        self.images[1].setDataArray(
+            self.result, levels=self.get_levels(self.result.values)
         )
 
-        self.layout.addWidget(self._smooth_group, 0, 0, 1, 1)
-        self.layout.addWidget(self._color_group, 0, 1, 1, 1)
-        self.layout.addWidget(self.tabwidget, 0, 2, 1, 1)
-        self.layout.addWidget(plotwidget, 1, 0, 2, 3)
-
-        self.use_curv = False
-        self.use_mingrad = False
-        self.use_deriv = True
-
-        if data is not None:
-            self.set_data(data)
-
-        self._smooth_mode_check.stateChanged.connect(self.set_gauss_smooth)
-        self._smooth_x_spin.valueChanged.connect(
-            lambda val, ax=1: self.smooth_data(ax, val)
-        )
-        self._smooth_y_spin.valueChanged.connect(
-            lambda val, ax=0: self.smooth_data(ax, val)
-        )
-        self._smooth_n_spin.valueChanged.connect(self.set_smooth_num)
-        self._smooth2_x_spin.valueChanged.connect(lambda: self.deriv_data())
-        self._smooth2_y_spin.valueChanged.connect(lambda: self.deriv_data())
-        self._smooth2_n_spin.valueChanged.connect(self.set_smooth2_num)
-        self._deriv_axis_combo.currentTextChanged.connect(self.deriv_data)
-        self._curv_alpha_spin.valueChanged.connect(self.curv_data)
-        self._curv_factor_spin.valueChanged.connect(self.curv_data)
-        self._mingrad_btn.clicked.connect(lambda: self.mingrad_data())
-        # self._mingrad_delta_spin.valueChanged.connect(
-        #     lambda delta: self.mingrad_data(delta=delta)
-        # )
-        for s in self._color_range_spin:
-            s.valueChanged.connect(self._result_update_lims)
-
-    def get_cutoff(self, data, cutoff=None):
-        q3, q1 = np.percentile(data, [75, 25])
-        ql = q1 - 1.5 * (q3 - q1)
-        qu = q3 + 1.5 * (q3 - q1)
-        i_qu = 100 * (data > qu).mean()
-        i_ql = 100 * (data < ql).mean()
-        for s in self._color_range_spin:
-            s.blockSignals(True)
-        self._color_range_spin[0].setMaximum(i_qu)
-        self._color_range_spin[1].setMaximum(i_ql)
-        for s in self._color_range_spin:
-            s.blockSignals(False)
+    def get_levels(self, data, cutoff=None) -> tuple[float, float]:
         if cutoff is None:
-            # cutoff = [30, 30]
-            cutoff = [s.value() for s in self._color_range_spin]
+            cutoff = (self.lo_spin.value(), self.hi_spin.value())
         else:
             try:
                 cutoff = list(cutoff.__iter__)
             except AttributeError:
                 cutoff = [cutoff] * 2
 
-        pu, pl = np.percentile(data, [100 - cutoff[0], cutoff[1]])
-        mn = max(min(pl, ql), data.min())
-        mx = min(max(pu, qu), data.max())
-        return [mn, mx]
+        pu, pl = np.percentile(data, [100 - cutoff[1], cutoff[0]])
+        return max(pl, data.min()), min(pu, data.max())
 
-    def set_gauss_smooth(self, value):
-        self.use_gaussfilt = value
-        self.smooth_data()
+    @QtCore.Slot()
+    def update_preprocess(self):
+        self.__dict__.pop("processed_data", None)
+        self.update_result()
 
-    def _result_update_lims(self):
-        self.images[1].setImage(
-            self.data_s_d.values,
-            rect=self._lims_to_rect(1, 0),
-            levels=self.get_cutoff(self.data_s_d.values),
-        )
+    @QtCore.Slot()
+    def update_result(self):
+        match self.tab_widget.currentIndex():
+            case 0:
+                dim = self.xdim if self.x_radio.isChecked() else self.ydim
+                self.result = self.processed_data.differentiate(dim).differentiate(dim)
+            case 1:
+                self.result = scaled_laplace(
+                    self.processed_data,
+                    factor=np.round(
+                        self.lapl_factor_spin.value(), self.lapl_factor_spin.decimals()
+                    ),
+                )
+            case 2:
+                self.result = curvature(
+                    self.processed_data,
+                    a0=np.round(
+                        self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
+                    ),
+                    factor=np.round(
+                        self.curv_factor_spin.value(), self.curv_factor_spin.decimals()
+                    ),
+                )
+            case 3:
+                self.result = -minimum_gradient(self.processed_data)
 
-    def set_smooth_num(self, n):
-        self.smooth_num = n
-        self.smooth_data()
+    def copy_code(self):
+        lines: list[str] = []
 
-    def set_smooth2_num(self, n):
-        self.smooth2_num = n
-        self.deriv_data()
+        data_name = (
+            self.data_name
+        )  # "".join([s.strip() for s in self.data_name.split("\n")])
+        if self.interp_group.isChecked():
+            arg_dict = {
+                dim: f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
+                for dim, n in zip(
+                    [self.xdim, self.ydim], [self.nx_spin.value(), self.ny_spin.value()]
+                )
+            }
+            lines.append(
+                gen_function_code(
+                    copy=False, **{f"_processed = {data_name}.interp": [arg_dict]}
+                )
+            )
+            data_name = "_processed"
 
-    # def mingrad_data(self, delta=1):
-    def mingrad_data(self):
-        self.use_curv = False
-        self.use_mingrad = True
-        self.use_deriv = False
-        # self.data_s_d = self.data_s.copy(deep=True)
-        # self.data_s_d = -minimum_gradient(self.data_s, delta=delta)
-        self.data_s_d = -minimum_gradient(self.data_s)
-        self._result_update_lims()
+        if self.smooth_group.isChecked():
+            arg_dict = {
+                "sigma": dict(
+                    zip(
+                        (self.xdim, self.ydim),
+                        [
+                            np.round(s.value(), s.decimals())
+                            for s in (self.sx_spin, self.sy_spin)
+                        ],
+                    )
+                )
+            }
+            lines.append(f"_processed = {data_name}.copy()")
+            data_name = "_processed"
+            lines.append(f"for _ in range({self.sn_spin.value()}):")
+            lines.append(
+                "\t"
+                + gen_function_code(
+                    copy=False,
+                    **{
+                        "_processed = era.image.gaussian_filter": [
+                            f"|{data_name}|",
+                            arg_dict,
+                        ]
+                    },
+                )
+            )
+            data_name = "_processed"
 
-    def curv_data(self):
-        self.use_curv = True
-        self.use_deriv = False
-        self.use_mingrad = False
-
-        # self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d = curvature(
-            # self.data_s / self.data_s.max(), alpha=alpha, beta=beta, values=True
-            self.data_s,
-            a0=self._curv_alpha_spin.value(),
-            factor=self._curv_factor_spin.value(),
-        )
-        # m = self.data_s_d.max()
-        # self.data_s_d /= m
-        self._result_update_lims()
-
-    def deriv_data(self, axis=None):
-        self.use_curv = False
-        self.use_mingrad = False
-        self.use_deriv = True
-        if axis is None:
-            axis = self._deriv_axis_combo.currentText()
-        if axis == "x":
-            axis = 0
-        elif axis == "y":
-            axis = 1
-        # axis = self.data_dims[axis]
-        self.data_s_d = self.data_s.copy(deep=True)
-        self.data_s_d.values = np.gradient(self.data_s.values, axis=axis)
-        amount = [self._smooth2_y_spin.value(), self._smooth2_x_spin.value()]
-        self.use_gaussfilt = self._smooth_mode_check.isChecked()
-        self.data_s_d.values = self.smoothfunc(
-            self.data_s_d.values, amount, self.smooth2_num
-        )
-        self.data_s_d.values = np.gradient(self.data_s_d.values, axis=axis)
-        # self.data_s_d = d1_along_axis(self.data_s_d, axis=axis)
-        self._result_update_lims()
-
-    def _get_middle_index(self, x):
-        return len(x) // 2 - (1 if len(x) % 2 == 0 else 0)
-
-    def smoothfunc(self, data, amount, num):
-        if not self.use_gaussfilt:
-            for _ in range(num):
-                data = uniform_filter(data, amount, mode="constant", origin=(0, 0))
+        if self.tab_widget.currentIndex() == 0:
+            dim = self.xdim if self.x_radio.isChecked() else self.ydim
+            lines.append(f"{data_name}.differentiate('{dim}').differentiate('{dim}')")
         else:
-            sigma = [(amount[0] - 1) / 3, (amount[1] - 1) / 3]
-            for _ in range(num):
-                data = gaussian_filter(data, sigma=sigma, truncate=5)
-        return data
+            match self.tab_widget.currentIndex():
+                case 1:
+                    fname = "era.image.scaled_laplace"
+                    arg_dict = {
+                        "factor": np.round(
+                            self.lapl_factor_spin.value(),
+                            self.lapl_factor_spin.decimals(),
+                        )
+                    }
+                case 2:
+                    fname = "era.image.curvature"
+                    arg_dict = {
+                        "a0": np.round(
+                            self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
+                        ),
+                        "factor": np.round(
+                            self.curv_factor_spin.value(),
+                            self.curv_factor_spin.decimals(),
+                        ),
+                    }
+                case 3:
+                    fname = "era.image.minimum_gradient"
+                    arg_dict = {}
 
-    def smooth_data(self, axis=None, amount=None):
-        if axis is not None:
-            self.win_list[axis] = amount
-        else:
-            self.win_list = [self._smooth_y_spin.value(), self._smooth_x_spin.value()]
-        self.use_gaussfilt = self._smooth_mode_check.isChecked()
+            lines.append(
+                gen_function_code(
+                    copy=False, **{f"result = {fname}": [f"|{data_name}|", arg_dict]}
+                )
+            )
 
-        self.data_s = self.data.copy(deep=True)
-        vals = self.data_s.values
-
-        self.data_s.values = self.smoothfunc(vals, self.win_list, self.smooth_num)
-
-        self.images[0].setImage(self.data_s.values, rect=self._lims_to_rect(1, 0))
-        if self.use_deriv:
-            self.deriv_data()
-        elif self.use_curv:
-            self.curv_data()
-        elif self.use_mingrad:
-            self.mingrad_data()
-
-    def _lims_to_rect(self, i, j):
-        x = self.data_lims[i][0] - self.data_incs[i]
-        y = self.data_lims[j][0] - self.data_incs[j]
-        w = self.data_lims[i][-1] - x
-        h = self.data_lims[j][-1] - y
-        x += 0.5 * self.data_incs[i]
-        y += 0.5 * self.data_incs[j]
-        return QtCore.QRectF(x, y, w, h)
-
-    def set_data(self, data):
-        self.data = parse_data(data).fillna(0)
-        self.data_s = self.data.copy(deep=True)
-        self.vals = self.data.values
-        self.data_dims = self.data.dims
-        self.data_coords = tuple(self.data[dim].values for dim in self.data_dims)
-        self.data_incs = tuple(c[1] - c[0] for c in self.data_coords)
-        self.data_lims = tuple((c[0], c[-1]) for c in self.data_coords)
-        self.data_shape = self.data.shape
-        self.data_origin = tuple(self._get_middle_index(c) for c in self.data_coords)
-        self._smooth_x_spin.setRange(1, self.data_shape[0] - 1)
-        self._smooth_y_spin.setRange(1, self.data_shape[1] - 1)
-        self._smooth2_x_spin.setRange(1, self.data_shape[0] - 1)
-        self._smooth2_y_spin.setRange(1, self.data_shape[1] - 1)
-        self.smooth_data()
-        # self.images[0].setImage(self.vals,
-        # rect=self._lims_to_rect(1, 0))
+        copy_to_clipboard(lines)
 
 
-def dtool(data, *args, **kwargs):
+def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
+    if data_name is None:
+        try:
+            data_name = varname.argname("data", func=dtool, vars_only=False)
+        except varname.VarnameRetrievingError:
+            data_name = "data"
+
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setApplicationName("Dispersive features analysis")
-    app = DerivativeTool(data, *args, **kwargs)
+
     qapp.setStyle("Fusion")
-    app.show()
-    app.activateWindow()
-    app.raise_()
-    qapp.exec()
+
+    win = DerivativeTool(data, data_name=data_name)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+
+    if execute is None:
+        execute = True
+        try:
+            shell = get_ipython().__class__.__name__  # type: ignore
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                execute = False
+                from IPython.lib.guisupport import start_event_loop_qt4
+
+                start_event_loop_qt4(qapp)
+        except NameError:
+            pass
+    if execute:
+        qapp.exec()
 
 
 if __name__ == "__main__":
     import erlab.io
 
-    gkmk_cvs = erlab.io.merlin.load(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/211217 ALS BL4/csvtisb1/f_003.pxt"
+    dat = erlab.io.load_wave("/Users/khan/Downloads/dose5_k.ibw").T.sel(
+        W=slice(-0.7, 0.7)
     )
-    alpha_new = np.linspace(gkmk_cvs.alpha[0], gkmk_cvs.alpha[-1], 1000)
-    eV_new = np.linspace(gkmk_cvs.eV[0], gkmk_cvs.eV[-1], 2000)
-    gkmk_cvs = gkmk_cvs.interp(alpha=alpha_new, eV=eV_new)
-    gkmk_cvs = gkmk_cvs.sel(
-        alpha=slice(*np.rad2deg((-0.25, 0.25))), eV=slice(-1.25, 0.15)
-    )
-    dtool(gkmk_cvs, bench=False)
+    dtool(dat)
