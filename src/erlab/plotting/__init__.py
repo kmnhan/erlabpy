@@ -38,6 +38,7 @@ import matplotlib.colors
 import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
+
 import erlab.io
 
 # Import colormaps if available

@@ -1,5 +1,5 @@
 import numpy as np
-from erlab.interactive.imagetool.fastbinning import nanmean_funcs, fast_nanmean
+from erlab.interactive.imagetool.fastbinning import fast_nanmean, nanmean_funcs
 
 
 def test_fast_nanmean():

@@ -2,10 +2,11 @@
 
 __all__ = ["get_bz_edge", "plot_hex_bz"]
 
+import itertools
+
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import itertools
 import scipy.spatial
 from matplotlib.patches import RegularPolygon
 

@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 import xarray as xr
-
 from erlab.analysis.fit.functions.dynamic import (
     FermiEdge2dFunction,
     MultiPeakFunction,

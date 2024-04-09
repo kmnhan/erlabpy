@@ -1,9 +1,8 @@
-import numpy as np
+import erlab.plotting.erplot as eplt
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
 from pyqtgraph.colormap import modulatedBarData
-
-import erlab.plotting.erplot as eplt
 
 plt.style.use("khan")
 

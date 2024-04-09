@@ -24,8 +24,8 @@ __all__ = [
     "hex_bz_mask_points",
 ]
 
-import numpy as np
 import numba
+import numpy as np
 import xarray as xr
 
 from erlab.analysis.mask import polygon

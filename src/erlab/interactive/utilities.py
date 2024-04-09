@@ -15,7 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
 
-from erlab.interactive.colors import pg_colormap_powernorm, BetterImageItem
+from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 __all__ = [
     "parse_data",

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import scipy.special
 from erlab.analysis.fit.functions.general import (
     _gen_kernel,
@@ -11,7 +12,6 @@ from erlab.analysis.fit.functions.general import (
     step_broad,
     step_linbkg_broad,
 )
-import pytest
 
 KB_EV = 8.617333262145179e-5
 

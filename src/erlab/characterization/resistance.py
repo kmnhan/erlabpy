@@ -5,13 +5,13 @@ physics lab III equipment.
 
 """
 
-import re
 import os
+import re
 from io import StringIO
 
 import numpy as np
-import xarray as xr
 import pandas as pd
+import xarray as xr
 
 __all__ = ["load_resistance_physlab"]
 

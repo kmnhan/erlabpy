@@ -6,13 +6,12 @@ Polygon mask generation code adapted from the `CGAL C++ library
 
 from __future__ import annotations
 
+import enum
 from typing import Annotated, Literal
 
-import enum
-
+import numba
 import numpy as np
 import numpy.typing as npt
-import numba
 
 
 class Comparison(enum.Enum):
