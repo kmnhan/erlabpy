@@ -6,7 +6,7 @@ User Guide
    :class: warning
 
    The user guide is incomplete. For the full list of packages and modules
-   provided by ERLabPy, see :doc:`reference`.
+   provided by ERLabPy, see :doc:`../reference`.
 
 This section contains some examples for getting started with ARPES data analysis
 and visualization.
@@ -27,12 +27,12 @@ Data in ERLabPy are mostly represented by :mod:`xarray` objects
 <https://tutorial.xarray.dev/>`_ are great resources to get started with xarray.
 
 .. toctree::
-   notebooks/io
-   notebooks/indexing
-   notebooks/plotting
-   notebooks/kconv
+   io
+   indexing
+   plotting
+   kconv
 
-Further Reading
+Further reading
 ===============
 
 - `Lectures on scientific computing with Python

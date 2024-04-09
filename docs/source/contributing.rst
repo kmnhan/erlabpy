@@ -1,6 +1,6 @@
-*****************
-Development Guide
-*****************
+******************
+Contributing Guide
+******************
 
 .. note::
 
@@ -9,6 +9,7 @@ Development Guide
   `Contributing to xarray
   <https://docs.xarray.dev/en/stable/contributing.html>`_.
 
+All contributions, bug reports, bug fixes, documentation improvements, enhancements, and ideas are welcome.
 
 Creating a development environment
 ==================================

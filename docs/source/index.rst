@@ -43,7 +43,7 @@ angle-resolved photoemission spectroscopy (ARPES).
          overview on the dependencies.
 
     .. grid-item-card::  User guide
-        :link: userguide
+        :link: user-guide/index
         :link-type: doc
 
          The user guide provides some tutorials and examples on how to use
@@ -56,11 +56,11 @@ angle-resolved photoemission spectroscopy (ARPES).
          The reference guide provides detailed information of the API, including
          descriptions of most available methods and parameters.
 
-    .. grid-item-card::  Development guide
-        :link: development
+    .. grid-item-card::  Contributing guide
+        :link: contributing
         :link-type: doc
 
-         The development guide contains information on how to contribute to the
+         The contributing guide contains information on how to contribute to the
          project.
 
 
@@ -80,7 +80,7 @@ angle-resolved photoemission spectroscopy (ARPES).
    :caption: Contents
 
    getting-started
-   userguide
+   user-guide/index
    reference
-   development
+   contributing
    bibliography

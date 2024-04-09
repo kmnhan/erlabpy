@@ -34,13 +34,15 @@ If you don’t use conda, you can install ERLabPy with pip: ::
 
   pip install erlab
 
+If you wish to install ERLabPy from source, see the :doc:`contributing`.
+
 Dependencies
 ============
 
 ERLabPy is installed with many different python libraries. Some key packages and
 links to their documentation are listed below as a reference. In particular,
 this documentation assumes basic familiarity with the first four packages, which
-are sufficient for most use cases.
+will be sufficient for most use cases.
 
 .. list-table::
     :header-rows: 1
@@ -65,9 +67,11 @@ are sufficient for most use cases.
 ERLabPy also requires a Qt library such as PyQt5, PyQt6, PySide2, or PySide6. To
 ensure compatibility and keep the namespace clean, ERLabPy imports Qt bindings
 from `qtpy <https://github.com/spyder-ide/qtpy>`_, which will automatically
-select the appropriate library based on what is installed.
+select the appropriate library based on what is installed. Be aware that there
+are some known compatibility issues with PyQt5 and PySide2, so it is recommended
+to use the newer PyQt6 or PySide6 if possible.
 
-See the :doc:`userguide` to start using ERLabPy!
+See the :doc:`user-guide/index` to start using ERLabPy!
 
 
 Optional dependencies
@@ -95,7 +99,7 @@ listed just for convenience.
       - More colormaps!
 
 For a full list of dependencies and optional dependencies, take a look at the ``[project]`` and ``[project.optional-dependencies]`` section in
-``pyproject.toml``:
+`pyproject.toml <https://github.com/kmnhan/erlabpy/blob/main/pyproject.toml>`_:
 
 .. literalinclude:: ../../pyproject.toml
    :language: toml

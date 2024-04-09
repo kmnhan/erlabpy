@@ -12,10 +12,12 @@ A library that provides a set of tools and utilities to handle, manipulate, and
 visualize data from condensed matter physics experiments, with a focus on
 angle-resolved photoemission spectroscopy (ARPES).
 
-*ERLabPy* is built on top of the popular scientific computing libraries `numpy`,
-`scipy`, and `xarray`, and is designed to be easy to use and integrate with
-existing scientific Python workflows. It is also designed to be extensible,
-allowing users to easily add custom functionality and analysis tools.
+*ERLabPy* is built on top of the popular scientific computing libraries
+[*numpy*](https://numpy.org/), [*scipy*](https://scipy.org/), and
+[*xarray*](https://xarray.pydata.org/), and is designed to be easy to use and
+integrate with existing scientific Python workflows. It is also designed to be
+extensible, allowing users to easily add custom functionality and analysis
+tools.
 
 *ERLabPy* is developed and maintained by the electronic structure research
 laboratory at Korea Advanced Institute of Science and Technology (KAIST).
@@ -72,7 +74,7 @@ issue [here](https://github.com/kmnhan/erlabpy/issues). If you would like to add
 a new feature or fix a bug yourself, we would love to have your contribution.
 Feel free to fork the repository and submit a pull request with your changes.
 
-For more information on contributing, see the [development guide](https://erlabpy.readthedocs.io/en/stable/development.html).
+For more information on contributing, see our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html).
 
 ## License
 
