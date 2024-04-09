@@ -1,10 +1,3 @@
-import os
-import warnings
-from collections.abc import Sequence
-
-import numpy as np
-import xarray as xr
-
 __all__ = [
     "showfitsinfo",
     "get_files",
@@ -13,6 +6,13 @@ __all__ = [
     "save_as_hdf5",
     "save_as_netcdf",
 ]
+
+import os
+import warnings
+from collections.abc import Sequence
+
+import numpy as np
+import xarray as xr
 
 
 def showfitsinfo(path: str | os.PathLike):
@@ -112,6 +112,20 @@ def fix_attr_format(da: xr.DataArray):
 
 
 def open_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+    """Open data from an HDF5 file saved with `save_as_hdf5`.
+
+    This is a thin wrapper around `xarray.open_dataarray` and `xarray.open_dataset`.
+
+    Parameters
+    ----------
+    filename
+        The path to the HDF5 file.
+
+    Returns
+    -------
+    xarray.DataArray or xarray.Dataset
+        The opened data.
+    """
     try:
         return xr.open_dataarray(filename, engine="h5netcdf")
     except ValueError:
@@ -119,6 +133,20 @@ def open_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
 
 
 def load_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+    """Load data from an HDF5 file saved with `save_as_hdf5`.
+
+    This is a thin wrapper around `xarray.load_dataarray` and `xarray.load_dataset`.
+
+    Parameters
+    ----------
+    filename
+        The path to the HDF5 file.
+
+    Returns
+    -------
+    xarray.DataArray or xarray.Dataset
+        The loaded data.
+    """
     try:
         return xr.load_dataarray(filename, engine="h5netcdf")
     except ValueError:
