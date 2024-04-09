@@ -209,7 +209,7 @@ class DerivativeTool(
                     ),
                 )
             case 3:
-                self.result = -minimum_gradient(self.processed_data)
+                self.result = minimum_gradient(self.processed_data)
 
     def copy_code(self):
         lines: list[str] = []
