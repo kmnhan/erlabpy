@@ -50,7 +50,17 @@ if importlib.util.find_spec("colorcet"):
     importlib.import_module("colorcet")
 
 
-def load_igor_ct(fname, name):
+def load_igor_ct(fname: str, name: str) -> None:
+    """Load a Igor CT wave file (`.ibw`) and register as a matplotlib colormap.
+
+    Parameters
+    ----------
+    fname
+        Path to the Igor CT wave file.
+    name
+        The name to register the colormap as.
+
+    """
     file = pkgutil.get_data(__package__, "IgorCT/" + fname)
     if fname.endswith(".txt"):
         values = np.genfromtxt(io.StringIO(file.decode()))
@@ -62,16 +72,15 @@ def load_igor_ct(fname, name):
     matplotlib.colormaps.register(cmap.reversed())
 
 
-if importlib.util.find_spec("igor2"):
-    load_igor_ct("CTBlueWhite.ibw", "BuWh")
-    load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
-    # load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
-    load_igor_ct("ColdWarm.ibw", "ColdWarm")
-    load_igor_ct("BlueHot.ibw", "BlueHot")
-    # load_igor_ct("PlanetEarth.ibw", "PlanetEarth")
-    # load_igor_ct("ametrine.ibw", "ametrine")
-    # load_igor_ct("isolum.ibw", "isolum")
-    # load_igor_ct("morgenstemning.ibw", "morgenstemning")
+load_igor_ct("CTBlueWhite.ibw", "BuWh")
+load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
+# load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
+load_igor_ct("ColdWarm.ibw", "ColdWarm")
+load_igor_ct("BlueHot.ibw", "BlueHot")
+# load_igor_ct("PlanetEarth.ibw", "PlanetEarth")
+# load_igor_ct("ametrine.ibw", "ametrine")
+# load_igor_ct("isolum.ibw", "isolum")
+# load_igor_ct("morgenstemning.ibw", "morgenstemning")
 
 
 matplotlib.style.core.USER_LIBRARY_PATHS.append(

@@ -1,22 +1,11 @@
 import os
 
 import h5netcdf
+import igor2.binarywave
+import igor2.packed
+import igor2.record
 import numpy as np
 import xarray as xr
-
-try:
-    import igor2.binarywave
-    import igor2.packed
-    import igor2.record
-
-except ImportError:
-    import warnings
-
-    warnings.warn(
-        "igor2 is not installed. Some functions may not work.",
-        ImportWarning,
-        stacklevel=1,
-    )
 
 __all__ = ["load_experiment", "load_h5", "load_ibw", "load_pxp", "load_wave"]
 
@@ -129,7 +118,7 @@ def load_h5(filename):
 
 
 def load_wave(
-    wave,  #: dict | igor2.record.WaveRecord | str | os.PathLike,
+    wave: dict | igor2.record.WaveRecord | str | os.PathLike,
     data_dir: str | os.PathLike | None = None,
 ) -> xr.DataArray:
     """Load a wave from Igor binary format.
