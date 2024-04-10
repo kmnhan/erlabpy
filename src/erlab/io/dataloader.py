@@ -780,7 +780,7 @@ class LoaderRegistry(RegistryBase):
             self.current_loader = loader
 
     @contextlib.contextmanager
-    def loader_context(self, loader: str):
+    def loader_context(self, loader: str, data_dir: str | os.PathLike | None = None):
         """Context manager for temporarily changing the current data loader.
 
         The loader set here will only be used within the context manager.
@@ -806,12 +806,20 @@ class LoaderRegistry(RegistryBase):
           >>> dat_ssrl_2 = erlab.io.load(...)
 
         """
-        old_loader: LoaderBase = self.current_loader
+        old_loader: LoaderBase | None = self.current_loader
         self.set_loader(loader)
+
+        if data_dir is not None:
+            old_data_dir = self.default_data_dir
+            self.set_data_dir(data_dir)
+
         try:
             yield self.current_loader
         finally:
             self.set_loader(old_loader)
+
+            if data_dir is not None:
+                self.set_data_dir(old_data_dir)
 
     def set_data_dir(self, data_dir: str | os.PathLike):
         """Set the default data directory for the data loader.
