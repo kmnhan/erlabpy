@@ -89,7 +89,7 @@ class LoaderBase:
     additional_attrs: dict[str, str | int | float] = {}
     """Additional attributes to be added to the data."""
 
-    always_single: bool = False
+    always_single: bool = True
     """
     If `True`, this indicates that all individual scans always lead to a single data
     file. No concatenation of data from multiple files will be performed.
@@ -359,7 +359,7 @@ class LoaderBase:
             else:
                 # Multiple files resolved
                 data = self.combine_multiple(
-                    self._load_multiple_parallel(file_paths), coord_dict
+                    self.load_multiple_parallel(file_paths), coord_dict
                 )
         else:
             if data_dir is not None:
@@ -654,24 +654,39 @@ class LoaderBase:
             elif "chi" not in data.coords:
                 cls._raise_or_warn("Missing coordinate chi")
 
+    def load_multiple_parallel(
+        self, file_paths: list[str], n_jobs: int | None = None
+    ) -> list[xr.DataArray | xr.Dataset]:
+        """Load multiple files in parallel.
+
+        Parameters
+        ----------
+        file_paths
+            A list of file paths to load.
+        n_jobs
+            The number of jobs to run in parallel. If `None`, the number of jobs is set
+            to 1 for less than 15 files and to -1 (all CPU cores) for 15 or more files.
+
+        Returns
+        -------
+        A list of the loaded data.
+        """
+        if n_jobs is None:
+            if len(file_paths) < 15:
+                n_jobs = 1
+            else:
+                n_jobs = -1
+
+        return joblib.Parallel(n_jobs=n_jobs)(
+            joblib.delayed(self.load_single)(f) for f in file_paths
+        )
+
     @classmethod
     def _raise_or_warn(cls, msg: str):
         if cls.strict_validation:
             raise ValidationError(msg)
         else:
             warnings.warn(msg, ValidationWarning, stacklevel=2)
-
-    def _load_multiple_parallel(
-        self, file_paths: list[str]
-    ) -> list[xr.DataArray | xr.Dataset]:
-        if len(file_paths) < 15:
-            n_jobs = 1
-        else:
-            n_jobs = -1
-
-        return joblib.Parallel(n_jobs=n_jobs)(
-            joblib.delayed(self.load_single)(f) for f in file_paths
-        )
 
 
 class RegistryBase:

@@ -47,6 +47,7 @@ class BL403Loader(LoaderBase):
         "configuration": 1,
         "sample_workfunction": 4.44,
     }
+    always_single: bool = False
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         data = load_experiment(file_path)
