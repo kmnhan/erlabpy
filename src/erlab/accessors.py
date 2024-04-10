@@ -677,6 +677,40 @@ class MomentumAccessor:
         self._offsetview.reset()
         self._offsetview.update(offset_dict)
 
+    @property
+    @only_angles
+    def best_kp_resolution(self) -> float:
+        r"""
+        Estimates the minimum in-plane momentum resolution based on the kinetic energy
+        and angular resolution:
+
+        .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
+
+        """
+        min_Ek = np.amin(self._kinetic_energy)
+        max_angle = max(np.abs(self._obj["alpha"].values))
+        return (
+            rel_kconv
+            * np.sqrt(min_Ek)
+            * np.cos(np.deg2rad(max_angle))
+            * np.deg2rad(self.angle_resolution)
+        )
+
+    @property
+    @only_angles
+    def best_kz_resolution(self) -> float:
+        r"""
+        Estimates the minimum out-of-plane momentum resolution based on the mean free
+        path :cite:p:`seah1979imfp` and the kinetic energy.
+
+        .. math:: \Delta k_z \sim 1/\lambda
+
+        """
+        kin = self._kinetic_energy.flatten()
+        c1, c2 = 641.0, 0.096
+        imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
+        return np.amin(1 / imfp)
+
     def estimate_bounds(self) -> dict[str, tuple[float, float]]:
         """
         Estimates the bounds of the data in momentum space based on the available
@@ -773,40 +807,6 @@ class MomentumAccessor:
             return self.best_kz_resolution
         else:
             return self.best_kp_resolution
-
-    @property
-    @only_angles
-    def best_kp_resolution(self) -> float:
-        r"""
-        Estimates the minimum in-plane momentum resolution based on the kinetic energy
-        and angular resolution:
-
-        .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
-
-        """
-        min_Ek = np.amin(self._kinetic_energy)
-        max_angle = max(np.abs(self._obj["alpha"].values))
-        return (
-            rel_kconv
-            * np.sqrt(min_Ek)
-            * np.cos(np.deg2rad(max_angle))
-            * np.deg2rad(self.angle_resolution)
-        )
-
-    @property
-    @only_angles
-    def best_kz_resolution(self) -> float:
-        r"""
-        Estimates the minimum out-of-plane momentum resolution based on the mean free
-        path :cite:p:`seah1979imfp` and the kinetic energy.
-
-        .. math:: \Delta k_z \sim 1/\lambda
-
-        """
-        kin = self._kinetic_energy.flatten()
-        c1, c2 = 641.0, 0.096
-        imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
-        return np.amin(1 / imfp)
 
     def _forward_func_raw(self, alpha, beta):
         return get_kconv_func(

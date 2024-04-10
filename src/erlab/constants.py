@@ -42,9 +42,8 @@ hbar_eV: float = 6.582119569509067e-16
 #: :math:`\hbar^2` (eV²·s²)
 hbarsq_eV: float = 4.332429802731423e-31
 
-#: :math:`hc`  (eV·nm)
+#: :math:`hc`  (eV·nm), Used in energy-wavelength conversion
 rel_eV_nm: float = 1239.8419843320028
-
 
 #: :math:`\frac{\sqrt{2 m_e}}{\hbar}`, Used in momentum conversion
 rel_kconv: float = 0.512316721967493

@@ -1,5 +1,5 @@
 """
-Polygon mask generation code adapted from the `CGAL C++ library
+Point-in-polygon algorithm adapted from the `CGAL C++ library
 <https://doc.cgal.org/5.3.2/Polygon/index.html>`_.
 
 """
@@ -69,7 +69,7 @@ def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> in
 
     Returns
     -------
-    int
+    index : int
 
     """
     ind = _get_argmin_all(points[:, 0].astype(np.float32))
@@ -134,8 +134,25 @@ def which_side_in_slab(point, low, high, points):
 
 @numba.njit(nogil=True, cache=True)
 def bounded_side_bool(
-    points: npt.NDArray[np.float64], point: tuple[float, float], boundary=True
-):
+    points: npt.NDArray[np.float64], point: tuple[float, float], boundary: bool = True
+) -> bool:
+    """Computes whether a point lies inside a polygon using `bounded_side`.
+
+    Parameters
+    ----------
+    points
+        (N, 2) input array of polygon vertices.
+    point
+        2-tuple of float specifying point of interest.
+    boundary
+        Whether to consider points on the boundary to be inside the polygon. Default is
+        `True`.
+
+    Returns
+    -------
+    bool
+        `True` if the point is on the bounded side of the polygon, `False` otherwise.
+    """
     match bounded_side(points, point):
         case Side.ON_UNBOUNDED_SIDE:
             return False
@@ -146,8 +163,8 @@ def bounded_side_bool(
 
 
 @numba.njit(nogil=True, cache=True)
-def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]):
-    """Computes if a point lies inside a polygon.
+def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]) -> Side:
+    """Computes if a point is inside, outside, or on the boundary of a polygon.
 
     The polygon is defined by the sequence of points [first,last). Being inside is
     defined by the odd-even rule. If the point is on a polygon edge, a special value is
@@ -159,7 +176,12 @@ def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]):
     points
         (N, 2) input array of polygon vertices.
     point
-        2-tuple specifying point of interest
+        2-tuple of float specifying point of interest.
+
+    Returns
+    -------
+    Side
+        Enum indicating the location of the point.
 
     Note
     ----

@@ -35,13 +35,28 @@ def _sinc(x):
     return np.sin(x) / (x + 1e-15)
 
 
-def kz_func_inv(kz, inner_potential, kx, ky):
+def _kz_func_inv(kz, inner_potential, kx, ky):
     k_perp_sq = kx**2 + ky**2
     k_z_sq = kz**2
     return k_perp_sq + k_z_sq - inner_potential / erlab.constants.rel_kzconv
 
 
+def _kperp_func(k_tot_sq, kx, ky):
+    r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
+    return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
+
+
 def kz_func(kinetic_energy, inner_potential, kx, ky):
+    r"""
+    Calculate :math:`k_z` from the given kinetic energy, inner potential, and
+    :math:`k_x`, :math:`k_y` with
+
+    .. math::
+
+        k_z = \sqrt{k^2 - k_x^2 - k_y^2 + \frac{2 m_e V_0}{\hbar^2}}
+
+    where :math:`k = \frac{\sqrt{2 m_e E_k}}{\hbar}`.
+    """
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     k_perp_sq = k_tot**2 - kx**2 - ky**2
     k_z_sq = k_perp_sq + inner_potential / erlab.constants.rel_kzconv
@@ -118,11 +133,6 @@ def get_kconv_func(
             ValueError(f"Invalid configuration {configuration}")
 
     return func(k_tot, **angle_params)
-
-
-def _kperp_func(k_tot_sq, kx, ky):
-    r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
-    return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
 
 
 def _kconv_func_type1(
