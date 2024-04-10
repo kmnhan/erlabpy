@@ -728,8 +728,9 @@ class LoaderRegistry(RegistryBase):
 
         # Add aliases to mapping
         self.alias_mapping[loader_class.name] = loader_class.name
-        for alias in loader_class.aliases:
-            self.alias_mapping[alias] = loader_class.name
+        if loader_class.aliases is not None:
+            for alias in loader_class.aliases:
+                self.alias_mapping[alias] = loader_class.name
 
     def get(self, key: str) -> LoaderBase:
         loader_name = self.alias_mapping.get(key)
