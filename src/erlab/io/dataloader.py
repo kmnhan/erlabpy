@@ -428,10 +428,9 @@ class LoaderBase:
         if usecache:
             try:
                 df = pandas.read_pickle(pkl_path)
+                df = df.head(len(df))
             except FileNotFoundError:
                 pass
-
-        df = df.head(len(df))
 
         if df is None:
             df = self.generate_summary(data_dir, **kwargs)
