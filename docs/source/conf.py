@@ -149,6 +149,11 @@ pybtex.style.formatting.unsrt.date = pybtex.style.template.words(sep="")[
 ]
 
 
+@pybtex.style.template.node
+def top_level(children, data):
+    return pybtex.style.template.sentence(sep=", ")[children].format_data(data)
+
+
 class APSStyle(pybtex.style.formatting.unsrt.Style):
     """
     APS style for BibTeX formatting, adapted from the conf.py file of the `mitiq
@@ -159,7 +164,13 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
         super().__init__(*args, **kwargs)
         self.abbreviate_names = True
 
-    def format_title(self, e, which_field, as_sentence=True):
+    def format_names(self, role, as_sentence=False):
+        return super().format_names(role, as_sentence=as_sentence)
+
+    def format_volume_and_series(self, e, as_sentence=False):
+        return super().format_volume_and_series(e, as_sentence=as_sentence)
+
+    def format_title(self, e, which_field, as_sentence=False):
         formatted_title = pybtex.style.template.field(
             which_field, apply_func=lambda text: text.capitalize()
         )
@@ -170,7 +181,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
         else:
             return formatted_title
 
-    def format_editor(self, e, as_sentence=True):
+    def format_editor(self, e, as_sentence=False):
         editors = self.format_names("editor", as_sentence=False)
         if "editor" not in e.persons:
             return editors
@@ -206,7 +217,20 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
             ],
         ]
 
-    def get_article_template(self, e):
+    def format_web_refs(self, e):
+        return pybtex.style.template.sentence(add_period=False)[
+            pybtex.style.template.optional[
+                self.format_url(e),
+                pybtex.style.template.optional[
+                    " (visited on ", pybtex.style.template.field("urldate"), ")"
+                ],
+            ],
+            pybtex.style.template.optional[self.format_eprint(e)],
+            pybtex.style.template.optional[self.format_pubmed(e)],
+            pybtex.style.template.optional[self.format_doi(e)],
+        ]
+
+    def format_journal_volume_page(self, e):
         volume_and_pages = pybtex.style.template.first_of[
             # volume and pages
             pybtex.style.template.optional[
@@ -230,24 +254,55 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
                 ),
             ],
         ]
-        template = pybtex.style.formatting.toplevel[
+        journal_volume_page = pybtex.style.template.sentence(sep=" ", add_period=False)[
+            pybtex.style.template.field("journal"),
+            pybtex.style.template.optional[volume_and_pages],
+            pybtex.style.formatting.unsrt.date,
+        ]
+        if "eprint" in e.fields:
+            return pybtex.style.template.href[
+                pybtex.style.template.join[
+                    "https://arxiv.org/abs/",
+                    pybtex.style.template.field("eprint", raw=True),
+                ],
+                journal_volume_page,
+            ]
+        elif "url" in e.fields:
+            return pybtex.style.template.href[
+                pybtex.style.template.field("url", raw=True), journal_volume_page
+            ]
+        elif "pubmed" in e.fields:
+            return pybtex.style.template.href[
+                pybtex.style.template.join[
+                    "https://www.ncbi.nlm.nih.gov/pubmed/",
+                    pybtex.style.template.field("pubmed", raw=True),
+                ],
+                journal_volume_page,
+            ]
+        elif "doi" in e.fields:
+            return pybtex.style.template.href[
+                pybtex.style.template.join[
+                    "https://doi.org/", pybtex.style.template.field("doi", raw=True)
+                ],
+                journal_volume_page,
+            ]
+        else:
+            return journal_volume_page
+
+    def get_article_template(self, e):
+        template = top_level[
             self.format_names("author"),
             self.format_title(e, "title"),
-            pybtex.style.template.sentence(sep=" ")[
-                pybtex.style.template.field("journal"),
-                pybtex.style.template.optional[volume_and_pages],
-                pybtex.style.formatting.unsrt.date,
-            ],
-            self.format_web_refs(e),
+            self.format_journal_volume_page(e),
         ]
         return template
 
     def get_book_template(self, e):
-        template = pybtex.style.formatting.toplevel[
+        template = top_level[
             self.format_author_or_editor(e),
             self.format_btitle(e, "title"),
             self.format_volume_and_series(e),
-            pybtex.style.template.sentence(sep=" ")[
+            pybtex.style.template.sentence(sep=" ", add_period=True)[
                 pybtex.style.template.sentence(add_period=False)[
                     pybtex.style.template.field("publisher"),
                     pybtex.style.template.optional_field("address"),
@@ -256,9 +311,9 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
                 pybtex.style.formatting.unsrt.date,
             ],
             pybtex.style.template.optional[
-                pybtex.style.template.sentence[self.format_isbn(e)]
+                pybtex.style.template.sentence(add_period=False)[self.format_isbn(e)]
             ],
-            pybtex.style.template.sentence[
+            pybtex.style.template.sentence(add_period=False)[
                 pybtex.style.template.optional_field("note")
             ],
             self.format_web_refs(e),
@@ -266,7 +321,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
         return template
 
     def get_incollection_template(self, e):
-        template = pybtex.style.formatting.toplevel[
+        template = top_level[
             pybtex.style.template.sentence[self.format_names("author")],
             self.format_title(e, "title"),
             pybtex.style.template.words[
@@ -293,12 +348,12 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
         return template
 
     def get_inproceedings_template(self, e):
-        template = pybtex.style.formatting.toplevel[
+        template = top_level[
             pybtex.style.template.sentence[self.format_names("author")],
             self.format_title(e, "title"),
             pybtex.style.template.words[
                 "in",
-                pybtex.style.template.sentence[
+                pybtex.style.template.sentence(add_period=False)[
                     self.format_btitle(e, "booktitle", as_sentence=False),
                     # self.format_volume_and_series(e, as_sentence=False),
                     # self.format_chapter_and_pages(e),
@@ -311,11 +366,10 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
                             "(", self.format_address_organization_publisher_date(e), ")"
                         ],
                     ],
-                    pybtex.style.template.sentence(add_period=True, sep=". ")[
-                        "p",
-                        pybtex.style.formatting.unsrt.pages,
-                        pybtex.style.template.optional_field("note"),
+                    pybtex.style.template.join(sep=" ")[
+                        "p.", pybtex.style.formatting.unsrt.pages
                     ],
+                    pybtex.style.template.optional_field("note"),
                 ],
             ],
             self.format_web_refs(e),
