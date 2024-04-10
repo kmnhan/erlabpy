@@ -2,6 +2,41 @@
 
 
 
+## v2.1.1 (2024-04-10)
+
+### Documentation
+
+* (**io**) improve docstrings and user guide ([`8e69abb`](https://github.com/kmnhan/erlabpy/commit/8e69abb37a99818081bf2e03453d64e1b48b16ab))
+
+* update io documentation ([`b0d2d01`](https://github.com/kmnhan/erlabpy/commit/b0d2d01d0dec2ec8180cb5d7da2034900d0d0aba))
+
+* change reference format ([`44e159a`](https://github.com/kmnhan/erlabpy/commit/44e159af6102f42182e4f705c18bacff1add7972))
+
+* add missing type annotations and docstrings ([`b8c7471`](https://github.com/kmnhan/erlabpy/commit/b8c747111663c07b441a3cbf0e11652c2f5cac49))
+
+### Fix
+
+* (**io**) enable specifying data_dir in loader context manager ([`37913b8`](https://github.com/kmnhan/erlabpy/commit/37913b80a1d7c6313a5b6cc4a3ab614565274c81))
+
+* (**io**) allow loader_class aliases to be None ([`7eae2eb`](https://github.com/kmnhan/erlabpy/commit/7eae2ebf13f972d368ddb9922a71fd3bbed014e5))
+
+### Refactor
+
+* remove igor2 import checking ([`b64d8f7`](https://github.com/kmnhan/erlabpy/commit/b64d8f7fe22ebc1c4818e26f93f864fd402bbd05))
+
+* (**io**) default to always_single=True ([`007bb3b`](https://github.com/kmnhan/erlabpy/commit/007bb3b2703a647856c0a85e89075cf6572d263a))
+
+### Style
+
+* sort __all__ and change linter configuration ([`c07262e`](https://github.com/kmnhan/erlabpy/commit/c07262eb647f17638eec77829a12a223f88b09d5))
+
+* apply perf lint and more ([`9cb4242`](https://github.com/kmnhan/erlabpy/commit/9cb424222e75360cf7240ce3325a63169ea67911))
+
+### Test
+
+* refactor directory structure ([`895ea0d`](https://github.com/kmnhan/erlabpy/commit/895ea0da46b4ed1ddcb81ff5dbff15ed20c7377b))
+
+
 ## v2.1.0 (2024-04-09)
 
 ### Chore
