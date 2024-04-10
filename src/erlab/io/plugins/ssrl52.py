@@ -196,7 +196,10 @@ class SSRL52Loader(LoaderBase):
             data = self.load(path)
 
             data_info.append(
-                [datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]), name]
+                [
+                    datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]),
+                    name,
+                ]
             )
 
             for k, v in summary_attrs.items():

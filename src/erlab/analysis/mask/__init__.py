@@ -17,11 +17,11 @@ Modules
 """
 
 __all__ = [
+    "hex_bz_mask_points",
+    "mask_with_hex_bz",
     "mask_with_polygon",
     "polygon_mask",
     "polygon_mask_points",
-    "mask_with_hex_bz",
-    "hex_bz_mask_points",
 ]
 
 import numba

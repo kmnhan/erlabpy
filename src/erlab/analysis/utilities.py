@@ -1,4 +1,4 @@
-__all__ = ["shift", "correct_with_edge"]
+__all__ = ["correct_with_edge", "shift"]
 
 import itertools
 from collections.abc import Callable

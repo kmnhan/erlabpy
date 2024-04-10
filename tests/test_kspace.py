@@ -59,7 +59,7 @@ def angle_data():
 def test_offsets(angle_data):
     angle_data.kspace.offsets.reset()
     angle_data.kspace.offsets = {"xi": 10.0}
-    answer = {k: 0.0 for k in angle_data.kspace.valid_offset_keys}
+    answer = dict.fromkeys(angle_data.kspace.valid_offset_keys, 0.0)
     answer["xi"] = 10.0
     assert dict(angle_data.kspace.offsets) == answer
 

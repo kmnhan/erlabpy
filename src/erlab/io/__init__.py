@@ -41,19 +41,19 @@ Examples
 """
 
 __all__ = [
-    "loaders",
-    "set_loader",
-    "loader_context",
-    "set_data_dir",
     "load",
-    "summarize",
     "load_experiment",
-    "load_wave",
-    "load_live",
-    "open_hdf5",
     "load_hdf5",
+    "load_live",
+    "load_wave",
+    "loader_context",
+    "loaders",
+    "open_hdf5",
     "save_as_hdf5",
     "save_as_netcdf",
+    "set_data_dir",
+    "set_loader",
+    "summarize",
 ]
 
 import warnings

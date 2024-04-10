@@ -286,11 +286,13 @@ class KspaceTool(KspaceToolGUI):
                 f"{input_name}.kspace.inner_potential"
                 f" = {self._offset_spins['V0'].value()}"
             )
-        out_lines.append(f"{input_name}.kspace.offsets = {self.offset_dict}")
-        out_lines.append(
-            gen_function_code(
-                copy=False,
-                **{f"{input_name}_kconv = {input_name}.kspace.convert": [arg_dict]},
+        out_lines.extend(
+            (
+                f"{input_name}.kspace.offsets = {self.offset_dict}",
+                gen_function_code(
+                    copy=False,
+                    **{f"{input_name}_kconv = {input_name}.kspace.convert": [arg_dict]},
+                ),
             )
         )
 
@@ -397,7 +399,10 @@ class KspaceTool(KspaceToolGUI):
 
             if rot != 0.0:
                 rotmat = np.array(
-                    [[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]]
+                    [
+                        [np.cos(rot), -np.sin(rot)],
+                        [np.sin(rot), np.cos(rot)],
+                    ]
                 )
                 lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
                 vertices = (rotmat @ vertices.T).T

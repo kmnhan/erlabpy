@@ -100,7 +100,7 @@ def gaussian_filter(
 
     """
     if np.isscalar(sigma):
-        sigma = {d: sigma for d in darr.dims}
+        sigma = dict.fromkeys(darr.dims, sigma)
     elif not isinstance(sigma, dict):
         sigma = dict(zip(darr.dims, sigma))
 
@@ -117,7 +117,7 @@ def gaussian_filter(
             raise ValueError("`radius` does not match dimensions of `sigma`")
 
         if np.isscalar(radius):
-            radius = {d: radius for d in sigma.keys()}
+            radius = dict.fromkeys(sigma.keys(), radius)
         elif not isinstance(radius, dict):
             radius = dict(zip(sigma.keys(), radius))
 
@@ -196,7 +196,7 @@ def gaussian_laplace(
         filter.
     """
     if np.isscalar(sigma):
-        sigma = {d: sigma for d in darr.dims}
+        sigma = dict.fromkeys(darr.dims, sigma)
     elif not isinstance(sigma, dict):
         sigma = dict(zip(darr.dims, sigma))
 

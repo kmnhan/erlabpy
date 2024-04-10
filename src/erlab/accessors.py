@@ -8,11 +8,11 @@ data analysis and visualization.
 """
 
 __all__ = [
-    "PlotAccessor",
     "ImageToolAccessor",
-    "SelectionAccessor",
     "MomentumAccessor",
     "OffsetView",
+    "PlotAccessor",
+    "SelectionAccessor",
 ]
 
 import functools

@@ -15,18 +15,18 @@ Modules
 
 __all__ = [
     "TINY",
+    "FermiEdge2dFunction",
+    "MultiPeakFunction",
+    "PolynomialFunction",
     "do_convolve",
     "do_convolve_y",
-    "gaussian_wh",
-    "lorentzian_wh",
     "fermi_dirac",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
-    "step_linbkg_broad",
+    "gaussian_wh",
+    "lorentzian_wh",
     "step_broad",
-    "PolynomialFunction",
-    "MultiPeakFunction",
-    "FermiEdge2dFunction",
+    "step_linbkg_broad",
 ]
 
 from erlab.analysis.fit.functions.dynamic import (

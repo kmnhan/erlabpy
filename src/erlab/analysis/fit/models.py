@@ -2,10 +2,10 @@
 
 __all__ = [
     "ExtendedAffineBroadenedFD",
-    "StepEdgeModel",
-    "PolynomialModel",
-    "MultiPeakModel",
     "FermiEdge2dModel",
+    "MultiPeakModel",
+    "PolynomialModel",
+    "StepEdgeModel",
 ]
 
 import lmfit
@@ -161,7 +161,11 @@ class ExtendedAffineBroadenedFD(lmfit.Model):
 class StepEdgeModel(lmfit.Model):
     def __init__(self, independent_vars=("x",), prefix="", missing="raise", **kwargs):
         kwargs.update(
-            {"prefix": prefix, "missing": missing, "independent_vars": independent_vars}
+            {
+                "prefix": prefix,
+                "missing": missing,
+                "independent_vars": independent_vars,
+            }
         )
         super().__init__(step_linbkg_broad, **kwargs)
         self.set_param_hint("sigma", min=0.0)

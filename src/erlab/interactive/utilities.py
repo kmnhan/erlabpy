@@ -18,17 +18,17 @@ from superqt import QDoubleSlider
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 __all__ = [
-    "parse_data",
-    "copy_to_clipboard",
-    "gen_single_function_code",
-    "gen_function_code",
-    "BetterSpinBox",
-    "BetterAxisItem",
-    "xImageItem",
-    "ParameterGroup",
     "AnalysisWidgetBase",
     "AnalysisWindow",
+    "BetterAxisItem",
+    "BetterSpinBox",
     "DictMenuBar",
+    "ParameterGroup",
+    "copy_to_clipboard",
+    "gen_function_code",
+    "gen_single_function_code",
+    "parse_data",
+    "xImageItem",
 ]
 
 

@@ -17,10 +17,10 @@ Modules
 
 __all__ = [
     "ExtendedAffineBroadenedFD",
-    "PolynomialModel",
-    "MultiPeakModel",
     "LeastSq",
     "Minuit",
+    "MultiPeakModel",
+    "PolynomialModel",
 ]
 
 from erlab.analysis.fit.minuit import LeastSq, Minuit

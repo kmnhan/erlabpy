@@ -18,7 +18,7 @@ except ImportError:
         stacklevel=1,
     )
 
-__all__ = ["load_experiment", "load_h5", "load_wave", "load_pxp", "load_ibw"]
+__all__ = ["load_experiment", "load_h5", "load_ibw", "load_pxp", "load_wave"]
 
 
 def _load_experiment_raw(

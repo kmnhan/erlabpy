@@ -22,13 +22,13 @@ Modules
 """
 
 __all__ = [
+    "correct_with_edge",
+    "mask_with_hex_bz",
     "mask_with_polygon",
     "polygon_mask",
     "polygon_mask_points",
-    "mask_with_hex_bz",
     "rotateinplane",
     "rotatestackinplane",
-    "correct_with_edge",
 ]
 
 from erlab.analysis import correlation, fit, gold, interpolate, kspace  # noqa: F401

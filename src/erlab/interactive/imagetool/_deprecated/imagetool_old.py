@@ -1845,7 +1845,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for i in range(self.data_ndim):
             if D[i]:
                 ind = self.get_index_of_value(i, V[i])
-                if self.snap and (ind == self._last_ind[i]) or self.axis_locked[i]:
+                if (self.snap and (ind == self._last_ind[i])) or self.axis_locked[i]:
                     D[i] = False
                 else:
                     self._last_ind[i] = ind

@@ -26,22 +26,22 @@ Colormap Normalization
 """
 
 __all__ = [
-    "InversePowerNorm",
-    "TwoSlopePowerNorm",
-    "CenteredPowerNorm",
-    "TwoSlopeInversePowerNorm",
     "CenteredInversePowerNorm",
-    "get_mappable",
-    "unify_clim",
-    "proportional_colorbar",
-    "nice_colorbar",
+    "CenteredPowerNorm",
+    "InversePowerNorm",
+    "TwoSlopeInversePowerNorm",
+    "TwoSlopePowerNorm",
+    "axes_textcolor",
+    "close_to_white",
+    "color_distance",
     "flatten_transparency",
     "gen_2d_colormap",
-    "color_distance",
-    "close_to_white",
-    "prominent_color",
+    "get_mappable",
     "image_is_light",
-    "axes_textcolor",
+    "nice_colorbar",
+    "prominent_color",
+    "proportional_colorbar",
+    "unify_clim",
 ]
 
 from collections.abc import Iterable, Sequence

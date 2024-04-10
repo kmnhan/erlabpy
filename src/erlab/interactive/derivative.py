@@ -245,17 +245,19 @@ class DerivativeTool(
             }
             lines.append(f"_processed = {data_name}.copy()")
             data_name = "_processed"
-            lines.append(f"for _ in range({self.sn_spin.value()}):")
-            lines.append(
-                "\t"
-                + gen_function_code(
-                    copy=False,
-                    **{
-                        "_processed = era.image.gaussian_filter": [
-                            f"|{data_name}|",
-                            arg_dict,
-                        ]
-                    },
+            lines.extend(
+                (
+                    f"for _ in range({self.sn_spin.value()}):",
+                    "\t"
+                    + gen_function_code(
+                        copy=False,
+                        **{
+                            "_processed = era.image.gaussian_filter": [
+                                f"|{data_name}|",
+                                arg_dict,
+                            ]
+                        },
+                    ),
                 )
             )
             data_name = "_processed"

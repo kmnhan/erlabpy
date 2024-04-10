@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 __all__ = [
+    "BetterColorBarItem",
+    "BetterImageItem",
     "ColorMapComboBox",
     "ColorMapGammaWidget",
-    "BetterImageItem",
-    "BetterColorBarItem",
     "color_to_QColor",
-    "pg_colormap_names",
     "pg_colormap_from_name",
+    "pg_colormap_names",
     "pg_colormap_powernorm",
     "pg_colormap_to_QPixmap",
 ]

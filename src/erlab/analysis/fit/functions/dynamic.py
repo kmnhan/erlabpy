@@ -5,11 +5,11 @@ complex models.
 """
 
 __all__ = [
-    "get_args_kwargs",
     "DynamicFunction",
-    "PolynomialFunction",
-    "MultiPeakFunction",
     "FermiEdge2dFunction",
+    "MultiPeakFunction",
+    "PolynomialFunction",
+    "get_args_kwargs",
 ]
 import functools
 import inspect

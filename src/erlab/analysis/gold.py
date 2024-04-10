@@ -4,9 +4,9 @@ __all__ = [
     "edge",
     "poly",
     "poly_from_edge",
-    "spline_from_edge",
     "resolution",
     "resolution_roi",
+    "spline_from_edge",
 ]
 
 from collections.abc import Sequence

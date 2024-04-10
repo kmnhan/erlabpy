@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 __all__ = [
-    "ItoolCrosshairControls",
     "ColorControls",
-    "ItoolColormapControls",
     "ItoolBinningControls",
+    "ItoolColormapControls",
+    "ItoolCrosshairControls",
 ]
 
 from typing import TYPE_CHECKING

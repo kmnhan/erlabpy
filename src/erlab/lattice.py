@@ -5,7 +5,7 @@ Tools related to the real and reciprocal lattice.
 
 """
 
-__all__ = ["angle_between", "abc2avec", "avec2abc", "to_reciprocal", "to_real"]
+__all__ = ["abc2avec", "angle_between", "avec2abc", "to_real", "to_reciprocal"]
 
 
 import numpy as np

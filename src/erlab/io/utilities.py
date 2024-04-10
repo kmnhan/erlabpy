@@ -1,10 +1,10 @@
 __all__ = [
-    "showfitsinfo",
     "get_files",
-    "open_hdf5",
     "load_hdf5",
+    "open_hdf5",
     "save_as_hdf5",
     "save_as_netcdf",
+    "showfitsinfo",
 ]
 
 import os

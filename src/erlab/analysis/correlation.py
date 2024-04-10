@@ -1,6 +1,6 @@
 """Macros for correlation analysis."""
 
-__all__ = ["acf2stack", "acf2", "match_dims", "xcorr1d"]
+__all__ = ["acf2", "acf2stack", "match_dims", "xcorr1d"]
 
 
 import itertools

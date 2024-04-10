@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 __all__ = [
-    "figwh",
+    "LabeledCursor",
     "autoscale_off",
     "autoscale_to",
-    "LabeledCursor",
+    "fermiline",
+    "figwh",
+    "gradient_fill",
     "place_inset",
     "plot_array",
     "plot_array_2d",
-    "gradient_fill",
     "plot_slices",
-    "fermiline",
 ]
 
 import contextlib

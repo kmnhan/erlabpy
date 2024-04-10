@@ -302,12 +302,12 @@ class LatticeWidget(QtWidgets.QTabWidget):
 
     def set_avec(self, avec):
         self.params_avec.set_values(
-            **{f"a{i+1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(avec)}
+            **{f"a{i + 1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(avec)}
         )
 
     def set_bvec(self, bvec):
         self.params_bvec.set_values(
-            **{f"b{i+1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(bvec)}
+            **{f"b{i + 1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(bvec)}
         )
 
     @property
@@ -368,11 +368,11 @@ class BZPlotWidget(QtWidgets.QWidget):
         # plot reciprocal lattice vectors
         self._bvecs = []
         for i, b in enumerate(bvec):
-            p = self.ax.plot(*[(0, bi) for bi in b], "-", c=f"C{i+1}", clip_on=False)
+            p = self.ax.plot(*[(0, bi) for bi in b], "-", c=f"C{i + 1}", clip_on=False)
             t = self.ax.text(
                 *(b + 0.15 * b / np.linalg.norm(b)),
-                f"$b_{i+1}$",
-                c=f"C{i+1}",
+                f"$b_{i + 1}$",
+                c=f"C{i + 1}",
                 ha="center",
                 va="center_baseline",
             )
