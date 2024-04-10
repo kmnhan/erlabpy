@@ -851,7 +851,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
                 ind_eff = 1
                 self.widgets[k] = v
             else:
-                raise ValueError(
+                raise TypeError(
                     "Each value must be a QtWidgets.QWidget instance"
                     "or a dictionary of keyword arguments to getParameterWidget."
                 )

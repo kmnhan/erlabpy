@@ -206,7 +206,7 @@ def correct_with_edge(
             edge_quad = modelresult
 
     else:
-        raise ValueError(
+        raise TypeError(
             "modelresult must be one of "
             "lmfit.model.ModelResult, "
             "and np.ndarray or a callable"

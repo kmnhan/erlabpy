@@ -1386,13 +1386,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif axis in top_right:
             group = top_right
             totalspan = (2, 2)
+        elif not toggle:
+            self.removeItem(target)
+            return
         else:
-            if not toggle:
-                self.removeItem(target)
-                return
-            else:
-                self.addItem(target, *ref_dims[axis])
-                return
+            self.addItem(target, *ref_dims[axis])
+            return
 
         anchors = tuple(ref_dims[i][:2] for i in group)
         other_index = [
@@ -1406,24 +1405,23 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 for o in other:
                     self.removeItem(o)
                     self.addItem(o, *anchors[0], *totalspan)
+        elif unique:
+            self.addItem(target, *anchors[0], *totalspan)
         else:
-            if unique:
-                self.addItem(target, *anchors[0], *totalspan)
-            else:
-                # for i, o, oi in enumerate(zip(other, other_index)):
-                # self.removeItem(o)
-                # for o, oi in zip(other, other_index):
-                #     self.removeItem(o)
-                # self.addItem(self.axes[group[0]], *ref_dims[axis])
-                # for o, oi in zip(other, other_index):
-                #     self.addItem(o, *ref_dims[oi])
-                # for a in group:
-                #     ax = self.axes[a]
-                #     if ax in self.ci.items.keys():
-                #         self.removeItem(ax)
-                #     self.addItem(ax, *ref_dims[a])
-                self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
-                self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
+            # for i, o, oi in enumerate(zip(other, other_index)):
+            # self.removeItem(o)
+            # for o, oi in zip(other, other_index):
+            #     self.removeItem(o)
+            # self.addItem(self.axes[group[0]], *ref_dims[axis])
+            # for o, oi in zip(other, other_index):
+            #     self.addItem(o, *ref_dims[oi])
+            # for a in group:
+            #     ax = self.axes[a]
+            #     if ax in self.ci.items.keys():
+            #         self.removeItem(ax)
+            #     self.addItem(ax, *ref_dims[a])
+            self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
+            self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
     def set_labels(self, labels=None):
         """labels: list or tuple of str"""
@@ -2122,7 +2120,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
         # print(points)
-        # TODO
         pass
 
     def _onselectpath(self, verts):
@@ -3208,7 +3205,6 @@ class ImageTool(QtWidgets.QMainWindow):
 
 
 def itool_(data, execute=None, *args, **kwargs):
-    # TODO: implement multiple windows, equal aspect settings
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)

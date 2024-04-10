@@ -471,16 +471,18 @@ def get_mappable(
     matplotlib.cm.ScalarMappable or None
 
     """
-    try:
-        if not image_only:
+    if not image_only:
+        try:
             mappable = ax.collections[-1]
-        else:
-            raise AttributeError
-    except (IndexError, AttributeError):
+        except (IndexError, AttributeError):
+            mappable = None
+
+    if image_only or mappable is None:
         try:
             mappable = ax.get_images()[-1]
         except (IndexError, AttributeError):
             mappable = None
+
     if not silent and mappable is None:
         raise RuntimeError(
             "No mappable was found to use for colorbar "

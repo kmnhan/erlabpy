@@ -51,7 +51,7 @@ def test_transform():
         assert np.allclose(ky, 0.2)
 
 
-@pytest.fixture
+@pytest.fixture()
 def angle_data():
     return generate_data_angles(shape=(10, 10, 10))
 

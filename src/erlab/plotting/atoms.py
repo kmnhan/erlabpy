@@ -387,19 +387,23 @@ class CrystalProperty:
 
     @property
     def _color_array(self) -> tuple[npt.NDArray[np.str_]]:
-        clr_arr = []
-        for k, v in self.atom_pos.items():
-            for _ in range(len(v)):
-                clr_arr.append(self.atom_color[k])
-        return np.asarray(clr_arr)
+        return np.asarray(
+            [
+                self.atom_color[k]
+                for k, v in self.atom_pos.items()
+                for _ in range(len(v))
+            ]
+        )
 
     @property
     def _size_array(self) -> tuple[npt.NDArray[np.float64]]:
-        sz_arr = []
-        for k, v in self.atom_pos.items():
-            for _ in range(len(v)):
-                sz_arr.append(self.atom_radii[k])
-        return np.asarray(sz_arr)
+        return np.asarray(
+            [
+                self.atom_radii[k]
+                for k, v in self.atom_pos.items()
+                for _ in range(len(v))
+            ]
+        )
 
     @property
     def _atom_pos_array(self) -> npt.NDArray[np.float64]:

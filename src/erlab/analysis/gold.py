@@ -216,7 +216,7 @@ def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, 
     elif callable(res):
         is_callable = True
     else:
-        raise ValueError
+        raise TypeError("res must be a callable or a lmfit.model.ModelResult")
 
     if not isinstance(fig, plt.Figure):
         fig = plt.figure(figsize=figwh(0.75, wscale=1.75))

@@ -285,7 +285,7 @@ class mpl_itool(Widget):
                 "If running in ipython, add `%matplotlib qt`."
             )
         for ax in self.axes:
-            for _loc, spine in ax.spines.items():
+            for spine in ax.spines.values():
                 spine.set_position(("outward", 1))
         self.cursorprops = cursorprops
         self.lineprops = lineprops
@@ -1033,7 +1033,6 @@ class mpl_itool(Widget):
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
         # print(points)
-        # TODO
         pass
 
     def _onselectpath(self, verts):
@@ -1069,11 +1068,7 @@ class ImageToolNavBar(NavigationToolbar2QT):
             "zoom_to_rect": qta.icon("msc.search"),
             "subplots": qta.icon("msc.editor-layout"),
         }
-        try:
-            return icons_dict[name]
-        except BaseException as e:
-            print(name)
-            raise Exception from e
+        return icons_dict[name]
         # name = name.replace('.png', '_large.png')
         # pm = QtGui.QPixmap(str(cbook._get_data_path('images', name)))
         # _setDevicePixelRatio(pm, _devicePixelRatioF(self))

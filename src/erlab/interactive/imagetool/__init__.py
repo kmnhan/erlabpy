@@ -132,7 +132,7 @@ def itool(
         del win
         gc.collect()
 
-        return
+        return None
     return win
 
 

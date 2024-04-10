@@ -30,18 +30,17 @@ _signature_array_rect = [
     )
     for i in VALID_NDIM
 ]
-_signature_index_of_value = []
-for ftype in (numba.float32, numba.float64):
-    for i in VALID_NDIM:
-        _signature_index_of_value.append(
-            numba.int64(
-                numba.int64,
-                ftype,
-                numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
-                numba.types.UniTuple(ftype, i),
-                numba.types.UniTuple(numba.int64, i),
-            )
-        )
+_signature_index_of_value = [
+    numba.int64(
+        numba.int64,
+        ftype,
+        numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
+        numba.types.UniTuple(ftype, i),
+        numba.types.UniTuple(numba.int64, i),
+    )
+    for ftype in (numba.float32, numba.float64)
+    for i in VALID_NDIM
+]
 
 
 @numba.njit(_signature_array_rect, cache=True, fastmath=True)

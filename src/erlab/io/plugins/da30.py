@@ -57,13 +57,12 @@ class DA30Loader(LoaderBase):
 def load_zip(
     filename: str | os.PathLike,
 ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-    regions: list[str] = []
-
     with zipfile.ZipFile(filename) as z:
-        for fn in z.namelist():
-            if fn.startswith("Spectrum_") and fn.endswith(".bin"):
-                regions.append(fn[9:-4])
-
+        regions: list[str] = [
+            fn[9:-4]
+            for fn in z.namelist()
+            if fn.startswith("Spectrum_") and fn.endswith(".bin")
+        ]
         out = []
         for region in regions:
             with tempfile.TemporaryDirectory() as tmp_dir:
