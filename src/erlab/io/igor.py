@@ -7,7 +7,7 @@ import igor2.record
 import numpy as np
 import xarray as xr
 
-__all__ = ["load_experiment", "load_h5", "load_ibw", "load_pxp", "load_wave"]
+__all__ = ["load_experiment", "load_igor_hdf5", "load_wave"]
 
 
 def _load_experiment_raw(
@@ -102,7 +102,20 @@ def load_experiment(
     )
 
 
-def load_h5(filename):
+def load_igor_hdf5(filename: str | os.PathLike) -> xr.Dataset:
+    """Load a HDF5 file exported by Igor Pro into an `xarray.Dataset`.
+
+    Parameters
+    ----------
+    filename
+        The path to the file.
+
+    Returns
+    -------
+    xarray.Dataset
+        The loaded data.
+
+    """
     ncf = h5netcdf.File(filename, mode="r", phony_dims="sort")
     ds = xr.open_dataset(xr.backends.H5NetCDFStore(ncf))
     for dv in ds.data_vars:
@@ -226,4 +239,7 @@ def load_wave(
 
 
 load_pxp = load_experiment
+"""Alias for :func:`load_experiment`."""
+
 load_ibw = load_wave
+"""Alias for :func:`load_wave`."""

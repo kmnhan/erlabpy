@@ -168,7 +168,10 @@ def save_as_hdf5(
     filename
         Target file name.
     igor_compat
-        Make the resulting file compatible with Igor's `HDF5OpenFile`.
+        (*Experimental*) Make the resulting file compatible with Igor's `HDF5OpenFile` for DataArrays
+        with up to 4 dimensions. A convenient Igor procedure is `included in the
+        repository <https://github.com/kmnhan/erlabpy/blob/main/PythonInterface.ipf>`_.
+        Default is `True`.
     **kwargs
         Extra arguments to `xarray.DataArray.to_netcdf`: refer to the `xarray`
         documentation for a list of all possible arguments.
@@ -183,8 +186,12 @@ def save_as_hdf5(
             data = data.assign_attrs({k: "None"})
         if isinstance(v, dict):
             data = data.assign_attrs({k: str(v)})
+
     if isinstance(data, xr.Dataset):
         igor_compat = False
+    elif data.ndim > 4:
+        igor_compat = False
+
     if igor_compat:
         # IGORWaveScaling order: chunk row column layer
         scaling = [[1, 0]]

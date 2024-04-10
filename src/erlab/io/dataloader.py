@@ -8,11 +8,14 @@ Loaded ARPES data must contain several attributes and coordinates. See the
 implementation of `LoaderBase.validate` for details.
 
 For any data loader plugin subclassing `LoaderBase`, the following attributes and
-methods must be defined: `LoaderBase.name`, `LoaderBase.aliases`,
-`LoaderBase.name_map`, `LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
+methods must be defined: `LoaderBase.name`, `LoaderBase.aliases`, `LoaderBase.name_map`,
+`LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
 `LoaderBase.always_single`, `LoaderBase.skip_validate`, :func:`LoaderBase.load_single`,
 :func:`LoaderBase.identify`, :func:`LoaderBase.infer_index`, and
 :func:`LoaderBase.generate_summary`.
+
+A detailed guide on how to implement a data loader can be found in
+:doc:`../user-guide/io`.
 
 If additional post-processing is required, the :func:`LoaderBase.post_process` method
 can be extended to include the necessary functionality.
@@ -149,7 +152,7 @@ class LoaderBase:
     def formatter(cls, val: object):
         """Format the given value based on its type.
 
-        This method is used when formtting the cells of the summary dataframe.
+        This method is used when formatting the cells of the summary dataframe.
 
         Parameters
         ----------
@@ -400,9 +403,9 @@ class LoaderBase:
         `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
         the contents of a directory.
 
-        The dataframe is formatted using `get_styler` and displayed in the IPython
-        shell. Results are cached in a pickle file in the directory. If the pickle file
-        is not found, the summary is generated with `generate_summary` and cached.
+        The dataframe is formatted using the style from :meth:`get_styler
+        <erlab.io.dataloader.LoaderBase.get_styler>` and displayed in the IPython shell.
+        Results are cached in a pickle file in the directory.
 
         Parameters
         ----------
@@ -410,7 +413,7 @@ class LoaderBase:
             Directory to summarize.
         usecache
             Whether to use the cached summary if available. If `False`, the summary will
-            be regenerated and cached.
+            be regenerated and the cache will be updated.
         **kwargs
             Additional keyword arguments to be passed to `generate_summary`.
 
@@ -460,7 +463,7 @@ class LoaderBase:
 
         Parameters
         ----------
-        file_paths
+        file_path
             Full path to the file to be loaded.
 
         Returns
@@ -477,7 +480,10 @@ class LoaderBase:
         """Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
-        coordinates.
+        coordinates. For scans spread over multiple files, the coordinates must be a
+        dictionary mapping scan axes names to scan coordinates. For single file scans,
+        the list should contain only one file path and coordinates must be an empty
+        dictionary.
 
         Parameters
         ----------
@@ -501,6 +507,9 @@ class LoaderBase:
 
     def infer_index(self, name: str) -> int | None:
         """Infer the index for the given file name.
+
+        This method takes a file name and tries to infer the scan index from it. If the
+        index can be inferred, it is returned; otherwise, `None` should be returned.
 
         Parameters
         ----------
