@@ -184,6 +184,9 @@ class BL403Loader(LoaderBase):
                     data_type = "LXY"
             else:
                 data = self.load(path)
+                data_type = "core"
+                if "alpha" in data.dims:
+                    data_type = "cut"
                 if "beta" in data.dims:
                     data_type = "map"
                 if "hv" in data.dims:
