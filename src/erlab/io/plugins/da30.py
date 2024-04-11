@@ -16,8 +16,8 @@ from erlab.io.igor import load_experiment, load_wave
 
 
 class DA30Loader(LoaderBase):
-    name: str = "_da30"
-    aliases: list[str] = []
+    name: str = "da30"
+    aliases: list[str] = ["DA30"]
 
     name_map: dict[str, str] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],

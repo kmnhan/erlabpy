@@ -111,7 +111,7 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
-def open_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+def open_hdf5(filename: str | os.PathLike, **kwargs: dict) -> xr.DataArray | xr.Dataset:
     """Open data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.open_dataarray` and `xarray.open_dataset`.
@@ -120,19 +120,22 @@ def open_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
     ----------
     filename
         The path to the HDF5 file.
+    **kwargs
+        Extra arguments to `xarray.open_dataarray` or `xarray.open_dataset`.
 
     Returns
     -------
     xarray.DataArray or xarray.Dataset
         The opened data.
     """
+    kwargs.setdefault("engine", "h5netcdf")
     try:
-        return xr.open_dataarray(filename, engine="h5netcdf")
+        return xr.open_dataarray(filename, **kwargs)
     except ValueError:
-        return xr.open_dataset(filename, engine="h5netcdf")
+        return xr.open_dataset(filename, **kwargs)
 
 
-def load_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
+def load_hdf5(filename: str | os.PathLike, **kwargs: dict) -> xr.DataArray | xr.Dataset:
     """Load data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.load_dataarray` and `xarray.load_dataset`.
@@ -141,16 +144,19 @@ def load_hdf5(filename: str | os.PathLike) -> xr.DataArray | xr.Dataset:
     ----------
     filename
         The path to the HDF5 file.
+    **kwargs
+        Extra arguments to `xarray.load_dataarray` or `xarray.load_dataset`.
 
     Returns
     -------
     xarray.DataArray or xarray.Dataset
         The loaded data.
     """
+    kwargs.setdefault("engine", "h5netcdf")
     try:
-        return xr.load_dataarray(filename, engine="h5netcdf")
+        return xr.load_dataarray(filename, **kwargs)
     except ValueError:
-        return xr.load_dataset(filename, engine="h5netcdf")
+        return xr.load_dataset(filename, **kwargs)
 
 
 def save_as_hdf5(
@@ -227,7 +233,6 @@ def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs: di
         documentation for a list of all possible arguments.
 
     """
-    # data = data.assign_attrs(provenance="")
     kwargs.setdefault("engine", "h5netcdf")
     fix_attr_format(data).to_netcdf(
         filename,

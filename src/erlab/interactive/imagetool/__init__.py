@@ -36,7 +36,7 @@ from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import numpy as np
     import numpy.typing as npt
@@ -421,24 +421,24 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     def _open_file(self):
-        valid_files = {
-            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
-            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.merlin.load, {}),
-            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.merlin.load_live, {}),
-            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.da30.load, {}),
-            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.ssrl52.load, {}),
+        valid_loaders: dict[str, tuple[Callable, dict]] = {
+            "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
+            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.loaders["merlin"].load, {}),
+            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.loaders["merlin"].load_live, {}),
+            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.loaders["da30"].load, {}),
+            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.loaders["ssrl52"].load, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilters(valid_files.keys())
+        dialog.setNameFilters(valid_loaders.keys())
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             files = dialog.selectedFiles()
-            fn, kargs = valid_files[dialog.selectedNameFilter()]
+            fn, kargs = valid_loaders[dialog.selectedNameFilter()]
             # !TODO: handle ambiguous datasets
             self.slicer_area.set_data(fn(files[0], **kargs))
             self.slicer_area.view_all()
@@ -449,14 +449,18 @@ class ItoolMenuBar(DictMenuBar):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-        dialog.setNameFilter(
-            "xarray HDF5 Files (*.h5)",
-        )
+
+        valid_savers: dict[str, tuple[Callable, dict]] = {
+            "xarray HDF5 Files (*.h5)": (erlab.io.save_as_hdf5, {}),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (erlab.io.save_as_netcdf, {}),
+        }
+        dialog.setNameFilters(valid_savers.keys())
         dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()
-            erlab.io.save_as_hdf5(self.slicer_area._data, files[0])
+            fn, kargs = valid_savers[dialog.selectedNameFilter()]
+            fn(self.slicer_area._data, files[0], **kargs)
 
 
 if __name__ == "__main__":
@@ -505,9 +509,9 @@ if __name__ == "__main__":
     data = xr.load_dataarray(
         #     # "~/Documents/ERLab/TiSe2/kxy10.nc",
         #     # "~/Documents/ERLab/TiSe2/221213_SSRL_BL5-2/fullmap_kconv_.h5",
-        #     # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
-        #     "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
-        "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
+        "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy_small.nc",
+        # "~/Documents/ERLab/CsV3Sb5/2021_Dec_ALS_CV3Sb5/Data/cvs_kxy.nc",
+        # "~/Documents/ERLab/TiSe2/220410_ALS_BL4/map_mm_4d_.nc",
         # engine="h5netcdf",
     )
 

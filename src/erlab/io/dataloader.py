@@ -936,13 +936,3 @@ class LoaderRegistry(RegistryBase):
 
     load.__doc__ = LoaderBase.load.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__
-
-
-loaders: LoaderRegistry = LoaderRegistry.instance()
-"""Global instance of `LoaderRegistry`\n\n:meta hide-value:"""
-
-set_loader = loaders.set_loader
-loader_context = loaders.loader_context
-set_data_dir = loaders.set_data_dir
-load = loaders.load
-summarize = loaders.summarize

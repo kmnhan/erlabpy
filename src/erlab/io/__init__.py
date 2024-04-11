@@ -58,20 +58,26 @@ __all__ = [
 
 import warnings
 
-from erlab.io.dataloader import (
-    load,
-    loader_context,
-    loaders,
-    set_data_dir,
-    set_loader,
-    summarize,
-)
+from erlab.io.dataloader import LoaderRegistry
 from erlab.io.igor import load_experiment, load_wave
 from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
 # Import plugins last
 # isort: off
 import erlab.io.plugins  # noqa: F401
+
+loaders = LoaderRegistry.instance()
+"""
+Global instance of :class:`LoaderRegistry <erlab.io.dataloader.LoaderRegistry>`.
+
+:meta hide-value:
+"""
+
+load = loaders.load
+loader_context = loaders.loader_context
+set_data_dir = loaders.set_data_dir
+set_loader = loaders.set_loader
+summarize = loaders.summarize
 
 merlin = loaders["merlin"]
 ssrl52 = loaders["ssrl52"]
