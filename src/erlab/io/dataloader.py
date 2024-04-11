@@ -329,7 +329,8 @@ class LoaderBase:
             single file within a multiple file scan, the default behavior when `single`
             is `False` is to return a single concatenated array that contains data from
             all files in the same scan. If `single` is set to `True`, only the data from
-            the file given is returned.
+            the file given is returned. This argument is ignored when `identifier` is a
+            number.
         **kwargs
             Additional keyword arguments are passed to `identify`.
 
@@ -423,6 +424,9 @@ class LoaderBase:
             Summary of the data in the directory.
 
         """
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError(f"Directory {data_dir} not found")
+
         pkl_path = os.path.join(data_dir, ".summary.pkl")
         df = None
         if usecache:
@@ -846,6 +850,8 @@ class LoaderRegistry(RegistryBase):
         directly, it will not use the default data directory.
 
         """
+        if not os.path.isdir(data_dir):
+            raise FileNotFoundError(f"Directory {data_dir} not found")
         self.default_data_dir = data_dir
 
     def load(
