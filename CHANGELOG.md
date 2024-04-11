@@ -2,6 +2,27 @@
 
 
 
+## v2.1.2 (2024-04-11)
+
+### Documentation
+
+* update syntax ([`2b72991`](https://github.com/kmnhan/erlabpy/commit/2b7299150a50af38e6e05d5f9690558cbeb7a9ad))
+
+* improve intro pages ([`ec2a4f8`](https://github.com/kmnhan/erlabpy/commit/ec2a4f816e1ad0ed1ad154d6544e91bea1b5d9c5))
+
+* (**io**) add complete data loading examples ([`63e88c4`](https://github.com/kmnhan/erlabpy/commit/63e88c40b14584214cd45bd0258f8ef7a32d716c))
+
+* (**io**) simplify flowchart ([`355d023`](https://github.com/kmnhan/erlabpy/commit/355d02374e11f7a78b87f8d3159f288a1d15d22d))
+
+### Fix
+
+* (**io**) prevent specifying invalid data_dir ([`701b011`](https://github.com/kmnhan/erlabpy/commit/701b011339ecba657a0f4a14e2fef19adeb4bf2b))
+
+* (**io**) fixes merlin summary data type resolving ([`a91ad3d`](https://github.com/kmnhan/erlabpy/commit/a91ad3d4387a23d25ac1b208cba8217e67efbec0))
+
+* (**io**) fix summary loading ([`a5dd84a`](https://github.com/kmnhan/erlabpy/commit/a5dd84af9eec0f835b3116bc7c470e57ef3f3e02))
+
+
 ## v2.1.1 (2024-04-10)
 
 ### Documentation
