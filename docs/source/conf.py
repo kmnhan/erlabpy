@@ -129,6 +129,7 @@ intersphinx_mapping = {
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
     "csaps": ("https://csaps.readthedocs.io/en/latest/", None),
     "iminuit": ("https://scikit-hep.org/iminuit/", None),
+    "cmasher": ("https://cmasher.readthedocs.io/", None),
 }
 
 
@@ -421,7 +422,6 @@ html_theme_options: dict[str, object] = {
 
 latex_engine = "lualatex"
 latex_show_pagerefs = True
-latex_show_urls = "footnote"
 latex_table_style = ["booktabs", "colorrows"]
 latex_elements = {
     "fontpkg": r"""\usepackage{fontspec,unicode-math}

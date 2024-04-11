@@ -47,7 +47,7 @@ def generate_data(
     temp: float = 20.0,
     a: float = 6.97,
     t: float = 0.43,
-    bandshift: float = -0.2,
+    bandshift: float = 0.0,
     Sreal: float = 0.0,
     Simag: float = 0.03,
     kres: float = 0.01,
@@ -77,7 +77,7 @@ def generate_data(
     t
         Tight binding parameter :math:`t`, by default 0.43
     bandshift
-        The rigid energy shift in eV, by default -0.2
+        The rigid energy shift in eV, by default 0.0
     Sreal
         The real part of the self energy, by default 0.0
     Simag
@@ -156,7 +156,7 @@ def generate_data_angles(
     temp: float = 20.0,
     a: float = 6.97,
     t: float = 0.43,
-    bandshift: float = -0.2,
+    bandshift: float = 0.0,
     Sreal: float = 0.0,
     Simag: float = 0.03,
     angres: float = 0.1,
@@ -191,7 +191,7 @@ def generate_data_angles(
     t
         Tight binding parameter :math:`t`, by default 0.43
     bandshift
-        The rigid energy shift in eV, by default -0.2
+        The rigid energy shift in eV, by default 0.0
     Sreal
         The real part of the self energy, by default 0.0
     Simag

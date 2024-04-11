@@ -34,6 +34,7 @@ __all__ = [
     "axes_textcolor",
     "close_to_white",
     "color_distance",
+    "combined_cmap",
     "flatten_transparency",
     "gen_2d_colormap",
     "get_mappable",
@@ -50,13 +51,17 @@ from typing import Literal
 
 import matplotlib
 import matplotlib.axes
-import matplotlib.colors as mcolors
+import matplotlib.cm
+import matplotlib.collections
+import matplotlib.colors
+import matplotlib.image
 import matplotlib.pyplot as plt
-import matplotlib.transforms as mtransforms
+import matplotlib.transforms
 import numpy as np
+import numpy.typing as npt
 
 
-class InversePowerNorm(mcolors.Normalize):
+class InversePowerNorm(matplotlib.colors.Normalize):
     r"""
     Linearly map a given value to the 0-1 range and then apply an inverse power-law
     normalization over that range.
@@ -228,7 +233,7 @@ def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
         return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
 
 
-class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
+class TwoSlopePowerNorm(matplotlib.colors.TwoSlopeNorm):
     r"""Power-law normalization of data with a set center.
 
     Useful when mapping data with an unequal rates of change around a
@@ -292,7 +297,7 @@ class TwoSlopePowerNorm(mcolors.TwoSlopeNorm):
         return self._func_i(value, gamma, vmin, vmax, vcenter)
 
 
-class CenteredPowerNorm(mcolors.CenteredNorm):
+class CenteredPowerNorm(matplotlib.colors.CenteredNorm):
     r"""Power-law normalization of symmetrical data around a center.
 
     Unlike `TwoSlopePowerNorm`, `CenteredPowerNorm` applies an equal rate of
@@ -493,7 +498,25 @@ def get_mappable(
     return mappable
 
 
-def unify_clim(axes, target=None, image_only: bool = False):
+def unify_clim(
+    axes: np.ndarray,
+    target: matplotlib.axes.Axes | None = None,
+    image_only: bool = False,
+) -> None:
+    """Unify the color limits for mappables in multiple axes.
+
+    Parameters
+    ----------
+    axes
+        Array of :class:`matplotlib.axes.Axes` to unify the color limits.
+    target
+        The target axis to unify the color limits. If provided, the target color limits
+        will be taken from this axes. Otherwise, the color limits will be set to include
+        all mappables in the ``axes``.
+    image_only
+        If `True`, only consider mappables that are images. Default is `False`.
+
+    """
     if target is None:
         vmn, vmx = [], []
         for ax in axes.flat:
@@ -501,9 +524,11 @@ def unify_clim(axes, target=None, image_only: bool = False):
             vmn.append(mappable.norm.vmin)
             vmx.append(mappable.norm.vmax)
         vmn, vmx = min(vmn), max(vmx)
+
     else:
         mappable = get_mappable(target, image_only=image_only)
         vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
+
     for ax in axes.flat:
         mappable = get_mappable(ax, image_only=image_only)
         mappable.norm.vmin, mappable.norm.vmax = vmn, vmx
@@ -548,7 +573,7 @@ def proportional_colorbar(
 
         import numpy as np
         import matplotlib.pyplot as plt
-        import matplotlib.colors as colors
+        import matplotlib.colors
 
         # Create example data and plot
         X, Y = np.mgrid[0 : 3 : complex(0, 100), 0 : 2 : complex(0, 100)]
@@ -556,7 +581,7 @@ def proportional_colorbar(
             X,
             Y,
             (1 + np.sin(Y * 10.0)) * X**2,
-            norm=mcolors.PowerNorm(gamma=0.5),
+            norm=matplotlib.colors.PowerNorm(gamma=0.5),
             cmap="Blues_r",
             shading="auto",
         )
@@ -709,10 +734,12 @@ class InsetAxesLocator:
         self.set_pad(pad)
 
     def __call__(self, ax, renderer):
-        return mtransforms.TransformedBbox(
-            mtransforms.Bbox.from_bounds(*self._size_to_bounds(ax)),
+        return matplotlib.transforms.TransformedBbox(
+            matplotlib.transforms.Bbox.from_bounds(*self._size_to_bounds(ax)),
             self._transAxes
-            + mtransforms.ScaledTranslation(*self.pads, ax.figure.dpi_scale_trans)
+            + matplotlib.transforms.ScaledTranslation(
+                *self.pads, ax.figure.dpi_scale_trans
+            )
             - ax.figure.transSubfigure,
         )
 
@@ -848,7 +875,7 @@ def nice_colorbar(
 
     else:
         if np.iterable(ax):
-            bbox = mtransforms.Bbox.union(
+            bbox = matplotlib.transforms.Bbox.union(
                 [
                     x.get_window_extent().transformed(
                         x.figure.dpi_scale_trans.inverted()
@@ -901,7 +928,18 @@ def nice_colorbar(
     return cbar
 
 
-def flatten_transparency(rgba, background: Sequence[float] | None = None):
+def flatten_transparency(rgba: npt.NDArray, background: Sequence[float] | None = None):
+    """
+    Flatten the transparency of an RGBA image by blending it with a background color.
+
+    Parameters
+    ----------
+    rgba
+        The input RGBA image as a numpy array.
+    background
+        The background color to blend with. Defaults to white ``(1, 1, 1)``.
+
+    """
     if background is None:
         background = (1, 1, 1)
     original_shape = rgba.shape
@@ -913,8 +951,8 @@ def flatten_transparency(rgba, background: Sequence[float] | None = None):
     return rgb.reshape(original_shape[:-1] + (3,))
 
 
-def _is_segment_iterable(cmap: mcolors.Colormap) -> bool:
-    if not isinstance(cmap, mcolors.LinearSegmentedColormap):
+def _is_segment_iterable(cmap: matplotlib.colors.Colormap) -> bool:
+    if not isinstance(cmap, matplotlib.colors.LinearSegmentedColormap):
         return False
     if any(callable(cmap._segmentdata[c]) for c in ["red", "green", "blue"]):
         return False
@@ -922,13 +960,40 @@ def _is_segment_iterable(cmap: mcolors.Colormap) -> bool:
 
 
 def combined_cmap(
-    cmap1: mcolors.Colormap | str,
-    cmap2: mcolors.Colormap | str,
+    cmap1: matplotlib.colors.Colormap | str,
+    cmap2: matplotlib.colors.Colormap | str,
     name: str,
     register: bool = False,
     N=256,
-):
-    """Stitch two existing colormaps to create a new colormap."""
+) -> matplotlib.colors.Colormap:
+    """Stitch two existing colormaps to create a new colormap.
+
+    This was implemented before :func:`cmasher.combine_cmaps` existed. Using that might
+    be better.
+
+    Parameters
+    ----------
+    cmap1
+        The first colormap to be combined. Can be either a
+        :class:`matplotlib.colors.Colormap` or a string representing the name of a
+        registered colormap.
+    cmap2
+        The second colormap to be combined. Can be either a
+        :class:`matplotlib.colors.Colormap` or a string representing the name of a
+        registered colormap.
+    name
+        The name of the combined colormap.
+    register
+        Whether to register the combined colormap. Defaults to `False`.
+    N
+        The number of colors in the resulting colormap. Defaults to 256.
+
+    Returns
+    -------
+    matplotlib.colors.Colormap
+        The combined colormap.
+
+    """
     if isinstance(cmap1, str):
         cmap1 = matplotlib.colormaps[cmap1]
     if isinstance(cmap2, str):
@@ -944,9 +1009,11 @@ def combined_cmap(
             seg1_c[:, 0] = seg1_c[:, 0] * 0.5
             seg2_c[:, 0] = seg2_c[:, 0] * 0.5 + 0.5
             segnew[c] = np.r_[seg1_c, seg2_c]
-        cmap = mcolors.LinearSegmentedColormap(name=name, segmentdata=segnew, N=N)
+        cmap = matplotlib.colors.LinearSegmentedColormap(
+            name=name, segmentdata=segnew, N=N
+        )
     else:
-        cmap = mcolors.LinearSegmentedColormap.from_list(
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
             name=name,
             colors=np.r_[
                 cmap1(np.linspace(0, 1, int(N / 2))),
@@ -962,24 +1029,57 @@ def combined_cmap(
 def gen_2d_colormap(
     ldat,
     cdat,
-    cmap: mcolors.Colormap | str = None,
-    colorbar: bool = True,
+    cmap: matplotlib.colors.Colormap | str = None,
     *,
     lnorm: plt.Normalize | None = None,
     cnorm: plt.Normalize | None = None,
     background: Sequence[float] | None = None,
     N: int = 256,
 ):
+    """Generate a 2D colormap image from lightness and color data.
+
+    Parameters
+    ----------
+    ldat : array-like
+        The lightness data.
+    cdat : array-like
+        The color data. Must have the same shape as `ldat`.
+    cmap
+        The colormap to use for the color axis. If `None`, a predefined linear segmented
+        colormap is used.
+    lnorm
+        The normalization for the lightness axes.
+    cnorm
+        The normalization for the color axes.
+    background
+        The background color. If `None`, it is set to white.
+    N
+        The number of levels in the colormap. Default is 256. The resulting colormap
+        will have a shape of ``(N, N, 4)``, where the last dimension represents the RGBA
+        values.
+
+    Returns
+    -------
+    cmap_img : array-like
+        RGBA image of the colormap.
+    img : array-like
+        RGBA image with the 2D colormap applied.
+
+    """
     if cmap is None:
-        cmap = mcolors.LinearSegmentedColormap.from_list(
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
             "", colors=[[0, 0, 1], [0, 0, 0], [1, 0, 0]], N=N
         )
+
     elif isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)
+
     if lnorm is None:
         lnorm = plt.Normalize()
+
     if cnorm is None:
         cnorm = plt.Normalize()
+
     if background is None:
         background = (1, 1, 1)
 
@@ -990,25 +1090,43 @@ def gen_2d_colormap(
     img = cmap(cnorm(cdat))[:, :, :-1]
     img *= l_vals
     img += (1 - l_vals) * background
+    l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
+    cmap_img = np.repeat(
+        cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
+    )[:, :, :-1]
+    cmap_img *= l_vals
+    cmap_img += (1 - l_vals) * background
 
-    if colorbar:
-        l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[
-            :, np.newaxis, np.newaxis
-        ]
-        cmap_img = np.repeat(
-            cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
-        )[:, :, :-1]
-        cmap_img *= l_vals
-        cmap_img += (1 - l_vals) * background
-        return cmap_img, img
-    else:
-        return None, img
+    return cmap_img, img
 
 
-def color_distance(c1, c2):
-    # https://www.compuphase.com/cmetric.htm
-    R1, G1, B1 = (np.array(mcolors.to_rgb(c1)) * 255).astype(int)
-    R2, G2, B2 = (np.array(mcolors.to_rgb(c2)) * 255).astype(int)
+def color_distance(c1, c2) -> float:
+    """Calculate the color distance between two RGB colors.
+
+    Parameters
+    ----------
+    c1, c2
+        Color to calculate the distance between in any format that
+        :func:`matplotlib.colors.to_rgb` can handle.
+
+    Returns
+    -------
+    float
+        The color distance between the two colors.
+
+    Note
+    ----
+    The color distance is calculated using the Euclidean distance formula in the RGB
+    color space. The formula takes into account the perceptual differences between
+    colors.
+
+    See Also
+    --------
+    - https://www.compuphase.com/cmetric.htm
+
+    """
+    R1, G1, B1 = (np.array(matplotlib.colors.to_rgb(c1)) * 255).astype(int)
+    R2, G2, B2 = (np.array(matplotlib.colors.to_rgb(c2)) * 255).astype(int)
     dR2 = (R2 - R1) ** 2
     dG2 = (G2 - G1) ** 2
     dB2 = (B2 - B1) ** 2
@@ -1016,26 +1134,68 @@ def color_distance(c1, c2):
     return np.sqrt((2 + r) * dR2 + 4 * dG2 + (2 + 255 / 256 - r) * dB2)
 
 
-def close_to_white(c):
+def close_to_white(c) -> bool:
+    """Check if a given color is closer to white than black.
+
+    Parameters
+    ----------
+    c
+        Color in any format that :func:`matplotlib.colors.to_rgb` can handle.
+
+    Returns
+    -------
+    bool
+        `True` if the color is closer to white than black, `False` otherwise.
+    """
     c2k = color_distance(c, (0, 0, 0))
     c2w = color_distance(c, (1, 1, 1))
     return bool(c2k > c2w)
 
 
-def prominent_color(im):
+def prominent_color(im: matplotlib.image._ImageBase | matplotlib.collections.QuadMesh):
+    """Calculate the prominent color of an image.
+
+    This function calculates the prominent color of an image by finding the most
+    frequent color in the image's histogram in color space. If the image array is
+    `None`, returns white.
+
+    """
     im_array = im.get_array()
     if im_array is None:
-        return mcolors.to_rgba("w")
+        return matplotlib.colors.to_rgba("w")
     hist, edges = np.histogram(np.nan_to_num(im_array), "auto")
     mx = hist.argmax()
     return im.to_rgba(edges[mx : mx + 2].mean())
 
 
-def image_is_light(im):
+def image_is_light(
+    im: matplotlib.image._ImageBase | matplotlib.collections.QuadMesh,
+) -> bool:
+    """
+    Determines if an image is *light* or *dark* by checking whether the prominent color
+    is closer to white than black.
+
+    """
     return close_to_white(prominent_color(im))
 
 
-def axes_textcolor(ax, light="k", dark="w"):
+def axes_textcolor(ax: matplotlib.axes.Axes, light="k", dark="w"):
+    """Determine the text color based on the color of the mappable in an axes.
+
+    Parameters
+    ----------
+    ax
+        The axes object for which the text color needs to be determined.
+    light
+        The *light* color, returned when :func:`image_is_light
+        <erlab.plotting.colors.image_is_light>` returns `False`. Default is ``'w'``
+        (white).
+    dark
+        The *dark* color, returned when :func:`image_is_light
+        <erlab.plotting.colors.image_is_light>` returns `True`. Default is ``'k'``
+        (black).
+
+    """
     c = light
     mappable = get_mappable(ax, silent=True)
     if mappable is not None:
