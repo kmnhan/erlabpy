@@ -2,6 +2,13 @@
 
 
 
+## v2.1.3 (2024-04-11)
+
+### Fix
+
+* (**interactive**) update data load functions used in imagetool ([`c3abe35`](https://github.com/kmnhan/erlabpy/commit/c3abe3517046ed603a9221de38b22257322d3a51))
+
+
 ## v2.1.2 (2024-04-11)
 
 ### Documentation
