@@ -2,6 +2,35 @@
 
 
 
+## v2.2.0 (2024-04-12)
+
+### Documentation
+
+* improve fitting documentation ([`9e0a106`](https://github.com/kmnhan/erlabpy/commit/9e0a10611a32ac75798e68f864cff55b5661330f))
+
+* add curve fitting guide ([`ff9743c`](https://github.com/kmnhan/erlabpy/commit/ff9743c2203eb773af6bdb8d88426907f4300924))
+
+* add docstrings to plotting.colors ([`1a15a70`](https://github.com/kmnhan/erlabpy/commit/1a15a706aa2fd591a18401ea53f950005391c88f))
+
+### Feature
+
+* enable component evaluation for MultiPeakModel ([`8875b74`](https://github.com/kmnhan/erlabpy/commit/8875b7443d26313156fcdcc43586d40af4ff4f00))
+
+* (**analysis.fit**) add BCS gap equation and Dynes formula ([`f862aa4`](https://github.com/kmnhan/erlabpy/commit/f862aa4af4d2ba470f1ea074fc90442d9b18b336))
+
+### Fix
+
+* curvefittingtool errors ([`9abb99c`](https://github.com/kmnhan/erlabpy/commit/9abb99c35633bc722469276d4837a2372c132042))
+
+### Refactor
+
+* cleanup fit namespace ([`906aa99`](https://github.com/kmnhan/erlabpy/commit/906aa99193f78577e705218b2d6c22378611f84b))
+
+* rename ExtendedAffineBroadenedFD to FermiEdgeModel ([`a98aa82`](https://github.com/kmnhan/erlabpy/commit/a98aa82bcbdf22ff8a156d800e336653f9afba07))
+
+* (**interactive**) exclude bad colormaps ([`877c915`](https://github.com/kmnhan/erlabpy/commit/877c915def6eb3dddb3862d6ac64c8c70f456ad3))
+
+
 ## v2.1.3 (2024-04-11)
 
 ### Fix
