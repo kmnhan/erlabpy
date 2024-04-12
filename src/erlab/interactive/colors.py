@@ -24,6 +24,27 @@ import numpy.typing as npt
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
+EXCLUDED_CMAPS: tuple[str, ...] = (
+    "prism",
+    "tab10",
+    "tab20",
+    "tab20b",
+    "tab20c",
+    "flag",
+    "Set1",
+    "Set2",
+    "Set3",
+    "Pastel1",
+    "Pastel2",
+    "Pastel3",
+    "Paired",
+    "Dark2",
+)
+"""
+Colormaps to exclude from the list of available colormaps. They are not suitable for
+continuous data, and looks horrible.
+"""
+
 
 class ColorMapComboBox(QtWidgets.QComboBox):
     LOAD_ALL_TEXT = "Load all..."
@@ -549,21 +570,25 @@ def pg_colormap_names(
     else:
         _mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
         for cmap in _mpl:
-            if cmap.startswith("cet_"):
-                _mpl = list(filter((cmap).__ne__, _mpl))
-            elif cmap.endswith("_r"):
-                # _mpl_r.append(cmap)
+            if (
+                cmap.startswith("cet_")
+                or cmap.endswith(("_r", "_r_i"))
+                or cmap in EXCLUDED_CMAPS
+            ):
                 _mpl = list(filter((cmap).__ne__, _mpl))
         if source == "all":
             cet = sorted(pg.colormap.listMaps(source="colorcet"))
+            for cmap in cet:
+                if cmap.startswith("glasbey"):
+                    cet = list(filter((cmap).__ne__, cet))
+
             # if (_mpl != []) and (cet != []):
             # local = []
-            # _mpl_r = []
 
             if exclude_local:
                 all_cmaps = cet + _mpl
             else:
-                all_cmaps = local + cet + _mpl  # + _mpl_r
+                all_cmaps = local + cet + _mpl
         elif exclude_local:
             all_cmaps = _mpl
         else:
