@@ -271,6 +271,29 @@ class MultiPeakModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
+    def eval_components(self, params=None, **kwargs):
+        key = self._prefix
+        if len(key) < 1:
+            key = self._name
+
+        if params is not None:
+            kwargs = kwargs | params.valuesdict()
+
+        # Coerce into numpy arrays
+        for k in list(kwargs.keys()):
+            if np.iterable(kwargs[k]):
+                kwargs[k] = np.asarray(kwargs[k])
+
+        fargs = self.make_funcargs(params, kwargs)
+
+        out = {}
+        for i in range(self.func.npeaks):
+            out[f"{key}_p{i}"] = self.func.eval_peak(i, **fargs)
+
+        out[f"{key}_bkg"] = self.func.eval_bkg(**fargs)
+
+        return out
+
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
 
 

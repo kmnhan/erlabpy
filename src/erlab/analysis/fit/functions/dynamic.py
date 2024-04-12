@@ -241,6 +241,9 @@ class MultiPeakFunction(DynamicFunction):
             x, **{k[3:]: v for k, v in params.items() if k.startswith(f"p{index}")}
         )
 
+    def eval_bkg(self, x: npt.NDArray[np.float64], **params: dict):
+        return params["lin_bkg"] * x + params["const_bkg"]
+
     def pre_call(
         self, x: npt.NDArray[np.float64], **params: dict
     ) -> npt.NDArray[np.float64]:
