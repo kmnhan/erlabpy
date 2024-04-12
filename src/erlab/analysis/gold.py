@@ -24,7 +24,7 @@ import uncertainties
 import xarray as xr
 
 from erlab.analysis.fit.models import (
-    ExtendedAffineBroadenedFD,
+    FermiEdgeModel,
     PolynomialModel,
     StepEdgeModel,
 )
@@ -107,7 +107,7 @@ def edge(
         if temp is None:
             temp = gold.attrs["temp_sample"]
         params = lmfit.create_params(temp={"value": temp, "vary": vary_temp})
-        model_cls = ExtendedAffineBroadenedFD
+        model_cls = FermiEdgeModel
 
     model = model_cls()
 
@@ -439,9 +439,9 @@ def resolution(
         temp={"value": gold_roi.attrs["temp_sample"], "vary": False},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
-    model = ExtendedAffineBroadenedFD()
+    model = FermiEdgeModel()
     params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
-    fit = ExtendedAffineBroadenedFD().fit(
+    fit = FermiEdgeModel().fit(
         edc_avg, x=edc_avg["eV"], params=params, method=method, scale_covar=scale_covar
     )
     if plot:
@@ -487,7 +487,7 @@ def resolution_roi(
         temp={"value": gold_roi.attrs["temp_sample"], "vary": not fix_temperature},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
-    model = ExtendedAffineBroadenedFD()
+    model = FermiEdgeModel()
     params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
     fit = model.fit(
         edc_avg,

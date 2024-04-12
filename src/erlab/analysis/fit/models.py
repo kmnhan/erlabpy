@@ -1,7 +1,7 @@
 """Models for fitting data."""
 
 __all__ = [
-    "ExtendedAffineBroadenedFD",
+    "FermiEdgeModel",
     "FermiEdge2dModel",
     "MultiPeakModel",
     "PolynomialModel",
@@ -100,7 +100,7 @@ def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
     return n0, m0, n1, m1
 
 
-class ExtendedAffineBroadenedFD(lmfit.Model):
+class FermiEdgeModel(lmfit.Model):
     """
     Fermi-dirac function with linear background above and below the fermi level,
     convolved with a gaussian kernel.

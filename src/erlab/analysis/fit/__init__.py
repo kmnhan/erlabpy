@@ -16,7 +16,7 @@ Modules
 """
 
 __all__ = [
-    "ExtendedAffineBroadenedFD",
+    "FermiEdgeModel",
     "LeastSq",
     "Minuit",
     "MultiPeakModel",
@@ -25,7 +25,7 @@ __all__ = [
 
 from erlab.analysis.fit.minuit import LeastSq, Minuit
 from erlab.analysis.fit.models import (
-    ExtendedAffineBroadenedFD,
+    FermiEdgeModel,
     MultiPeakModel,
     PolynomialModel,
 )
