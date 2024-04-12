@@ -1,6 +1,8 @@
 """Models for fitting data."""
 
 __all__ = [
+    "BCSGapModel",
+    "DynesModel",
     "FermiEdgeModel",
     "FermiEdge2dModel",
     "MultiPeakModel",
@@ -19,6 +21,8 @@ from erlab.analysis.fit.functions import (
     FermiEdge2dFunction,
     MultiPeakFunction,
     PolynomialFunction,
+    bcs_gap,
+    dynes,
     fermi_dirac_linbkg_broad,
     step_linbkg_broad,
 )
@@ -316,3 +320,23 @@ class FermiEdge2dModel(lmfit.Model):
 
     __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
     guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+
+
+class BCSGapModel(lmfit.Model):
+    def __init__(self, **kwargs):
+        super().__init__(bcs_gap, **kwargs)
+        self.set_param_hint("a", min=0.0)
+        self.set_param_hint("tc", min=0.0)
+
+    __doc__ = bcs_gap.__doc__
+    __init__.doc = lmfit.models.COMMON_INIT_DOC
+
+
+class DynesModel(lmfit.Model):
+    def __init__(self, **kwargs):
+        super().__init__(dynes, **kwargs)
+        self.set_param_hint("gamma", min=0.0)
+        self.set_param_hint("delta", min=0.0)
+
+    __doc__ = dynes.__doc__
+    __init__.doc = lmfit.models.COMMON_INIT_DOC

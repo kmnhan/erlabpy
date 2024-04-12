@@ -5,8 +5,10 @@ Many functions are `numba`-compiled for speed.
 
 __all__ = [
     "TINY",
+    "bcs_gap",
     "do_convolve",
     "do_convolve_y",
+    "dynes",
     "fermi_dirac",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
@@ -237,4 +239,67 @@ def step_linbkg_broad(
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) * (
         step_broad(x, center, sigma, 1.0)
+    )
+
+
+@numba.njit()
+def bcs_gap(
+    x, a: float = 1.76, b: float = 1.74, tc: float = 100.0
+) -> npt.NDArray[np.float64]:
+    r"""Interpolation formula for a temperature dependent BCS-like gap.
+
+    .. math::
+
+        \Delta(T) \simeq a \cdot k_B T_c \cdot \tanh\left(b \sqrt{\frac{T_c}{T} -
+        1}\right)
+
+    Parameters
+    ----------
+    x : array_like
+        The temperature values in kelvins at which to calculate the BCS gap.
+    a
+        Proportionality constant. Default is 1.76.
+    b
+        Proportionality constant. Default is 1.74.
+    tc
+        The critical temperature in Kelvins. Default is 100.0.
+
+    """
+    out = np.empty_like(x, dtype=np.float64)
+    for i in range(len(x)):
+        if x[i] < tc:
+            out[i] = a * kb_eV * tc * np.tanh(b * np.sqrt(tc / x[i] - 1))
+        else:
+            out[i] = 0.0
+    return out
+
+
+def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
+    r"""The Dynes formula for superconducting density of states.
+
+    The formula is given by :cite:p:`dynes1978dynes`:
+
+    .. math::
+
+        f(x) = N_0  \text{Re}\left[\frac{|x| + i \Gamma}{\sqrt{(|x| + i \Gamma)^2 -
+        \Delta^2}}\right]
+
+    where :math:`x` is the binding energy, :math:`N_0` is the normal-state density of
+    states at the Fermi level, :math:`\Gamma` is the broadening term, and :math:`\Delta`
+    is the superconducting energy gap.
+
+    Parameters
+    ----------
+    x : array_like
+        The input array of energy in eV.
+    n0
+        :math:`N_0`, by default 1.0.
+    gamma
+        :math:`\Gamma`, by default 0.003.
+    delta
+        The superconducting energy gap :math:`\Delta`, by default 0.01.
+
+    """
+    return n0 * np.real(
+        (np.abs(x) + 1j * gamma) / (np.sqrt((np.abs(x) + 1j * gamma) ** 2 - delta**2))
     )

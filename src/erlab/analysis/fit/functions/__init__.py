@@ -18,8 +18,10 @@ __all__ = [
     "FermiEdge2dFunction",
     "MultiPeakFunction",
     "PolynomialFunction",
+    "bcs_gap",
     "do_convolve",
     "do_convolve_y",
+    "dynes",
     "fermi_dirac",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
@@ -36,8 +38,10 @@ from erlab.analysis.fit.functions.dynamic import (
 )
 from erlab.analysis.fit.functions.general import (
     TINY,
+    bcs_gap,
     do_convolve,
     do_convolve_y,
+    dynes,
     fermi_dirac,
     fermi_dirac_linbkg,
     fermi_dirac_linbkg_broad,
