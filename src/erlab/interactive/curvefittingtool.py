@@ -116,6 +116,10 @@ class PlotPeakItem(pg.PlotCurveItem):
         self._pen_color = self.opts["pen"].color()
         self._pen_width = self.opts["pen"].width()
 
+    def viewRangeChanged(self):
+        super().viewRangeChanged()
+        self._mouseShape = None
+
     def setMouseHover(self, hover):
         # Inform the item that the mouse is (not) hovering over it
         # if self.mouseHovering == hover:
@@ -136,6 +140,11 @@ class PlotPeakPosition(pg.InfiniteLine):
         self.param_widget = param_widget
         self.curve = curve
         super().__init__(*args, movable=True, **kargs)
+
+        self.addMarker("o", -0.5)
+
+    def boundingRect(self):
+        return super().boundingRect()
 
     def mouseDragEvent(self, ev):
         if not self.movable:
@@ -162,7 +171,7 @@ class PlotPeakPosition(pg.InfiniteLine):
 
         elif QtCore.Qt.MouseButton.RightButton in ev.buttons():
             if ev.isStart():
-                self._start_width = self.param_widgÏet.widgets["width"].value()
+                self._start_width = self.param_widget.widgets["width"].value()
             ev.accept()
 
             val = self.mapToParent(ev.buttonDownPos() - ev.pos()).y()
@@ -250,7 +259,7 @@ class edctool(QtWidgets.QMainWindow):
                 "showlabel": "Fermi Level",
                 "name": "efermi",
                 "fixed": True,
-                "spin_kw": {"value": 0, "minimum": 0, "minimumWidth": 200},
+                "spin_kw": {"value": 0, "minimumWidth": 200},
             },
             Method={"qwtype": "combobox", "items": LMFIT_METHODS},
             go={
@@ -341,6 +350,8 @@ class edctool(QtWidgets.QMainWindow):
         )
 
     def refresh_n_peaks(self):
+        if not hasattr(self, "_params_peak"):
+            return
         current = int(self._params_peak.count())
         if self.n_bands > current:
             while self.n_bands > self._params_peak.count():
@@ -575,6 +586,8 @@ class mdctool(QtWidgets.QMainWindow):
         )
 
     def refresh_n_peaks(self):
+        if not hasattr(self, "_params_peak"):
+            return
         current = int(self._params_peak.count())
         if self.n_bands > current:
             while self.n_bands > self._params_peak.count():
