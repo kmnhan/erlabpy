@@ -31,6 +31,7 @@ familiar with xarray.
    indexing
    plotting
    kconv
+   curve-fitting
 
 Further reading
 ===============

@@ -239,6 +239,13 @@ class MultiPeakModel(lmfit.Model):
             **kwargs,
         )
 
+        for i in range(self.func.npeaks):
+            self.set_param_hint(f"p{i}_width", min=0.0)
+            self.set_param_hint(f"p{i}_height", min=0.0)
+
+        if self.func.fd:
+            self.set_param_hint("temp", min=0.0)
+
         if self.func.convolve:
             self.set_param_hint("resolution", min=0.0)
 
