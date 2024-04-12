@@ -6,7 +6,7 @@ import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
-from erlab.analysis.fit import MultiPeakModel
+from erlab.analysis.fit.models import MultiPeakModel
 from erlab.interactive.utilities import FittingParameterWidget, ParameterGroup
 
 # EDCmultiFitting Igor procedure - 2D wave EDC fit along momentum range
