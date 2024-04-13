@@ -19,7 +19,7 @@ numba>=0.56.2
 numbagg
 numba-progress
 joblib
-lmfit>=1.2.0
+lmfit<1.3.0
 iminuit>=2.25.2
 pyqtgraph>=0.13.1
 tqdm
