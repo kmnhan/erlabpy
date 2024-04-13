@@ -32,6 +32,8 @@ dependencies:
   - furo
   - sphinx-design
   - pyperclip
+  - ipywidgets
+  - ipython
   - pip:
     - pyqt6>=6.2.2
     - csaps
