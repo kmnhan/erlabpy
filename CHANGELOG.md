@@ -2,6 +2,39 @@
 
 
 
+## v2.2.1 (2024-04-14)
+
+### Chore
+
+* (**deps**) pin lmfit&lt;1.3.0 ([`915fc60`](https://github.com/kmnhan/erlabpy/commit/915fc60e8e7e8a2dfc9a56bbc1afd1c737bcc3d5))
+
+### Documentation
+
+* rephrase some docstrings ([`e67597c`](https://github.com/kmnhan/erlabpy/commit/e67597c90e009748d1bd39c43c03a8cc1b439840))
+
+* add link to changelog ([`fbb6d32`](https://github.com/kmnhan/erlabpy/commit/fbb6d3254ae254278dec74b2ce9965e20a4dc88d))
+
+* add ipywidgets as requirement ([`41024eb`](https://github.com/kmnhan/erlabpy/commit/41024ebbef02609d9a2fc70c4630fec06aa96012))
+
+* temporarily pin lmfit&lt;1.3.0 to build docs ([`6b86ac2`](https://github.com/kmnhan/erlabpy/commit/6b86ac2f89c2a822753f3fbe106eb5dfaa2cb22c))
+
+### Fix
+
+* (**fit**) add sigma and amplitude expressions to MultiPeakModel parameters ([`3f6ba5e`](https://github.com/kmnhan/erlabpy/commit/3f6ba5e84922129296183e02255506df73da0276))
+
+* (**fit.minuit**) properly handle parameters constrained with expressions ([`d03f012`](https://github.com/kmnhan/erlabpy/commit/d03f012b4fde92f445a24657dca1fb5b3600fa45))
+
+### Refactor
+
+* set informative model name for MultiPeakModel ([`d14ee9d`](https://github.com/kmnhan/erlabpy/commit/d14ee9d6ac7962207700de50039a5b7a858fea6a))
+
+* add gaussian and lorentzian for consistency ([`07c0dfb`](https://github.com/kmnhan/erlabpy/commit/07c0dfb9ecfb882e4f5f0ccfe942c1a835b613b2))
+
+### Test
+
+* add tests for fit models ([`3f9125c`](https://github.com/kmnhan/erlabpy/commit/3f9125ce19a4a30dd31b9d039d6614a8cae19966))
+
+
 ## v2.2.0 (2024-04-12)
 
 ### Documentation
