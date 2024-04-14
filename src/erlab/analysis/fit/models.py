@@ -242,6 +242,12 @@ class MultiPeakModel(lmfit.Model):
         for i in range(self.func.npeaks):
             self.set_param_hint(f"p{i}_width", min=0.0)
             self.set_param_hint(f"p{i}_height", min=0.0)
+            sigma_expr = self.func.sigma_expr(i, self.prefix)
+            if sigma_expr is not None:
+                self.set_param_hint(f"p{i}_sigma", expr=sigma_expr)
+            amplitude_expr = self.func.amplitude_expr(i, self.prefix)
+            if amplitude_expr is not None:
+                self.set_param_hint(f"p{i}_amplitude", expr=amplitude_expr)
 
         if self.func.fd:
             self.set_param_hint("temp", min=0.0)

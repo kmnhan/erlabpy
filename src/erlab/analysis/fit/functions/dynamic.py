@@ -236,9 +236,30 @@ class MultiPeakFunction(DynamicFunction):
                 kws.append((f"p{i}_{arg}", val))
         return kws
 
+    def sigma_expr(self, index: int, prefix: str) -> str | None:
+        if self._peak_funcs[index] == gaussian_wh:
+            return f"{prefix}p{index}_width / (2 * sqrt(2 * log(2)))"
+        elif self._peak_funcs[index] == lorentzian_wh:
+            return f"{prefix}p{index}_width / 2"
+        else:
+            return None
+
+    def amplitude_expr(self, index: int, prefix: str) -> str | None:
+        if self._peak_funcs[index] == gaussian_wh:
+            return f"{prefix}p{index}_height * {prefix}p{index}_sigma / sqrt(2 * pi)"
+        elif self._peak_funcs[index] == lorentzian_wh:
+            return f"{prefix}p{index}_height * {prefix}p{index}_sigma * pi"
+        else:
+            return None
+
     def eval_peak(self, index: int, x: npt.NDArray[np.float64], **params: dict):
         return self.peak_funcs[index](
-            x, **{k[3:]: v for k, v in params.items() if k.startswith(f"p{index}")}
+            x,
+            **{
+                k[3:]: v
+                for k, v in params.items()
+                if k.startswith(f"p{index}") and not k.endswith(("sigma", "amplitude"))
+            },
         )
 
     def eval_bkg(self, x: npt.NDArray[np.float64], **params: dict):
