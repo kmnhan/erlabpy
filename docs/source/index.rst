@@ -96,3 +96,4 @@ research!
    reference
    contributing
    bibliography
+   Changelog <https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md>
