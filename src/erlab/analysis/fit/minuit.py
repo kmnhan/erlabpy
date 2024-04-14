@@ -144,13 +144,23 @@ class Minuit(iminuit.Minuit):
         # Convert data to numpy array (must be after guessing parameters)
         data = np.asarray(data)
 
-        fixedparams = []
+        param_names: list[str] = []
+        fixed_params: list[str] = []
         values: dict[str, float] = {}
         limits: dict[str, tuple[float, float]] = {}
 
         for k, par in params.items():
+            if par.expr is not None:
+                if par.vary:
+                    raise ValueError(
+                        "Parameters constrained with expressions are not supported by Minuit."
+                    )
+                else:
+                    continue
+
+            param_names.append(k)
             if not par.vary:
-                fixedparams.append(k)
+                fixed_params.append(k)
 
             val = float(par.value)
             if not np.isfinite(val):
@@ -171,10 +181,10 @@ class Minuit(iminuit.Minuit):
                 return model.func(*x, **dict(zip(model._param_root_names, fargs)))
 
         c = LeastSq(x, data, yerr, _temp_func)
-        m = cls(c, name=model.param_names, **values)
+        m = cls(c, name=param_names, **values)
 
-        for n in model.param_names:
-            m.fixed[n] = n in fixedparams
+        for n in param_names:
+            m.fixed[n] = n in fixed_params
             m.limits[n] = limits[n]
 
         if return_cost:
