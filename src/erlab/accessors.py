@@ -404,8 +404,8 @@ class MomentumAccessor:
         """Work function of the sample in eV.
 
         The work function is stored in the ``sample_workfunction`` attribute of the
-        data. If the work function is not set, a warning is issued and a default value
-        of 4.5 eV is assumed.
+        data. If not found, a warning is issued and a default value of 4.5 eV is
+        assumed.
 
         Note
         ----
@@ -434,12 +434,13 @@ class MomentumAccessor:
 
     @property
     def angle_resolution(self) -> float:
-        """Angular resolution of the data in degrees.
+        """Retrieve the angular resolution of the data in degrees.
 
-        The angular resolution is stored in the ``angle_resolution`` attribute of the
-        data. If it is not set, a default value of 0.1° is silently used. It is used in
-        `best_kp_resolution` when automatically estimating momentum steps through
-        `estimate_resolution`.
+        Checks for the ``angle_resolution`` attribute of the data. If not found, a
+        default value of 0.1° is silently assumed.
+
+        This property is used in `best_kp_resolution` upon estimating momentum step
+        sizes through `estimate_resolution`.
         """
 
         try:
