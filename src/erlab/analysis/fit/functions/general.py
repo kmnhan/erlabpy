@@ -13,7 +13,9 @@ __all__ = [
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
     "gaussian_wh",
+    "gaussian",
     "lorentzian_wh",
+    "lorentzian",
     "step_broad",
     "step_linbkg_broad",
 ]
@@ -29,6 +31,7 @@ from erlab.constants import kb_eV
 
 #: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
 TINY: float = 1.0e-15
+S2PI = np.sqrt(2 * np.pi)
 
 
 @numba.njit(cache=True)
@@ -65,7 +68,7 @@ def _gen_kernel(
         * np.exp(
             -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / max(TINY, 2 * sigma**2)
         )
-        / max(TINY, np.sqrt(2 * np.pi) * sigma)
+        / max(TINY, S2PI * sigma)
     )
     return extended, gauss
 
@@ -137,6 +140,15 @@ def gaussian_wh(
 
 
 @numba.njit(cache=True)
+def gaussian(
+    x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
+) -> npt.NDArray[np.float64]:
+    return (amplitude / (max(TINY, S2PI * sigma))) * np.exp(
+        -((1.0 * x - center) ** 2) / max(TINY, (2 * sigma**2))
+    )
+
+
+@numba.njit(cache=True)
 def lorentzian_wh(
     x: npt.NDArray[np.float64], center: float, width: float, height: float
 ) -> npt.NDArray[np.float64]:
@@ -148,6 +160,15 @@ def lorentzian_wh(
 
     """
     return height / (1 + 4 * ((1.0 * x - center) / max(TINY, width)) ** 2)
+
+
+@numba.njit(cache=True)
+def lorentzian(
+    x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
+) -> npt.NDArray[np.float64]:
+    return (amplitude / (1 + ((1.0 * x - center) / max(TINY, sigma)) ** 2)) / max(
+        TINY, (np.pi * sigma)
+    )
 
 
 @numba.njit(cache=True)

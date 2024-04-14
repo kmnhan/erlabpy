@@ -26,7 +26,9 @@ __all__ = [
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
     "gaussian_wh",
+    "gaussian",
     "lorentzian_wh",
+    "lorentzian",
     "step_broad",
     "step_linbkg_broad",
 ]
@@ -46,7 +48,9 @@ from erlab.analysis.fit.functions.general import (
     fermi_dirac_linbkg,
     fermi_dirac_linbkg_broad,
     gaussian_wh,
+    gaussian,
     lorentzian_wh,
+    lorentzian,
     step_broad,
     step_linbkg_broad,
 )
