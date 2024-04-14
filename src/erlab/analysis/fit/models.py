@@ -232,6 +232,7 @@ class MultiPeakModel(lmfit.Model):
         convolve: bool = True,
         **kwargs,
     ):
+        kwargs.setdefault("name", f"{npeaks}Peak")
         super().__init__(
             MultiPeakFunction(
                 npeaks, peak_shapes=peak_shapes, fd=fd, convolve=convolve
