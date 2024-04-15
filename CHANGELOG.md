@@ -2,6 +2,53 @@
 
 
 
+## v2.2.2 (2024-04-15)
+
+### Chore
+
+* cleanup pyproject.toml ([`0331132`](https://github.com/kmnhan/erlabpy/commit/033113247ea5d8fa8bc4afb9513b349b95080bed))
+
+* (**deps**) add ipywidgets to optional dependency group viz ([`0062966`](https://github.com/kmnhan/erlabpy/commit/00629663742ada02ade556cb19ca0b14bd864fec))
+
+### Ci
+
+* (**readthdocs**) update build python version and add zip format ([`b2cc6fc`](https://github.com/kmnhan/erlabpy/commit/b2cc6fc1f732bab8904f90e10e194d4dffee5d57))
+
+### Documentation
+
+* (**io**) add tutorial for writing advanced plugins ([`11f289e`](https://github.com/kmnhan/erlabpy/commit/11f289edd451e10773d99ae1c9fc47cde22b06dc))
+
+* add ipywidgets to intersphinx mapping ([`0ee46f8`](https://github.com/kmnhan/erlabpy/commit/0ee46f8c6d783f2ee63cad807abf5e8582cfaa31))
+
+### Fix
+
+* (**io**) unify call signature for summarize ([`e2782c8`](https://github.com/kmnhan/erlabpy/commit/e2782c898d5aaaa1443b2bc82bb61fb40a28d232))
+
+* resolve failing tests due to changes in sample data generation ([`80f0045`](https://github.com/kmnhan/erlabpy/commit/80f004574950834e42dbfa7677031d0f9f113bda))
+
+* (**interactive.exampledata**) properly generate 2D data ([`825260c`](https://github.com/kmnhan/erlabpy/commit/825260c8ceb0a79b8c071750003529b91cda3573))
+
+### Performance
+
+* (**io**) speedup merlin summary generation by excluding duplicates ([`d6b4253`](https://github.com/kmnhan/erlabpy/commit/d6b42537ce48232b5112daef8f31e5cf86ea921a))
+
+### Refactor
+
+* (**io**) allow for more complex setups ([`f67b2e4`](https://github.com/kmnhan/erlabpy/commit/f67b2e4c7b092b7ca2db00ce02a23647879c514b))
+
+  LoaderBase.infer_index now returns a second argument, which is a dictionary containing optional keyword arguments to load.
+
+* (**io**) provide rich interactive summary ([`b075a9e`](https://github.com/kmnhan/erlabpy/commit/b075a9ee59b61892462fc475e78b036a54408099))
+
+* (**io**) include &#34;Path&#34; column in ssrl loader summary ([`ae1d8ae`](https://github.com/kmnhan/erlabpy/commit/ae1d8aee051aa71563f6a6009ce9672e56edfae7))
+
+* (**io**) improve array formatting in summary ([`1718529`](https://github.com/kmnhan/erlabpy/commit/171852957db7fe53ff6a5c5c5f843530078d4b46))
+
+### Test
+
+* add test for dataloader ([`64cde09`](https://github.com/kmnhan/erlabpy/commit/64cde099dbb13d8b148e67d1fe23a8849041dae4))
+
+
 ## v2.2.1 (2024-04-14)
 
 ### Chore
