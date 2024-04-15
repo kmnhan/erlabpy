@@ -62,7 +62,7 @@ dev = [
     "ruff",
     "pre-commit",
 ]
-viz = ["cmasher", "cmocean", "colorcet", "hvplot"]
+viz = ["cmasher", "cmocean", "colorcet", "hvplot", "ipywidgets"]
 
 [project.urls]
 Documentation = "https://erlabpy.readthedocs.io"
