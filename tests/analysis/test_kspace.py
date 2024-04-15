@@ -53,7 +53,7 @@ def test_transform():
 
 @pytest.fixture()
 def angle_data():
-    return generate_data_angles(shape=(10, 10, 10))
+    return generate_data_angles(shape=(10, 10, 10), assign_attributes=True)
 
 
 def test_offsets(angle_data):
