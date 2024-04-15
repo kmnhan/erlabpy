@@ -1,12 +1,20 @@
-# ERLabPy
-[![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab)](https://pypi.org/project/erlab/)
-[![PyPi](https://img.shields.io/pypi/v/erlab.svg)](https://pypi.org/project/erlab/)
-[![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab.svg)](https://anaconda.org/conda-forge/erlab)
-[![Workflow Status](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg)](https://github.com/kmnhan/erlabpy/actions/workflows/release.yml)
-[![Documentation Status](https://readthedocs.org/projects/erlabpy/badge/)](https://erlabpy.readthedocs.io/)
-[![License](https://img.shields.io/pypi/l/erlab)](https://github.com/kmnhan/erlabpy/blob/main/LICENSE)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg)](https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main)
+<h1 align="center">
+ERLabPy
+</h1>
+<p align="center">
+    <a href="https://pypi.org/project/erlab/" alt="Supported Python Versions">
+        <img src="https://img.shields.io/pypi/pyversions/erlab?logo=python&logoColor=white" /></a>
+    <a href="https://pypi.org/project/erlab/" alt="PyPi">
+        <img src="https://img.shields.io/pypi/v/erlab?logo=pypi&logoColor=white" /></a>
+    <a href="https://anaconda.org/conda-forge/erlab" alt="Conda Version">
+        <img src="https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white" /></a>
+    <a href="https://github.com/kmnhan/erlabpy/actions/workflows/release.yml" alt="Workflow Status">
+        <img src="https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/release.yml?logo=github&label=tests" /></a>
+    <a href="https://erlabpy.readthedocs.io/" alt="Documentation Status">
+        <img src="https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white" /></a>
+    <a href="https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main" alt="pre-commit.ci status">
+        <img src="https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg" /></a>
+</p>
 
 A library that provides a set of tools and utilities to handle, manipulate, and
 visualize data from condensed matter physics experiments, with a focus on angle-resolved

@@ -4,29 +4,22 @@ ERLabPy
 
 .. only:: format_html
 
-   Last updated |today|
+   **Date**: |today|
 
-   .. image:: https://img.shields.io/pypi/pyversions/erlab
+   **Download documentation**: `Zipped HTML <https://erlabpy.readthedocs.io/_/downloads/en/latest/htmlzip/>`_, `PDF <https://erlabpy.readthedocs.io/_/downloads/en/latest/pdf/>`_
+
+   .. image:: https://img.shields.io/pypi/pyversions/erlab?style=for-the-badge&logo=python&logoColor=white
        :target: https://pypi.org/project/erlab/
        :alt: Supported Python Versions
-   .. image:: https://img.shields.io/pypi/v/erlab.svg
+   .. image:: https://img.shields.io/pypi/v/erlab?style=for-the-badge&logo=pypi&logoColor=white
        :target: https://pypi.org/project/erlab/
        :alt: PyPi
-   .. image:: https://img.shields.io/conda/vn/conda-forge/erlab.svg
+   .. image:: https://img.shields.io/conda/vn/conda-forge/erlab?style=for-the-badge&logo=condaforge&logoColor=white
        :target: https://anaconda.org/conda-forge/erlab
        :alt: Conda Version
-   .. image:: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml/badge.svg
-       :target: https://github.com/kmnhan/erlabpy/actions/workflows/release.yml
-       :alt: Workflow Status
-   .. image:: https://readthedocs.org/projects/erlabpy/badge/?version=latest
-       :target: https://erlabpy.readthedocs.io/en/latest/
-       :alt: Documentation Status
-   .. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json
-       :target: https://github.com/astral-sh/ruff
-       :alt: Ruff
-   .. image:: https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg
-       :target: https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main
-       :alt: pre-commit.ci status
+   .. image:: https://img.shields.io/github/last-commit/kmnhan/erlabpy?style=for-the-badge&logo=github&color=lightseagreen
+       :target: https://github.com/kmnhan/erlabpy.git
+       :alt: Last Commit
 
 A library that provides a set of tools and utilities to handle, manipulate, and
 visualize data from condensed matter physics experiments, with a focus on
