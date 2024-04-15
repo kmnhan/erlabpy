@@ -130,6 +130,7 @@ intersphinx_mapping = {
     "csaps": ("https://csaps.readthedocs.io/en/latest/", None),
     "iminuit": ("https://scikit-hep.org/iminuit/", None),
     "cmasher": ("https://cmasher.readthedocs.io/", None),
+    "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable/", None),
 }
 
 
