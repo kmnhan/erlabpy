@@ -425,9 +425,14 @@ latex_engine = "lualatex"
 latex_show_pagerefs = True
 latex_table_style = ["booktabs", "colorrows"]
 latex_elements = {
+    "papersize": "a4paper",
+    "pointsize": "10pt",
     "fontpkg": r"""\usepackage{fontspec,unicode-math}
-\setmainfont{DejaVu Serif}
-\setsansfont{DejaVu Sans}
-\setmonofont{DejaVu Sans Mono}
-"""
+\directlua{
+    luaotfload.add_fallback("monofallback", {"DejaVuSansMono:mode=harf;", })
+}
+\setmainfont{Source Serif Pro}
+\setsansfont{IBM Plex Sans}
+\setmonofont{IBM Plex Mono}[Scale=0.9,RawFeature={fallback=monofallback}]
+""",
 }
