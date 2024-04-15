@@ -179,17 +179,18 @@ class LoaderBase:
             - If the array can be squeezed to a 1-dimensional array, the following are
               applied.
 
-                - If the array is evenly spaced, the start, end, and step values are
-                  formatted and returned as a string in the format "start→end (step)".
+                - If the array is evenly spaced, the start, end, step, and length values
+                  are formatted and returned as a string in the format "start→end (step,
+                  length)".
                 - If the array is monotonic increasing or decreasing but not evenly
-                  spaced, the start and end values are formatted and returned as a
-                  string in the format "start→end".
+                  spaced, the start, end, and length values are formatted and returned
+                  as a string in the format "start→end (length)".
                 - If all elements are equal, the value is recursively formatted using
                   `formatter(val[0])`.
-                - If the array is not monotonic, the mean and standard deviation values
-                  are formatted and returned as a string in the format "mean±std".
+                - If the array is not monotonic, the minimum and maximum values are
+                  formatted and returned as a string in the format "min~max".
 
-            - For other dimensions, the array is returned as is.
+            - For arrays with more dimensions, the array is returned as is.
 
         - For lists:
             The list is grouped by consecutive equal elements, and the count of each
@@ -216,19 +217,22 @@ class LoaderBase:
         --------
 
         >>> formatter(np.array([0.1, 0.15, 0.2]))
-        '0.1→0.2 (0.05)'
+        '0.1→0.2 (0.05, 3)'
 
         >>> formatter(np.array([1.0, 2.0, 2.1]))
-        '1→2.1'
+        '1→2.1 (3)'
 
         >>> formatter(np.array([1.0, 2.1, 2.0]))
-        '1.7±0.4967'
+        '1~2.1 (3)'
 
         >>> formatter([1, 1, 2, 2, 2, 3, 3, 3, 3])
         '[1]×2, [2]×3, [3]×4'
 
         >>> formatter(3.14159)
         '3.1416'
+
+        >>> formatter(42.0)
+        '42'
 
         >>> formatter(42)
         '42'
@@ -247,16 +251,19 @@ class LoaderBase:
                     start, end, step = tuple(
                         cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
                     )
-                    return f"{start}→{end} ({step})".replace("-", "−")
+                    return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
 
                 elif _is_monotonic(val):
                     if val[0] == val[-1]:
                         return cls.formatter(val[0])
 
-                    return f"{cls.formatter(val[0])}→{cls.formatter(val[-1])}"
+                    return (
+                        f"{cls.formatter(val[0])}→{cls.formatter(val[-1])} ({len(val)})"
+                    )
 
                 else:
-                    return f"{cls.formatter(np.mean(val))}±{cls.formatter(np.std(val))}"
+                    mn, mx = tuple(cls.formatter(v) for v in (np.min(val), np.max(val)))
+                    return f"{mn}~{mx} ({len(val)})"
 
             else:
                 return val
