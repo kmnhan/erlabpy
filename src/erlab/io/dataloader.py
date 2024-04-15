@@ -1120,14 +1120,19 @@ class LoaderRegistry(RegistryBase):
         return loader.load(identifier, data_dir=data_dir, **kwargs)
 
     def summarize(
-        self, data_dir: str | os.PathLike | None = None, usecache: bool = True, **kwargs
+        self,
+        data_dir: str | os.PathLike | None = None,
+        usecache: bool = True,
+        *,
+        display: bool = True,
+        **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         loader, default_dir = self._get_current_defaults()
 
         if data_dir is None:
             data_dir = default_dir
 
-        return loader.summarize(data_dir, usecache, **kwargs)
+        return loader.summarize(data_dir, usecache, display=display, **kwargs)
 
     def _get_current_defaults(self):
         if self.current_loader is None:
