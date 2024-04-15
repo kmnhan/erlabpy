@@ -32,6 +32,7 @@ familiar with xarray.
    plotting
    kconv
    curve-fitting
+   imagetool
 
 Further reading
 ===============
