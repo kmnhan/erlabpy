@@ -104,16 +104,16 @@ class BL403Loader(LoaderBase):
 
         return files, coord_dict
 
-    def infer_index(self, name: str) -> int | None:
+    def infer_index(self, name: str) -> tuple[int | None, dict]:
         try:
             scan_num: str = re.match(r".*?(\d{3})(?:_S\d{3})?", name).group(1)
         except (AttributeError, IndexError):
-            return None
+            return None, None
 
         if scan_num.isdigit():
-            return int(scan_num)
+            return int(scan_num), {}
         else:
-            return None
+            return None, None
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -187,7 +187,7 @@ class BL403Loader(LoaderBase):
                 else:
                     data_type = "LXY"
             else:
-                idx = self.infer_index(os.path.splitext(os.path.basename(path))[0])
+                idx, _ = self.infer_index(os.path.splitext(os.path.basename(path))[0])
                 if idx in processed_indices:
                     continue
 

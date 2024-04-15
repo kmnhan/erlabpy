@@ -173,12 +173,12 @@ def test_loader():
             try:
                 scan_num: str = re.match(r".*?(\d{3})(?:_S\d{3})?", name).group(1)
             except (AttributeError, IndexError):
-                return None
+                return None, None
 
             if scan_num.isdigit():
-                return int(scan_num)
+                return int(scan_num), {}
             else:
-                return None
+                return None, None
 
         def generate_summary(self, data_dir):
             # Get all valid data files in directory
@@ -216,7 +216,7 @@ def test_loader():
             processed_indices = set()
             for name, path in files.items():
                 # Skip already processed multi-file scans
-                index = self.infer_index(name)
+                index, _ = self.infer_index(name)
                 if index in processed_indices:
                     continue
                 elif index is not None:

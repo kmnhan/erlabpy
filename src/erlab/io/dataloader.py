@@ -7,13 +7,6 @@ subclasses `LoaderBase` is registered on import in `loaders`.
 Loaded ARPES data must contain several attributes and coordinates. See the
 implementation of `LoaderBase.validate` for details.
 
-For any data loader plugin subclassing `LoaderBase`, the following attributes and
-methods must be defined: `LoaderBase.name`, `LoaderBase.aliases`, `LoaderBase.name_map`,
-`LoaderBase.coordinate_attrs`, `LoaderBase.additional_attrs`,
-`LoaderBase.always_single`, `LoaderBase.skip_validate`, :func:`LoaderBase.load_single`,
-:func:`LoaderBase.identify`, :func:`LoaderBase.infer_index`, and
-:func:`LoaderBase.generate_summary`.
-
 A detailed guide on how to implement a data loader can be found in
 :doc:`../user-guide/io`.
 
@@ -386,12 +379,16 @@ class LoaderBase:
                 basename_no_ext: str = os.path.splitext(os.path.basename(identifier))[0]
 
                 # Infer index from file name
-                new_identifier: int | None = self.infer_index(basename_no_ext)
+                new_identifier, additional_kwargs = self.infer_index(basename_no_ext)
 
                 if new_identifier is not None:
                     # On success, load with the index
                     new_dir: str = os.path.dirname(identifier)
-                    return self.load(new_identifier, new_dir, single=single, **kwargs)
+
+                    new_kwargs = kwargs | additional_kwargs
+                    return self.load(
+                        new_identifier, new_dir, single=single, **new_kwargs
+                    )
                 else:
                     # On failure, assume single file
                     single = True
@@ -568,7 +565,9 @@ class LoaderBase:
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx = self.infer_index(os.path.splitext(os.path.basename(path))[0])
+                    idx, _ = self.infer_index(
+                        os.path.splitext(os.path.basename(path))[0]
+                    )
                     if idx is not None:
                         n_scans = len(self.identify(idx, os.path.dirname(path))[0])
                         if n_scans > 1 and not full:
@@ -756,7 +755,7 @@ class LoaderBase:
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
-    def infer_index(self, name: str) -> int | None:
+    def infer_index(self, name: str) -> tuple[int | None, dict | None]:
         """Infer the index for the given file name.
 
         This method takes a file name and tries to infer the scan index from it. If the
@@ -771,6 +770,9 @@ class LoaderBase:
         -------
         index
             The inferred index if found, otherwise None.
+        additional_kwargs
+            Additional keyword arguments to be passed to `load` when the index is found.
+            This argument is useful when the index alone is not enough to load the data.
 
         Note
         ----
