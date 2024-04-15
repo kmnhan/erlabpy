@@ -69,7 +69,7 @@ with dark mode enabled will show the dark mode screenshots.
 
 ## Getting Started
 
-To get started, see [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+To get started, see [installation instructions](https://erlabpy.readthedocs.io/en/latest/getting-started.html).
 
 ## Documentation
 
@@ -79,11 +79,16 @@ The full documentation for ERLabPy is available on [Read the Docs](https://erlab
 
 ERLabPy is an open-source project and we welcome contributions from the community. If
 you find any bugs, issues, or have any suggestions, please open an issue
-[here](https://github.com/kmnhan/erlabpy/issues). If you would like to add a new feature
-or fix a bug yourself, we would love to have your contribution. Feel free to fork the
-repository and submit a pull request with your changes.
+[here](https://github.com/kmnhan/erlabpy/issues).
 
-For more information on contributing, see our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html).
+If you have any questions or need help with using ERLabPy, please feel free to ask on
+the [Discussions page](https://github.com/kmnhan/erlabpy/discussions).
+
+If you would like to add a new feature or fix a bug yourself, we would love to have your
+contribution. Feel free to fork the repository and submit a pull request with your
+changes.
+
+For more information on contributing, see our [Contributing page](https://erlabpy.readthedocs.io/en/latest/contributing.html).
 
 ## License
 
