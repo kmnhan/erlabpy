@@ -30,7 +30,7 @@ class BL403Loader(LoaderBase):
         "hv": "BL Energy",
         "polarization": "EPU POL",
         "temp_sample": "Temperature Sensor B",
-        "photon_flux": "Mesh Current",
+        "mesh_current": "Mesh Current",
     }
     coordinate_attrs: tuple[str, ...] = (
         "beta",
@@ -41,7 +41,7 @@ class BL403Loader(LoaderBase):
         "y",
         "z",
         "polarization",
-        "photon_flux",
+        "mesh_current",
     )
     additional_attrs: dict[str, str | int | float] = {
         "configuration": 1,
@@ -50,6 +50,9 @@ class BL403Loader(LoaderBase):
     always_single: bool = False
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+        if os.path.splitext(file_path)[1] == ".ibw":
+            return self.load_live(file_path)
+
         data = load_experiment(file_path)
         # One file always corresponds to single region, so assume only one data variable
         data: xr.DataArray = data.data_vars[next(iter(data.data_vars.keys()))]
@@ -138,12 +141,12 @@ class BL403Loader(LoaderBase):
     ) -> pd.DataFrame:
         files: dict[str, str] = {}
 
-        for pth in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
-            data_name = os.path.splitext(os.path.basename(pth))[0]
+        for path in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
+            data_name = os.path.splitext(os.path.basename(path))[0]
             name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
             if name_match is not None:
                 data_name = name_match.group(1)
-            files[data_name] = pth
+            files[data_name] = path
 
         if not exclude_live:
             for file in os.listdir(data_dir):
@@ -170,10 +173,11 @@ class BL403Loader(LoaderBase):
             "azi": "delta",
         }
 
-        cols = ["Time", "File Name", "Type", *summary_attrs.keys()]
+        cols = ["File Name", "Path", "Time", "Type", *summary_attrs.keys()]
 
-        data: list[dict] = []
         data_info = []
+
+        processed_indices: list[int] = []
 
         for name, path in files.items():
             if os.path.splitext(path)[1] == ".ibw":
@@ -183,6 +187,12 @@ class BL403Loader(LoaderBase):
                 else:
                     data_type = "LXY"
             else:
+                idx = self.infer_index(os.path.splitext(os.path.basename(path))[0])
+                if idx in processed_indices:
+                    continue
+
+                if idx is not None:
+                    processed_indices.append(idx)
                 data = self.load(path)
                 data_type = "core"
                 if "alpha" in data.dims:
@@ -194,11 +204,12 @@ class BL403Loader(LoaderBase):
 
             data_info.append(
                 [
+                    name,
+                    path,
                     datetime.datetime.strptime(
                         f"{data.attrs['Date']} {data.attrs['Time']}",
                         "%d/%m/%Y %I:%M:%S %p",
                     ),
-                    name,
                     data_type,
                 ]
             )
