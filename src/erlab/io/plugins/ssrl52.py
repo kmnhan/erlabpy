@@ -188,7 +188,7 @@ class SSRL52Loader(LoaderBase):
             "DA": "beta",
         }
 
-        cols = ["Time", "File Name", *summary_attrs.keys()]
+        cols = ["File Name", "Path", "Time", *summary_attrs.keys()]
 
         data_info = []
 
@@ -197,8 +197,9 @@ class SSRL52Loader(LoaderBase):
 
             data_info.append(
                 [
-                    datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]),
                     name,
+                    path,
+                    datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]),
                 ]
             )
 
