@@ -112,7 +112,6 @@ def generate_data(
     eV = np.linspace(*Erange, shape[2])
 
     dE = eV[1] - eV[0]
-    dk = ((kx[1] - kx[0]) + (ky[1] - ky[0])) / 2
 
     point_iter = np.array(np.meshgrid(kx, ky)).T.reshape(-1, 2)
 
@@ -134,7 +133,8 @@ def generate_data(
 
     broadened = scipy.ndimage.gaussian_filter(
         out,
-        sigma=[kres / dk, kres / dk, Eres / dE],
+        sigma=[kres / (k[1] - k[0]) if len(k) > 1 else 0 for k in (kx, ky)]
+        + [Eres / dE],
         truncate=10.0,
     )
     if noise:
@@ -142,7 +142,7 @@ def generate_data(
             rng.poisson(broadened).astype(float), ccd_sigma, truncate=10.0
         )
 
-    return xr.DataArray(broadened, coords={"kx": kx, "ky": ky, "eV": eV})
+    return xr.DataArray(broadened, coords={"kx": kx, "ky": ky, "eV": eV}).squeeze()
 
 
 def generate_data_angles(
@@ -164,6 +164,7 @@ def generate_data_angles(
     noise: bool = True,
     count: int = 10000,
     ccd_sigma: float = 0.6,
+    assign_attributes: bool = False,
 ) -> xr.DataArray:
     """
     Generate simulated data for a given shape.
@@ -206,6 +207,8 @@ def generate_data_angles(
         Determines the signal-to-noise ratio when `noise` is `True`, by default 10000
     ccd_sigma
         The sigma value for CCD noise generation when `noise` is `True`, by default 0.6
+    assign_attributes
+        Whether to assign attributes to the generated data, by default `False`
 
     Returns
     -------
@@ -235,7 +238,6 @@ def generate_data_angles(
     )
 
     dE = eV[1] - eV[0]
-    dalpha, dbeta = (alpha[1] - alpha[0]), (beta[1] - beta[0])
 
     a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
     kxv, kyv = forward_func(a_mesh[:, :, None], b_mesh[:, :, None])
@@ -259,7 +261,8 @@ def generate_data_angles(
 
     out = scipy.ndimage.gaussian_filter(
         out,
-        sigma=[angres / dalpha, angres / dbeta, Eres / dE],
+        sigma=[angres / (a[1] - a[0]) if len(a) > 1 else 0 for a in (alpha, beta)]
+        + [Eres / dE],
         truncate=10.0,
     )
     if noise:
@@ -277,11 +280,14 @@ def generate_data_angles(
         ):
             out = out.assign_coords(chi=0.0)
 
-    return out.assign_attrs(
-        configuration=int(configuration),
-        temp_sample=temp,
-        sample_workfunction=4.5,
-    )
+    if assign_attributes:
+        out = out.assign_attrs(
+            configuration=int(configuration),
+            temp_sample=temp,
+            sample_workfunction=4.5,
+        )
+
+    return out.squeeze()
 
 
 if __name__ == "__main__":
