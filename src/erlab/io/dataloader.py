@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import importlib
 import itertools
 import os
 import warnings
@@ -308,8 +309,11 @@ class LoaderBase:
 
         """
         style = df.style.format(cls.formatter)
-        if "Time" in df.columns:
-            style = style.hide(["Time"], axis="columns")
+
+        hidden = [c for c in ("Time", "Path") if c in df.columns]
+        if len(hidden) > 0:
+            style = style.hide(hidden, axis="columns")
+
         return style
 
     def load(
@@ -404,10 +408,15 @@ class LoaderBase:
         return data
 
     def summarize(
-        self, data_dir: str | os.PathLike, usecache: bool = True, **kwargs
-    ) -> pandas.DataFrame:
+        self,
+        data_dir: str | os.PathLike,
+        usecache: bool = True,
+        *,
+        display: bool = True,
+        **kwargs,
+    ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         """
-        Takes a path to a directory and summarizes the data in the directory to a
+        Takes a path to a directory and summarizes the data in the directory to a table
         `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
         the contents of a directory.
 
@@ -422,13 +431,21 @@ class LoaderBase:
         usecache
             Whether to use the cached summary if available. If `False`, the summary will
             be regenerated and the cache will be updated.
+        display
+            Whether to display the formatted dataframe using the IPython shell. If
+            `False`, the dataframe will be returned without formatting. If `True` but
+            the IPython shell is not detected, the dataframe styler will be returned.
         **kwargs
             Additional keyword arguments to be passed to `generate_summary`.
 
         Returns
         -------
-        pandas.DataFrame
-            Summary of the data in the directory.
+        df : pandas.DataFrame or pandas.io.formats.style.Styler or None
+            Summary of the data in the directory. If `display` is `False`, the DataFrame
+            is returned. If `display` is `True` and the IPython shell is detected, the
+            summary will be displayed, and `None` will be returned. If `display` is
+            `True` but the IPython shell is not detected, the styler for the summary
+            DataFrame will be returned.
 
         """
         if not os.path.isdir(data_dir):
@@ -447,19 +464,243 @@ class LoaderBase:
             df = self.generate_summary(data_dir, **kwargs)
             df.to_pickle(pkl_path)
 
+        if not display:
+            return df
+
+        styled = self.get_styler(df)
+
         try:
             shell = get_ipython().__class__.__name__  # type: ignore
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+            if display and (
+                shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]
+            ):
                 from IPython.display import display
 
                 with pandas.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
-                    display(self.get_styler(df))
+                    display(styled)
+
+                if importlib.util.find_spec("ipywidgets"):
+                    display(self.isummarize(df=df))
+
+                return None
+
         except NameError:
             pass
 
-        return df
+        return styled
+
+    def isummarize(self, df: pandas.DataFrame | None = None, **kwargs):
+        """Display an interactive summary.
+
+        This method provides an interactive summary of the data using ipywidgets and
+        matplotlib.
+
+        Parameters
+        ----------
+        df
+            A summary dataframe as returned by `generate_summary`. If None, a dataframe
+            will be generated using `summarize`. Defaults to None.
+        **kwargs
+            Additional keyword arguments to be passed to `summarize` if `df` is None.
+
+        Note
+        ----
+        This method requires `ipywidgets` to be installed. If not found, an
+        `ImportError` will be raised.
+
+        """
+        if not importlib.util.find_spec("ipywidgets"):
+            raise ImportError(
+                "ipywidgets and IPython is required for interactive summaries"
+            )
+        if df is None:
+            kwargs.setdefault("display", False)
+            df = self.summarize(**kwargs)
+
+        import matplotlib.pyplot as plt
+        import erlab.plotting.erplot as eplt
+
+        from ipywidgets import (
+            HTML,
+            Button,
+            Dropdown,
+            FloatSlider,
+            HBox,
+            Layout,
+            Output,
+            Select,
+            VBox,
+        )
+        from ipywidgets.widgets.interaction import show_inline_matplotlib_plots
+
+        self._temp_data: xr.DataArray | None = None
+
+        def _format_data_info(series) -> str:
+            table = ""
+            table += (
+                "<div class='widget-inline-hbox widget-select' "
+                "style='height:220px;overflow-y:auto;'>"
+            )
+            table += "<table class='widget-select'>"
+            table += "<tbody>"
+
+            for k, v in series.items():
+                if k == "Path":
+                    continue
+                table += "<tr>"
+                table += f"<td style='text-align:left;'><b>{k}</b></td>"
+                table += f"<td style='text-align:left;'>{self.formatter(v)}</td>"
+                table += "</tr>"
+
+            table += "</tbody></table>"
+            table += "</div>"
+            return table
+
+        def _update_data(_, *, full: bool = False):
+            series = df.loc[data_select.value]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+
+                path = series["Path"]
+
+                full_button.disabled = True
+
+                if not self.always_single:
+                    idx = self.infer_index(os.path.splitext(os.path.basename(path))[0])
+                    if idx is not None:
+                        n_scans = len(self.identify(idx, os.path.dirname(path))[0])
+                        if n_scans > 1 and not full:
+                            full_button.disabled = False
+
+                self._temp_data = self.load(path, single=not full)
+
+                data_info.value = _format_data_info(series)
+
+            if self._temp_data.ndim == 4:
+                # If the data is 4D, average over the last dimension, making it 3D
+                self._temp_data = self._temp_data.mean(self._temp_data.dims[-1])
+
+            if self._temp_data.ndim == 3:
+                dim_sel.unobserve(_update_sliders, "value")
+                coord_sel.unobserve(_update_plot, "value")
+
+                dim_sel.options = self._temp_data.dims
+                # Set the default dimension to the one with the smallest size
+                dim_sel.value = self._temp_data.dims[np.argmin(self._temp_data.shape)]
+
+                coord_sel.observe(_update_plot, "value")
+                dim_sel.observe(_update_sliders, "value")
+
+                dim_sel.disabled = False
+                dim_sel.layout.visibility = "visible"
+                coord_sel.disabled = False
+                coord_sel.layout.visibility = "visible"
+
+                _update_sliders(None)
+
+            else:
+                # 2D or 1D data, disable and hide dimension selection
+                dim_sel.disabled = True
+                dim_sel.layout.visibility = "hidden"
+                coord_sel.disabled = True
+                coord_sel.layout.visibility = "hidden"
+
+            _update_plot(None)
+
+        def _update_sliders(_):
+            if out.block:
+                return
+            if self._temp_data is None:
+                return
+
+            scan_coords = self._temp_data[dim_sel.value].values
+
+            dim_sel.unobserve(_update_sliders, "value")
+            coord_sel.unobserve(_update_plot, "value")
+
+            coord_sel.step = abs(scan_coords[1] - scan_coords[0])
+            coord_sel.max = 1e100  # To ensure max > min always
+            coord_sel.min = scan_coords.min()
+            coord_sel.max = scan_coords.max()
+
+            coord_sel.observe(_update_plot, "value")
+            dim_sel.observe(_update_sliders, "value")
+
+        def _update_plot(_):
+            if self._temp_data is None:
+                return
+            if not coord_sel.disabled:
+                plot_data = self._temp_data.qsel({dim_sel.value: coord_sel.value})
+            else:
+                plot_data = self._temp_data
+
+            out.clear_output(wait=True)
+            with out:
+                plot_data.qplot(ax=plt.gca())
+                # Remove automatic title from xarray
+                plt.title("")
+
+                # Add line at Fermi level if the data is 2D and has an energy dimension
+                if plot_data.ndim == 2 and "eV" in plot_data.dims:
+                    if plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0:
+                        eplt.fermiline(
+                            orientation="h" if plot_data.dims[0] == "eV" else "v"
+                        )
+
+                show_inline_matplotlib_plots()
+
+        def _next(_):
+            idx = list(df.index).index(data_select.value)
+            if idx + 1 < len(df.index):
+                data_select.value = list(df.index)[idx + 1]
+
+        def _prev(_):
+            idx = list(df.index).index(data_select.value)
+            if idx - 1 >= 0:
+                data_select.value = list(df.index)[idx - 1]
+
+        prev_button = Button(description="Prev", layout=Layout(width="50px"))
+        prev_button.on_click(_prev)
+
+        next_button = Button(description="Next", layout=Layout(width="50px"))
+        next_button.on_click(_next)
+
+        full_button = Button(description="Load full", layout=Layout(width="100px"))
+        full_button.on_click(lambda _: _update_data(None, full=True))
+
+        buttons = [prev_button, next_button]
+        if not self.always_single:
+            buttons.append(full_button)
+
+        data_select = Select(options=list(df.index), value=next(iter(df.index)))
+        data_select.observe(_update_data, "value")
+
+        data_info = HTML()
+
+        dim_sel = Dropdown()
+        dim_sel.observe(_update_sliders, "value")
+
+        coord_sel = FloatSlider(continuous_update=True, readout_format=".3f")
+        coord_sel.observe(_update_plot, "value")
+
+        ui = VBox([HBox(buttons), data_select, data_info, dim_sel, coord_sel])
+
+        out = Output()
+        out.block = False
+
+        show_inline_matplotlib_plots()
+        _update_data(None)
+
+        return HBox(
+            [ui, out],
+            layout=Layout(
+                display="grid",
+                grid_template_columns="auto auto",
+                grid_template_rows="auto",
+            ),
+        )
 
     def load_single(
         self, file_path: str | os.PathLike
