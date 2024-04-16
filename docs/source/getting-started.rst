@@ -67,12 +67,23 @@ will be sufficient for most use cases.
 ERLabPy also requires a Qt library such as PyQt5, PyQt6, PySide2, or PySide6. To
 ensure compatibility and keep the namespace clean, ERLabPy imports Qt bindings
 from `qtpy <https://github.com/spyder-ide/qtpy>`_, which will automatically
-select the appropriate library based on what is installed. Be aware that there
-are some known compatibility issues with PyQt5 and PySide2, so it is recommended
-to use the newer PyQt6 or PySide6 if possible.
+select the appropriate library based on what is installed.
 
 See the :doc:`user-guide/index` to start using ERLabPy!
 
+Notes on compatibility
+----------------------
+
+- ERLabPy is tested on Python 3.11 and 3.12. It is not guaranteed to work on older
+  versions of Python.
+- There are some `known compatibility issues
+  <https://github.com/kmnhan/erlabpy/issues/17>`_ with PyQt5 and PySide2, so it is
+  recommended to use the newer PyQt6 or PySide6 if possible.
+- If you meet any unexpected behaviour while using IPython's `autoreload extension
+  <https://ipython.readthedocs.io/en/stable/config/extensions/autoreload.html>`_, try
+  excluding the following modules: ::
+
+    %aimport -erlab.io.dataloader -erlab.accessors
 
 Optional dependencies
 ---------------------
