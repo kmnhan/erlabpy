@@ -406,6 +406,7 @@ def plot_array_2d(
     carr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
     *,
+    normalize_with_larr: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     cmap: mcolors.Colormap | str = None,
@@ -455,6 +456,9 @@ def plot_array_2d(
         sel_kw[larr.dims[0]] = slice(*ylim)
     larr = larr.sel(**sel_kw)
     carr = carr.sel(**sel_kw)
+
+    if normalize_with_larr:
+        carr = carr / larr
 
     cmap_img, img = gen_2d_colormap(
         larr.values,
