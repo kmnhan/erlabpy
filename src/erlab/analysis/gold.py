@@ -42,12 +42,13 @@ def edge(
     vary_temp: bool = False,
     fast: bool = False,
     method: str = "leastsq",
+    scale_covar: bool = True,
+    normalize: bool = True,
+    fixed_center: float | None = None,
     progress: bool = True,
     parallel_kw: dict | None = None,
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
-    fixed_center: float | None = None,
-    scale_covar: bool = True,
     **kwargs: dict,
 ) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
     """
@@ -73,6 +74,13 @@ def edge(
         `False`.
     method
         The fitting method to use, by default ``"leastsq"``.
+    scale_covar
+        Whether to scale the covariance matrix, by default `True`.
+    fixed_center
+        The fixed center value. If provided, the Fermi level will be fixed at the given
+        value, by default `None`.
+    normalize
+        Whether to normalize the energy coordinates, by default `True`.
     progress
         Whether to display the fitting progress, by default `True`.
     parallel_kw
@@ -82,11 +90,6 @@ def edge(
         `parallel_kw` will be ignored.
     return_full
         Whether to return the full fit results, by default `False`.
-    fixed_center
-        The fixed center value. If provided, the Fermi level will be fixed at the given
-        value, by default `None`.
-    scale_covar
-        Whether to scale the covariance matrix, by default `True`.
     **kwargs
         Additional keyword arguments to fitting.
 
@@ -135,6 +138,11 @@ def edge(
             parallel_kw.setdefault("n_jobs", 1)
         parallel_obj = joblib.Parallel(**parallel_kw)
 
+    if normalize:
+        # Normalize energy coordinates
+        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
+        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
+
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
 
@@ -167,11 +175,15 @@ def edge(
     res_vals = []
 
     for i, r in enumerate(fitresults):
-        center_ufloat = r.uvars["center"]
+        if hasattr(r, "uvars"):
+            center_ufloat = r.uvars["center"]
 
-        if not np.isnan(center_ufloat.std_dev):
-            xval.append(gold_sel.alpha.values[i])
-            res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
+            if normalize:
+                center_ufloat = center_ufloat * stdx + avgx
+
+            if not np.isnan(center_ufloat.std_dev):
+                xval.append(gold_sel.alpha.values[i])
+                res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
 
     xval = np.asarray(xval)
     yval, yerr = np.asarray(res_vals).T
@@ -319,6 +331,7 @@ def poly(
     vary_temp: bool = False,
     fast: bool = False,
     method: str = "leastsq",
+    normalize: bool = True,
     degree: int = 4,
     correct: bool = False,
     crop_correct: bool = False,
@@ -337,6 +350,7 @@ def poly(
         vary_temp=vary_temp,
         fast=fast,
         method=method,
+        normalize=normalize,
         parallel_kw=parallel_kw,
         scale_covar=scale_covar_edge,
     )
