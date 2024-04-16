@@ -17,7 +17,7 @@ __all__ = [
 
 import contextlib
 import copy
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import matplotlib
 import matplotlib.colors as mcolors
@@ -412,7 +412,7 @@ def plot_array_2d(
     cmap: mcolors.Colormap | str = None,
     lnorm: mcolors.Normalize | None = None,
     cnorm: mcolors.Normalize | None = None,
-    background: Sequence[float] | None = None,
+    background: Any = None,
     colorbar: bool = True,
     cax: matplotlib.axes.Axes | None = None,
     colorbar_kw: dict | None = None,
@@ -460,6 +460,12 @@ def plot_array_2d(
     if normalize_with_larr:
         carr = carr / larr
 
+    if lnorm is None:
+        lnorm = plt.Normalize()
+
+    if cnorm is None:
+        cnorm = plt.Normalize()
+
     cmap_img, img = gen_2d_colormap(
         larr.values,
         carr.values,
@@ -483,6 +489,7 @@ def plot_array_2d(
             cmap_img.transpose(1, 0, 2),
             extent=(lnorm.vmin, lnorm.vmax, cnorm.vmin, cnorm.vmax),
             origin="lower",
+            aspect="auto",
         )
 
     im = ax.imshow(img, extent=array_extent(larr), **imshow_kw)
