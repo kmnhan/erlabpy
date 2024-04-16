@@ -159,6 +159,12 @@ class SelectionAccessor(ERLabAccessor):
                 avg_dims.append(dim)
 
         if len(scalars) >= 1:
+            for k, v in scalars.items():
+                if v < self._obj[k].min() or v > self._obj[k].max():
+                    warnings.warn(
+                        f"Selected value {v} for `{k}` is outside coordinate bounds",
+                        stacklevel=2,
+                    )
             out = self._obj.sel(**scalars, method="nearest")
         else:
             out = self._obj
