@@ -18,13 +18,12 @@ __all__ = [
 import functools
 import time
 import warnings
-from collections.abc import Callable, ItemsView, Iterable, Iterator
-from typing import Literal
+from collections.abc import Callable, Hashable, ItemsView, Iterable, Iterator, Mapping
+from typing import Any, Literal, TypeGuard, TypeVar, cast
 
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
-from xarray.core.utils import either_dict_or_kwargs
 
 import erlab.plotting.erplot as eplt
 from erlab.analysis.interpolate import interpn
@@ -32,6 +31,31 @@ from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.kspace import ktool
+
+T = TypeVar("T")
+
+
+def is_dict_like(value: Any) -> TypeGuard[Mapping[Any, Any]]:
+    return hasattr(value, "keys") and hasattr(value, "__getitem__")
+
+
+def either_dict_or_kwargs(
+    pos_kwargs: Mapping[Any, T] | None,
+    kw_kwargs: Mapping[str, T],
+    func_name: str,
+) -> Mapping[Hashable, T]:
+    if pos_kwargs is None or pos_kwargs == {}:
+        # Need an explicit cast to appease mypy due to invariance; see
+        # https://github.com/python/mypy/issues/6228
+        return cast(Mapping[Hashable, T], kw_kwargs)
+
+    if not is_dict_like(pos_kwargs):
+        raise ValueError(f"the first argument to .{func_name} must be a dictionary")
+    if kw_kwargs:
+        raise ValueError(
+            f"cannot specify both keyword and positional arguments to .{func_name}"
+        )
+    return pos_kwargs
 
 
 class ERLabAccessor:
