@@ -1,6 +1,7 @@
 """Fermi edge fitting."""
 
 __all__ = [
+    "correct_with_edge",
     "edge",
     "poly",
     "poly_from_edge",
@@ -9,7 +10,7 @@ __all__ = [
     "spline_from_edge",
 ]
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import joblib
 import lmfit.model
@@ -24,13 +25,119 @@ import uncertainties
 import xarray as xr
 
 from erlab.analysis.fit.models import (
+    FermiEdge2dModel,
     FermiEdgeModel,
     PolynomialModel,
     StepEdgeModel,
 )
-from erlab.analysis.utilities import correct_with_edge
+from erlab.analysis.utilities import shift
 from erlab.parallel import joblib_progress
-from erlab.plotting.general import autoscale_to, figwh
+from erlab.plotting.colors import proportional_colorbar
+from erlab.plotting.general import autoscale_to, figwh, plot_array
+
+
+def correct_with_edge(
+    darr: xr.DataArray,
+    modelresult: lmfit.model.ModelResult | npt.NDArray[np.floating] | Callable,
+    shift_coords: bool = True,
+    plot: bool = False,
+    plot_kw: dict | None = None,
+    **shift_kwargs,
+):
+    """
+    Corrects the given data array `darr` with the given values or fit result.
+
+    Parameters
+    ----------
+    darr
+        The input data array to be corrected.
+    modelresult
+        The model result that contains the fermi edge information. It can be an instance
+        of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
+        angle, or a callable function that takes an array of angles and returns the
+        corresponding energy value.
+    shift_coords
+        If `True`, the coordinates of the output data will be changed so that the output
+        contains all the values of the original data. If `False`, the coordinates and
+        shape of the original data will be retained, and only the data will be shifted.
+        Defaults to `False`.
+    plot
+        Whether to plot the original and corrected data arrays. Defaults to `False`.
+    plot_kw
+        Additional keyword arguments for the plot. Defaults to `None`.
+    **shift_kwargs
+        Additional keyword arguments to `erlab.analysis.utilities.shift`.
+
+    Returns
+    -------
+    corrected : xarray.DataArray
+        The edge corrected data.
+    """
+    if plot_kw is None:
+        plot_kw = {}
+
+    if isinstance(modelresult, lmfit.model.ModelResult):
+        if isinstance(modelresult.model, FermiEdge2dModel):
+            edge_quad = np.polynomial.polynomial.polyval(
+                darr.alpha,
+                np.array(
+                    [
+                        modelresult.best_values[f"c{i}"]
+                        for i in range(modelresult.model.func.poly.degree + 1)
+                    ]
+                ),
+            )
+        else:
+            edge_quad = modelresult.eval(x=darr.alpha)
+
+    elif callable(modelresult):
+        edge_quad = modelresult(darr.alpha.values)
+
+    elif isinstance(modelresult, np.ndarray | xr.DataArray):
+        if len(darr.alpha) != len(modelresult):
+            raise ValueError(
+                "Length of modelresult must be equal to the length of alpha in data"
+            )
+        else:
+            edge_quad = modelresult
+
+    else:
+        raise TypeError(
+            "modelresult must be one of "
+            "lmfit.model.ModelResult, "
+            "and np.ndarray or a callable"
+        )
+
+    if isinstance(edge_quad, np.ndarray):
+        edge_quad = xr.DataArray(
+            edge_quad, coords={"alpha": darr.alpha}, dims=["alpha"]
+        )
+
+    corrected = shift(darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs)
+
+    if plot is True:
+        _, axes = plt.subplots(1, 2, layout="constrained", figsize=(10, 5))
+
+        plot_kw.setdefault("cmap", "copper")
+        plot_kw.setdefault("gamma", 0.5)
+
+        if darr.ndim > 2:
+            avg_dims = list(darr.dims)[:]
+            avg_dims.remove("alpha")
+            avg_dims.remove("eV")
+            plot_array(darr.mean(avg_dims), ax=axes[0], **plot_kw)
+            plot_array(corrected.mean(avg_dims), ax=axes[1], **plot_kw)
+        else:
+            plot_array(darr, ax=axes[0], **plot_kw)
+            plot_array(corrected, ax=axes[1], **plot_kw)
+        edge_quad.plot(ax=axes[0], ls="--", color="0.35")
+
+        proportional_colorbar(ax=axes[0])
+        proportional_colorbar(ax=axes[1])
+        axes[0].set_title("Data")
+        axes[1].set_title("Edge Corrected")
+
+    return corrected
 
 
 def edge(
