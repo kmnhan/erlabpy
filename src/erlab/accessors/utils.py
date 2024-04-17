@@ -15,6 +15,10 @@ from erlab.interactive.imagetool import ImageTool, itool
 
 T = TypeVar("T")
 
+# Used as the key corresponding to a DataArray's variable when converting
+# arbitrary DataArray objects to datasets, from xarray.core.dataarray
+_THIS_ARRAY = "<this-array>"
+
 
 class ERLabAccessor:
     """Base class for accessors."""

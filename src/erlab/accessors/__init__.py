@@ -18,12 +18,15 @@ Modules
 """
 
 __all__ = [
-    "ImageToolAccessor",
+    "ModelFitDataArrayAccessor",
+    "ModelFitDatasetAccessor",
     "MomentumAccessor",
     "OffsetView",
+    "ImageToolAccessor",
     "PlotAccessor",
     "SelectionAccessor",
 ]
 
+from erlab.accessors.fit import ModelFitDataArrayAccessor, ModelFitDatasetAccessor
 from erlab.accessors.kspace import MomentumAccessor, OffsetView
 from erlab.accessors.utils import ImageToolAccessor, PlotAccessor, SelectionAccessor

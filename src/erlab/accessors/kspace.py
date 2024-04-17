@@ -13,6 +13,7 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
+from erlab.accessors.utils import ERLabAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
@@ -175,7 +176,7 @@ class OffsetView:
 
 
 @xr.register_dataarray_accessor("kspace")
-class MomentumAccessor:
+class MomentumAccessor(ERLabAccessor):
     """`xarray.DataArray.kspace` accessor for momentum conversion related utilities.
 
     This class provides convenient access to various momentum-related properties of a
@@ -184,9 +185,6 @@ class MomentumAccessor:
     parameters, and offsets.
 
     """
-
-    def __init__(self, xarray_obj: xr.DataArray):
-        self._obj = xarray_obj
 
     @property
     def configuration(self) -> AxesConfiguration:
