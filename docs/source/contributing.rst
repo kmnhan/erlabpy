@@ -120,8 +120,7 @@ reflected in the package without having to reinstall it. Before installing:
 
    .. hint::
 
-     | If using conda, replace :code:`mamba` with :code:`conda`.
-     | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml` to use `Accelerate <https://developer.apple.com/accelerate/>`_ instead of `OpenBLAS <https://en.wikipedia.org/wiki/OpenBLAS>`_.
+     If using conda, replace :code:`mamba` with :code:`conda`.
 
    .. code-block:: sh
 
@@ -152,8 +151,7 @@ Updating the editable installation
 
   .. hint::
 
-    | If using conda, replace :code:`mamba` with :code:`conda`.
-    | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+    If using conda, replace :code:`mamba` with :code:`conda`.
 
   .. code-block:: bash
 
