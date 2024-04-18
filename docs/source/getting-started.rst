@@ -24,7 +24,7 @@ conda environment, you can install ERLabPy with the conda command line tool: ::
   <https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl.html>`_:
   ::
 
-    conda install "libblas=*=mkl"
+    conda install "libblas=*=*mkl"
 
   To prevent conda from switching back to the default libraries, see the
   `conda-forge documentation
