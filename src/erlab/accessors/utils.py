@@ -8,6 +8,7 @@ import warnings
 from collections.abc import Hashable, Mapping
 from typing import Any, TypeGuard, TypeVar, cast
 
+import matplotlib.pyplot as plt
 import xarray as xr
 
 import erlab.plotting.erplot as eplt
@@ -71,7 +72,14 @@ class PlotAccessor(ERLabAccessor):
         if len(self._obj.dims) == 2:
             return eplt.plot_array(self._obj, *args, **kwargs)
         else:
-            return self._obj.plot(*args, **kwargs)
+            ax = kwargs.pop("ax", None)
+            if ax is None:
+                ax = plt.gca()
+            kwargs["ax"] = ax
+
+            out = self._obj.plot(*args, **kwargs)
+            eplt.fancy_labels(ax)
+            return out
 
 
 @xr.register_dataarray_accessor("qshow")
