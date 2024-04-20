@@ -538,7 +538,7 @@ def proportional_colorbar(
     mappable: matplotlib.cm.ScalarMappable | None = None,
     cax: matplotlib.axes.Axes | None = None,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.colorbar.Colorbar:
     """
     Replaces the current colorbar or creates a new colorbar with proportional spacing.
@@ -715,7 +715,7 @@ def _ez_inset(
         "lower center",
         "lower right",
     ] = "upper right",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.axes.Axes:
     fig = parent_axes.get_figure()
     locator = InsetAxesLocator(parent_axes, width, height, pad, loc)
@@ -817,7 +817,7 @@ def nice_colorbar(
     orientation: Literal["vertical", "horizontal"] = "vertical",
     floating=False,
     ticklabels: Sequence[str] | None = None,
-    **kwargs: dict,
+    **kwargs,
 ):
     r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
 

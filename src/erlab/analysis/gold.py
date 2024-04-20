@@ -157,7 +157,7 @@ def edge(
     parallel_kw: dict | None = None,
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
-    **kwargs: dict,
+    **kwargs,
 ) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
     """
     Fit a Fermi edge to the given gold data.
@@ -482,7 +482,7 @@ def poly(
 
     modelresult = poly_from_edge(
         center_arr,
-        weights=1 / center_stderr,
+        weights=1.0 / center_stderr,
         degree=degree,
         method=method,
         scale_covar=scale_covar,

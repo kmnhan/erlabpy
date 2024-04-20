@@ -29,7 +29,11 @@ class ModelFitDatasetAccessor(ERLabAccessor):
         | None = None,
         guess: bool = False,
         errors: Literal["raise", "ignore"] = "raise",
-        **kwargs: dict[str, Any],
+        parallel: bool | None = None,
+        parallel_kw: dict[str, Any] | None = None,
+        progress: bool = False,
+        output_result: bool = True,
+        **kwargs,
     ) -> xr.Dataset:
         """
         Curve fitting optimization for arbitrary functions.

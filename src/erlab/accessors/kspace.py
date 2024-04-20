@@ -154,7 +154,7 @@ class OffsetView:
     def update(
         self,
         other: dict | Iterable[tuple[str, float]] | None = None,
-        **kwargs: dict[str, float],
+        **kwargs,
     ) -> "OffsetView":
         """Updates the offset view with the provided key-value pairs."""
         if other is not None:

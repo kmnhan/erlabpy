@@ -85,7 +85,7 @@ def process_arg(arg):
     return arg
 
 
-def gen_single_function_code(funcname: str, *args: tuple, **kwargs: dict):
+def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     """Generates the string for a Python function call.
 
     The first argument is the name of the function, and subsequent arguments are
@@ -133,7 +133,7 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs: dict):
     return code
 
 
-def gen_function_code(copy: bool = True, **kwargs: dict):
+def gen_function_code(copy: bool = True, **kwargs):
     r"""Copies the Python code for function calls to the clipboard.
 
     The result can be copied to your clipboard in a form that can be pasted into an
@@ -215,7 +215,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         significant: bool = False,
         scientific: bool = False,
         value: float = 0.0,
-        **kwargs: dict,
+        **kwargs,
     ):
         self._only_int = integer
         self._is_compact = compact
@@ -826,7 +826,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)  #: :meta private:
 
-    def __init__(self, ncols: int = 1, groupbox_kw: dict | None = None, **kwargs: dict):
+    def __init__(self, ncols: int = 1, groupbox_kw: dict | None = None, **kwargs):
         if groupbox_kw is None:
             groupbox_kw = {}
         super().__init__(**groupbox_kw)
@@ -888,7 +888,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             ]
             | None
         ) = None,
-        **kwargs: dict,
+        **kwargs,
     ):
         """
         Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
@@ -1530,7 +1530,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
     def add_items(self, **kwargs):
         self.parse_menu(self, **kwargs)
 
-    def parse_menu(self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs: dict):
+    def parse_menu(self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs):
         for name, opts in kwargs.items():
             menu = opts.pop("menu", None)
             actions = opts.pop("actions")

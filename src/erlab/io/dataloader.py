@@ -56,7 +56,7 @@ class ValidationWarning(UserWarning):
 class LoaderBase:
     """Base class for all data loaders."""
 
-    name: str | None = None
+    name: str = None
     """
     Name of the loader. Using a unique and descriptive name is recommended. For easy
     access, it is recommended to use a name that passes :func:`str.isidentifier`.
@@ -313,7 +313,7 @@ class LoaderBase:
         self,
         identifier: str | os.PathLike | int | None,
         data_dir: str | os.PathLike | None = None,
-        **kwargs: dict,
+        **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         """Load ARPES data.
 
@@ -1108,7 +1108,7 @@ class LoaderRegistry(RegistryBase):
         self,
         identifier: str | os.PathLike | int | None,
         data_dir: str | os.PathLike | None = None,
-        **kwargs: dict,
+        **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         loader, default_dir = self._get_current_defaults()
 

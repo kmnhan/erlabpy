@@ -17,7 +17,7 @@ T = TypeVar("T")
 
 # Used as the key corresponding to a DataArray's variable when converting
 # arbitrary DataArray objects to datasets, from xarray.core.dataarray
-_THIS_ARRAY = "<this-array>"
+_THIS_ARRAY: str = "<this-array>"
 
 
 class ERLabAccessor:
@@ -97,7 +97,7 @@ class SelectionAccessor(ERLabAccessor):
         indexers: dict[str, float | slice] | None = None,
         *,
         verbose: bool = False,
-        **indexers_kwargs: dict[str, float | slice],
+        **indexers_kwargs,
     ):
         """Select and average data along specified dimensions.
 

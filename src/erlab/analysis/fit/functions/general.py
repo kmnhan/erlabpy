@@ -21,7 +21,6 @@ __all__ = [
 ]
 
 from collections.abc import Callable
-
 import numba
 import numpy as np
 import numpy.typing as npt
@@ -78,7 +77,7 @@ def do_convolve(
     func: Callable,
     resolution: float,
     pad: int = 5,
-    **kwargs: dict,
+    **kwargs,
 ) -> npt.NDArray[np.float64]:
     r"""Convolves `func` with gaussian of FWHM `resolution` in `x`.
 
@@ -108,7 +107,7 @@ def do_convolve_y(
     func: Callable,
     resolution: float,
     pad: int = 5,
-    **kwargs: dict,
+    **kwargs,
 ) -> npt.NDArray[np.float64]:
     xn, g = _gen_kernel(
         np.asarray(np.squeeze(x), dtype=np.float64), resolution, pad=pad

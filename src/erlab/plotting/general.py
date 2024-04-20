@@ -228,7 +228,7 @@ def place_inset(
         "lower center",
         "lower right",
     ] = "upper right",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.axes.Axes:
     """Easy placement of inset axes.
 
@@ -511,7 +511,7 @@ def gradient_fill(
     transpose: bool = False,
     reverse: bool = False,
     ax: matplotlib.axes.Axes | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.image.AxesImage:
     """Applies a gradient fill to a line plot.
 
@@ -943,7 +943,7 @@ def fermiline(
     ax: matplotlib.axes.Axes | None = None,
     value: float = 0.0,
     orientation: Literal["h", "v"] = "h",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.lines.Line2D:
     """Plots a constant energy line to denote the Fermi level.
 

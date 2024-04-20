@@ -125,7 +125,7 @@ class GoldTool(AnalysisWindow):
         data_corr: xr.DataArray | None = None,
         *,
         data_name: str | None = None,
-        **kwargs: dict,
+        **kwargs,
     ):
         super().__init__(
             data,
@@ -545,7 +545,7 @@ def goldtool(
     data_corr: xr.DataArray | None = None,
     *,
     data_name: str | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> GoldTool:
     """Interactive gold edge fitting.
 
