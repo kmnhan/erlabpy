@@ -20,6 +20,7 @@ Modules
 __all__ = [
     "ModelFitDataArrayAccessor",
     "ModelFitDatasetAccessor",
+    "ParallelFitDataArrayAccessor",
     "MomentumAccessor",
     "OffsetView",
     "ImageToolAccessor",
@@ -27,6 +28,10 @@ __all__ = [
     "SelectionAccessor",
 ]
 
-from erlab.accessors.fit import ModelFitDataArrayAccessor, ModelFitDatasetAccessor
+from erlab.accessors.fit import (
+    ModelFitDataArrayAccessor,
+    ModelFitDatasetAccessor,
+    ParallelFitDataArrayAccessor,
+)
 from erlab.accessors.kspace import MomentumAccessor, OffsetView
 from erlab.accessors.utils import ImageToolAccessor, PlotAccessor, SelectionAccessor
