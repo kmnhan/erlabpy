@@ -1,12 +1,16 @@
-"""Generates simple simulated ARPES data from Graphene bands."""
+"""Generates simple simulated ARPES data for testing purposes."""
 
 __all__ = ["generate_data", "generate_data_angles"]
+
+from collections.abc import Sequence
 
 import numpy as np
 import scipy.ndimage
 import xarray as xr
 
+import erlab.analysis.image
 import erlab.analysis.kspace
+from erlab.constants import kb_eV
 
 
 def func(kvec, a):
@@ -56,8 +60,7 @@ def generate_data(
     count: int = 10000,
     ccd_sigma: float = 0.6,
 ) -> xr.DataArray:
-    """
-    Generate simulated data for a given shape.
+    """Generate simulated data for a given shape in momentum space.
 
     Parameters
     ----------
@@ -166,8 +169,7 @@ def generate_data_angles(
     ccd_sigma: float = 0.6,
     assign_attributes: bool = False,
 ) -> xr.DataArray:
-    """
-    Generate simulated data for a given shape.
+    """Generate simulated data for a given shape in angle space.
 
     Parameters
     ----------
@@ -288,6 +290,94 @@ def generate_data_angles(
         )
 
     return out.squeeze()
+
+
+def generate_gold_edge(
+    a: float = -0.05,
+    b: float = 0.1,
+    c: float = 0.0,
+    temp: float = 100.0,
+    Eres: float = 1e-2,
+    angres: float = 0.1,
+    edge_coeffs: Sequence[float] = (0.04, 1e-5, -3e-4),
+    background_coeffs: Sequence[float] = (1.0, 0.0, -2e-3),
+    count: int = 1e6,
+    noise: bool = True,
+    seed: int | None = None,
+    ccd_sigma: float = 0.6,
+) -> xr.DataArray:
+    """
+    Generate a curved Fermi edge with a linear density of states.
+
+    Parameters
+    ----------
+    a
+        Slope of the linear density of states. Default is -0.05.
+    b
+        Intercept of the linear density of states. Default is 0.1.
+    c
+        Constant background. Default is 0.0.
+    temp
+        Temperature in Kelvin. Default is 100.0.
+    Eres
+        Energy resolution in eV. Default is 1e-2.
+    angres
+        Angular resolution. Default is 0.1.
+    edge_coeffs
+        Coefficients for the polynomial equation used to calculate the center of the
+        spectrum. Default is (0.04, 1e-5, -3e-4).
+    background_coeffs
+        Coefficients for the polynomial equation used to calculate the background of the
+        spectrum. Default is (1.0, 0.0, -2e-3).
+    count
+        Total count of the spectrum. Default is 1e6.
+    noise
+        Flag indicating whether to add noise to the spectrum. Default is True.
+    seed
+        Seed for the random number generator for the noisd. Default is None.
+    ccd_sigma
+        Standard deviation of the Gaussian filter applied to the spectrum. Default is
+        0.6.
+
+    Returns
+    -------
+    data : xarray.DataArray
+        Simulated gold edge spectrum.
+
+    """
+    alpha = np.linspace(-15, 15, 200)
+    eV = np.linspace(-1.3, 0.3, 300)
+
+    alpha = xr.DataArray(alpha, dims="alpha", coords={"alpha": alpha})
+    eV = xr.DataArray(eV, dims="eV", coords={"eV": eV})
+
+    center = np.polynomial.polynomial.polyval(alpha, edge_coeffs)
+
+    data = (b - c + a * eV) / (
+        1 + np.exp((1.0 * eV - center) / max(1e-15, temp * kb_eV))
+    ) + c
+
+    background = np.polynomial.polynomial.polyval(alpha, background_coeffs).clip(min=0)
+
+    data *= background
+    data += 0.1e-2
+    data = data / data.sum()
+    data = data * count
+
+    if noise:
+        rng = np.random.default_rng(seed)
+        data[:] = rng.poisson(data).astype(float)
+
+    data = erlab.analysis.image.gaussian_filter(
+        data, sigma={"eV": Eres, "alpha": angres}
+    )
+
+    if noise:
+        data[:] = scipy.ndimage.gaussian_filter(
+            rng.poisson(data).astype(float), sigma=ccd_sigma
+        )
+
+    return data.assign_attrs(temp_sample=temp)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ Modules
    dataloader
    utilities
    igor
+   exampledata
 
 
 For a single session, it is very common to use only one type of loader for a single

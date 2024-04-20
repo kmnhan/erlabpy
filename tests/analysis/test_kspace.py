@@ -4,7 +4,7 @@ import erlab.analysis.kspace
 import numpy as np
 import pytest
 import xarray
-from erlab.interactive.exampledata import generate_data_angles
+from erlab.io.exampledata import generate_data_angles
 
 k_tot = np.array([1.0, 2.0, 3.0])
 

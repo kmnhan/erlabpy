@@ -525,7 +525,7 @@ if __name__ == "__main__":
     #     engine="h5netcdf",
     # )
 
-    # from erlab.interactive.exampledata import generate_data
+    # from erlab.io.exampledata import generate_data
 
     # data = generate_data()
 

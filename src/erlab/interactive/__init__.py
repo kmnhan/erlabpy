@@ -13,7 +13,6 @@ Interactive tools
    bzplot
    colors
    curvefittingtool
-   exampledata
    fermiedge
    kspace
    masktool
