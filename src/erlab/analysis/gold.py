@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
+import tqdm.auto
 import uncertainties
 import xarray as xr
 
@@ -243,6 +244,11 @@ def edge(
             parallel_kw.setdefault("n_jobs", -1)
         else:
             parallel_kw.setdefault("n_jobs", 1)
+
+        parallel_kw.setdefault("max_nbytes", None)
+        parallel_kw.setdefault("return_as", "generator")
+        parallel_kw.setdefault("pre_dispatch", "n_jobs")
+
         parallel_obj = joblib.Parallel(**parallel_kw)
 
     if normalize:
@@ -260,23 +266,35 @@ def edge(
             method=method,
             scale_covar=scale_covar,
             weights=w,
+            **kwargs,
         )
         return res
 
-    if progress:
-        with joblib_progress(desc="Fitting", total=n_fits) as _:
+    tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
+
+    if parallel_obj.return_generator:
+        fitresults = tqdm.auto.tqdm(
+            parallel_obj(
+                joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                for i in range(n_fits)
+            ),
+            **tqdm_kw,
+        )
+    else:
+        if progress:
+            with joblib_progress(**tqdm_kw) as _:
+                fitresults = parallel_obj(
+                    joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                    for i in range(n_fits)
+                )
+        else:
             fitresults = parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
             )
-    else:
-        fitresults = parallel_obj(
-            joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
-            for i in range(n_fits)
-        )
 
     if return_full:
-        return fitresults
+        return list(fitresults)
 
     xval = []
     res_vals = []
