@@ -7,7 +7,7 @@ __all__ = [
     "TINY",
     "bcs_gap",
     "do_convolve",
-    "do_convolve_y",
+    "do_convolve_2d",
     "dynes",
     "fermi_dirac",
     "fermi_dirac_linbkg",
@@ -34,6 +34,33 @@ S2PI = np.sqrt(2 * np.pi)
 
 
 @numba.njit(cache=True)
+def _infer_meshgrid_shape(arr: np.ndarray) -> tuple[tuple[int, int], int, np.ndarray]:
+    if arr.ndim != 1:
+        raise ValueError("Array must be 1-dimensional")
+
+    axis = 1
+
+    # Find the index at which the array value decreases
+    change_index = np.where(np.diff(arr) <= 0)[0]
+    if change_index.size == 0:
+        raise ValueError("Array does not appear to be a flattened meshgrid")
+
+    if change_index[0] == 0:
+        change_index = np.where(np.diff(arr) > 0)[0]
+        axis = 0
+
+    # The shape of the original meshgrid
+    shape = len(arr) // (change_index[0] + 1), change_index[0] + 1
+
+    if axis == 0:
+        coord = arr.reshape(shape)[:, 0]
+    else:
+        coord = arr.reshape(shape)[0, :]
+
+    return shape, axis, coord
+
+
+@numba.njit(cache=True)
 def _gen_kernel(
     x: npt.NDArray[np.float64], resolution: float, pad: int = 5
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -56,7 +83,9 @@ def _gen_kernel(
         The gaussian kernel defined on `extended`.
 
     """
+
     delta_x = x[1] - x[0]
+
     sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
     n_pad = int(sigma * pad / delta_x + 0.5)
     x_pad = n_pad * delta_x
@@ -101,7 +130,7 @@ def do_convolve(
     return np.convolve(func(xn, **kwargs), g, mode="valid")
 
 
-def do_convolve_y(
+def do_convolve_2d(
     x: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64],
     func: Callable,
@@ -109,17 +138,37 @@ def do_convolve_y(
     pad: int = 5,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
+    idx_x = None
+    try:
+        # check if x is a meshgrid
+        shape_x, idx_x, x = _infer_meshgrid_shape(np.ascontiguousarray(x))
+        shape_y, _, y = _infer_meshgrid_shape(np.ascontiguousarray(y))
+    except ValueError:
+        pass
+    else:
+        if shape_x != shape_y:
+            raise ValueError("x and y do not have matching shape")
+
     xn, g = _gen_kernel(
         np.asarray(np.squeeze(x), dtype=np.float64), resolution, pad=pad
     )
+
     if not np.iterable(y):
         y = [y]
-    return np.vstack(
+
+    convolved = np.vstack(
         [
             np.convolve(func(xn, yi, **kwargs), g, mode="valid")
             for yi in np.asarray(y).flat
         ]
-    ).T
+    )
+
+    if idx_x is None:
+        return convolved.T
+    elif idx_x == 0:
+        return convolved.T.ravel()
+    else:
+        return convolved.ravel()
 
 
 @numba.njit(cache=True)

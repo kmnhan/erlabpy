@@ -22,7 +22,7 @@ import xarray as xr
 from erlab.analysis.fit.functions.general import (
     TINY,
     do_convolve,
-    do_convolve_y,
+    do_convolve_2d,
     fermi_dirac,
     gaussian_wh,
     lorentzian_wh,
@@ -340,4 +340,4 @@ class FermiEdge2dFunction(DynamicFunction):
             alpha = alpha.values
         if "resolution" not in params:
             raise TypeError("Missing parameter `resolution` required for convolution")
-        return do_convolve_y(eV, alpha, self.pre_call, **params).flatten()
+        return do_convolve_2d(eV, alpha, self.pre_call, **params).ravel()

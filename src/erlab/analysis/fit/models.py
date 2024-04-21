@@ -26,6 +26,13 @@ from erlab.analysis.fit.functions import (
     fermi_dirac_linbkg_broad,
     step_linbkg_broad,
 )
+from erlab.analysis.fit.functions.general import _infer_meshgrid_shape
+
+COMMON_GUESS_DOC = lmfit.models.COMMON_GUESS_DOC.replace(
+    """.. versionchanged:: 1.0.3
+       Argument ``x`` is now explicitly required to estimate starting values.""",
+    "",
+)
 
 
 @numba.njit("f8[:,:](f8[:], i8)", cache=True)
@@ -159,7 +166,7 @@ class FermiEdgeModel(lmfit.Model):
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     __init__.doc = lmfit.models.COMMON_INIT_DOC
-    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+    guess.__doc__ = COMMON_GUESS_DOC
 
 
 class StepEdgeModel(lmfit.Model):
@@ -193,7 +200,7 @@ class StepEdgeModel(lmfit.Model):
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     __init__.doc = lmfit.models.COMMON_INIT_DOC
-    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+    guess.__doc__ = COMMON_GUESS_DOC
 
 
 class PolynomialModel(lmfit.Model):
@@ -214,7 +221,7 @@ class PolynomialModel(lmfit.Model):
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     __init__.doc = lmfit.models.COMMON_INIT_DOC
-    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+    guess.__doc__ = COMMON_GUESS_DOC
 
 
 class MultiPeakModel(lmfit.Model):
@@ -301,7 +308,7 @@ class MultiPeakModel(lmfit.Model):
 
         return out
 
-    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+    guess.__doc__ = COMMON_GUESS_DOC
 
 
 class FermiEdge2dModel(lmfit.Model):
@@ -331,21 +338,40 @@ class FermiEdge2dModel(lmfit.Model):
         super().__init__(FermiEdge2dFunction(degree), **kwargs)
         self.name = f"FermiEdge2dModel (deg {degree})"
 
+        self.set_param_hint("temp", min=0.0)
+        self.set_param_hint("resolution", min=0.0)
+
     def guess(self, data, eV, alpha, **kwargs):
         pars = self.make_params()
         for i in range(self.func.poly.degree + 1):
             pars[f"{self.prefix}c{i}"].set(value=0.0)
 
-        avg_edc = data.mean("alpha").values
+        if isinstance(data, xr.DataArray):
+            avg_edc = data.mean("alpha").values
+
+        elif data.shape == eV.shape:
+            shape, _, eV = _infer_meshgrid_shape(np.ascontiguousarray(eV))
+            shape_, ax_alpha, alpha = _infer_meshgrid_shape(np.ascontiguousarray(alpha))
+            if shape != shape_:
+                raise ValueError(
+                    "eV and alpha seems to be meshgrids of different shapes."
+                )
+            avg_edc = data.reshape(shape).mean(axis=ax_alpha)
+        else:
+            avg_edc = data.reshape(len(eV), len(alpha)).mean(axis=-1)
+
         len_fit = max(round(len(eV) * 0.05), 10)
         dos0, dos1 = fit_poly_jit(
             np.asarray(eV[:len_fit], dtype=np.float64),
             np.asarray(avg_edc[:len_fit], dtype=np.float64),
             deg=1,
         )
+
         pars[f"{self.prefix}const_bkg"].set(value=dos0)
         pars[f"{self.prefix}lin_bkg"].set(value=dos1)
-        pars[f"{self.prefix}temp"].set(value=data.attrs["temp_sample"])
+
+        if isinstance(data, xr.DataArray):
+            pars[f"{self.prefix}temp"].set(value=data.attrs["temp_sample"])
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
@@ -356,7 +382,7 @@ class FermiEdge2dModel(lmfit.Model):
         return super().fit(data.ravel(), *args, **kwargs)
 
     __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
-    guess.__doc__ = lmfit.models.COMMON_GUESS_DOC
+    guess.__doc__ = COMMON_GUESS_DOC.replace("x : ", "eV, alpha : ")
 
 
 class BCSGapModel(lmfit.Model):
