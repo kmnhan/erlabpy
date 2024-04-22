@@ -12,40 +12,19 @@ import sys
 
 import joblib
 import joblib._parallel_backends
-import tqdm
-import tqdm.notebook
+import tqdm.auto
 from qtpy import QtCore
 
 
-def is_notebook():
-    # http://stackoverflow.com/questions/34091701/determine-if-were-in-an-ipython-notebook-session
-    if "IPython" not in sys.modules:  # IPython hasn't been imported
-        return False
-    from IPython import get_ipython
-
-    # check for `kernel` attribute on the IPython instance
-    return getattr(get_ipython(), "kernel", None) is not None
-
-
 @contextlib.contextmanager
-def joblib_progress(file=None, notebook=None, dynamic_ncols=True, **kwargs):
+def joblib_progress(file=None, **kwargs):
     """Context manager to patch joblib to report into tqdm progress bar given as
     argument"""
 
     if file is None:
         file = sys.stdout
 
-    if notebook is None:
-        notebook = is_notebook()
-
-    if notebook:
-        tqdm_object = tqdm.notebook.tqdm(
-            iterable=None, dynamic_ncols=dynamic_ncols, file=file, **kwargs
-        )
-    else:
-        tqdm_object = tqdm.tqdm(
-            iterable=None, dynamic_ncols=dynamic_ncols, file=file, **kwargs
-        )
+    tqdm_object = tqdm.auto.tqdm(iterable=None, file=file, **kwargs)
 
     def tqdm_print_progress(self):
         if self.n_completed_tasks > tqdm_object.n:

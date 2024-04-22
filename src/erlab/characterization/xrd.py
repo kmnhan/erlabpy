@@ -13,7 +13,7 @@ import numpy as np
 import xarray as xr
 
 
-def load_xrd_itx(path: str, **kwargs: dict):
+def load_xrd_itx(path: str, **kwargs):
     r"""Load x-ray diffraction spectra from ``.itx`` file for Igor pro.
 
     Parameters

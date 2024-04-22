@@ -17,7 +17,7 @@ __all__ = [
 
 import contextlib
 import copy
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import matplotlib
 import matplotlib.colors as mcolors
@@ -228,7 +228,7 @@ def place_inset(
         "lower center",
         "lower right",
     ] = "upper right",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.axes.Axes:
     """Easy placement of inset axes.
 
@@ -406,12 +406,13 @@ def plot_array_2d(
     carr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
     *,
+    normalize_with_larr: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     cmap: mcolors.Colormap | str = None,
     lnorm: mcolors.Normalize | None = None,
     cnorm: mcolors.Normalize | None = None,
-    background: Sequence[float] | None = None,
+    background: Any = None,
     colorbar: bool = True,
     cax: matplotlib.axes.Axes | None = None,
     colorbar_kw: dict | None = None,
@@ -456,6 +457,15 @@ def plot_array_2d(
     larr = larr.sel(**sel_kw)
     carr = carr.sel(**sel_kw)
 
+    if normalize_with_larr:
+        carr = carr / larr
+
+    if lnorm is None:
+        lnorm = plt.Normalize()
+
+    if cnorm is None:
+        cnorm = plt.Normalize()
+
     cmap_img, img = gen_2d_colormap(
         larr.values,
         carr.values,
@@ -479,6 +489,7 @@ def plot_array_2d(
             cmap_img.transpose(1, 0, 2),
             extent=(lnorm.vmin, lnorm.vmax, cnorm.vmin, cnorm.vmax),
             origin="lower",
+            aspect="auto",
         )
 
     im = ax.imshow(img, extent=array_extent(larr), **imshow_kw)
@@ -500,7 +511,7 @@ def gradient_fill(
     transpose: bool = False,
     reverse: bool = False,
     ax: matplotlib.axes.Axes | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.image.AxesImage:
     """Applies a gradient fill to a line plot.
 
@@ -932,7 +943,7 @@ def fermiline(
     ax: matplotlib.axes.Axes | None = None,
     value: float = 0.0,
     orientation: Literal["h", "v"] = "h",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.lines.Line2D:
     """Plots a constant energy line to denote the Fermi level.
 

@@ -5,7 +5,9 @@
 # -- Imports -----------------------------------------------------------------
 
 import importlib.metadata
+import inspect
 import os
+import sys
 
 import pybtex.plugin
 import pybtex.style.formatting
@@ -37,7 +39,7 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     # "sphinx_autodoc_typehints",
-    "sphinx.ext.viewcode",
+    "sphinx.ext.linkcode",
     "sphinx.ext.mathjax",
     "sphinx.ext.intersphinx",
     "matplotlib.sphinxext.plot_directive",
@@ -60,6 +62,58 @@ default_role = "obj"
 
 # nitpicky = False
 # nitpick_ignore = [("py:class", "numpy.float64")]
+
+# -- Linkcode settings -------------------------------------------------------
+# https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html
+
+
+# based on numpy doc/source/conf.py
+def linkcode_resolve(domain, info):
+    """
+    Determine the URL corresponding to Python object
+    """
+    if domain != "py":
+        return None
+
+    modname = info["module"]
+    fullname = info["fullname"]
+
+    submod = sys.modules.get(modname)
+    if submod is None:
+        return None
+
+    obj = submod
+    for part in fullname.split("."):
+        try:
+            obj = getattr(obj, part)
+        except AttributeError:
+            return None
+
+    try:
+        fn = inspect.getsourcefile(inspect.unwrap(obj))
+    except TypeError:
+        fn = None
+    if not fn:
+        return None
+
+    try:
+        source, lineno = inspect.getsourcelines(obj)
+    except OSError:
+        lineno = None
+
+    if lineno:
+        linespec = f"#L{lineno}-L{lineno + len(source) - 1}"
+    else:
+        linespec = ""
+
+    import erlab
+
+    fn = os.path.relpath(fn, start=os.path.dirname(erlab.__file__))
+
+    return (
+        f"https://github.com/kmnhan/erlabpy/blob/"
+        f"v{version}/src/erlab/{fn}{linespec}"
+    )
 
 
 # -- Autosummary and autodoc settings ----------------------------------------
@@ -131,6 +185,7 @@ intersphinx_mapping = {
     "iminuit": ("https://scikit-hep.org/iminuit/", None),
     "cmasher": ("https://cmasher.readthedocs.io/", None),
     "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable/", None),
+    "joblib": ("https://joblib.readthedocs.io/en/latest/", None),
 }
 
 

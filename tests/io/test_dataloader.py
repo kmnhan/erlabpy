@@ -8,7 +8,7 @@ import tempfile
 import erlab.io
 import numpy as np
 import pandas as pd
-from erlab.interactive.exampledata import generate_data_angles
+from erlab.io.exampledata import generate_data_angles
 from erlab.io.dataloader import LoaderBase
 
 

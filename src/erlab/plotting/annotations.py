@@ -315,7 +315,7 @@ def label_subplot_properties(
     name: str | None = None,
     unit: str | None = None,
     order: Literal["C", "F", "A", "K"] = "C",
-    **kwargs: dict,
+    **kwargs,
 ):
     r"""Labels subplots with automatically generated labels.
 
@@ -625,7 +625,7 @@ def mark_points(
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
-    **kwargs: dict,
+    **kwargs,
 ):
     """Mark points above the horizontal axis.
 

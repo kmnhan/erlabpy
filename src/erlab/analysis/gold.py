@@ -1,6 +1,7 @@
 """Fermi edge fitting."""
 
 __all__ = [
+    "correct_with_edge",
     "edge",
     "poly",
     "poly_from_edge",
@@ -9,7 +10,7 @@ __all__ = [
     "spline_from_edge",
 ]
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import joblib
 import lmfit.model
@@ -20,17 +21,124 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
+import tqdm.auto
 import uncertainties
 import xarray as xr
 
 from erlab.analysis.fit.models import (
+    FermiEdge2dModel,
     FermiEdgeModel,
     PolynomialModel,
     StepEdgeModel,
 )
-from erlab.analysis.utilities import correct_with_edge
+from erlab.analysis.utilities import shift
 from erlab.parallel import joblib_progress
-from erlab.plotting.general import autoscale_to, figwh
+from erlab.plotting.colors import proportional_colorbar
+from erlab.plotting.general import autoscale_to, figwh, plot_array
+
+
+def correct_with_edge(
+    darr: xr.DataArray,
+    modelresult: lmfit.model.ModelResult | npt.NDArray[np.floating] | Callable,
+    shift_coords: bool = True,
+    plot: bool = False,
+    plot_kw: dict | None = None,
+    **shift_kwargs,
+):
+    """
+    Corrects the given data array `darr` with the given values or fit result.
+
+    Parameters
+    ----------
+    darr
+        The input data array to be corrected.
+    modelresult
+        The model result that contains the fermi edge information. It can be an instance
+        of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
+        angle, or a callable function that takes an array of angles and returns the
+        corresponding energy value.
+    shift_coords
+        If `True`, the coordinates of the output data will be changed so that the output
+        contains all the values of the original data. If `False`, the coordinates and
+        shape of the original data will be retained, and only the data will be shifted.
+        Defaults to `False`.
+    plot
+        Whether to plot the original and corrected data arrays. Defaults to `False`.
+    plot_kw
+        Additional keyword arguments for the plot. Defaults to `None`.
+    **shift_kwargs
+        Additional keyword arguments to `erlab.analysis.utilities.shift`.
+
+    Returns
+    -------
+    corrected : xarray.DataArray
+        The edge corrected data.
+    """
+    if plot_kw is None:
+        plot_kw = {}
+
+    if isinstance(modelresult, lmfit.model.ModelResult):
+        if isinstance(modelresult.model, FermiEdge2dModel):
+            edge_quad = np.polynomial.polynomial.polyval(
+                darr.alpha,
+                np.array(
+                    [
+                        modelresult.best_values[f"c{i}"]
+                        for i in range(modelresult.model.func.poly.degree + 1)
+                    ]
+                ),
+            )
+        else:
+            edge_quad = modelresult.eval(x=darr.alpha)
+
+    elif callable(modelresult):
+        edge_quad = modelresult(darr.alpha.values)
+
+    elif isinstance(modelresult, np.ndarray | xr.DataArray):
+        if len(darr.alpha) != len(modelresult):
+            raise ValueError(
+                "Length of modelresult must be equal to the length of alpha in data"
+            )
+        else:
+            edge_quad = modelresult
+
+    else:
+        raise TypeError(
+            "modelresult must be one of "
+            "lmfit.model.ModelResult, "
+            "and np.ndarray or a callable"
+        )
+
+    if isinstance(edge_quad, np.ndarray):
+        edge_quad = xr.DataArray(
+            edge_quad, coords={"alpha": darr.alpha}, dims=["alpha"]
+        )
+
+    corrected = shift(darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs)
+
+    if plot is True:
+        _, axes = plt.subplots(1, 2, layout="constrained", figsize=(10, 5))
+
+        plot_kw.setdefault("cmap", "copper")
+        plot_kw.setdefault("gamma", 0.5)
+
+        if darr.ndim > 2:
+            avg_dims = list(darr.dims)[:]
+            avg_dims.remove("alpha")
+            avg_dims.remove("eV")
+            plot_array(darr.mean(avg_dims), ax=axes[0], **plot_kw)
+            plot_array(corrected.mean(avg_dims), ax=axes[1], **plot_kw)
+        else:
+            plot_array(darr, ax=axes[0], **plot_kw)
+            plot_array(corrected, ax=axes[1], **plot_kw)
+        edge_quad.plot(ax=axes[0], ls="--", color="0.35")
+
+        proportional_colorbar(ax=axes[0])
+        proportional_colorbar(ax=axes[1])
+        axes[0].set_title("Data")
+        axes[1].set_title("Edge Corrected")
+
+    return corrected
 
 
 def edge(
@@ -42,13 +150,14 @@ def edge(
     vary_temp: bool = False,
     fast: bool = False,
     method: str = "leastsq",
+    scale_covar: bool = True,
+    normalize: bool = True,
+    fixed_center: float | None = None,
     progress: bool = True,
     parallel_kw: dict | None = None,
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
-    fixed_center: float | None = None,
-    scale_covar: bool = True,
-    **kwargs: dict,
+    **kwargs,
 ) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
     """
     Fit a Fermi edge to the given gold data.
@@ -73,6 +182,13 @@ def edge(
         `False`.
     method
         The fitting method to use, by default ``"leastsq"``.
+    scale_covar
+        Whether to scale the covariance matrix, by default `True`.
+    fixed_center
+        The fixed center value. If provided, the Fermi level will be fixed at the given
+        value, by default `None`.
+    normalize
+        Whether to normalize the energy coordinates, by default `True`.
     progress
         Whether to display the fitting progress, by default `True`.
     parallel_kw
@@ -82,11 +198,6 @@ def edge(
         `parallel_kw` will be ignored.
     return_full
         Whether to return the full fit results, by default `False`.
-    fixed_center
-        The fixed center value. If provided, the Fermi level will be fixed at the given
-        value, by default `None`.
-    scale_covar
-        Whether to scale the covariance matrix, by default `True`.
     **kwargs
         Additional keyword arguments to fitting.
 
@@ -133,7 +244,17 @@ def edge(
             parallel_kw.setdefault("n_jobs", -1)
         else:
             parallel_kw.setdefault("n_jobs", 1)
+
+        parallel_kw.setdefault("max_nbytes", None)
+        parallel_kw.setdefault("return_as", "generator")
+        parallel_kw.setdefault("pre_dispatch", "n_jobs")
+
         parallel_obj = joblib.Parallel(**parallel_kw)
+
+    if normalize:
+        # Normalize energy coordinates
+        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
+        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
 
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
@@ -145,33 +266,49 @@ def edge(
             method=method,
             scale_covar=scale_covar,
             weights=w,
+            **kwargs,
         )
         return res
 
-    if progress:
-        with joblib_progress(desc="Fitting", total=n_fits) as _:
+    tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
+
+    if parallel_obj.return_generator:
+        fitresults = tqdm.auto.tqdm(
+            parallel_obj(
+                joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                for i in range(n_fits)
+            ),
+            **tqdm_kw,
+        )
+    else:
+        if progress:
+            with joblib_progress(**tqdm_kw) as _:
+                fitresults = parallel_obj(
+                    joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                    for i in range(n_fits)
+                )
+        else:
             fitresults = parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
             )
-    else:
-        fitresults = parallel_obj(
-            joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
-            for i in range(n_fits)
-        )
 
     if return_full:
-        return fitresults
+        return list(fitresults)
 
     xval = []
     res_vals = []
 
     for i, r in enumerate(fitresults):
-        center_ufloat = r.uvars["center"]
+        if hasattr(r, "uvars"):
+            center_ufloat = r.uvars["center"]
 
-        if not np.isnan(center_ufloat.std_dev):
-            xval.append(gold_sel.alpha.values[i])
-            res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
+            if normalize:
+                center_ufloat = center_ufloat * stdx + avgx
+
+            if not np.isnan(center_ufloat.std_dev):
+                xval.append(gold_sel.alpha.values[i])
+                res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
 
     xval = np.asarray(xval)
     yval, yerr = np.asarray(res_vals).T
@@ -319,6 +456,7 @@ def poly(
     vary_temp: bool = False,
     fast: bool = False,
     method: str = "leastsq",
+    normalize: bool = True,
     degree: int = 4,
     correct: bool = False,
     crop_correct: bool = False,
@@ -337,13 +475,14 @@ def poly(
         vary_temp=vary_temp,
         fast=fast,
         method=method,
+        normalize=normalize,
         parallel_kw=parallel_kw,
         scale_covar=scale_covar_edge,
     )
 
     modelresult = poly_from_edge(
         center_arr,
-        weights=1 / center_stderr,
+        weights=1.0 / center_stderr,
         degree=degree,
         method=method,
         scale_covar=scale_covar,

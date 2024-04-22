@@ -47,7 +47,7 @@ __all__ = [
 
 from collections.abc import Iterable, Sequence
 from numbers import Number
-from typing import Literal
+from typing import Any, Literal
 
 import matplotlib
 import matplotlib.axes
@@ -538,7 +538,7 @@ def proportional_colorbar(
     mappable: matplotlib.cm.ScalarMappable | None = None,
     cax: matplotlib.axes.Axes | None = None,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.colorbar.Colorbar:
     """
     Replaces the current colorbar or creates a new colorbar with proportional spacing.
@@ -715,7 +715,7 @@ def _ez_inset(
         "lower center",
         "lower right",
     ] = "upper right",
-    **kwargs: dict,
+    **kwargs,
 ) -> matplotlib.axes.Axes:
     fig = parent_axes.get_figure()
     locator = InsetAxesLocator(parent_axes, width, height, pad, loc)
@@ -817,7 +817,7 @@ def nice_colorbar(
     orientation: Literal["vertical", "horizontal"] = "vertical",
     floating=False,
     ticklabels: Sequence[str] | None = None,
-    **kwargs: dict,
+    **kwargs,
 ):
     r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
 
@@ -1033,7 +1033,7 @@ def gen_2d_colormap(
     *,
     lnorm: plt.Normalize | None = None,
     cnorm: plt.Normalize | None = None,
-    background: Sequence[float] | None = None,
+    background: Any = None,
     N: int = 256,
 ):
     """Generate a 2D colormap image from lightness and color data.
@@ -1081,21 +1081,30 @@ def gen_2d_colormap(
         cnorm = plt.Normalize()
 
     if background is None:
-        background = (1, 1, 1)
+        background: tuple[float, float, float] = (1, 1, 1, 1)
+    else:
+        background: tuple[float, float, float] = matplotlib.colors.to_rgba(background)
 
-    lnorm.autoscale_None(ldat)
-    cnorm.autoscale_None(cdat)
+    ldat_masked = np.ma.masked_invalid(ldat)
+    cdat_masked = np.ma.masked_invalid(cdat)
 
-    l_vals = lnorm(ldat)[:, :, np.newaxis]
-    img = cmap(cnorm(cdat))[:, :, :-1]
+    lnorm.autoscale_None(ldat_masked)
+    cnorm.autoscale_None(cdat_masked)
+
+    l_vals = lnorm(ldat_masked)
+    c_vals = cnorm(cdat_masked)
+    l_vals = l_vals[:, :, np.newaxis]
+
+    img = cmap(c_vals)
     img *= l_vals
     img += (1 - l_vals) * background
-    l_vals = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
+
+    l_linear = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
     cmap_img = np.repeat(
         cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
-    )[:, :, :-1]
-    cmap_img *= l_vals
-    cmap_img += (1 - l_vals) * background
+    )
+    cmap_img *= l_linear
+    cmap_img += (1 - l_linear) * background
 
     return cmap_img, img
 

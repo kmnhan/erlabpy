@@ -5,9 +5,8 @@ Getting Started
 Installing
 ==========
 
-The recommended way to install ERLabPy is via `conda
-<https://docs.conda.io/en/latest/>`_. If you do not have conda installed, follow
-the :ref:`installation instructions <Installing conda>`. Once you have a working
+The recommended way to install ERLabPy is via conda. If you do not have conda installed,
+follow the :ref:`installation instructions <Installing conda>`. Once you have a working
 conda environment, you can install ERLabPy with the conda command line tool: ::
 
   conda install -c conda-forge erlab

@@ -17,7 +17,7 @@ def _load_experiment_raw(
     prefix: str | None = None,
     ignore: list[str] | None = None,
     recursive: bool = False,
-    **kwargs: dict,
+    **kwargs,
 ) -> xr.Dataset:
     if folder is None:
         folder = []
@@ -64,7 +64,7 @@ def load_experiment(
     prefix: str | None = None,
     ignore: list[str] | None = None,
     recursive: bool = False,
-    **kwargs: dict,
+    **kwargs,
 ) -> xr.Dataset:
     """Loads waves from an igor experiment (`.pxp`) file.
 

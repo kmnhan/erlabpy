@@ -205,7 +205,7 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 
     """
 
-    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs: dict):
+    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs):
         super().__init__(segments, **kwargs)
         self._scale_linewidths: bool = scale_linewidths
 

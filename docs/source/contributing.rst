@@ -120,8 +120,7 @@ reflected in the package without having to reinstall it. Before installing:
 
    .. hint::
 
-     | If using conda, replace :code:`mamba` with :code:`conda`.
-     | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml` to use `Accelerate <https://developer.apple.com/accelerate/>`_ instead of `OpenBLAS <https://en.wikipedia.org/wiki/OpenBLAS>`_.
+     If using conda, replace :code:`mamba` with :code:`conda`.
 
    .. code-block:: sh
 
@@ -152,8 +151,7 @@ Updating the editable installation
 
   .. hint::
 
-    | If using conda, replace :code:`mamba` with :code:`conda`.
-    | If on Apple silicon, replace :code:`environment.yml` with :code:`environment_apple.yml`.
+    If using conda, replace :code:`mamba` with :code:`conda`.
 
   .. code-block:: bash
 
@@ -304,6 +302,16 @@ Code standards
           def __init__(self):
               super().__init__()
               self.setupUi(self)
+
+- Please try to add type annotations to your code. This will help with code completion
+  and static analysis.
+
+- Although it would be great to enforce static type checking, our code base currently
+  does not pass the tests. It would require a large amount of work to get it to pass, so
+  we are not enforcing it at the moment, and it is unclear whether the extra effort is
+  worth it. See `this article
+  <https://typing.readthedocs.io/en/latest/source/typing_anti_pitch.html>`_ for some
+  reasons to avoid static type checking.
 
 Documentation
 =============

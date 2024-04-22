@@ -12,6 +12,8 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
+
 import xarray as xr
 
 
@@ -111,7 +113,7 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
-def open_hdf5(filename: str | os.PathLike, **kwargs: dict) -> xr.DataArray | xr.Dataset:
+def open_hdf5(filename: str | os.PathLike, **kwargs) -> xr.DataArray | xr.Dataset:
     """Open data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.open_dataarray` and `xarray.open_dataset`.
@@ -135,7 +137,7 @@ def open_hdf5(filename: str | os.PathLike, **kwargs: dict) -> xr.DataArray | xr.
         return xr.open_dataset(filename, **kwargs)
 
 
-def load_hdf5(filename: str | os.PathLike, **kwargs: dict) -> xr.DataArray | xr.Dataset:
+def load_hdf5(filename: str | os.PathLike, **kwargs) -> xr.DataArray | xr.Dataset:
     """Load data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.load_dataarray` and `xarray.load_dataset`.
@@ -163,7 +165,7 @@ def save_as_hdf5(
     data: xr.DataArray | xr.Dataset,
     filename: str | os.PathLike,
     igor_compat: bool = True,
-    **kwargs: dict,
+    **kwargs,
 ):
     """Saves data in ``HDF5`` format.
 
@@ -202,7 +204,7 @@ def save_as_hdf5(
         # IGORWaveScaling order: chunk row column layer
         scaling = [[1, 0]]
         for i in range(data.ndim):
-            coord = data[data.dims[i]].values
+            coord: npt.NDArray = data[data.dims[i]].values
             delta = coord[1] - coord[0]
             scaling.append([delta, coord[0]])
         if data.ndim == 4:
@@ -217,7 +219,7 @@ def save_as_hdf5(
     )
 
 
-def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs: dict):
+def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs):
     """Saves data in ``netCDF4`` format.
 
     Discards invalid ``netCDF4`` attributes and produces a warning.

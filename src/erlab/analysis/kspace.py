@@ -64,7 +64,7 @@ def kz_func(kinetic_energy, inner_potential, kx, ky):
 
 
 def get_kconv_func(
-    kinetic_energy: np.floating | npt.NDArray,
+    kinetic_energy: float | npt.NDArray,
     configuration: AxesConfiguration,
     angle_params: dict[str, float],
 ) -> tuple[Callable, Callable]:
@@ -136,11 +136,11 @@ def get_kconv_func(
 
 
 def _kconv_func_type1(
-    k_tot: np.floating | npt.NDArray,
-    delta: np.floating = 0.0,
-    xi: np.floating = 0.0,
-    xi0: np.floating = 0.0,
-    beta0: np.floating = 0.0,
+    k_tot: float | npt.NDArray,
+    delta: float = 0.0,
+    xi: float = 0.0,
+    xi0: float = 0.0,
+    beta0: float = 0.0,
 ):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
@@ -180,11 +180,11 @@ def _kconv_func_type1(
 
 
 def _kconv_func_type2(
-    k_tot: np.floating | npt.NDArray,
-    delta: np.floating = 0.0,
-    xi: np.floating = 0.0,
-    xi0: np.floating = 0.0,
-    beta0: np.floating = 0.0,
+    k_tot: float | npt.NDArray,
+    delta: float = 0.0,
+    xi: float = 0.0,
+    xi0: float = 0.0,
+    beta0: float = 0.0,
 ):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
@@ -224,12 +224,12 @@ def _kconv_func_type2(
 
 
 def _kconv_func_type1_da(
-    k_tot: np.floating | npt.NDArray,
-    delta: np.floating = 0.0,
-    chi: np.floating = 0.0,
-    chi0: np.floating = 0.0,
-    xi: np.floating = 0.0,
-    xi0: np.floating = 0.0,
+    k_tot: float | npt.NDArray,
+    delta: float = 0.0,
+    chi: float = 0.0,
+    chi0: float = 0.0,
+    xi: float = 0.0,
+    xi0: float = 0.0,
 ):
     _fwd_2, _inv_2 = _kconv_func_type2_da(k_tot, delta, chi, chi0, xi, xi0)
 
@@ -244,12 +244,12 @@ def _kconv_func_type1_da(
 
 
 def _kconv_func_type2_da(
-    k_tot: np.floating | npt.NDArray,
-    delta: np.floating = 0.0,
-    chi: np.floating = 0.0,
-    chi0: np.floating = 0.0,
-    xi: np.floating = 0.0,
-    xi0: np.floating = 0.0,
+    k_tot: float | npt.NDArray,
+    delta: float = 0.0,
+    chi: float = 0.0,
+    chi0: float = 0.0,
+    xi: float = 0.0,
+    xi0: float = 0.0,
 ):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ, azimuth
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ

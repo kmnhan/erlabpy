@@ -1217,7 +1217,7 @@ class ItoolPlotItem(pg.PlotItem):
             return
         self.set_range_from(self.slicer_area.manual_limits)
 
-    def set_range_from(self, limits: dict[str, list[float]], **kwargs: dict):
+    def set_range_from(self, limits: dict[str, list[float]], **kwargs):
         for dim, key in zip(self.axis_dims, ("xRange", "yRange")):
             if dim is not None:
                 try:

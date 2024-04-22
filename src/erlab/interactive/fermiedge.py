@@ -62,7 +62,10 @@ class EdgeFitter(QtCore.QThread):
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
         self.parallel_obj = joblib.Parallel(
-            n_jobs=self.params["# CPU"], max_nbytes=None
+            n_jobs=self.params["# CPU"],
+            max_nbytes=None,
+            return_as="list",
+            pre_dispatch="n_jobs",
         )
 
     @QtCore.Slot()
@@ -122,7 +125,7 @@ class GoldTool(AnalysisWindow):
         data_corr: xr.DataArray | None = None,
         *,
         data_name: str | None = None,
-        **kwargs: dict,
+        **kwargs,
     ):
         super().__init__(
             data,
@@ -542,7 +545,7 @@ def goldtool(
     data_corr: xr.DataArray | None = None,
     *,
     data_name: str | None = None,
-    **kwargs: dict,
+    **kwargs,
 ) -> GoldTool:
     """Interactive gold edge fitting.
 

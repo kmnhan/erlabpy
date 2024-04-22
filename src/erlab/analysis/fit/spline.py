@@ -9,9 +9,7 @@ except ImportError as e:
     ) from e
 
 
-def xcsaps(
-    arr: xr.DataArray, **kwargs: dict
-) -> tuple[xr.DataArray, csaps.ISmoothingSpline]:
+def xcsaps(arr: xr.DataArray, **kwargs) -> tuple[xr.DataArray, csaps.ISmoothingSpline]:
     """`xarray` compatible `csaps.csaps`.
 
     Parameters
