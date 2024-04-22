@@ -1042,15 +1042,18 @@ class LoaderRegistry(RegistryBase):
             self.current_loader = loader
 
     @contextlib.contextmanager
-    def loader_context(self, loader: str, data_dir: str | os.PathLike | None = None):
-        """Context manager for temporarily changing the current data loader.
-
-        The loader set here will only be used within the context manager.
+    def loader_context(
+        self, loader: str | None = None, data_dir: str | os.PathLike | None = None
+    ):
+        """
+        Context manager for the current data loader and data directory.
 
         Parameters
         ----------
-        loader
-            The new loader to set as the current loader.
+        loader : str, optional
+            The name or alias of the loader to use in the context.
+        data_dir : str or os.PathLike, optional
+            The data directory to use in the context.
 
         Examples
         --------
@@ -1059,17 +1062,24 @@ class LoaderRegistry(RegistryBase):
           >>> with erlab.io.loader_context("merlin"):
           ...     dat_merlin = erlab.io.load(...)
 
-        - Load data with different loaders:
+        - Load data with different loaders and directories:
 
-          >>> erlab.io.set_loader("ssrl52")
+          >>> erlab.io.set_loader("ssrl52", data_dir="/path/to/dir1")
           >>> dat_ssrl_1 = erlab.io.load(...)
-          >>> with erlab.io.loader_context("merlin"):
+          >>> with erlab.io.loader_context("merlin", data_dir="/path/to/dir2"):
           ...     dat_merlin = erlab.io.load(...)
           >>> dat_ssrl_2 = erlab.io.load(...)
 
         """
-        old_loader: LoaderBase | None = self.current_loader
-        self.set_loader(loader)
+
+        if loader is None and data_dir is None:
+            raise ValueError(
+                "At least one of loader or data_dir must be specified in the context"
+            )
+
+        if loader is not None:
+            old_loader: LoaderBase | None = self.current_loader
+            self.set_loader(loader)
 
         if data_dir is not None:
             old_data_dir = self.default_data_dir
@@ -1078,7 +1088,8 @@ class LoaderRegistry(RegistryBase):
         try:
             yield self.current_loader
         finally:
-            self.set_loader(old_loader)
+            if loader is not None:
+                self.set_loader(old_loader)
 
             if data_dir is not None:
                 self.set_data_dir(old_data_dir)
