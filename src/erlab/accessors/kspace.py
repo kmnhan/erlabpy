@@ -10,7 +10,6 @@ from collections.abc import Callable, ItemsView, Iterable, Iterator
 from typing import Literal
 
 import numpy as np
-import numpy.typing as npt
 import xarray as xr
 
 from erlab.accessors.utils import ERLabAccessor
@@ -310,6 +309,21 @@ class MomentumAccessor(ERLabAccessor):
                 return "ky"
 
     @property
+    def other_axis(self) -> str:
+        """Returns the momentum axis perpendicular to the slit.
+
+        Returns
+        -------
+        str
+            Returns ``'ky'`` for type 1 configurations, ``'kx'`` otherwise.
+        """
+        match self.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type1DA:
+                return "ky"
+            case _:
+                return "kx"
+
+    @property
     @only_angles
     def momentum_axes(self) -> tuple[str, ...]:
         """Returns the momentum axes of the data after conversion.
@@ -346,72 +360,31 @@ class MomentumAccessor(ERLabAccessor):
         return params
 
     @property
-    def _photon_energy(self) -> npt.NDArray[np.floating] | float:
-        # Make photon energy axis always comes last
-        if self.has_hv:
-            return self._obj.hv.values[
-                tuple(
-                    slice(None) if (i == self._obj.ndim - 1) else np.newaxis
-                    for i in range(self._obj.ndim)
-                )
-            ]
-        else:
-            # Scalar
-            return float(self._obj.hv)
-
-    @property
-    def _beta(self) -> npt.NDArray[np.floating] | float:
-        if self.has_beta:
-            if self.has_hv:
-                # Assume hv-dependent beta, make same shape as hv (last axis)
-                return self._obj["beta"].values[
-                    tuple(
-                        slice(None) if (i == self._obj.ndim - 1) else np.newaxis
-                        for i in range(self._obj.ndim)
-                    )
-                ]
-            else:
-                # First axis
-                return self._obj["beta"].values[
-                    tuple(
-                        slice(None) if (i == 0) else np.newaxis
-                        for i in range(self._obj.ndim)
-                    )
-                ]
-        else:
-            # Scalar
-            return float(self._obj["beta"])
+    @only_angles
+    def alpha(self) -> xr.DataArray:
+        return self._obj.alpha
 
     @property
     @only_angles
-    def _alpha(self) -> npt.NDArray[np.floating] | float:
-        if not self.has_beta and not self.has_hv:
-            return self._obj["alpha"].values
-        else:
-            return self._obj["alpha"].values[
-                tuple(
-                    slice(None) if (i == 0) else np.newaxis
-                    for i in range(self._obj.ndim)
-                )
-            ]
+    def beta(self) -> xr.DataArray:
+        return self._obj.beta
 
     @property
-    def _binding_energy(self) -> npt.NDArray[np.floating] | float:
-        if self.has_eV:
-            if self._obj.eV.values.min() > 0:
-                print(
-                    "Energy values seems to be kinetic, transforming to binding energy"
-                )
-                self._obj = self._obj.assign_coords(
-                    eV=self._obj.eV.values - self._photon_energy + self.work_function
-                )
-            return self._obj.eV.values[:, np.newaxis]
-        else:
-            return float(self._obj.eV.values)
+    def hv(self) -> xr.DataArray:
+        return self._obj.hv
 
     @property
-    def _kinetic_energy(self) -> npt.NDArray[np.floating] | float:
-        return self._photon_energy - self.work_function + self._binding_energy
+    def binding_energy(self) -> xr.DataArray:
+        if self._obj.eV.values.min() > 0:
+            # eV values are kinetic, transform to binding energy
+            binding = self._obj.eV - self.hv + self.work_function
+            return binding.assign_coords(eV=binding.values)
+        else:
+            return self._obj.eV
+
+    @property
+    def kinetic_energy(self) -> xr.DataArray:
+        return self.hv - self.work_function + self.binding_energy
 
     @property
     def has_eV(self) -> bool:
@@ -442,7 +415,7 @@ class MomentumAccessor(ERLabAccessor):
         :math:`hν`-dependent :math:`β` offset.
 
         """
-        return self._obj.beta.size > 1
+        return self.beta.size > 1
 
     @property
     def valid_offset_keys(self) -> tuple[str, ...]:
@@ -534,8 +507,8 @@ class MomentumAccessor(ERLabAccessor):
         .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
         """
-        min_Ek = np.amin(self._kinetic_energy)
-        max_angle = max(np.abs(self._obj["alpha"].values))
+        min_Ek = np.amin(self.kinetic_energy.values)
+        max_angle = max(np.abs(self.alpha.values))
         return (
             rel_kconv
             * np.sqrt(min_Ek)
@@ -553,10 +526,18 @@ class MomentumAccessor(ERLabAccessor):
         .. math:: \Delta k_z \sim 1/\lambda
 
         """
-        kin = self._kinetic_energy.flatten()
+        kin = self.kinetic_energy.values
         c1, c2 = 641.0, 0.096
         imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
         return np.amin(1 / imfp)
+
+    def _get_transformed_coords(self) -> dict[str, xr.DataArray]:
+        kx, ky = self._forward_func(self.alpha, self.beta)
+        if "hv" in kx.dims:
+            kz = kz_func(self.kinetic_energy, self.inner_potential, kx, ky)
+            return {"kx": kx, "ky": ky, "kz": kz}
+        else:
+            return {"kx": kx, "ky": ky}
 
     def estimate_bounds(self) -> dict[str, tuple[float, float]]:
         """
@@ -571,34 +552,11 @@ class MomentumAccessor(ERLabAccessor):
             values are tuples representing the minimum and maximum values.
 
         """
-        if self.has_hv:
-            # hv dependent cut
-            kx, ky = self._forward_func_raw(self._alpha, self._beta)
-            kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
 
-            return {
-                "kx": (kx.min(), kx.max()),
-                "ky": (ky.min(), ky.max()),
-                "kz": (kz.min(), kz.max()),
-            }
-
-        elif self.has_beta:
-            # kxy map
-            # construct boundary array from meshgrid
-            alpha, beta = (
-                np.r_[arr[0, :-1], arr[:-1, -1], arr[-1, ::-1], arr[-2:0:-1, 0]]
-                for arr in np.meshgrid(self._obj["alpha"], self._obj["beta"])
-            )
-
-            kx, ky = self._forward_func_raw(alpha[np.newaxis, :], beta[np.newaxis, :])
-
-            return {"kx": (kx.min(), kx.max()), "ky": (ky.min(), ky.max())}
-
-        else:
-            # just cut
-            kx, ky = self._forward_func_raw(self._alpha, self._beta)
-
-            return {"kx": (kx.min(), kx.max()), "ky": (ky.min(), ky.max())}
+        return {
+            k: (v.values.min(), v.values.max())
+            for k, v in self._get_transformed_coords().items()
+        }
 
     @only_angles
     def estimate_resolution(
@@ -638,15 +596,14 @@ class MomentumAccessor(ERLabAccessor):
 
         if axis == self.slit_axis:
             dim = "alpha"
-
+        elif axis == self.other_axis:
+            dim = "beta"
         elif axis == "kz":
             dim = "hv"
-
             if not self.has_hv:
                 raise ValueError("No photon energy axis found.")
-
         else:
-            dim = "beta"
+            raise ValueError(f"`{axis}` is not a valid momentum axis.")
 
         if from_numpoints:
             return float((lims[1] - lims[0]) / len(self._obj[dim]))
@@ -655,74 +612,72 @@ class MomentumAccessor(ERLabAccessor):
         else:
             return self.best_kp_resolution
 
-    def _forward_func_raw(self, alpha, beta):
+    def _forward_func(self, alpha, beta):
         return get_kconv_func(
-            self._kinetic_energy, self.configuration, self.angle_params
+            self.kinetic_energy, self.configuration, self.angle_params
         )[0](alpha, beta)
 
-    def _inverse_func_raw(self, kx, ky, kz=None):
+    def _inverse_func(self, kx, ky, kz=None):
         return get_kconv_func(
-            self._kinetic_energy, self.configuration, self.angle_params
+            self.kinetic_energy, self.configuration, self.angle_params
         )[1](kx, ky, kz)
 
-    # def forward(self, phi, theta):
-    #     # make alpha and beta (1,N) where N = len(phi) * len(theta)
-    #     alpha, beta = np.array(np.meshgrid(phi, theta)).reshape(2, -1)[:, None]
-
-    #     if self.has_hv:
-    #         alpha = alpha[:, :, np.newaxis]
-    #         beta = beta[:, :, np.newaxis]
-    #     # binding energy 없이 photon energy만 주어지는 경우는 없겠지?
-
-    #     return self._forward_func(alpha, beta)
-
-    def _inverse(
-        self,
-        kx: npt.NDArray[np.floating],
-        ky: npt.NDArray[np.floating],
-        kz: npt.NDArray[np.floating] | None = None,
-    ) -> dict[str, npt.NDArray[np.floating]]:
-        if self.has_eV:
-            ndim = self._kinetic_energy.ndim
+    def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
+        kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
+        kyval = xr.DataArray(ky, dims="ky", coords={"ky": ky})
+        if kz is not None:
+            kzval = xr.DataArray(kz, dims="kz", coords={"kz": kz})
         else:
-            ndim = 1
-        slicer = tuple(
-            slice(None) if (i == ndim - 1) else np.newaxis for i in range(ndim)
-        )
-
-        if kz is None:
-            # make kxval and kyval (...,N) where N = len(kx) * len(ky)
-            kxval, kyval = np.array(np.meshgrid(kx, ky)).reshape(2, -1)
-            kxval, kyval = kxval[slicer], kyval[slicer]
             kzval = None
-        else:
-            kxval, kyval, kzval = np.array(np.meshgrid(kx, ky, kz)).reshape(3, -1)
-            kxval, kyval, kzval = kxval[slicer], kyval[slicer], kzval[slicer]
 
-        alpha, beta = self._inverse_func_raw(kxval, kyval, kzval)
+        alpha, beta = self._inverse_func(kxval, kyval, kzval)
 
         out_dict = {"alpha": alpha, "beta": beta}
 
         if self.has_eV:
-            # Ensure all arrays have the same shape
-            binding = self._binding_energy * np.ones_like(alpha)
-            for k in out_dict:
-                out_dict[k] = out_dict[k] * np.ones_like(binding)
-            out_dict["eV"] = binding
+            out_dict["eV"] = self.binding_energy
 
-        if self.has_hv:
-            # Photon energy
+        if kz is not None:
             out_dict["hv"] = (
                 rel_kzconv * (kxval**2 + kyval**2 + kzval**2)
                 - self.inner_potential
                 + self.work_function
+                - self.binding_energy
             )
-            if self.has_eV:
-                out_dict["hv"] = out_dict["hv"] - out_dict["eV"]
-            else:
-                out_dict["hv"] = out_dict["hv"] - self._binding_energy
 
-        return out_dict
+        return dict(zip(out_dict.keys(), xr.broadcast(*out_dict.values())))
+
+    @only_angles
+    def convert_coords(self) -> xr.DataArray:
+        """Convert the coordinates to momentum space.
+
+        Assigns new exact momentum coordinates to the data. This is useful when you want
+        to work with momentum coordinates but don't want to interpolate the data.
+
+        Returns
+        -------
+        xarray.DataArray
+            The DataArray with transformed coordinates.
+        """
+        return self._obj.assign_coords(self._get_transformed_coords())
+
+    @only_angles
+    def _get_coord_for_conversion(self, name: str) -> xr.DataArray:
+        """
+        Get the coordinte array for given dimension name. This just ensures that the
+        energy coordinates are given as binding energy.
+        """
+        if name == "eV":
+            return self.binding_energy
+        else:
+            return self._obj[name]
+
+    @only_angles
+    def _data_ensure_binding(self) -> xr.DataArray:
+        """
+        Returns the data while ensuring that the energy axis is in binding energy.
+        """
+        return self._obj.assign_coords(eV=self.binding_energy)
 
     @only_angles
     def convert(
@@ -731,6 +686,7 @@ class MomentumAccessor(ERLabAccessor):
         resolution: dict[str, float] | None = None,
         *,
         silent: bool = False,
+        **coords,
     ) -> xr.DataArray:
         """Convert to momentum space.
 
@@ -753,6 +709,9 @@ class MomentumAccessor(ERLabAccessor):
             the smaller of the two values.
         silent
             If `True`, suppresses printing, by default `False`.
+        **coords
+            Array-like keyword arguments that specifies the coordinate array for each
+            momentum axis. If provided, the bounds and resolution will be ignored.
 
         Returns
         -------
@@ -799,13 +758,9 @@ class MomentumAccessor(ERLabAccessor):
         if not silent:
             print("Estimating bounds and resolution")
 
-        calculated_bounds: dict[str, tuple[float, float]] = self.estimate_bounds()
+        momentum_coords: dict[str, np.ndarray] = {}
 
-        new_size: dict[str, int] = {}
-        interp_coords: dict[str, np.ndarray] = {}
-        other_coords: dict[str, np.ndarray] = {}
-
-        for k, lims in calculated_bounds.items():
+        for k, lims in self.estimate_bounds().items():
             if k in self.momentum_axes:
                 lims = bounds.get(k, lims)
 
@@ -815,79 +770,84 @@ class MomentumAccessor(ERLabAccessor):
                     res = min(res, res_n)
                 res = resolution.get(k, res)
 
-                new_size[k] = round((lims[1] - lims[0]) / res + 1)
-
-                interp_coords[k] = np.linspace(*lims, new_size[k])
+                momentum_coords[k] = np.linspace(
+                    *lims, round((lims[1] - lims[0]) / res + 1)
+                )
             else:
                 # Take the mean for axes that will not appear in converted data
                 if not silent and lims[1] - lims[0] > 0.001:
-                    print(f"Data spans about {lims[1] - lims[0]:.3f} Å⁻¹ of {k}")
-                other_coords[k] = np.array([(lims[0] + lims[1]) / 2])
+                    print(f"Data spans {lims[1] - lims[0]:.3f} Å⁻¹ of {k}")
+                momentum_coords[k] = np.array([(lims[0] + lims[1]) / 2])
 
         if not silent:
             print("Calculating destination coordinates")
 
-        target_dict = self._inverse(
-            (interp_coords | other_coords).get("kx"),
-            (interp_coords | other_coords).get("ky"),
-            (interp_coords | other_coords).get("kz", None),
+        target_dict: dict[str, xr.DataArray] = self._inverse_broadcast(
+            momentum_coords.get("kx"),
+            momentum_coords.get("ky"),
+            momentum_coords.get("kz", None),
         )
 
-        if self.has_hv:
-            old_dim_order = ("alpha", "hv")
-            new_dim_order = (self.slit_axis, "kz")
+        # Coords of first value in target_dict. Output of inverse_broadcast are all
+        # broadcasted to each other, so all values will have same coords
+        coords_for_transform = next(iter(target_dict.values())).coords
 
-        elif self.has_beta:
-            old_dim_order = ("alpha", "beta")
-            new_dim_order = ("ky", "kx")
-        else:
-            old_dim_order = ("alpha",)
-            new_dim_order = (self.slit_axis,)
+        # Remove non-dimension coordinates
+        for k in list(coords_for_transform.keys()):
+            if k not in coords_for_transform.dims:
+                del coords_for_transform[k]
 
-        if self.has_eV:
-            old_dim_order = ("eV", *old_dim_order)
-            new_dim_order = ("eV", *new_dim_order)
-            new_size["eV"] = len(self._binding_energy)
-            interp_coords["eV"] = np.squeeze(self._binding_energy)
+        # Now, coords_for_transform contains a subset of kx, ky, kz, eV, and hv coords,
+        # depending on the dimensions of the input data.
 
-        target = tuple(target_dict[dim] for dim in old_dim_order)
-
-        for d in self._obj.dims:
-            if d not in old_dim_order:
-                old_dim_order += (d,)
-                new_dim_order += (d,)
-                new_size[d] = len(self._obj[d])
-                interp_coords[d] = self._obj[d].values
-
-        # Get non-dimension coordinates
-        for d, c in self._obj.coords.items():
-            if d not in interp_coords and d not in other_coords:
-                if c.ndim == 0:
-                    other_coords[d] = c.values
-
-        # Only keep scalar coordinates
-        for k, v in other_coords.items():
-            if v.size != 1:
-                del other_coords[k]
+        dim_mapping: dict[str, str] = {}
+        for d in coords_for_transform.dims:
+            if d == self.slit_axis:
+                dim_mapping["alpha"] = d
+            elif d == self.other_axis:
+                dim_mapping["beta"] = d
+            elif d == "kz":
+                dim_mapping["hv"] = d
             else:
-                other_coords[k] = v.item()
+                dim_mapping[d] = d
+
+        # Delete keys not in the input data, e.g. "beta" for cuts
+        for k in list(dim_mapping.keys()):
+            if k not in self._obj.dims:
+                del dim_mapping[k]
+
+        input_dims: tuple[str, ...] = tuple(dim_mapping.keys())
+        output_dims: tuple[str, ...] = tuple(dim_mapping.values())
 
         if not silent:
-            print(f"Converting {old_dim_order}  ->  {new_dim_order}")
+            print(f"Converting {input_dims}  ->  {output_dims}")
             t_start = time.perf_counter()
 
-        out = xr.DataArray(
-            interpn(
-                tuple(self._obj[dim].values for dim in old_dim_order),
-                self._obj.copy(deep=True).transpose(*old_dim_order).values,
-                target,
-                bounds_error=False,
-            ).reshape(tuple(new_size[d] for d in new_dim_order)),
-            coords=interp_coords,
-            dims=new_dim_order,
-        )
-        out = out.assign_attrs(self._obj.attrs)
-        out = out.assign_coords(other_coords)
+        def _wrap_interpn(arr, *args):
+            points, xi = args[: arr.ndim], args[arr.ndim :]
+            return interpn(points, arr, xi, bounds_error=False).squeeze()
+
+        input_core_dims = [input_dims]
+        input_core_dims.extend([[d] for d in input_dims])
+        input_core_dims.extend([target_dict[d].dims for d in input_dims])
+
+        out = xr.apply_ufunc(
+            _wrap_interpn,
+            self._data_ensure_binding(),
+            *tuple(self._get_coord_for_conversion(dim) for dim in input_dims),
+            *tuple(target_dict[dim] for dim in input_dims),
+            vectorize=True,
+            dask="parallelized",
+            input_core_dims=input_core_dims,
+            output_core_dims=[output_dims],
+            dask_gufunc_kwargs={
+                "allow_rechunk": True,
+                "output_sizes": {d: coords_for_transform[d].size for d in output_dims},
+            },
+            keep_attrs=True,
+            output_dtypes=[np.float64],
+        ).assign_coords({k: v.squeeze() for k, v in coords_for_transform.items()})
+
         if not silent:
             print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
 
