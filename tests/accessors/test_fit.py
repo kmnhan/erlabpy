@@ -5,16 +5,21 @@ import pytest
 import xarray as xr
 
 
-@pytest.mark.parametrize("use_dask", [True, False])
-def test_modelfit(use_dask: bool):
-    # Tests are adapted from xarray's curvefit tests
+def exp_decay(t, n0, tau=1):
+    return n0 * np.exp(-t / tau)
 
-    def exp_decay(t, n0, tau=1):
-        return n0 * np.exp(-t / tau)
 
-    def power(t, a):
-        return np.power(t, a)
+def power(t, a):
+    return np.power(t, a)
 
+
+@pytest.fixture()
+def exp_decay_model():
+    return lmfit.Model(exp_decay)
+
+
+@pytest.fixture()
+def fit_test_darr():
     t = np.arange(0, 5, 0.5)
     da = xr.DataArray(
         np.stack([exp_decay(t, 3, 3), exp_decay(t, 5, 4), np.nan * t], axis=-1),
@@ -22,58 +27,50 @@ def test_modelfit(use_dask: bool):
         coords={"t": t, "x": [0, 1, 2]},
     )
     da[0, 0] = np.nan
+    return da
 
-    expected = xr.DataArray(
+
+@pytest.fixture()
+def fit_expected_darr():
+    return xr.DataArray(
         [[3, 3], [5, 4], [np.nan, np.nan]],
         dims=("x", "param"),
         coords={"x": [0, 1, 2], "param": ["n0", "tau"]},
     )
 
-    if use_dask:
-        da = da.chunk({"x": 1})
 
-    # Create model
-    model = lmfit.Model(exp_decay)
+@pytest.mark.parametrize("use_dask", [True, False])
+def test_modelfit(
+    use_dask: bool,
+    exp_decay_model: lmfit.Model,
+    fit_test_darr: xr.DataArray,
+    fit_expected_darr: xr.DataArray,
+):
+    # Tests are adapted from xarray's curvefit tests
+    if use_dask:
+        fit_test_darr = fit_test_darr.chunk({"x": 1})
 
     # Params as dictionary
-    fit = da.modelfit(
-        coords=[da.t],
-        model=model,
+    fit = fit_test_darr.modelfit(
+        coords=[fit_test_darr.t],
+        model=exp_decay_model,
         params={"n0": 4, "tau": {"min": 2, "max": 6}},
     )
-    np.testing.assert_allclose(fit.modelfit_coefficients, expected, rtol=1e-3)
+    np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
 
     # Params as lmfit.Parameters
-    fit = da.modelfit(
-        coords=[da.t],
-        model=model,
+    fit = fit_test_darr.modelfit(
+        coords=[fit_test_darr.t],
+        model=exp_decay_model,
         params=lmfit.create_params(n0=4, tau={"min": 2, "max": 6}),
     )
-    np.testing.assert_allclose(fit.modelfit_coefficients, expected, rtol=1e-3)
-
-    # Test parallel fits
-    if not use_dask:
-        fit = da.parallel_fit(
-            dim="x",
-            model=model,
-            params={"n0": 4, "tau": {"min": 2, "max": 6}},
-            output_result=False,
-        )
-        np.testing.assert_allclose(fit.modelfit_coefficients, expected, rtol=1e-3)
-
-        fit = da.parallel_fit(
-            dim="x",
-            model=model,
-            params=lmfit.create_params(n0=4, tau={"min": 2, "max": 6}),
-            output_result=False,
-        )
-        np.testing.assert_allclose(fit.modelfit_coefficients, expected, rtol=1e-3)
+    np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
 
     if use_dask:
-        da = da.compute()
+        fit_test_darr = fit_test_darr.compute()
 
     # Test 0dim output
-    fit = da.modelfit(
+    fit = fit_test_darr.modelfit(
         coords="t",
         model=lmfit.Model(power),
         reduce_dims="x",
@@ -82,6 +79,30 @@ def test_modelfit(use_dask: bool):
 
     assert "a" in fit.param
     assert fit.modelfit_results.dims == ()
+
+
+def test_parallel_fit(fit_test_darr, fit_expected_darr):
+    def exp_decay(t, n0, tau=1):
+        return n0 * np.exp(-t / tau)
+
+    model = lmfit.Model(exp_decay)
+
+    # Test parallel fits
+    fit = fit_test_darr.parallel_fit(
+        dim="x",
+        model=model,
+        params={"n0": 4, "tau": {"min": 2, "max": 6}},
+        output_result=False,
+    )
+    np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
+
+    fit = fit_test_darr.parallel_fit(
+        dim="x",
+        model=model,
+        params=lmfit.create_params(n0=4, tau={"min": 2, "max": 6}),
+        output_result=False,
+    )
+    np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
 
 
 @pytest.mark.parametrize("use_dask", [True, False])

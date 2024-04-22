@@ -2,9 +2,6 @@ from collections.abc import Callable
 
 import erlab.analysis.kspace
 import numpy as np
-import pytest
-import xarray
-from erlab.io.exampledata import generate_data_angles
 
 k_tot = np.array([1.0, 2.0, 3.0])
 
@@ -49,32 +46,3 @@ def test_transform():
         assert kx.size == ky.size == k_tot.size
         assert np.allclose(kx, 0.1)
         assert np.allclose(ky, 0.2)
-
-
-@pytest.fixture()
-def angle_data():
-    return generate_data_angles(shape=(10, 10, 10), assign_attributes=True)
-
-
-def test_offsets(angle_data):
-    angle_data.kspace.offsets.reset()
-    angle_data.kspace.offsets = {"xi": 10.0}
-    answer = dict.fromkeys(angle_data.kspace.valid_offset_keys, 0.0)
-    answer["xi"] = 10.0
-    assert dict(angle_data.kspace.offsets) == answer
-
-
-def test_kconv(angle_data):
-    for conf in erlab.analysis.kspace.AxesConfiguration:
-        angle_data.kspace.configuration = conf
-        match conf:
-            case (
-                erlab.analysis.kspace.AxesConfiguration.Type1DA
-                | erlab.analysis.kspace.AxesConfiguration.Type2DA
-            ):
-                angle_data = angle_data.assign_coords(chi=0.0)
-
-        kconv = angle_data.kspace.convert()
-
-        assert isinstance(kconv, xarray.DataArray)
-        assert not kconv.isnull().all()

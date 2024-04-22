@@ -398,6 +398,13 @@ class MomentumAccessor(ERLabAccessor):
     @property
     def _binding_energy(self) -> npt.NDArray[np.floating] | float:
         if self.has_eV:
+            if self._obj.eV.values.min() > 0:
+                print(
+                    "Energy values seems to be kinetic, transforming to binding energy"
+                )
+                self._obj = self._obj.assign_coords(
+                    eV=self._obj.eV.values - self._photon_energy + self.work_function
+                )
             return self._obj.eV.values[:, np.newaxis]
         else:
             return float(self._obj.eV.values)
