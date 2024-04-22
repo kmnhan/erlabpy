@@ -57,6 +57,7 @@ def generate_data(
     kres: float = 0.01,
     Eres: float = 2.0e-3,
     noise: bool = True,
+    seed: int | None = None,
     count: int = 1e8,
     ccd_sigma: float = 0.6,
 ) -> xr.DataArray:
@@ -91,6 +92,8 @@ def generate_data(
         Broadening in energy in electronvolts, by default 2.0e-3
     noise
         Whether to add noise to the generated data, by default `True`
+    seed
+        Seed for the random number generator for the noise. Default is None.
     count
         Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
@@ -131,7 +134,7 @@ def generate_data(
     add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
 
     if noise:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         out = rng.poisson(out).astype(float)
 
     broadened = scipy.ndimage.gaussian_filter(
@@ -165,6 +168,7 @@ def generate_data_angles(
     angres: float = 0.1,
     Eres: float = 10.0e-3,
     noise: bool = True,
+    seed: int | None = None,
     count: int = 1e8,
     ccd_sigma: float = 0.6,
     assign_attributes: bool = False,
@@ -205,6 +209,8 @@ def generate_data_angles(
         Broadening in energy in electronvolts, by default 2.0e-3
     noise
         Whether to add noise to the generated data, by default `True`
+    seed
+        Seed for the random number generator for the noise. Default is None.
     count
         Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
@@ -258,7 +264,7 @@ def generate_data_angles(
     add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
 
     if noise:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         out = rng.poisson(out).astype(float)
 
     out = scipy.ndimage.gaussian_filter(
@@ -334,7 +340,7 @@ def generate_gold_edge(
     noise
         Flag indicating whether to add noise to the spectrum. Default is True.
     seed
-        Seed for the random number generator for the noisd. Default is None.
+        Seed for the random number generator for the noise. Default is None.
     ccd_sigma
         Standard deviation of the Gaussian filter applied to the spectrum. Default is
         0.6.
