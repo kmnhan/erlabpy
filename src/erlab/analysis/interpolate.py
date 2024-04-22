@@ -44,6 +44,14 @@ def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
 
 
 @numba.njit(nogil=True, inline="always")
+def _calc_interp1(values, v0):
+    i0 = math.floor(v0)
+    n0 = values.size
+    j0 = min(i0 + 1, n0 - 1)
+    return _do_interp1(v0 - i0, values[i0], values[j0])
+
+
+@numba.njit(nogil=True, inline="always")
 def _calc_interp2(values, v0, v1):
     i0, i1 = math.floor(v0), math.floor(v1)
     n0, n1 = values.shape
@@ -87,6 +95,22 @@ def _val2ind(val, coord):
 
 
 @numba.njit(nogil=True, parallel=True)
+def _interp1(x, values, xc, fill_value=np.nan):
+    n = len(xc)
+
+    arr_new = np.empty(n, values.dtype)
+
+    for m in numba.prange(n):
+        v0 = _val2ind(xc[m], x)
+
+        if np.isnan(v0):
+            arr_new[m] = fill_value
+        else:
+            arr_new[m] = _calc_interp1(values, v0)
+    return arr_new
+
+
+@numba.njit(nogil=True, parallel=True)
 def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     n = len(xc)
 
@@ -123,12 +147,16 @@ def _get_interp_func(ndim):
         return _interp3
     elif ndim == 2:
         return _interp2
+    elif ndim == 1:
+        return _interp1
     else:
         raise ValueError("Fast interpolation only supported for 2D or 3D")
 
 
 def _check_even(arr):
     dif = np.diff(arr)
+    if dif.size == 0:
+        return False
     return np.allclose(dif, dif[0])
 
 
@@ -141,8 +169,8 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
     The input arguments are identical to `scipy.interpolate.RegularGridInterpolator`
     except `bounds_error`, which is set to `False` by default.
 
-    Performance improvements are enabled for 2D and 3D linear interpolation on uniformly
-    spaced coordinates with extrapolation disabled. Otherwise,
+    Performance improvements are enabled for 1D, 2D and 3D linear interpolation on
+    uniformly spaced coordinates with extrapolation disabled. Otherwise,
     `scipy.interpolate.RegularGridInterpolator` is called. See below for more
     information.
 
@@ -152,7 +180,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     * `method` is ``"linear"``.
     * Coordinates along all dimensions are evenly spaced.
-    * Values are 2D or 3D.
+    * Values are 1D, 2D or 3D.
     * Extrapolation is disabled, i.e., `fill_value` is not `None`.
     * The dimension of coordinates `xi` matches the number of dimensions of the values.
       Also, each coordinate array in `xi` must have the same shape.
@@ -213,7 +241,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     def __call__(self, xi, method=None):
         is_linear: bool = method == "linear" or self.method == "linear"
-        nd_supported: bool = self.values.ndim in (2, 3)
+        nd_supported: bool = self.values.ndim in (1, 2, 3)
         no_extrap: bool = self.fill_value is not None
 
         if (len(self.uneven_dims) == 0) and is_linear and nd_supported and no_extrap:
