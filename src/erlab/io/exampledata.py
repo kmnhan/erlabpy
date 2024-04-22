@@ -36,12 +36,12 @@ def spectral_function(w, bareband, Sreal, Simag):
     return Simag / (np.pi * ((w - bareband - Sreal) ** 2 + Simag**2))
 
 
-def add_fd_norm(image, eV, temp=30, efermi=0, count=1e3):
+def add_fd_norm(image, eV, temp=30, efermi=0, count=1e7):
     if temp != 0:
         image *= fermi_dirac(eV - efermi, temp)[None, None, :]
-    image += 0.5e-6
-    image /= image.max()
-    image *= count / np.mean(image)
+    image += 0.1e-2
+    image /= image.sum()
+    image *= count
 
 
 def generate_data(
@@ -57,7 +57,7 @@ def generate_data(
     kres: float = 0.01,
     Eres: float = 2.0e-3,
     noise: bool = True,
-    count: int = 10000,
+    count: int = 1e8,
     ccd_sigma: float = 0.6,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in momentum space.
@@ -92,7 +92,7 @@ def generate_data(
     noise
         Whether to add noise to the generated data, by default `True`
     count
-        Determines the signal-to-noise ratio when `noise` is `True`, by default 10000
+        Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
         The sigma value for CCD noise generation when `noise` is `True`, by default 0.6
 
@@ -165,7 +165,7 @@ def generate_data_angles(
     angres: float = 0.1,
     Eres: float = 10.0e-3,
     noise: bool = True,
-    count: int = 10000,
+    count: int = 1e8,
     ccd_sigma: float = 0.6,
     assign_attributes: bool = False,
 ) -> xr.DataArray:
@@ -206,7 +206,7 @@ def generate_data_angles(
     noise
         Whether to add noise to the generated data, by default `True`
     count
-        Determines the signal-to-noise ratio when `noise` is `True`, by default 10000
+        Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
         The sigma value for CCD noise generation when `noise` is `True`, by default 0.6
     assign_attributes
