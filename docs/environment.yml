@@ -2,27 +2,29 @@ name: erlabrtd
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
-  - pip>=19.3
-  - ipykernel
+  - h5netcdf>=1.2.0
   - igor2>=0.5.6
-  - numpy>=1.22.0
+  - iminuit>=2.25.2
+  - ipykernel
+  - joblib>=1.3.2
+  - lmfit>=1.2.0,!=1.3.0
   - matplotlib>=3.8.0
-  - hvplot
-  - xarray
-  - h5netcdf
-  - varname
-  - numba>=0.56.2
-  - numbagg
-  - numba-progress
-  - joblib
-  - lmfit>=1.2.0
+  - numba>=0.59.0
+  - numbagg>=0.8.1
+  - numpy>=1.26.0
+  - pip>=19.3
+  - pyperclip>=1.8.2
   - pyqtgraph>=0.13.1
-  - tqdm
+  - python>=3.11
+  - qtawesome>=1.3.1
+  - qtpy>=2.4.1
+  - scipy>=1.12.0
+  - superqt>=0.6.2
+  - tqdm>=4.66.2
   - uncertainties>=3.0.1
-  - qtawesome
-  - superqt
-  - qtpy
+  - varname>=0.13.0
+  - xarray>=2024.02.0
+  - hvplot
   - sphinx
   - sphinx-autodoc-typehints
   - sphinx-copybutton
@@ -33,9 +35,8 @@ dependencies:
   - sphinx-design
   - pyperclip
   - ipywidgets
-  - ipython
   - pip:
     - pyqt6>=6.2.2
     - csaps
-    - -e git+https://github.com/kmnhan/erlabpy.git#egg=erlab
     - sphinx-qt-documentation
+    - -e .
