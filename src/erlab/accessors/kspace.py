@@ -779,6 +779,12 @@ class MomentumAccessor(ERLabAccessor):
                     print(f"Data spans {lims[1] - lims[0]:.3f} Å⁻¹ of {k}")
                 momentum_coords[k] = np.array([(lims[0] + lims[1]) / 2])
 
+        for k, v in coords.items():
+            if k in self.momentum_axes:
+                momentum_coords[k] = v
+            else:
+                raise ValueError(f"Dimension `{k}` is not a momentum axis")
+
         if not silent:
             print("Calculating destination coordinates")
 
