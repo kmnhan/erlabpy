@@ -7,7 +7,7 @@ For scipy-based filter functions, the default value of the `mode` argument is 'n
 unlike the scipy default of 'reflect'.
 """
 
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence, Sized, Hashable
 
 import numpy as np
 import numpy.typing as npt
@@ -19,13 +19,13 @@ from numba import carray, cfunc, types
 
 def gaussian_filter(
     darr: xr.DataArray,
-    sigma: float | dict[str, float] | Sequence[float],
-    order: int | Sequence[int] | dict[str, int] = 0,
-    mode: str | Sequence[str] | dict[str, str] = "nearest",
+    sigma: float | Collection[float] | Mapping[Hashable, float],
+    order: int | Sequence[int] | Mapping[Hashable, int] = 0,
+    mode: str | Sequence[str] | Mapping[Hashable, str] = "nearest",
     cval: float = 0.0,
     truncate: float = 4.0,
     *,
-    radius: None | float | Sequence[float] | dict[str, float] = None,
+    radius: None | float | Collection[float] | Mapping[Hashable, float] = None,
 ) -> xr.DataArray:
     """Coordinate-aware wrapper around `scipy.ndimage.gaussian_filter`.
 
@@ -99,48 +99,58 @@ def gaussian_filter(
     Dimensions without coordinates: x, y
 
     """
-    if np.isscalar(sigma):
-        sigma = dict.fromkeys(darr.dims, sigma)
-    elif not isinstance(sigma, dict):
-        sigma = dict(zip(darr.dims, sigma))
+    if isinstance(sigma, Mapping):
+        sigma_dict = dict(sigma)
+    elif np.isscalar(sigma):
+        sigma_dict = dict.fromkeys(darr.dims, sigma)
+    elif isinstance(sigma, Collection):
+        sigma_dict = dict(zip(darr.dims, sigma))
+    else:
+        raise TypeError("`sigma` must be a scalar, sequence, or mapping")
 
     # Get the axis indices to apply the filter
-    axes = tuple(darr.get_axis_num(d) for d in sigma.keys())
+    axes = tuple(darr.get_axis_num(d) for d in sigma_dict.keys())
 
     # Convert arguments to tuples acceptable by scipy
-    if isinstance(order, dict):
-        order = tuple(order.get(d, 0) for d in sigma.keys())
-    if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in sigma.keys())
-    if radius is not None:
-        if len(radius) != len(sigma):
-            raise ValueError("`radius` does not match dimensions of `sigma`")
+    if isinstance(order, Mapping):
+        order = tuple(order.get(str(d), 0) for d in sigma_dict.keys())
+    if isinstance(mode, Mapping):
+        mode = tuple(mode[str(d)] for d in sigma_dict.keys())
 
-        if np.isscalar(radius):
-            radius = dict.fromkeys(sigma.keys(), radius)
-        elif not isinstance(radius, dict):
-            radius = dict(zip(sigma.keys(), radius))
+    if radius is not None:
+        if isinstance(radius, Mapping):
+            radius_dict = dict(radius)
+        elif isinstance(radius, Sized):
+            if len(radius) != len(sigma_dict):
+                raise ValueError("`radius` does not match dimensions of `sigma`")
+            radius_dict = dict(zip(sigma_dict.keys(), radius))
+        elif np.isscalar(radius):
+            radius_dict = dict.fromkeys(sigma_dict.keys(), radius)
+        else:
+            raise TypeError("`radius` must be a scalar, sequence, or mapping")
 
         # Calculate radius in pixels
-        radius: tuple[int, ...] = tuple(
+        radius_pix: tuple[int, ...] | None = tuple(
             round(r / (darr[d].values[1] - darr[d].values[0]))
-            for d, r in radius.items()
+            for d, r in radius_dict.items()
         )
+    else:
+        radius_pix = None
 
     # Calculate sigma in pixels
-    sigma: tuple[float, ...] = tuple(
-        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
+    sigma_pix: tuple[float, ...] = tuple(
+        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma_dict.items()
     )
 
     return darr.copy(
         data=scipy.ndimage.gaussian_filter(
             darr.values,
-            sigma=sigma,
+            sigma=sigma_pix,
             order=order,
             mode=mode,
             cval=cval,
             truncate=truncate,
-            radius=radius,
+            radius=radius_pix,
             axes=axes,
         )
     )
@@ -148,8 +158,8 @@ def gaussian_filter(
 
 def gaussian_laplace(
     darr: xr.DataArray,
-    sigma: float | dict[str, float] | Sequence[float],
-    mode: str | Sequence[str] | dict[str, str] = "nearest",
+    sigma: float | Collection[float] | Mapping[str, float],
+    mode: str | Sequence[str] | Mapping[str, str] = "nearest",
     cval: float = 0.0,
     **kwargs,
 ) -> xr.DataArray:
@@ -195,28 +205,35 @@ def gaussian_laplace(
     :func:`scipy.ndimage.gaussian_laplace` : The underlying function used to apply the
         filter.
     """
-    if np.isscalar(sigma):
-        sigma = dict.fromkeys(darr.dims, sigma)
-    elif not isinstance(sigma, dict):
-        sigma = dict(zip(darr.dims, sigma))
 
-    if len(sigma) != darr.ndim:
+    if isinstance(sigma, Mapping):
+        sigma_dict = dict(sigma)
+    elif np.isscalar(sigma):
+        sigma_dict = dict.fromkeys(darr.dims, sigma)
+    elif isinstance(sigma, Collection):
+        sigma_dict = dict(zip(darr.dims, sigma))
+    else:
+        raise TypeError("`sigma` must be a scalar, sequence, or mapping")
+
+    if len(sigma_dict) != darr.ndim:
+        required_dims = set(darr.dims) - set(sigma_dict.keys())
         raise ValueError(
-            "`sigma` must be provided for every dimension of the DataArray"
+            "`sigma` missing for the following dimension"
+            f"{'' if len(required_dims) == 1 else 's'}: {required_dims}"
         )
 
     # Convert mode to tuple acceptable by scipy
     if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in sigma.keys())
+        mode = tuple(mode[d] for d in sigma_dict.keys())
 
     # Calculate sigma in pixels
-    sigma: tuple[float, ...] = tuple(
-        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma.items()
+    sigma_pix: tuple[float, ...] = tuple(
+        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma_dict.items()
     )
 
     return darr.copy(
         data=scipy.ndimage.gaussian_laplace(
-            darr.values, sigma=sigma, mode=mode, cval=cval, **kwargs
+            darr.values, sigma=sigma_pix, mode=mode, cval=cval, **kwargs
         )
     )
 

@@ -13,44 +13,47 @@ import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
-
+import types
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
 from erlab.interactive.utilities import BetterSpinBox
 
 if TYPE_CHECKING:
     import xarray as xr
+    from collections.abc import Mapping
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
 class IconButton(QtWidgets.QPushButton):
-    ICON_ALIASES = {
-        "invert": "mdi6.invert-colors",
-        "invert_off": "mdi6.invert-colors-off",
-        "contrast": "mdi6.contrast-box",
-        "lock": "mdi6.lock",
-        "unlock": "mdi6.lock-open-variant",
-        "bright_auto": "mdi6.brightness-auto",
-        "bright_percent": "mdi6.brightness-percent",
-        "colorbar": "mdi6.gradient-vertical",
-        "transpose_0": "mdi6.arrow-top-left-bottom-right",
-        "transpose_1": "mdi6.arrow-up-down",
-        "transpose_2": "mdi6.arrow-left-right",
-        "transpose_3": "mdi6.axis-z-arrow",
-        "snap": "mdi6.grid",
-        "snap_off": "mdi6.grid-off",
-        "palette": "mdi6.palette-advanced",
-        "styles": "mdi6.palette-swatch",
-        "layout": "mdi6.page-layout-body",
-        "zero_center": "mdi6.format-vertical-align-center",
-        "table_eye": "mdi6.table-eye",
-        "plus": "mdi6.plus",
-        "minus": "mdi6.minus",
-        "reset": "mdi6.backup-restore",
-        # all_cursors="mdi6.checkbox-multiple-outline",
-        "all_cursors": "mdi6.select-multiple",
-    }
+    ICON_ALIASES: Mapping[str, str] = types.MappingProxyType(
+        {
+            "invert": "mdi6.invert-colors",
+            "invert_off": "mdi6.invert-colors-off",
+            "contrast": "mdi6.contrast-box",
+            "lock": "mdi6.lock",
+            "unlock": "mdi6.lock-open-variant",
+            "bright_auto": "mdi6.brightness-auto",
+            "bright_percent": "mdi6.brightness-percent",
+            "colorbar": "mdi6.gradient-vertical",
+            "transpose_0": "mdi6.arrow-top-left-bottom-right",
+            "transpose_1": "mdi6.arrow-up-down",
+            "transpose_2": "mdi6.arrow-left-right",
+            "transpose_3": "mdi6.axis-z-arrow",
+            "snap": "mdi6.grid",
+            "snap_off": "mdi6.grid-off",
+            "palette": "mdi6.palette-advanced",
+            "styles": "mdi6.palette-swatch",
+            "layout": "mdi6.page-layout-body",
+            "zero_center": "mdi6.format-vertical-align-center",
+            "table_eye": "mdi6.table-eye",
+            "plus": "mdi6.plus",
+            "minus": "mdi6.minus",
+            "reset": "mdi6.backup-restore",
+            # all_cursors="mdi6.checkbox-multiple-outline",
+            "all_cursors": "mdi6.select-multiple",
+        }
+    )
 
     def __init__(self, on: str | None = None, off: str | None = None, **kwargs):
         self.icon_key_on = None
@@ -88,18 +91,22 @@ class IconButton(QtWidgets.QPushButton):
         if self.icon_key_on is not None:
             self.setIcon(self.get_icon(self.icon_key_on))
 
-    def changeEvent(self, evt: QtCore.QEvent):  # handles dark mode
-        if evt.type() == QtCore.QEvent.Type.PaletteChange:
+    def changeEvent(self, evt: QtCore.QEvent | None):  # handles dark mode
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
             qta.reset_cache()
             self.refresh_icons()
         super().changeEvent(evt)
 
 
-def clear_layout(layout: QtWidgets.QLayout):
+def clear_layout(layout: QtWidgets.QLayout | None) -> None:
+    if layout is None:
+        return
     while layout.count():
         child = layout.takeAt(0)
-        if child.widget():
-            child.widget().deleteLater()
+        if child is not None:
+            w = child.widget()
+            if w is not None:
+                w.deleteLater()
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
@@ -108,7 +115,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
     ):
         super().__init__(*args, **kwargs)
         self._slicer_area = slicer_area
-        self.sub_controls = []
+        self.sub_controls: list[QtWidgets.QWidget] = []
         self.initialize_layout()
         self.initialize_widgets()
         self.connect_signals()

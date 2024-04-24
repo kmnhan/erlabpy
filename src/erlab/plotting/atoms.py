@@ -9,17 +9,18 @@ Some of the projection code was adapted from kwant.
 import contextlib
 import functools
 import itertools
-from collections.abc import Callable, Sequence
-from typing import Literal
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Literal, cast
 
 import matplotlib.collections
-import matplotlib.colors as mcolors
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d
 import mpl_toolkits.mplot3d.art3d
 import mpl_toolkits.mplot3d.proj3d
 import numpy as np
 import numpy.typing as npt
+from matplotlib.typing import ColorType
 
 __all__ = ["Atom3DCollection", "Bond3DCollection", "CrystalProperty"]
 
@@ -100,7 +101,7 @@ def _zalpha(colors, zs):
         return np.zeros((0, 4))
     norm = plt.Normalize(min(zs), max(zs))
     sats = 1 - norm(zs) * 0.7
-    rgba = np.broadcast_to(mcolors.to_rgba_array(colors), (len(zs), 4))
+    rgba = np.broadcast_to(matplotlib.colors.to_rgba_array(colors), (len(zs), 4))
     rgba = rgba.T * sats
     rgba += 1 - sats
     rgba = rgba.T
@@ -131,7 +132,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
         )
         if len(color_array) > 1:
             color_array = color_array[self._z_markers_idx]
-        return mcolors.to_rgba_array(color_array, self._alpha)
+        return matplotlib.colors.to_rgba_array(color_array, self._alpha)
 
     def set_sizes(self, sizes: np.ndarray, dpi: float = 72.0):
         super().set_sizes(sizes, dpi)
@@ -240,15 +241,15 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 class CrystalProperty:
     def __init__(
         self,
-        atom_pos: dict[
-            str, npt.NDArray[np.float64] | Sequence[npt.NDArray[np.float64]]
+        atom_pos: Mapping[
+            str, Iterable[float | np.floating | npt.NDArray[np.floating]]
         ],
         avec: npt.NDArray[np.float64],
-        offset: npt.NDArray[np.float64] | Sequence[float] = (0.0, 0.0, 0.0),
-        radii: Sequence[float] | None = None,
-        colors: Sequence[str | tuple[float, ...]] | None = None,
+        offset: Iterable[float] = (0.0, 0.0, 0.0),
+        radii: Iterable[float] | None = None,
+        colors: Iterable[ColorType] | None = None,
         repeat: tuple[int, int, int] = (1, 1, 1),
-        bounds: dict[Literal["x", "y", "z"], tuple[float, float]] | None = None,
+        bounds: Mapping[Literal["x", "y", "z"], tuple[float, float]] | None = None,
         mask: Callable | None = None,
         r_factor: float = 0.4,
     ):
@@ -300,12 +301,13 @@ class CrystalProperty:
 
         if colors is None:
             colors = [f"C{i}" for i in range(len(self.atoms))]
+
         self.atom_color: dict[str, str] = {
-            k: mcolors.to_hex(v) for k, v in zip(self.atoms, colors)
+            k: matplotlib.colors.to_hex(v) for k, v in zip(self.atoms, colors)
         }
 
         self.repeat: tuple[int, int, int] = repeat
-        self._bounds: dict[Literal["x", "y", "z"], tuple[float, float]] = (
+        self._bounds: Mapping[Literal["x", "y", "z"], tuple[float, float]] = (
             {} if bounds is None else bounds
         )
         self.mask: Callable | None = mask
@@ -326,9 +328,14 @@ class CrystalProperty:
         *args,
         **kwargs,
     ):
-        atom_pos = {}
+        atom_pos: dict[str, list[npt.NDArray[np.float64]]] = {}
         for k, v in frac_pos.items():
-            atom_pos[k] = [x[0] * avec[0] + x[1] * avec[1] + x[2] * avec[2] for x in v]
+            atom_pos[k] = [
+                np.asarray(
+                    x[0] * avec[0] + x[1] * avec[1] + x[2] * avec[2], dtype=np.float64
+                )
+                for x in v
+            ]
         return cls(atom_pos, avec, *args, **kwargs)
 
     @property
@@ -336,7 +343,7 @@ class CrystalProperty:
         bound_list = []
         for dim in ("x", "y", "z"):
             try:
-                bound_list.append(self._bounds[dim])
+                bound_list.append(self._bounds[cast(Literal["x", "y", "z"], dim)])
             except KeyError:
                 bound_list.append((-np.inf, np.inf))
         return bound_list
@@ -386,7 +393,7 @@ class CrystalProperty:
         return masked_atom_pos
 
     @property
-    def _color_array(self) -> tuple[npt.NDArray[np.str_]]:
+    def _color_array(self) -> npt.NDArray[np.str_]:
         return np.asarray(
             [
                 self.atom_color[k]
@@ -396,7 +403,7 @@ class CrystalProperty:
         )
 
     @property
-    def _size_array(self) -> tuple[npt.NDArray[np.float64]]:
+    def _size_array(self) -> npt.NDArray[np.float64]:
         return np.asarray(
             [
                 self.atom_radii[k]
@@ -464,6 +471,7 @@ class CrystalProperty:
 
         if ax is None:
             ax = plt.gcf().add_subplot(projection="3d")
+        ax = cast(mpl_toolkits.mplot3d.Axes3D, ax)
 
         if clean_axes:
             ax.set_facecolor("none")

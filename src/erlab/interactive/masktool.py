@@ -1,7 +1,5 @@
-import sys
-
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore
 
 from erlab.interactive.utilities import AnalysisWindow, ParameterGroup
 
@@ -85,23 +83,3 @@ class masktool(AnalysisWindow):
         # self.images[0].setImage(self.data.isel({dim_z:self.cursor.widgets["slider"].value()}).values)
 
         # self.cursor.values["slider"]
-
-
-if __name__ == "__main__":
-    import erlab.io
-
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
-
-    ds = erlab.io.load_igor_h5(
-        "/Users/khan/Documents/ERLab/CsV3Sb5/220630_ALS_Kagome_nesting/maps.h5"
-    )
-    map3 = ds["Map3"].rename(phony_dim_0="kx", phony_dim_1="ky", phony_dim_2="eV")
-    # map6 = ds["Map6"].rename(phony_dim_0="kx", phony_dim_3="ky", phony_dim_4="eV")
-    ct = masktool(map3)
-    ct.show()
-    ct.activateWindow()
-    ct.raise_()
-    qapp.exec()

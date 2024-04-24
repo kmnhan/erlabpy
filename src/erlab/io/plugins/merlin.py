@@ -4,6 +4,7 @@ import datetime
 import glob
 import os
 import re
+from typing import Any, ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -16,10 +17,11 @@ from erlab.io.igor import load_experiment, load_wave
 
 
 class BL403Loader(LoaderBase):
-    name: str = "merlin"
-    aliases: list[str] = ["ALS_BL4", "als_bl4", "BL403", "bl403"]
+    name = "merlin"
 
-    name_map: dict[str, str | list[str]] = {
+    aliases = ("ALS_BL4", "als_bl4", "BL403", "bl403")
+
+    name_map: ClassVar[dict] = {
         "alpha": "deg",
         "beta": ["Polar", "Polar Compens"],
         "delta": "Azimuth",
@@ -32,7 +34,7 @@ class BL403Loader(LoaderBase):
         "temp_sample": "Temperature Sensor B",
         "mesh_current": "Mesh Current",
     }
-    coordinate_attrs: tuple[str, ...] = (
+    coordinate_attrs = (
         "beta",
         "delta",
         "xi",
@@ -43,11 +45,11 @@ class BL403Loader(LoaderBase):
         "polarization",
         "mesh_current",
     )
-    additional_attrs: dict[str, str | int | float] = {
+    additional_attrs: ClassVar[dict] = {
         "configuration": 1,
         "sample_workfunction": 4.44,
     }
-    always_single: bool = False
+    always_single = False
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         if os.path.splitext(file_path)[1] == ".ibw":
@@ -59,9 +61,7 @@ class BL403Loader(LoaderBase):
 
         return self.process_keys(data)
 
-    def identify(
-        self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, npt.NDArray[np.float64]]]:
+    def identify(self, num: int, data_dir: str | os.PathLike):
         coord_dict: dict[str, npt.NDArray[np.float64]] = {}
 
         # Look for scans
@@ -74,9 +74,12 @@ class BL403Loader(LoaderBase):
             files = glob.glob(f"*_{str(num).zfill(3)}_R*.pxt", root_dir=data_dir)
             files.sort()
         elif len(files) > 1:
-            prefix: str = re.match(
+            match_prefix = re.match(
                 r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0]
-            ).group(1)
+            )
+            if match_prefix is None:
+                raise RuntimeError(f"Failed to match prefix in {files[0]}")
+            prefix: str = match_prefix.group(1)
 
             motor_file = os.path.join(
                 data_dir, f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
@@ -104,16 +107,20 @@ class BL403Loader(LoaderBase):
 
         return files, coord_dict
 
-    def infer_index(self, name: str) -> tuple[int | None, dict]:
+    def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         try:
-            scan_num: str = re.match(r".*?(\d{3})(?:_S\d{3})?", name).group(1)
-        except (AttributeError, IndexError):
-            return None, None
+            match_scan = re.match(r".*?(\d{3})(?:_S\d{3})?", name)
+            if match_scan is None:
+                return None, {}
+
+            scan_num: str = match_scan.group(1)
+        except IndexError:
+            return None, {}
 
         if scan_num.isdigit():
             return int(scan_num), {}
         else:
-            return None, None
+            return None, {}
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import sys
+import types
 import warnings
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -16,6 +17,9 @@ from qtpy import QtCore, QtGui, QtWidgets
 from superqt import QDoubleSlider
 
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -251,7 +255,9 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._updateWidth()
 
         if self.isReadOnly():
-            self.lineEdit().setReadOnly(True)
+            line_edit = self.lineEdit()
+            if line_edit is not None:
+                line_edit.setReadOnly(True)
             self.setButtonSymbols(self.ButtonSymbols.NoButtons)
         self.setValue(self.value())
 
@@ -565,8 +571,9 @@ class FittingParameterWidget(QtWidgets.QWidget):
         super().__init__()
         if spin_kw is None:
             spin_kw = {}
-        self.layout = QtWidgets.QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
+        layout = QtWidgets.QHBoxLayout(self)
+        self.setLayout(layout)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         self.param_name = name
         self._prefix = ""
@@ -591,14 +598,15 @@ class FittingParameterWidget(QtWidgets.QWidget):
         self.spin_ub.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Fixed
         )
-        self.check = QtWidgets.QCheckBox(toolTip="Fixed")
+        self.check = QtWidgets.QCheckBox()
+        self.check.setToolTip("Fix parameter")
 
         if show_label:
-            self.layout.addWidget(self.label)
-        self.layout.addWidget(self.spin_value)
-        self.layout.addWidget(self.spin_lb)
-        self.layout.addWidget(self.spin_ub)
-        self.layout.addWidget(self.check)
+            layout.addWidget(self.label)
+        layout.addWidget(self.spin_value)
+        layout.addWidget(self.spin_lb)
+        layout.addWidget(self.spin_ub)
+        layout.addWidget(self.check)
 
         for spin in (self.spin_value, self.spin_lb, self.spin_ub):
             spin.valueChanged.connect(lambda: self.sigParamChanged.emit())
@@ -811,30 +819,44 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     """
 
-    VALID_QWTYPE: dict[str, QtWidgets.QWidget] = {
-        "spin": QtWidgets.QSpinBox,
-        "dblspin": QtWidgets.QDoubleSpinBox,
-        "btspin": BetterSpinBox,
-        "slider": QtWidgets.QSlider,
-        "dblslider": QDoubleSlider,
-        "chkbox": QtWidgets.QCheckBox,
-        "pushbtn": QtWidgets.QPushButton,
-        "chkpushbtn": QtWidgets.QPushButton,
-        "combobox": QtWidgets.QComboBox,
-        "fitparam": FittingParameterWidget,
-    }  # : Dictionary of valid widgets that can be added.
+    VALID_QWTYPE: Mapping[str, type[QtWidgets.QWidget]] = types.MappingProxyType(
+        {
+            "spin": QtWidgets.QSpinBox,
+            "dblspin": QtWidgets.QDoubleSpinBox,
+            "btspin": BetterSpinBox,
+            "slider": QtWidgets.QSlider,
+            "dblslider": QDoubleSlider,
+            "chkbox": QtWidgets.QCheckBox,
+            "pushbtn": QtWidgets.QPushButton,
+            "chkpushbtn": QtWidgets.QPushButton,
+            "combobox": QtWidgets.QComboBox,
+            "fitparam": FittingParameterWidget,
+        }
+    )  # : Dictionary of valid widgets that can be added.
 
     sigParameterChanged: QtCore.SignalInstance = QtCore.Signal(dict)  #: :meta private:
 
-    def __init__(self, ncols: int = 1, groupbox_kw: dict | None = None, **kwargs):
+    def __init__(
+        self,
+        widgets: dict[str, dict] | None = None,
+        ncols: int = 1,
+        groupbox_kw: dict | None = None,
+        **widgets_kwargs,
+    ):
         if groupbox_kw is None:
             groupbox_kw = {}
         super().__init__(**groupbox_kw)
-        self.setLayout(QtWidgets.QGridLayout(self))
+        layout = QtWidgets.QGridLayout(self)
+        self.setLayout(layout)
 
         self.labels = []
         self.untracked = []
         self.widgets: dict[str, QtWidgets.QWidget] = {}
+
+        if widgets is not None:
+            kwargs = widgets
+        else:
+            kwargs = widgets_kwargs
 
         j = 0
         for i, (k, v) in enumerate(kwargs.items()):
@@ -859,12 +881,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
             self.labels.append(QtWidgets.QLabel(str(showlabel)))
             self.labels[i].setBuddy(self.widgets[k])
             if showlabel:
-                self.layout().addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
-                self.layout().addWidget(
+                layout.addWidget(self.labels[i], j // ncols, 2 * (j % ncols))
+                layout.addWidget(
                     self.widgets[k], j // ncols, 2 * (j % ncols) + 1, 1, 2 * ind_eff - 1
                 )
             else:
-                self.layout().addWidget(
+                layout.addWidget(
                     self.widgets[k], j // ncols, 2 * (j % ncols), 1, 2 * ind_eff
                 )
             j += ind_eff
@@ -1224,13 +1246,6 @@ class ROIControls(ParameterGroup):
         vb.mouseDragEvent = mouseDragEventCustom  # set to modified mouseDragEvent
 
 
-class PostInitCaller(type(QtWidgets.QMainWindow)):
-    def __call__(cls, *args, **kwargs):
-        obj = type.__call__(cls, *args, **kwargs)
-        obj.__post_init__()
-        return obj
-
-
 class AnalysisWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -1318,9 +1333,9 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         self.controls.addWidget(group)
         return group
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        cb = QtWidgets.QApplication.instance().clipboard()
-        if cb.text(cb.Mode.Clipboard) != "":
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        cb = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance()).clipboard()
+        if event is not None and cb is not None and cb.text(cb.Mode.Clipboard) != "":
             pyperclip.copy(cb.text(cb.Mode.Clipboard))
         return super().closeEvent(event)
 
@@ -1368,10 +1383,12 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             if link in ("y", "both"):
                 self.axes[i].setYLink(self.axes[0])
 
-    def initialize_layout(self, nax):
-        self.hists = [pg.HistogramLUTItem() for _ in range(nax)]
-        self.axes = [pg.PlotItem() for _ in range(nax)]
-        self.images = [xImageItem(axisOrder="row-major") for _ in range(nax)]
+    def initialize_layout(self, nax: int):
+        self.hists: pg.HistogramLUTItem = [pg.HistogramLUTItem() for _ in range(nax)]
+        self.axes: list[pg.PlotItem] = [pg.PlotItem() for _ in range(nax)]
+        self.images: list[xImageItem] = [
+            xImageItem(axisOrder="row-major") for _ in range(nax)
+        ]
         cmap = pg_colormap_powernorm("terrain", 1.0, N=6)
         for i in range(nax):
             self.addItem(self.axes[i], *self.get_axis_pos(i))
@@ -1504,7 +1521,7 @@ class ComparisonWidget(AnalysisWidgetBase):
 
 
 class DictMenuBar(QtWidgets.QMenuBar):
-    def __init__(self, parent: QtWidgets.QWidget | None = ..., **kwargs) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None, **kwargs) -> None:
         super().__init__(parent)
 
         self.menu_dict: dict[str, QtWidgets.QMenu] = {}
@@ -1517,7 +1534,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
             return super().__getattribute__(__name)
         except AttributeError:
             try:
-                out = self.menu_dict[__name]
+                out: Any = self.menu_dict[__name]
             except KeyError:
                 out = self.action_dict[__name]
             warnings.warn(
@@ -1596,7 +1613,9 @@ class DictMenuBar(QtWidgets.QMenuBar):
 if __name__ == "__main__":
     from scipy.ndimage import gaussian_filter  # , uniform_filter
 
-    qapp = QtWidgets.QApplication.instance()
+    qapp: QtWidgets.QApplication = cast(
+        QtWidgets.QApplication, QtWidgets.QApplication.instance()
+    )
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")

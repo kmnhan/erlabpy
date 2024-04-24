@@ -15,7 +15,7 @@ from qtpy import QtCore
 from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Sequence, Hashable
 
     import xarray as xr
 
@@ -54,8 +54,8 @@ def _array_rect(
     y = lims[j][0] - incs[j]
     w = lims[i][-1] - x
     h = lims[j][-1] - y
-    x += 0.5 * incs[i]
-    y += 0.5 * incs[j]
+    x += np.float32(0.5 * incs[i])
+    y += np.float32(0.5 * incs[j])
     return x, y, w, h
 
 
@@ -101,7 +101,9 @@ def _is_uniform(arr: npt.NDArray[np.float32]) -> bool:
     ],
     cache=True,
 )
-def _index_of_value_nonuniform(arr: npt.NDArray[np.float32], val: np.float32) -> int:
+def _index_of_value_nonuniform(
+    arr: npt.NDArray[np.float32], val: np.float32
+) -> np.int_:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
@@ -146,7 +148,6 @@ class ArraySlicer(QtCore.QObject):
 
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
-        self._obj: xr.DataArray | None = None
         self.set_array(xarray_obj, validate=True, reset=True)
 
     @property
@@ -205,29 +206,29 @@ class ArraySlicer(QtCore.QObject):
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
     # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
     @functools.cached_property
-    def nanmax(self) -> np.floating:
-        return np.nanmax(self._obj.values)
+    def nanmax(self) -> float:
+        return float(np.nanmax(self._obj.values))
 
     @functools.cached_property
-    def nanmin(self) -> np.floating:
-        return np.nanmin(self._obj.values)
+    def nanmin(self) -> float:
+        return float(np.nanmin(self._obj.values))
 
     @functools.cached_property
-    def absnanmax(self) -> np.floating:
+    def absnanmax(self) -> float:
         return max(abs(self.nanmin), abs(self.nanmax))
 
     @functools.cached_property
-    def absnanmin(self) -> np.floating:
+    def absnanmin(self) -> float:
         mn, mx = self.nanmin, self.nanmax
         if mn * mx <= np.float32(0.0):
-            return np.float32(0.0)
+            return 0.0
         elif mn < np.float32(0.0):
             return -mx
         else:
             return mn
 
     @property
-    def limits(self) -> tuple[np.floating, np.floating]:
+    def limits(self) -> tuple[float, float]:
         """Returns the global minima and maxima of the data."""
         return self.nanmin, self.nanmax
 
@@ -265,7 +266,7 @@ class ArraySlicer(QtCore.QObject):
             # if data has kx and ky axis, transpose
             if "eV" in data.dims:
                 new_dims += ("eV",)
-            new_dims += tuple(d for d in data.dims if d not in new_dims)
+            new_dims += tuple(str(d) for d in data.dims if d not in new_dims)
             data = data.transpose(*new_dims)
 
         nonuniform_dims: list[str] = [
@@ -304,13 +305,14 @@ class ArraySlicer(QtCore.QObject):
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
     ) -> None:
-        del self._obj
+        if hasattr(self, "_obj"):
+            del self._obj
 
         if validate:
             self._obj: xr.DataArray = self.validate_array(xarray_obj)
         else:
-            self._obj: xr.DataArray = xarray_obj
-        self._nonuniform_axes: list[str] = [
+            self._obj = xarray_obj
+        self._nonuniform_axes: list[int] = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
 
@@ -328,7 +330,7 @@ class ArraySlicer(QtCore.QObject):
             ]
             self.snap_to_data: bool = False
 
-    def values_of_dim(self, dim: str) -> npt.NDArray[np.float32]:
+    def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.float32]:
         """Fast equivalent of :code:`self._obj[dim].values`.
 
         Returns the cached pointer of the underlying coordinate array, achieving a ~80x
@@ -353,7 +355,7 @@ class ArraySlicer(QtCore.QObject):
         do the trick.
 
         """
-        return self._obj._coords[dim]._data.array._data
+        return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
@@ -580,7 +582,8 @@ class ArraySlicer(QtCore.QObject):
     ) -> dict[str, slice | int]:
         axis = sorted(set(range(self._obj.ndim)) - set(disp))
         return {
-            self._obj.dims[ax]: self._bin_slice(cursor, ax, int_if_one) for ax in axis
+            str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
+            for ax in axis
         }
 
     def qsel_args(self, cursor: int, disp: Sequence[int]) -> dict:
@@ -638,17 +641,17 @@ class ArraySlicer(QtCore.QObject):
         return f".isel({dict_repr})"
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
-        isel_kw: dict[str, slice] = self.isel_args(cursor, disp, int_if_one=False)
+        isel_kw = self.isel_args(cursor, disp, int_if_one=False)
         binned_coord_average: dict[str, xr.DataArray] = {
-            k: self._obj[k][isel_kw[k]].mean()
+            str(k): self._obj[k][isel_kw[str(k)]].mean()
             for k, v in zip(self._obj.dims, self.get_binned(cursor))
             if v
         }
         return (
-            self._obj.isel(**isel_kw)
+            self._obj.isel(isel_kw)
             .squeeze()
             .mean(binned_coord_average.keys())
-            .assign_coords(**binned_coord_average)
+            .assign_coords(binned_coord_average)
         )
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
@@ -673,6 +676,8 @@ class ArraySlicer(QtCore.QObject):
 
     def span_bounds(self, cursor: int, axis: int) -> npt.NDArray[np.float32]:
         slc = self._bin_slice(cursor, axis)
+        if isinstance(slc, int):
+            return self.coords_uniform[axis][slc : slc + 1]
         lb = max(0, slc.start)
         ub = min(self._obj.shape[axis] - 1, slc.stop - 1)
         return self.coords_uniform[axis][[lb, ub]]

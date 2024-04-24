@@ -3,10 +3,10 @@
 import datetime
 import os
 import re
+from typing import ClassVar
 
 import h5netcdf
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
 import xarray as xr
 
@@ -15,10 +15,10 @@ from erlab.io.dataloader import LoaderBase
 
 
 class SSRL52Loader(LoaderBase):
-    name: str = "ssrl"
-    aliases: list[str] = ["ssrl52", "bl5-2"]
+    name = "ssrl"
+    aliases = ("ssrl52", "bl5-2")
 
-    name_map: dict[str, str] = {
+    name_map: ClassVar[dict] = {
         "eV": "Kinetic Energy",
         "alpha": "ThetaX",
         "beta": ["ThetaY", "YDeflection", "DeflectionY"],
@@ -32,17 +32,10 @@ class SSRL52Loader(LoaderBase):
         "temp_sample": ["TB", "sample_stage_temperature"],
         "sample_workfunction": "WorkFunction",
     }
-    coordinate_attrs: tuple[str, ...] = (
-        "beta",
-        "delta",
-        "chi",
-        "xi",
-        "hv",
-        "x",
-        "y",
-        "z",
-    )
-    additional_attrs: dict[str, str | int | float] = {
+
+    coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
+
+    additional_attrs: ClassVar[dict] = {
         "configuration": 3,
         "sample_workfunction": 4.5,
     }
@@ -123,7 +116,7 @@ class SSRL52Loader(LoaderBase):
         num: int,
         data_dir: str | os.PathLike,
         zap: bool = False,
-    ) -> tuple[list[str], dict[str, npt.NDArray[np.float64]]]:
+    ):
         if zap:
             target_files = erlab.io.utilities.get_files(
                 data_dir, extensions=(".h5",), contains="zap"

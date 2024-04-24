@@ -306,12 +306,9 @@ Code standards
 - Please try to add type annotations to your code. This will help with code completion
   and static analysis.
 
-- Although it would be great to enforce static type checking, our code base currently
-  does not pass the tests. It would require a large amount of work to get it to pass, so
-  we are not enforcing it at the moment, and it is unclear whether the extra effort is
-  worth it. See `this article
-  <https://typing.readthedocs.io/en/latest/source/typing_anti_pitch.html>`_ for some
-  reasons to avoid static type checking.
+- We are in the process of adding type annotations to the codebase, and most of it
+  should pass `mypy <https://mypy.readthedocs.io/en/stable/>`_ except for the io and
+  interactive modules.
 
 Documentation
 =============

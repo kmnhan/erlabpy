@@ -27,7 +27,7 @@ class LeastSq(iminuit.cost.LeastSquares):
         if self._ndim > 1:
             raise ValueError("visualize is not implemented for multi-dimensional data")
 
-        plt.grid(visible="both")
+        plt.grid(visible=True, axis="both")
         x, y, ye = self._masked.T
         plt.errorbar(
             x, y, ye, fmt="o", lw=0.75, ms=3, mfc="w", zorder=2, c="0.4", capsize=0
@@ -43,7 +43,10 @@ class LeastSq(iminuit.cost.LeastSquares):
             ym = self.model(xm, *args)
         else:
             xm, ym = _smart_sampling(
-                lambda x: self.model(x, *args), x[0], x[-1], start=len(x)
+                lambda x: self.model(x, *args),
+                x[0],
+                x[-1],
+                start=len(x),
             )
         plt.plot(xm, ym, "r-", lw=1, zorder=3)
         return (x, y, ye), (xm, ym)
@@ -100,17 +103,17 @@ class Minuit(iminuit.Minuit):
     def from_lmfit(
         cls,
         model: lmfit.Model,
-        data: npt.ArrayLike,
-        ivars: npt.ArrayLike | Sequence[npt.ArrayLike],
-        yerr: float | npt.ArrayLike | None = None,
+        data: npt.NDArray,
+        ivars: npt.NDArray | Sequence[npt.NDArray],
+        yerr: float | npt.NDArray | None = None,
         return_cost: bool = False,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
         if len(model.independent_vars) == 1:
-            if len(ivars) != 1:
+            if isinstance(ivars, npt.NDArray):
                 ivars = [ivars]
 
-        x = [np.asarray(a) for a in ivars]
+        x: npt.NDArray | list[npt.NDArray] = [np.asarray(a) for a in ivars]
 
         if len(x) != len(model.independent_vars):
             raise ValueError("Number of independent variables does not match model.")

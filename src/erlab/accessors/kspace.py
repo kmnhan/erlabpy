@@ -6,20 +6,20 @@ __all__ = [
 import functools
 import time
 import warnings
-from collections.abc import Callable, ItemsView, Iterable, Iterator
-from typing import Literal
+from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
+from typing import Literal, cast
 
 import numpy as np
 import xarray as xr
 
-from erlab.accessors.utils import ERLabAccessor
+from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
-from erlab.interactive.kspace import ktool
+from erlab.interactive.kspace import KspaceTool, ktool
 
 
-def only_angles(method: Callable | None = None):
+def only_angles(method=None):
     """
     A decorator that ensures the data is in angle space before executing the decorated
     method.
@@ -28,7 +28,7 @@ def only_angles(method: Callable | None = None):
     `ValueError` is raised.
     """
 
-    def wrapper(method: Callable):
+    def wrapper(method):
         @functools.wraps(method)
         def _impl(self, *args, **kwargs):
             if "kx" in self._obj.dims or "ky" in self._obj.dims:
@@ -44,7 +44,7 @@ def only_angles(method: Callable | None = None):
     return wrapper
 
 
-def only_momentum(method: Callable | None = None):
+def only_momentum(method=None):
     """
     A decorator that ensures the data is in momentum space before executing the
     decorated method.
@@ -53,7 +53,7 @@ def only_momentum(method: Callable | None = None):
     present), a `ValueError` is raised.
     """
 
-    def wrapper(method: Callable):
+    def wrapper(method):
         @functools.wraps(method)
         def _impl(self, *args, **kwargs):
             if not ("kx" in self._obj.dims or "ky" in self._obj.dims):
@@ -111,10 +111,7 @@ class OffsetView:
             if k + "_offset" not in self._obj.attrs:
                 self[k] = 0.0
 
-    def __len__(self) -> int:
-        return len(self._obj.kspace.valid_offset_keys)
-
-    def __iter__(self) -> Iterator[str, float]:
+    def __iter__(self) -> Iterator[tuple[str, float]]:
         for key in self._obj.kspace.valid_offset_keys:
             yield key, self.__getitem__(key)
 
@@ -132,7 +129,10 @@ class OffsetView:
             self._obj.attrs[key + "_offset"] = float(value)
 
     def __eq__(self, other: object) -> bool:
-        return dict(self) == dict(other)
+        if isinstance(other, Mapping):
+            return dict(self) == dict(other)
+        else:
+            return False
 
     def __repr__(self) -> str:
         return dict(self).__repr__()
@@ -152,13 +152,13 @@ class OffsetView:
 
     def update(
         self,
-        other: dict | Iterable[tuple[str, float]] | None = None,
+        other: dict[str, float] | Iterable[tuple[str, float]] | None = None,
         **kwargs,
     ) -> "OffsetView":
         """Updates the offset view with the provided key-value pairs."""
         if other is not None:
             for k, v in other.items() if isinstance(other, dict) else other:
-                self[k] = v
+                self[str(k)] = v
         for k, v in kwargs.items():
             self[k] = v
         return self
@@ -175,7 +175,7 @@ class OffsetView:
 
 
 @xr.register_dataarray_accessor("kspace")
-class MomentumAccessor(ERLabAccessor):
+class MomentumAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.kspace` accessor for momentum conversion related utilities.
 
     This class provides convenient access to various momentum-related properties of a
@@ -198,7 +198,7 @@ class MomentumAccessor(ERLabAccessor):
                 "Configuration not found in data attributes! "
                 "Data attributes may have been discarded since initial import."
             )
-        return AxesConfiguration(int(self._obj.attrs.get("configuration")))
+        return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
     @configuration.setter
     def configuration(self, value: AxesConfiguration | int):
@@ -294,7 +294,7 @@ class MomentumAccessor(ERLabAccessor):
         self._obj.attrs["angle_resolution"] = float(value)
 
     @property
-    def slit_axis(self) -> str:
+    def slit_axis(self) -> Literal["kx", "ky"]:
         """Returns the momentum axis parallel to the slit.
 
         Returns
@@ -309,7 +309,7 @@ class MomentumAccessor(ERLabAccessor):
                 return "ky"
 
     @property
-    def other_axis(self) -> str:
+    def other_axis(self) -> Literal["kx", "ky"]:
         """Returns the momentum axis perpendicular to the slit.
 
         Returns
@@ -325,7 +325,7 @@ class MomentumAccessor(ERLabAccessor):
 
     @property
     @only_angles
-    def momentum_axes(self) -> tuple[str, ...]:
+    def momentum_axes(self) -> tuple[Literal["kx", "ky", "kz"], ...]:
         """Returns the momentum axes of the data after conversion.
 
         Returns
@@ -529,9 +529,9 @@ class MomentumAccessor(ERLabAccessor):
         kin = self.kinetic_energy.values
         c1, c2 = 641.0, 0.096
         imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
-        return np.amin(1 / imfp)
+        return float(np.amin(1 / imfp))
 
-    def _get_transformed_coords(self) -> dict[str, xr.DataArray]:
+    def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self.alpha, self.beta)
         if "hv" in kx.dims:
             kz = kz_func(self.kinetic_energy, self.inner_potential, kx, ky)
@@ -539,7 +539,7 @@ class MomentumAccessor(ERLabAccessor):
         else:
             return {"kx": kx, "ky": ky}
 
-    def estimate_bounds(self) -> dict[str, tuple[float, float]]:
+    def estimate_bounds(self) -> dict[Literal["kx", "ky", "kz"], tuple[float, float]]:
         """
         Estimates the bounds of the data in momentum space based on the available
         parameters.
@@ -605,7 +605,7 @@ class MomentumAccessor(ERLabAccessor):
         else:
             raise ValueError(f"`{axis}` is not a valid momentum axis.")
 
-        if from_numpoints:
+        if from_numpoints and (lims is not None):
             return float((lims[1] - lims[0]) / len(self._obj[dim]))
         elif axis == "kz":
             return self.best_kz_resolution
@@ -637,7 +637,7 @@ class MomentumAccessor(ERLabAccessor):
         if self.has_eV:
             out_dict["eV"] = self.binding_energy
 
-        if kz is not None:
+        if kzval is not None:
             out_dict["hv"] = (
                 rel_kzconv * (kxval**2 + kyval**2 + kzval**2)
                 - self.inner_potential
@@ -645,7 +645,12 @@ class MomentumAccessor(ERLabAccessor):
                 - self.binding_energy
             )
 
-        return dict(zip(out_dict.keys(), xr.broadcast(*out_dict.values())))
+        return cast(
+            dict[str, xr.DataArray],
+            dict(
+                zip(cast(list[str], out_dict.keys()), xr.broadcast(*out_dict.values()))
+            ),
+        )
 
     @only_angles
     def convert_coords(self) -> xr.DataArray:
@@ -662,7 +667,7 @@ class MomentumAccessor(ERLabAccessor):
         return self._obj.assign_coords(self._get_transformed_coords())
 
     @only_angles
-    def _get_coord_for_conversion(self, name: str) -> xr.DataArray:
+    def _get_coord_for_conversion(self, name: Hashable) -> xr.DataArray:
         """
         Get the coordinte array for given dimension name. This just ensures that the
         energy coordinates are given as binding energy.
@@ -809,13 +814,13 @@ class MomentumAccessor(ERLabAccessor):
         dim_mapping: dict[str, str] = {}
         for d in coords_for_transform.dims:
             if d == self.slit_axis:
-                dim_mapping["alpha"] = d
+                dim_mapping["alpha"] = str(d)
             elif d == self.other_axis:
-                dim_mapping["beta"] = d
+                dim_mapping["beta"] = str(d)
             elif d == "kz":
-                dim_mapping["hv"] = d
+                dim_mapping["hv"] = str(d)
             else:
-                dim_mapping[d] = d
+                dim_mapping[str(d)] = str(d)
 
         # Delete keys not in the input data, e.g. "beta" for cuts
         for k in list(dim_mapping.keys()):
@@ -834,8 +839,10 @@ class MomentumAccessor(ERLabAccessor):
             return interpn(points, arr, xi, bounds_error=False).squeeze()
 
         input_core_dims = [input_dims]
-        input_core_dims.extend([[d] for d in input_dims])
-        input_core_dims.extend([target_dict[d].dims for d in input_dims])
+        input_core_dims.extend([(d,) for d in input_dims])
+        input_core_dims.extend(
+            [cast(tuple[str, ...], target_dict[d].dims) for d in input_dims]
+        )
 
         out = xr.apply_ufunc(
             _wrap_interpn,
@@ -859,7 +866,7 @@ class MomentumAccessor(ERLabAccessor):
 
         return out
 
-    def interactive(self, **kwargs) -> ktool:
+    def interactive(self, **kwargs) -> KspaceTool:
         """Open the interactive momentum space conversion tool."""
         if self._obj.ndim < 3:
             raise ValueError("Interactive tool requires three-dimensional data.")

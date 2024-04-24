@@ -21,10 +21,17 @@ T = TypeVar("T")
 _THIS_ARRAY: str = "<this-array>"
 
 
-class ERLabAccessor:
+class ERLabDataArrayAccessor:
     """Base class for accessors."""
 
-    def __init__(self, xarray_obj: xr.DataArray | xr.Dataset):
+    def __init__(self, xarray_obj: xr.DataArray):
+        self._obj = xarray_obj
+
+
+class ERLabDatasetAccessor:
+    """Base class for accessors."""
+
+    def __init__(self, xarray_obj: xr.Dataset):
         self._obj = xarray_obj
 
 
@@ -52,7 +59,7 @@ def either_dict_or_kwargs(
 
 
 @xr.register_dataarray_accessor("qplot")
-class PlotAccessor(ERLabAccessor):
+class PlotAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qplot` accessor for plotting data."""
 
     def __call__(self, *args, **kwargs):
@@ -83,10 +90,10 @@ class PlotAccessor(ERLabAccessor):
 
 
 @xr.register_dataarray_accessor("qshow")
-class ImageToolAccessor(ERLabAccessor):
+class ImageToolAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qshow` accessor for interactive visualization."""
 
-    def __call__(self, *args, **kwargs) -> ImageTool:
+    def __call__(self, *args, **kwargs) -> ImageTool | list[ImageTool] | None:
         if len(self._obj.dims) >= 2:
             return itool(self._obj, *args, **kwargs)
         else:
@@ -94,7 +101,7 @@ class ImageToolAccessor(ERLabAccessor):
 
 
 @xr.register_dataarray_accessor("qsel")
-class SelectionAccessor(ERLabAccessor):
+class SelectionAccessor(ERLabDataArrayAccessor):
     """
     `xarray.DataArray.qsel` accessor for conveniently selecting and averaging
     data.
@@ -102,7 +109,7 @@ class SelectionAccessor(ERLabAccessor):
 
     def __call__(
         self,
-        indexers: dict[str, float | slice] | None = None,
+        indexers: Mapping[Hashable, float | slice] | None = None,
         *,
         verbose: bool = False,
         **indexers_kwargs,
@@ -151,28 +158,39 @@ class SelectionAccessor(ERLabAccessor):
         indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
 
         # Bin widths for each dimension, zero if width not specified
-        bin_widths: dict[str, float] = {}
+        bin_widths: dict[Hashable, float] = {}
 
         for dim in indexers:
-            if not dim.endswith("_width"):
-                bin_widths[dim] = indexers.get(f"{dim}_width", 0.0)
+            if not str(dim).endswith("_width"):
+                width = indexers.get(f"{dim}_width", 0.0)
+                if isinstance(width, slice):
+                    raise ValueError(
+                        f"Slice not allowed for width of dimension `{dim}`"
+                    )
+                else:
+                    bin_widths[dim] = float(width)
                 if dim not in self._obj.dims:
                     raise ValueError(f"Dimension `{dim}` not found in data.")
 
-        scalars: dict[str, float] = {}
-        slices: dict[str, slice] = {}
-        avg_dims: list[str] = []
+        scalars: dict[Hashable, float] = {}
+        slices: dict[Hashable, slice] = {}
+        avg_dims: list[Hashable] = []
 
         for dim, width in bin_widths.items():
+            value = indexers[dim]
+
             if width == 0.0:
-                if isinstance(indexers[dim], slice):
-                    slices[dim] = indexers[dim]
+                if isinstance(value, slice):
+                    slices[dim] = value
                 else:
-                    scalars[dim] = float(indexers[dim])
+                    scalars[dim] = float(value)
             else:
-                slices[dim] = slice(
-                    indexers[dim] - width / 2, indexers[dim] + width / 2
-                )
+                if isinstance(value, slice):
+                    raise ValueError(
+                        f"Slice not allowed for value of dimension `{dim}` "
+                        "with width specified"
+                    )
+                slices[dim] = slice(value - width / 2, value + width / 2)
                 avg_dims.append(dim)
 
         if len(scalars) >= 1:
@@ -182,12 +200,14 @@ class SelectionAccessor(ERLabAccessor):
                         f"Selected value {v} for `{k}` is outside coordinate bounds",
                         stacklevel=2,
                     )
-            out = self._obj.sel(**scalars, method="nearest")
+            out = self._obj.sel(
+                {str(k): v for k, v in scalars.items()}, method="nearest"
+            )
         else:
             out = self._obj
 
         if len(slices) >= 1:
-            out = out.sel(**slices)
+            out = out.sel(slices)
 
             lost_coords = {k: out[k].mean() for k in avg_dims}
             out = out.mean(dim=avg_dims, keep_attrs=True)

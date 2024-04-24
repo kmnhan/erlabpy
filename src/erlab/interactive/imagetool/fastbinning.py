@@ -6,7 +6,7 @@ based on numba. Enables efficient real-time multidimensional binning.
 
 __all__ = ["fast_nanmean"]
 
-from collections.abc import Iterable
+from collections.abc import Collection
 
 import numba
 import numba.core.registry
@@ -315,8 +315,8 @@ nanmean_funcs = {
 
 
 def fast_nanmean(
-    a: npt.NDArray[np.float32 | np.float64], axis: int | Iterable[int] | None = None
-) -> npt.NDArray[np.float32 | np.float64] | float:
+    a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int] | None = None
+) -> npt.NDArray[np.float32 | np.float64] | np.float64:
     """A fast, parallelized arithmetic mean for floating point arrays that ignores NaNs.
 
     Parameters
@@ -345,8 +345,8 @@ def fast_nanmean(
     if a.ndim == 1 or axis is None:
         return _nanmean_all(a)
     elif a.ndim > 4:
-        return np.ascontiguousarray(numbagg.nanmean(a, axis))
-    if hasattr(axis, "__iter__"):
+        return np.ascontiguousarray(numbagg.nanmean(a, axis))  # type: ignore[arg-type]
+    if isinstance(axis, Collection):
         if len(axis) == a.ndim:
             return _nanmean_all(a)
         axis = frozenset(x % a.ndim for x in axis)
@@ -356,8 +356,8 @@ def fast_nanmean(
 
 
 def _fast_nanmean_skipcheck(
-    a: npt.NDArray[np.float32 | np.float64], axis: int | Iterable[int]
-) -> npt.NDArray[np.float32 | np.float64] | float:
+    a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int]
+) -> npt.NDArray[np.float32 | np.float64] | np.float64:
     """A version of `fast_nanmean` with near-zero overhead. Meant for internal use.
 
     Strict assumptions on the input parameters allow skipping some checks.
@@ -377,18 +377,8 @@ def _fast_nanmean_skipcheck(
         The calculated mean. The output array is always C-contiguous.
 
     """
-    if hasattr(axis, "__iter__"):
+    if isinstance(axis, Collection):
         if len(axis) == a.ndim:
             return _nanmean_all(a)
         axis = frozenset(axis)
     return nanmean_funcs[a.ndim][axis](a).astype(a.dtype)
-
-
-if __name__ == "__main__":
-    for nd, funcs in nanmean_funcs.items():
-        x = np.random.RandomState(42).randn(*((30,) * nd))
-        for axis, func in funcs.items():
-            if isinstance(axis, frozenset):
-                axis = tuple(axis)
-            if not np.allclose(np.nanmean(x, axis), fast_nanmean(x, axis)):
-                print(func)

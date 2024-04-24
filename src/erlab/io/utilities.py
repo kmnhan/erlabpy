@@ -204,7 +204,7 @@ def save_as_hdf5(
         # IGORWaveScaling order: chunk row column layer
         scaling = [[1, 0]]
         for i in range(data.ndim):
-            coord: npt.NDArray = data[data.dims[i]].values
+            coord: npt.NDArray = np.asarray(data[data.dims[i]].values)
             delta = coord[1] - coord[0]
             scaling.append([delta, coord[0]])
         if data.ndim == 4:

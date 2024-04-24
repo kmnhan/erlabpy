@@ -57,9 +57,12 @@ def load_xrd_itx(path: str, **kwargs):
     kwargs.setdefault("encoding", "windows-1252")
     with open(path, **kwargs) as file:
         content = file.read()
-    head, data = re.search(
-        r"IGOR\nWAVES/O\s(.*?)\nBEGIN\n(.+?)\nEND", content, re.DOTALL
-    ).groups()
+
+    search = re.search(r"IGOR\nWAVES/O\s(.*?)\nBEGIN\n(.+?)\nEND", content, re.DOTALL)
+    if search is None:
+        raise ValueError("Failed to parse .itx file.")
+
+    head, data = search.groups()
     head = head.split(", ")
 
     data = np.array(

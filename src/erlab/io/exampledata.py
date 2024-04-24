@@ -58,7 +58,7 @@ def generate_data(
     Eres: float = 2.0e-3,
     noise: bool = True,
     seed: int | None = None,
-    count: int = 1e8,
+    count: int = 100000000,
     ccd_sigma: float = 0.6,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in momentum space.
@@ -108,12 +108,12 @@ def generate_data(
     if isinstance(krange, dict):
         kx = np.linspace(*krange["kx"], shape[0])
         ky = np.linspace(*krange["ky"], shape[1])
-    elif not np.iterable(krange):
-        kx = np.linspace(-krange, krange, shape[0])
-        ky = np.linspace(-krange, krange, shape[1])
-    else:
+    elif isinstance(krange, tuple):
         kx = np.linspace(*krange, shape[0])
         ky = np.linspace(*krange, shape[1])
+    else:
+        kx = np.linspace(-krange, krange, shape[0])
+        ky = np.linspace(-krange, krange, shape[1])
 
     eV = np.linspace(*Erange, shape[2])
 
@@ -169,7 +169,7 @@ def generate_data_angles(
     Eres: float = 10.0e-3,
     noise: bool = True,
     seed: int | None = None,
-    count: int = 1e8,
+    count: int = 100000000,
     ccd_sigma: float = 0.6,
     assign_attributes: bool = False,
 ) -> xr.DataArray:
@@ -228,12 +228,12 @@ def generate_data_angles(
     if isinstance(angrange, dict):
         alpha = np.linspace(*angrange["alpha"], shape[0])
         beta = np.linspace(*angrange["beta"], shape[1])
-    elif not np.iterable(angrange):
-        alpha = np.linspace(-angrange, angrange, shape[0])
-        beta = np.linspace(-angrange, angrange, shape[1])
-    else:
+    elif isinstance(angrange, tuple):
         alpha = np.linspace(*angrange, shape[0])
         beta = np.linspace(*angrange, shape[1])
+    else:
+        alpha = np.linspace(-angrange, angrange, shape[0])
+        beta = np.linspace(-angrange, angrange, shape[1])
 
     if not isinstance(configuration, erlab.analysis.kspace.AxesConfiguration):
         configuration = erlab.analysis.kspace.AxesConfiguration(configuration)
@@ -307,7 +307,7 @@ def generate_gold_edge(
     angres: float = 0.1,
     edge_coeffs: Sequence[float] = (0.04, 1e-5, -3e-4),
     background_coeffs: Sequence[float] = (1.0, 0.0, -2e-3),
-    count: int = 1e6,
+    count: int = 1000000,
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
@@ -384,19 +384,3 @@ def generate_gold_edge(
         )
 
     return data.assign_attrs(temp_sample=temp)
-
-
-if __name__ == "__main__":
-    # out = generate_data(
-    #     shape=(201, 202, 203),
-    #     krange=1.4,
-    #     Erange=(-0.45, 0.09),
-    #     temp=30,
-    #     bandshift=-0.2,
-    #     count=1000,
-    #     noise=True,
-    # )
-    out = generate_data_angles()
-    import erlab.plotting.erplot as eplt
-
-    eplt.itool([out, out.kspace.convert()])

@@ -24,7 +24,7 @@ from erlab.plotting.bz import get_bz_edge
 
 
 class KspaceToolGUI(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))
+    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
 ):
     def __init__(self):
         # Start the QApplication if it doesn't exist
@@ -155,7 +155,9 @@ class KspaceTool(KspaceToolGUI):
         if data_name is None:
             try:
                 self._argnames["data"] = varname.argname(
-                    "data", func=self.__init__, vars_only=False
+                    "data",
+                    func=self.__init__,  # type: ignore[misc]
+                    vars_only=False,
                 )
             except varname.VarnameRetrievingError:
                 self._argnames["data"] = "data"
@@ -302,7 +304,10 @@ class KspaceTool(KspaceToolGUI):
     def bounds(self) -> dict[str, tuple[float, float]] | None:
         if self.bounds_group.isChecked():
             return {
-                k: tuple(self._bound_spins[f"{k}{j}"].value() for j in range(2))
+                k: (
+                    self._bound_spins[f"{k}0"].value(),
+                    self._bound_spins[f"{k}1"].value(),
+                )
                 for k in self.data.kspace.momentum_axes
             }
         else:
@@ -425,5 +430,7 @@ def ktool(data: xr.DataArray, *, data_name: str | None = None) -> KspaceTool:
 
 
 if __name__ == "__main__":
-    dat = erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5")
+    from typing import cast
+
+    dat = cast(xr.DataArray, erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5"))
     win = ktool(dat)

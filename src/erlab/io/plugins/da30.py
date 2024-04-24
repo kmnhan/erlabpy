@@ -7,7 +7,7 @@ import configparser
 import os
 import tempfile
 import zipfile
-
+from typing import ClassVar
 import numpy as np
 import xarray as xr
 
@@ -16,19 +16,18 @@ from erlab.io.igor import load_experiment, load_wave
 
 
 class DA30Loader(LoaderBase):
-    name: str = "da30"
-    aliases: list[str] = ["DA30"]
+    name = "da30"
+    aliases = ("DA30",)
 
-    name_map: dict[str, str] = {
+    name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],
         "beta": ["Thetay [deg]"],
         "hv": ["BL Energy", "Excitation Energy"],
     }
-    coordinate_attrs: tuple[str, ...] = ()
-    additional_attrs: dict[str, str | int | float] = {}
-    always_single: bool = True
-    skip_validate: bool = True
+    additional_attrs: ClassVar[dict] = {}
+    always_single = True
+    skip_validate = True
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         ext = os.path.splitext(file_path)[-1]
