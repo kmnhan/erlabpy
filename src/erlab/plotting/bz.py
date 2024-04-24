@@ -74,7 +74,7 @@ def get_bz_edge(
     lines = []
     vertices = []
 
-    for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices):
+    for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices, strict=True):
         simplex = np.asarray(simplex)
         if zero_ind in pointidx:
             # If the origin is included in the ridge, add the vertices

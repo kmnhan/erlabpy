@@ -91,7 +91,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
         acf,
         {
             d: autocorrelation_lags(n, mode) * s
-            for s, n, d in zip(steps, arr.shape, out.dims)
+            for s, n, d in zip(steps, arr.shape, out.dims, strict=True)
         },
         attrs=out.attrs,
     )
@@ -114,14 +114,14 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 
         out_list = joblib.Parallel(n_jobs=-1, pre_dispatch="3 * n_jobs")(
             joblib.delayed(nanacf)(
-                np.squeeze(arr.isel(dict(zip(stack_dims, vals))).values),
+                np.squeeze(arr.isel(dict(zip(stack_dims, vals, strict=True))).values),
                 mode,
                 method,
             )
             for vals in itertools.product(*stack_iter)
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
-        acf_sizes = dict(zip(acf_dims, out_list[0].shape))
+        acf_sizes = dict(zip(acf_dims, out_list[0].shape, strict=True))
         acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
 
         out_sizes = stack_sizes | acf_sizes
@@ -137,12 +137,14 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
             out = out.assign_coords({d: arr[d] for d in stack_dims})
 
         for i, vals in enumerate(itertools.product(*stack_iter)):
-            out.loc[{s: arr[s][v] for s, v in zip(stack_dims, vals)}] = out_list[i]
+            out.loc[{s: arr[s][v] for s, v in zip(stack_dims, vals, strict=True)}] = (
+                out_list[i]
+            )
 
         out = out.assign_coords(
             {
                 d: autocorrelation_lags(len(arr[d]), mode) * s
-                for s, d in zip(acf_steps, acf_dims)
+                for s, d in zip(acf_steps, acf_dims, strict=True)
             }
         )
         if all(i in out.dims for i in ["kx", "ky"]):

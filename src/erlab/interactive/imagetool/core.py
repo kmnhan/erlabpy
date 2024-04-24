@@ -918,7 +918,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ]
         if self.data.ndim == 4:
             sizes[3] = (0, 0, (r0 + r1 - d))
-        for split, sz in zip(self._splitters, sizes):
+        for split, sz in zip(self._splitters, sizes, strict=True):
             split.setSizes(tuple(round(s * scale) for s in sz))
 
         for i, sel in enumerate(valid_axis):
@@ -1226,7 +1226,10 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_independent:
             return
         for dim, auto, rng in zip(
-            self.axis_dims, self.vb.state["autoRange"], self.vb.state["viewRange"]
+            self.axis_dims,
+            self.vb.state["autoRange"],
+            self.vb.state["viewRange"],
+            strict=True,
         ):
             if dim is not None:
                 if auto:
@@ -1240,7 +1243,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.set_range_from(self.slicer_area.manual_limits)
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs):
-        for dim, key in zip(self.axis_dims, ("xRange", "yRange")):
+        for dim, key in zip(self.axis_dims, ("xRange", "yRange"), strict=True):
             if dim is not None:
                 try:
                     kwargs[key] = limits[dim]
@@ -1374,7 +1377,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.cursor_lines.append({})
         self.cursor_spans.append({})
-        for c, s, ax in zip(cursors, spans, self.display_axis):
+        for c, s, ax in zip(cursors, spans, self.display_axis, strict=True):
             self.cursor_lines[-1][ax] = c
             self.cursor_spans[-1][ax] = s
             self.addItem(c)
@@ -1422,7 +1425,9 @@ class ItoolPlotItem(pg.PlotItem):
         item = self.slicer_data_items.pop(index)
         self.removeItem(item)
         for line, span in zip(
-            self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
+            self.cursor_lines.pop(index).values(),
+            self.cursor_spans.pop(index).values(),
+            strict=True,
         ):
             self.removeItem(line)
             self.removeItem(span)
@@ -1471,7 +1476,9 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             label_kw = {
                 a: self._get_label_unit(i)
-                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
+                for a, i in zip(
+                    ("top", "bottom", "left", "right"), (0, 0, 1, 1), strict=True
+                )
                 if self.getAxis(a).isVisible()
             }
         else:

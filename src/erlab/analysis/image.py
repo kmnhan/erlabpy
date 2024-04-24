@@ -104,7 +104,7 @@ def gaussian_filter(
     elif np.isscalar(sigma):
         sigma_dict = dict.fromkeys(darr.dims, sigma)
     elif isinstance(sigma, Collection):
-        sigma_dict = dict(zip(darr.dims, sigma))
+        sigma_dict = dict(zip(darr.dims, sigma, strict=True))
     else:
         raise TypeError("`sigma` must be a scalar, sequence, or mapping")
 
@@ -123,7 +123,7 @@ def gaussian_filter(
         elif isinstance(radius, Sized):
             if len(radius) != len(sigma_dict):
                 raise ValueError("`radius` does not match dimensions of `sigma`")
-            radius_dict = dict(zip(sigma_dict.keys(), radius))
+            radius_dict = dict(zip(sigma_dict.keys(), radius, strict=True))
         elif np.isscalar(radius):
             radius_dict = dict.fromkeys(sigma_dict.keys(), radius)
         else:
@@ -211,7 +211,7 @@ def gaussian_laplace(
     elif np.isscalar(sigma):
         sigma_dict = dict.fromkeys(darr.dims, sigma)
     elif isinstance(sigma, Collection):
-        sigma_dict = dict(zip(darr.dims, sigma))
+        sigma_dict = dict(zip(darr.dims, sigma, strict=True))
     else:
         raise TypeError("`sigma` must be a scalar, sequence, or mapping")
 

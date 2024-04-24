@@ -158,7 +158,6 @@ select = [
     "RUF",
 ]
 ignore = [
-    "B905",
     "ICN001", # Import conventions
     "TRY003", # Long exception messages
 ]
@@ -205,7 +204,13 @@ warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 allow_redefinition = true
-exclude = ["^docs/", "^tests/", "_deprecated/", "interactive/fermiedge.py", "io/"]
+exclude = [
+    "^docs/",
+    "^tests/",
+    "_deprecated/",
+    "interactive/fermiedge.py",
+    "io/",
+]
 
 [[tool.mypy.overrides]]
 module = [

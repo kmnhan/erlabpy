@@ -648,7 +648,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return cast(
             dict[str, xr.DataArray],
             dict(
-                zip(cast(list[str], out_dict.keys()), xr.broadcast(*out_dict.values()))
+                zip(
+                    cast(list[str], out_dict.keys()),
+                    xr.broadcast(*out_dict.values()),
+                    strict=True,
+                )
             ),
         )
 

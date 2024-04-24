@@ -217,7 +217,7 @@ def load_wave(
     dims = [get_dim_name(i) for i in range(_MAXDIM)]
     coords = {
         dims[i]: np.linspace(b, b + a * (c - 1), c)
-        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape))
+        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape, strict=True))
         if c != 0
     }
 

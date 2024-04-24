@@ -1154,7 +1154,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
         else:
             raise NotImplementedError("Only supports 2D, 3D, and 4D arrays.")
-        for i, (p, sel) in enumerate(zip(self.axes, valid_selection)):
+        for i, (p, sel) in enumerate(zip(self.axes, valid_selection, strict=True)):
             p.setDefaultPadding(0)
             for axis in ["left", "bottom", "right", "top"]:
                 p.getAxis(axis).setTickFont(font)

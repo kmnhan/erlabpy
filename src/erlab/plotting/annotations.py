@@ -369,7 +369,7 @@ def label_subplot_properties(
                 for val in v
             ]
         )
-    strlist = list(zip(*strlist))
+    strlist = list(zip(*strlist, strict=True))
     strlist = ["\n".join(strlist[i]) for i in range(len(strlist))]
     label_subplots(axes, strlist, order=order, **kwargs)
 
@@ -679,7 +679,7 @@ def mark_points(
             y = [y] * len(points)  # type: ignore[list-item]
 
         with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, label in zip(points, y, labels):
+            for xi, yi, label in zip(points, y, labels, strict=True):
                 ax.text(
                     xi,
                     yi,
@@ -901,7 +901,7 @@ def scale_units(
 def set_titles(axes, labels, order="C", **kwargs):
     axlist = np.array(axes, dtype=object).flatten(order=order)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_title(label, **kwargs)
 
 
@@ -910,7 +910,7 @@ def set_xlabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_xlabel(label, **kwargs)
 
 
@@ -919,7 +919,7 @@ def set_ylabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_ylabel(label, **kwargs)
 
 

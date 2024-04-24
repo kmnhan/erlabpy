@@ -326,7 +326,7 @@ class ArraySlicer(QtCore.QObject):
                 [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
             ]
             self._values: list[list[np.float32]] = [
-                [c[i] for c, i in zip(self.coords, self._indices[0])]
+                [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
             ]
             self.snap_to_data: bool = False
 
@@ -361,7 +361,7 @@ class ArraySlicer(QtCore.QObject):
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)
         self._indices.append(list(new_ind))
-        self._values.append([c[i] for c, i in zip(self.coords, new_ind)])
+        self._values.append([c[i] for c, i in zip(self.coords, new_ind, strict=True)])
         if update:
             self.sigCursorCountChanged.emit(self.n_cursors)
 
@@ -644,7 +644,7 @@ class ArraySlicer(QtCore.QObject):
         isel_kw = self.isel_args(cursor, disp, int_if_one=False)
         binned_coord_average: dict[str, xr.DataArray] = {
             str(k): self._obj[k][isel_kw[str(k)]].mean()
-            for k, v in zip(self._obj.dims, self.get_binned(cursor))
+            for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
             if v
         }
         return (

@@ -18,6 +18,7 @@ def _generate_funclist() -> list[tuple[Callable, Callable]]:
             [0, 30.0, -30.0],
             [0.0, 10.0, -10.0],
             [0.0, 10.0, -10.0],
+            strict=True,
         ):
             funcs.append(kconv_func(k_tot, delta, xi, xi0, beta0))
     for kconv_func in (
@@ -30,6 +31,7 @@ def _generate_funclist() -> list[tuple[Callable, Callable]]:
             [0.0, 10.0, -10.0],
             [0.0, 10.0, -10.0],
             [0.0, 10.0, -10.0],
+            strict=True,
         ):
             funcs.append(kconv_func(k_tot, delta, chi, chi0, xi, xi0))
     return funcs

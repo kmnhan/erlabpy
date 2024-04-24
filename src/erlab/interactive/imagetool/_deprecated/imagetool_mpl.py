@@ -839,7 +839,9 @@ class mpl_itool(Widget):
                     span.set_xy(get_xy_y(*domain))
                 span.set_visible(self.visible)
             if self.useblit:
-                for i, span in list(zip(self.span_ax_index[axis], self.spans[axis])):
+                for i, span in list(
+                    zip(self.span_ax_index[axis], self.spans[axis], strict=True)
+                ):
                     self.axes[i].draw_artist(span)
 
     def get_index_of_value(self, axis, val):
@@ -968,7 +970,9 @@ class mpl_itool(Widget):
                 # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
                 #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
             else:
-                for i, art in list(zip(self.ax_index, self.all + self.scaling_axes)):
+                for i, art in list(
+                    zip(self.ax_index, self.all + self.scaling_axes, strict=True)
+                ):
                     self.axes[i].draw_artist(art)
             if any(self.averaged):
                 self.update_spans()

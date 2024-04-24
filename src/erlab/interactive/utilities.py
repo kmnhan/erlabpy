@@ -522,6 +522,7 @@ class BetterAxisItem(pg.AxisItem):
                     for k, v in zip(
                         ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-"),
                         ("⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁻"),
+                        strict=True,
                     ):
                         units = units.replace(k, v)
                     units = f"10{units}"
@@ -1156,7 +1157,7 @@ class ROIControls(ParameterGroup):
         self.widgets["y0"].setMaximum(self.widgets["y1"].value())
         self.widgets["x1"].setMinimum(self.widgets["x0"].value())
         self.widgets["y1"].setMinimum(self.widgets["y0"].value())
-        for pos, spin in zip(self.roi_limits, self.roi_spin):
+        for pos, spin in zip(self.roi_limits, self.roi_spin, strict=True):
             spin.blockSignals(True)
             spin.setValue(pos)
             spin.blockSignals(False)
@@ -1164,7 +1165,9 @@ class ROIControls(ParameterGroup):
     def modify_roi(self, x0=None, y0=None, x1=None, y1=None, update=True):
         lim_new = (x0, y0, x1, y1)
         lim_old = self.roi_limits
-        x0, y0, x1, y1 = ((f if f is not None else i) for i, f in zip(lim_old, lim_new))
+        x0, y0, x1, y1 = (
+            (f if f is not None else i) for i, f in zip(lim_old, lim_new, strict=True)
+        )
         xm, ym, xM, yM = self.roi.maxBounds.getCoords()
         x0, y0, x1, y1 = max(x0, xm), max(y0, ym), min(x1, xM), min(y1, yM)
         self.roi.setPos((x0, y0), update=False)

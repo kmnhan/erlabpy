@@ -130,7 +130,9 @@ def test_modelfit_params(use_dask: bool):
 
     # params as DataArray of JSON strings
     params = []
-    for a, p, f in zip(a_guess, p_guess, np.full_like(da.x, 2, dtype=float)):
+    for a, p, f in zip(
+        a_guess, p_guess, np.full_like(da.x, 2, dtype=float), strict=True
+    ):
         params.append(lmfit.create_params(a=a, p=p, f=f).dumps())
     params = xr.DataArray(params, coords=[da.x])
     fit = da.modelfit(

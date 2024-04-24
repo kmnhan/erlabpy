@@ -45,7 +45,9 @@ def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
         else:
             to_broadcast[k] = xr.DataArray(v)
 
-    for k, v in zip(to_broadcast.keys(), xr.broadcast(*to_broadcast.values())):
+    for k, v in zip(
+        to_broadcast.keys(), xr.broadcast(*to_broadcast.values()), strict=True
+    ):
         d[k] = v
     return d
 
@@ -385,7 +387,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                 if n_coords == 1:
                     indep_var_kwargs = {model.independent_vars[0]: x}
                 else:
-                    indep_var_kwargs = dict(zip(model.independent_vars[:n_coords], x))
+                    indep_var_kwargs = dict(
+                        zip(model.independent_vars[:n_coords], x, strict=True)
+                    )
             else:
                 raise ValueError("Independent variables not defined in model")
 

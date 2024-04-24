@@ -8,6 +8,7 @@ import iminuit.util
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import xarray
 from iminuit.util import _detect_log_spacing, _smart_sampling
 
 import erlab.plotting.general
@@ -103,14 +104,16 @@ class Minuit(iminuit.Minuit):
     def from_lmfit(
         cls,
         model: lmfit.Model,
-        data: npt.NDArray,
-        ivars: npt.NDArray | Sequence[npt.NDArray],
+        data: npt.NDArray | xarray.DataArray,
+        ivars: npt.NDArray
+        | xarray.DataArray
+        | Sequence[npt.NDArray | xarray.DataArray],
         yerr: float | npt.NDArray | None = None,
         return_cost: bool = False,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
         if len(model.independent_vars) == 1:
-            if isinstance(ivars, npt.NDArray):
+            if isinstance(ivars, np.ndarray | xarray.DataArray):
                 ivars = [ivars]
 
         x: npt.NDArray | list[npt.NDArray] = [np.asarray(a) for a in ivars]
@@ -176,12 +179,16 @@ class Minuit(iminuit.Minuit):
         if len(model.independent_vars) == 1:
 
             def _temp_func(x, *fargs):
-                return model.func(x, **dict(zip(model._param_root_names, fargs)))
+                return model.func(
+                    x, **dict(zip(model._param_root_names, fargs, strict=True))
+                )
 
         else:
 
             def _temp_func(x, *fargs):
-                return model.func(*x, **dict(zip(model._param_root_names, fargs)))
+                return model.func(
+                    *x, **dict(zip(model._param_root_names, fargs, strict=True))
+                )
 
         c = LeastSq(x, data, yerr, _temp_func)
         m = cls(c, name=param_names, **values)

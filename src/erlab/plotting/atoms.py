@@ -79,7 +79,9 @@ def projected_length_pos(ax: mpl_toolkits.mplot3d.Axes3D, length, position):
         return np.asarray(
             [
                 projected_length_pos(ax, d, p)
-                for d, p in zip(np.asarray(length).flat, np.asarray(position))
+                for d, p in zip(
+                    np.asarray(length).flat, np.asarray(position), strict=True
+                )
             ]
         )
     rc = np.asarray(position).reshape(-1, 1)
@@ -297,13 +299,14 @@ class CrystalProperty:
 
         if radii is None:
             radii = [1.0] * len(self.atoms)
-        self.atom_radii: dict[str, float] = dict(zip(self.atoms, radii))
+        self.atom_radii: dict[str, float] = dict(zip(self.atoms, radii, strict=True))
 
         if colors is None:
             colors = [f"C{i}" for i in range(len(self.atoms))]
 
         self.atom_color: dict[str, str] = {
-            k: matplotlib.colors.to_hex(v) for k, v in zip(self.atoms, colors)
+            k: matplotlib.colors.to_hex(v)
+            for k, v in zip(self.atoms, colors, strict=True)
         }
 
         self.repeat: tuple[int, int, int] = repeat

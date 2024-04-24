@@ -338,6 +338,7 @@ class ItoolMenuBar(DictMenuBar):
                 ),
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
+                strict=True,
             )
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
@@ -371,6 +372,7 @@ class ItoolMenuBar(DictMenuBar):
                 ),
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
+                strict=True,
             )
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
@@ -400,7 +402,9 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["snapCursorAct"].blockSignals(False)
 
         cmap_props = self.slicer_area.colormap_properties
-        for ca, k in zip(self.colorAct, ["reversed", "highContrast", "zeroCentered"]):
+        for ca, k in zip(
+            self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
+        ):
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)

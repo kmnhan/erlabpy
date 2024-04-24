@@ -225,7 +225,9 @@ class DerivativeTool(
             arg_dict = {
                 dim: f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
                 for dim, n in zip(
-                    [self.xdim, self.ydim], [self.nx_spin.value(), self.ny_spin.value()]
+                    [self.xdim, self.ydim],
+                    [self.nx_spin.value(), self.ny_spin.value()],
+                    strict=True,
                 )
             }
             lines.append(
@@ -244,6 +246,7 @@ class DerivativeTool(
                             np.round(s.value(), s.decimals())
                             for s in (self.sx_spin, self.sy_spin)
                         ],
+                        strict=True,
                     )
                 )
             }
