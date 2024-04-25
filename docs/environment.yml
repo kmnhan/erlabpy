@@ -36,6 +36,7 @@ dependencies:
   - ipywidgets
   - pip:
     - pyqt6>=6.2.2
+    - PyQt6-Qt6<6.7.0
     - csaps
     - sphinx-qt-documentation
     - -e .
