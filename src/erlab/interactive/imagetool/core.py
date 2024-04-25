@@ -325,7 +325,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("g"),
         pg.mkColor("r"),
         pg.mkColor("b"),
-    )  #: :class:`PySide6.QtGui.QColor`s for multiple cursors.
+    )  #: :class:`PySide6.QtGui.QColor`\ s for multiple cursors.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
