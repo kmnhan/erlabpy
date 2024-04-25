@@ -255,11 +255,11 @@ Commit and push your changes
 Open a pull request
 -------------------
 
-When you're ready or need feedback on your code, open a Pull Request (PR) so that the
-xarray developers can give feedback and eventually include your suggested code into the
-``main`` branch. `Pull requests (PRs) on GitHub
+When you're ready or need feedback on your code, open a Pull Request (PR) so that we can
+give feedback and eventually include your suggested code into the ``main`` branch. `Pull
+requests (PRs) on GitHub
 <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests>`_
-are the mechanism for contributing to xarray's code and documentation.
+are the mechanism for contributing to the code and documentation.
 
 Enter a title for the set of changes with some explanation of what you've done. Mention
 anything you'd like particular attention for - such as a complicated change or some code
@@ -287,7 +287,7 @@ Code standards
       from qtpy import QtWidgets, QtCore, QtGui
 
   * Use fully qualified enum names from Qt6 instead of the short-form enums from Qt5, i.
-    e., ``QtCore.Qt.CheckState.Checked`` instead of ``QtCore.Qt.Checked``.
+    e., `QtCore.Qt.CheckState.Checked` instead of `QtCore.Qt.Checked`.
 
   * Use the signal and slot syntax from PySide6 (``QtCore.Signal`` and ``QtCore.Slot``
     instead of ``QtCore.pyqtSignal`` and ``QtCore.pyqtSlot``)

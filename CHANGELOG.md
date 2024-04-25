@@ -2,6 +2,122 @@
 
 
 
+## v2.3.0 (2024-04-22)
+
+### Chore
+
+* cleanup directory ([`40e1f8d`](https://github.com/kmnhan/erlabpy/commit/40e1f8dcce66d53f9de6fd5905cef3c690633c98))
+
+* customize issue template chooser ([`0aa7617`](https://github.com/kmnhan/erlabpy/commit/0aa7617e7794449756df0abfc3260c6e545f97a3))
+
+* update issue templates ([`5dfb250`](https://github.com/kmnhan/erlabpy/commit/5dfb25098a6843f378303486499a89489e00ee76))
+
+### Ci
+
+* (**github**) update test requirements ([`21080cc`](https://github.com/kmnhan/erlabpy/commit/21080ccb5553e3c753db29d8fa372f6000ea59a7))
+
+* (**readthedocs**) rollback to 3.11 due to bug in python 3.12.0 and 3.12.1 ([`5eb6152`](https://github.com/kmnhan/erlabpy/commit/5eb615266ed78473583ca53a2e38f11ee58fc13f))
+
+### Documentation
+
+* update documentation ([`ab32920`](https://github.com/kmnhan/erlabpy/commit/ab3292032bcfa6e6e39e3b367090909a09ea813b))
+
+  Updated requirements, contrib page, fitting guide. Source button now links to github.
+
+* fix typo in getting-started.rst ([`3304a18`](https://github.com/kmnhan/erlabpy/commit/3304a182a7e46b7799977af93966bae9c5d3a95c))
+
+* fix typos and add compat notes to getting-started ([`3bb2ac5`](https://github.com/kmnhan/erlabpy/commit/3bb2ac576ad029cacaf2d2043a3bf57a184ace24))
+
+* add masking section, WIP ([`0844f6a`](https://github.com/kmnhan/erlabpy/commit/0844f6a58b971684a5cc02867dd36f61263e8c6c))
+
+* add imagetool to user guide ([`84d3586`](https://github.com/kmnhan/erlabpy/commit/84d35866f9c221f82af7a4dfdcfbd871a88e4eaf))
+
+* update io and plotting documentation and cleanup contributing ([`b4c4f7c`](https://github.com/kmnhan/erlabpy/commit/b4c4f7ce028cc03e87d4a54fefc72c8a610ce0ac))
+
+* update badges ([`5e373f4`](https://github.com/kmnhan/erlabpy/commit/5e373f4f6a4f45ba90600f18a76dfd4830bb075e))
+
+* enable latexpdf generation ([`7469271`](https://github.com/kmnhan/erlabpy/commit/746927115faba6c76a791c94aee3ef026fd11bf5))
+
+### Feature
+
+* (**kspace**) rewrite conversion with `xarray.apply_ufunc` ([`156cef8`](https://github.com/kmnhan/erlabpy/commit/156cef830582e01dc378a7437a0c85f4c7efc077))
+
+  Momentum conversion now relies on xarray broadcasting for all computations, and objects with extra dimensions such as temperature can be automatically broadcasted. Dask arrays can also be converted.
+
+* (**exampledata**) enable specifying seed for noise rng ([`aa542e8`](https://github.com/kmnhan/erlabpy/commit/aa542e8c288ff1ca64820960f469b2c244ca5c95))
+
+* (**interpolate**) enable fast interpolation for 1D arrays ([`ff333a0`](https://github.com/kmnhan/erlabpy/commit/ff333a05803d7079034e36f2e1dc3d22d0b686f7))
+
+* make both arguments optional for loader_context ([`6780197`](https://github.com/kmnhan/erlabpy/commit/6780197f68abfe7a9edbda951d804a9bc5ba56e9))
+
+* (**kspace**) automatically detect kinetic energy axis and convert to binding ([`bbde447`](https://github.com/kmnhan/erlabpy/commit/bbde44717155d1dd9ffefbc286da32b0bfac2180))
+
+* add more output and parallelization to fit accessor ([`59b35f5`](https://github.com/kmnhan/erlabpy/commit/59b35f53f3ef7f518aec92e05854dba42ddba56f))
+
+  Allows dictionary of `DataArray`s as parameter to fit accessor. Now, the return `Dataset` contains the data and the best fit array. Relevant tests have been added.
+
+* add callable fit accessor using apply_ufunc ([`11e3546`](https://github.com/kmnhan/erlabpy/commit/11e35466fec158e40d0e8e738dd81ed10225d83c))
+
+  Add a `Dataset.modelfit` and `DataArray.modelfit` accessor with similar syntax and output as `Dataset.curvefit`. Closes #22
+
+* add option to plot_array_2d so that users can pass non-normalized color array ([`74cf961`](https://github.com/kmnhan/erlabpy/commit/74cf961532a50d9c324189318460a9f840291a85))
+
+* (**analysis.gold**) add option to normalize energy axis in fitting ([`3dffad6`](https://github.com/kmnhan/erlabpy/commit/3dffad65993520c4b9a9a3afd6be85671bac9d3a))
+
+  This improves performance and results when eV is large like ~100eV.
+
+### Fix
+
+* (**exampledata**) change noise generation parameters ([`b213f11`](https://github.com/kmnhan/erlabpy/commit/b213f1151ed2555fc80374e9ebe3fc0856a13948))
+
+* (**fit**) make FermiEdge2dModel compatible with flattened meshgrid-like input arrays ([`c0dba26`](https://github.com/kmnhan/erlabpy/commit/c0dba261670774862f2dfae62c770bbab81aac2f))
+
+* fix progress bar for parallel objects that return generators ([`23d41b3`](https://github.com/kmnhan/erlabpy/commit/23d41b31a3f3ee6c7343d471f7cec34dc374bafa))
+
+  Tqdm imports are also simplified. We no longer handle `is_notebook` ourselves, but just import from `tqdm.auto`
+
+* (**plotting**) fix 2d colormaps ([`8299576`](https://github.com/kmnhan/erlabpy/commit/8299576ce3cbcbaec106bef952c6df148bb7ca18))
+
+  Allow images including nan to be plotted with gen_2d_colormap, also handle plot_array_2d colorbar aspect
+
+### Refactor
+
+* fix some type hints ([`2dfa5e1`](https://github.com/kmnhan/erlabpy/commit/2dfa5e1b4582e00d0631376ee32aa7d0b1b945b6))
+
+* (**example**) move exampledata from interactive to io ([`1fc7e6c`](https://github.com/kmnhan/erlabpy/commit/1fc7e6c22ce477fe7ebbd8b0c6844d1a85df3fcf))
+
+  Also add sample data generation for fermi edge
+
+* refactor accessors as submodule ([`9fc37bd`](https://github.com/kmnhan/erlabpy/commit/9fc37bd4825de519e4c4b6e30e9e32bf9392ed2d))
+
+* rewrite either_dict_or_kwargs with public api ([`34953d1`](https://github.com/kmnhan/erlabpy/commit/34953d10b6fd67720b1c29dbed1ab7a24e4d3060))
+
+* move correct_with_edge from era.utilities to era.gold ([`08a906f`](https://github.com/kmnhan/erlabpy/commit/08a906ff61a74febc0f47ed08ac24e7a4cd0977f))
+
+  Calling from utilities will now raise a DeprecationWarning. The erlab.analysis namespace is unchanged, so the affect will be minimal.
+
+* qsel now raises a warning upon scalar indexing outside coordinate bounds ([`d6ed628`](https://github.com/kmnhan/erlabpy/commit/d6ed628111be8ac594d3a1b83cc2785a31e3f06e))
+
+### Unknown
+
+* Merge pull request #23 from kmnhan/dev ([`4514a23`](https://github.com/kmnhan/erlabpy/commit/4514a234716e86c77329b48ff8615df193731514))
+
+  Added new interface for fitting, see #22 for discussions.
+  Made loader argument optional for `erlab.io.loader_context` so it can be used to just change the data directory.
+  Momentum conversion has been rewritten using `xarray.apply_ufunc`, and is now dask-compatible. It also automatically determines the current energy axis (kinetic or binding).
+
+* Merge remote-tracking branch &#39;origin/main&#39; into dev ([`fd8e1ad`](https://github.com/kmnhan/erlabpy/commit/fd8e1ad14b345664289810c4c8a605df6b299c3a))
+
+* Merge pull request #20 from kmnhan/pre-commit-ci-update-config ([`f1b965e`](https://github.com/kmnhan/erlabpy/commit/f1b965e84f79d6976ee1cabf692847fe25f58306))
+
+  [pre-commit.ci] pre-commit autoupdate
+
+* [pre-commit.ci] pre-commit autoupdate ([`7e3a89e`](https://github.com/kmnhan/erlabpy/commit/7e3a89e22bb5491f7d4a2bcb21f5a7baeead8773))
+
+  updates:
+  - [github.com/astral-sh/ruff-pre-commit: v0.3.5 → v0.3.7](https://github.com/astral-sh/ruff-pre-commit/compare/v0.3.5...v0.3.7)
+
+
 ## v2.2.2 (2024-04-15)
 
 ### Chore
