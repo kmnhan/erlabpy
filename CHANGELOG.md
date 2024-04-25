@@ -2,6 +2,41 @@
 
 
 
+## v2.3.1 (2024-04-25)
+
+### Chore
+
+* (**deps**) make `iminuit` and `superqt` optional ([`1bbcc24`](https://github.com/kmnhan/erlabpy/commit/1bbcc24268312f8c285df0774e1e5d5c8c775650))
+
+* (**deps**) reduce dependencies ([`6a03518`](https://github.com/kmnhan/erlabpy/commit/6a0351859ace99dbfb4f251ccbb78e581d6f7218))
+
+* (**github**) update issue templates ([`6a2dd50`](https://github.com/kmnhan/erlabpy/commit/6a2dd504ac05c5c47a39499dab991d44daee57f9))
+
+* (**deps**) update lmfit dependencies to include &gt;1.3.0 ([`942a810`](https://github.com/kmnhan/erlabpy/commit/942a810783fb574cc36a446333be09a82b1d22ae))
+
+### Fix
+
+* (**interactive**) keep pointer for imagetool, fix typing issues ([`c98c38e`](https://github.com/kmnhan/erlabpy/commit/c98c38ea11bce50ed9bfd8d374064bb2b1659d0c))
+
+* (**kspace**) allow explicit coordinate kwargs ([`fe47efc`](https://github.com/kmnhan/erlabpy/commit/fe47efcde941767c02b582ce8b29d4b3678fd843))
+
+### Refactor
+
+* move `characterization` to `io` ([`9c30f1b`](https://github.com/kmnhan/erlabpy/commit/9c30f1b7df51460f502dcbf999e3fac34be1cf99))
+
+* make zip strict (ruff B905) ([`78bf5f5`](https://github.com/kmnhan/erlabpy/commit/78bf5f5a2db52c14ccf5bfd3c83659ca53c4a408))
+
+### Style
+
+* add mypy compatible type hints ([`c97724d`](https://github.com/kmnhan/erlabpy/commit/c97724dcd9095a3cdc1842e5afb1f29b3c472c45))
+
+### Unknown
+
+* Merge pull request #26 from kmnhan/dev ([`85a60b3`](https://github.com/kmnhan/erlabpy/commit/85a60b37c29aca93db97004f776e8dcdd3d38666))
+
+* Merge branch &#39;main&#39; into dev ([`184afb0`](https://github.com/kmnhan/erlabpy/commit/184afb023dc704b4ab6ffe8ef5c098c19ca19084))
+
+
 ## v2.3.0 (2024-04-22)
 
 ### Chore
