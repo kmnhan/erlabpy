@@ -420,6 +420,7 @@ class LoaderBase:
         data_dir: str | os.PathLike,
         usecache: bool = True,
         *,
+        cache: bool = True,
         display: bool = True,
         **kwargs,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
@@ -438,7 +439,11 @@ class LoaderBase:
             Directory to summarize.
         usecache
             Whether to use the cached summary if available. If `False`, the summary will
-            be regenerated and the cache will be updated.
+            be regenerated. The cache will be updated if `cache` is `True`.
+        cache
+            Whether to cache the summary in a pickle file in the directory. If `False`,
+            no cache will be created or updated. Note that existing cache files will not
+            be deleted, and will be used if `usecache` is `True`.
         display
             Whether to display the formatted dataframe using the IPython shell. If
             `False`, the dataframe will be returned without formatting. If `True` but
@@ -456,6 +461,7 @@ class LoaderBase:
             DataFrame will be returned.
 
         """
+
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(f"Directory {data_dir} not found")
 
@@ -470,7 +476,13 @@ class LoaderBase:
 
         if df is None:
             df = self.generate_summary(data_dir, **kwargs)
-            df.to_pickle(pkl_path)
+            if cache:
+                try:
+                    df.to_pickle(pkl_path)
+                except OSError:
+                    warnings.warn(
+                        f"Failed to cache summary to {pkl_path}", stacklevel=1
+                    )
 
         if not display:
             return df
@@ -700,7 +712,6 @@ class LoaderBase:
         out = Output()
         out.block = False
 
-        show_inline_matplotlib_plots()
         _update_data(None)
 
         return HBox(
@@ -1168,6 +1179,7 @@ class LoaderRegistry(RegistryBase):
         data_dir: str | os.PathLike | None = None,
         usecache: bool = True,
         *,
+        cache: bool = True,
         display: bool = True,
         **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
@@ -1176,7 +1188,9 @@ class LoaderRegistry(RegistryBase):
         if data_dir is None:
             data_dir = default_dir
 
-        return loader.summarize(data_dir, usecache, display=display, **kwargs)
+        return loader.summarize(
+            data_dir, usecache, cache=cache, display=display, **kwargs
+        )
 
     def _get_current_defaults(self):
         if self.current_loader is None:
