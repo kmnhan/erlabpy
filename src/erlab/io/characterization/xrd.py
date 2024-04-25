@@ -1,4 +1,4 @@
-"""Functions related to analyzing x-ray diffraction spectra.
+"""Functions related to loading x-ray diffraction spectra.
 
 Currently only supports loading raw data from igor ``.itx`` files.
 

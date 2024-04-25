@@ -16,6 +16,7 @@ Modules
    utilities
    igor
    exampledata
+   characterization
 
 
 For a single session, it is very common to use only one type of loader for a single

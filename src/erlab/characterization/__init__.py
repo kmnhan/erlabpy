@@ -1,15 +1,8 @@
-"""
-Data import and analysis for characterization experiments.
+import warnings
+from erlab.io.characterization import xrd, resistance  # noqa: F401
 
-.. currentmodule:: erlab.characterization
-
-Modules
-=======
-
-.. autosummary::
-   :toctree: generated
-
-   xrd
-   resistance
-
-"""
+warnings.warn(
+    "`erlab.characterization` is deprecated. Use `erlab.io.characterization` instead",
+    DeprecationWarning,
+    stacklevel=2,
+)
