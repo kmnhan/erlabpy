@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
+
+if not importlib.util.find_spec("iminuit"):
+    raise ImportError("`erlab.analysis.fit.minuit` requires `iminuit` to be installed.")
 
 import iminuit.cost
 import iminuit.util

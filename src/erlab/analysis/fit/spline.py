@@ -4,8 +4,7 @@ try:
     import csaps
 except ImportError as e:
     raise ImportError(
-        "The `csaps` package is required for this module. "
-        "Please install it using `pip install csaps`."
+        "`erlab.analysis.fit.spline` requires `csaps` to be installed."
     ) from e
 
 

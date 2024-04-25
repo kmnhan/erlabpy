@@ -14,7 +14,6 @@ import pyperclip
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
-from superqt import QDoubleSlider
 
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
@@ -826,7 +825,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
             "dblspin": QtWidgets.QDoubleSpinBox,
             "btspin": BetterSpinBox,
             "slider": QtWidgets.QSlider,
-            "dblslider": QDoubleSlider,
             "chkbox": QtWidgets.QCheckBox,
             "pushbtn": QtWidgets.QPushButton,
             "chkpushbtn": QtWidgets.QPushButton,
@@ -902,7 +900,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
                 "dblspin",
                 "btspin",
                 "slider",
-                "dblslider",
                 "chkbox",
                 "pushbtn",
                 "chkpushbtn",
@@ -1077,7 +1074,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
     # "spin": QtWidgets.QSpinBox,
     # "dblspin": QtWidgets.QDoubleSpinBox,
     # "slider": QtWidgets.QSlider,
-    # "dblslider": QDoubleSlider,
     # "chkbox": QtWidgets.QCheckBox,
     # "pushbtn": QtWidgets.QPushButton,
     # "chkpushbtn": QtWidgets.QPushButton,
