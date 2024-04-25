@@ -2,6 +2,29 @@
 
 
 
+## v2.3.2 (2024-04-25)
+
+### Chore
+
+* pin PyQt due to tests failing on Qt6.7 ([`9dee08c`](https://github.com/kmnhan/erlabpy/commit/9dee08cd8a9ac2ac16b9b9a1cd96ce537b7104cb))
+
+### Fix
+
+* (**io**) make summary caching togglable ([`99b8e22`](https://github.com/kmnhan/erlabpy/commit/99b8e221e75db73382bf599170c58d8a68ca049e))
+
+  Also fixes a bug where interactive summary plots were duplicated
+
+* (**io**) data loader related fixes ([`da08e90`](https://github.com/kmnhan/erlabpy/commit/da08e9076e59895b35c393c8e2556c3592adf4a5))
+
+  DA30 dataloader now preserves case for attribute names from zip files. Post processing for datasets now works properly
+
+### Unknown
+
+* Merge pull request #24 from kmnhan/pre-commit-ci-update-config ([`bee9e5a`](https://github.com/kmnhan/erlabpy/commit/bee9e5acc7686f03497505cee0f4b533aa85cea2))
+
+  [pre-commit.ci] pre-commit autoupdate
+
+
 ## v2.3.1 (2024-04-25)
 
 ### Chore
@@ -35,6 +58,11 @@
 * Merge pull request #26 from kmnhan/dev ([`85a60b3`](https://github.com/kmnhan/erlabpy/commit/85a60b37c29aca93db97004f776e8dcdd3d38666))
 
 * Merge branch &#39;main&#39; into dev ([`184afb0`](https://github.com/kmnhan/erlabpy/commit/184afb023dc704b4ab6ffe8ef5c098c19ca19084))
+
+* [pre-commit.ci] pre-commit autoupdate ([`43bfbab`](https://github.com/kmnhan/erlabpy/commit/43bfbabc93720a3afb232a75de05d43aa2567ace))
+
+  updates:
+  - [github.com/astral-sh/ruff-pre-commit: v0.3.7 → v0.4.1](https://github.com/astral-sh/ruff-pre-commit/compare/v0.3.7...v0.4.1)
 
 
 ## v2.3.0 (2024-04-22)
