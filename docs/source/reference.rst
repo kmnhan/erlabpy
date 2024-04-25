@@ -2,7 +2,7 @@
 API Reference
 *************
 
-ERLabPy is organized into multiple subpackages and submodules.
+ERLabPy is organized into multiple subpackages and submodules classified by their functionality. The following table lists the subpackages and submodules of ERLabPy.
 
 Subpackages
 ===========
@@ -10,11 +10,11 @@ Subpackages
 ========================   ========================
 Subpackage                 Description
 ========================   ========================
-`erlab.analysis`           Data analysis
-`erlab.io`                 Read & write ARPES data
-`erlab.plotting`           Plot
-`erlab.interactive`        Interactive plotting based on Qt and pyqtgraph
-`erlab.characterization`   Analyze sample characterization results such as XRD and transport measurements
+`erlab.analysis`           Routines for analyzing ARPES data.
+`erlab.io`                 Reading and writing data.
+`erlab.plotting`           Functions related to static plotting with matplotlib.
+`erlab.interactive`        Interactive tools and widgets based on Qt and pyqtgraph
+`erlab.accessors`          `xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_. You will not need to import this module directly.
 ========================   ========================
 
 .. currentmodule:: erlab
@@ -26,7 +26,7 @@ Subpackage                 Description
    erlab.io
    erlab.plotting
    erlab.interactive
-   erlab.characterization
+   erlab.accessors
 
 Submodules
 ==========
@@ -35,9 +35,8 @@ Submodules
 Submodule           Description
 ==================  ==================
 `erlab.lattice`     Tools for working with real and reciprocal lattices.
-`erlab.constants`   Physical constants and unit conversion
-`erlab.accessors`   `xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_
-`erlab.parallel`    Helpers for parallel processing
+`erlab.constants`   Physical constants and functions for unit conversion.
+`erlab.parallel`    Helpers for parallel processing.
 ==================  ==================
 
 .. toctree::
@@ -45,5 +44,4 @@ Submodule           Description
 
    erlab.lattice
    erlab.constants
-   erlab.accessors
    erlab.parallel

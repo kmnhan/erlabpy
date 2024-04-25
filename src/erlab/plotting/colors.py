@@ -47,18 +47,20 @@ __all__ = [
 
 from collections.abc import Iterable, Sequence
 from numbers import Number
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import matplotlib
 import matplotlib.axes
 import matplotlib.cm
 import matplotlib.collections
+import matplotlib.colorbar
 import matplotlib.colors
 import matplotlib.image
 import matplotlib.pyplot as plt
 import matplotlib.transforms
 import numpy as np
 import numpy.typing as npt
+from matplotlib.typing import ColorType
 
 
 class InversePowerNorm(matplotlib.colors.Normalize):
@@ -469,7 +471,8 @@ def get_mappable(
     image_only
         Only consider images as a valid mappable, by default `False`.
     silent
-        If `False`, raises a `RuntimeError`. If `True`, silently returns `None`.
+        If `False`, raises a `RuntimeError` when no mappable is found. If `True`,
+        silently returns `None`.
 
     Returns
     -------
@@ -478,7 +481,7 @@ def get_mappable(
     """
     if not image_only:
         try:
-            mappable = ax.collections[-1]
+            mappable: Any = ax.collections[-1]
         except (IndexError, AttributeError):
             mappable = None
 
@@ -488,13 +491,14 @@ def get_mappable(
         except (IndexError, AttributeError):
             mappable = None
 
-    if not silent and mappable is None:
-        raise RuntimeError(
-            "No mappable was found to use for colorbar "
-            "creation. First define a mappable such as "
-            "an image (with imshow) or a contour set ("
-            "with contourf)."
-        )
+    if mappable is None:
+        if not silent:
+            raise RuntimeError(
+                "No mappable was found to use for colorbar "
+                "creation. First define a mappable such as "
+                "an image (with imshow) or a contour set ("
+                "with contourf)."
+            )
     return mappable
 
 
@@ -517,21 +521,29 @@ def unify_clim(
         If `True`, only consider mappables that are images. Default is `False`.
 
     """
+    vmn: float | None
+    vmx: float | None
+
     if target is None:
-        vmn, vmx = [], []
+        vmn_list, vmx_list = [], []
         for ax in axes.flat:
-            mappable = get_mappable(ax, image_only=image_only)
-            vmn.append(mappable.norm.vmin)
-            vmx.append(mappable.norm.vmax)
-        vmn, vmx = min(vmn), max(vmx)
-
+            mappable = get_mappable(ax, image_only=image_only, silent=True)
+            if mappable is not None:
+                if mappable.norm.vmin is not None:
+                    vmn_list.append(mappable.norm.vmin)
+                if mappable.norm.vmax is not None:
+                    vmx_list.append(mappable.norm.vmax)
+        vmn, vmx = min(vmn_list), max(vmx_list)
     else:
-        mappable = get_mappable(target, image_only=image_only)
-        vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
+        mappable = get_mappable(target, image_only=image_only, silent=True)
+        if mappable is not None:
+            vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
 
+    # Apply color limits
     for ax in axes.flat:
-        mappable = get_mappable(ax, image_only=image_only)
-        mappable.norm.vmin, mappable.norm.vmax = vmn, vmx
+        mappable = get_mappable(ax, image_only=image_only, silent=True)
+        if mappable is not None:
+            mappable.norm.vmin, mappable.norm.vmax = vmn, vmx
 
 
 def proportional_colorbar(
@@ -597,7 +609,9 @@ def proportional_colorbar(
             ax = plt.gca()
             if mappable is None:
                 mappable = get_mappable(ax)
-    elif isinstance(ax, np.ndarray):
+    elif isinstance(ax, Iterable):
+        if not isinstance(ax, np.ndarray):
+            ax = np.array(ax, dtype=object)
         i = 0
         while mappable is None and i < len(ax.flat):
             mappable = get_mappable(ax.flatten()[i], silent=(i != (len(ax.flat) - 1)))
@@ -605,8 +619,13 @@ def proportional_colorbar(
     elif mappable is None:
         mappable = get_mappable(ax)
 
+    if mappable is None:
+        raise RuntimeError("No mappable was found to use for colorbar creation")
+
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
+        mappable.colorbar = cast(matplotlib.colorbar.Colorbar, mappable.colorbar)
+
     ticks = mappable.colorbar.get_ticks()
     if cax is None:
         mappable.colorbar.remove()
@@ -718,6 +737,8 @@ def _ez_inset(
     **kwargs,
 ) -> matplotlib.axes.Axes:
     fig = parent_axes.get_figure()
+    if fig is None:
+        raise RuntimeError("Parent axes is not attached to a figure")
     locator = InsetAxesLocator(parent_axes, width, height, pad, loc)
     ax_ = fig.add_axes(locator(parent_axes, None).bounds, **kwargs)
     ax_.set_axes_locator(locator)
@@ -808,7 +829,7 @@ def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
 
 # TODO: fix colorbar size properly
 def nice_colorbar(
-    ax: matplotlib.axes.Axes | None = None,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
     mappable: matplotlib.cm.ScalarMappable | None = None,
     width: float = 5.0,
     aspect: float = 5.0,
@@ -874,7 +895,9 @@ def nice_colorbar(
         )
 
     else:
-        if np.iterable(ax):
+        if isinstance(ax, Iterable):
+            if not isinstance(ax, np.ndarray):
+                ax = np.array(ax, dtype=object)
             bbox = matplotlib.transforms.Bbox.union(
                 [
                     x.get_window_extent().transformed(
@@ -884,9 +907,12 @@ def nice_colorbar(
                 ]
             )
         else:
-            bbox = ax.get_window_extent().transformed(
-                ax.figure.dpi_scale_trans.inverted()
-            )
+            fig = ax.get_figure()
+
+            if fig is None:
+                raise RuntimeError("Axes is not attached to a figure")
+
+            bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
 
         if orientation == "horizontal":
             kwargs["anchor"] = (1, 1)
@@ -951,10 +977,21 @@ def flatten_transparency(rgba: npt.NDArray, background: Sequence[float] | None =
     return rgb.reshape(original_shape[:-1] + (3,))
 
 
+def _get_segment_for_color(
+    cmap: matplotlib.colors.LinearSegmentedColormap,
+    color: Literal["red", "green", "blue", "alpha"],
+) -> Any:
+    if hasattr(cmap, "_segmentdata"):
+        if color in cmap._segmentdata:
+            return cmap._segmentdata[color]
+    return None
+
+
 def _is_segment_iterable(cmap: matplotlib.colors.Colormap) -> bool:
     if not isinstance(cmap, matplotlib.colors.LinearSegmentedColormap):
         return False
-    if any(callable(cmap._segmentdata[c]) for c in ["red", "green", "blue"]):
+
+    if any(callable(_get_segment_for_color(cmap, c)) for c in ["red", "green", "blue"]):  # type: ignore[arg-type]
         return False
     return True
 
@@ -1000,15 +1037,25 @@ def combined_cmap(
         cmap2 = matplotlib.colormaps[cmap2]
 
     if all(_is_segment_iterable(c) for c in (cmap1, cmap2)):
-        segnew = {}
+        cmap1 = cast(
+            matplotlib.colors.LinearSegmentedColormap, cmap1
+        )  # to appease mypy
+        cmap2 = cast(
+            matplotlib.colors.LinearSegmentedColormap, cmap2
+        )  # to appease mypy
+
+        segnew: dict[
+            Literal["red", "green", "blue", "alpha"], Sequence[tuple[float, ...]]
+        ] = {}
+
         for c in ["red", "green", "blue"]:
             seg1_c, seg2_c = (
-                np.asarray(cmap1._segmentdata[c]),
-                np.asarray(cmap2._segmentdata[c]),
+                np.asarray(_get_segment_for_color(cmap1, c)),  # type: ignore[arg-type]
+                np.asarray(_get_segment_for_color(cmap2, c)),  # type: ignore[arg-type]
             )
             seg1_c[:, 0] = seg1_c[:, 0] * 0.5
             seg2_c[:, 0] = seg2_c[:, 0] * 0.5 + 0.5
-            segnew[c] = np.r_[seg1_c, seg2_c]
+            segnew[c] = np.r_[seg1_c, seg2_c]  # type: ignore[index]
         cmap = matplotlib.colors.LinearSegmentedColormap(
             name=name, segmentdata=segnew, N=N
         )
@@ -1029,11 +1076,11 @@ def combined_cmap(
 def gen_2d_colormap(
     ldat,
     cdat,
-    cmap: matplotlib.colors.Colormap | str = None,
+    cmap: matplotlib.colors.Colormap | str | None = None,
     *,
     lnorm: plt.Normalize | None = None,
     cnorm: plt.Normalize | None = None,
-    background: Any = None,
+    background: ColorType | None = None,
     N: int = 256,
 ):
     """Generate a 2D colormap image from lightness and color data.
@@ -1081,9 +1128,9 @@ def gen_2d_colormap(
         cnorm = plt.Normalize()
 
     if background is None:
-        background: tuple[float, float, float] = (1, 1, 1, 1)
+        background_arr: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     else:
-        background: tuple[float, float, float] = matplotlib.colors.to_rgba(background)
+        background_arr = matplotlib.colors.to_rgba(background)
 
     ldat_masked = np.ma.masked_invalid(ldat)
     cdat_masked = np.ma.masked_invalid(cdat)
@@ -1097,20 +1144,21 @@ def gen_2d_colormap(
 
     img = cmap(c_vals)
     img *= l_vals
-    img += (1 - l_vals) * background
+    img += (1 - l_vals) * background_arr
 
-    l_linear = lnorm(np.linspace(lnorm.vmin, lnorm.vmax, N))[:, np.newaxis, np.newaxis]
-    cmap_img = np.repeat(
-        cmap(cnorm(np.linspace(cnorm.vmin, cnorm.vmax, N)))[np.newaxis, :], N, 0
-    )
+    lmin, lmax = cast(float, lnorm.vmin), cast(float, lnorm.vmax)  # to appease mypy
+    cmin, cmax = cast(float, cnorm.vmin), cast(float, cnorm.vmax)
+
+    l_linear = lnorm(np.linspace(lmin, lmax, N))[:, np.newaxis, np.newaxis]
+    cmap_img = np.repeat(cmap(cnorm(np.linspace(cmin, cmax, N)))[np.newaxis, :], N, 0)
     cmap_img *= l_linear
-    cmap_img += (1 - l_linear) * background
+    cmap_img += (1 - l_linear) * background_arr
 
     return cmap_img, img
 
 
-def color_distance(c1, c2) -> float:
-    """Calculate the color distance between two RGB colors.
+def color_distance(c1: ColorType, c2: ColorType) -> float:
+    """Calculate the color distance between two matplotlib colors.
 
     Parameters
     ----------
@@ -1143,7 +1191,7 @@ def color_distance(c1, c2) -> float:
     return np.sqrt((2 + r) * dR2 + 4 * dG2 + (2 + 255 / 256 - r) * dB2)
 
 
-def close_to_white(c) -> bool:
+def close_to_white(c: ColorType) -> bool:
     """Check if a given color is closer to white than black.
 
     Parameters
@@ -1188,7 +1236,9 @@ def image_is_light(
     return close_to_white(prominent_color(im))
 
 
-def axes_textcolor(ax: matplotlib.axes.Axes, light="k", dark="w"):
+def axes_textcolor(
+    ax: matplotlib.axes.Axes, light: ColorType = "k", dark: ColorType = "w"
+):
     """Determine the text color based on the color of the mappable in an axes.
 
     Parameters

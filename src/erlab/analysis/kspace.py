@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 import numpy as np
 import numpy.typing as npt
+import xarray
 
 import erlab.constants
 import erlab.io
@@ -64,7 +65,7 @@ def kz_func(kinetic_energy, inner_potential, kx, ky):
 
 
 def get_kconv_func(
-    kinetic_energy: float | npt.NDArray,
+    kinetic_energy: float | npt.NDArray | xarray.DataArray,
     configuration: AxesConfiguration,
     angle_params: dict[str, float],
 ) -> tuple[Callable, Callable]:
@@ -122,7 +123,7 @@ def get_kconv_func(
 
     match configuration:
         case AxesConfiguration.Type1:
-            func = _kconv_func_type1
+            func: Callable = _kconv_func_type1
         case AxesConfiguration.Type2:
             func = _kconv_func_type2
         case AxesConfiguration.Type1DA:
@@ -135,13 +136,7 @@ def get_kconv_func(
     return func(k_tot, **angle_params)
 
 
-def _kconv_func_type1(
-    k_tot: float | npt.NDArray,
-    delta: float = 0.0,
-    xi: float = 0.0,
-    xi0: float = 0.0,
-    beta0: float = 0.0,
-):
+def _kconv_func_type1(k_tot, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
@@ -179,13 +174,7 @@ def _kconv_func_type1(
     return _forward_func, _inverse_func
 
 
-def _kconv_func_type2(
-    k_tot: float | npt.NDArray,
-    delta: float = 0.0,
-    xi: float = 0.0,
-    xi0: float = 0.0,
-    beta0: float = 0.0,
-):
+def _kconv_func_type2(k_tot, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ - ξ0
 
@@ -223,14 +212,7 @@ def _kconv_func_type2(
     return _forward_func, _inverse_func
 
 
-def _kconv_func_type1_da(
-    k_tot: float | npt.NDArray,
-    delta: float = 0.0,
-    chi: float = 0.0,
-    chi0: float = 0.0,
-    xi: float = 0.0,
-    xi0: float = 0.0,
-):
+def _kconv_func_type1_da(k_tot, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0):
     _fwd_2, _inv_2 = _kconv_func_type2_da(k_tot, delta, chi, chi0, xi, xi0)
 
     def _forward_func(alpha, beta):
@@ -243,14 +225,7 @@ def _kconv_func_type1_da(
     return _forward_func, _inverse_func
 
 
-def _kconv_func_type2_da(
-    k_tot: float | npt.NDArray,
-    delta: float = 0.0,
-    chi: float = 0.0,
-    chi0: float = 0.0,
-    xi: float = 0.0,
-    xi0: float = 0.0,
-):
+def _kconv_func_type2_da(k_tot, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0):
     cd, sd = np.cos(np.deg2rad(delta)), np.sin(np.deg2rad(delta))  # δ, azimuth
     cx, sx = np.cos(np.deg2rad(xi - xi0)), np.sin(np.deg2rad(xi - xi0))  # ξ
     cc, sc = np.cos(np.deg2rad(chi - chi0)), np.sin(np.deg2rad(chi - chi0))  # χ
@@ -300,7 +275,7 @@ def _kconv_func_type2_da(
             k_sq = kx**2 + ky**2 + kz**2
             k = np.sqrt(k_sq)
 
-        kperp = _kperp_func(k_sq, kx, ky)  # sqrt(k² − k_x² − k_y²)
+        kperp = _kperp_func(k_sq, kx, ky)  # sqrt(k² - k_x² - k_y²)
 
         proj1 = t11 * kx + t12 * ky + t13 * kperp
         proj2 = t21 * kx + t22 * ky + t23 * kperp

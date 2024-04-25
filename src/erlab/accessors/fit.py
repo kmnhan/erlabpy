@@ -18,7 +18,11 @@ import numpy as np
 import tqdm.auto
 import xarray as xr
 
-from erlab.accessors.utils import _THIS_ARRAY, ERLabAccessor
+from erlab.accessors.utils import (
+    _THIS_ARRAY,
+    ERLabDataArrayAccessor,
+    ERLabDatasetAccessor,
+)
 from erlab.parallel import joblib_progress
 
 if TYPE_CHECKING:
@@ -33,7 +37,7 @@ def _nested_dict_vals(d):
             yield v
 
 
-def _broadcast_dict_values(d: Mapping[str, Any]) -> Mapping[str, xr.DataArray]:
+def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
     to_broadcast = {}
     for k, v in d.items():
         if isinstance(v, xr.DataArray | xr.Dataset):
@@ -41,16 +45,20 @@ def _broadcast_dict_values(d: Mapping[str, Any]) -> Mapping[str, xr.DataArray]:
         else:
             to_broadcast[k] = xr.DataArray(v)
 
-    for k, v in zip(to_broadcast.keys(), xr.broadcast(*to_broadcast.values())):
+    for k, v in zip(
+        to_broadcast.keys(), xr.broadcast(*to_broadcast.values()), strict=True
+    ):
         d[k] = v
     return d
 
 
-def _concat_along_keys(d: Mapping[str, xr.DataArray], dim_name: str) -> xr.DataArray:
+def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArray:
     return xr.concat(d.values(), d.keys()).rename(concat_dim=dim_name)
 
 
-def _parse_params(d: Mapping[str, Any], dask: bool) -> xr.DataArray | _ParametersWraper:
+def _parse_params(
+    d: dict[str, Any] | lmfit.Parameters, dask: bool
+) -> xr.DataArray | _ParametersWraper:
     if isinstance(d, lmfit.Parameters):
         # Input to apply_ufunc cannot be a Mapping, so wrap in a class
         return _ParametersWraper(d)
@@ -65,7 +73,7 @@ def _parse_params(d: Mapping[str, Any], dask: bool) -> xr.DataArray | _Parameter
     return _ParametersWraper(lmfit.create_params(**d))
 
 
-def _parse_multiple_params(d: Mapping[str, Any], as_str: bool) -> xr.DataArray:
+def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
     for k in d.keys():
         if isinstance(d[k], int | float | complex | xr.DataArray):
             d[k] = {"value": d[k]}
@@ -111,7 +119,7 @@ class _ParametersWraper:
 
 
 @xr.register_dataset_accessor("modelfit")
-class ModelFitDatasetAccessor(ERLabAccessor):
+class ModelFitDatasetAccessor(ERLabDatasetAccessor):
     """`xarray.Dataset.modelfit` accessor for fitting lmfit models."""
 
     def __call__(
@@ -121,9 +129,10 @@ class ModelFitDatasetAccessor(ERLabAccessor):
         reduce_dims: Dims = None,
         skipna: bool = True,
         params: lmfit.Parameters
-        | Mapping[str, float | dict[str, Any]]
+        | dict[str, float | dict[str, Any]]
         | xr.DataArray
         | xr.Dataset
+        | _ParametersWraper
         | None = None,
         guess: bool = False,
         errors: Literal["raise", "ignore"] = "raise",
@@ -374,10 +383,15 @@ class ModelFitDatasetAccessor(ERLabAccessor):
 
             x = np.squeeze(x)
 
-            if n_coords == 1:
-                indep_var_kwargs = {model.independent_vars[0]: x}
+            if model.independent_vars is not None:
+                if n_coords == 1:
+                    indep_var_kwargs = {model.independent_vars[0]: x}
+                else:
+                    indep_var_kwargs = dict(
+                        zip(model.independent_vars[:n_coords], x, strict=True)
+                    )
             else:
-                indep_var_kwargs = dict(zip(model.independent_vars[:n_coords], x))
+                raise ValueError("Independent variables not defined in model")
 
             if guess:
                 if isinstance(model, lmfit.model.CompositeModel):
@@ -534,7 +548,7 @@ class ModelFitDatasetAccessor(ERLabAccessor):
             parallel_obj = joblib.Parallel(**parallel_kw)
 
             if parallel_obj.return_generator:
-                out_dicts = tqdm.auto.tqdm(
+                out_dicts = tqdm.auto.tqdm(  # type: ignore[call-overload]
                     parallel_obj(
                         joblib.delayed(_output_wrapper)(name, da)
                         for name, da in self._obj.data_vars.items()
@@ -548,13 +562,13 @@ class ModelFitDatasetAccessor(ERLabAccessor):
                         for name, da in self._obj.data_vars.items()
                     )
             result = type(self._obj)(
-                dict(itertools.chain.from_iterable(d.items() for d in out_dicts))
+                dict(itertools.chain.from_iterable(d.items() for d in out_dicts))  # type: ignore[call-overload]
             )
             del out_dicts
 
         else:
             result = type(self._obj)()
-            for name, da in tqdm.auto.tqdm(self._obj.data_vars.items(), **tqdm_kw):
+            for name, da in tqdm.auto.tqdm(self._obj.data_vars.items(), **tqdm_kw):  # type: ignore[call-overload]
                 _output_wrapper(name, da, result)
 
         result = result.assign_coords(
@@ -572,23 +586,22 @@ class ModelFitDatasetAccessor(ERLabAccessor):
 
 
 @xr.register_dataarray_accessor("modelfit")
-class ModelFitDataArrayAccessor(ERLabAccessor):
+class ModelFitDataArrayAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.modelfit` accessor for fitting lmfit models."""
 
     def __call__(self, *args, **kwargs) -> xr.Dataset:
         return self._obj.to_dataset(name=_THIS_ARRAY).modelfit(*args, **kwargs)
 
     __call__.__doc__ = (
-        ModelFitDatasetAccessor.__call__.__doc__.replace(
-            "Dataset.curvefit", "DataArray.curvefit"
-        )
+        str(ModelFitDatasetAccessor.__call__.__doc__)
+        .replace("Dataset.curvefit", "DataArray.curvefit")
         .replace("Dataset.polyfit", "DataArray.polyfit")
         .replace("[var]_", "")
     )
 
 
 @xr.register_dataarray_accessor("parallel_fit")
-class ParallelFitDataArrayAccessor(ERLabAccessor):
+class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
     """
     `xarray.DataArray.parallel_fit` accessor for fitting lmfit models in parallel along
     a single dimension.
@@ -647,7 +660,7 @@ class ParallelFitDataArrayAccessor(ERLabAccessor):
         fitres = ds.modelfit(set(self._obj.dims) - {dim}, model, **kwargs)
 
         drop_keys = []
-        concat_vars = {}
+        concat_vars: dict[Hashable, list[xr.DataArray]] = {}
         for k in ds.data_vars.keys():
             for var in self._VAR_KEYS:
                 key = f"{k}_{var}"

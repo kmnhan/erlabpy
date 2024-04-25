@@ -4,12 +4,13 @@ import glob
 import os
 import re
 import tempfile
+from typing import ClassVar
 
 import erlab.io
 import numpy as np
 import pandas as pd
-from erlab.io.exampledata import generate_data_angles
 from erlab.io.dataloader import LoaderBase
+from erlab.io.exampledata import generate_data_angles
 
 
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
@@ -88,9 +89,9 @@ def test_loader():
     class ExampleLoader(LoaderBase):
         name = "example"
 
-        aliases = ["Ex"]
+        aliases = ("Ex",)
 
-        name_map = {
+        name_map: ClassVar[dict] = {
             "eV": "BindingEnergy",
             "alpha": "ThetaX",
             "beta": [
@@ -107,7 +108,7 @@ def test_loader():
             "temp_sample": "TB",
         }
 
-        coordinate_attrs: tuple[str, ...] = (
+        coordinate_attrs = (
             "beta",
             "delta",
             "xi",
@@ -121,7 +122,7 @@ def test_loader():
         # Attributes to be used as coordinates. Place all attributes that we don't want to
         # lose when merging multiple file scans here.
 
-        additional_attrs = {
+        additional_attrs: ClassVar[dict] = {
             "configuration": 1,  # Experimental geometry. Required for momentum conversion
             "sample_workfunction": 4.3,
         }  # Any additional metadata you want to add to the data

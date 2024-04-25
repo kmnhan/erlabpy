@@ -4,6 +4,7 @@ import h5netcdf
 import igor2.binarywave
 import igor2.packed
 import igor2.record
+from typing import Any
 import numpy as np
 import xarray as xr
 
@@ -18,9 +19,9 @@ def _load_experiment_raw(
     ignore: list[str] | None = None,
     recursive: bool = False,
     **kwargs,
-) -> xr.Dataset:
+) -> dict[str, xr.DataArray]:
     if folder is None:
-        folder = []
+        split_path: list[Any] = []
     if ignore is None:
         ignore = []
 
@@ -31,13 +32,13 @@ def _load_experiment_raw(
         except ValueError:
             continue
 
-    waves = {}
+    waves: dict[str, xr.DataArray] = {}
     if isinstance(folder, str):
-        folder = folder.split("/")
-    folder = [n.encode() for n in folder]
+        split_path = folder.split("/")
+    split_path = [n.encode() for n in split_path]
 
     expt = expt["root"]
-    for dirname in folder:
+    for dirname in split_path:
         expt = expt[dirname]
 
     def unpack_folders(expt):
@@ -216,7 +217,7 @@ def load_wave(
     dims = [get_dim_name(i) for i in range(_MAXDIM)]
     coords = {
         dims[i]: np.linspace(b, b + a * (c - 1), c)
-        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape))
+        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape, strict=True))
         if c != 0
     }
 

@@ -22,7 +22,7 @@ abbrv_kws = {
 def get_bz_edge(
     basis: npt.NDArray[np.float64],
     reciprocal: bool = True,
-    extend: tuple[int, int, int] | tuple[int, int] | None = None,
+    extend: tuple[int, ...] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
 
@@ -47,18 +47,21 @@ def get_bz_edge(
         Vertices of the BZ.
 
     """
-    if not (basis.shape == (2, 2) or basis.shape == (3, 3)):
+    if basis.shape == (2, 2):
+        ndim = 2
+    elif basis.shape == (3, 3):
+        ndim = 3
+    else:
         raise ValueError("Shape of `basis` must be (N, N) where N = 2 or 3.")
+
     if not reciprocal:
         basis = 2 * np.pi * np.linalg.inv(basis).T
-
-    ndim = basis.shape[-1]
 
     if extend is None:
         extend = (1,) * ndim
 
     points = (
-        np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=[0, 0])
+        np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=(0, 0))
         .reshape((ndim, 3**ndim))
         .T
     )
@@ -71,7 +74,7 @@ def get_bz_edge(
     lines = []
     vertices = []
 
-    for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices):
+    for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices, strict=True):
         simplex = np.asarray(simplex)
         if zero_ind in pointidx:
             # If the origin is included in the ridge, add the vertices
@@ -79,8 +82,8 @@ def get_bz_edge(
             vertices.append(vor.vertices[simplex])
 
     # Remove duplicates
-    lines_new = []
-    vertices_new = []
+    lines_new: list[npt.NDArray] = []
+    vertices_new: list[npt.NDArray] = []
 
     for line in lines:
         for i in range(line.shape[0] - 1):
@@ -94,8 +97,8 @@ def get_bz_edge(
         if not any(np.allclose(v, vn) for vn in vertices_new):
             vertices_new.append(v)
 
-    lines = np.asarray(lines_new)
-    vertices = np.asarray(vertices_new)
+    lines_arr = np.asarray(lines_new)
+    vertices_arr = np.asarray(vertices_new)
 
     # Extend the BZ
     additional_lines = []
@@ -103,12 +106,12 @@ def get_bz_edge(
     for vals in itertools.product(*[range(-n + 1, n) for n in extend]):
         if vals != (0,) * ndim:
             displacement = np.dot(vals, basis)
-            additional_lines.append(lines + displacement)
-            additional_verts.append(vertices + displacement)
-    lines = np.r_[lines, *additional_lines]
-    vertices = np.r_[vertices, *additional_verts]
+            additional_lines.append(lines_arr + displacement)
+            additional_verts.append(vertices_arr + displacement)
+    lines_arr = np.r_[lines_arr, *additional_lines]
+    vertices_arr = np.r_[vertices_arr, *additional_verts]
 
-    return lines, vertices
+    return lines_arr, vertices_arr
 
 
 def plot_hex_bz(

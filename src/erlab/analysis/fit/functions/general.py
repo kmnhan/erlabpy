@@ -132,13 +132,17 @@ def do_convolve(
 
 def do_convolve_2d(
     x: npt.NDArray[np.float64],
-    y: npt.NDArray[np.float64],
+    y: npt.NDArray[np.float64] | float,
     func: Callable,
     resolution: float,
     pad: int = 5,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
     idx_x = None
+
+    if not np.iterable(y):
+        y = np.asarray([y])
+
     try:
         # check if x is a meshgrid
         shape_x, idx_x, x = _infer_meshgrid_shape(np.ascontiguousarray(x))
@@ -152,9 +156,6 @@ def do_convolve_2d(
     xn, g = _gen_kernel(
         np.asarray(np.squeeze(x), dtype=np.float64), resolution, pad=pad
     )
-
-    if not np.iterable(y):
-        y = [y]
 
     convolved = np.vstack(
         [

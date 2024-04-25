@@ -2,6 +2,7 @@ __all__ = ["shift"]
 
 import itertools
 import warnings
+from typing import cast
 
 import numpy as np
 import scipy.ndimage
@@ -85,7 +86,7 @@ def shift(
                 f"Dimension {dim} in shift array has different size than input array"
             )
 
-    domain_indices: list[int] = [darr.get_axis_num(ax) for ax in shift.dims]
+    domain_indices: tuple[int, ...] = darr.get_axis_num(shift.dims)
 
     # `along` must be evenly spaced and monotonic increasing
     out = darr.sortby(along).copy()
@@ -96,7 +97,7 @@ def shift(
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        rigid_shift = np.round(shift.values.mean())
+        rigid_shift: float = np.round(shift.values.mean())
         shift = shift - rigid_shift
 
         # Apply coordinate shift
@@ -104,7 +105,7 @@ def shift(
 
         # The bounds of the remaining shift values are used to pad the data
         nshift_min, nshift_max = shift.values.min(), shift.values.max()
-        pads: tuple[int] = min(0, round(nshift_min)), max(0, round(nshift_max))
+        pads: tuple[int, int] = min(0, round(nshift_min)), max(0, round(nshift_max))
 
         # Construct new coordinate array
         new_along = np.linspace(
@@ -114,21 +115,24 @@ def shift(
         )
 
         # Pad the data and assign new coordinates
-        out = out.pad({along: np.abs(pads)}, mode="constant", constant_values=np.nan)
+        out = out.pad(
+            {along: tuple(np.abs(pads))}, mode="constant", constant_values=np.nan
+        )
         out = out.assign_coords({along: new_along})
 
     for idxs in itertools.product(*[range(darr.shape[i]) for i in domain_indices]):
         # Construct slices for indexing
-        slices = [slice(None)] * darr.ndim
-        for domain_index, i in zip(domain_indices, idxs):
-            slices[domain_index] = i
-        slices = tuple(slices)
+        _slices: list[slice | int] = [slice(None)] * darr.ndim
+        for domain_index, i in zip(domain_indices, idxs, strict=True):
+            _slices[domain_index] = i
+
+        slices: tuple[slice | int, ...] = tuple(_slices)
 
         # Initialize arguments to `scipy.ndimage.shift`
         input = out[slices]
-        shifts = [0] * input.ndim
-        shift_val: float = float(shift.isel(dict(zip(shift.dims, idxs))))
-        shifts[input.get_axis_num(along)] = shift_val
+        shifts: list[float] = [0.0] * input.ndim
+        shift_val: float = float(shift.isel(dict(zip(shift.dims, idxs, strict=True))))
+        shifts[cast(int, input.get_axis_num(along))] = shift_val
 
         # Apply shift
         out[slices] = scipy.ndimage.shift(input.values, shifts, **shift_kwargs)

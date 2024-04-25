@@ -24,7 +24,6 @@ dynamic = ["version"]
 dependencies = [
     "h5netcdf>=1.2.0",
     "igor2>=0.5.6",
-    "iminuit>=2.25.2",
     "joblib>=1.3.2",
     "lmfit>=1.2.0,!=1.3.0",
     "matplotlib>=3.8.0",
@@ -36,9 +35,8 @@ dependencies = [
     "qtawesome>=1.3.1",
     "qtpy>=2.4.1",
     "scipy>=1.12.0",
-    "superqt>=0.6.2",
     "tqdm>=4.66.2",
-    "uncertainties>=3.0.1",
+    "uncertainties>=3.1.4",
     "varname>=0.13.0",
     "xarray>=2024.02.0",
 ]
@@ -156,9 +154,29 @@ select = [
     "PERF",
     "RUF",
 ]
-ignore = ["B905", "ICN001", "TRY003", "RUF001", "RUF002", "RUF003", "RUF012"]
+ignore = [
+    "ICN001", # Import conventions
+    "TRY003", # Long exception messages
+]
 extend-select = [
     "UP", # pyupgrade
+]
+allowed-confusables = [
+    "×",
+    "−",
+    "𝑎",
+    "𝒂",
+    "𝑏",
+    "𝒃",
+    "𝑐",
+    "𝑥",
+    "𝑦",
+    "𝑧",
+    "𝛼",
+    "γ",
+    "𝛾",
+    "ν",
+    "α",
 ]
 
 [tool.ruff.format]
@@ -176,3 +194,37 @@ profile = "black"
 addopts = ["--import-mode=importlib"]
 pythonpath = "src"
 testpaths = "tests"
+
+[tool.mypy]
+plugins = ["numpy.typing.mypy_plugin"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+allow_redefinition = true
+exclude = [
+    "^docs/",
+    "^tests/",
+    "_deprecated/",
+    "interactive/fermiedge.py",
+    "io/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "astropy.*",
+    "h5netcdf.*",
+    "igor2.*",
+    "iminuit.*",
+    "ipywidgets.*",
+    "joblib.*",
+    "lmfit.*",
+    "mpl_toolkits.*",
+    "numba.*",
+    "pyperclip.*",
+    "pyqtgraph.*",
+    "qtawesome.*",
+    "scipy.*",
+    "uncertainties.*",
+    "varname.*",
+]
+ignore_missing_imports = true

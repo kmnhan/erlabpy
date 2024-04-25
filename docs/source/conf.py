@@ -63,6 +63,8 @@ default_role = "obj"
 # nitpicky = False
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
+highlight_language = "python3"
+
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html
 

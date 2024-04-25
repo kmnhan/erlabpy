@@ -350,5 +350,5 @@ def _get_interpolator_nd_fast(method, **kwargs):
         return _get_interpolator_nd_original(method, **kwargs)
 
 
-xarray.core.missing._get_interpolator = _get_interpolator_fast
+xarray.core.missing._get_interpolator = _get_interpolator_fast  # type: ignore[assignment]
 xarray.core.missing._get_interpolator_nd = _get_interpolator_nd_fast

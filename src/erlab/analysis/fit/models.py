@@ -115,7 +115,10 @@ class FermiEdgeModel(lmfit.Model):
     """
     Fermi-dirac function with linear background above and below the fermi level,
     convolved with a gaussian kernel.
+
     """
+
+    __doc__ = __doc__ + lmfit.models.COMMON_INIT_DOC
 
     @staticmethod
     def LinearBroadFermiDirac(
@@ -165,7 +168,6 @@ class FermiEdgeModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    __init__.doc = lmfit.models.COMMON_INIT_DOC
     guess.__doc__ = COMMON_GUESS_DOC
 
 
@@ -199,7 +201,7 @@ class StepEdgeModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    __init__.doc = lmfit.models.COMMON_INIT_DOC
+    __doc__ = lmfit.models.COMMON_INIT_DOC
     guess.__doc__ = COMMON_GUESS_DOC
 
 
@@ -220,7 +222,7 @@ class PolynomialModel(lmfit.Model):
                 pars[f"{self.prefix}c{i}"].set(value=coef)
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    __init__.doc = lmfit.models.COMMON_INIT_DOC
+    __doc__ = lmfit.models.COMMON_INIT_DOC
     guess.__doc__ = COMMON_GUESS_DOC
 
 
@@ -326,7 +328,7 @@ class FermiEdge2dModel(lmfit.Model):
     :math:`c` convolved with a gaussian, where :math:`\omega` is the binding energy and
     :math:`\alpha` is the detector angle.
 
-    """
+    """ + lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
 
     def __init__(
         self,
@@ -381,7 +383,6 @@ class FermiEdge2dModel(lmfit.Model):
         # Ensure flat fit
         return super().fit(data.ravel(), *args, **kwargs)
 
-    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
     guess.__doc__ = COMMON_GUESS_DOC.replace("x : ", "eV, alpha : ")
 
 
@@ -392,7 +393,7 @@ class BCSGapModel(lmfit.Model):
         self.set_param_hint("tc", min=0.0)
 
     __doc__ = bcs_gap.__doc__
-    __init__.doc = lmfit.models.COMMON_INIT_DOC
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
 
 
 class DynesModel(lmfit.Model):
@@ -402,4 +403,4 @@ class DynesModel(lmfit.Model):
         self.set_param_hint("delta", min=0.0)
 
     __doc__ = dynes.__doc__
-    __init__.doc = lmfit.models.COMMON_INIT_DOC
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC

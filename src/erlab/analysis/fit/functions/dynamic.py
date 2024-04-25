@@ -13,7 +13,8 @@ __all__ = [
 ]
 import functools
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Any, TypedDict, no_type_check, ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -30,7 +31,12 @@ from erlab.analysis.fit.functions.general import (
 from erlab.constants import kb_eV
 
 
-def get_args_kwargs(func) -> tuple[list[str], dict[str, object]]:
+class PeakArgs(TypedDict):
+    args: list[str]
+    kwargs: dict[str, Any]
+
+
+def get_args_kwargs(func: Callable) -> tuple[list[str], dict[str, Any]]:
     """Get all argument names and default values from a function signature.
 
     Parameters
@@ -72,6 +78,11 @@ def get_args_kwargs(func) -> tuple[list[str], dict[str, object]]:
     return args, args_default
 
 
+def get_args_kwargs_dict(func: Callable) -> PeakArgs:
+    args, kwargs = get_args_kwargs(func)
+    return {"args": args, "kwargs": kwargs}
+
+
 class DynamicFunction:
     """Base class for dynamic functions.
 
@@ -81,7 +92,7 @@ class DynamicFunction:
 
     @property
     def __name__(self) -> str:
-        return self.__class__.__name__
+        return str(self.__class__.__name__)
 
     @property
     def argnames(self) -> list[str]:
@@ -91,7 +102,8 @@ class DynamicFunction:
     def kwargs(self) -> dict[str, int | float]:
         return {}
 
-    def __call__(self, x: npt.NDArray[np.float64], **params) -> npt.NDArray[np.float64]:
+    @no_type_check
+    def __call__(self, **kwargs):
         raise NotImplementedError("Must be overloaded in child classes")
 
 
@@ -149,7 +161,7 @@ class MultiPeakFunction(DynamicFunction):
 
     """
 
-    PEAK_SHAPES: dict[Callable, list[str]] = {
+    PEAK_SHAPES: ClassVar[dict[Callable, list[str]]] = {
         lorentzian_wh: ["lorentzian", "lor", "l"],
         gaussian_wh: ["gaussian", "gauss", "g"],
     }
@@ -180,20 +192,20 @@ class MultiPeakFunction(DynamicFunction):
 
         self._peak_shapes = peak_shapes
 
-        self._peak_funcs = [None] * self.npeaks
-        for i, name in enumerate(self._peak_shapes):
+        self._peak_funcs: list[Callable] = []
+        for name in self._peak_shapes:
             for fcn, aliases in self.PEAK_SHAPES.items():
                 if name in aliases:
-                    self._peak_funcs[i] = fcn
+                    self._peak_funcs.append(fcn)
 
-        if None in self._peak_funcs:
+        if len(self._peak_funcs) != self.npeaks:
             raise ValueError("Invalid peak name")
 
     @functools.cached_property
-    def peak_all_args(self) -> dict[Callable, dict[str, list | dict]]:
-        res = {}
+    def peak_all_args(self) -> dict[Callable, PeakArgs]:
+        res: dict[Callable, PeakArgs] = {}
         for func in self.PEAK_SHAPES:
-            res[func] = dict(zip(("args", "kwargs"), get_args_kwargs(func)))
+            res[func] = get_args_kwargs_dict(func)
         return res
 
     @functools.cached_property
@@ -201,12 +213,12 @@ class MultiPeakFunction(DynamicFunction):
         res = {}
         for func in self.PEAK_SHAPES:
             res[func] = self.peak_all_args[func]["args"][1:] + list(
-                self.peak_all_args[func]["kwargs"].keys()
+                dict(self.peak_all_args[func]["kwargs"]).keys()
             )
         return res
 
     @property
-    def peak_funcs(self) -> list[Callable]:
+    def peak_funcs(self) -> Sequence[Callable]:
         return self._peak_funcs
 
     @property
@@ -232,7 +244,7 @@ class MultiPeakFunction(DynamicFunction):
             kws += [("resolution", 0.02)]
 
         for i, func in enumerate(self.peak_funcs):
-            for arg, val in self.peak_all_args[func]["kwargs"].items():
+            for arg, val in dict(self.peak_all_args[func]["kwargs"]).items():
                 kws.append((f"p{i}_{arg}", val))
         return kws
 
@@ -252,7 +264,7 @@ class MultiPeakFunction(DynamicFunction):
         else:
             return None
 
-    def eval_peak(self, index: int, x: npt.NDArray[np.float64], **params: dict):
+    def eval_peak(self, index: int, x, **params):
         return self.peak_funcs[index](
             x,
             **{
@@ -262,12 +274,10 @@ class MultiPeakFunction(DynamicFunction):
             },
         )
 
-    def eval_bkg(self, x: npt.NDArray[np.float64], **params: dict):
+    def eval_bkg(self, x, **params):
         return params["lin_bkg"] * x + params["const_bkg"]
 
-    def pre_call(
-        self, x: npt.NDArray[np.float64], **params: dict
-    ) -> npt.NDArray[np.float64]:
+    def pre_call(self, x, **params):
         x = np.asarray(x).copy()
         y = np.zeros_like(x)
 
@@ -284,9 +294,7 @@ class MultiPeakFunction(DynamicFunction):
 
         return y
 
-    def __call__(
-        self, x: npt.NDArray[np.float64], **params: dict
-    ) -> npt.NDArray[np.float64]:
+    def __call__(self, x, **params):
         if isinstance(x, xr.DataArray):
             return x * 0.0 + self.__call__(x.values, **params)
 
@@ -319,7 +327,7 @@ class FermiEdge2dFunction(DynamicFunction):
             ("resolution", 0.02),
         ]
 
-    def pre_call(self, eV, alpha, **params: dict):
+    def pre_call(self, eV, alpha, **params):
         center = self.poly(
             np.asarray(alpha),
             *[params.pop(f"c{i}") for i in range(self.poly.degree + 1)],
@@ -328,15 +336,20 @@ class FermiEdge2dFunction(DynamicFunction):
             1 + np.exp((1.0 * eV - center) / max(TINY, params["temp"] * kb_eV))
         ) + params["offset"]
 
-    def __call__(self, eV, alpha, **params: dict):
+    def __call__(
+        self,
+        eV: npt.NDArray[np.float64] | xr.DataArray,
+        alpha: npt.NDArray[np.float64] | xr.DataArray,
+        **params,
+    ):
         if isinstance(eV, xr.DataArray) and isinstance(alpha, xr.DataArray):
             out = eV * alpha * 0.0
             return out + self.__call__(eV.values, alpha.values, **params).reshape(
                 out.shape
             )
-        if isinstance("eV", xr.DataArray):
+        if isinstance(eV, xr.DataArray):
             eV = eV.values
-        if isinstance("alpha", xr.DataArray):
+        if isinstance(alpha, xr.DataArray):
             alpha = alpha.values
         if "resolution" not in params:
             raise TypeError("Missing parameter `resolution` required for convolution")

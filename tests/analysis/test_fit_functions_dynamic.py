@@ -33,7 +33,7 @@ def test_poly_func_call():
     x = np.arange(5, dtype=np.float64)
     coeffs = RAND_STATE.randn(3)
     expected_result = np.polyval(np.asarray(list(reversed(coeffs))), x)
-    params = dict(zip([f"c{i}" for i in range(3)], coeffs))
+    params = dict(zip([f"c{i}" for i in range(3)], coeffs, strict=True))
     result = PolynomialFunction(degree=2)(x, **params)
     assert np.allclose(result, expected_result)
 

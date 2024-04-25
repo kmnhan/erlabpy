@@ -10,7 +10,7 @@ import inspect
 import os
 import time
 import weakref
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -31,6 +31,14 @@ if TYPE_CHECKING:
 
     from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
     from pyqtgraph.GraphicsScene import mouseEvents
+
+    class ColorMapProperties(TypedDict):
+        cmap: str | pg.ColorMap
+        gamma: float
+        reversed: bool
+        highContrast: bool
+        zeroCentered: bool
+
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
@@ -118,11 +126,13 @@ def link_slicer(
     indices
         If `True`, the input argument named `value` given to `func` are interpreted as
         indices, and will be converted to appropriate values for other instances of
-        `ImageSlicerArea`. The behavior of this conversion is determined by `steps`.
+        `ImageSlicerArea`. The behavior of this conversion is determined by `steps`. If
+        `True`, An input argument named `axis` of type integer must be present in the
+        decorated method to determine the axis along which the index is to be changed.
     steps
-        If `False`, considers `value` as an absolute index. If `True`, considers
-        `value` as a relative value such as the number of steps or bins. See the
-        implementation of `SlicerLinkProxy` for more information.
+        If `False`, considers `value` as an absolute index. If `True`, considers `value`
+        as a relative value such as the number of steps or bins. See the implementation
+        of `SlicerLinkProxy` for more information.
     color
         Boolean whether the decorated method is related to visualization, such as
         colormap control.
@@ -167,7 +177,7 @@ class SlicerLinkProxy:
 
     """
 
-    def __init__(self, *slicers: list[ImageSlicerArea], link_colors: bool = True):
+    def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True):
         self.link_colors = link_colors
         self._slicers: set[ImageSlicerArea] = set()
         for s in slicers:
@@ -228,19 +238,17 @@ class SlicerLinkProxy:
         steps: bool,
     ):
         if indices:
-            axis: int | None = args.get("axis")
-            index: int | None = args.get("value")
+            index: int | None = args.get("value", None)
 
             if index is not None:
+                axis: int | None = args.get("axis")
+
                 if axis is None:
-                    args["value"] = [
-                        self.convert_index(source, target, a, i, steps)
-                        for (a, i) in zip(axis, index)
-                    ]
-                else:
-                    args["value"] = self.convert_index(
-                        source, target, axis, index, steps
+                    raise ValueError(
+                        "Axis argument not found in decorated method with `indices=True`"
                     )
+
+                args["value"] = self.convert_index(source, target, axis, index, steps)
 
         args["__slicer_skip_sync"] = True  # passed onto the decorator
         return args
@@ -309,7 +317,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     """
 
-    COLORS: list[QtGui.QColor] = [
+    COLORS: tuple[QtGui.QColor, ...] = (
         pg.mkColor(0.8),
         pg.mkColor("y"),
         pg.mkColor("m"),
@@ -317,7 +325,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("g"),
         pg.mkColor("r"),
         pg.mkColor("b"),
-    ]  #: List of :class:`PySide6.QtGui.QColor` containing colors for multiple cursors.
+    )  #: :class:`PySide6.QtGui.QColor`\ s for multiple cursors.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
@@ -362,9 +370,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.bench = bench
 
-        self.setLayout(QtWidgets.QHBoxLayout())
-        self.layout().setContentsMargins(0, 0, 0, 0)
-        self.layout().setSpacing(0)
+        layout = QtWidgets.QHBoxLayout()
+        self.setLayout(layout)
+
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self._splitters = (
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
@@ -383,7 +393,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # s.setPalette(palette)
             # print(s.handleWidth())
             # pass
-        self.layout().addWidget(self._splitters[0])
+        layout.addWidget(self._splitters[0])
         for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):
             self._splitters[i].addWidget(self._splitters[j])
         _sync_splitters(self._splitters[1], self._splitters[4])
@@ -391,11 +401,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
 
         self._colorbar = ItoolColorBar(self)
-        self.layout().addWidget(self._colorbar)
+        layout.addWidget(self._colorbar)
         self._colorbar.setVisible(False)
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
-        self.manual_limits: dict[str | list[float]] = {}
+        self.manual_limits: dict[str, list[list[float]]] = {}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
@@ -414,7 +424,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for i in (5, 2):
             self._splitters[6].addWidget(self._plots[i])
 
-        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         self.qapp.aboutToQuit.connect(self.on_close)
 
         cmap_reversed = False
@@ -426,7 +436,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if cmap.startswith("cet_CET"):
                 cmap = cmap[4:]
 
-        self.colormap_properties: dict[str, str | pg.ColorMap | float | bool] = {
+        self.colormap_properties: ColorMapProperties = {
             "cmap": cmap,
             "gamma": gamma,
             "reversed": cmap_reversed,
@@ -488,15 +498,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return tuple(self.get_axes(ax) for ax in (4, 5))
         elif self.data.ndim == 4:
             return tuple(self.get_axes(ax) for ax in (4, 5, 7))
+        else:
+            raise ValueError("Data must have 2 to 4 dimensions")
 
     @property
     def profiles(self) -> tuple[ItoolPlotItem, ...]:
         if self.data.ndim == 2:
-            profile_axes = (1, 2)
+            profile_axes = [1, 2]
         elif self.data.ndim == 3:
-            profile_axes = (1, 2, 3)
+            profile_axes = [1, 2, 3]
         else:
-            profile_axes = (1, 2, 3, 6)
+            profile_axes = [1, 2, 3, 6]
+
         return tuple(self.get_axes(ax) for ax in profile_axes)
 
     @property
@@ -639,7 +652,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if hasattr(self, "_array_slicer"):
             self._array_slicer.set_array(self._data, reset=True)
         else:
-            self._array_slicer = ArraySlicer(self._data)
+            self._array_slicer: ArraySlicer = ArraySlicer(self._data)
 
         while self.n_cursors != n_cursors_old:
             self.array_slicer.add_cursor(update=False)
@@ -813,7 +826,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool):
-        self.levels_locked: bool = lock
+        self.levels_locked = lock
 
         if self.levels_locked:
             levels = self.array_slicer.limits
@@ -870,7 +883,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
-        valid_axis: tuple[tuple[bool, bool, bool, bool]] = (
+        valid_axis: tuple[tuple[Literal[0, 1], ...], ...] = (
             (1, 0, 0, 1),
             (1, 1, 0, 0),
             (0, 0, 1, 1),
@@ -905,7 +918,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ]
         if self.data.ndim == 4:
             sizes[3] = (0, 0, (r0 + r1 - d))
-        for split, sz in zip(self._splitters, sizes):
+        for split, sz in zip(self._splitters, sizes, strict=True):
             split.setSizes(tuple(round(s * scale) for s in sz))
 
         for i, sel in enumerate(valid_axis):
@@ -940,22 +953,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.array_slicer.snap_to_data = value
         self.sigViewOptionChanged.emit()
 
-    def changeEvent(self, evt: QtCore.QEvent):
-        if evt.type() == QtCore.QEvent.Type.PaletteChange:
-            self.qapp.setStyle(self.qapp.style().name())
+    def changeEvent(self, evt: QtCore.QEvent | None):
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            style = self.qapp.style()
+            if style is not None:
+                self.qapp.setStyle(style.name())
         super().changeEvent(evt)
 
 
 class ItoolCursorLine(pg.InfiniteLine):
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
-        self.qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
 
     @property
     def plotItem(self) -> ItoolPlotItem:
         return self.parentItem().parentItem().parentItem()
 
-    def setBounds(self, bounds: Sequence[float], value: float | None = None):
+    def setBounds(self, bounds: Sequence[np.floating], value: float | None = None):
         if bounds[0] > bounds[1]:
             bounds = list(bounds)
             bounds.reverse()
@@ -970,7 +984,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
                 if ev.isStart():
@@ -1001,7 +1015,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             super().mouseClickEvent(ev)
         else:
@@ -1011,7 +1025,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def hoverEvent(self, ev):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             super().hoverEvent(ev)
         else:
@@ -1038,7 +1052,7 @@ class ItoolDisplayObject:
         if cursor is None:
             cursor = 0
         self._cursor_index = int(cursor)
-        self.qapp: QtGui.QGuiApplication = QtGui.QGuiApplication.instance()
+        self.qapp = QtGui.QGuiApplication.instance()
 
     @property
     def display_axis(self):
@@ -1117,13 +1131,19 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         )
 
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
-        if QtCore.Qt.KeyboardModifier.ControlModifier in self.qapp.keyboardModifiers():
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in QtWidgets.QApplication.keyboardModifiers()
+        ):
             ev.ignore()
         else:
             super().mouseDragEvent(ev)
 
     def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
-        if QtCore.Qt.KeyboardModifier.ControlModifier in self.qapp.keyboardModifiers():
+        if (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            in QtWidgets.QApplication.keyboardModifiers()
+        ):
             ev.ignore()
         else:
             super().mouseClickEvent(ev)
@@ -1181,14 +1201,16 @@ class ItoolPlotItem(pg.PlotItem):
             slot=self.process_drag,
         )
         if self.slicer_area.bench:
-            self._time_start = None
-            self._time_end = None
-            self._single_queue = collections.deque([0], maxlen=9)
-            self._next_queue = collections.deque([0], maxlen=9)
+            self._time_start: float | None = None
+            self._time_end: float | None = None
+            self._single_queue = collections.deque([0.0], maxlen=9)
+            self._next_queue = collections.deque([0.0], maxlen=9)
 
     @property
-    def axis_dims(self) -> list[str]:
-        dim_list = [self.slicer_area.data.dims[ax] for ax in self.display_axis]
+    def axis_dims(self) -> list[str | None]:
+        dim_list: list[str | None] = [
+            str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
+        ]
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
                 dim_list = [None, *dim_list]
@@ -1204,7 +1226,10 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_independent:
             return
         for dim, auto, rng in zip(
-            self.axis_dims, self.vb.state["autoRange"], self.vb.state["viewRange"]
+            self.axis_dims,
+            self.vb.state["autoRange"],
+            self.vb.state["viewRange"],
+            strict=True,
         ):
             if dim is not None:
                 if auto:
@@ -1218,7 +1243,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.set_range_from(self.slicer_area.manual_limits)
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs):
-        for dim, key in zip(self.axis_dims, ("xRange", "yRange")):
+        for dim, key in zip(self.axis_dims, ("xRange", "yRange"), strict=True):
             if dim is not None:
                 try:
                     kwargs[key] = limits[dim]
@@ -1252,7 +1277,7 @@ class ItoolPlotItem(pg.PlotItem):
         self, sig: tuple[mouseEvents.MouseDragEvent, QtCore.Qt.KeyboardModifier]
     ):
         if self.slicer_area.bench:
-            if self._time_end is not None:
+            if self._time_end is not None and self._time_start is not None:
                 self._single_queue.append(1 / (self._time_end - self._time_start))
             self._time_end = self._time_start
             self._time_start = time.perf_counter()
@@ -1352,7 +1377,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.cursor_lines.append({})
         self.cursor_spans.append({})
-        for c, s, ax in zip(cursors, spans, self.display_axis):
+        for c, s, ax in zip(cursors, spans, self.display_axis, strict=False):
             self.cursor_lines[-1][ax] = c
             self.cursor_spans[-1][ax] = s
             self.addItem(c)
@@ -1400,7 +1425,9 @@ class ItoolPlotItem(pg.PlotItem):
         item = self.slicer_data_items.pop(index)
         self.removeItem(item)
         for line, span in zip(
-            self.cursor_lines.pop(index).values(), self.cursor_spans.pop(index).values()
+            self.cursor_lines.pop(index).values(),
+            self.cursor_spans.pop(index).values(),
+            strict=True,
         ):
             self.removeItem(line)
             self.removeItem(span)
@@ -1449,7 +1476,9 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             label_kw = {
                 a: self._get_label_unit(i)
-                for a, i in zip(("top", "bottom", "left", "right"), (0, 0, 1, 1))
+                for a, i in zip(
+                    ("top", "bottom", "left", "right"), (0, 0, 1, 1), strict=True
+                )
                 if self.getAxis(a).isVisible()
             }
         else:
@@ -1540,7 +1569,7 @@ class ItoolPlotItem(pg.PlotItem):
 
 
 class ItoolColorBarItem(BetterColorBarItem):
-    def __init__(self, slicer_area: ImageSlicerArea | None = None, **kwargs):
+    def __init__(self, slicer_area: ImageSlicerArea, **kwargs):
         self._slicer_area = slicer_area
         kwargs.setdefault(
             "axisItems",
@@ -1572,14 +1601,14 @@ class ItoolColorBarItem(BetterColorBarItem):
 
 
 class ItoolColorBar(pg.PlotWidget):
-    def __init__(self, slicer_area: ImageSlicerArea | None = None, **cbar_kw):
+    def __init__(self, slicer_area: ImageSlicerArea, **cbar_kw):
         super().__init__(
             parent=slicer_area, plotItem=ItoolColorBarItem(slicer_area, **cbar_kw)
         )
         self.scene().sigMouseClicked.connect(self.mouseDragEvent)
 
     @property
-    def cb(self) -> BetterColorBarItem:
+    def cb(self) -> ItoolColorBarItem:
         return self.plotItem
 
     def set_dimensions(

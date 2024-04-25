@@ -160,6 +160,8 @@ def bounded_side_bool(
             return True
         case Side.ON_BOUNDARY:
             return boundary
+        case _:
+            return False
 
 
 @numba.njit(nogil=True, cache=True)

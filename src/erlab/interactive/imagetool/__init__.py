@@ -21,8 +21,10 @@ __all__ = ["ImageTool", "itool"]
 
 import gc
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
+import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
@@ -38,23 +40,16 @@ from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    import numpy as np
-    import numpy.typing as npt
-
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
 def itool(
-    data: (
-        Sequence[xr.DataArray | npt.ArrayLike[np.floating]]
-        | xr.DataArray
-        | npt.ArrayLike[np.floating]
-    ),
+    data: Sequence[xr.DataArray | npt.NDArray] | xr.DataArray | npt.NDArray,
     link: bool = False,
     link_colors: bool = True,
     execute: bool | None = None,
     **kwargs,
-):
+) -> ImageTool | list[ImageTool] | None:
     """Create and display an ImageTool window.
 
     Parameters
@@ -78,7 +73,7 @@ def itool(
 
     Returns
     -------
-    ImageTool or tuple of ImageTool
+    ImageTool or list of ImageTool
         The created ImageTool window(s).
 
     Notes
@@ -93,29 +88,32 @@ def itool(
     >>> itool(data_list, link=True)
     """
 
-    qapp: QtWidgets.QApplication = QtWidgets.QApplication.instance()
+    qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
 
-    if isinstance(data, list | tuple):
-        win = ()
-        for d in data:
-            win += (ImageTool(d, **kwargs),)
-        for w in win:
-            w.show()
-        win[-1].activateWindow()
-        win[-1].raise_()
+    if isinstance(qapp, QtWidgets.QApplication):
+        qapp.setStyle("Fusion")
 
-        if link:
-            linker = SlicerLinkProxy(  # noqa: F841
-                *[w.slicer_area for w in win], link_colors=link_colors
-            )
-    else:
-        win = ImageTool(data, **kwargs)
-        win.show()
-        win.raise_()
-        win.activateWindow()
+    if isinstance(data, np.ndarray | xr.DataArray):
+        data = cast(list[npt.NDArray | xr.DataArray], [data])
+
+    itool_list = [ImageTool(d, **kwargs) for d in data]
+
+    for w in itool_list:
+        w.show()
+
+    if len(itool_list) == 0:
+        raise ValueError("No data provided")
+
+    itool_list[-1].activateWindow()
+    itool_list[-1].raise_()
+
+    if link:
+        linker = SlicerLinkProxy(  # noqa: F841
+            *[w.slicer_area for w in itool_list], link_colors=link_colors
+        )
+
     if execute is None:
         execute = True
         try:
@@ -127,13 +125,14 @@ def itool(
                 start_event_loop_qt4(qapp)
         except NameError:
             pass
+
     if execute:
         qapp.exec()
-        del win
+        del itool_list
         gc.collect()
 
         return None
-    return win
+    return itool_list
 
 
 class BaseImageTool(QtWidgets.QMainWindow):
@@ -231,7 +230,7 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     def _generate_menu_kwargs(self) -> dict:
-        menu_kwargs = {
+        menu_kwargs: dict[str, Any] = {
             "fileMenu": {
                 "title": "&File",
                 "actions": {
@@ -340,6 +339,7 @@ class ItoolMenuBar(DictMenuBar):
                 ),
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
+                strict=True,
             )
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
@@ -373,6 +373,7 @@ class ItoolMenuBar(DictMenuBar):
                 ),
                 (1, 1, 0, 0) * 2,
                 (1, -1, 1, -1, 10, -10, 10, -10),
+                strict=True,
             )
         ):
             menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
@@ -402,7 +403,9 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["snapCursorAct"].blockSignals(False)
 
         cmap_props = self.slicer_area.colormap_properties
-        for ca, k in zip(self.colorAct, ["reversed", "highContrast", "zeroCentered"]):
+        for ca, k in zip(
+            self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
+        ):
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)

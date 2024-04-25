@@ -23,7 +23,7 @@ import importlib
 import itertools
 import os
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 import joblib
 import numpy as np
@@ -32,7 +32,9 @@ import pandas
 import xarray as xr
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping
+
+    DataFromSingleFile = xr.DataArray | xr.Dataset | list[xr.DataArray]
 
 
 def _is_uniform(arr: npt.NDArray) -> bool:
@@ -40,7 +42,7 @@ def _is_uniform(arr: npt.NDArray) -> bool:
     return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
 
 
-def _is_monotonic(arr: npt.NDArray) -> bool:
+def _is_monotonic(arr: npt.NDArray) -> np.bool_:
     dif = np.diff(arr)
     return np.all(dif >= 0) or np.all(dif <= 0)
 
@@ -53,19 +55,26 @@ class ValidationWarning(UserWarning):
     """This warning is issued when the loaded data fails validation checks."""
 
 
+class LoaderNotFoundError(Exception):
+    """This exception is raised when a loader is not found in the registry."""
+
+    def __init__(self, key: str):
+        super().__init__(f"Loader for name or alias {key} not found in the registry")
+
+
 class LoaderBase:
     """Base class for all data loaders."""
 
-    name: str = None
+    name: str
     """
     Name of the loader. Using a unique and descriptive name is recommended. For easy
     access, it is recommended to use a name that passes :func:`str.isidentifier`.
     """
 
-    aliases: list[str] | None = None
+    aliases: Iterable[str] | None = None
     """List of alternative names for the loader."""
 
-    name_map: dict[str, str | Iterable[str]] = {}
+    name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
     """
     Dictionary that maps **new** coordinate or attribute names to **original**
     coordinate or attribute names. If there are multiple possible names for a single
@@ -83,7 +92,7 @@ class LoaderBase:
     consistency.
     """
 
-    additional_attrs: dict[str, str | int | float] = {}
+    additional_attrs: ClassVar[dict[str, str | int | float]] = {}
     """Additional attributes to be added to the data."""
 
     always_single: bool = True
@@ -107,7 +116,7 @@ class LoaderBase:
         return self.reverse_mapping(self.name_map)
 
     @staticmethod
-    def reverse_mapping(mapping: dict[str, str | Iterable[str]]) -> dict[str, str]:
+    def reverse_mapping(mapping: Mapping[str, str | Iterable[str]]) -> dict[str, str]:
         """Reverse the given mapping dictionary to form a one-to-one mapping.
 
         Parameters
@@ -268,6 +277,7 @@ class LoaderBase:
             )
 
         elif np.issubdtype(type(val), np.floating):
+            val = cast(np.floating, val)
             if val.is_integer():
                 return cls.formatter(np.int64(val))
             else:
@@ -311,8 +321,8 @@ class LoaderBase:
 
     def load(
         self,
-        identifier: str | os.PathLike | int | None,
-        data_dir: str | os.PathLike | None = None,
+        identifier: str | int,
+        data_dir: str | None = None,
         **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         """Load ARPES data.
@@ -400,8 +410,6 @@ class LoaderBase:
         if not self.skip_validate:
             self.validate(data)
 
-        data.attrs["data_loader_name"] = str(self.name)
-
         return data
 
     def summarize(
@@ -467,19 +475,19 @@ class LoaderBase:
         styled = self.get_styler(df)
 
         try:
-            shell = get_ipython().__class__.__name__  # type: ignore
+            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
             if display and (
                 shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]
             ):
-                from IPython.display import display
+                from IPython.display import display  # type: ignore[assignment]
 
                 with pandas.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
-                    display(styled)
+                    display(styled)  # type: ignore[misc]
 
                 if importlib.util.find_spec("ipywidgets"):
-                    display(self.isummarize(df=df))
+                    display(self.isummarize(df=df))  # type: ignore[misc]
 
                 return None
 
@@ -513,12 +521,10 @@ class LoaderBase:
                 "ipywidgets and IPython is required for interactive summaries"
             )
         if df is None:
-            kwargs.setdefault("display", False)
-            df = self.summarize(**kwargs)
+            kwargs["display"] = False
+            df = cast(pandas.DataFrame, self.summarize(**kwargs))
 
         import matplotlib.pyplot as plt
-        import erlab.plotting.erplot as eplt
-
         from ipywidgets import (
             HTML,
             Button,
@@ -531,6 +537,8 @@ class LoaderBase:
             VBox,
         )
         from ipywidgets.widgets.interaction import show_inline_matplotlib_plots
+
+        import erlab.plotting.erplot as eplt
 
         self._temp_data: xr.DataArray | None = None
 
@@ -755,7 +763,7 @@ class LoaderBase:
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
-    def infer_index(self, name: str) -> tuple[int | None, dict | None]:
+    def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         """Infer the index for the given file name.
 
         This method takes a file name and tries to infer the scan index from it. If the
@@ -802,9 +810,11 @@ class LoaderBase:
 
     def combine_multiple(
         self,
-        data_list: list[xr.DataArray | xr.Dataset],
-        coord_dict: dict[str, Sequence],
-    ) -> xr.DataArray | xr.Dataset | Sequence[xr.DataArray | xr.Dataset]:
+        data_list: list[xr.DataArray | xr.Dataset | list[xr.DataArray]],
+        coord_dict: dict[str, Iterable],
+    ) -> (
+        xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset | list[xr.DataArray]]
+    ):
         if len(coord_dict) == 0:
             try:
                 # Try to merge the data without conflicts
@@ -814,16 +824,25 @@ class LoaderBase:
                 return data_list
         else:
             for i in range(len(data_list)):
-                data_list[i] = data_list[i].assign_coords(
-                    {k: v[i] for k, v in coord_dict.items()}
+                if isinstance(data_list[i], list):
+                    data_list[i] = self.combine_multiple(data_list[i], coord_dict={})
+
+                if not isinstance(data_list[i], list):
+                    data_list[i] = data_list[i].assign_coords(
+                        {k: v[i] for k, v in coord_dict.items()}
+                    )
+            try:
+                return xr.concat(
+                    data_list,
+                    dim=next(iter(coord_dict.keys())),
+                    coords="different",
                 )
-            return xr.concat(
-                data_list, dim=next(iter(coord_dict.keys())), coords="different"
-            )
+            except:  # noqa: E722
+                return data_list
 
     def post_process_general(
-        self, data: xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset]
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset]:
+        self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]
+    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         if isinstance(data, xr.DataArray):
             return self.post_process(data)
 
@@ -868,11 +887,15 @@ class LoaderBase:
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = self.process_keys(data)
-        data = data.assign_attrs(self.additional_attrs)
+        data = data.assign_attrs(
+            self.additional_attrs | {"data_loader_name": str(self.name)}
+        )
         return data
 
     @classmethod
-    def validate(cls, data: xr.DataArray | xr.Dataset):
+    def validate(
+        cls, data: xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset]
+    ) -> None:
         """Validate the input data to ensure it is in the correct format.
 
         Checks for the presence of all required coordinates and attributes. If the data
@@ -918,7 +941,7 @@ class LoaderBase:
 
     def load_multiple_parallel(
         self, file_paths: list[str], n_jobs: int | None = None
-    ) -> list[xr.DataArray | xr.Dataset]:
+    ) -> list[xr.DataArray | xr.Dataset | list[xr.DataArray]]:
         """Load multiple files in parallel.
 
         Parameters
@@ -958,7 +981,7 @@ class RegistryBase:
     registry is created and used throughout the application.
     """
 
-    __instance = None
+    __instance: RegistryBase | None = None
 
     def __new__(cls):
         if not isinstance(cls.__instance, cls):
@@ -966,16 +989,16 @@ class RegistryBase:
         return cls.__instance
 
     @classmethod
-    def instance(cls) -> LoaderRegistry:
+    def instance(cls) -> Self:
         """Returns the registry instance."""
         return cls()
 
 
 class LoaderRegistry(RegistryBase):
-    loaders: dict[str, LoaderBase | type[LoaderBase]] = {}
+    loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
     """Registered loaders \n\n:meta hide-value:"""
 
-    alias_mapping: dict[str, str] = {}
+    alias_mapping: ClassVar[dict[str, str]] = {}
     """Mapping of aliases to loader names \n\n:meta hide-value:"""
 
     current_loader: LoaderBase | None = None
@@ -996,15 +1019,18 @@ class LoaderRegistry(RegistryBase):
 
     def get(self, key: str) -> LoaderBase:
         loader_name = self.alias_mapping.get(key)
+        if loader_name is None:
+            raise LoaderNotFoundError(key)
+
         loader = self.loaders.get(loader_name)
 
         if loader is None:
-            raise KeyError(f"Loader for {key} not found")
+            raise LoaderNotFoundError(key)
 
         if not isinstance(loader, LoaderBase):
             # If not an instance, create one
-            self.loaders[loader_name] = loader()
-            loader = self.loaders[loader_name]
+            loader = loader()
+            self.loaders[loader_name] = loader
 
         return loader
 
@@ -1014,10 +1040,10 @@ class LoaderRegistry(RegistryBase):
     def __getattr__(self, key: str) -> LoaderBase:
         try:
             return self.get(key)
-        except KeyError as e:
-            raise AttributeError(f"Loader for {key} not found") from e
+        except LoaderNotFoundError as e:
+            raise AttributeError(str(e)) from e
 
-    def set_loader(self, loader: str | LoaderBase):
+    def set_loader(self, loader: str | LoaderBase | None):
         """Set the current data loader.
 
         All subsequent calls to `load` will use the loader set here.
@@ -1094,7 +1120,7 @@ class LoaderRegistry(RegistryBase):
             if data_dir is not None:
                 self.set_data_dir(old_data_dir)
 
-    def set_data_dir(self, data_dir: str | os.PathLike):
+    def set_data_dir(self, data_dir: str | os.PathLike | None):
         """Set the default data directory for the data loader.
 
         All subsequent calls to `load` will use the `data_dir` set here unless
@@ -1111,7 +1137,7 @@ class LoaderRegistry(RegistryBase):
         directly, it will not use the default data directory.
 
         """
-        if not os.path.isdir(data_dir):
+        if data_dir is not None and not os.path.isdir(data_dir):
             raise FileNotFoundError(f"Directory {data_dir} not found")
         self.default_data_dir = data_dir
 

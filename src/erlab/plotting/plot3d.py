@@ -63,7 +63,7 @@ def set_3d_properties(self, verts, zs=0, zdir="z"):
     self._segment3d = np.asarray(
         [
             (*np.dot(_transform_zdir(zdir), (x, y, 0)), 0, 0, z)
-            for ((x, y), z) in zip(verts, zs)
+            for ((x, y), z) in zip(verts, zs, strict=True)
         ]
     )
 

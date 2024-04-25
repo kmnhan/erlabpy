@@ -1,5 +1,6 @@
 import copy
 import sys
+from typing import cast
 
 import lmfit
 import pyqtgraph as pg
@@ -54,7 +55,7 @@ LMFIT_METHODS = [
 
 
 class SinglePeakWidget(ParameterGroup):
-    VALID_LINESHAPE = ["lorentzian", "gaussian"]
+    VALID_LINESHAPE: tuple[str, ...] = ("lorentzian", "gaussian")
 
     def __init__(self, peak_index):
         self.peak_index = peak_index
@@ -96,7 +97,7 @@ class SinglePeakWidget(ParameterGroup):
 
     @property
     def peak_shape(self) -> str:
-        return self.values["Peak Shape"]
+        return str(self.values["Peak Shape"])
 
 
 class PlotPeakItem(pg.PlotCurveItem):
@@ -200,7 +201,7 @@ class edctool(QtWidgets.QMainWindow):
         self.qapp = QtCore.QCoreApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        self.qapp.setStyle("Fusion")
+        cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
         super().__init__()
         self.resize(720, 360)
 
@@ -299,8 +300,8 @@ class edctool(QtWidgets.QMainWindow):
         self.fitplot = self.plotwidget.plot()
         self.fitplot.setPen(pg.mkPen("c"))
 
-        self.peakcurves = []
-        self.peaklines = []
+        self.peakcurves: list[PlotPeakItem] = []
+        self.peaklines: list[PlotPeakPosition] = []
 
         self.refresh_n_peaks()
 
@@ -427,7 +428,7 @@ class edctool(QtWidgets.QMainWindow):
             }
         )
         for i in range(self.n_bands):
-            self._params_peak.widget(i).set_values(
+            self._params_peak.widget(i).set_values(  # type: ignore[union-attr]
                 **{k[3:]: v for k, v in params.items() if k.startswith(f"p{i}")}
             )
 
@@ -455,7 +456,7 @@ class mdctool(QtWidgets.QMainWindow):
         self.qapp = QtCore.QCoreApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        self.qapp.setStyle("Fusion")
+        cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
         super().__init__()
         self.resize(720, 360)
 
@@ -534,8 +535,8 @@ class mdctool(QtWidgets.QMainWindow):
         self.fitplot = self.plotwidget.plot()
         self.fitplot.setPen(pg.mkPen("c"))
 
-        self.peakcurves = []
-        self.peaklines = []
+        self.peakcurves: list[PlotPeakItem] = []
+        self.peaklines: list[PlotPeakPosition] = []
 
         self.refresh_n_peaks()
 
@@ -660,7 +661,7 @@ class mdctool(QtWidgets.QMainWindow):
             }
         )
         for i in range(self.n_bands):
-            self._params_peak.widget(i).set_values(
+            self._params_peak.widget(i).set_values(  # type: ignore[union-attr]
                 **{k[3:]: v for k, v in params.items() if k.startswith(f"p{i}")}
             )
 

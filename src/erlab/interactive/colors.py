@@ -16,13 +16,16 @@ __all__ = [
 
 import weakref
 from collections.abc import Iterable, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import matplotlib.colors as mcolors
+import matplotlib.colors
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
+
+if TYPE_CHECKING:
+    from matplotlib.typing import ColorType
 
 EXCLUDED_CMAPS: tuple[str, ...] = (
     "prism",
@@ -156,16 +159,16 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
 
     def __init__(
         self,
-        parent: QtWidgets.QWidget = None,
+        parent: QtWidgets.QWidget | None = None,
         value: float = 1.0,
         slider_cls: type | None = None,
         spin_cls: type | None = None,
     ):
         super().__init__(parent=parent)
-        self.setLayout(QtWidgets.QHBoxLayout(self))
-        self.layout().setContentsMargins(0, 0, 0, 0)
-
-        self.layout().setSpacing(3)
+        layout = QtWidgets.QHBoxLayout(self)
+        self.setLayout(layout)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
 
         if slider_cls is None:
             slider_cls = QtWidgets.QSlider
@@ -202,9 +205,9 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         )
         self.slider.valueChanged.connect(self.slider_changed)
 
-        self.layout().addWidget(self.label)
-        self.layout().addWidget(self.spin)
-        self.layout().addWidget(self.slider)
+        layout.addWidget(self.label)
+        layout.addWidget(self.spin)
+        layout.addWidget(self.slider)
 
     def value(self) -> float:
         return self.spin.value()
@@ -219,13 +222,13 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.slider.blockSignals(False)
         self.valueChanged.emit(value)
 
-    def slider_changed(self, value: float):
+    def slider_changed(self, value: float | int):
         self.spin.setValue(self.gamma_scale_inv(value))
 
     def gamma_scale(self, y: float) -> int:
         return round(1e4 * np.log10(y))
 
-    def gamma_scale_inv(self, x: int) -> float:
+    def gamma_scale_inv(self, x: float | int) -> float:
         return np.power(10, x * 1e-4)
 
 
@@ -248,7 +251,7 @@ class BetterImageItem(pg.ImageItem):
 
     sigColorChanged = QtCore.Signal()  #: :meta private:
 
-    def __init__(self, image: npt.NDArray = None, **kwargs):
+    def __init__(self, image: npt.NDArray | None = None, **kwargs):
         super().__init__(image, **kwargs)
 
     def set_colormap(
@@ -279,7 +282,7 @@ class BetterColorBarItem(pg.PlotItem):
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
-        image: Sequence[BetterImageItem] | BetterImageItem | None = None,
+        image: Iterable[BetterImageItem] | BetterImageItem | None = None,
         autoLevels: bool = False,
         limits: tuple[float, float] | None = None,
         pen: QtGui.QPen | str = "c",
@@ -386,15 +389,14 @@ class BetterColorBarItem(pg.PlotItem):
         if self._primary_image is not None:
             self.limit_changed()
 
-    def addImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
-        # if isinstance(image, BetterImageItem):
-        if not np.iterable(image):
+    def addImage(self, image: Iterable[BetterImageItem] | BetterImageItem):
+        if not isinstance(image, Iterable):
             self._images.add(weakref.ref(image))
         else:
             for img in image:
                 self._images.add(weakref.ref(img))
 
-    def removeImage(self, image: Sequence[BetterImageItem] | BetterImageItem):
+    def removeImage(self, image: Iterable[BetterImageItem] | BetterImageItem):
         if isinstance(image, Iterable):
             for img in image:
                 self._images.remove(weakref.ref(img))
@@ -403,7 +405,7 @@ class BetterColorBarItem(pg.PlotItem):
 
     def setImageItem(
         self,
-        image: Sequence[BetterImageItem] | BetterImageItem,
+        image: Iterable[BetterImageItem] | BetterImageItem,
         insert_in: pg.PlotItem | None = None,
     ):
         self.addImage(image)
@@ -527,9 +529,7 @@ class BetterColorBarItem(pg.PlotItem):
         ev.ignore()
 
 
-def color_to_QColor(
-    c: str | tuple[float, ...], alpha: float | None = None
-) -> QtGui.QColor:
+def color_to_QColor(c: ColorType, alpha: float | None = None) -> QtGui.QColor:
     """Convert a matplotlib color to a :class:`PySide6.QtGui.QColor`.
 
     Parameters
@@ -546,7 +546,7 @@ def color_to_QColor(
     PySide6.QtGui.QColor
 
     """
-    return QtGui.QColor.fromRgbF(*mcolors.to_rgba(c, alpha=alpha))
+    return QtGui.QColor.fromRgbF(*matplotlib.colors.to_rgba(c, alpha=alpha))
 
 
 def pg_colormap_names(
@@ -700,5 +700,5 @@ def pg_colormap_to_QPixmap(
     cmap_arr = cmap.getLookupTable(0, 1, w, alpha=True)[:, None]
 
     # print(cmap_arr.shape)
-    img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format_RGBA8888)
+    img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(img).scaled(w, h)

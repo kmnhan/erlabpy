@@ -23,9 +23,13 @@ __all__ = [
 
 import io
 import re
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import matplotlib
+import matplotlib.backends.backend_pdf
+import matplotlib.backends.backend_svg
+import matplotlib.figure
+import matplotlib.mathtext
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.transforms as mtransforms
@@ -264,6 +268,7 @@ def copy_mathtext(
         rcparams = {}
     parser = matplotlib.mathtext.MathTextParser("path")
     width, height, depth, _, _ = parser.parse(s, dpi=72, prop=fontproperties)
+
     fig = matplotlib.figure.Figure(figsize=(width / 72, height / 72))
     fig.patch.set_facecolor("none")
     fig.text(0, depth / height, s, fontproperties=fontproperties)
@@ -285,11 +290,11 @@ def copy_mathtext(
             rcparams.setdefault("svg.fonttype", "path" if outline else "none")
             rcparams.setdefault("svg.image_inline", True)
             with plt.rc_context(rcparams):
-                fig.canvas.print_svg(buffer)
+                fig.canvas.print_svg(buffer)  # type: ignore[attr-defined]
         else:
             rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
             with plt.rc_context(rcparams):
-                fig.canvas.print_pdf(buffer)
+                fig.canvas.print_pdf(buffer)  # type: ignore[attr-defined]
         pyperclip.copy(buffer.getvalue().decode("utf-8"))
 
 
@@ -308,7 +313,7 @@ def fancy_labels(ax=None, deg2rad=False):
 
 
 def label_subplot_properties(
-    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
+    axes: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
     values: dict,
     decimals: int | None = None,
     si: int = 0,
@@ -352,7 +357,7 @@ def label_subplot_properties(
     kwargs.setdefault("suffix", "")
     kwargs.setdefault("loc", "upper right")
 
-    strlist = []
+    strlist: Any = []
     for k, v in values.items():
         if not isinstance(v, tuple | list | np.ndarray):
             v = [v]
@@ -364,14 +369,14 @@ def label_subplot_properties(
                 for val in v
             ]
         )
-    strlist = list(zip(*strlist))
+    strlist = list(zip(*strlist, strict=True))
     strlist = ["\n".join(strlist[i]) for i in range(len(strlist))]
     label_subplots(axes, strlist, order=order, **kwargs)
 
 
 def label_subplots(
-    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
-    values: Sequence[int | str] | None = None,
+    axes: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
+    values: Iterable[int | str] | None = None,
     startfrom: int = 1,
     order: Literal["C", "F", "A", "K"] = "C",
     loc: Literal[
@@ -467,10 +472,12 @@ def label_subplots(
 
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if values is None:
-        values = np.array([i + startfrom for i in range(len(axlist))], dtype=np.int64)
+        value_arr = np.array(
+            [i + startfrom for i in range(len(axlist))], dtype=np.int64
+        )
     else:
-        values = np.array(values).flatten(order=order)
-        if not (axlist.size == values.size):
+        value_arr = np.array(values).flatten(order=order)
+        if not (axlist.size == value_arr.size):
             raise IndexError(
                 "The number of given values must match the number of given axes."
             )
@@ -479,16 +486,14 @@ def label_subplots(
         bbox_to_anchor = axlist[i].bbox
         if fontsize is None:
             if isinstance(axlist[i], matplotlib.figure.Figure):
-                fs = "large"
+                fontsize = "large"
             else:
-                fs = "medium"
-        else:
-            fs = fontsize
+                fontsize = "medium"
 
         bbox_transform = matplotlib.transforms.ScaledTranslation(
             offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
         )
-        label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
+        label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
         with plt.rc_context({"text.color": axes_textcolor(axlist[i])}):
             at = matplotlib.offsetbox.AnchoredText(
                 label_str,
@@ -496,7 +501,7 @@ def label_subplots(
                 frameon=False,
                 pad=0,
                 borderpad=0.5,
-                prop=dict(fontsize=fs, **kwargs),
+                prop=dict(fontsize=fontsize, **kwargs),
                 bbox_to_anchor=bbox_to_anchor,
                 bbox_transform=bbox_transform,
                 clip_on=False,
@@ -587,16 +592,18 @@ def label_subplots_nature(
 
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if values is None:
-        values = np.array([i + startfrom for i in range(len(axlist))], dtype=np.int64)
+        value_arr = np.array(
+            [i + startfrom for i in range(len(axlist))], dtype=np.int64
+        )
     else:
-        values = np.array(values).flatten(order=order)
-        if not (axlist.size == values.size):
+        value_arr = np.array(values).flatten(order=order)
+        if not (axlist.size == value_arr.size):
             raise IndexError(
                 "The number of given values must match the number of given axes."
             )
 
     for i in range(len(axlist)):
-        label_str = _alph_label(values[i], prefix, suffix, numeric, capital)
+        label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
         trans = matplotlib.transforms.ScaledTranslation(
             offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
         )
@@ -624,7 +631,7 @@ def mark_points(
     literal: bool = False,
     roman: bool = True,
     bar: bool = False,
-    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
     **kwargs,
 ):
     """Mark points above the horizontal axis.
@@ -654,23 +661,32 @@ def mark_points(
     """
     if ax is None:
         ax = plt.gca()
+
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
+        ax = cast(matplotlib.axes.Axes, ax)  # to appease mypy
+        fig = ax.get_figure()
+
+        if fig is None:
+            raise ValueError("Given axes does not belong to a figure")
+
         for k, v in {"ha": "center", "va": "baseline", "fontsize": "small"}.items():
             kwargs.setdefault(k, v)
+
         if not np.iterable(y):
-            y = [y] * len(points)
+            y = [y] * len(points)  # type: ignore[list-item]
+
         with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, label in zip(points, y, labels):
+            for xi, yi, label in zip(points, y, labels, strict=True):
                 ax.text(
                     xi,
                     yi,
                     label if literal else parse_point_labels(label, roman, bar),
                     transform=ax.transData
                     + mtransforms.ScaledTranslation(
-                        pad[0] / 72, pad[1] / 72, ax.figure.dpi_scale_trans
+                        pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
                     ),
                     **kwargs,
                 )
@@ -682,7 +698,7 @@ def mark_points_outside(
     axis: Literal["x", "y"] = "x",
     roman: bool = True,
     bar: bool = False,
-    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] = None,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
 ):
     """Mark points above the horizontal axis.
 
@@ -712,6 +728,8 @@ def mark_points_outside(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points_outside(points, labels, axis, roman, bar, a)
     else:
+        ax = cast(matplotlib.axes.Axes, ax)  # to appease mypy
+
         if axis == "x":
             label_ax = ax.twiny()
             label_ax.set_xlim(ax.get_xlim())
@@ -775,7 +793,7 @@ def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs):
     )
 
 
-def property_label(key, value, decimals=None, si=0, name=None, unit=None):
+def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:
     if name == "":
         delim = ""
     else:
@@ -883,7 +901,7 @@ def scale_units(
 def set_titles(axes, labels, order="C", **kwargs):
     axlist = np.array(axes, dtype=object).flatten(order=order)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_title(label, **kwargs)
 
 
@@ -892,7 +910,7 @@ def set_xlabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_xlabel(label, **kwargs)
 
 
@@ -901,7 +919,7 @@ def set_ylabels(axes, labels, order="C", **kwargs):
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
     labels = np.asarray(labels)
-    for ax, label in zip(axlist.flat, labels.flat):
+    for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_ylabel(label, **kwargs)
 
 

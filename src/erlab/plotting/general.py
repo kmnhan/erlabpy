@@ -17,10 +17,11 @@ __all__ = [
 
 import contextlib
 import copy
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
 import matplotlib
-import matplotlib.colors as mcolors
+import matplotlib.colors
 import matplotlib.image
 import matplotlib.patches
 import matplotlib.path
@@ -40,7 +41,7 @@ from erlab.plotting.colors import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
 figure_width_ref = {
     "aps": [3.4, 7.0],
@@ -119,20 +120,22 @@ class LabeledCursor(AxesWidget):
         textOn: bool = True,
         useblit: bool = True,
         textprops: dict | None = None,
-        **lineprops: dict,
+        **lineprops,
     ):
         super().__init__(ax)
 
         if textprops is None:
             textprops = {}
 
-        self.connect_event("motion_notify_event", self.onmove)
-        self.connect_event("draw_event", self.clear)
+        self.connect_event("motion_notify_event", self.onmove)  # type: ignore[arg-type]
+        self.connect_event("draw_event", self.clear)  # type: ignore[arg-type]
 
         self.visible = True
         self.horizOn = horizOn
         self.vertOn = vertOn
         self.textOn = textOn
+        if self.canvas is None:
+            raise RuntimeError("No canvas found to attach to")
         self.useblit = useblit and self.canvas.supports_blit
 
         if self.useblit:
@@ -291,14 +294,14 @@ def plot_array(
     colorbar: bool = False,
     colorbar_kw: dict | None = None,
     gamma: float = 1.0,
-    norm: mcolors.Normalize | None = None,
+    norm: matplotlib.colors.Normalize | None = None,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     crop: bool = False,
     rad2deg: bool | Iterable[str] = False,
     func: Callable | None = None,
     func_args: dict | None = None,
-    **improps: dict,
+    **improps,
 ) -> matplotlib.image.AxesImage:
     """Plots a 2D :class:`xarray.DataArray` using :func:`matplotlib.pyplot.imshow`.
 
@@ -340,12 +343,16 @@ def plot_array(
 
     if isinstance(arr, np.ndarray):
         arr = xr.DataArray(arr)
+
     if ax is None:
         ax = plt.gca()
-    if xlim is not None and not np.iterable(xlim):
+
+    if xlim is not None and not isinstance(xlim, Iterable):
         xlim = (-xlim, xlim)
-    if ylim is not None and not np.iterable(ylim):
+
+    if ylim is not None and not isinstance(ylim, Iterable):
         ylim = (-ylim, ylim)
+
     if rad2deg is not False:
         if np.iterable(rad2deg):
             conv_dims = rad2deg
@@ -368,7 +375,7 @@ def plot_array(
         colorbar_kw.setdefault("extend", "max")
 
     if norm is None:
-        norm = copy.deepcopy(mcolors.PowerNorm(gamma, **norm_kw))
+        norm = copy.deepcopy(matplotlib.colors.PowerNorm(gamma, **norm_kw))
 
     improps_default = {
         "interpolation": "none",
@@ -385,19 +392,24 @@ def plot_array(
             arr = arr.copy(deep=True).sel({arr.dims[1]: slice(*xlim)})
         if ylim is not None:
             arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
+
     if func is not None:
         img = ax.imshow(func(arr.values, **func_args), norm=norm, **improps)
     else:
         img = ax.imshow(arr.values, norm=norm, **improps)
-    ax.set_xlabel(arr.dims[1])
-    ax.set_ylabel(arr.dims[0])
+
+    ax.set_xlabel(str(arr.dims[1]))
+    ax.set_ylabel(str(arr.dims[0]))
     fancy_labels(ax)
+
     if xlim is not None:
         ax.set_xlim(*xlim)
     if ylim is not None:
         ax.set_ylim(*ylim)
+
     if colorbar:
         nice_colorbar(ax=ax, **colorbar_kw)
+
     return img
 
 
@@ -409,16 +421,16 @@ def plot_array_2d(
     normalize_with_larr: bool = False,
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
-    cmap: mcolors.Colormap | str = None,
-    lnorm: mcolors.Normalize | None = None,
-    cnorm: mcolors.Normalize | None = None,
+    cmap: matplotlib.colors.Colormap | str | None = None,
+    lnorm: matplotlib.colors.Normalize | None = None,
+    cnorm: matplotlib.colors.Normalize | None = None,
     background: Any = None,
     colorbar: bool = True,
     cax: matplotlib.axes.Axes | None = None,
     colorbar_kw: dict | None = None,
     imshow_kw: dict | None = None,
     N: int = 256,
-    **indexers_kwargs: dict,
+    **indexers_kwargs,
 ):
     if lnorm is None:
         lnorm = plt.Normalize()
@@ -446,16 +458,19 @@ def plot_array_2d(
     larr = larr.qsel(**indexers_kwargs).copy(deep=True)
     carr = carr.qsel(**indexers_kwargs).copy(deep=True)
     sel_kw = {}
+
     if xlim is not None:
-        if not np.iterable(xlim):
+        if not isinstance(xlim, Iterable):
             xlim = (-xlim, xlim)
         sel_kw[larr.dims[1]] = slice(*xlim)
+
     if ylim is not None:
-        if not np.iterable(ylim):
+        if not isinstance(ylim, Iterable):
             ylim = (-ylim, ylim)
         sel_kw[larr.dims[0]] = slice(*ylim)
-    larr = larr.sel(**sel_kw)
-    carr = carr.sel(**sel_kw)
+
+    larr = larr.sel(sel_kw)
+    carr = carr.sel(sel_kw)
 
     if normalize_with_larr:
         carr = carr / larr
@@ -478,23 +493,34 @@ def plot_array_2d(
 
     if colorbar:
         if cax is None:
+            fig = ax.get_figure()
+            if fig is None:
+                raise ValueError(
+                    "Cannot create colorbar without a figure. Please provide `cax`."
+                )
+
             colorbar_kw.setdefault("aspect", 2)
             colorbar_kw.setdefault("anchor", (0, 1))
             colorbar_kw.setdefault("panchor", (0, 1))
-            cb = ax.get_figure().colorbar(plt.cm.ScalarMappable(), ax=ax, **colorbar_kw)
+
+            cb = fig.colorbar(plt.cm.ScalarMappable(), ax=ax, **colorbar_kw)
             cax = cb.ax
             cax.clear()
 
+        lmin, lmax = cast(float, lnorm.vmin), cast(float, lnorm.vmax)  # to appease mypy
+        cmin, cmax = cast(float, cnorm.vmin), cast(float, cnorm.vmax)
+
         cax.imshow(
             cmap_img.transpose(1, 0, 2),
-            extent=(lnorm.vmin, lnorm.vmax, cnorm.vmin, cnorm.vmax),
+            extent=(lmin, lmax, cmin, cmax),
             origin="lower",
             aspect="auto",
         )
 
     im = ax.imshow(img, extent=array_extent(larr), **imshow_kw)
-    ax.set_xlabel(larr.dims[0])
-    ax.set_ylabel(larr.dims[1])
+    ax.set_xlabel(str(larr.dims[0]))
+    ax.set_ylabel(str(larr.dims[1]))
+    fancy_labels(ax)
 
     if colorbar:
         return im, cb
@@ -503,11 +529,11 @@ def plot_array_2d(
 
 
 def gradient_fill(
-    x: Sequence[int | float],
-    y: Sequence[int | float],
+    x: Collection[int | float],
+    y: Collection[int | float],
     y0: float | None = None,
     color: str | tuple[float, float, float] | tuple[float, float, float, float] = "C0",
-    cmap: str | mcolors.Colormap | None = None,
+    cmap: str | matplotlib.colors.Colormap | None = None,
     transpose: bool = False,
     reverse: bool = False,
     ax: matplotlib.axes.Axes | None = None,
@@ -543,8 +569,8 @@ def gradient_fill(
     kwargs.setdefault("norm", InversePowerNorm(0.5))
     kwargs.setdefault("alpha", 0.75)
     if cmap is None:
-        cmap = mcolors.LinearSegmentedColormap.from_list(
-            "", colors=[(1, 1, 1, 0), mcolors.to_rgba(color)], N=1024
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+            "", colors=[(1, 1, 1, 0), matplotlib.colors.to_rgba(color)], N=1024
         )
     if isinstance(cmap, str):
         cmap = matplotlib.colormaps[cmap]
@@ -559,6 +585,8 @@ def gradient_fill(
 
     if y0 is None:
         y0 = min(y)
+
+    x = np.asarray(x)
     xn = np.r_[x[0], x, x[-1]]
     yn = np.r_[y0, y, y0]
     patch = matplotlib.patches.PathPatch(
@@ -569,7 +597,7 @@ def gradient_fill(
     im = matplotlib.image.AxesImage(
         ax, cmap=cmap, interpolation="bicubic", origin="lower", zorder=0, **kwargs
     )
-    im.use_sticky_edges = False
+    im.use_sticky_edges = False  # type: ignore[attr-defined]
     ax.add_artist(im)
     if transpose:
         im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1).T)
@@ -598,8 +626,15 @@ def plot_slices(
     colorbar: Literal["none", "right", "rightspan", "all"] = "none",
     hide_colorbar_ticks: bool = True,
     annotate: bool = True,
-    cmap: str | mcolors.Colormap | Iterable[mcolors.Colormap | str] | None = None,
-    norm: mcolors.Normalize | Iterable[mcolors.Normalize] | None = None,
+    cmap: str
+    | matplotlib.colors.Colormap
+    | Iterable[
+        str | matplotlib.colors.Colormap | Iterable[matplotlib.colors.Colormap | str]
+    ]
+    | None = None,
+    norm: matplotlib.colors.Normalize
+    | Iterable[matplotlib.colors.Normalize | Iterable[matplotlib.colors.Normalize]]
+    | None = None,
     order: Literal["C", "F"] = "C",
     cmap_order: Literal["C", "F"] = "C",
     norm_order: Literal["C", "F"] | None = None,
@@ -608,9 +643,9 @@ def plot_slices(
     subplot_kw: dict | None = None,
     annotate_kw: dict | None = None,
     colorbar_kw: dict | None = None,
-    axes: npt.NDArray[matplotlib.axes.Axes] | None = None,
-    **values: dict,
-) -> tuple[matplotlib.figure.Figure, npt.NDArray[matplotlib.axes.Axes]]:
+    axes: Iterable[matplotlib.axes.Axes] | None = None,
+    **values,
+) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
     """Automated comparison plot of slices.
 
     Parameters
@@ -766,18 +801,18 @@ def plot_slices(
         slice_levels = slice_kw[slice_dim]
         slice_width = kwargs.pop(slice_dim + "_width", None)
 
-    plot_dims = [d for d in dims if d != slice_dim]
+    plot_dims: list[str] = [str(d) for d in dims if d != slice_dim]
 
     if len(plot_dims) not in (1, 2):
         raise ValueError("The data to plot must be 1D or 2D")
 
-    if not np.iterable(slice_levels):
+    if not isinstance(slice_levels, Iterable):
         slice_levels = [slice_levels]
 
-    if xlim is not None and not np.iterable(xlim):
+    if xlim is not None and not isinstance(xlim, Iterable):
         xlim = (-xlim, xlim)
 
-    if ylim is not None and not np.iterable(ylim):
+    if ylim is not None and not isinstance(ylim, Iterable):
         ylim = (-ylim, ylim)
 
     auto_gradient_color = all(k not in gradient_kw for k in ("c", "color"))
@@ -796,10 +831,16 @@ def plot_slices(
 
     cmap_name = cmap
     cmap_norm = norm
+
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-
+        axes = cast(npt.NDArray[Any], axes)
     else:
+        if not isinstance(axes, np.ndarray):
+            if not isinstance(axes, Iterable):
+                raise TypeError("axes must be an iterable of matplotlib.axes.Axes")
+            axes = np.array(axes, dtype=object)
+
         fig = axes.flat[0].get_figure()
 
     if nrow == 1:
@@ -808,7 +849,7 @@ def plot_slices(
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
 
-    qsel_kw = {}
+    qsel_kw: dict[str, Any] = {}
 
     if crop:
         if len(plot_dims) == 1:
@@ -825,7 +866,7 @@ def plot_slices(
             if ylim is not None:
                 qsel_kw[plot_dims[0]] = slice(*ylim)
 
-    if slice_width is not None:
+    if slice_width is not None and slice_dim is not None:
         qsel_kw[slice_dim + "_width"] = slice_width
 
     for i in range(len(slice_levels)):
@@ -840,17 +881,26 @@ def plot_slices(
             elif order == "C":
                 ax = axes[j, i]
 
-            if np.iterable(cmap_name) and not isinstance(cmap_name, str):
+            if isinstance(cmap_name, Iterable) and not isinstance(cmap_name, str):
+                cmap_name = list(cmap_name)
                 if cmap_order == "F":
-                    if isinstance(cmap_name[i], str):
+                    if isinstance(cmap_name[i], str | matplotlib.colors.Colormap):
                         cmap = cmap_name[i]
                     else:
-                        cmap = cmap_name[i][j]
+                        cmap = list(
+                            cast(
+                                Iterable[str | matplotlib.colors.Colormap], cmap_name[i]
+                            )
+                        )[j]
                 elif cmap_order == "C":
-                    if isinstance(cmap_name[j], str):
+                    if isinstance(cmap_name[j], str | matplotlib.colors.Colormap):
                         cmap = cmap_name[j]
                     else:
-                        cmap = cmap_name[j][i]
+                        cmap = list(
+                            cast(
+                                Iterable[str | matplotlib.colors.Colormap], cmap_name[j]
+                            )
+                        )[i]
             else:
                 cmap = cmap_name
 
@@ -884,21 +934,24 @@ def plot_slices(
                         )
 
             elif len(plot_dims) == 2:
-                if np.iterable(cmap_norm):
+                if isinstance(cmap_norm, Iterable):
+                    cmap_norm = list(cmap_norm)
                     if norm_order == "F":
                         try:
-                            norm = cmap_norm[i][j]
+                            norm = list(cast(Iterable[plt.Normalize], cmap_norm[i]))[j]
                         except TypeError:
                             norm = cmap_norm[i]
 
                     elif norm_order == "C":
                         try:
-                            norm = cmap_norm[j][i]
+                            norm = list(cast(Iterable[plt.Normalize], cmap_norm[j]))[i]
                         except TypeError:
                             norm = cmap_norm[j]
                 else:
                     norm = copy.deepcopy(cmap_norm)
-                plot_array(dat_sel, ax=ax, norm=norm, cmap=cmap, **kwargs)
+                plot_array(
+                    dat_sel, ax=ax, norm=cast(plt.Normalize, norm), cmap=cmap, **kwargs
+                )
 
     if same_limits and len(plot_dims) == 2:
         vmn, vmx = [], []
@@ -939,12 +992,15 @@ def plot_slices(
     return fig, axes
 
 
+MultipleLine2D = list[Union[matplotlib.lines.Line2D, "MultipleLine2D"]]
+
+
 def fermiline(
     ax: matplotlib.axes.Axes | None = None,
     value: float = 0.0,
     orientation: Literal["h", "v"] = "h",
     **kwargs,
-) -> matplotlib.lines.Line2D:
+) -> matplotlib.lines.Line2D | MultipleLine2D:
     """Plots a constant energy line to denote the Fermi level.
 
     Parameters

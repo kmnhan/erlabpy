@@ -18,6 +18,7 @@ from erlab.interactive.utilities import (
     ParameterGroup,
     ROIControls,
     gen_function_code,
+    xImageItem,
 )
 from erlab.parallel import joblib_progress_qt
 
@@ -156,6 +157,9 @@ class GoldTool(AnalysisWindow):
                 self._argnames["data_corr"] = "data_corr"
 
         self.data_corr = data_corr
+        self.hists: pg.HistogramLUTItem
+        self.axes: list[pg.PlotItem]
+        self.images: list[xImageItem]
 
         self.axes[1].setVisible(False)
         self.hists[1].setVisible(False)
@@ -169,7 +173,7 @@ class GoldTool(AnalysisWindow):
 
         self.params_roi = ROIControls(self.add_roi(0))
         self.params_edge = ParameterGroup(
-            **{
+            {
                 "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
                 "Fix T": {"qwtype": "chkbox", "checked": True},
                 "Bin x": {"qwtype": "spin", "value": 1, "minimum": 1},
@@ -195,7 +199,7 @@ class GoldTool(AnalysisWindow):
         self.params_edge.widgets["Fast"].stateChanged.connect(self._toggle_fast)
 
         self.params_poly = ParameterGroup(
-            **{
+            {
                 "Degree": {"qwtype": "spin", "value": 4, "range": (1, 20)},
                 "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
@@ -220,7 +224,7 @@ class GoldTool(AnalysisWindow):
         )
 
         self.params_spl = ParameterGroup(
-            **{
+            {
                 "Auto": {"qwtype": "chkbox", "checked": True},
                 "lambda": {
                     "qwtype": "dblspin",
@@ -299,18 +303,18 @@ class GoldTool(AnalysisWindow):
         self.axes[0].disableAutoRange()
 
         # Setup time calculation
-        self.start_time: float | None = None
-        self.step_times: list[float] = []
+        self.start_time: float
+        self.step_times: list[float]
 
         # Setup progress bar
-        self.progress = QtWidgets.QProgressDialog(
+        self.progress: QtWidgets.QProgressDialog = QtWidgets.QProgressDialog(
             labelText="Fitting...",
             minimum=0,
             parent=self,
             minimumDuration=0,
             windowModality=QtCore.Qt.WindowModal,
         )
-        self.pbar = QtWidgets.QProgressBar()
+        self.pbar: QtWidgets.QProgressBar = QtWidgets.QProgressBar()
         self.progress.setBar(self.pbar)
         self.progress.setFixedSize(self.progress.size())
         self.progress.setCancelButtonText("Abort!")
@@ -360,7 +364,7 @@ class GoldTool(AnalysisWindow):
     @QtCore.Slot()
     def perform_edge_fit(self):
         self.start_time = time.perf_counter()
-        self.step_times: list[float] = [0.0]
+        self.step_times = [0.0]
 
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)

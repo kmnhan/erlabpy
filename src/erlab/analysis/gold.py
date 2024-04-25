@@ -10,9 +10,10 @@ __all__ = [
     "spline_from_edge",
 ]
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import joblib
+import lmfit
 import lmfit.model
 import matplotlib
 import matplotlib.figure
@@ -142,7 +143,7 @@ def correct_with_edge(
 
 
 def edge(
-    gold: xr.DataArray | xr.Dataset,
+    gold: xr.DataArray,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -158,7 +159,7 @@ def edge(
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
     **kwargs,
-) -> tuple[npt.NDArray, npt.NDArray] | xr.Dataset:
+) -> tuple[xr.DataArray, xr.DataArray] | list[lmfit.model.ModelResult]:
     """
     Fit a Fermi edge to the given gold data.
 
@@ -211,9 +212,10 @@ def edge(
         `True`.
 
     """
+
     if fast:
         params = lmfit.create_params()
-        model_cls = StepEdgeModel
+        model_cls: lmfit.Model = StepEdgeModel
     else:
         if temp is None:
             temp = gold.attrs["temp_sample"]
@@ -230,12 +232,12 @@ def edge(
 
     if any(b != 1 for b in bin_size):
         gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
-        gold = gold_binned.mean()
+        gold = gold_binned.mean()  # type: ignore[attr-defined]
 
     gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
 
     # Assuming Poisson noise, the weights are the square root of the counts.
-    weights = 1 / np.sqrt(gold_sel.sum("eV").values)
+    weights = 1 / np.sqrt(np.asarray(gold_sel.sum("eV").values))
 
     n_fits = len(gold_sel.alpha)
 
@@ -273,7 +275,7 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
-        fitresults = tqdm.auto.tqdm(
+        fitresults = tqdm.auto.tqdm(  # type: ignore[call-overload]
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
@@ -296,7 +298,7 @@ def edge(
     if return_full:
         return list(fitresults)
 
-    xval = []
+    xval: list[npt.NDArray] = []
     res_vals = []
 
     for i, r in enumerate(fitresults):
@@ -310,13 +312,10 @@ def edge(
                 xval.append(gold_sel.alpha.values[i])
                 res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
 
-    xval = np.asarray(xval)
+    coords = {"alpha": np.asarray(xval)}
     yval, yerr = np.asarray(res_vals).T
 
-    return (
-        xr.DataArray(yval, coords={"alpha": xval}),
-        xr.DataArray(yerr, coords={"alpha": xval}),
-    )
+    return xr.DataArray(yval, coords=coords), xr.DataArray(yerr, coords=coords)
 
 
 def poly_from_edge(
@@ -336,7 +335,7 @@ def poly_from_edge(
 
 
 def spline_from_edge(
-    center, weights: Sequence[float] | None = None, lam: float | None = None
+    center, weights: npt.ArrayLike | None = None, lam: float | None = None
 ) -> scipy.interpolate.BSpline:
     spl = scipy.interpolate.make_smoothing_spline(
         center.alpha.values,
@@ -448,7 +447,7 @@ def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, 
 
 
 def poly(
-    gold: xr.DataArray | xr.Dataset,
+    gold: xr.DataArray,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -501,7 +500,7 @@ def poly(
 
 
 def spline(
-    gold: xr.DataArray | xr.Dataset,
+    gold: xr.DataArray,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -543,7 +542,7 @@ def spline(
 
 
 def resolution(
-    gold: xr.DataArray | xr.Dataset,
+    gold: xr.DataArray,
     angle_range: tuple[float, float],
     eV_range_edge: tuple[float, float],
     eV_range_fit: tuple[float, float] | None = None,

@@ -49,11 +49,20 @@ class BZPlotter(QtWidgets.QMainWindow):
             param_type = "bvec"
 
         if param_type == "lattice":
+            if len(params) != 6:
+                raise TypeError("Lattice parameters must be a 6-tuple.")
+
             bvec = to_reciprocal(abc2avec(*params))
-        elif param_type == "avec":
-            bvec = to_reciprocal(params)
-        elif param_type == "bvec":
-            bvec = params
+        else:
+            if not isinstance(params, np.ndarray):
+                raise TypeError("Lattice vectors must be a numpy array.")
+            if params.shape != (3, 3):
+                raise TypeError("Lattice vectors must be a 3 by 3 numpy array.")
+
+            if param_type == "avec":
+                bvec = to_reciprocal(params)
+            elif param_type == "bvec":
+                bvec = params
 
         self.controls = None
         self.plot = BZPlotWidget(bvec)

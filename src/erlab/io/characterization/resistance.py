@@ -1,4 +1,4 @@
-"""Functions related to analyzing temperature-dependent resistance data.
+"""Functions related to loading temperature-dependent resistance data.
 
 Currently only supports loading raw data from ``.dat`` and ``.csv`` files output by
 physics lab III equipment.

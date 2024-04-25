@@ -5,6 +5,7 @@ __all__ = ["dtool"]
 import functools
 import os
 import sys
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -26,14 +27,17 @@ from erlab.interactive.utilities import (
     xImageItem,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Hashable
+
 
 class DerivativeTool(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))
+    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))  # type: ignore[misc]
 ):
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
         if data_name is None:
             try:
-                data_name = varname.argname("data", func=self.__init__, vars_only=False)
+                data_name = varname.argname("data", func=self.__init__, vars_only=False)  # type: ignore[misc]
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
@@ -50,8 +54,8 @@ class DerivativeTool(
         self.data: xr.DataArray = parse_data(data)
         self._result: xr.DataArray = self.data.copy()
 
-        self.xdim: str = self.data.dims[1]
-        self.ydim: str = self.data.dims[0]
+        self.xdim: Hashable = self.data.dims[1]
+        self.ydim: Hashable = self.data.dims[0]
 
         self.xinc: float = abs(float(self.data[self.xdim][1] - self.data[self.xdim][0]))
         self.yinc: float = abs(float(self.data[self.ydim][1] - self.data[self.ydim][0]))
@@ -138,11 +142,11 @@ class DerivativeTool(
         if self.interp_group.isChecked():
             out = self.data.interp(
                 {
-                    self.xdim: np.linspace(
-                        *self.data[self.xdim][[0, -1]], self.nx_spin.value()
+                    self.xdim: np.linspace(  # type: ignore[call-overload]
+                        *self.data[self.xdim].values[[0, -1]], self.nx_spin.value()
                     ),
-                    self.ydim: np.linspace(
-                        *self.data[self.ydim][[0, -1]], self.ny_spin.value()
+                    self.ydim: np.linspace(  # type: ignore[call-overload]
+                        *self.data[self.ydim].values[[0, -1]], self.ny_spin.value()
                     ),
                 }
             )
@@ -221,7 +225,9 @@ class DerivativeTool(
             arg_dict = {
                 dim: f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
                 for dim, n in zip(
-                    [self.xdim, self.ydim], [self.nx_spin.value(), self.ny_spin.value()]
+                    [self.xdim, self.ydim],
+                    [self.nx_spin.value(), self.ny_spin.value()],
+                    strict=True,
                 )
             }
             lines.append(
@@ -240,6 +246,7 @@ class DerivativeTool(
                             np.round(s.value(), s.decimals())
                             for s in (self.sx_spin, self.sy_spin)
                         ],
+                        strict=True,
                     )
                 )
             }
@@ -310,7 +317,7 @@ def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 
-    qapp.setStyle("Fusion")
+    cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
 
     win = DerivativeTool(data, data_name=data_name)
     win.show()

@@ -59,11 +59,11 @@ def sample_plot(norms, labels, kw0, kw1, cmap):
         figsize=eplt.figwh(),
     )
 
-    for norm, label, k0, k1 in zip(norms, labels, kw0, kw1):
+    for norm, label, k0, k1 in zip(norms, labels, kw0, kw1, strict=True):
         axs[0].plot(x, norm(**k0, **k1)(x), label=label)
 
     bar_data = modulatedBarData(384, 256)
-    for i, (ax, norm, k1) in enumerate(zip(axs[1:], norms, kw1)):
+    for i, (ax, norm, k1) in enumerate(zip(axs[1:], norms, kw1, strict=True)):
         ax.plot(
             0.5,
             1,

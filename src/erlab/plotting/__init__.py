@@ -62,6 +62,10 @@ def load_igor_ct(fname: str, name: str) -> None:
 
     """
     file = pkgutil.get_data(__package__, "IgorCT/" + fname)
+
+    if file is None:
+        raise FileNotFoundError(f"Could not find file {fname}")
+
     if fname.endswith(".txt"):
         values = np.genfromtxt(io.StringIO(file.decode()))
     elif fname.endswith(".ibw"):

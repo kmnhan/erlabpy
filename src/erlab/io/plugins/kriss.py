@@ -3,19 +3,20 @@
 import os
 import re
 from collections.abc import Iterable
+from typing import ClassVar
 
 import erlab.io.utilities
 from erlab.io.plugins.da30 import DA30Loader
 
 
 class KRISSLoader(DA30Loader):
-    name: str = "kriss"
+    name = "kriss"
 
-    aliases: list[str] = ["KRISS"]
+    aliases = ("KRISS",)
 
-    coordinate_attrs: tuple[str, ...] = ("beta", "chi", "xi", "hv", "x", "y", "z")
+    coordinate_attrs = ("beta", "chi", "xi", "hv", "x", "y", "z")
 
-    additional_attrs: dict[str, str | int | float] = {"configuration": 4}
+    additional_attrs: ClassVar[dict] = {"configuration": 4}
 
     @property
     def name_map(self):
