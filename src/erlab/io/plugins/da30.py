@@ -15,6 +15,11 @@ from erlab.io.dataloader import LoaderBase
 from erlab.io.igor import load_experiment, load_wave
 
 
+class CasePreservingConfigParser(configparser.ConfigParser):
+    def optionxform(self, optionstr):
+        return str(optionstr)
+
+
 class DA30Loader(LoaderBase):
     name = "da30"
     aliases = ("DA30",)
@@ -108,7 +113,7 @@ def load_zip(
 
 
 def parse_ini(filename: str | os.PathLike) -> dict:
-    parser = configparser.ConfigParser(strict=False)
+    parser = CasePreservingConfigParser(strict=False)
     out = {}
     with open(filename) as f:
         parser.read_file(f)

@@ -93,7 +93,10 @@ class LoaderBase:
     """
 
     additional_attrs: ClassVar[dict[str, str | int | float]] = {}
-    """Additional attributes to be added to the data."""
+    """Additional attributes to be added to the data after loading."""
+
+    additional_coords: ClassVar[dict[str, str | int | float]] = {}
+    """Additional non-dimension coordinates to be added to the data after loading."""
 
     always_single: bool = True
     """
@@ -850,9 +853,10 @@ class LoaderBase:
             return [self.post_process(d) for d in data]
 
         elif isinstance(data, xr.Dataset):
-            for k, v in data.data_vars.items():
-                data[k] = self.post_process(v)
-            return data
+            return xr.Dataset(
+                {k: self.post_process(v) for k, v in data.data_vars.items()},
+                attrs=data.attrs,
+            )
 
     def process_keys(
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
@@ -890,6 +894,7 @@ class LoaderBase:
         data = data.assign_attrs(
             self.additional_attrs | {"data_loader_name": str(self.name)}
         )
+        data = data.assign_coords(self.additional_coords)
         return data
 
     @classmethod
