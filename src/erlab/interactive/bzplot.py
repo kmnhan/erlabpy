@@ -54,7 +54,7 @@ class BZPlotter(QtWidgets.QMainWindow):
 
             bvec = to_reciprocal(abc2avec(*params))
         else:
-            if not isinstance(params, npt.NDArray):
+            if not isinstance(params, np.ndarray):
                 raise TypeError("Lattice vectors must be a numpy array.")
             if params.shape != (3, 3):
                 raise TypeError("Lattice vectors must be a 3 by 3 numpy array.")

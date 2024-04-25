@@ -262,11 +262,11 @@ class KspaceTool(KspaceToolGUI):
         wait_dialog.setLayout(QtWidgets.QVBoxLayout())
         wait_dialog.layout().addWidget(QtWidgets.QLabel("Converting..."))
         wait_dialog.open()
-        itool = ImageTool(
+        self._itool = ImageTool(
             self.data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
         )
         wait_dialog.close()
-        itool.show()
+        self._itool.show()
 
     def copy_code(self):
         arg_dict = {}

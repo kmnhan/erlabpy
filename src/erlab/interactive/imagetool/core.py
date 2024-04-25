@@ -984,7 +984,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
                 if ev.isStart():
@@ -1015,7 +1015,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def mouseClickEvent(self, ev: mouseEvents.MouseClickEvent):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             super().mouseClickEvent(ev)
         else:
@@ -1025,7 +1025,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def hoverEvent(self, ev):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier
-            not in self.qapp.keyboardModifiers()
+            not in QtWidgets.QApplication.keyboardModifiers()
         ):
             super().hoverEvent(ev)
         else:
@@ -1377,7 +1377,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.cursor_lines.append({})
         self.cursor_spans.append({})
-        for c, s, ax in zip(cursors, spans, self.display_axis, strict=True):
+        for c, s, ax in zip(cursors, spans, self.display_axis, strict=False):
             self.cursor_lines[-1][ax] = c
             self.cursor_spans[-1][ax] = s
             self.addItem(c)

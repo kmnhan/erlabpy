@@ -23,6 +23,7 @@ import gc
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 
 
 def itool(
-    data: (Sequence[xr.DataArray | npt.NDArray] | xr.DataArray | npt.NDArray),
+    data: Sequence[xr.DataArray | npt.NDArray] | xr.DataArray | npt.NDArray,
     link: bool = False,
     link_colors: bool = True,
     execute: bool | None = None,
@@ -94,7 +95,7 @@ def itool(
     if isinstance(qapp, QtWidgets.QApplication):
         qapp.setStyle("Fusion")
 
-    if isinstance(data, npt.NDArray | xr.DataArray):
+    if isinstance(data, np.ndarray | xr.DataArray):
         data = cast(list[npt.NDArray | xr.DataArray], [data])
 
     itool_list = [ImageTool(d, **kwargs) for d in data]
