@@ -16,7 +16,6 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
-from erlab.interactive.kspace import KspaceTool, ktool
 
 
 def only_angles(method=None):
@@ -870,8 +869,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return out
 
-    def interactive(self, **kwargs) -> KspaceTool:
+    def interactive(self, **kwargs):
         """Open the interactive momentum space conversion tool."""
+        from erlab.interactive.kspace import ktool
+
         if self._obj.ndim < 3:
             raise ValueError("Interactive tool requires three-dimensional data.")
         return ktool(self._obj, **kwargs)

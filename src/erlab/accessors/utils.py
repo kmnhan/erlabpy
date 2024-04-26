@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 import erlab.plotting.erplot as eplt
-from erlab.interactive.imagetool import ImageTool, itool
 
 T = TypeVar("T")
 
@@ -93,7 +92,9 @@ class PlotAccessor(ERLabDataArrayAccessor):
 class ImageToolAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qshow` accessor for interactive visualization."""
 
-    def __call__(self, *args, **kwargs) -> ImageTool | list[ImageTool] | None:
+    def __call__(self, *args, **kwargs):
+        from erlab.interactive.imagetool import itool
+
         if len(self._obj.dims) >= 2:
             return itool(self._obj, *args, **kwargs)
         else:
