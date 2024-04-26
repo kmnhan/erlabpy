@@ -115,7 +115,11 @@ class LoaderBase:
 
     @property
     def name_map_reversed(self) -> dict[str, str]:
-        """A reversed version of the name_map dictionary."""
+        """A reversed version of the name_map dictionary.
+
+        This property is useful for mapping original names to new names.
+
+        """
         return self.reverse_mapping(self.name_map)
 
     @staticmethod
@@ -643,7 +647,7 @@ class LoaderBase:
             coord_sel.unobserve(_update_plot, "value")
 
             coord_sel.step = abs(scan_coords[1] - scan_coords[0])
-            coord_sel.max = 1e100  # To ensure max > min always
+            coord_sel.max = 1e100  # To ensure max > min before setting bounds
             coord_sel.min = scan_coords.min()
             coord_sel.max = scan_coords.max()
 
@@ -661,11 +665,11 @@ class LoaderBase:
             out.clear_output(wait=True)
             with out:
                 plot_data.qplot(ax=plt.gca())
-                # Remove automatic title from xarray
-                plt.title("")
+                plt.title("")  # Remove automatically generated title
 
                 # Add line at Fermi level if the data is 2D and has an energy dimension
                 if plot_data.ndim == 2 and "eV" in plot_data.dims:
+                    # Check if binding
                     if plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0:
                         eplt.fermiline(
                             orientation="h" if plot_data.dims[0] == "eV" else "v"
@@ -674,11 +678,13 @@ class LoaderBase:
                 show_inline_matplotlib_plots()
 
         def _next(_):
+            # Select next row
             idx = list(df.index).index(data_select.value)
             if idx + 1 < len(df.index):
                 data_select.value = list(df.index)[idx + 1]
 
         def _prev(_):
+            # Select previous row
             idx = list(df.index).index(data_select.value)
             if idx - 1 >= 0:
                 data_select.value = list(df.index)[idx - 1]
@@ -757,6 +763,9 @@ class LoaderBase:
         the list should contain only one file path and coordinates must be an empty
         dictionary.
 
+        The keys of the coordinates must be transformed to new names prior to returning
+        by using the mapping returned by the `name_map_reversed` property.
+
         Parameters
         ----------
         num
@@ -780,8 +789,11 @@ class LoaderBase:
     def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         """Infer the index for the given file name.
 
-        This method takes a file name and tries to infer the scan index from it. If the
-        index can be inferred, it is returned; otherwise, `None` should be returned.
+        This method takes a file name with the path and extension stripped, and tries to
+        infer the scan index from it. If the index can be inferred, it is returned along
+        with additional keyword arguments that should be passed to `load`. If the index
+        is not found, `None` should be returned for the index, and an empty dictionary
+        for additional keyword arguments.
 
         Parameters
         ----------
@@ -805,9 +817,10 @@ class LoaderBase:
         raise NotImplementedError("method must be implemented in the subclass")
 
     def generate_summary(self, data_dir: str | os.PathLike) -> pandas.DataFrame:
-        """Takes a path to a directory and summarizes the data in the directory to a
-        pandas DataFrame, much like a log file. This is useful for quickly inspecting
-        the contents of a directory.
+        """
+        Takes a path to a directory and summarizes the data in the directory to a pandas
+        DataFrame, much like a log file. This is useful for quickly inspecting the
+        contents of a directory.
 
         Parameters
         ----------
