@@ -827,11 +827,10 @@ def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
     return cax
 
 
-# TODO: fix colorbar size properly
 def nice_colorbar(
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
     mappable: matplotlib.cm.ScalarMappable | None = None,
-    width: float = 5.0,
+    width: float = 8.0,
     aspect: float = 5.0,
     pad: float = 3.0,
     minmax: bool = False,
@@ -900,9 +899,10 @@ def nice_colorbar(
                 ax = np.array(ax, dtype=object)
             bbox = matplotlib.transforms.Bbox.union(
                 [
-                    x.get_window_extent().transformed(
-                        x.figure.dpi_scale_trans.inverted()
-                    )
+                    x.get_position(original=True)
+                    .frozen()
+                    .transformed(x.figure.transFigure)
+                    .transformed(x.figure.dpi_scale_trans.inverted())
                     for x in ax.flat
                 ]
             )
@@ -912,7 +912,12 @@ def nice_colorbar(
             if fig is None:
                 raise RuntimeError("Axes is not attached to a figure")
 
-            bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+            bbox = (
+                ax.get_position(original=True)
+                .frozen()
+                .transformed(fig.transFigure)
+                .transformed(fig.dpi_scale_trans.inverted())
+            )
 
         if orientation == "horizontal":
             kwargs["anchor"] = (1, 1)
