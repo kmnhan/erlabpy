@@ -14,7 +14,7 @@ __all__ = [
 import functools
 import inspect
 from collections.abc import Callable, Sequence
-from typing import Any, TypedDict, no_type_check, ClassVar
+from typing import Any, ClassVar, TypedDict, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -125,16 +125,16 @@ class PolynomialFunction(DynamicFunction):
     def argnames(self) -> list[str]:
         return ["x"] + [f"c{i}" for i in range(self.degree + 1)]
 
-    def __call__(self, x, *coeffs, **params):
+    def __call__(self, x, *coeffs: float, **params):
         if len(coeffs) != self.degree + 1:
-            coeffs = [params[f"c{d}"] for d in range(self.degree + 1)]
+            coeffs = tuple(params[f"c{d}"] for d in range(self.degree + 1))
         if isinstance(x, np.ndarray):
             return np.polynomial.polynomial.polyval(x, coeffs)
         else:
-            coeffs = xr.DataArray(
+            coeffs_xr = xr.DataArray(
                 np.asarray(coeffs), coords={"degree": np.arange(self.degree + 1)}
             )
-            return xr.polyval(x, coeffs)
+            return xr.polyval(x, coeffs_xr)
 
 
 class MultiPeakFunction(DynamicFunction):
@@ -231,14 +231,14 @@ class MultiPeakFunction(DynamicFunction):
     @property
     def kwargs(self):
         kws = [
-            ("lin_bkg", 0),
-            ("const_bkg", 0),
+            ("lin_bkg", 0.0),
+            ("const_bkg", 0.0),
         ]
         if self.fd:
             kws += [
                 ("efermi", 0.0),  # fermi level
-                ("temp", 30),  # temperature
-                ("offset", 0),
+                ("temp", 30.0),  # temperature
+                ("offset", 0.0),
             ]
         if self.convolve:
             kws += [("resolution", 0.02)]

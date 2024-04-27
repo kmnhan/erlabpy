@@ -3,6 +3,7 @@
 __all__ = ["get_bz_edge", "plot_hex_bz"]
 
 import itertools
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,10 +13,10 @@ from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
 
-abbrv_kws = {
-    "facecolor": ["fc", "none"],
-    "linestyle": ["ls", "--"],
-    "linewidth": ["lw", 0.5],
+abbrv_kws: dict[str, tuple[str, Any]] = {
+    "facecolor": ("fc", "none"),
+    "linestyle": ("ls", "--"),
+    "linewidth": ("lw", 0.5),
 }
 
 
@@ -24,7 +25,7 @@ def get_bz_edge(
     reciprocal: bool = True,
     extend: tuple[int, ...] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Calculates the edge of the first Brillouin zone (BZ) from lattice vectors.
+    """Calculate the edge of the first Brillouin zone (BZ) from lattice vectors.
 
     Parameters
     ----------
@@ -117,9 +118,7 @@ def get_bz_edge(
 def plot_hex_bz(
     a=3.54, rotate=0.0, offset=(0.0, 0.0), reciprocal=True, ax=None, **kwargs
 ):
-    """
-    Plots a 2D hexagonal BZ overlay on the specified axes.
-    """
+    """Plot a 2D hexagonal BZ overlay on the specified axes."""
     kwargs.setdefault("zorder", 5)
     for k, v in abbrv_kws.items():
         kwargs[k] = kwargs.pop(k, kwargs.pop(*v))

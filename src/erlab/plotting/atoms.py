@@ -1,4 +1,5 @@
-"""
+"""Plot atoms.
+
 Classes and functions for plotting atoms and bonds in a crystal structure using
 matplotlib's 3D plotting capabilities.
 
@@ -26,7 +27,7 @@ __all__ = ["Atom3DCollection", "Bond3DCollection", "CrystalProperty"]
 
 
 def sunflower_sphere(n: int = 100) -> npt.NDArray[np.float64]:
-    """Returns n points on a sphere using the sunflower algorithm."""
+    """Return n points on a sphere using the sunflower algorithm."""
     indices = np.arange(0, n, dtype=float) + 0.5
 
     phi = np.arccos(1 - 2 * indices / n)
@@ -97,8 +98,11 @@ def projected_length_pos(ax: mpl_toolkits.mplot3d.Axes3D, length, position):
 
 
 def _zalpha(colors, zs):
-    """Modified from `mpl_toolkits.mplot3d.art3d` to modifies the brightness of the
-    color based on depth, rather than setting the transparency."""
+    """Set alpha based on zdepth.
+
+    Modified from `mpl_toolkits.mplot3d.art3d` to modifies the brightness of the
+    color based on depth, rather than setting the transparency.
+    """
     if len(colors) == 0 or len(zs) == 0:
         return np.zeros((0, 4))
     norm = plt.Normalize(min(zs), max(zs))
@@ -145,11 +149,11 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
         if self._offset_zordered is None:
             yield
         else:
-            old_offset = self._offsets
+            old_offset = self._offsets  # type: ignore[has-type]
             super().set_offsets(self._offset_zordered)
-            old_sizes = self._sizes
+            old_sizes = self._sizes  # type: ignore[has-type]
             super().set_sizes(
-                self._sizes[
+                self._sizes[  # type: ignore[has-type]
                     old_offset[:, 0].argsort()[
                         self._offset_zordered[:, 0].argsort().argsort()
                     ]
@@ -191,9 +195,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
 
 
 class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
-    """
-    A subclass of `mpl_toolkits.mplot3d.art3d.Line3DCollection` representing a
-    collection of 3D bonds.
+    """A collection of 3D lines that represents bonds in a crystal structure.
 
     Parameters
     ----------
@@ -255,10 +257,11 @@ class CrystalProperty:
         mask: Callable | None = None,
         r_factor: float = 0.4,
     ):
-        """
-        A class that stores the information required to plot a three dimensional crystal
-        structure. The crystal can be repeated along the lattice vectors, and can be
-        masked. Bonds can be added between atoms.
+        """Properties of a crystal structure for plotting.
+
+        Stores the information required to plot a three dimensional crystal structure.
+        The crystal can be repeated along the lattice vectors, and can be masked. Bonds
+        can be added between atoms.
 
         Parameters
         ----------
@@ -471,7 +474,6 @@ class CrystalProperty:
             plot the atoms.
 
         """
-
         if ax is None:
             ax = plt.gcf().add_subplot(projection="3d")
         ax = cast(mpl_toolkits.mplot3d.Axes3D, ax)

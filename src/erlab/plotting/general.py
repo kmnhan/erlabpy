@@ -166,7 +166,7 @@ class LabeledCursor(AxesWidget):
         self.needclear = False
 
     def clear(self, event):
-        """Internal event handler to clear the cursor."""
+        """Clear the cursor."""
         if self.ignore(event):
             return
         if self.useblit:
@@ -176,7 +176,7 @@ class LabeledCursor(AxesWidget):
         self.label.set_visible(False)
 
     def onmove(self, event):
-        """Internal event handler to draw the cursor when the mouse moves."""
+        """Draw the cursor when the mouse moves."""
         if self.ignore(event):
             return
         if not self.canvas.widgetlock.available(self):
@@ -256,14 +256,13 @@ def place_inset(
 
 
     """
-
     return _ez_inset(parent_axes, width, height, pad, loc, **kwargs)
 
 
 def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
-    """
-    Gets the extent of a :class:`xarray.DataArray` to be used in
-    :func:`matplotlib.pyplot.imshow`.
+    """Get the extent of a :class:`xarray.DataArray`.
+
+    The extent can be used as the `extent` argument in :func:`matplotlib.pyplot.imshow`.
 
     Parameters
     ----------
@@ -275,7 +274,6 @@ def array_extent(data: xr.DataArray) -> tuple[float, float, float, float]:
     x0, x1, y0, y1 : float
 
     """
-
     data_coords = tuple(data[dim].values for dim in data.dims)
     data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
     data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
@@ -303,7 +301,7 @@ def plot_array(
     func_args: dict | None = None,
     **improps,
 ) -> matplotlib.image.AxesImage:
-    """Plots a 2D :class:`xarray.DataArray` using :func:`matplotlib.pyplot.imshow`.
+    """Plot a 2D :class:`xarray.DataArray` using :func:`matplotlib.pyplot.imshow`.
 
     Parameters
     ----------
@@ -539,7 +537,7 @@ def gradient_fill(
     ax: matplotlib.axes.Axes | None = None,
     **kwargs,
 ) -> matplotlib.image.AxesImage:
-    """Applies a gradient fill to a line plot.
+    """Apply a gradient fill to a line plot.
 
     Parameters
     ----------
@@ -1001,7 +999,7 @@ def fermiline(
     orientation: Literal["h", "v"] = "h",
     **kwargs,
 ) -> matplotlib.lines.Line2D | MultipleLine2D:
-    """Plots a constant energy line to denote the Fermi level.
+    """Plot a constant energy line to denote the Fermi level.
 
     Parameters
     ----------

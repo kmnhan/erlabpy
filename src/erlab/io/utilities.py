@@ -13,12 +13,11 @@ from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
-
 import xarray as xr
 
 
 def showfitsinfo(path: str | os.PathLike):
-    """Prints raw metadata from a ``.fits`` file.
+    """Print raw metadata from a ``.fits`` file.
 
     Parameters
     ----------
@@ -42,7 +41,7 @@ def get_files(
     contains: str | None = None,
     notcontains: str | None = None,
 ) -> list[str]:
-    """Returns a list of files in a directory with the given extensions.
+    """Return a list of files in a directory with the given extensions.
 
     Parameters
     ----------
@@ -61,7 +60,6 @@ def get_files(
         List of files in the directory.
 
     """
-
     files = []
 
     for f in os.listdir(directory):
@@ -167,7 +165,7 @@ def save_as_hdf5(
     igor_compat: bool = True,
     **kwargs,
 ):
-    """Saves data in ``HDF5`` format.
+    """Save data in ``HDF5`` format.
 
     Parameters
     ----------
@@ -220,7 +218,7 @@ def save_as_hdf5(
 
 
 def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs):
-    """Saves data in ``netCDF4`` format.
+    """Save data in ``netCDF4`` format.
 
     Discards invalid ``netCDF4`` attributes and produces a warning.
 
@@ -241,8 +239,3 @@ def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs):
         encoding={var: {"zlib": True, "complevel": 5} for var in data.coords},
         **kwargs,
     )
-
-
-def save_as_fits():
-    # TODO
-    raise NotImplementedError

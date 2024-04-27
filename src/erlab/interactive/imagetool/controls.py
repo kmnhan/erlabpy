@@ -7,19 +7,21 @@ __all__ = [
     "ItoolCrosshairControls",
 ]
 
-from typing import TYPE_CHECKING
+import types
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
-import types
+
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
 from erlab.interactive.utilities import BetterSpinBox
 
 if TYPE_CHECKING:
-    import xarray as xr
     from collections.abc import Mapping
+
+    import xarray as xr
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -138,10 +140,10 @@ class ItoolControlsBase(QtWidgets.QWidget):
         return self.slicer_area.current_cursor
 
     def initialize_layout(self):
-        self.setLayout(QtWidgets.QHBoxLayout(self))
-        self.layout().setContentsMargins(0, 0, 0, 0)
-
-        self.layout().setSpacing(3)
+        layout = QtWidgets.QHBoxLayout(self)
+        self.setLayout(layout)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
 
     def initialize_widgets(self):
         for ctrl in self.sub_controls:
@@ -182,19 +184,19 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea):
-        """
-        Initially, the goal was to be able to control multiple `ImageSlicerArea`s
-        with a single control widget, so the control widgets were designed with easy
-        connection and disconnection of signals in mind. However, this has become
-        largely unnecessary since we now have `SlicerLinkProxy` as a translation layer
-        between multiple `ImageSlicerArea`s with individual control widgets. Hence, this
-        method will remain unused for the time being.
+        """Set the `ImageSlicerArea` instance for the control widget.
+
+        Initially, the goal was to be able to control multiple `ImageSlicerArea`s with a
+        single control widget, so the control widgets were designed with easy connection
+        and disconnection of signals in mind. However, this has become largely
+        unnecessary since we now have `SlicerLinkProxy` as a translation layer between
+        multiple `ImageSlicerArea`s with individual control widgets. Hence, this method
+        will remain unused for the time being.
 
         Also, in principle, most of the control widgets along with the menu bar should
         be re-written to use QActions...
 
         """
-
         # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
         try:
             self.disconnect_signals()
@@ -305,12 +307,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_layouts[0].addWidget(self.btn_snap, 0, 3, 1, 1)
             self.values_layouts[0].addWidget(self.cb_cursors, 0, 0, 1, 1)
             self.values_layouts[0].addWidget(self.spin_dat, 0, 4, 1, 1)
-        self.layout().addWidget(self.values_groups[0])
+        cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[0])
 
         # info widgets
         self.label_dim = tuple(
-            QtWidgets.QPushButton(grp, checkable=True) for grp in self.values_groups[1:]
+            QtWidgets.QPushButton(grp) for grp in self.values_groups[1:]
         )
+        for lab in self.label_dim:
+            lab.setCheckable(True)
+
         self.spin_idx = tuple(
             BetterSpinBox(
                 grp,
@@ -364,7 +369,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.values_layouts[i + 1].addWidget(self.spin_idx[i], 0, 2, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
 
-            self.layout().addWidget(self.values_groups[i + 1])
+            cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[i + 1])
 
     def _transpose_axes(self, idx):
         if self.data.ndim == 4:
@@ -558,10 +563,11 @@ class ColorControls(ItoolControlsBase):
         self.btn_contrast.toggled.connect(self.update_colormap)
         self.btn_zero.toggled.connect(self.update_colormap)
 
-        self.layout().addWidget(self.btn_reverse)
-        self.layout().addWidget(self.btn_contrast)
-        self.layout().addWidget(self.btn_zero)
-        self.layout().addWidget(self.btn_lock)
+        layout = cast(QtWidgets.QLayout, self.layout())
+        layout.addWidget(self.btn_reverse)
+        layout.addWidget(self.btn_contrast)
+        layout.addWidget(self.btn_zero)
+        layout.addWidget(self.btn_lock)
 
     def update(self):
         self.btn_reverse.blockSignals(True)
@@ -614,9 +620,10 @@ class ItoolColormapControls(ItoolControlsBase):
             self.setLayout(QtWidgets.QVBoxLayout(self))
         else:
             self.setLayout(QtWidgets.QHBoxLayout(self))
-        self.layout().setContentsMargins(0, 0, 0, 0)
 
-        self.layout().setSpacing(3)
+        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
 
     def initialize_widgets(self):
         super().initialize_widgets()
@@ -633,9 +640,10 @@ class ItoolColormapControls(ItoolControlsBase):
 
         self.misc_controls = self.add_control(ColorControls(self))
 
-        self.layout().addWidget(self.cb_colormap)
-        self.layout().addWidget(self.gamma_widget)
-        self.layout().addWidget(self.misc_controls)
+        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout.addWidget(self.cb_colormap)
+        layout.addWidget(self.gamma_widget)
+        layout.addWidget(self.misc_controls)
 
     def update(self):
         super().update()
@@ -666,9 +674,10 @@ class ItoolBinningControls(ItoolControlsBase):
 
     def initialize_layout(self):
         self.setLayout(QtWidgets.QGridLayout(self))
-        self.layout().setContentsMargins(0, 0, 0, 0)
 
-        self.layout().setSpacing(3)
+        layout = cast(QtWidgets.QGridLayout, self.layout())
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
 
     def initialize_widgets(self):
         super().initialize_widgets()
@@ -698,11 +707,12 @@ class ItoolBinningControls(ItoolControlsBase):
             toolTip="Apply for all cursors",
         )
 
+        layout = cast(QtWidgets.QGridLayout, self.layout())
         for i in range(self.data.ndim):
-            self.layout().addWidget(self.labels[i], 0, i, 1, 1)
-            self.layout().addWidget(self.spins[i], 1, i, 1, 1)
-        self.layout().addWidget(self.reset_btn, 2, 0, 1, 1)
-        self.layout().addWidget(self.all_btn, 2, 1, 1, 1)
+            layout.addWidget(self.labels[i], 0, i, 1, 1)
+            layout.addWidget(self.spins[i], 1, i, 1, 1)
+        layout.addWidget(self.reset_btn, 2, 0, 1, 1)
+        layout.addWidget(self.all_btn, 2, 1, 1, 1)
         # for spin in self.spins:
         # spin.setMinimumWidth(60)
 

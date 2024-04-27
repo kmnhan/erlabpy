@@ -1,5 +1,5 @@
 """
-.. deprecated:: 0.1
+.. deprecated:: 0.1.
 
     This module is deprecated, and is only kept for reference purposes.
     Use `erlab.interactive.imagetool` instead.
@@ -30,7 +30,7 @@ __all__ = ["mpl_itool"]
 
 
 def qt_style_names():
-    """Return a list of styles, default platform style first"""
+    """Return a list of styles, default platform style first."""
     default_style_name = QtWidgets.QApplication.style().objectName().lower()
     result = []
     for style in QtWidgets.QStyleFactory.keys():
@@ -46,7 +46,7 @@ def change_style(style_name):
 
 
 def colormap_to_QPixmap(name: str, h=64):
-    """Convert matplotlib colormap to a 256-by-`h` QPixmap"""
+    """Convert matplotlib colormap to a 256-by-`h` QPixmap."""
     cmap = plt.colormaps[name]
     cmap_arr = cmap(np.tile(np.linspace(0, 1, 256), (h, 1))) * 255
     img = QtGui.QImage(
@@ -1049,9 +1049,10 @@ class ImageToolNavBar(NavigationToolbar2QT):
         NavigationToolbar2QT.__init__(self, canvas, parent, coordinates=coordinates)
 
     def _icon(self, name):
-        """
-        Construct a `.QIcon` from an image file *name*, including the extension
-        and relative to Matplotlib's "images" data directory.
+        """Construct a `.QIcon` from an image file name.
+
+        The name must include the extension and be given relative to Matplotlib's
+        "images" data directory.
         """
         name = name.replace(".png", "")
         icons_dict = {

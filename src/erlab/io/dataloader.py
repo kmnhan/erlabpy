@@ -1,4 +1,4 @@
-r"""Base functionality for implementing data loaders
+r"""Base functionality for implementing data loaders.
 
 This module provides a base class `LoaderBase` for implementing data loaders. Data
 loaders are plugins used to load data from various file formats. Each data loader that
@@ -48,15 +48,15 @@ def _is_monotonic(arr: npt.NDArray) -> np.bool_:
 
 
 class ValidationError(Exception):
-    """This exception is raised when the loaded data fails validation checks."""
+    """Raised when the loaded data fails validation checks."""
 
 
 class ValidationWarning(UserWarning):
-    """This warning is issued when the loaded data fails validation checks."""
+    """Issued when the loaded data fails validation checks."""
 
 
 class LoaderNotFoundError(Exception):
-    """This exception is raised when a loader is not found in the registry."""
+    """Raised when a loader is not found in the registry."""
 
     def __init__(self, key: str):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
@@ -225,7 +225,6 @@ class LoaderBase:
 
         Examples
         --------
-
         >>> formatter(np.array([0.1, 0.15, 0.2]))
         '0.1→0.2 (0.05, 3)'
 
@@ -428,10 +427,11 @@ class LoaderBase:
         display: bool = True,
         **kwargs,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
-        """
-        Takes a path to a directory and summarizes the data in the directory to a table
-        `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
-        the contents of a directory.
+        """Summarize the data in the given directory.
+
+        Takes a path to a directory and summarizes the data in the directory to a table,
+        much like a log file. This is useful for quickly inspecting the contents of a
+        directory.
 
         The dataframe is formatted using the style from :meth:`get_styler
         <erlab.io.dataloader.LoaderBase.get_styler>` and displayed in the IPython shell.
@@ -465,7 +465,6 @@ class LoaderBase:
             DataFrame will be returned.
 
         """
-
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(f"Directory {data_dir} not found")
 
@@ -543,6 +542,9 @@ class LoaderBase:
             kwargs["display"] = False
             df = cast(pandas.DataFrame, self.summarize(**kwargs))
 
+        self._isummarize(df)
+
+    def _isummarize(self, df: pandas.DataFrame):
         import matplotlib.pyplot as plt
         from ipywidgets import (
             HTML,
@@ -600,13 +602,18 @@ class LoaderBase:
                         if n_scans > 1 and not full:
                             full_button.disabled = False
 
-                self._temp_data = self.load(path, single=not full)
+                out = self.load(path, single=not full)
+                if isinstance(out, xr.DataArray):
+                    self._temp_data = out
+                del out
 
                 data_info.value = _format_data_info(series)
+            if self._temp_data is None:
+                return
 
             if self._temp_data.ndim == 4:
                 # If the data is 4D, average over the last dimension, making it 3D
-                self._temp_data = self._temp_data.mean(self._temp_data.dims[-1])
+                self._temp_data = self._temp_data.mean(str(self._temp_data.dims[-1]))
 
             if self._temp_data.ndim == 3:
                 dim_sel.unobserve(_update_sliders, "value")
@@ -817,7 +824,8 @@ class LoaderBase:
         raise NotImplementedError("method must be implemented in the subclass")
 
     def generate_summary(self, data_dir: str | os.PathLike) -> pandas.DataFrame:
-        """
+        """Generate a dataframe summarizing the data in the given directory.
+
         Takes a path to a directory and summarizes the data in the directory to a pandas
         DataFrame, much like a log file. This is useful for quickly inspecting the
         contents of a directory.
@@ -1019,7 +1027,7 @@ class RegistryBase:
 
     @classmethod
     def instance(cls) -> Self:
-        """Returns the registry instance."""
+        """Return the registry instance."""
         return cls()
 
 
@@ -1126,7 +1134,6 @@ class LoaderRegistry(RegistryBase):
           >>> dat_ssrl_2 = erlab.io.load(...)
 
         """
-
         if loader is None and data_dir is None:
             raise ValueError(
                 "At least one of loader or data_dir must be specified in the context"

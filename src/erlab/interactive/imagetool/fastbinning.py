@@ -1,6 +1,7 @@
-"""
-This module provides a fast, parallelized version of nanmean that supports multiple axes
-based on numba. Enables efficient real-time multidimensional binning.
+"""Fast parallelized averaging for multidimensional arrays.
+
+This module provides a numba-based fast, parallelized version of nanmean that supports
+multiple axes. This enables efficient real-time multidimensional binning.
 
 """
 
@@ -317,7 +318,7 @@ nanmean_funcs = {
 def fast_nanmean(
     a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int] | None = None
 ) -> npt.NDArray[np.float32 | np.float64] | np.float64:
-    """A fast, parallelized arithmetic mean for floating point arrays that ignores NaNs.
+    """Compute the arithmetic mean for floating point arrays while ignoring NaNs.
 
     Parameters
     ----------
@@ -358,8 +359,9 @@ def fast_nanmean(
 def _fast_nanmean_skipcheck(
     a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int]
 ) -> npt.NDArray[np.float32 | np.float64] | np.float64:
-    """A version of `fast_nanmean` with near-zero overhead. Meant for internal use.
+    """Compute the arithmetic mean for floating point arrays while ignoring NaNs.
 
+    This is a version of `fast_nanmean` with near-zero overhead meant for internal use.
     Strict assumptions on the input parameters allow skipping some checks.
 
     Parameters

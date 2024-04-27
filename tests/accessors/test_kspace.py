@@ -1,8 +1,8 @@
 import pytest
 import xarray
 import xarray.testing
-from erlab.io.exampledata import generate_data_angles
 from erlab.analysis.kspace import AxesConfiguration
+from erlab.io.exampledata import generate_data_angles
 
 
 @pytest.fixture()

@@ -1,5 +1,5 @@
 """
-.. deprecated:: 0.1
+.. deprecated:: 0.1.
 
     This module is deprecated, and is only kept for reference purposes.
     Use `erlab.interactive.imagetool` instead.
@@ -243,7 +243,7 @@ class BorderlessGroupBox(QtWidgets.QWidget):
 
 
 def qt_style_names():
-    """Return a list of styles, default platform style first"""
+    """Return a list of styles, default platform style first."""
     default_style_name = QtWidgets.QApplication.style().objectName().lower()
     result = []
     for style in QtWidgets.QStyleFactory.keys():
@@ -504,7 +504,7 @@ class ItoolDock(Dock):
 
 
 def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
-    """Creates a QtGui.QPixmap from a mathtext string.
+    """Create a QtGui.QPixmap from a mathtext string.
 
     Parameters
     ----------
@@ -520,11 +520,9 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
 
     Returns
     -------
-
     A QtGui.QPixmap object.
 
     """
-
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=9)
@@ -545,7 +543,7 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
 def get_svg_label(
     s: str, outfile: QtCore.QTemporaryFile, prop=None, dpi=300, **text_kw
 ):
-    """Creates an SVG image from a mathtext string.
+    """Create an SVG image from a mathtext string.
 
     Parameters
     ----------
@@ -567,7 +565,6 @@ def get_svg_label(
         Name of the output file containing the rendered SVG.
 
     """
-
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=12)
@@ -887,9 +884,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
     sigIndexChanged(indices, values)
 
     """
-
-    # !TODO: ctrl + A to view all
-    # !TODO: auto adjust limits on transpose
 
     sigDataChanged = QtCore.Signal(object)  #: :meta private:
     sigIndexChanged = QtCore.Signal(list, list)  #: :meta private:
@@ -1424,7 +1418,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
     def set_labels(self, labels=None):
-        """labels: list or tuple of str"""
+        """labels: list or tuple of str."""
         if labels is None:
             labels = self.data_dims
         # 0: default, 1: svg, 2: pixmap
@@ -1797,7 +1791,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return mods
 
     def _get_mouse_datapos(self, plot, pos):
-        """Returns mouse position in data coords"""
+        """Return mouse position in data coords."""
         mouse_point = plot.vb.mapSceneToView(pos)
         return mouse_point.x(), mouse_point.y()
 
@@ -2313,7 +2307,6 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
                    vertex coordinates.
     ============== =========================================================
     """
-
     if path is True:
         connected = True
     np.nan_to_num(data, copy=False)
@@ -3054,7 +3047,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def setPopupMinimumWidthForItems(self):
         view = self.view()
         fm = self.fontMetrics()
-        maxWidth = max([fm.width(self.itemText(i)) for i in range(self.count())])
+        maxWidth = max(fm.width(self.itemText(i)) for i in range(self.count()))
         if maxWidth:
             view.setMinimumWidth(maxWidth)
 

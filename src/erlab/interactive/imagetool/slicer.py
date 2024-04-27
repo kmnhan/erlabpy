@@ -15,7 +15,7 @@ from qtpy import QtCore
 from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Hashable
+    from collections.abc import Hashable, Sequence
 
     import xarray as xr
 
@@ -229,12 +229,12 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def limits(self) -> tuple[float, float]:
-        """Returns the global minima and maxima of the data."""
+        """Return the global minima and maxima of the data."""
         return self.nanmin, self.nanmax
 
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
-        """Validates a given :class:`xarray.DataArray`.
+        """Validate a given :class:`xarray.DataArray`.
 
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
         exists) as the first two (or three) dimensions. Then, checks the data for

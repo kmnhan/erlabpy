@@ -71,8 +71,7 @@ class _TempFig:
 
 
 class Minuit(iminuit.Minuit):
-    """A subclass of `iminuit.Minuit` that provides additional functionality for fitting
-    `lmfit` library models.
+    """`iminuit.Minuit` with additional functionality.
 
     This class extends the functionality of the `iminuit.Minuit` class by providing a
     convenient method `from_lmfit` to initialize the `Minuit` object from an
@@ -82,7 +81,6 @@ class Minuit(iminuit.Minuit):
 
     Examples
     --------
-
     >>> import lmfit.models
     >>> import numpy as np
     >>> from erlab.analysis.fit.minuit import Minuit

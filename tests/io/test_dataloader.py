@@ -64,7 +64,7 @@ def test_loader():
     for i, beta in enumerate(beta_coords):
         erlab.io.save_as_hdf5(
             make_data(beta=beta, temp=20.0, hv=50.0),
-            filename=f"{tmp_dir.name}/data_001_S{str(i+1).zfill(3)}.h5",
+            filename=f"{tmp_dir.name}/data_001_S{str(i + 1).zfill(3)}.h5",
             igor_compat=False,
         )
 

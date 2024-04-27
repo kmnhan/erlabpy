@@ -6,7 +6,7 @@ import re
 import sys
 import types
 import warnings
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -19,6 +19,8 @@ from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -35,7 +37,7 @@ __all__ = [
 ]
 
 
-def parse_data(data):
+def parse_data(data) -> xr.DataArray:
     if isinstance(data, xr.Dataset):
         raise TypeError(
             "input argument data must be a xarray.DataArray or a "
@@ -60,7 +62,7 @@ def array_rect(data):
 
 
 def copy_to_clipboard(content: str | list[str]) -> str:
-    """Convenience function for clipboard handling.
+    """Copy content to the clipboard.
 
     Parameters
     ----------
@@ -71,7 +73,6 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     -------
     str
         The copied content.
-
     """
     if isinstance(content, list):
         content = "\n".join(content)
@@ -89,7 +90,7 @@ def process_arg(arg):
 
 
 def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
-    """Generates the string for a Python function call.
+    """Generate the string for a Python function call.
 
     The first argument is the name of the function, and subsequent arguments are
     passed as positional arguments. Keyword arguments are also supported.
@@ -137,7 +138,7 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
 
 
 def gen_function_code(copy: bool = True, **kwargs):
-    r"""Copies the Python code for function calls to the clipboard.
+    r"""Copy the Python code for function calls to the clipboard.
 
     The result can be copied to your clipboard in a form that can be pasted into an
     interactive Python session or Jupyter notebook cell.
@@ -228,7 +229,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.setDecimals(decimals)
 
         self._value = value
-        self._lastvalue = None
+        self._lastvalue: float | None = None
         self._min = -np.inf
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
@@ -399,7 +400,9 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._lastvalue, self._value = self._value, val
 
         self.valueChanged.emit(self.value())
-        self.lineEdit().setText(self.text())
+        line = self.lineEdit()
+        if line is not None:
+            line.setText(self.text())
         self.textChanged.emit(self.text())
 
     def fixup(self, input):
@@ -424,12 +427,18 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return (ret, strn, pos)
 
     def editingFinishedEvent(self):
-        self.setValue(self.valueFromText(self.lineEdit().text()))
+        line = self.lineEdit()
+        if line is not None:
+            self.setValue(self.valueFromText(line.text()))
 
     def keyPressEvent(self, evt):
-        if evt == QtGui.QKeySequence.StandardKey.Copy:
-            if (not evt.isAutoRepeat()) and self.lineEdit().hasSelectedText():
-                copy_to_clipboard(self.lineEdit().selectedText())
+        line = self.lineEdit()
+        if line is not None:
+            if evt == QtGui.QKeySequence.StandardKey.Copy:
+                if (not evt.isAutoRepeat()) and line.hasSelectedText():
+                    copy_to_clipboard(line.selectedText())
+            else:
+                super().keyPressEvent(evt)
         else:
             super().keyPressEvent(evt)
 
@@ -438,7 +447,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
     def _get_offset(self):
-        spin = QtWidgets.QDoubleSpinBox(self, minimum=0, maximum=0)
+        spin = QtWidgets.QDoubleSpinBox(self)
+        spin.setRange(0, 0)
         w = (
             spin.minimumSizeHint().width()
             - QtGui.QFontMetrics(spin.font())
@@ -510,14 +520,13 @@ class BetterAxisItem(pg.AxisItem):
                 #     r"10<sup>\1\2</sup>",
                 #     f"(×{1.0 / self.autoSIPrefixScale:.3G})",
                 # )#.replace("-", "−")
+                search = re.search(
+                    r"1E\+?(\-?)0?(\d?\d)",
+                    f"{1.0 / self.autoSIPrefixScale:.3G}",
+                )
+                if search is not None:
+                    units = "".join(search.groups())
 
-                try:
-                    units = "".join(
-                        re.search(
-                            r"1E\+?(\-?)0?(\d?\d)",
-                            f"{1.0 / self.autoSIPrefixScale:.3G}",
-                        ).groups()
-                    )
                     for k, v in zip(
                         ("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-"),
                         ("⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁻"),
@@ -525,7 +534,7 @@ class BetterAxisItem(pg.AxisItem):
                     ):
                         units = units.replace(k, v)
                     units = f"10{units}"
-                except AttributeError:
+                else:
                     units = f"{1.0 / self.autoSIPrefixScale:.3G}"
                 units = f"(×{units})"
 
@@ -547,7 +556,7 @@ class BetterAxisItem(pg.AxisItem):
         self.labelUnits = units or ""
         self.labelUnitPrefix = unitPrefix or ""
         if len(args) > 0:
-            self.labelStyle = args
+            self.labelStyle: dict = args
         # Account empty string and `None` for units and text
         visible = bool(text or units)
         if text == units == "":
@@ -679,9 +688,10 @@ class FittingParameterWidget(QtWidgets.QWidget):
 
 
 class xImageItem(BetterImageItem):
-    """
-    :class:`pyqtgraph.ImageItem` with additional functionality, including
-    :class:`xarray.DataArray` support and auto limits based on histogram analysis.
+    """:class:`pyqtgraph.ImageItem` with additional functionality.
+
+    This class provides :class:`xarray.DataArray` support and auto limits based on
+    histogram analysis.
 
     Parameters
     ----------
@@ -700,7 +710,7 @@ class xImageItem(BetterImageItem):
 
     def __init__(self, image: npt.NDArray | None = None, **kwargs):
         super().__init__(image, **kwargs)
-        self.cut_tolerance = (30, 30)
+        self.cut_tolerance = [30, 30]
         self.data_array: None | xr.DataArray = None
 
     def set_cut_tolerance(self, cut_tolerance):
@@ -749,6 +759,7 @@ class xImageItem(BetterImageItem):
         self.setImage(img, rect=rect, **kargs)
         self.data_array = data
 
+    @no_type_check
     def getMenu(self):
         if self.menu is None:
             if not self.removable:
@@ -808,7 +819,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     Examples
     --------
-
     >>> ParameterGroup(
         **{
             "a": QtWidgets.QDoubleSpinBox(range=(0, 1), singleStep=0.01, value=0.2),
@@ -911,7 +921,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         **kwargs,
     ):
         """
-        Initializes the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
+        Initialize the :class:`PySide6.QtWidgets.QWidget` corresponding to ``qwtype``.
 
         Parameters
         ----------
@@ -1001,9 +1011,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
     def set_values(self, **kwargs):
         for k, v in kwargs.items():
-            self.widgets[k].blockSignals(True)
-            self.widgets[k].setValue(v)
-            self.widgets[k].blockSignals(False)
+            widget = self.widgets[k]
+            widget.blockSignals(True)
+            if hasattr(widget, "setValue"):
+                widget.setValue(v)
+            widget.blockSignals(False)
+
         self.sigParameterChanged.emit(kwargs)
 
     def widget_value(self, widget: str | QtWidgets.QWidget):
@@ -1148,6 +1161,7 @@ class ROIControls(ParameterGroup):
         x1, y1 = x0 + w, y0 + h
         return x0, y0, x1, y1
 
+    @no_type_check
     def update_pos(self):
         self.widgets["x0"].setMaximum(self.widgets["x1"].value())
         self.widgets["y0"].setMaximum(self.widgets["y1"].value())
@@ -1177,12 +1191,13 @@ class ROIControls(ParameterGroup):
             vb.setMouseMode(self._state_old)
             vb.rbScaleBox.setPen(pg.mkPen((255, 255, 100), width=1))
             vb.rbScaleBox.setBrush(pg.mkBrush(255, 255, 0, 100))
-            vb.setCursor(QtGui.QCursor(QtCore.Qt.ArrowCursor))
+
+            vb.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.ArrowCursor))
             return
 
-        vb.setCursor(QtGui.QCursor(QtCore.Qt.CrossCursor))
-        self._state_old = vb.state["mouseMode"]
-        self._drag_evt_old = vb.mouseDragEvent
+        vb.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
+        self._state_old: int = vb.state["mouseMode"]
+        self._drag_evt_old: MouseDragEvent = vb.mouseDragEvent
 
         vb.setMouseMode(pg.ViewBox.RectMode)
         vb.rbScaleBox.setPen(pg.mkPen((255, 255, 255), width=1))
@@ -1256,7 +1271,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         *args,
         **kwargs,
     ):
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         self.qapp.setStyle("Fusion")
@@ -1273,10 +1288,12 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
         self.controlgroup = QtWidgets.QWidget()
         if layout == "vertical":
-            self.layout = QtWidgets.QVBoxLayout(self._main)
-            self.controls = QtWidgets.QHBoxLayout(self.controlgroup)
+            layout = QtWidgets.QVBoxLayout(self._main)
+            self.controls: QtWidgets.QBoxLayout = QtWidgets.QHBoxLayout(
+                self.controlgroup
+            )
         elif layout == "horizontal":
-            self.layout = QtWidgets.QHBoxLayout(self._main)
+            layout = QtWidgets.QHBoxLayout(self._main)
             self.controls = QtWidgets.QVBoxLayout(self.controlgroup)
         else:
             raise ValueError("Layout must be 'vertical' or 'horizontal'.")
@@ -1302,14 +1319,14 @@ class AnalysisWindow(QtWidgets.QMainWindow):
             # "refresh_all",
         ]:
             setattr(self, n, getattr(self.aw, n))
-        self.layout.addWidget(self.aw)
-        self.layout.addWidget(self.controlgroup)
+        layout.addWidget(self.aw)
+        layout.addWidget(self.controlgroup)
 
-        self.layout.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
-        self.layout.setSpacing(0)
+        layout.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
+        layout.setSpacing(0)
         self.controlgroup.setContentsMargins(QtCore.QMargins(0, 0, 0, 0))
         if data_is_input:
-            self.set_input(data)
+            self.aw.set_input(data)
 
     def __post_init__(self, execute=None):
         self.show()
@@ -1340,7 +1357,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
 
 class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
-    """AnalysisWidgetBase
+    """AnalysisWidgetBase.
 
     Parameters
     ----------
@@ -1372,7 +1389,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             raise ValueError("Orientation must be 'vertical' or 'horizontal'.")
         self.cut_to_data = cut_to_data
 
-        self.input = None
+        self.input: None | xr.DataArray = None
 
         self.initialize_layout(num_ax)
 
@@ -1422,10 +1439,10 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
     def set_input(self, data=None):
         if data is not None:
             self.input = parse_data(data)
-        self.images[0].setDataArray(
-            self.input,
-            cut_to_data=self.cut_to_data in ("in", "both"),
-        )
+            self.images[0].setDataArray(
+                self.input,
+                cut_to_data=self.cut_to_data in ("in", "both"),
+            )
 
     def add_roi(self, i):
         self.roi[i] = pg.ROI(
@@ -1447,7 +1464,8 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
 
 class ComparisonWidget(AnalysisWidgetBase):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, num_ax=2, **kwargs)
+        kwargs["num_ax"] = 2
+        super().__init__(*args, **kwargs)
         self.prefunc = lambda x: x
         self.mainfunc = lambda x: x
         self.prefunc_only_values = False
@@ -1457,8 +1475,10 @@ class ComparisonWidget(AnalysisWidgetBase):
 
     def call_prefunc(self, x):
         if self.prefunc_only_values:
-            x = np.asarray(x)
-        return self.prefunc(x, **self.prefunc_kwargs)
+            xval = np.asarray(x)
+        else:
+            xval = x
+        return self.prefunc(xval, **self.prefunc_kwargs)
 
     def set_input(self, data=None):
         if data is not None:
@@ -1466,12 +1486,20 @@ class ComparisonWidget(AnalysisWidgetBase):
 
         self.input = self.call_prefunc(self.input_)
         if self.prefunc_only_values:
+            if not isinstance(self.input, np.ndarray):
+                raise TypeError(
+                    "Pre-function must return a numpy array when `only_values` is True."
+                )
             self.images[0].setImage(
                 np.ascontiguousarray(self.input),
                 rect=array_rect(self.input_),
                 cut_to_data=self.cut_to_data in ("in", "both"),
             )
         else:
+            if not isinstance(self.input, xr.DataArray):
+                raise TypeError(
+                    "Pre-function must return a DataArray when `only_values` is False."
+                )
             self.images[0].setDataArray(
                 self.input,
                 cut_to_data=self.cut_to_data in ("in", "both"),

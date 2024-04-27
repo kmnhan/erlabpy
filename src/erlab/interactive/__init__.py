@@ -1,5 +1,5 @@
 """
-Interactive plotting based on Qt and pyqtgraph
+Interactive plotting based on Qt and pyqtgraph.
 
 .. currentmodule:: erlab.interactive
 

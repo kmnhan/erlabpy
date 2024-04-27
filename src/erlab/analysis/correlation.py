@@ -1,6 +1,6 @@
 """Macros for correlation analysis."""
 
-__all__ = ["acf2", "acf2stack", "match_dims", "xcorr1d"]
+__all__ = ["acf2", "acf2stack", "xcorr1d"]
 
 
 import itertools
@@ -48,9 +48,7 @@ def nanacf(arr, *args, **kwargs):
 
 
 def acf2(arr, mode: str = "full", method: str = "fft"):
-    """
-    Calculate the autocorrelation function (ACF) of a two-dimensional array including
-    nan values.
+    """Calculate the autocorrelation function (ACF) of a 2D array including nans.
 
     Parameters
     ----------
@@ -152,18 +150,9 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
     return out
 
 
-def match_dims(da1: xr.DataArray, da2: xr.DataArray):
-    """
-    Returns the second array interpolated with the coordinates of the first array,
-    making them the same size.
-
-    """
-    return da2.interp({dim: da1[dim] for dim in da2.dims})
-
-
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
-    """Performs 1-dimensional correlation analysis on `xarray.DataArray` s."""
-    in2 = match_dims(in1, in2)
+    """Perform 1-dimensional correlation analysis on `xarray.DataArray` s."""
+    in2 = in2.interp_like(in1)
     out = in1.copy(deep=True)
     xind = scipy.signal.correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]

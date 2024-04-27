@@ -64,30 +64,31 @@ from matplotlib.typing import ColorType
 
 
 class InversePowerNorm(matplotlib.colors.Normalize):
-    r"""
+    r"""Inverse power-law normalization.
+
     Linearly map a given value to the 0-1 range and then apply an inverse power-law
     normalization over that range.
 
-    For values :math:`x`, `matplotlib.colors.PowerNorm` calculates
-    :math:`x^\gamma`, whereas `InversePowerNorm` calculates :math:`1-x^{1/\gamma}`.
-    This provides higher contrast for values closer to ``vmin``.
+    For values :math:`x`, `matplotlib.colors.PowerNorm` calculates :math:`x^\gamma`,
+    whereas `InversePowerNorm` calculates :math:`1-x^{1/\gamma}`. This provides higher
+    contrast for values closer to ``vmin``.
 
     Parameters
     ----------
     gamma
         Power law normalization parameter. If equal to 1, the colormap is linear.
     vmin, vmax
-        If ``vmin`` and/or ``vmax`` is not given, they are initialized from the
-        minimum and maximum value, respectively, of the first input
-        processed; i.e., ``__call__(A)`` calls ``autoscale_None(A)``
+        If ``vmin`` and/or ``vmax`` is not given, they are initialized from the minimum
+        and maximum value, respectively, of the first input processed; i.e.,
+        ``__call__(A)`` calls ``autoscale_None(A)``
     clip
-        If ``True`` values falling outside the range ``[vmin, vmax]``,
-        are mapped to 0 or 1, whichever is closer, and masked values are
-        set to 1.  If ``False`` masked values remain masked.
+        If ``True`` values falling outside the range ``[vmin, vmax]``, are mapped to 0
+        or 1, whichever is closer, and masked values are set to 1.  If ``False`` masked
+        values remain masked.
 
-        Clipping silently defeats the purpose of setting the over, under,
-        and masked colors in a colormap, so it is likely to lead to
-        surprises; therefore the default is ``clip=False``.
+        Clipping silently defeats the purpose of setting the over, under, and masked
+        colors in a colormap, so it is likely to lead to surprises; therefore the
+        default is ``clip=False``.
 
     """
 
@@ -108,6 +109,7 @@ class InversePowerNorm(matplotlib.colors.Normalize):
         result, is_scalar = self.process_value(value)
 
         self.autoscale_None(result)
+
         gamma = self.gamma
         vmin, vmax = self.vmin, self.vmax
         if vmin > vmax:
@@ -271,9 +273,7 @@ class TwoSlopePowerNorm(matplotlib.colors.TwoSlopeNorm):
         self._func_i = _diverging_powernorm_inv
 
     def __call__(self, value, clip=None):
-        """
-        Map value to the interval [0, 1]. The clip argument is unused.
-        """
+        """Map value to the interval [0, 1]. The clip argument is unused."""
         result, is_scalar = self.process_value(value)
 
         self.autoscale_None(result)
@@ -344,9 +344,7 @@ class CenteredPowerNorm(matplotlib.colors.CenteredNorm):
         self._func_i = _diverging_powernorm_inv
 
     def __call__(self, value, clip=None):
-        """
-        Map value to the interval [0, 1].
-        """
+        """Map value to the interval [0, 1]."""
         if clip is None:
             clip = self.clip
 
@@ -462,7 +460,7 @@ class CenteredInversePowerNorm(CenteredPowerNorm):
 def get_mappable(
     ax: matplotlib.axes.Axes, image_only: bool = False, silent: bool = False
 ) -> matplotlib.cm.ScalarMappable | None:
-    """Gets the `matplotlib.cm.ScalarMappable` from a given `matplotlib.axes.Axes`.
+    """Get the `matplotlib.cm.ScalarMappable` from a given `matplotlib.axes.Axes`.
 
     Parameters
     ----------
@@ -553,7 +551,7 @@ def proportional_colorbar(
     **kwargs,
 ) -> matplotlib.colorbar.Colorbar:
     """
-    Replaces the current colorbar or creates a new colorbar with proportional spacing.
+    Replace the current colorbar or creates a new colorbar with proportional spacing.
 
     The default behavior of colorbars in `matplotlib` does not support colors
     proportional to data in different norms. This function circumvents this behavior.
@@ -759,7 +757,7 @@ class InsetAxesLocator:
             matplotlib.transforms.Bbox.from_bounds(*self._size_to_bounds(ax)),
             self._transAxes
             + matplotlib.transforms.ScaledTranslation(
-                *self.pads, ax.figure.dpi_scale_trans
+                self.pads[0], self.pads[1], ax.figure.dpi_scale_trans
             )
             - ax.figure.transSubfigure,
         )
@@ -839,7 +837,7 @@ def nice_colorbar(
     ticklabels: Sequence[str] | None = None,
     **kwargs,
 ):
-    r"""Creates a colorbar with fixed width and aspect to ensure uniformity of plots.
+    r"""Create a colorbar with fixed width and aspect to ensure uniformity of plots.
 
     Parameters
     ----------
@@ -868,7 +866,6 @@ def nice_colorbar(
         The created colorbar.
 
     """
-
     is_horizontal = orientation == "horizontal"
 
     if ax is None:
@@ -1233,10 +1230,9 @@ def prominent_color(im: matplotlib.image._ImageBase | matplotlib.collections.Qua
 def image_is_light(
     im: matplotlib.image._ImageBase | matplotlib.collections.QuadMesh,
 ) -> bool:
-    """
-    Determines if an image is *light* or *dark* by checking whether the prominent color
-    is closer to white than black.
+    """Determine if an image is *light* or *dark*.
 
+    Checks whether the prominent color is closer to white than black.
     """
     return close_to_white(prominent_color(im))
 

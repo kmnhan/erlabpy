@@ -1,5 +1,6 @@
-"""
-Point-in-polygon algorithm adapted from the `CGAL C++ library
+"""Point-in-polygon algorithm.
+
+The implementation has been adapted from the `CGAL C++ library
 <https://doc.cgal.org/5.3.2/Polygon/index.html>`_.
 
 """
@@ -58,7 +59,7 @@ def _get_argmax_all(arr):
 
 @numba.njit(nogil=True, cache=True)
 def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int:
-    """Returns the index of the leftmost point of a polygon.
+    """Return the index of the leftmost point of a polygon.
 
     In case of a tie, the point with the smallest y-coordinate is taken.
 
@@ -78,7 +79,7 @@ def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> in
 
 @numba.njit(nogil=True, cache=True)
 def right_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]):
-    """Returns the index of the rightmost point of a polygon.
+    """Return the index of the rightmost point of a polygon.
 
     In case of a tie, the point with the largest y-coordinate is taken.
 
@@ -136,7 +137,7 @@ def which_side_in_slab(point, low, high, points):
 def bounded_side_bool(
     points: npt.NDArray[np.float64], point: tuple[float, float], boundary: bool = True
 ) -> bool:
-    """Computes whether a point lies inside a polygon using `bounded_side`.
+    """Compute whether a point lies inside a polygon using `bounded_side`.
 
     Parameters
     ----------
@@ -166,7 +167,7 @@ def bounded_side_bool(
 
 @numba.njit(nogil=True, cache=True)
 def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]) -> Side:
-    """Computes if a point is inside, outside, or on the boundary of a polygon.
+    """Compute if a point is inside, outside, or on the boundary of a polygon.
 
     The polygon is defined by the sequence of points [first,last). Being inside is
     defined by the odd-even rule. If the point is on a polygon edge, a special value is
@@ -194,7 +195,6 @@ def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]) ->
     the bottom vertex is not. (Segments are half-closed).
 
     """
-
     last = len(points) - 1
     if last < 2:
         return Side.ON_UNBOUNDED_SIDE

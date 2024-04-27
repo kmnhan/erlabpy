@@ -71,9 +71,7 @@ highlight_language = "python3"
 
 # based on numpy doc/source/conf.py
 def linkcode_resolve(domain, info):
-    """
-    Determine the URL corresponding to Python object
-    """
+    """Determine the URL corresponding to Python object."""
     if domain != "py":
         return None
 
@@ -214,8 +212,9 @@ def top_level(children, data):
 
 
 class APSStyle(pybtex.style.formatting.unsrt.Style):
-    """
-    APS style for BibTeX formatting, adapted from the conf.py file of the `mitiq
+    """APS style for BibTeX formatting.
+
+    Adapted from the conf.py file of the `mitiq
     library<https://github.com/unitaryfund/mitiq>`_.
     """
 

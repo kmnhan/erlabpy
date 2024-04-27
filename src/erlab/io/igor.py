@@ -1,10 +1,10 @@
 import os
+from typing import Any
 
 import h5netcdf
 import igor2.binarywave
 import igor2.packed
 import igor2.record
-from typing import Any
 import numpy as np
 import xarray as xr
 
@@ -67,7 +67,7 @@ def load_experiment(
     recursive: bool = False,
     **kwargs,
 ) -> xr.Dataset:
-    """Loads waves from an igor experiment (`.pxp`) file.
+    """Load waves from an igor experiment (`.pxp`) file.
 
     Parameters
     ----------
@@ -145,6 +145,7 @@ def load_wave(
     data_dir
         The directory where the wave file is located. This parameter is only used if
         `wave` is a string or `PathLike` object. If `None`, `wave` must be a valid path.
+
     Returns
     -------
     xarray.DataArray

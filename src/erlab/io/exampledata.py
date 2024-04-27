@@ -2,7 +2,8 @@
 
 __all__ = ["generate_data", "generate_data_angles"]
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
+from typing import cast
 
 import numpy as np
 import scipy.ndimage
@@ -224,7 +225,6 @@ def generate_data_angles(
         The generated data with coordinates for alpha, beta, and eV.
 
     """
-
     if isinstance(angrange, dict):
         alpha = np.linspace(*angrange["alpha"], shape[0])
         beta = np.linspace(*angrange["beta"], shape[1])
@@ -375,7 +375,7 @@ def generate_gold_edge(
         data[:] = rng.poisson(data).astype(float)
 
     data = erlab.analysis.image.gaussian_filter(
-        data, sigma={"eV": Eres, "alpha": angres}
+        data, sigma=cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
     )
 
     if noise:

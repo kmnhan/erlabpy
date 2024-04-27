@@ -132,10 +132,14 @@ indent-width = 4
 
 [tool.ruff.lint]
 select = [
+    "F",
     "E4",
     "E7",
     "E9",
-    "F",
+    "W",
+    "I",
+    "D",
+    "UP",
     "B",
     "C4",
     "FA",
@@ -146,21 +150,28 @@ select = [
     "RSE",
     "TID",
     "TCH",
+    "INT",
+    # "ARG",
     # "PTH",
     # "FIX",
     "TRY",
     "FLY",
     "NPY",
     "PERF",
+    # "FURB",
     "RUF",
 ]
 ignore = [
     "ICN001", # Import conventions
     "TRY003", # Long exception messages
+    "D100", # Missing docstring in public module
+    "D101", # Missing docstring in public class
+    "D102", # Missing docstring in public method
+    "D103", # Missing docstring in public function
+    "D104", # Missing docstring in public package
+    "D105", # Missing docstring in magic method
 ]
-extend-select = [
-    "UP", # pyupgrade
-]
+extend-select = []
 allowed-confusables = [
     "×",
     "−",
@@ -178,6 +189,9 @@ allowed-confusables = [
     "ν",
     "α",
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -201,12 +215,15 @@ warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 allow_redefinition = true
+check_untyped_defs = false
 exclude = [
     "^docs/",
     "^tests/",
     "_deprecated/",
     "interactive/fermiedge.py",
-    "io/",
+    "interactive/bzplot.py",
+    "interactive/curvefittingtool.py",
+    "io/plugins/",
 ]
 
 [[tool.mypy.overrides]]

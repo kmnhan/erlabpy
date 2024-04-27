@@ -101,17 +101,17 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         view = self.view()
         fm = self.fontMetrics()
         maxWidth = max(
-            [fm.boundingRect(self.itemText(i)).width() for i in range(self.count())]
+            fm.boundingRect(self.itemText(i)).width() for i in range(self.count())
         )
-        if maxWidth:
+        if maxWidth and view is not None:
             view.setMinimumWidth(maxWidth)
 
     @QtCore.Slot()
     def nextIndex(self):
         self.wheelEvent(
             QtGui.QWheelEvent(
-                QtCore.QPoint(0, 0),
-                QtCore.QPoint(0, 0),
+                QtCore.QPointF(0, 0),
+                QtCore.QPointF(0, 0),
                 QtCore.QPoint(0, 0),
                 QtCore.QPoint(0, -15),
                 QtCore.Qt.MouseButton.NoButton,
@@ -125,8 +125,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def previousIndex(self):
         self.wheelEvent(
             QtGui.QWheelEvent(
-                QtCore.QPoint(0, 0),
-                QtCore.QPoint(0, 0),
+                QtCore.QPointF(0, 0),
+                QtCore.QPointF(0, 0),
                 QtCore.QPoint(0, 0),
                 QtCore.QPoint(0, 15),
                 QtCore.Qt.MouseButton.NoButton,
@@ -597,7 +597,7 @@ def pg_colormap_names(
 
 
 def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
-    """Gets a :class:`pyqtgraph.ColorMap` from its name.
+    """Get a :class:`pyqtgraph.ColorMap` from its name.
 
     Parameters
     ----------
@@ -673,7 +673,7 @@ def pg_colormap_powernorm(
 def pg_colormap_to_QPixmap(
     cmap: str | pg.ColorMap, w: int = 64, h: int = 16, skipCache: bool = True
 ) -> QtGui.QPixmap:
-    """Converts a :class:`pyqtgraph.ColorMap` to a ``w``-by-``h`` QPixmap thumbnail.
+    """Convert a :class:`pyqtgraph.ColorMap` to a ``w``-by-``h`` QPixmap thumbnail.
 
     Parameters
     ----------
@@ -690,7 +690,6 @@ def pg_colormap_to_QPixmap(
     PySide6.QtGui.QPixmap
 
     """
-
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=skipCache)
     # cmap_arr = np.reshape(cmap.getColors()[:, None], (1, -1, 4), order='C')

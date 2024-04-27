@@ -1,6 +1,8 @@
-"""
-Base class for implementing loaders that can load data acquired with Scienta Omicron's
-DA30L analyzer using ``SES.exe``. Must be subclassed to implement the actual loading.
+"""Loader for Scienta Omicron DA30L analyzer with SES.
+
+Provides a base class for implementing loaders that can load data acquired with Scienta
+Omicron's DA30L analyzer using ``SES.exe``. Must be subclassed to implement the actual
+loading.
 """
 
 import configparser
@@ -8,6 +10,7 @@ import os
 import tempfile
 import zipfile
 from typing import ClassVar
+
 import numpy as np
 import xarray as xr
 
