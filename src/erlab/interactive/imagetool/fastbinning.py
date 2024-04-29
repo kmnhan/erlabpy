@@ -5,16 +5,25 @@ multiple axes. This enables efficient real-time multidimensional binning.
 
 """
 
-__all__ = ["fast_nanmean", "fast_nanmean_skipcheck"]
+__all__ = ["NANMEAN_FUNCS", "fast_nanmean", "fast_nanmean_skipcheck"]
 
-from collections.abc import Collection
+import importlib
+from collections.abc import Callable, Collection
 
 import numba
 import numba.core.registry
 import numba.typed
-import numbagg
 import numpy as np
 import numpy.typing as npt
+
+if importlib.util.find_spec("numbagg"):
+    import numbagg
+
+    _general_nanmean_func: Callable = numbagg.nanmean
+else:
+    _general_nanmean_func = np.nanmean
+
+# _SIG_N_M: List of signatures that reduces from N to M dimensions.
 
 _SIG_2_1 = [
     numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 2, "C")),
@@ -274,7 +283,7 @@ def _nanmean_4_123(a: npt.NDArray[np.float32 | np.float64]) -> npt.NDArray[np.fl
     return output
 
 
-nanmean_funcs = {
+NANMEAN_FUNCS: dict[int, dict[int | frozenset[int], Callable]] = {
     2: {
         0: _nanmean_2_0,
         1: _nanmean_2_1,
@@ -312,7 +321,7 @@ nanmean_funcs = {
         frozenset({0, 2, 3}): _nanmean_4_023,
         frozenset({1, 2, 3}): _nanmean_4_123,
     },
-}
+}  #: Mapping from array dimensions to axis combinations to corresponding functions.
 
 
 def fast_nanmean(
@@ -335,14 +344,15 @@ def fast_nanmean(
 
     Notes
     -----
-    - Parallelization is only applied for :code:`N`-dimensional arrays with :code:`N <=
-      4` and :code:`len(axis) < N`.
+    - Parallelization is only applied for ``N``-dimensional arrays with ``N <= 4`` and
+      ``len(axis) < N``.
 
-    - For bigger :code:`N`, :obj:`numbagg.nanmean` is used.
+    - For calculating the average of a flattened array (``axis = None`` or ``len(axis)
+      == N``), the `numba` implemenation of `numpy.nanmean` is used.
 
-    - For calculating the average of a flattened array (:code:`axis = None` or
-      :code:`len(axis) == N`), the :obj:`numba` implemenation of :obj:`numpy.nanmean` is
-      used.
+    - For bigger ``N``, ``numbagg.nanmean`` is used if `numbagg
+      <https://github.com/numbagg/numbagg>`_ is installed. Otherwise, the calculation
+      falls back to `numpy.nanmean`.
 
     - This function does not keep the input dimensions, i.e., the output is squeezed.
 
@@ -354,14 +364,16 @@ def fast_nanmean(
     if a.ndim == 1 or axis is None:
         return _nanmean_all(a)
     elif a.ndim > 4:
-        return np.ascontiguousarray(numbagg.nanmean(a, axis))  # type: ignore[arg-type]
+        return np.ascontiguousarray(
+            _general_nanmean_func(a.astype(np.float64), axis), dtype=a.dtype
+        )
     if isinstance(axis, Collection):
         if len(axis) == a.ndim:
             return _nanmean_all(a)
         axis = frozenset(x % a.ndim for x in axis)
     else:
         axis = axis % a.ndim
-    return nanmean_funcs[a.ndim][axis](a).astype(a.dtype)
+    return NANMEAN_FUNCS[a.ndim][axis](a).astype(a.dtype)
 
 
 def fast_nanmean_skipcheck(
@@ -370,7 +382,8 @@ def fast_nanmean_skipcheck(
     """Compute the mean for specific floating point arrays while ignoring NaNs.
 
     This is a version of `fast_nanmean` with near-zero overhead meant for internal use.
-    Strict assumptions on the input parameters allow skipping some checks.
+    Strict assumptions on the input parameters allow skipping some checks. Failure to
+    meet these assumptions may lead to undefined behavior.
 
     Parameters
     ----------
@@ -391,4 +404,4 @@ def fast_nanmean_skipcheck(
         if len(axis) == a.ndim:
             return _nanmean_all(a)
         axis = frozenset(axis)
-    return nanmean_funcs[a.ndim][axis](a).astype(a.dtype)
+    return NANMEAN_FUNCS[a.ndim][axis](a).astype(a.dtype)

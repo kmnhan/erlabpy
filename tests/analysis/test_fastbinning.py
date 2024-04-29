@@ -1,9 +1,9 @@
 import numpy as np
-from erlab.interactive.imagetool.fastbinning import fast_nanmean, nanmean_funcs
+from erlab.interactive.imagetool.fastbinning import NANMEAN_FUNCS, fast_nanmean
 
 
 def test_fast_nanmean():
-    for nd, funcs in nanmean_funcs.items():
+    for nd, funcs in NANMEAN_FUNCS.items():
         x = np.random.RandomState(42).randn(*((10,) * nd))
         x64 = x.astype(np.float64)
         x32 = x.astype(np.float32)

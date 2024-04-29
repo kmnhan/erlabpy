@@ -138,7 +138,7 @@ reflected in the package without having to reinstall it. Before installing:
 
    .. code-block:: sh
 
-     pip install -e . --config-settings editable_mode=compat
+     pip install -e ".[dev]" --config-settings editable_mode=compat
 
 
 Updating the editable installation

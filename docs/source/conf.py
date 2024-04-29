@@ -130,7 +130,7 @@ autodoc_default_options = {
 }
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
-autodoc_type_aliases = {}
+# autodoc_type_aliases = {}
 autodoc_typehints_format = "short"
 autodoc_preserve_defaults = True
 autodoc_inherit_docstrings = False

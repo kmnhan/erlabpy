@@ -11,6 +11,8 @@ conda environment, you can install ERLabPy with the conda command line tool: ::
 
   conda install -c conda-forge erlab
 
+Add any `optional dependencies`_ you want to install to the command above.
+
 .. hint::
 
   If you are using macOS, you might experience degraded performance with the
@@ -31,7 +33,14 @@ conda environment, you can install ERLabPy with the conda command line tool: ::
 
 If you don’t use conda, you can install ERLabPy with pip: ::
 
-  pip install erlab
+  python -m pip install erlab
+
+Optional dependency groups can be installed with the following commands: ::
+
+  python -m pip install erlab[viz]       # Install optional dependencies for visualization
+  python -m pip install erlab[perf]      # Install optional dependencies for performance
+  python -m pip install erlab[misc]      # Install miscellaneous optional dependencies
+  python -m pip install erlab[complete]  # Install all optional dependencies
 
 If you wish to install ERLabPy from source, see the :doc:`contributing`.
 
@@ -70,6 +79,47 @@ select the appropriate library based on what is installed.
 
 See the :doc:`user-guide/index` to start using ERLabPy!
 
+.. _optional dependencies:
+
+Optional dependencies
+---------------------
+
+The following packages are optional dependencies that are not installed by default. They
+are only used in specific functions, or is not used at all but is listed just for
+convenience.
+
+.. list-table::
+    :header-rows: 1
+    :stub-columns: 1
+    :widths: auto
+
+    * - Package
+      - Description
+    * - `csaps <https://github.com/espdev/csaps>`_
+      - Multidimensional smoothing splines
+    * - `ipywidgets <https://github.com/jupyter-widgets/ipywidgets>`_
+      - Interactive widgets
+    * - `hvplot <https://github.com/holoviz/hvplot>`_ and `bokeh
+        <https://github.com/bokeh/bokeh>`_
+      - Interactive plotting
+    * - `cmasher <https://cmasher.readthedocs.io>`_,
+        `cmocean <https://matplotlib.org/cmocean/>`_, and
+        `colorcet <https://colorcet.holoviz.org>`_
+      - More colormaps!
+    * - `numbagg <https://github.com/numbagg/numbagg>`_ and `bottleneck
+        <https://github.com/pydata/bottleneck>`_
+      - Fast multidimensional aggregation, accelerates xarray
+
+For a full list of dependencies and optional dependencies, take a look at the
+``[project]`` and ``[project.optional-dependencies]`` section in `pyproject.toml
+<https://github.com/kmnhan/erlabpy/blob/main/pyproject.toml>`_:
+
+.. literalinclude:: ../../pyproject.toml
+   :language: toml
+   :start-at: dependencies = [
+   :end-before: [project.urls]
+
+
 Notes on compatibility
 ----------------------
 
@@ -83,35 +133,3 @@ Notes on compatibility
   excluding the following modules: ::
 
     %aimport -erlab.io.dataloader -erlab.accessors
-
-Optional dependencies
----------------------
-
-The following packages are optional dependencies that are not installed by
-default. They are used in only specific functions, or is not used at all but is
-listed just for convenience.
-
-.. list-table::
-    :header-rows: 1
-    :stub-columns: 1
-    :widths: auto
-
-    * - Package
-      - Description
-    * - `csaps <https://github.com/espdev/csaps>`_
-      - Multidimensional smoothing splines
-    * - `hvplot <https://github.com/holoviz/hvplot>`_ and `bokeh
-        <https://github.com/bokeh/bokeh>`_
-      - Interactive plotting
-    * - `cmasher <https://cmasher.readthedocs.io>`_,
-        `cmocean <https://matplotlib.org/cmocean/>`_, and
-        `colorcet <https://colorcet.holoviz.org>`_
-      - More colormaps!
-
-For a full list of dependencies and optional dependencies, take a look at the ``[project]`` and ``[project.optional-dependencies]`` section in
-`pyproject.toml <https://github.com/kmnhan/erlabpy/blob/main/pyproject.toml>`_:
-
-.. literalinclude:: ../../pyproject.toml
-   :language: toml
-   :start-at: dependencies = [
-   :end-before: [project.urls]

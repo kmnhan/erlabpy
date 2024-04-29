@@ -8,6 +8,7 @@
 
 import colorsys
 import enum
+import importlib
 import sys
 import weakref
 from itertools import chain, compress
@@ -15,7 +16,6 @@ from time import perf_counter
 
 import matplotlib.mathtext
 import numba
-import numbagg
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
@@ -38,6 +38,12 @@ from erlab.interactive.utilities import parse_data, xImageItem
 # pg.setConfigOption('background', 'w')
 # pg.setConfigOption('foreground', 'k')
 
+if importlib.util.find_spec("numbagg"):
+    import numbagg
+
+    _general_nanmean_func = numbagg.nanmean
+else:
+    _general_nanmean_func = np.nanmean
 
 __all__ = ["itool_", "pg_itool"]
 
@@ -1691,7 +1697,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 + (self._get_bin_slice(axis + 1),)
             ].squeeze(axis=axis)
         else:
-            return numbagg.nanmean(
+            return _general_nanmean_func(
                 self.data_vals_T[
                     (slice(None),) * (axis % self.data_ndim)
                     + (self._get_bin_slice(axis + 1),)
@@ -1705,11 +1711,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
         slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
         return self._block_slice_avg(avg_axis, slices)
         # self._slice_block = self._block_slicer(avg_axis, slices)
-        # return numbagg.nanmean(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
+        # return _general_nanmean_func(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
 
     def _block_slice_avg(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
-        return numbagg.nanmean(
+        return _general_nanmean_func(
             self.data_vals_T[
                 tuple(
                     slices[axis.index(d)] if d in axis else slice(None)
