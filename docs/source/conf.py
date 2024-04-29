@@ -121,23 +121,20 @@ def linkcode_resolve(domain, info):
 autosummary_generate = True
 autosummary_generate_overwrite = True
 
-autodoc_inherit_docstrings = False
-autodoc_typehints = "description"
-autodoc_typehints_format = "short"
 autodoc_class_signature = "mixed"
-autodoc_member_order = "bysource"
+autodoc_member_order = "groupwise"
 autodoc_default_options = {
     "members": True,
     "undoc-members": True,
-    # "exclude-members":("sigDataChanged",),
     "show-inheritance": False,
 }
+autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
+autodoc_type_aliases = {}
+autodoc_typehints_format = "short"
+autodoc_preserve_defaults = True
+autodoc_inherit_docstrings = False
 
-# autodoc_type_aliases = {
-# "numpy.float64": "float",
-# "float64": "float",
-# }
 
 # -- Napoleon settings -------------------------------------------------------
 
@@ -147,17 +144,26 @@ napoleon_numpy_docstring = True
 # napoleon_include_private_with_doc = False
 napoleon_include_special_with_doc = True
 # napoleon_use_admonition_for_examples = False
-# napoleon_use_admonition_for_notes = False
+napoleon_use_admonition_for_notes = True
 # napoleon_use_admonition_for_references = False
-# napoleon_use_ivar = False
+napoleon_use_ivar = True
 napoleon_use_param = True
+napoleon_use_keyword = False
 # napoleon_use_rtype = True
 napoleon_preprocess_types = True
-# napoleon_type_aliases = {
-#     "array-like": "ndarray <numpy.ndarray>",
-#     "numpy.float64": "float",
-#     "float64": "float",
-# }
+
+napoleon_type_aliases = {
+    "np.float32": "float32",
+    "numpy.float32": "float32",
+    "np.float64": "float64",
+    "numpy.float64": "float64",
+    "xr.DataArray": "xarray.DataArray",
+    "array-like": "`array-like <numpy.typing.ArrayLike>`",
+    "array_like": "`array-like <numpy.typing.ArrayLike>`",
+    "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
+    "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
+    "RGBAColorType": "`RGBAColorType <matplotlib.typing.RGBAColorType>`",
+}
 napoleon_attr_annotations = True
 napoleon_custom_sections = [("Signals", "params_style")]
 
@@ -464,14 +470,14 @@ html_theme_options: dict[str, object] = {
             "class": "",
         },
     ],
-    "light_css_variables": {
-        "color-brand-primary": "#6d50bf",
-        "color-brand-content": "#6d50bf",
-    },
-    "dark_css_variables": {
-        "color-brand-primary": "#a180ff",
-        "color-brand-content": "#a180ff",
-    },
+    # "light_css_variables": {
+    #     "color-brand-primary": "#6d50bf",
+    #     "color-brand-content": "#6d50bf",
+    # },
+    # "dark_css_variables": {
+    #     "color-brand-primary": "#a180ff",
+    #     "color-brand-content": "#a180ff",
+    # },
 }
 
 # -- LaTeX options -----------------------------------------------------------

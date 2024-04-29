@@ -1,9 +1,12 @@
+"""Widgets for controlling `ImageSlicerArea`."""
+
 from __future__ import annotations
 
 __all__ = [
-    "ColorControls",
     "ItoolBinningControls",
+    "ItoolColorControls",
     "ItoolColormapControls",
+    "ItoolControlsBase",
     "ItoolCrosshairControls",
 ]
 
@@ -531,7 +534,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
 
 
-class ColorControls(ItoolControlsBase):
+class ItoolColorControls(ItoolControlsBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -638,7 +641,7 @@ class ItoolColormapControls(ItoolControlsBase):
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
         )
 
-        self.misc_controls = self.add_control(ColorControls(self))
+        self.misc_controls = self.add_control(ItoolColorControls(self))
 
         layout = cast(QtWidgets.QBoxLayout, self.layout())
         layout.addWidget(self.cb_colormap)

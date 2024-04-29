@@ -5,7 +5,7 @@ multiple axes. This enables efficient real-time multidimensional binning.
 
 """
 
-__all__ = ["fast_nanmean"]
+__all__ = ["fast_nanmean", "fast_nanmean_skipcheck"]
 
 from collections.abc import Collection
 
@@ -318,7 +318,7 @@ nanmean_funcs = {
 def fast_nanmean(
     a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int] | None = None
 ) -> npt.NDArray[np.float32 | np.float64] | np.float64:
-    """Compute the arithmetic mean for floating point arrays while ignoring NaNs.
+    """Compute the mean for floating point arrays while ignoring NaNs.
 
     Parameters
     ----------
@@ -333,14 +333,22 @@ def fast_nanmean(
     numpy.ndarray or float
         The calculated mean. The output array is always C-contiguous.
 
-    Note
-    ----
-    Parallelization is only applied for :code:`N`-dimensional arrays with :code:`N <= 4`
-    and :code:`len(axis) < N`. For bigger :code:`N`, :obj:`numbagg.nanmean` is used. For
-    calculating the average of a flattened array (:code:`axis = None` or
-    :code:`len(axis) == N`), the :obj:`numba` implemenation of :obj:`numpy.nanmean` is
-    used. This function does not keep the input dimensions, i.e., the output is
-    squeezed.
+    Notes
+    -----
+    - Parallelization is only applied for :code:`N`-dimensional arrays with :code:`N <=
+      4` and :code:`len(axis) < N`.
+
+    - For bigger :code:`N`, :obj:`numbagg.nanmean` is used.
+
+    - For calculating the average of a flattened array (:code:`axis = None` or
+      :code:`len(axis) == N`), the :obj:`numba` implemenation of :obj:`numpy.nanmean` is
+      used.
+
+    - This function does not keep the input dimensions, i.e., the output is squeezed.
+
+    - For single precision input, the calculation is performed in double precision and
+      converted back to single precision. This may lead to different results compared to
+      `numpy.nanmean`.
 
     """
     if a.ndim == 1 or axis is None:
@@ -356,10 +364,10 @@ def fast_nanmean(
     return nanmean_funcs[a.ndim][axis](a).astype(a.dtype)
 
 
-def _fast_nanmean_skipcheck(
+def fast_nanmean_skipcheck(
     a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int]
 ) -> npt.NDArray[np.float32 | np.float64] | np.float64:
-    """Compute the arithmetic mean for floating point arrays while ignoring NaNs.
+    """Compute the mean for specific floating point arrays while ignoring NaNs.
 
     This is a version of `fast_nanmean` with near-zero overhead meant for internal use.
     Strict assumptions on the input parameters allow skipping some checks.
@@ -367,10 +375,10 @@ def _fast_nanmean_skipcheck(
     Parameters
     ----------
     a
-        A numpy array of floats. :code:`a.ndim` must be one of 2, 3, and 4.
+        A numpy array of floats. ``a.ndim`` must be one of 2, 3, and 4.
     axis
         Axis or iterable of axis along which the means are computed. All elements must
-        be nonnegative integers that are less than or equal to :code:`a.ndim`, i.e.,
+        be nonnegative integers that are less than or equal to ``a.ndim``, i.e.,
         negative indexing is not allowed.
 
     Returns

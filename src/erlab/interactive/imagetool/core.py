@@ -115,7 +115,8 @@ def link_slicer(
     steps: bool = False,
     color: bool = False,
 ):
-    """Decorate methods that should be synced across multiple `ImageSlicerArea`s.
+    """
+    Decorate methods that should be synced across multiple `ImageSlicerArea` instances.
 
     Parameters
     ----------

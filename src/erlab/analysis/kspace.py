@@ -48,16 +48,16 @@ def _kperp_func(k_tot_sq, kx, ky):
 
 
 def kz_func(kinetic_energy, inner_potential, kx, ky):
-    r"""Calculate :math:`k_z`.
+    r"""Calculate the out-of-plane momentum.
 
-    :math:`k_z` is computed from the given kinetic energy, inner potential, :math:`k_x`,
-    and :math:`k_y` by
+    :math:`k_z` is computed from the given kinetic energy :math:`E_k`, inner potential
+    :math:`V_0`, and in-plane momenta :math:`k_x`, and :math:`k_y` by
 
     .. math::
 
         k_z = \sqrt{k^2 - k_x^2 - k_y^2 + \frac{2 m_e V_0}{\hbar^2}}
 
-    where :math:`k = \frac{\sqrt{2 m_e E_k}}{\hbar}`.
+    where :math:`k =\sqrt{2 m_e E_k}/\hbar`.
     """
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     k_perp_sq = k_tot**2 - kx**2 - ky**2

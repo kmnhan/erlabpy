@@ -149,11 +149,11 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
         if self._offset_zordered is None:
             yield
         else:
-            old_offset = self._offsets  # type: ignore[has-type]
+            old_offset = self._offsets
             super().set_offsets(self._offset_zordered)
-            old_sizes = self._sizes  # type: ignore[has-type]
+            old_sizes = self._sizes
             super().set_sizes(
-                self._sizes[  # type: ignore[has-type]
+                self._sizes[
                     old_offset[:, 0].argsort()[
                         self._offset_zordered[:, 0].argsort().argsort()
                     ]

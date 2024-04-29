@@ -60,7 +60,7 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms
 import numpy as np
 import numpy.typing as npt
-from matplotlib.typing import ColorType
+from matplotlib.typing import ColorType, RGBColorType
 
 
 class InversePowerNorm(matplotlib.colors.Normalize):
@@ -630,9 +630,6 @@ def proportional_colorbar(
     kwargs.setdefault("ticks", ticks)
     kwargs.setdefault("cmap", mappable.cmap)
     kwargs.setdefault("norm", mappable.norm)
-    kwargs.setdefault("pad", 0.05)
-    kwargs.setdefault("fraction", 0.05)
-    kwargs.setdefault("aspect", 25)
 
     cbar = plt.colorbar(
         mappable=mappable,
@@ -956,7 +953,7 @@ def nice_colorbar(
     return cbar
 
 
-def flatten_transparency(rgba: npt.NDArray, background: Sequence[float] | None = None):
+def flatten_transparency(rgba: npt.NDArray, background: RGBColorType | None = None):
     """
     Flatten the transparency of an RGBA image by blending it with a background color.
 
@@ -964,12 +961,15 @@ def flatten_transparency(rgba: npt.NDArray, background: Sequence[float] | None =
     ----------
     rgba
         The input RGBA image as a numpy array.
-    background
-        The background color to blend with. Defaults to white ``(1, 1, 1)``.
+    background : RGBColorType, optional
+        The background color to blend with. Defaults to white.
 
     """
     if background is None:
         background = (1, 1, 1)
+    else:
+        background = matplotlib.colors.to_rgb(background)
+
     original_shape = rgba.shape
     rgba = rgba.reshape(-1, 4)
     rgb = rgba[:, :-1]
@@ -1100,7 +1100,7 @@ def gen_2d_colormap(
         The normalization for the lightness axes.
     cnorm
         The normalization for the color axes.
-    background
+    background : ColorType, optional
         The background color. If `None`, it is set to white.
     N
         The number of levels in the colormap. Default is 256. The resulting colormap
@@ -1164,13 +1164,13 @@ def color_distance(c1: ColorType, c2: ColorType) -> float:
 
     Parameters
     ----------
-    c1, c2
+    c1, c2 : ColorType
         Color to calculate the distance between in any format that
         :func:`matplotlib.colors.to_rgb` can handle.
 
     Returns
     -------
-    float
+    distance : float
         The color distance between the two colors.
 
     Note
@@ -1198,7 +1198,7 @@ def close_to_white(c: ColorType) -> bool:
 
     Parameters
     ----------
-    c
+    c : ColorType
         Color in any format that :func:`matplotlib.colors.to_rgb` can handle.
 
     Returns
@@ -1244,13 +1244,13 @@ def axes_textcolor(
 
     Parameters
     ----------
-    ax
+    ax : matplotlib.axes.Axes
         The axes object for which the text color needs to be determined.
-    light
+    light : ColorType
         The *light* color, returned when :func:`image_is_light
         <erlab.plotting.colors.image_is_light>` returns `False`. Default is ``'w'``
         (white).
-    dark
+    dark : ColorType
         The *dark* color, returned when :func:`image_is_light
         <erlab.plotting.colors.image_is_light>` returns `True`. Default is ``'k'``
         (black).

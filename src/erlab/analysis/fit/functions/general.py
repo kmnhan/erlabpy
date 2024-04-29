@@ -319,7 +319,7 @@ def bcs_gap(
 
     Parameters
     ----------
-    x : array_like
+    x : array-like
         The temperature values in kelvins at which to calculate the BCS gap.
     a
         Proportionality constant. Default is 1.76.
@@ -354,7 +354,7 @@ def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
 
     Parameters
     ----------
-    x : array_like
+    x : array-like
         The input array of energy in eV.
     n0
         :math:`N_0`, by default 1.0.

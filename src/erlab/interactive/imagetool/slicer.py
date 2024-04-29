@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 from qtpy import QtCore
 
-from erlab.interactive.imagetool.fastbinning import _fast_nanmean_skipcheck
+from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -703,7 +703,7 @@ class ArraySlicer(QtCore.QObject):
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
             ].squeeze(axis=axis_val)
         else:
-            return _fast_nanmean_skipcheck(
+            return fast_nanmean_skipcheck(
                 self.data_vals_T[
                     (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
                 ],
@@ -725,6 +725,6 @@ class ArraySlicer(QtCore.QObject):
             )
         ]
         if any(self.get_binned(cursor)):
-            return _fast_nanmean_skipcheck(selected, axis=axis)
+            return fast_nanmean_skipcheck(selected, axis=axis)
         else:
             return selected
