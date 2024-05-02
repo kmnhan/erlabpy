@@ -2,6 +2,72 @@
 
 
 
+## v2.4.0 (2024-05-02)
+
+### Chore
+
+* (**deps**) update dependencies ([`37c1b4b`](https://github.com/kmnhan/erlabpy/commit/37c1b4bf838eeaabeda9ee255fa22902f6ce955b))
+
+  Numbagg is now an optional dependency.
+
+### Documentation
+
+* improve documentation ([`8f23f99`](https://github.com/kmnhan/erlabpy/commit/8f23f9974672a8432ff1e6bd3fdc6ed01a82c937))
+
+* improve io documentation ([`4369d23`](https://github.com/kmnhan/erlabpy/commit/4369d23310c0ad91b41952d9ead4b87458fe107e))
+
+* fix PyQt version pinning to resolve build failures on Qt6.7 ([`433ee9e`](https://github.com/kmnhan/erlabpy/commit/433ee9ed13ea254c6d1e1c83531c9c89f9ff9698))
+
+### Feature
+
+* (**imagetool**) add method to update only the values ([`ca40fe4`](https://github.com/kmnhan/erlabpy/commit/ca40fe41a0320fd7843c86f95b68f8b6e19adca8))
+
+* add interpolation along a path ([`7366ec4`](https://github.com/kmnhan/erlabpy/commit/7366ec4db600617e585c724d05aafea387456cf2))
+
+  The `slice_along_path` function has been added to `analysis.interpolate`, which enables easy interpolation along a evenly spaced path that is specified by its vertices and step size. The path can have an arbitrary number of dimensions and points.
+
+### Fix
+
+* (**io**) remove direct display call in interactive summary ([`d44b3a5`](https://github.com/kmnhan/erlabpy/commit/d44b3a56aecfb054a38d944c5c8b7f45d362cf3b))
+
+  This was causing duplicated plots.
+
+* (**plotting**) add some validation checks to `plot_array` ([`2e0753c`](https://github.com/kmnhan/erlabpy/commit/2e0753c90ffbe6fdd05af210ac6a4dbfa9aba899))
+
+  The functions `plot_array` and `plot_array_2d` now checks if the input array coordinates are uniformly spaced. If they are not, a warning is issued and the user is informed that the plot may not be accurate.
+
+* (**plotting**) increase default colorbar size ([`3208399`](https://github.com/kmnhan/erlabpy/commit/32083990e9e77df6e94b2b0836bc1f9764cfaaf7))
+
+  The default `width` argument to `nice_colorbar` is changed to 8 points. This ensures visibility in subplots, especially when constrained layout is used.
+
+* delay interactive imports until called ([`ad15910`](https://github.com/kmnhan/erlabpy/commit/ad15910f921cb5ffffc388e7a5e02832935f8547))
+
+### Refactor
+
+* various cleanup ([`2b38397`](https://github.com/kmnhan/erlabpy/commit/2b383970b602507b6efedbf396f14d470db60d8f))
+
+  Improve docstring formatting and tweak linter settings
+
+### Style
+
+* remove % formatting ([`ae18a34`](https://github.com/kmnhan/erlabpy/commit/ae18a341f36542c2f39d72b0dd975dbe640c7e24))
+
+### Unknown
+
+* Merge pull request #30 from kmnhan/pre-commit-ci-update-config ([`a550367`](https://github.com/kmnhan/erlabpy/commit/a5503679cf4c432a6c01cc4c0715c21d77136a8b))
+
+  [pre-commit.ci] pre-commit autoupdate
+
+* Merge pull request #28 from kmnhan/dev-2.4 ([`5d1f8fc`](https://github.com/kmnhan/erlabpy/commit/5d1f8fc840a7a807c35b0915ac572fa3ec2bfb49))
+
+  2.4 Release
+
+* [pre-commit.ci] pre-commit autoupdate ([`3c351cc`](https://github.com/kmnhan/erlabpy/commit/3c351cc255dc31010b2c5fab2d134531f00a4dac))
+
+  updates:
+  - [github.com/astral-sh/ruff-pre-commit: v0.4.1 → v0.4.2](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.1...v0.4.2)
+
+
 ## v2.3.2 (2024-04-25)
 
 ### Chore
