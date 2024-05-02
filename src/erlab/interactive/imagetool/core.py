@@ -115,8 +115,7 @@ def link_slicer(
     steps: bool = False,
     color: bool = False,
 ):
-    """
-    Decorate methods that should be synced across multiple `ImageSlicerArea` instances.
+    """Sync decorated methods across multiple `ImageSlicerArea` instances.
 
     Parameters
     ----------
@@ -624,6 +623,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def set_data(
         self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
     ):
+        """Set the data to be displayed.
+
+        Parameters
+        ----------
+        data
+            The data to be displayed. If a `xarray.DataArray` is given, the
+            dimensions and coordinates are used to determine the axes of the plots. If a
+            :class:`xarray.Dataset` is given, the first data variable is used. If a
+            :class:`numpy.ndarray` is given, it is converted to a `xarray.DataArray`
+            with default dimensions.
+        rad2deg
+            If `True`, converts coords along dimensions that have angle-like names to
+            degrees. If an iterable of strings is given, coordinates for dimensions that
+            correspond to the given strings are converted.
+
+        """
         if hasattr(self, "_array_slicer"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):
@@ -675,6 +690,52 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_colormap(update=True)
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
+
+    def update_values(self, values: npt.NDArray | xr.DataArray, update: bool = True):
+        """Update only the values of the data.
+
+        The coords and shape of the data array are not changed.
+
+        Parameters
+        ----------
+        values
+            The new values to be set. If a `xarray.DataArray` is given, the dimensions
+            must match the current data array. If a `numpy.ndarray` is given, the shape
+            must match the current data array. Note that if the user has transposed the
+            current data array, passing a `numpy.ndarray` with the original shape will
+            fail.
+        update
+            If `True`, the plots are updated after setting the new values.
+
+        Note
+        ----
+        This method only checks for matching dimension name and shape, and does not
+        check for equal coordinate values.
+
+        """
+        if isinstance(values, xr.DataArray):
+            if self.array_slicer._obj.ndim != values.ndim:
+                raise ValueError("DataArray dimensions do not match")
+            if set(self.array_slicer._obj.dims) != set(values.dims):
+                raise ValueError("DataArray dimensions do not match")
+
+            if self.array_slicer._obj.dims != values.dims:
+                values = values.transpose(*self.array_slicer._obj.dims)
+            if self.array_slicer._obj.shape != values.shape:
+                raise ValueError("DataArray shape does not match")
+
+            values = values.values
+        else:
+            if self.array_slicer._obj.shape != values.shape:
+                raise ValueError(
+                    "Data shape does not match. Array is "
+                    f"{self.array_slicer._obj.shape} but {values.shape} given"
+                )
+        self.array_slicer._obj[:] = values
+
+        if update:
+            self.array_slicer.clear_val_cache(include_vals=True)
+            self.refresh_all(only_plots=True)
 
     @QtCore.Slot(int, int)
     @link_slicer

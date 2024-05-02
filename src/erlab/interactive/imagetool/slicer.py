@@ -282,7 +282,7 @@ class ArraySlicer(QtCore.QObject):
     def reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def clear_dim_cache(self):
+    def clear_dim_cache(self, include_vals: bool = False):
         for prop in (
             "coords",
             "coords_uniform",
@@ -290,17 +290,22 @@ class ArraySlicer(QtCore.QObject):
             "incs_uniform",
             "lims",
             "lims_uniform",
-            "data_vals_T",
         ):
             self.reset_property_cache(prop)
 
-    def clear_val_cache(self):
+        if include_vals:
+            self.reset_property_cache("data_vals_T")
+
+    def clear_val_cache(self, include_vals: bool = False):
         for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
             self.reset_property_cache(prop)
 
+        if include_vals:
+            self.reset_property_cache("data_vals_T")
+
     def clear_cache(self):
         self.clear_dim_cache()
-        self.clear_val_cache()
+        self.clear_val_cache(include_vals=True)
 
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
@@ -316,9 +321,9 @@ class ArraySlicer(QtCore.QObject):
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
 
-        self.clear_dim_cache()
+        self.clear_dim_cache(include_vals=True)
         if validate:
-            self.clear_val_cache()
+            self.clear_val_cache(include_vals=False)
 
         if reset:
             self._bins: list[list[int]] = [[1] * self._obj.ndim]
@@ -399,7 +404,7 @@ class ArraySlicer(QtCore.QObject):
     @QtCore.Slot(int, int, int, bool, result=list)
     def set_bin(
         self, cursor: int, axis: int, value: int, update: bool = True
-    ) -> list[int | None]:
+    ) -> list[int]:
         if value is None:
             return []
         if int(value) != value:
