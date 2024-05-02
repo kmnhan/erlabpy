@@ -458,11 +458,18 @@ class LoaderBase:
         Returns
         -------
         df : pandas.DataFrame or pandas.io.formats.style.Styler or None
-            Summary of the data in the directory. If `display` is `False`, the DataFrame
-            is returned. If `display` is `True` and the IPython shell is detected, the
-            summary will be displayed, and `None` will be returned. If `display` is
-            `True` but the IPython shell is not detected, the styler for the summary
-            DataFrame will be returned.
+            Summary of the data in the directory.
+
+            - If `display` is `False`, the summary DataFrame is returned.
+
+            - If `display` is `True` and the IPython shell is detected, the summary will
+              be displayed, and `None` will be returned.
+
+              * If `ipywidgets` is installed, an interactive widget will be returned
+                instead of `None`.
+
+            - If `display` is `True` but the IPython shell is not detected, the styler
+              for the summary DataFrame will be returned.
 
         """
         if not os.path.isdir(data_dir):
@@ -505,7 +512,7 @@ class LoaderBase:
                     display(styled)  # type: ignore[misc]
 
                 if importlib.util.find_spec("ipywidgets"):
-                    display(self.isummarize(df=df))  # type: ignore[misc]
+                    return self._isummarize(df)
 
                 return None
 
@@ -681,7 +688,6 @@ class LoaderBase:
                         eplt.fermiline(
                             orientation="h" if plot_data.dims[0] == "eV" else "v"
                         )
-
                 show_inline_matplotlib_plots()
 
         def _next(_):
@@ -709,7 +715,7 @@ class LoaderBase:
         if not self.always_single:
             buttons.append(full_button)
 
-        data_select = Select(options=list(df.index), value=next(iter(df.index)))
+        data_select = Select(options=list(df.index), value=next(iter(df.index)), rows=8)
         data_select.observe(_update_data, "value")
 
         data_info = HTML()
