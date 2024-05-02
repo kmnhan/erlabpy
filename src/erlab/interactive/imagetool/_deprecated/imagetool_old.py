@@ -362,8 +362,7 @@ class ColorButton(QtWidgets.QPushButton):
         self.colorChanged.emit(color.getRgbF())
         if self._color:
             self.setStyleSheet(
-                "QWidget { background-color: %s; border: 0; }"
-                % self._color.name(QtGui.QColor.HexArgb)
+                f"QWidget {{ background-color: {self._color.name(QtGui.QColor.HexArgb)}; border: 0; }}"
             )
         else:
             self.setStyleSheet("")
@@ -1575,7 +1574,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self._fpsLastUpdate = now
         w = 0.8
         self._avg_fps = self._avg_fps * (1 - w) + fps * w
-        self.axes[1].setTitle("%0.2f fps" % self._avg_fps)
+        self.axes[1].setTitle(f"{self._avg_fps:0.2f} fps")
 
     def labelify(self, text):
         """Prettify some frequently used axis labels."""

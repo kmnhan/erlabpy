@@ -171,8 +171,7 @@ class ColorButton(QtWidgets.QPushButton):
         self.colorChanged.emit(color.getRgbF())
         if self._color:
             self.setStyleSheet(
-                "QWidget { background-color: %s; border: 0; }"
-                % self._color.name(QtGui.QColor.HexArgb)
+                f"QWidget {{ background-color: {self._color.name(QtGui.QColor.HexArgb)}; border: 0; }}"
             )
         else:
             self.setStyleSheet("")

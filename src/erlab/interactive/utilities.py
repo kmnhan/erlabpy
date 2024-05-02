@@ -504,7 +504,7 @@ class BetterAxisItem(pg.AxisItem):
         for v in values:
             vs = v * scale
             if abs(vs) < 0.001 or abs(vs) >= 10000:
-                vstr = "%g" % vs
+                vstr = f"{vs:g}"
             else:
                 vstr = ("%%0.%df" % places) % vs
             strings.append(vstr.replace("-", "−"))
