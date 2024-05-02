@@ -21,7 +21,7 @@ __all__ = ["ImageTool", "itool"]
 
 import gc
 import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -36,6 +36,7 @@ from erlab.interactive.imagetool.controls import (
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
+from erlab.io.plugins.merlin import BL403Loader
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -87,7 +88,6 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool(data_list, link=True)
     """
-
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -407,7 +407,9 @@ class ItoolMenuBar(DictMenuBar):
             self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
         ):
             ca.blockSignals(True)
-            ca.setChecked(cmap_props[k])
+            ca.setChecked(
+                cmap_props[cast(Literal["reversed", "highContrast", "zeroCentered"], k)]
+            )
             ca.blockSignals(False)
 
     def _set_colormap_options(self):
@@ -424,10 +426,11 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     def _open_file(self):
+        merlin_loader = cast(BL403Loader, erlab.io.loaders["merlin"])
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
-            "ALS BL4.0.3 Raw Data (*.pxt)": (erlab.io.loaders["merlin"].load, {}),
-            "ALS BL4.0.3 Live (*.ibw)": (erlab.io.loaders["merlin"].load_live, {}),
+            "ALS BL4.0.3 Raw Data (*.pxt)": (merlin_loader.load, {}),
+            "ALS BL4.0.3 Live (*.ibw)": (merlin_loader.load_live, {}),
             "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.loaders["da30"].load, {}),
             "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.loaders["ssrl52"].load, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),

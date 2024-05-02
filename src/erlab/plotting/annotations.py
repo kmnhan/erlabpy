@@ -90,6 +90,56 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
     "yocto",
 )  #: Names of the SI prefixes.
 
+PRETTY_NAMES: dict[str, tuple[str, str]] = {
+    "temperature": ("Temperature", "Temperature"),
+    "T": (r"\ensuremath{T}", r"$T$"),
+    "beta": (r"\ensuremath{\beta}", r"$\beta$"),
+    "theta": (r"\ensuremath{\theta}", r"$\theta$"),
+    "chi": (r"\ensuremath{\chi}", r"$\chi$"),
+    "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
+    "psi": (r"\ensuremath{\psi}", r"$\psi$"),
+    "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+    "xi": (r"\ensuremath{\xi}", r"$\xi$"),
+    "Eb": (r"\ensuremath{E}", r"$E$"),
+    "Ek": (r"\ensuremath{E_{\text{kin}}}", r"$E_{\text{kin}}$"),
+    "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
+    "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
+    "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
+    "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
+    "kp": (r"\ensuremath{k_{\parallel}}", r"$k_\parallel$"),
+    "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
+}
+"""Pretty names for labeling plots.
+
+The first element is for LaTeX, and the second is for plain text.
+
+"""
+
+PRETTY_UNITS: dict[str, tuple[str, str]] = {
+    "temperature": (r"K", r"K"),
+    "T": (r"K", r"K"),
+    "theta": (r"deg", r"deg"),
+    "beta": (r"deg", r"deg"),
+    "psi": (r"deg", r"deg"),
+    "chi": (r"deg", r"deg"),
+    "alpha": (r"deg", r"deg"),
+    "phi": (r"deg", r"deg"),
+    "xi": (r"deg", r"deg"),
+    "Eb": (r"eV", r"eV"),
+    "Ek": (r"eV", r"eV"),
+    "eV": (r"eV", r"eV"),
+    "hv": (r"eV", r"eV"),
+    "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+}
+"""Pretty units for labeling plots.
+
+The first element is for LaTeX, and the second is for plain text.
+
+"""
+
 
 def _alph_label(val, prefix, suffix, numeric, capital):
     """Generate labels from string or integer."""
@@ -123,7 +173,7 @@ def _unit_from_label(label: str) -> str | None:
 
 
 def get_si_str(si: int) -> str:
-    """Returns the SI prefix string to be plotted by :mod:`matplotlib`.
+    """Return the SI prefix string to be plotted by :mod:`matplotlib`.
 
     Parameters
     ----------
@@ -145,66 +195,33 @@ def get_si_str(si: int) -> str:
             raise ValueError("Invalid SI prefix.") from e
 
 
-def name_for_dim(dim_name, escaped=True):
-    name = {
-        "temperature": ("Temperature", "Temperature"),
-        "T": (r"\ensuremath{T}", r"$T$"),
-        "beta": (r"\ensuremath{\beta}", r"$\beta$"),
-        "theta": (r"\ensuremath{\theta}", r"$\theta$"),
-        "chi": (r"\ensuremath{\chi}", r"$\chi$"),
-        "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
-        "psi": (r"\ensuremath{\psi}", r"$\psi$"),
-        "phi": (r"\ensuremath{\phi}", r"$\phi$"),
-        "xi": (r"\ensuremath{\xi}", r"$\xi$"),
-        "Eb": (r"\ensuremath{E}", r"$E$"),
-        "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
-        "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
-        "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
-        "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
-        "kp": (r"\ensuremath{k_{\parallel}}", r"$k_\parallel$"),
-        "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
-    }.get(dim_name)
+def name_for_dim(dim_name: str, escaped: bool = True) -> str:
+    names: tuple[str, str] | None = PRETTY_NAMES.get(dim_name)
 
-    if name is None:
+    if names is None:
         name = dim_name
     else:
-        name = name[0] if plt.rcParams["text.usetex"] else name[1]
+        name = names[0] if plt.rcParams["text.usetex"] else names[1]
 
     if not escaped:
         name = name.replace("$", "")
     return name
 
 
-def unit_for_dim(dim_name, deg2rad=False):
-    unit = {
-        "temperature": (r"K", r"K"),
-        "T": (r"K", r"K"),
-        "theta": (r"deg", r"deg"),
-        "beta": (r"deg", r"deg"),
-        "psi": (r"deg", r"deg"),
-        "chi": (r"deg", r"deg"),
-        "alpha": (r"deg", r"deg"),
-        "phi": (r"deg", r"deg"),
-        "xi": (r"deg", r"deg"),
-        "Eb": (r"eV", r"eV"),
-        "eV": (r"eV", r"eV"),
-        "hv": (r"eV", r"eV"),
-        "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-        "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-        "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-        "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    }.get(dim_name)
+def unit_for_dim(dim_name: str, deg2rad: bool = False) -> str:
+    units: tuple[str, str] | None = PRETTY_UNITS.get(dim_name)
 
-    if unit is None:
+    if units is None:
         unit = ""
     else:
-        unit = unit[0] if plt.rcParams["text.usetex"] else unit[1]
+        unit = units[0] if plt.rcParams["text.usetex"] else units[1]
+
     if deg2rad:
         unit = unit.replace("deg", "rad")
     return unit
 
 
-def label_for_dim(dim_name, deg2rad=False, escaped=True):
+def label_for_dim(dim_name: str, deg2rad: bool = False, escaped: bool = True) -> str:
     name = name_for_dim(dim_name, escaped=escaped)
     unit = unit_for_dim(dim_name, deg2rad=deg2rad)
     if unit == "":
@@ -213,15 +230,16 @@ def label_for_dim(dim_name, deg2rad=False, escaped=True):
         return f"{name} ({unit})"
 
 
-def parse_special_point(name):
+def parse_special_point(name: str) -> str:
     special_points = {"G": r"\Gamma", "D": r"\Delta"}
-    try:
+
+    if name in special_points.keys():
         return special_points[name]
-    except KeyError:
+    else:
         return name
 
 
-def parse_point_labels(name: str, roman=True, bar=False):
+def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
     name = parse_special_point(name)
 
     if name.endswith("*"):
@@ -463,7 +481,6 @@ def label_subplots(
         documentation for a list of all possible arguments.
 
     """
-
     kwargs["fontweight"] = fontweight
     if plt.rcParams["text.usetex"] & (fontweight == "bold"):
         prefix = "\\textbf{" + prefix
@@ -583,7 +600,6 @@ def label_subplots_nature(
         documentation for a list of all possible arguments.
 
     """
-
     kwargs["fontweight"] = fontweight
     if plt.rcParams["text.usetex"] & (fontweight == "bold"):
         prefix = "\\textbf{" + prefix
@@ -764,9 +780,10 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_frame_on(False)
 
 
-# TODO: fix format using name_for_dim and unit_for_dim
 def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs):
-    s = "$h\\nu=" + str(val) + "$~eV"
+    name = name_for_dim("hv", escaped=False)
+    unit = unit_for_dim("hv")
+    s = f"${name}={val}$ {unit}"
     ax.text(
         x,
         y,
@@ -780,7 +797,9 @@ def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs):
 
 
 def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs):
-    s = "$h\\nu=" + str(val) + "$~eV"
+    name = name_for_dim("hv", escaped=False)
+    unit = unit_for_dim("hv")
+    s = f"${name}={val}$ {unit}"
     ax.text(
         x,
         y,
@@ -839,7 +858,12 @@ class _SIFormatter(matplotlib.ticker.ScalarFormatter):
     def __call__(self, x, pos=None):
         self.orderOfMagnitude += self._si_exponent
 
-        sigfigs = int(re.match(r".*{%1.(\d+)f}", self.format).group(1))
+        match_format = re.match(r".*{%1.(\d+)f}", self.format)
+        if match_format is None:
+            # Match failed, may be due to changes in matplotlib
+            raise RuntimeError("Failed to match format string. Please report this bug")
+
+        sigfigs = int(match_format.group(1))
         self.format = self.format.replace(
             f"%1.{sigfigs}f", f"%1.{max(0, sigfigs + self._si_exponent)}f"
         )
@@ -859,8 +883,9 @@ def scale_units(
 ):
     """Rescales ticks and adds an SI prefix to the axis label.
 
-    Useful when you want to rescale the ticks. For example, when plotting a cut from a
-    low pass energy scan, you might want to convert the energy units from eV to meV.
+    Useful when you want to rescale the ticks without actually rescaling the data. For
+    example, when plotting a cut from a low pass energy scan, you might want to convert
+    the energy units from eV to meV.
 
     Using this function on an axis where the major locator is not the default formatter
     `matplotlib.ticker.ScalarFormatter` will result in undefined behavior.
@@ -948,7 +973,7 @@ def sizebar(
     frameon: bool = False,
     **kwargs,
 ):
-    """
+    """Add a size bar to an axes.
 
     Parameters
     ----------
@@ -981,7 +1006,6 @@ def sizebar(
         `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
 
     """
-
     size = value / resolution
     unit = get_si_str(si) + unit
     value = np.around(value / 10**si, decimals=decimals)

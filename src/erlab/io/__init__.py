@@ -30,7 +30,6 @@ For instructions on how to write a custom loader, see
 
 Examples
 --------
-
 - View all registered loaders:
 
   >>> erlab.io.loaders

@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 import xarray as xr
 
 import erlab.plotting.erplot as eplt
-from erlab.interactive.imagetool import ImageTool, itool
 
 T = TypeVar("T")
 
@@ -63,10 +62,11 @@ class PlotAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qplot` accessor for plotting data."""
 
     def __call__(self, *args, **kwargs):
-        """
-        Plot the data. If a 2D data array is provided, it is plotted using
-        :func:`plot_array <erlab.plotting.general.plot_array>`. Otherwise, it is
-        equivalent to calling :meth:`xarray.DataArray.plot`.
+        """Plot the data.
+
+        If a 2D data array is provided, it is plotted using :func:`plot_array
+        <erlab.plotting.general.plot_array>`. Otherwise, it is equivalent to calling
+        :meth:`xarray.DataArray.plot`.
 
         Parameters
         ----------
@@ -93,7 +93,9 @@ class PlotAccessor(ERLabDataArrayAccessor):
 class ImageToolAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qshow` accessor for interactive visualization."""
 
-    def __call__(self, *args, **kwargs) -> ImageTool | list[ImageTool] | None:
+    def __call__(self, *args, **kwargs):
+        from erlab.interactive.imagetool import itool
+
         if len(self._obj.dims) >= 2:
             return itool(self._obj, *args, **kwargs)
         else:
@@ -102,10 +104,7 @@ class ImageToolAccessor(ERLabDataArrayAccessor):
 
 @xr.register_dataarray_accessor("qsel")
 class SelectionAccessor(ERLabDataArrayAccessor):
-    """
-    `xarray.DataArray.qsel` accessor for conveniently selecting and averaging
-    data.
-    """
+    """`xarray.DataArray.qsel` accessor for convenient selection and averaging."""
 
     def __call__(
         self,
@@ -154,7 +153,6 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         ValueError
             If a specified dimension is not present in the data.
         """
-
         indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
 
         # Bin widths for each dimension, zero if width not specified

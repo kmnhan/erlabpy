@@ -7,7 +7,7 @@ For scipy-based filter functions, the default value of the `mode` argument is 'n
 unlike the scipy default of 'reflect'.
 """
 
-from collections.abc import Collection, Mapping, Sequence, Sized, Hashable
+from collections.abc import Collection, Hashable, Mapping, Sequence, Sized
 
 import numpy as np
 import numpy.typing as npt
@@ -205,7 +205,6 @@ def gaussian_laplace(
     :func:`scipy.ndimage.gaussian_laplace` : The underlying function used to apply the
         filter.
     """
-
     if isinstance(sigma, Mapping):
         sigma_dict = dict(sigma)
     elif np.isscalar(sigma):
@@ -279,7 +278,6 @@ def gradient_magnitude(
     The gradient magnitude is then calculated as the square root of the sum of the
     squared differences.
     """
-
     dxy = np.sqrt(dx**2 + dy**2)
     dist = np.array([[dxy, dy, dxy], [dx, 0.0, dx], [dxy, dy, dxy]]).flatten()
 
@@ -378,7 +376,6 @@ def minimum_gradient(
     - The input array is assumed to be regularly spaced.
     - Any zero gradient values are replaced with NaN.
     """
-
     if darr.ndim != 2:
         raise ValueError("DataArray must be 2D")
 
@@ -505,7 +502,6 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     ----
     The input array is assumed to be regularly spaced.
     """
-
     if darr.ndim != 2:
         raise ValueError("DataArray must be 2D")
 

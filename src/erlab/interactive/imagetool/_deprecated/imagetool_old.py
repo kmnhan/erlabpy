@@ -1,5 +1,5 @@
 """
-.. deprecated:: 0.1
+.. deprecated:: 0.1.
 
     This module is deprecated, and is only kept for reference purposes.
     Use `erlab.interactive.imagetool` instead.
@@ -8,6 +8,7 @@
 
 import colorsys
 import enum
+import importlib
 import sys
 import weakref
 from itertools import chain, compress
@@ -15,7 +16,6 @@ from time import perf_counter
 
 import matplotlib.mathtext
 import numba
-import numbagg
 import numpy as np
 import pyqtgraph as pg
 import qtawesome as qta
@@ -38,6 +38,12 @@ from erlab.interactive.utilities import parse_data, xImageItem
 # pg.setConfigOption('background', 'w')
 # pg.setConfigOption('foreground', 'k')
 
+if importlib.util.find_spec("numbagg"):
+    import numbagg
+
+    _general_nanmean_func = numbagg.nanmean
+else:
+    _general_nanmean_func = np.nanmean
 
 __all__ = ["itool_", "pg_itool"]
 
@@ -243,7 +249,7 @@ class BorderlessGroupBox(QtWidgets.QWidget):
 
 
 def qt_style_names():
-    """Return a list of styles, default platform style first"""
+    """Return a list of styles, default platform style first."""
     default_style_name = QtWidgets.QApplication.style().objectName().lower()
     result = []
     for style in QtWidgets.QStyleFactory.keys():
@@ -362,8 +368,7 @@ class ColorButton(QtWidgets.QPushButton):
         self.colorChanged.emit(color.getRgbF())
         if self._color:
             self.setStyleSheet(
-                "QWidget { background-color: %s; border: 0; }"
-                % self._color.name(QtGui.QColor.HexArgb)
+                f"QWidget {{ background-color: {self._color.name(QtGui.QColor.HexArgb)}; border: 0; }}"
             )
         else:
             self.setStyleSheet("")
@@ -504,7 +509,7 @@ class ItoolDock(Dock):
 
 
 def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
-    """Creates a QtGui.QPixmap from a mathtext string.
+    """Create a QtGui.QPixmap from a mathtext string.
 
     Parameters
     ----------
@@ -520,11 +525,9 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
 
     Returns
     -------
-
     A QtGui.QPixmap object.
 
     """
-
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=9)
@@ -545,7 +548,7 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
 def get_svg_label(
     s: str, outfile: QtCore.QTemporaryFile, prop=None, dpi=300, **text_kw
 ):
-    """Creates an SVG image from a mathtext string.
+    """Create an SVG image from a mathtext string.
 
     Parameters
     ----------
@@ -567,7 +570,6 @@ def get_svg_label(
         Name of the output file containing the rendered SVG.
 
     """
-
     parser = matplotlib.mathtext.MathTextParser("path")
     if prop is None:
         prop = FontProperties(size=12)
@@ -887,9 +889,6 @@ class pg_itool(pg.GraphicsLayoutWidget):
     sigIndexChanged(indices, values)
 
     """
-
-    # !TODO: ctrl + A to view all
-    # !TODO: auto adjust limits on transpose
 
     sigDataChanged = QtCore.Signal(object)  #: :meta private:
     sigIndexChanged = QtCore.Signal(list, list)  #: :meta private:
@@ -1424,7 +1423,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
     def set_labels(self, labels=None):
-        """labels: list or tuple of str"""
+        """labels: list or tuple of str."""
         if labels is None:
             labels = self.data_dims
         # 0: default, 1: svg, 2: pixmap
@@ -1581,7 +1580,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self._fpsLastUpdate = now
         w = 0.8
         self._avg_fps = self._avg_fps * (1 - w) + fps * w
-        self.axes[1].setTitle("%0.2f fps" % self._avg_fps)
+        self.axes[1].setTitle(f"{self._avg_fps:0.2f} fps")
 
     def labelify(self, text):
         """Prettify some frequently used axis labels."""
@@ -1698,7 +1697,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 + (self._get_bin_slice(axis + 1),)
             ].squeeze(axis=axis)
         else:
-            return numbagg.nanmean(
+            return _general_nanmean_func(
                 self.data_vals_T[
                     (slice(None),) * (axis % self.data_ndim)
                     + (self._get_bin_slice(axis + 1),)
@@ -1712,11 +1711,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
         slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
         return self._block_slice_avg(avg_axis, slices)
         # self._slice_block = self._block_slicer(avg_axis, slices)
-        # return numbagg.nanmean(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
+        # return _general_nanmean_func(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
 
     def _block_slice_avg(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
-        return numbagg.nanmean(
+        return _general_nanmean_func(
             self.data_vals_T[
                 tuple(
                     slices[axis.index(d)] if d in axis else slice(None)
@@ -1797,7 +1796,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         return mods
 
     def _get_mouse_datapos(self, plot, pos):
-        """Returns mouse position in data coords"""
+        """Return mouse position in data coords."""
         mouse_point = plot.vb.mapSceneToView(pos)
         return mouse_point.x(), mouse_point.y()
 
@@ -2313,7 +2312,6 @@ def fast_isocurve(data, level, connected=False, extendToEdge=False, path=False):
                    vertex coordinates.
     ============== =========================================================
     """
-
     if path is True:
         connected = True
     np.nan_to_num(data, copy=False)
@@ -3054,7 +3052,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def setPopupMinimumWidthForItems(self):
         view = self.view()
         fm = self.fontMetrics()
-        maxWidth = max([fm.width(self.itemText(i)) for i in range(self.count())])
+        maxWidth = max(fm.width(self.itemText(i)) for i in range(self.count()))
         if maxWidth:
             view.setMinimumWidth(maxWidth)
 

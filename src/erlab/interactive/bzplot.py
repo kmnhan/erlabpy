@@ -1,5 +1,5 @@
 import sys
-from typing import Literal
+from typing import Literal, cast
 
 import mpl_toolkits
 import numpy as np
@@ -15,27 +15,31 @@ from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
 
 
 class BZPlotter(QtWidgets.QMainWindow):
+    """
+    Interactive Brillouin zone plotter.
+
+    Parameters
+    ----------
+    params :
+        Input parameter for plotting. If `param_type` is 'lattice', it must be a
+        6-tuple containing the lengths a, b, c and angles alpha, beta, gamma.
+        Otherwise, it must be a 3 by 3 numpy array with each row vector containing
+        each real/reciprocal lattice vector. If not provided, a hexagonal lattice is
+        shown by default.
+    param_type
+        Specifies the param_type of the input parameters. Valid param_types are
+        `'lattice'`, `'avec'`, `'bvec'`. By default, `'bvec'` is assumed.
+    """
+
     def __init__(
         self,
         params: tuple[float, ...] | npt.NDArray[np.float64] | None = None,
         param_type: Literal["lattice", "avec", "bvec"] | None = None,
     ) -> None:
-        """
-        Parameters
-        ----------
-        params :
-            Input parameter for plotting. If `param_type` is 'lattice', it must be a
-            6-tuple containing the lengths a, b, c and angles alpha, beta, gamma.
-            Otherwise, it must be a 3 by 3 numpy array with each row vector containing
-            each real/reciprocal lattice vector. If not provided, a hexagonal lattice is
-            shown by default.
-        param_type
-            Specifies the param_type of the input parameters. Valid param_types are
-            `'lattice'`, `'avec'`, `'bvec'`. By default, `'bvec'` is assumed.
-        """
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
+
         super().__init__()
 
         if params is None:
@@ -64,7 +68,6 @@ class BZPlotter(QtWidgets.QMainWindow):
             elif param_type == "bvec":
                 bvec = params
 
-        self.controls = None
         self.plot = BZPlotWidget(bvec)
         self.setCentralWidget(self.plot)
 
@@ -279,7 +282,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
 
     def closeEvent(self, event):
         super().closeEvent(event)
-        QtCore.QCoreApplication.instance().quit()
+        QtWidgets.QApplication.instance().quit()
 
     def block_params_signals(self, b: bool):
         self.params_latt.blockSignals(b)

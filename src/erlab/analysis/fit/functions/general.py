@@ -12,15 +12,16 @@ __all__ = [
     "fermi_dirac",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
-    "gaussian_wh",
     "gaussian",
-    "lorentzian_wh",
+    "gaussian_wh",
     "lorentzian",
+    "lorentzian_wh",
     "step_broad",
     "step_linbkg_broad",
 ]
 
 from collections.abc import Callable
+
 import numba
 import numpy as np
 import numpy.typing as npt
@@ -83,7 +84,6 @@ def _gen_kernel(
         The gaussian kernel defined on `extended`.
 
     """
-
     delta_x = x[1] - x[0]
 
     sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
@@ -263,10 +263,7 @@ def fermi_dirac_linbkg_broad(
     dos0: float,
     dos1: float,
 ) -> npt.NDArray[np.float64]:
-    """
-    Resolution-broadened Fermi-dirac edge with linear backgrounds above and below the
-    fermi level.
-    """
+    """Resolution-broadened Fermi edge with linear backgrounds above and below EF."""
     return do_convolve(
         x,
         fermi_dirac_linbkg,
@@ -303,10 +300,7 @@ def step_linbkg_broad(
     dos0: float,
     dos1: float,
 ):
-    """
-    A linear density of states multiplied with a resolution broadened step function with
-    a linear background.
-    """
+    """Resolution broadened step function with linear backgrounds."""
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) * (
         step_broad(x, center, sigma, 1.0)
     )
@@ -325,7 +319,7 @@ def bcs_gap(
 
     Parameters
     ----------
-    x : array_like
+    x : array-like
         The temperature values in kelvins at which to calculate the BCS gap.
     a
         Proportionality constant. Default is 1.76.
@@ -345,7 +339,7 @@ def bcs_gap(
 
 
 def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
-    r"""The Dynes formula for superconducting density of states.
+    r"""Dynes formula for superconducting density of states.
 
     The formula is given by :cite:p:`dynes1978dynes`:
 
@@ -360,7 +354,7 @@ def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
 
     Parameters
     ----------
-    x : array_like
+    x : array-like
         The input array of energy in eV.
     n0
         :math:`N_0`, by default 1.0.

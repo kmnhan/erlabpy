@@ -69,7 +69,6 @@ def shift(
     nan 1.0 2.0 4.0 5.0 6.0 nan nan 7.0
     Dimensions without coordinates: x, y
     """
-
     shift_kwargs.setdefault("order", 1)
     shift_kwargs.setdefault("mode", "constant")
     if shift_kwargs["mode"] == "constant":

@@ -20,9 +20,9 @@ import erlab.lattice
 
 
 class AxesConfiguration(enum.IntEnum):
-    """
-    Enum class representing different types of axes configurations. See Ref.
-    :cite:p:`ishida2018kconv`.
+    """Enum class representing different types of axes configurations.
+
+    See Ref. :cite:p:`ishida2018kconv`.
 
     """
 
@@ -43,20 +43,21 @@ def _kz_func_inv(kz, inner_potential, kx, ky):
 
 
 def _kperp_func(k_tot_sq, kx, ky):
-    r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`"""
+    r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`."""
     return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
 
 
 def kz_func(kinetic_energy, inner_potential, kx, ky):
-    r"""
-    Calculate :math:`k_z` from the given kinetic energy, inner potential, and
-    :math:`k_x`, :math:`k_y` with
+    r"""Calculate the out-of-plane momentum.
+
+    :math:`k_z` is computed from the given kinetic energy :math:`E_k`, inner potential
+    :math:`V_0`, and in-plane momenta :math:`k_x`, and :math:`k_y` by
 
     .. math::
 
         k_z = \sqrt{k^2 - k_x^2 - k_y^2 + \frac{2 m_e V_0}{\hbar^2}}
 
-    where :math:`k = \frac{\sqrt{2 m_e E_k}}{\hbar}`.
+    where :math:`k =\sqrt{2 m_e E_k}/\hbar`.
     """
     k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
     k_perp_sq = k_tot**2 - kx**2 - ky**2
@@ -69,9 +70,9 @@ def get_kconv_func(
     configuration: AxesConfiguration,
     angle_params: dict[str, float],
 ) -> tuple[Callable, Callable]:
-    """
-    Returns the appropriate momentum conversion functions based on the given
-    configuration and kinetic energy.
+    """Return appropriate momentum conversion functions.
+
+    The appropriate function is created by the given configuration and kinetic energy.
 
     Parameters
     ----------

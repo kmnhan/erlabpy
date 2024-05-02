@@ -155,8 +155,7 @@ def polygon_mask_points(
 def mask_with_hex_bz(
     kxymap: xr.DataArray, a: float = 3.54, rotate: float = 0.0, invert: bool = False
 ) -> xr.DataArray:
-    """Returns map masked with a hexagonal BZ."""
-
+    """Return map masked with a hexagonal BZ."""
     if "kx" in kxymap.dims or "qx" in kxymap.dims:
         dims = ("kx", "ky")
 
@@ -177,8 +176,7 @@ def hex_bz_mask_points(
     reciprocal: bool = False,
     invert: bool = False,
 ) -> npt.NDArray[np.bool_]:
-    """Returns a mask for given points."""
-
+    """Return a mask for given points."""
     if reciprocal:
         d = 2 * np.pi / (a * 3)
     else:

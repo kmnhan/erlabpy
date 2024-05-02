@@ -115,9 +115,7 @@ def link_slicer(
     steps: bool = False,
     color: bool = False,
 ):
-    """
-    An internal decorator for choosing which functions to sync accross multiple
-    instances of `ImageSlicerArea`.
+    """Sync decorated methods across multiple `ImageSlicerArea` instances.
 
     Parameters
     ----------
@@ -153,9 +151,15 @@ def link_slicer(
                     )
                     all_args.apply_defaults()
                     obj: ImageSlicerArea = all_args.arguments.pop("self")
-                    obj._linking_proxy.sync(
-                        obj, func.__name__, all_args.arguments, indices, steps, color
-                    )
+                    if obj._linking_proxy is not None:
+                        obj._linking_proxy.sync(
+                            obj,
+                            func.__name__,
+                            all_args.arguments,
+                            indices,
+                            steps,
+                            color,
+                        )
             return out
 
         return wrapped
@@ -205,7 +209,7 @@ class SlicerLinkProxy:
         steps: bool,
         color: bool,
     ):
-        """The core method that propagates changes across multiple `ImageSlicerArea`s.
+        """Propagate changes across multiple `ImageSlicerArea`s.
 
         This method is invoked every time a method decorated with :func:`link_slicer` in
         a linked `ImageSlicerArea` is called.
@@ -333,22 +337,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
-        """:meta private:"""
+        """:meta private:"""  # noqa: D400
         return self.array_slicer.sigCursorCountChanged
 
     @property
     def sigIndexChanged(self) -> QtCore.SignalInstance:
-        """:meta private:"""
+        """:meta private:"""  # noqa: D400
         return self.array_slicer.sigIndexChanged
 
     @property
     def sigBinChanged(self) -> QtCore.SignalInstance:
-        """:meta private:"""
+        """:meta private:"""  # noqa: D400
         return self.array_slicer.sigBinChanged
 
     @property
     def sigShapeChanged(self) -> QtCore.SignalInstance:
-        """:meta private:"""
+        """:meta private:"""  # noqa: D400
         return self.array_slicer.sigShapeChanged
 
     def __init__(
@@ -405,7 +409,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(False)
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
-        self.manual_limits: dict[str, list[list[float]]] = {}
+        self.manual_limits: dict[str, list[float]] = {}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
@@ -458,7 +462,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def on_close(self):
         self.array_slicer.clear_cache()
         self.data.close()
-        if hasattr(self, "_data"):
+        if hasattr(self, "_data") and self._data is not None:
             self._data.close()
             del self._data
 
@@ -480,7 +484,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         proxy.add(self)
 
     def remove_link(self):
-        self._linking_proxy.remove(self)
+        if self.is_linked:
+            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
 
     @property
     def is_linked(self) -> bool:
@@ -514,7 +519,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def main_image(self) -> ItoolPlotItem:
-        """returns the main PlotItem"""
+        """Return the main PlotItem."""
         return self.get_axes(0)
 
     @property
@@ -523,7 +528,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def axes(self) -> tuple[ItoolPlotItem, ...]:
-        """Currently valid subset of self._plots"""
+        """Currently valid subset of self._plots."""
         return self.images + self.profiles
 
     @property
@@ -618,6 +623,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def set_data(
         self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
     ):
+        """Set the data to be displayed.
+
+        Parameters
+        ----------
+        data
+            The data to be displayed. If a `xarray.DataArray` is given, the
+            dimensions and coordinates are used to determine the axes of the plots. If a
+            :class:`xarray.Dataset` is given, the first data variable is used. If a
+            :class:`numpy.ndarray` is given, it is converted to a `xarray.DataArray`
+            with default dimensions.
+        rad2deg
+            If `True`, converts coords along dimensions that have angle-like names to
+            degrees. If an iterable of strings is given, coordinates for dimensions that
+            correspond to the given strings are converted.
+
+        """
         if hasattr(self, "_array_slicer"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):
@@ -669,6 +690,52 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_colormap(update=True)
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
+
+    def update_values(self, values: npt.NDArray | xr.DataArray, update: bool = True):
+        """Update only the values of the data.
+
+        The coords and shape of the data array are not changed.
+
+        Parameters
+        ----------
+        values
+            The new values to be set. If a `xarray.DataArray` is given, the dimensions
+            must match the current data array. If a `numpy.ndarray` is given, the shape
+            must match the current data array. Note that if the user has transposed the
+            current data array, passing a `numpy.ndarray` with the original shape will
+            fail.
+        update
+            If `True`, the plots are updated after setting the new values.
+
+        Note
+        ----
+        This method only checks for matching dimension name and shape, and does not
+        check for equal coordinate values.
+
+        """
+        if isinstance(values, xr.DataArray):
+            if self.array_slicer._obj.ndim != values.ndim:
+                raise ValueError("DataArray dimensions do not match")
+            if set(self.array_slicer._obj.dims) != set(values.dims):
+                raise ValueError("DataArray dimensions do not match")
+
+            if self.array_slicer._obj.dims != values.dims:
+                values = values.transpose(*self.array_slicer._obj.dims)
+            if self.array_slicer._obj.shape != values.shape:
+                raise ValueError("DataArray shape does not match")
+
+            values = values.values
+        else:
+            if self.array_slicer._obj.shape != values.shape:
+                raise ValueError(
+                    "Data shape does not match. Array is "
+                    f"{self.array_slicer._obj.shape} but {values.shape} given"
+                )
+        self.array_slicer._obj[:] = values
+
+        if update:
+            self.array_slicer.clear_val_cache(include_vals=True)
+            self.refresh_all(only_plots=True)
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -848,7 +915,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         font_size: float = 11.0,
         r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
     ):
-        """Determines the padding and aspect ratios.
+        """Determine the padding and aspect ratios.
 
         Parameters
         ----------
@@ -879,7 +946,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                   r[3] * r[2]
 
         """
-
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
@@ -1233,7 +1299,7 @@ class ItoolPlotItem(pg.PlotItem):
         ):
             if dim is not None:
                 if auto:
-                    self.slicer_area.manual_limits.pop("dim", None)
+                    self.slicer_area.manual_limits.pop(dim, None)
                 else:
                     self.slicer_area.manual_limits[dim] = rng
 
@@ -1510,6 +1576,10 @@ class ItoolPlotItem(pg.PlotItem):
                 item.setVisible(i == index)
 
     def save_current_data(self, fileName=None):
+        default_name = "data"
+        if self.slicer_area._data is not None:
+            default_name = str(self.slicer_area._data.name)
+
         if fileName is None:
             self.fileDialog = QtWidgets.QFileDialog()
             self.fileDialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
@@ -1517,13 +1587,11 @@ class ItoolPlotItem(pg.PlotItem):
             self.fileDialog.setNameFilter("xarray HDF5 Files (*.h5)")
             if pg.PlotItem.lastFileDir is not None:
                 self.fileDialog.setDirectory(
-                    os.path.join(
-                        pg.PlotItem.lastFileDir, f"{self.slicer_area._data.name}.h5"
-                    )
+                    os.path.join(pg.PlotItem.lastFileDir, f"{default_name}.h5")
                 )
             else:
                 self.fileDialog.setDirectory(
-                    os.path.join(os.getcwd(), f"{self.slicer_area._data.name}.h5")
+                    os.path.join(os.getcwd(), f"{default_name}.h5")
                 )
             self.fileDialog.show()
             self.fileDialog.fileSelected.connect(self.save_current_data)

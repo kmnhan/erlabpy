@@ -212,7 +212,6 @@ def edge(
         `True`.
 
     """
-
     if fast:
         params = lmfit.create_params()
         model_cls: lmfit.Model = StepEdgeModel

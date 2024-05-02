@@ -26,7 +26,6 @@ def xcsaps(arr: xr.DataArray, **kwargs) -> tuple[xr.DataArray, csaps.ISmoothingS
     spl : csaps.ISmoothingSpline
         The spline object.
     """
-
     kwargs.setdefault("normalizedsmooth", True)
     coords = [arr[d].values for d in arr.dims]
     spl = csaps.csaps(coords, arr.values, **kwargs)

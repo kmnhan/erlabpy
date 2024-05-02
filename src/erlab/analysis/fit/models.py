@@ -3,8 +3,8 @@
 __all__ = [
     "BCSGapModel",
     "DynesModel",
-    "FermiEdgeModel",
     "FermiEdge2dModel",
+    "FermiEdgeModel",
     "MultiPeakModel",
     "PolynomialModel",
     "StepEdgeModel",
@@ -112,10 +112,10 @@ def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
 
 
 class FermiEdgeModel(lmfit.Model):
-    """
-    Fermi-dirac function with linear background above and below the fermi level,
-    convolved with a gaussian kernel.
+    """Model for fitting a Fermi edge with a linear background.
 
+    The model function is a Fermi-dirac function with linear background above and below
+    the fermi level, convolved with a gaussian kernel.
     """
 
     __doc__ = __doc__ + lmfit.models.COMMON_INIT_DOC

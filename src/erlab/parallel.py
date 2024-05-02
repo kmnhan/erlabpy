@@ -18,9 +18,7 @@ from qtpy import QtCore
 
 @contextlib.contextmanager
 def joblib_progress(file=None, **kwargs):
-    """Context manager to patch joblib to report into tqdm progress bar given as
-    argument"""
-
+    """Patches joblib to report into a tqdm progress bar."""
     if file is None:
         file = sys.stdout
 

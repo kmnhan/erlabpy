@@ -10,7 +10,7 @@ import copy
 import itertools
 import warnings
 from collections.abc import Hashable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import joblib
 import lmfit
@@ -45,11 +45,10 @@ def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
         else:
             to_broadcast[k] = xr.DataArray(v)
 
-    for k, v in zip(
-        to_broadcast.keys(), xr.broadcast(*to_broadcast.values()), strict=True
-    ):
-        d[k] = v
-    return d
+    d = dict(
+        zip(to_broadcast.keys(), xr.broadcast(*to_broadcast.values()), strict=True)
+    )
+    return cast(dict[str, xr.DataArray], d)
 
 
 def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArray:
@@ -375,7 +374,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                 x = x[:, mask]
                 y = y[mask]
                 if not len(y):
-                    modres = lmfit.model.ModelResult(model, model.make_params(), data=y)
+                    modres: lmfit.model.ModelResult = lmfit.model.ModelResult(
+                        model, model.make_params(), data=y
+                    )
                     modres.success = False
                     return popt, perr, pcov, stats, data, best, modres
             else:
@@ -417,7 +418,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                         )
                         initial_params = model.make_params().update(initial_params)
             try:
-                modres: lmfit.model.ModelResult = model.fit(
+                modres = model.fit(
                     y, **indep_var_kwargs, params=initial_params, **kwargs
                 )
             except ValueError:
@@ -428,16 +429,20 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                 return popt, perr, pcov, stats, data, best, modres
             else:
                 if modres.success:
-                    popt, perr = [], []
+                    popt_list, perr_list = [], []
                     for name in param_names:
                         p = modres.params[name]
-                        popt.append(p.value if p.value is not None else np.nan)
-                        perr.append(p.stderr if p.stderr is not None else np.nan)
+                        popt_list.append(p.value if p.value is not None else np.nan)
+                        perr_list.append(p.stderr if p.stderr is not None else np.nan)
 
-                    popt, perr = np.array(popt), np.array(perr)
+                    popt, perr = np.array(popt_list), np.array(perr_list)
 
-                    stats = [getattr(modres, s) for s in stat_names]
-                    stats = np.array([s if s is not None else np.nan for s in stats])
+                    stats = np.array(
+                        [
+                            s if s is not None else np.nan
+                            for s in [getattr(modres, s) for s in stat_names]
+                        ]
+                    )
 
                     if modres.covar is not None:
                         var_names = modres.var_names
@@ -550,19 +555,21 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             if parallel_obj.return_generator:
                 out_dicts = tqdm.auto.tqdm(  # type: ignore[call-overload]
                     parallel_obj(
-                        joblib.delayed(_output_wrapper)(name, da)
-                        for name, da in self._obj.data_vars.items()
+                        itertools.starmap(
+                            joblib.delayed(_output_wrapper), self._obj.data_vars.items()
+                        )
                     ),
                     **tqdm_kw,
                 )
             else:
                 with joblib_progress(**tqdm_kw) as _:
                     out_dicts = parallel_obj(
-                        joblib.delayed(_output_wrapper)(name, da)
-                        for name, da in self._obj.data_vars.items()
+                        itertools.starmap(
+                            joblib.delayed(_output_wrapper), self._obj.data_vars.items()
+                        )
                     )
             result = type(self._obj)(
-                dict(itertools.chain.from_iterable(d.items() for d in out_dicts))  # type: ignore[call-overload]
+                dict(itertools.chain.from_iterable(d.items() for d in out_dicts))
             )
             del out_dicts
 
@@ -602,11 +609,7 @@ class ModelFitDataArrayAccessor(ERLabDataArrayAccessor):
 
 @xr.register_dataarray_accessor("parallel_fit")
 class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
-    """
-    `xarray.DataArray.parallel_fit` accessor for fitting lmfit models in parallel along
-    a single dimension.
-
-    """
+    """`xarray.DataArray.parallel_fit` accessor for fitting lmfit models in parallel."""
 
     _VAR_KEYS: tuple[str, ...] = (
         "modelfit_results",

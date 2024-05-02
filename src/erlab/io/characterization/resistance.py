@@ -8,6 +8,7 @@ physics lab III equipment.
 import os
 import re
 from io import StringIO
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,7 @@ __all__ = ["load_resistance_physlab"]
 
 
 def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
-    """Loads resistance measurement acquired with physics lab III equipment.
+    """Load resistance measurement acquired with physics lab III equipment.
 
     Parameters
     ----------
@@ -50,7 +51,7 @@ def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
 def _load_resistance_physlab_old(
     path: str, encoding: str = "windows-1252", **kwargs
 ) -> xr.Dataset:
-    """Loads resistance measurement acquired with physics lab III equipment.
+    """Load resistance measurement acquired with physics lab III equipment.
 
     Parameters
     ----------
@@ -86,14 +87,14 @@ def _load_resistance_physlab_old(
     >>> data.res.plot()
 
     """
-    with open(path, encoding=encoding) as file:
-        content = re.sub(
-            r"(e[-+]\d{3}) {2,3}(-?)",
-            "\\g<1>\\t \\g<2>",
-            file.read(),
-            count=0,
-            flags=re.MULTILINE,
-        )
+    content = re.sub(
+        r"(e[-+]\d{3}) {2,3}(-?)",
+        "\\g<1>\\t \\g<2>",
+        Path(path).read_text(encoding),
+        count=0,
+        flags=re.MULTILINE,
+    )
+
     content = content.replace("-1.#IO", "   nan")
     data = np.genfromtxt(
         StringIO(content),

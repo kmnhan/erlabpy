@@ -16,13 +16,12 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
-from erlab.interactive.kspace import KspaceTool, ktool
 
 
 def only_angles(method=None):
-    """
-    A decorator that ensures the data is in angle space before executing the decorated
-    method.
+    """Decorate methods that require data to be in angle space.
+
+    Ensures the data is in angle space before executing the decorated method.
 
     If the data is not in angle space (i.e., if "kx" or "ky" dimensions are present), a
     `ValueError` is raised.
@@ -45,9 +44,9 @@ def only_angles(method=None):
 
 
 def only_momentum(method=None):
-    """
-    A decorator that ensures the data is in momentum space before executing the
-    decorated method.
+    """Decorate methods that require data to be in momentum space.
+
+    Ensure the data is in momentum space before executing the decorated method.
 
     If the data is not in momentum space (i.e., if "kx" nor "ky" dimensions are
     present), a `ValueError` is raised.
@@ -155,7 +154,7 @@ class OffsetView:
         other: dict[str, float] | Iterable[tuple[str, float]] | None = None,
         **kwargs,
     ) -> "OffsetView":
-        """Updates the offset view with the provided key-value pairs."""
+        """Update the offset view with the provided key-value pairs."""
         if other is not None:
             for k, v in other.items() if isinstance(other, dict) else other:
                 self[str(k)] = v
@@ -164,7 +163,7 @@ class OffsetView:
         return self
 
     def items(self) -> ItemsView[str, float]:
-        """Returns a view of the offset view as a list of (key, value) pairs."""
+        """Return a view of the offset view as a list of (key, value) pairs."""
         return dict(self).items()
 
     def reset(self) -> "OffsetView":
@@ -187,7 +186,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def configuration(self) -> AxesConfiguration:
-        """Returns the experimental configuration.
+        """Return the experimental configuration.
 
         For a properly implemented data loader, the configuration attribute must be set
         on data import. See :class:`erlab.analysis.kspace.AxesConfiguration` for
@@ -223,7 +222,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         >>> data.kspace.inner_potential
         13.0
         """
-
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
         else:
@@ -256,7 +254,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         >>> data.kspace.work_function
         4.5
         """
-
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
         else:
@@ -280,7 +277,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         This property is used in `best_kp_resolution` upon estimating momentum step
         sizes through `estimate_resolution`.
         """
-
         try:
             return float(self._obj.attrs["angle_resolution"])
         except KeyError:
@@ -295,7 +291,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def slit_axis(self) -> Literal["kx", "ky"]:
-        """Returns the momentum axis parallel to the slit.
+        """Return the momentum axis parallel to the slit.
 
         Returns
         -------
@@ -310,7 +306,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def other_axis(self) -> Literal["kx", "ky"]:
-        """Returns the momentum axis perpendicular to the slit.
+        """Return the momentum axis perpendicular to the slit.
 
         Returns
         -------
@@ -326,7 +322,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     @only_angles
     def momentum_axes(self) -> tuple[Literal["kx", "ky", "kz"], ...]:
-        """Returns the momentum axes of the data after conversion.
+        """Return the momentum axes of the data after conversion.
 
         Returns
         -------
@@ -388,13 +384,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def has_eV(self) -> bool:
-        """Returns `True` if object has an energy axis."""
+        """Return `True` if object has an energy axis."""
         return "eV" in self._obj.dims
 
     @property
     @only_angles
     def has_hv(self) -> bool:
-        """Returns `True` for photon energy dependent data."""
+        """Return `True` for photon energy dependent data."""
         return self._obj["hv"].size > 1
 
     @property
@@ -446,7 +442,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Examples
         --------
-
         - View all offsets
 
           >>> data.kspace.offsets
@@ -500,9 +495,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     @only_angles
     def best_kp_resolution(self) -> float:
-        r"""
-        Estimates the minimum in-plane momentum resolution based on the kinetic energy
-        and angular resolution:
+        r"""Estimate the minimum in-plane momentum resolution.
+
+        The resolution is estimated with the kinetic energy and angular resolution:
 
         .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
@@ -519,9 +514,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     @only_angles
     def best_kz_resolution(self) -> float:
-        r"""
-        Estimates the minimum out-of-plane momentum resolution based on the mean free
-        path :cite:p:`seah1979imfp` and the kinetic energy.
+        r"""Estimate the minimum out-of-plane momentum resolution.
+
+        The resolution is estimated based on the mean free path :cite:p:`seah1979imfp`
+        and the kinetic energy.
 
         .. math:: \Delta k_z \sim 1/\lambda
 
@@ -541,8 +537,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     def estimate_bounds(self) -> dict[Literal["kx", "ky", "kz"], tuple[float, float]]:
         """
-        Estimates the bounds of the data in momentum space based on the available
-        parameters.
+        Estimate the bounds of the data in momentum space.
 
         Returns
         -------
@@ -552,7 +547,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             values are tuples representing the minimum and maximum values.
 
         """
-
         return {
             k: (v.values.min(), v.values.max())
             for k, v in self._get_transformed_coords().items()
@@ -672,9 +666,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def _get_coord_for_conversion(self, name: Hashable) -> xr.DataArray:
-        """
-        Get the coordinte array for given dimension name. This just ensures that the
-        energy coordinates are given as binding energy.
+        """Get the coordinte array for given dimension name.
+
+        This just ensures that the energy coordinates are given as binding energy.
         """
         if name == "eV":
             return self.binding_energy
@@ -683,9 +677,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def _data_ensure_binding(self) -> xr.DataArray:
-        """
-        Returns the data while ensuring that the energy axis is in binding energy.
-        """
+        """Return the data while ensuring that the energy axis is in binding energy."""
         return self._obj.assign_coords(eV=self.binding_energy)
 
     @only_angles
@@ -757,7 +749,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             converted_data = data.kspace.convert(bounds, resolution)
 
         """
-
         if bounds is None:
             bounds = {}
 
@@ -870,15 +861,17 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return out
 
-    def interactive(self, **kwargs) -> KspaceTool:
+    def interactive(self, **kwargs):
         """Open the interactive momentum space conversion tool."""
+        from erlab.interactive.kspace import ktool
+
         if self._obj.ndim < 3:
             raise ValueError("Interactive tool requires three-dimensional data.")
         return ktool(self._obj, **kwargs)
 
     @only_momentum
     def hv_to_kz(self, hv: float) -> xr.DataArray:
-        """Returns :math:`k_z` for a given photon energy.
+        """Return :math:`k_z` for a given photon energy.
 
         Useful when creating overlays on :math:`hν`-dependent data.
 

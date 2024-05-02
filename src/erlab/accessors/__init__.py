@@ -15,15 +15,15 @@ Modules
    kspace
    fit
 
-"""
+"""  # noqa: D205
 
 __all__ = [
+    "ImageToolAccessor",
     "ModelFitDataArrayAccessor",
     "ModelFitDatasetAccessor",
-    "ParallelFitDataArrayAccessor",
     "MomentumAccessor",
     "OffsetView",
-    "ImageToolAccessor",
+    "ParallelFitDataArrayAccessor",
     "PlotAccessor",
     "SelectionAccessor",
 ]

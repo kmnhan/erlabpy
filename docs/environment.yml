@@ -32,7 +32,6 @@ dependencies:
   - nbsphinx
   - furo
   - sphinx-design
-  - pyperclip
   - ipywidgets
   - pip:
     - pyqt6>=6.2.2

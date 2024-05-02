@@ -1,4 +1,4 @@
-r"""Base functionality for implementing data loaders
+r"""Base functionality for implementing data loaders.
 
 This module provides a base class `LoaderBase` for implementing data loaders. Data
 loaders are plugins used to load data from various file formats. Each data loader that
@@ -48,15 +48,15 @@ def _is_monotonic(arr: npt.NDArray) -> np.bool_:
 
 
 class ValidationError(Exception):
-    """This exception is raised when the loaded data fails validation checks."""
+    """Raised when the loaded data fails validation checks."""
 
 
 class ValidationWarning(UserWarning):
-    """This warning is issued when the loaded data fails validation checks."""
+    """Issued when the loaded data fails validation checks."""
 
 
 class LoaderNotFoundError(Exception):
-    """This exception is raised when a loader is not found in the registry."""
+    """Raised when a loader is not found in the registry."""
 
     def __init__(self, key: str):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
@@ -115,7 +115,11 @@ class LoaderBase:
 
     @property
     def name_map_reversed(self) -> dict[str, str]:
-        """A reversed version of the name_map dictionary."""
+        """A reversed version of the name_map dictionary.
+
+        This property is useful for mapping original names to new names.
+
+        """
         return self.reverse_mapping(self.name_map)
 
     @staticmethod
@@ -221,7 +225,6 @@ class LoaderBase:
 
         Examples
         --------
-
         >>> formatter(np.array([0.1, 0.15, 0.2]))
         '0.1→0.2 (0.05, 3)'
 
@@ -424,10 +427,11 @@ class LoaderBase:
         display: bool = True,
         **kwargs,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
-        """
-        Takes a path to a directory and summarizes the data in the directory to a table
-        `pandas.DataFrame`, much like a log file. This is useful for quickly inspecting
-        the contents of a directory.
+        """Summarize the data in the given directory.
+
+        Takes a path to a directory and summarizes the data in the directory to a table,
+        much like a log file. This is useful for quickly inspecting the contents of a
+        directory.
 
         The dataframe is formatted using the style from :meth:`get_styler
         <erlab.io.dataloader.LoaderBase.get_styler>` and displayed in the IPython shell.
@@ -454,14 +458,20 @@ class LoaderBase:
         Returns
         -------
         df : pandas.DataFrame or pandas.io.formats.style.Styler or None
-            Summary of the data in the directory. If `display` is `False`, the DataFrame
-            is returned. If `display` is `True` and the IPython shell is detected, the
-            summary will be displayed, and `None` will be returned. If `display` is
-            `True` but the IPython shell is not detected, the styler for the summary
-            DataFrame will be returned.
+            Summary of the data in the directory.
+
+            - If `display` is `False`, the summary DataFrame is returned.
+
+            - If `display` is `True` and the IPython shell is detected, the summary will
+              be displayed, and `None` will be returned.
+
+              * If `ipywidgets` is installed, an interactive widget will be returned
+                instead of `None`.
+
+            - If `display` is `True` but the IPython shell is not detected, the styler
+              for the summary DataFrame will be returned.
 
         """
-
         if not os.path.isdir(data_dir):
             raise FileNotFoundError(f"Directory {data_dir} not found")
 
@@ -502,7 +512,7 @@ class LoaderBase:
                     display(styled)  # type: ignore[misc]
 
                 if importlib.util.find_spec("ipywidgets"):
-                    display(self.isummarize(df=df))  # type: ignore[misc]
+                    return self._isummarize(df)
 
                 return None
 
@@ -539,6 +549,9 @@ class LoaderBase:
             kwargs["display"] = False
             df = cast(pandas.DataFrame, self.summarize(**kwargs))
 
+        self._isummarize(df)
+
+    def _isummarize(self, df: pandas.DataFrame):
         import matplotlib.pyplot as plt
         from ipywidgets import (
             HTML,
@@ -596,13 +609,18 @@ class LoaderBase:
                         if n_scans > 1 and not full:
                             full_button.disabled = False
 
-                self._temp_data = self.load(path, single=not full)
+                out = self.load(path, single=not full)
+                if isinstance(out, xr.DataArray):
+                    self._temp_data = out
+                del out
 
                 data_info.value = _format_data_info(series)
+            if self._temp_data is None:
+                return
 
             if self._temp_data.ndim == 4:
                 # If the data is 4D, average over the last dimension, making it 3D
-                self._temp_data = self._temp_data.mean(self._temp_data.dims[-1])
+                self._temp_data = self._temp_data.mean(str(self._temp_data.dims[-1]))
 
             if self._temp_data.ndim == 3:
                 dim_sel.unobserve(_update_sliders, "value")
@@ -643,7 +661,7 @@ class LoaderBase:
             coord_sel.unobserve(_update_plot, "value")
 
             coord_sel.step = abs(scan_coords[1] - scan_coords[0])
-            coord_sel.max = 1e100  # To ensure max > min always
+            coord_sel.max = 1e100  # To ensure max > min before setting bounds
             coord_sel.min = scan_coords.min()
             coord_sel.max = scan_coords.max()
 
@@ -661,24 +679,25 @@ class LoaderBase:
             out.clear_output(wait=True)
             with out:
                 plot_data.qplot(ax=plt.gca())
-                # Remove automatic title from xarray
-                plt.title("")
+                plt.title("")  # Remove automatically generated title
 
                 # Add line at Fermi level if the data is 2D and has an energy dimension
                 if plot_data.ndim == 2 and "eV" in plot_data.dims:
+                    # Check if binding
                     if plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0:
                         eplt.fermiline(
                             orientation="h" if plot_data.dims[0] == "eV" else "v"
                         )
-
                 show_inline_matplotlib_plots()
 
         def _next(_):
+            # Select next row
             idx = list(df.index).index(data_select.value)
             if idx + 1 < len(df.index):
                 data_select.value = list(df.index)[idx + 1]
 
         def _prev(_):
+            # Select previous row
             idx = list(df.index).index(data_select.value)
             if idx - 1 >= 0:
                 data_select.value = list(df.index)[idx - 1]
@@ -696,7 +715,7 @@ class LoaderBase:
         if not self.always_single:
             buttons.append(full_button)
 
-        data_select = Select(options=list(df.index), value=next(iter(df.index)))
+        data_select = Select(options=list(df.index), value=next(iter(df.index)), rows=8)
         data_select.observe(_update_data, "value")
 
         data_info = HTML()
@@ -757,6 +776,9 @@ class LoaderBase:
         the list should contain only one file path and coordinates must be an empty
         dictionary.
 
+        The keys of the coordinates must be transformed to new names prior to returning
+        by using the mapping returned by the `name_map_reversed` property.
+
         Parameters
         ----------
         num
@@ -780,8 +802,11 @@ class LoaderBase:
     def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         """Infer the index for the given file name.
 
-        This method takes a file name and tries to infer the scan index from it. If the
-        index can be inferred, it is returned; otherwise, `None` should be returned.
+        This method takes a file name with the path and extension stripped, and tries to
+        infer the scan index from it. If the index can be inferred, it is returned along
+        with additional keyword arguments that should be passed to `load`. If the index
+        is not found, `None` should be returned for the index, and an empty dictionary
+        for additional keyword arguments.
 
         Parameters
         ----------
@@ -805,9 +830,11 @@ class LoaderBase:
         raise NotImplementedError("method must be implemented in the subclass")
 
     def generate_summary(self, data_dir: str | os.PathLike) -> pandas.DataFrame:
-        """Takes a path to a directory and summarizes the data in the directory to a
-        pandas DataFrame, much like a log file. This is useful for quickly inspecting
-        the contents of a directory.
+        """Generate a dataframe summarizing the data in the given directory.
+
+        Takes a path to a directory and summarizes the data in the directory to a pandas
+        DataFrame, much like a log file. This is useful for quickly inspecting the
+        contents of a directory.
 
         Parameters
         ----------
@@ -1006,7 +1033,7 @@ class RegistryBase:
 
     @classmethod
     def instance(cls) -> Self:
-        """Returns the registry instance."""
+        """Return the registry instance."""
         return cls()
 
 
@@ -1113,7 +1140,6 @@ class LoaderRegistry(RegistryBase):
           >>> dat_ssrl_2 = erlab.io.load(...)
 
         """
-
         if loader is None and data_dir is None:
             raise ValueError(
                 "At least one of loader or data_dir must be specified in the context"
