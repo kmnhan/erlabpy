@@ -52,7 +52,7 @@ def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
 
 
 def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArray:
-    return xr.concat(d.values(), d.keys()).rename(concat_dim=dim_name)
+    return xr.concat(d.values(), d.keys(), coords="minimal").rename(concat_dim=dim_name)
 
 
 def _parse_params(
