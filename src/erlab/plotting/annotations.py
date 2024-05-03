@@ -858,7 +858,7 @@ class _SIFormatter(matplotlib.ticker.ScalarFormatter):
     def __call__(self, x, pos=None):
         self.orderOfMagnitude += self._si_exponent
 
-        match_format = re.match(r".*{%1.(\d+)f}", self.format)
+        match_format = re.match(r".*%1.(\d+)f", self.format)
         if match_format is None:
             # Match failed, may be due to changes in matplotlib
             raise RuntimeError("Failed to match format string. Please report this bug")
@@ -874,7 +874,7 @@ class _SIFormatter(matplotlib.ticker.ScalarFormatter):
 
 
 def scale_units(
-    ax: matplotlib.axes.Axes,
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
     axis: Literal["x", "y", "z"],
     si: int = 0,
     *,
@@ -908,6 +908,11 @@ def scale_units(
         instead.
 
     """
+    if np.iterable(ax):
+        for a in np.asarray(ax, dtype=object).flatten():
+            scale_units(a, axis, si, prefix=prefix, power=power)
+        return
+
     getlabel = getattr(ax, f"get_{axis}label")
     setlabel = getattr(ax, f"set_{axis}label")
 
