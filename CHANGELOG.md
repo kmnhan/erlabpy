@@ -2,6 +2,17 @@
 
 
 
+## v2.4.1 (2024-05-03)
+
+### Fix
+
+* (**plotting**) fix wrong regex in `scale_units` ([`d7826d0`](https://github.com/kmnhan/erlabpy/commit/d7826d0269214dfd822a4d0293e42a9840015ce8))
+
+* fix bug in `modelfit` parameter concatenation ([`edaa556`](https://github.com/kmnhan/erlabpy/commit/edaa5566c6e3817e1d9220f7a96e8e731cf7eede))
+
+* (**itool**) ensure DataArray is readable on load ([`5a0ff00`](https://github.com/kmnhan/erlabpy/commit/5a0ff002802cdf5bd3ceb34f9cddc53c9674e7bd))
+
+
 ## v2.4.0 (2024-05-02)
 
 ### Chore
