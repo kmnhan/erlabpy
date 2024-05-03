@@ -650,12 +650,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if not isinstance(data, xr.DataArray):
             if isinstance(data, xr.Dataset):
-                try:
-                    data = data.spectrum
-                except AttributeError:
-                    data = data[next(iter(data.data_vars.keys()))]
+                data = data[next(iter(data.data_vars.keys()))]
             else:
                 data = xr.DataArray(np.asarray(data))
+
+        if not data.data.flags["WRITEABLE"]:
+            data = data.copy()
 
         if not rad2deg:
             self._data = data
