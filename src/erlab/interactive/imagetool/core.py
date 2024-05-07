@@ -653,9 +653,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 data = data[next(iter(data.data_vars.keys()))]
             else:
                 data = xr.DataArray(np.asarray(data))
-
-        if not data.data.flags["WRITEABLE"]:
-            data = data.copy()
+        if hasattr(data.data, "flags"):
+            if not data.data.flags["WRITEABLE"]:
+                data = data.copy()
 
         if not rad2deg:
             self._data = data
