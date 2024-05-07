@@ -2,6 +2,26 @@
 
 
 
+## v2.4.2 (2024-05-07)
+
+### Fix
+
+* (**ktool**) resolve ktool initialization problem, closes #32 ([`e88a58e`](https://github.com/kmnhan/erlabpy/commit/e88a58e6aaed326af1a68aa33322d6ea9f0e800d))
+
+* (**itool**) disable flag checking for non-numpy arrays ([`da6eb1d`](https://github.com/kmnhan/erlabpy/commit/da6eb1db9e81d51b52d4b361de938bcf7ba45e68))
+
+### Unknown
+
+* Merge pull request #31 from kmnhan/pre-commit-ci-update-config ([`e3a4a9f`](https://github.com/kmnhan/erlabpy/commit/e3a4a9f6bda7a21d824ecfc0d70e2e1419898cbf))
+
+  [pre-commit.ci] pre-commit autoupdate
+
+* [pre-commit.ci] pre-commit autoupdate ([`ec62bea`](https://github.com/kmnhan/erlabpy/commit/ec62bea6af2b4074f77ef11a2ddf82b7b7a4db33))
+
+  updates:
+  - [github.com/astral-sh/ruff-pre-commit: v0.4.2 → v0.4.3](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.2...v0.4.3)
+
+
 ## v2.4.1 (2024-05-03)
 
 ### Fix
