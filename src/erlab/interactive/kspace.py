@@ -4,13 +4,14 @@ __all__ = ["ktool"]
 
 import os
 import sys
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import varname
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets, uic
+from qtpy import QtGui, QtWidgets, uic
 
 import erlab.analysis
 from erlab.interactive.colors import (
@@ -27,12 +28,6 @@ class KspaceToolGUI(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
 ):
     def __init__(self):
-        # Start the QApplication if it doesn't exist
-        self.qapp = QtCore.QCoreApplication.instance()
-        if not self.qapp:
-            self.qapp = QtWidgets.QApplication(sys.argv)
-        self.qapp.setStyle("Fusion")
-
         # Initialize UI
         super().__init__()
         self.setupUi(self)
@@ -125,25 +120,6 @@ class KspaceToolGUI(
                 symbolBrush=pg.mkColor("m"),
                 symbolSize=6,
             )
-
-    def __post_init__(self, execute=None):
-        self.show()
-        self.raise_()
-        self.activateWindow()
-
-        if execute is None:
-            execute = True
-            try:
-                shell = get_ipython().__class__.__name__  # type: ignore
-                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                    execute = False
-                    from IPython.lib.guisupport import start_event_loop_qt4
-
-                    start_event_loop_qt4(self.qapp)
-            except NameError:
-                pass
-        if execute:
-            self.qapp.exec()
 
 
 class KspaceTool(KspaceToolGUI):
@@ -241,8 +217,6 @@ class KspaceTool(KspaceToolGUI):
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
-
-        self.__post_init__()
 
     def calculate_resolution(self):
         for k, spin in self._resolution_spins.items():
@@ -419,18 +393,44 @@ class KspaceTool(KspaceToolGUI):
         super().closeEvent(event)
 
 
-def ktool(data: xr.DataArray, *, data_name: str | None = None) -> KspaceTool:
+def ktool(
+    data: xr.DataArray, *, data_name: str | None = None, execute: bool | None = None
+) -> KspaceTool:
     """Interactive momentum conversion tool."""
     if data_name is None:
         try:
-            data_name = varname.argname("data", func=ktool, vars_only=False)
+            data_name = varname.argname("data", func=ktool, vars_only=False)  # type: ignore[assignment]
         except varname.VarnameRetrievingError:
             data_name = "data"
-    return KspaceTool(data, data_name=data_name)
+
+    qapp = QtWidgets.QApplication.instance()
+    if not qapp:
+        qapp = QtWidgets.QApplication(sys.argv)
+
+    cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
+
+    win = KspaceTool(data, data_name=data_name)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+
+    if execute is None:
+        execute = True
+        try:
+            shell = get_ipython().__class__.__name__  # type: ignore
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                execute = False
+                from IPython.lib.guisupport import start_event_loop_qt4
+
+                start_event_loop_qt4(qapp)
+        except NameError:
+            pass
+    if execute:
+        qapp.exec()
+
+    return win
 
 
 if __name__ == "__main__":
-    from typing import cast
-
     dat = cast(xr.DataArray, erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5"))
     win = ktool(dat)

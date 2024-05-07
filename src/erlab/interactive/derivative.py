@@ -37,7 +37,10 @@ class DerivativeTool(
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
         if data_name is None:
             try:
-                data_name = varname.argname("data", func=self.__init__, vars_only=False)  # type: ignore[misc]
+                data_name = cast(
+                    str,
+                    varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
+                )
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
@@ -309,7 +312,7 @@ class DerivativeTool(
 def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
     if data_name is None:
         try:
-            data_name = varname.argname("data", func=dtool, vars_only=False)
+            data_name = varname.argname("data", func=dtool, vars_only=False)  # type: ignore[assignment]
         except varname.VarnameRetrievingError:
             data_name = "data"
 

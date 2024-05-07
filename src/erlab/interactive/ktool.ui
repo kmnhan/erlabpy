@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>750</width>
-    <height>300</height>
+    <width>759</width>
+    <height>667</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -24,10 +24,10 @@
        </sizepolicy>
       </property>
       <property name="tabPosition">
-       <enum>QTabWidget::West</enum>
+       <enum>QTabWidget::TabPosition::West</enum>
       </property>
       <property name="tabShape">
-       <enum>QTabWidget::Rounded</enum>
+       <enum>QTabWidget::TabShape::Rounded</enum>
       </property>
       <property name="currentIndex">
        <number>0</number>
@@ -116,7 +116,7 @@
            <item>
             <widget class="QPushButton" name="res_btn">
              <property name="toolTip">
-              <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Estimate momentum resolution from the data.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+              <string>Estimate momentum resolution from the data.</string>
              </property>
              <property name="text">
               <string>Estimate</string>
@@ -174,7 +174,7 @@
              <item row="0" column="0">
               <widget class="QLabel" name="label">
                <property name="text">
-                <string>𝒂</string>
+                <string>a</string>
                </property>
               </widget>
              </item>
@@ -200,7 +200,7 @@
              <item row="1" column="0">
               <widget class="QLabel" name="label_2">
                <property name="text">
-                <string>𝒃</string>
+                <string>b</string>
                </property>
               </widget>
              </item>
@@ -255,7 +255,7 @@
              <item row="3" column="0">
               <widget class="QLabel" name="label_13">
                <property name="text">
-                <string>𝒄</string>
+                <string>c</string>
                </property>
               </widget>
              </item>
@@ -300,7 +300,7 @@
              <item row="4" column="0">
               <widget class="QLabel" name="label_14">
                <property name="text">
-                <string>𝒂 or 𝒃</string>
+                <string>a or b</string>
                </property>
               </widget>
              </item>
@@ -506,7 +506,7 @@
         <item>
          <spacer name="verticalSpacer">
           <property name="orientation">
-           <enum>Qt::Vertical</enum>
+           <enum>Qt::Orientation::Vertical</enum>
           </property>
           <property name="sizeHint" stdset="0">
            <size>
@@ -547,8 +547,8 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>750</width>
-     <height>21</height>
+     <width>759</width>
+     <height>24</height>
     </rect>
    </property>
   </widget>
