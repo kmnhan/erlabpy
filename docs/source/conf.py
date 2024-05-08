@@ -478,6 +478,9 @@ html_theme_options: dict[str, object] = {
     #     "color-brand-primary": "#a180ff",
     #     "color-brand-content": "#a180ff",
     # },
+    "source_repository": "https://github.com/kmnhan/erlabpy/",
+    "source_branch": f"v{version}",
+    "source_directory": "docs/source/",
 }
 
 # -- LaTeX options -----------------------------------------------------------
