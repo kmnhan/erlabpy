@@ -7,6 +7,7 @@ __all__ = [
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
     "autoscale_to",
+    "clean_labels",
     "copy_mathtext",
     "fancy_labels",
     "fermiline",
@@ -72,6 +73,7 @@ from erlab.plotting.colors import (
 )
 from erlab.plotting.general import (
     autoscale_to,
+    clean_labels,
     fermiline,
     figwh,
     gradient_fill,
@@ -80,23 +82,6 @@ from erlab.plotting.general import (
     plot_array_2d,
     plot_slices,
 )
-
-
-def clean_labels(axes, tick_right=False, *args, **kwargs):
-    if axes.ndim == 1:
-        axes = axes[None]
-    for ax in axes[:-1, :].flat:
-        ax.set_xlabel("")
-    if tick_right:
-        target = axes[:, :-1]
-    else:
-        target = axes[:, 1:]
-    for ax in target.flat:
-        ax.set_ylabel("")
-    fancy_labels(axes, *args, **kwargs)
-    for ax in axes.flat:
-        if tick_right:
-            ax.yaxis.set_label_position("right")
 
 
 def integer_ticks(axes):
