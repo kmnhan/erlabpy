@@ -13,6 +13,7 @@ import numpy.typing as npt
 from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
+from erlab.interactive.utilities import format_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -632,18 +633,10 @@ class ArraySlicer(QtCore.QObject):
         except ValueError:
             return self.isel_code(cursor, disp)
 
-        dict_repr: str = ""
-        for k, v in qsel_kw.items():
-            dict_repr += f"{k}={v!s}, "
-        dict_repr = dict_repr.rstrip(", ")
-        return f".qsel({dict_repr})"
+        return f".qsel({format_kwargs(qsel_kw)})"
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        dict_repr: str = ""
-        for k, v in self.isel_args(cursor, disp, int_if_one=True).items():
-            dict_repr += f"{k}={v!s}, "
-        dict_repr = dict_repr.rstrip(", ")
-        return f".isel({dict_repr})"
+        return f".isel({format_kwargs(self.isel_args(cursor, disp, int_if_one=True))})"
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
         isel_kw = self.isel_args(cursor, disp, int_if_one=False)
