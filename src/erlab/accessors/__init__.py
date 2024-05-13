@@ -18,7 +18,8 @@ Modules
 """  # noqa: D205
 
 __all__ = [
-    "ImageToolAccessor",
+    "InteractiveDataArrayAccessor",
+    "InteractiveDatasetAccessor",
     "ModelFitDataArrayAccessor",
     "ModelFitDatasetAccessor",
     "MomentumAccessor",
@@ -34,4 +35,9 @@ from erlab.accessors.fit import (
     ParallelFitDataArrayAccessor,
 )
 from erlab.accessors.kspace import MomentumAccessor, OffsetView
-from erlab.accessors.utils import ImageToolAccessor, PlotAccessor, SelectionAccessor
+from erlab.accessors.utils import (
+    InteractiveDataArrayAccessor,
+    InteractiveDatasetAccessor,
+    PlotAccessor,
+    SelectionAccessor,
+)

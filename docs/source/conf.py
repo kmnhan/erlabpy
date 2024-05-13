@@ -192,6 +192,8 @@ intersphinx_mapping = {
     "cmasher": ("https://cmasher.readthedocs.io/", None),
     "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable/", None),
     "joblib": ("https://joblib.readthedocs.io/en/latest/", None),
+    "panel": ("https://panel.holoviz.org/", None),
+    "hvplot": ("https://hvplot.holoviz.org/", None),
 }
 
 

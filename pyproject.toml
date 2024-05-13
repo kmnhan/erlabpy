@@ -235,6 +235,7 @@ exclude = [
 module = [
     "astropy.*",
     "h5netcdf.*",
+    "hvplot.*",
     "igor2.*",
     "iminuit.*",
     "ipywidgets.*",
