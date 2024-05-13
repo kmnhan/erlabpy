@@ -2,6 +2,52 @@
 
 
 
+## v2.5.0 (2024-05-13)
+
+### Chore
+
+* (**deps**) unpin PyQt6 ([`55a8ce5`](https://github.com/kmnhan/erlabpy/commit/55a8ce5e0c74c38c22a44f4f385c5ee87ee5fdcb))
+
+### Ci
+
+* (**pre-commit**) update commit messages ([`0321ec1`](https://github.com/kmnhan/erlabpy/commit/0321ec131b61e8bf6881f1f72fdc550937d96959))
+
+### Documentation
+
+* make view button point to github ([`f968c37`](https://github.com/kmnhan/erlabpy/commit/f968c3777ed796011338f7ff14b0561d9fada05e))
+
+### Feature
+
+* extended interactive accessor ([`f6f19ab`](https://github.com/kmnhan/erlabpy/commit/f6f19abd8edfb33585b5e19040a2ebaff39b2b70))
+
+  The `qshow` accessor has been updated so that it calls `hvplot` (if installed) for data not supported by ImageTool.
+  Also, the `qshow` accessor has been introduced to Datasets. For valid fit result datasets produced by the `modelfit` accessor, calling `qshow` will now show an `hvplot`-based interactive visualization of the fit result.
+
+* (**itool**) make itool accept Datasets ([`f77b699`](https://github.com/kmnhan/erlabpy/commit/f77b699abdf312a23832611052d67e8c4c8d4930))
+
+  When a Dataset is passed to `itool`, each data variable will be shown in a separate ImageTool window.
+
+* (**analysis.image**) add multidimensional Savitzky-Golay filter ([`131b32d`](https://github.com/kmnhan/erlabpy/commit/131b32d9e562693e98a2f9e45cf6db4635405b44))
+
+### Fix
+
+* (**itool**) add input data dimension check ([`984f2db`](https://github.com/kmnhan/erlabpy/commit/984f2db0f69db2b5b99211728840447d9617f8bf))
+
+* (**analysis.image**) correct argument order parsing in some filters ([`6043413`](https://github.com/kmnhan/erlabpy/commit/60434136224c0875ed8fba41d24e32fc6868127c))
+
+* (**interactive**) improve formatting for code copied to clipboard ([`d8b6d91`](https://github.com/kmnhan/erlabpy/commit/d8b6d91a4d2688486886f2464426935fdf8cabc2))
+
+### Refactor
+
+* (**plotting**) update `clean_labels` to use `Axes.label_outer` ([`0c64756`](https://github.com/kmnhan/erlabpy/commit/0c647564c6027f5b60f9ff288f13019e0e5933b6))
+
+### Unknown
+
+* Merge pull request #33 from kmnhan/dev-2.5 ([`dc9a9a8`](https://github.com/kmnhan/erlabpy/commit/dc9a9a84a6c1e5424d6994ce02a678b6a0a30db2))
+
+  2.5 Update
+
+
 ## v2.4.2 (2024-05-07)
 
 ### Fix
