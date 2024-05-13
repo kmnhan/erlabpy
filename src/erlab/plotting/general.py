@@ -6,6 +6,7 @@ __all__ = [
     "LabeledCursor",
     "autoscale_off",
     "autoscale_to",
+    "clean_labels",
     "fermiline",
     "figwh",
     "gradient_fill",
@@ -1134,3 +1135,38 @@ def fermiline(
             return ax.axvline(value, ls=ls, lw=lw, c=c, **kwargs)
         case _:
             raise ValueError("`orientation` must be either 'v' or 'h'")
+
+
+def clean_labels(
+    axes: Iterable[matplotlib.axes.Axes],
+    remove_inner_ticks: bool = False,
+    **kwargs,
+):
+    """Clean the labels of the given axes.
+
+    This function removes the labels from the axes except for the outermost axes and
+    prettifies the remaining labels with :func:`fancy_labels
+    <erlab.plotting.annotations.fancy_labels>`.
+
+    .. versionchanged:: 2.5.0
+
+       The function now calls :meth:`Axes.label_outer
+       <matplotlib.axes.Axes.label_outer>` recursively instead of setting the labels to
+       an empty string.
+
+    Parameters
+    ----------
+    axes
+        The axes to clean the labels for.
+    remove_inner_ticks
+        If `True`, remove the inner ticks as well (not only tick labels).
+    **kwargs
+        Additional keyword arguments to be passed to :func:`fancy_labels
+        <erlab.plotting.annotations.fancy_labels>`.
+
+    """
+    axes = np.asarray(axes)
+
+    for ax in axes.flat:
+        ax.label_outer(remove_inner_ticks=remove_inner_ticks)
+    fancy_labels(axes, **kwargs)

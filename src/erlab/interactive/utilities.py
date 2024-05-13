@@ -80,20 +80,30 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
-def process_arg(arg):
+def _parse_single_arg(arg):
     if isinstance(arg, str):
         if arg.startswith("|") and arg.endswith("|"):
+            # If the string is surrounded by vertical bars, remove them
             arg = arg[1:-1]
+
         else:
+            # Otherwise, quote the string
             arg = f'"{arg}"'
+
+    elif isinstance(arg, dict):
+        # If the argument is a dict, convert to string with double quotes
+        arg = str(arg).replace("'", '"')
+
     return arg
 
 
 def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     """Generate the string for a Python function call.
 
-    The first argument is the name of the function, and subsequent arguments are
-    passed as positional arguments. Keyword arguments are also supported.
+    The first argument is the name of the function, and subsequent arguments are passed
+    as positional arguments. Keyword arguments are also supported. For strings in
+    arguments and keyword arguments, surrounding the string with vertical bars (``|``)
+    will prevent the string from being quoted.
 
     Parameters
     ----------
@@ -111,29 +121,31 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
 
     """
     if len(args) == 0 and len(kwargs) == 0:
+        # If no arguments are passed, return the function name
         return f"{funcname}()"
-    tab = "    "
+
+    TAB = "    "
+
+    # Start with function call and open parenthesis
     code = f"{funcname}(\n"
+
     for v in args:
-        if isinstance(v, str):
-            if v.startswith("|") and v.endswith("|"):
-                v = v[1:-1]
-            else:
-                v = f'"{v}"'
-        code += f"{tab}{v},\n"
+        # Add positional argument to code string
+        code += f"{TAB}{_parse_single_arg(v)},\n"
+
     for k, v in kwargs.items():
-        if isinstance(v, str):
-            if v.startswith("|") and v.endswith("|"):
-                v = v[1:-1]
-            else:
-                v = f'"{v}"'
-        code += f"{tab}{k}={v},\n"
+        # Add keyword argument to code string
+        code += f"{TAB}{k}={_parse_single_arg(v)},\n"
+
+    # Add closing parenthesis
     code += ")"
 
     if len(code.replace("\n", "")) <= 88:
         # If code fits in one line, remove newlines
         code = " ".join([s.strip() for s in code.split("\n")])
+        # Remove trailing comma and space
         code = code.replace(", )", ")").replace("( ", "(")
+
     return code
 
 
@@ -154,10 +166,10 @@ def gen_function_code(copy: bool = True, **kwargs):
 
     """
     code_list = []
-    for k, v in kwargs.items():
-        if not isinstance(v[-1], dict):
-            v.append({})
-        code_list.append(gen_single_function_code(k, *v[:-1], **v[-1]))
+    for fname, fargs in kwargs.items():
+        if not isinstance(fargs[-1], dict):
+            fargs.append({})
+        code_list.append(gen_single_function_code(fname, *fargs[:-1], **fargs[-1]))
 
     code_str = "\n".join(code_list)
 
@@ -165,6 +177,25 @@ def gen_function_code(copy: bool = True, **kwargs):
         return copy_to_clipboard(code_str)
     else:
         return code_str
+
+
+def format_kwargs(d: dict[str, Any]) -> str:
+    """Format a dictionary of keyword arguments for a function call.
+
+    If the keys are valid Python identifiers, the output will be formatted as keyword
+    arguments. Otherwise, the output will be formatted as a dictionary.
+
+    Parameters
+    ----------
+    d
+        Dictionary of keyword arguments.
+
+    """
+    if all(s.isidentifier() for s in d.keys()):
+        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
+    else:
+        out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+        return "{" + out + "}"
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):

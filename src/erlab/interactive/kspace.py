@@ -262,9 +262,11 @@ class KspaceTool(KspaceToolGUI):
                 f"{input_name}.kspace.inner_potential"
                 f" = {self._offset_spins['V0'].value()}"
             )
+
+        offset_dict_repr = str(self.offset_dict).replace("'", '"')
         out_lines.extend(
             (
-                f"{input_name}.kspace.offsets = {self.offset_dict}",
+                f"{input_name}.kspace.offsets = {offset_dict_repr}",
                 gen_function_code(
                     copy=False,
                     **{f"{input_name}_kconv = {input_name}.kspace.convert": [arg_dict]},
