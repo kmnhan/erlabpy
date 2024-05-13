@@ -39,13 +39,16 @@ from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
 from erlab.io.plugins.merlin import BL403Loader
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
 def itool(
-    data: Sequence[xr.DataArray | npt.NDArray] | xr.DataArray | npt.NDArray,
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset,
     link: bool = False,
     link_colors: bool = True,
     execute: bool | None = None,
@@ -81,6 +84,9 @@ def itool(
     -----
     - If `data` is a sequence of valid data, multiple ImageTool windows will be created
       and displayed.
+    - If `data` is a Dataset, each DataArray in the Dataset will be displayed in a
+      separate ImageTool window. Data variables with 2 to 4 dimensions are considered as
+      valid. Other variables are ignored.
     - If `link` is True, the ImageTool windows will be synchronized.
 
     Examples
@@ -95,8 +101,13 @@ def itool(
     if isinstance(qapp, QtWidgets.QApplication):
         qapp.setStyle("Fusion")
 
+    if isinstance(data, xr.Dataset):
+        data = [d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4]
+        if len(data) == 0:
+            raise ValueError("No valid data for ImageTool found in the Dataset")
+
     if isinstance(data, np.ndarray | xr.DataArray):
-        data = cast(list[npt.NDArray | xr.DataArray], [data])
+        data = (data,)
 
     itool_list = [ImageTool(d, **kwargs) for d in data]
 
