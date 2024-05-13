@@ -254,6 +254,12 @@ class ArraySlicer(QtCore.QObject):
             The converted data.
 
         """
+        if data.ndim < 2:
+            raise ValueError("Data must have at least two dimensions.")
+
+        if data.ndim > 4:
+            raise ValueError("Data must have at most four dimensions.")
+
         # convert coords to C-contiguous float32
         data = data.assign_coords(
             {d: data[d].astype(np.float32, order="C") for d in data.dims}
