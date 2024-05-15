@@ -105,6 +105,8 @@ class GoldTool(AnalysisWindow):
     data_name
         Name of the data used in generating the code snipped copied to the clipboard.
         Overrides automatic detection.
+    execute
+        Whether to execute the tool immediately.
     **kwargs
         Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
 
@@ -126,6 +128,7 @@ class GoldTool(AnalysisWindow):
         data_corr: xr.DataArray | None = None,
         *,
         data_name: str | None = None,
+        execute: bool = True,
         **kwargs,
     ):
         super().__init__(
@@ -342,7 +345,7 @@ class GoldTool(AnalysisWindow):
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | lmfit.model.ModelResult | None = None
 
-        self.__post_init__(execute=True)
+        self.__post_init__(execute=execute)
 
     def _toggle_fast(self):
         self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
