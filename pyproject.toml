@@ -48,6 +48,8 @@ misc = ["iminuit>=2.25.2", "csaps>=1.1.0"]
 dev = [
     "mypy",
     "pre-commit",
+    "pytest-cov",
+    "pytest-qt",
     "pytest-xdist",
     "pytest",
     "python-semantic-release",
@@ -213,6 +215,10 @@ profile = "black"
 addopts = ["--import-mode=importlib"]
 pythonpath = "src"
 testpaths = "tests"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/_deprecated/*"]
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
