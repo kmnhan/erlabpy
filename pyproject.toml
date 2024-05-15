@@ -220,6 +220,21 @@ testpaths = "tests"
 source = ["src"]
 omit = ["*/_deprecated/*"]
 
+[tool.coverage.report]
+exclude_also = [
+    "@numba.njit",
+    "@cfunc",
+    "get_ipython()",
+    "from IPython",
+    "def mouseDragEvent",
+    "def .*_drag",
+    "def _link_splitters",
+    "def draw_mode",
+    "self.qapp = ",
+    "if execute is None:",
+    "if __name__ == __main__:",
+]
+
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
 warn_unused_configs = true
