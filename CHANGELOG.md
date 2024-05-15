@@ -2,6 +2,47 @@
 
 
 
+## v2.5.1 (2024-05-15)
+
+### Chore
+
+* exclude merge commits from semantic release ([`9179cab`](https://github.com/kmnhan/erlabpy/commit/9179cab62a299b65992ed2621d9618bf7a9f35ee))
+
+* (**deps**) add dask to optional dependencies ([`cdc90dd`](https://github.com/kmnhan/erlabpy/commit/cdc90dd785f8f7d32443e521e89b415a7575303a))
+
+* add coverage configuration ([`9c1e6a5`](https://github.com/kmnhan/erlabpy/commit/9c1e6a5365922303e0119e9f07604ba6d89b539c))
+
+### Ci
+
+* (**github**) ci changes for testing and coverage ([`67550d6`](https://github.com/kmnhan/erlabpy/commit/67550d6ebbf6423052b22bc5224ad331d824d502))
+
+  Parallelized tests for `gold.poly`, setup Qt testing, and added `.codecov.yml` config file.
+
+* (**github**) update codecov script ([`5cab279`](https://github.com/kmnhan/erlabpy/commit/5cab2796d588bc40fc74f8cd130a1efad3b76b37))
+
+* (**github**) update test script ([`7dbb384`](https://github.com/kmnhan/erlabpy/commit/7dbb384caa461992690893017cacb4bd72273149))
+
+* (**pre-commit**) pre-commit autoupdate (#34) ([`acf3dc5`](https://github.com/kmnhan/erlabpy/commit/acf3dc5f4e7987619d8a9be53ad7717f17d12fec))
+
+### Fix
+
+* (**plotting**) fixes #35 ([`a67be68`](https://github.com/kmnhan/erlabpy/commit/a67be6869c2d25780f8a56794aad0386379202dd))
+
+  Gradient fill disappears upon adding labels
+
+* (**fit.models**) wrong StepEdgeModel guess with DataArray input ([`6778c8d`](https://github.com/kmnhan/erlabpy/commit/6778c8dd2c048b0cab67c6d3668b25b3f79a71da))
+
+### Refactor
+
+* (**plotting**) code cleanup ([`aef10e4`](https://github.com/kmnhan/erlabpy/commit/aef10e472a3ebc935711253e91124cfd87beb9cc))
+
+### Test
+
+* fix tests for interactive ([`57403f7`](https://github.com/kmnhan/erlabpy/commit/57403f70f61500e248d57584962c1a0df3a2defc))
+
+* add tests for analysis.gold ([`61d4d36`](https://github.com/kmnhan/erlabpy/commit/61d4d36fb3f858ae9d096f2c8b3f9d090d8905ff))
+
+
 ## v2.5.0 (2024-05-13)
 
 ### Chore
@@ -41,12 +82,6 @@
 
 * (**plotting**) update `clean_labels` to use `Axes.label_outer` ([`0c64756`](https://github.com/kmnhan/erlabpy/commit/0c647564c6027f5b60f9ff288f13019e0e5933b6))
 
-### Unknown
-
-* Merge pull request #33 from kmnhan/dev-2.5 ([`dc9a9a8`](https://github.com/kmnhan/erlabpy/commit/dc9a9a84a6c1e5424d6994ce02a678b6a0a30db2))
-
-  2.5 Update
-
 
 ## v2.4.2 (2024-05-07)
 
@@ -57,10 +92,6 @@
 * (**itool**) disable flag checking for non-numpy arrays ([`da6eb1d`](https://github.com/kmnhan/erlabpy/commit/da6eb1db9e81d51b52d4b361de938bcf7ba45e68))
 
 ### Unknown
-
-* Merge pull request #31 from kmnhan/pre-commit-ci-update-config ([`e3a4a9f`](https://github.com/kmnhan/erlabpy/commit/e3a4a9f6bda7a21d824ecfc0d70e2e1419898cbf))
-
-  [pre-commit.ci] pre-commit autoupdate
 
 * [pre-commit.ci] pre-commit autoupdate ([`ec62bea`](https://github.com/kmnhan/erlabpy/commit/ec62bea6af2b4074f77ef11a2ddf82b7b7a4db33))
 
@@ -131,14 +162,6 @@
 
 ### Unknown
 
-* Merge pull request #30 from kmnhan/pre-commit-ci-update-config ([`a550367`](https://github.com/kmnhan/erlabpy/commit/a5503679cf4c432a6c01cc4c0715c21d77136a8b))
-
-  [pre-commit.ci] pre-commit autoupdate
-
-* Merge pull request #28 from kmnhan/dev-2.4 ([`5d1f8fc`](https://github.com/kmnhan/erlabpy/commit/5d1f8fc840a7a807c35b0915ac572fa3ec2bfb49))
-
-  2.4 Release
-
 * [pre-commit.ci] pre-commit autoupdate ([`3c351cc`](https://github.com/kmnhan/erlabpy/commit/3c351cc255dc31010b2c5fab2d134531f00a4dac))
 
   updates:
@@ -160,12 +183,6 @@
 * (**io**) data loader related fixes ([`da08e90`](https://github.com/kmnhan/erlabpy/commit/da08e9076e59895b35c393c8e2556c3592adf4a5))
 
   DA30 dataloader now preserves case for attribute names from zip files. Post processing for datasets now works properly
-
-### Unknown
-
-* Merge pull request #24 from kmnhan/pre-commit-ci-update-config ([`bee9e5a`](https://github.com/kmnhan/erlabpy/commit/bee9e5acc7686f03497505cee0f4b533aa85cea2))
-
-  [pre-commit.ci] pre-commit autoupdate
 
 
 ## v2.3.1 (2024-04-25)
@@ -197,8 +214,6 @@
 * add mypy compatible type hints ([`c97724d`](https://github.com/kmnhan/erlabpy/commit/c97724dcd9095a3cdc1842e5afb1f29b3c472c45))
 
 ### Unknown
-
-* Merge pull request #26 from kmnhan/dev ([`85a60b3`](https://github.com/kmnhan/erlabpy/commit/85a60b37c29aca93db97004f776e8dcdd3d38666))
 
 * Merge branch &#39;main&#39; into dev ([`184afb0`](https://github.com/kmnhan/erlabpy/commit/184afb023dc704b4ab6ffe8ef5c098c19ca19084))
 
@@ -306,17 +321,7 @@
 
 ### Unknown
 
-* Merge pull request #23 from kmnhan/dev ([`4514a23`](https://github.com/kmnhan/erlabpy/commit/4514a234716e86c77329b48ff8615df193731514))
-
-  Added new interface for fitting, see #22 for discussions.
-  Made loader argument optional for `erlab.io.loader_context` so it can be used to just change the data directory.
-  Momentum conversion has been rewritten using `xarray.apply_ufunc`, and is now dask-compatible. It also automatically determines the current energy axis (kinetic or binding).
-
 * Merge remote-tracking branch &#39;origin/main&#39; into dev ([`fd8e1ad`](https://github.com/kmnhan/erlabpy/commit/fd8e1ad14b345664289810c4c8a605df6b299c3a))
-
-* Merge pull request #20 from kmnhan/pre-commit-ci-update-config ([`f1b965e`](https://github.com/kmnhan/erlabpy/commit/f1b965e84f79d6976ee1cabf692847fe25f58306))
-
-  [pre-commit.ci] pre-commit autoupdate
 
 * [pre-commit.ci] pre-commit autoupdate ([`7e3a89e`](https://github.com/kmnhan/erlabpy/commit/7e3a89e22bb5491f7d4a2bcb21f5a7baeead8773))
 
