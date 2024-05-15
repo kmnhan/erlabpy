@@ -192,7 +192,7 @@ class StepEdgeModel(lmfit.Model):
             np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
         ]
 
-        pars[f"{self.prefix}center"].set(value=efermi)
+        pars[f"{self.prefix}center"].set(value=float(efermi))
         pars[f"{self.prefix}back0"].set(value=back0)
         pars[f"{self.prefix}back1"].set(value=back1)
         pars[f"{self.prefix}dos0"].set(value=dos0)
