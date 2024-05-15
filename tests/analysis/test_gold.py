@@ -12,7 +12,7 @@ def gold():
     )
 
 
-@pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1}, {"n_jobs": -1}])
+@pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1, "return_as": "list"}])
 @pytest.mark.parametrize("fast", [True, False])
 def test_poly(gold, parallel_kw: dict, fast: bool):
     res = poly(

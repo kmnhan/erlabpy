@@ -50,6 +50,7 @@ dev = [
     "pre-commit",
     "pytest-cov",
     "pytest-qt",
+    "pytest-xdist",
     "pytest",
     "python-semantic-release",
     "ruff",
