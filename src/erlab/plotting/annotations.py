@@ -499,19 +499,15 @@ def label_subplots(
                 "The number of given values must match the number of given axes."
             )
 
-    for i in range(len(axlist)):
-        bbox_to_anchor = axlist[i].bbox
+    for i, ax in enumerate(axlist):
         if fontsize is None:
-            if isinstance(axlist[i], matplotlib.figure.Figure):
+            if isinstance(ax, matplotlib.figure.Figure):
                 fontsize = "large"
             else:
                 fontsize = "medium"
 
-        bbox_transform = matplotlib.transforms.ScaledTranslation(
-            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
-        )
         label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
-        with plt.rc_context({"text.color": axes_textcolor(axlist[i])}):
+        with plt.rc_context({"text.color": axes_textcolor(ax)}):
             at = matplotlib.offsetbox.AnchoredText(
                 label_str,
                 loc=loc,
@@ -519,11 +515,15 @@ def label_subplots(
                 pad=0,
                 borderpad=0.5,
                 prop=dict(fontsize=fontsize, **kwargs),
-                bbox_to_anchor=bbox_to_anchor,
-                bbox_transform=bbox_transform,
+                bbox_to_anchor=ax.bbox,
+                bbox_transform=matplotlib.transforms.ScaledTranslation(
+                    offset[0] / 72,
+                    offset[1] / 72,
+                    ax.get_figure().dpi_scale_trans,
+                ),
                 clip_on=False,
             )
-        axlist[i].add_artist(at)
+        ax.add_artist(at)
 
 
 def label_subplots_nature(
