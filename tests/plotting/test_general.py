@@ -23,8 +23,8 @@ def test_plot_slices():
     assert isinstance(axes, np.ndarray)
     assert axes.shape == (2, 1)
 
-    # Test line plots
-    fig, axes = plot_slices(maps, y=[0.1, 0.2, 0.3], transpose=True)
+    # Test line plots with gradient
+    fig, axes = plot_slices(maps, y=[0.1, 0.2, 0.3], transpose=True, gradient=True)
     assert axes[0, 0].lines[0].get_ydata().tolist() == x.tolist()
     assert axes.shape == (2, 3)
 
