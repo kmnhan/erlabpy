@@ -29,6 +29,7 @@ import matplotlib
 import matplotlib.backends.backend_pdf
 import matplotlib.backends.backend_svg
 import matplotlib.figure
+import matplotlib.font_manager
 import matplotlib.mathtext
 import matplotlib.pyplot as plt
 import matplotlib.ticker
@@ -271,10 +272,12 @@ def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
 
 def copy_mathtext(
     s: str,
-    fontsize=None,
-    fontproperties=None,
-    outline=False,
-    svg=False,
+    fontsize: float
+    | Literal["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"]
+    | None = None,
+    fontproperties: matplotlib.font_manager.FontProperties | None = None,
+    outline: bool = False,
+    svg: bool = True,
     rcparams: dict | None = None,
     **mathtext_rc,
 ):
