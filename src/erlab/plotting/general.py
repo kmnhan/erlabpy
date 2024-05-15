@@ -708,6 +708,7 @@ def gradient_fill(
     # with autoscale_off(ax):
     im.set_extent((min(xn), max(xn), min(yn), max(yn)))
     im.set_clip_path(patch)
+    im.autoscale_None()
     ax.add_image(im)
 
     return im
