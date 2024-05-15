@@ -1222,7 +1222,9 @@ def prominent_color(im: matplotlib.image._ImageBase | matplotlib.collections.Qua
     im_array = im.get_array()
     if im_array is None:
         return matplotlib.colors.to_rgba("w")
-    hist, edges = np.histogram(np.nan_to_num(im_array), "auto")
+
+    # https://github.com/numpy/numpy/issues/11879
+    hist, edges = np.histogram(np.nan_to_num(im_array), "sqrt")
     mx = hist.argmax()
     return im.to_rgba(edges[mx : mx + 2].mean())
 
