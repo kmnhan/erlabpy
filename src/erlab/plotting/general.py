@@ -699,14 +699,17 @@ def gradient_fill(
         ax, cmap=cmap, interpolation="bicubic", origin="lower", zorder=0, **kwargs
     )
     im.use_sticky_edges = False  # type: ignore[attr-defined]
-    ax.add_artist(im)
+
     if transpose:
         im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1).T)
     else:
         im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1))
+
     # with autoscale_off(ax):
     im.set_extent((min(xn), max(xn), min(yn), max(yn)))
     im.set_clip_path(patch)
+    im.autoscale_None()
+    ax.add_image(im)
 
     return im
 

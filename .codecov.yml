@@ -1,0 +1,7 @@
+codecov:
+  branch: main
+fixes:
+  - 'src/erlab::'
+comment:
+  behavior: once
+  require_changes: true

@@ -9,6 +9,8 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }} tests
     runs-on: ubuntu-latest
+    env:
+      DISPLAY: ':99.0'
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -22,17 +24,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - uses: tlambert03/setup-qt-libs@v1
+      - name: Setup for Qt testing
+        run: |
+          /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
+
       - name: Install pytest and dependencies
         run: |
-          sudo apt update && sudo apt install -y libegl1-mesa-dev
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install -v . pytest pytest-xdist
-
+          python -m pip install -v .[complete] pyqt6
 
       - name: Test with pytest
+        if: matrix.python-version != '3.12'
         run: |
-          pytest -v -n auto
+          pytest -v
+
+      - name: Test with pytest with coverage
+        if: matrix.python-version == '3.12'
+        run: |
+          pytest --cov erlab --cov-report xml -v
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   release:
     name: Release

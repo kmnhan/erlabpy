@@ -311,6 +311,8 @@ def generate_gold_edge(
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
+    nx: int = 200,
+    ny: int = 300,
 ) -> xr.DataArray:
     """
     Generate a curved Fermi edge with a linear density of states.
@@ -344,6 +346,10 @@ def generate_gold_edge(
     ccd_sigma
         Standard deviation of the Gaussian filter applied to the spectrum. Default is
         0.6.
+    nx
+        Number of angle points. Default is 200.
+    ny
+        Number of energy points. Default is 300.
 
     Returns
     -------
@@ -351,8 +357,8 @@ def generate_gold_edge(
         Simulated gold edge spectrum.
 
     """
-    alpha = np.linspace(-15, 15, 200)
-    eV = np.linspace(-1.3, 0.3, 300)
+    alpha = np.linspace(-15, 15, nx)
+    eV = np.linspace(-1.3, 0.3, ny)
 
     alpha = xr.DataArray(alpha, dims="alpha", coords={"alpha": alpha})
     eV = xr.DataArray(eV, dims="eV", coords={"eV": eV})
