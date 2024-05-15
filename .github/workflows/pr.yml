@@ -5,7 +5,6 @@ name: Test
 
 on:
   pull_request:
-  workflow_dispatch:
 
 jobs:
   test:
@@ -31,5 +30,17 @@ jobs:
           python -m pip install -v .[complete] pyqt6
 
       - name: Test with pytest
+        if: matrix.python-version != '3.12'
         run: |
           pytest -v -n auto
+
+      - name: Test with pytest with coverage
+        if: matrix.python-version == '3.12'
+        run: |
+          pytest --cov erlab --cov-report xml -v -n auto
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
