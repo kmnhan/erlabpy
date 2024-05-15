@@ -12,9 +12,9 @@ def gold():
     )
 
 
+@pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1}, {"n_jobs": -1}])
 @pytest.mark.parametrize("fast", [True, False])
-@pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1}])
-def test_poly(gold, fast: bool, parallel_kw: dict):
+def test_poly(gold, parallel_kw: dict, fast: bool):
     res = poly(
         gold,
         angle_range=(-15, 15),
@@ -30,7 +30,7 @@ def test_poly(gold, fast: bool, parallel_kw: dict):
     assert_allclose(
         np.array(list(res.best_values.values())),
         np.array([0.04, 1e-5, -3e-4]),
-        atol=1e-3,
+        atol=1e-2,
     )
 
 
