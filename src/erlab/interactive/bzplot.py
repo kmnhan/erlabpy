@@ -29,12 +29,15 @@ class BZPlotter(QtWidgets.QMainWindow):
     param_type
         Specifies the param_type of the input parameters. Valid param_types are
         `'lattice'`, `'avec'`, `'bvec'`. By default, `'bvec'` is assumed.
+    execute
+        If `True`, the Qapp instance will be executed immediately.
     """
 
     def __init__(
         self,
         params: tuple[float, ...] | npt.NDArray[np.float64] | None = None,
         param_type: Literal["lattice", "avec", "bvec"] | None = None,
+        execute: bool = True,
     ) -> None:
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         if not self.qapp:
@@ -74,11 +77,7 @@ class BZPlotter(QtWidgets.QMainWindow):
         self.controls = LatticeWidget(bvec)
         self.controls.sigChanged.connect(self.plot.set_bvec)
 
-        self.__post_init__(execute=True)
-
-    def closeEvent(self, event):
-        super().closeEvent(event)
-        self.qapp.quit()
+        self.__post_init__(execute=execute)
 
     def __post_init__(self, execute=None):
         self.show()
@@ -280,10 +279,6 @@ class LatticeWidget(QtWidgets.QTabWidget):
         # self.params_avec.sigParameterChanged.connect(self.avec_changed)
         # self.params_bvec.sigParameterChanged.connect(self.bvec_changed)
 
-    def closeEvent(self, event):
-        super().closeEvent(event)
-        QtWidgets.QApplication.instance().quit()
-
     def block_params_signals(self, b: bool):
         self.params_latt.blockSignals(b)
         self.params_avec.blockSignals(b)
@@ -416,7 +411,3 @@ class BZPlotWidget(QtWidgets.QWidget):
             self.vertices[:, 0], self.vertices[:, 1], self.vertices[:, 2]
         )
         self._canvas.draw()
-
-
-if __name__ == "__main__":
-    app = BZPlotter()
