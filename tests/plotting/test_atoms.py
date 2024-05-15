@@ -47,3 +47,5 @@ def test_CrystalProperty():
     matplotlib.backends.backend_svg.FigureCanvasSVG(fig)
     with io.BytesIO() as buffer:
         fig.canvas.print_svg(buffer)
+
+    plt.close()

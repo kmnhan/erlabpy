@@ -1,5 +1,4 @@
 import numpy as np
-import pyperclip
 import xarray as xr
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
@@ -15,7 +14,7 @@ from ..analysis.test_gold import gold  # noqa: TID252, F401
 def test_goldtool(qtbot, gold):  # noqa: F811
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitActive(win):
+    with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
         win.raise_()
@@ -28,7 +27,7 @@ def test_dtool(qtbot):
     win = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitActive(win):
+    with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
         win.raise_()
@@ -36,9 +35,8 @@ def test_dtool(qtbot):
     win.tab_widget.setCurrentIndex(0)
     win.interp_group.setChecked(False)
     win.smooth_group.setChecked(True)
-    win.copy_btn.click()
     assert (
-        pyperclip.paste()
+        win.copy_code()
         == """_processed = data.copy()
 for _ in range(1):
 \t_processed = era.image.gaussian_filter(_processed, sigma={\"y\": 1.0, \"x\": 1.0})
@@ -46,27 +44,22 @@ result = _processed.differentiate('y').differentiate('y')"""
     )
 
     win.smooth_group.setChecked(False)
-
-    win.copy_btn.click()
-    assert pyperclip.paste() == "result = data.differentiate('y').differentiate('y')"
+    assert win.copy_code() == "result = data.differentiate('y').differentiate('y')"
 
     win.tab_widget.setCurrentIndex(1)
-    win.copy_btn.click()
-    assert pyperclip.paste() == "result = era.image.scaled_laplace(data, factor=1.0)"
+    assert win.copy_code() == "result = era.image.scaled_laplace(data, factor=1.0)"
 
     win.tab_widget.setCurrentIndex(2)
-    win.copy_btn.click()
-    assert pyperclip.paste() == "result = era.image.curvature(data, a0=1.0, factor=1.0)"
+    assert win.copy_code() == "result = era.image.curvature(data, a0=1.0, factor=1.0)"
 
     win.tab_widget.setCurrentIndex(3)
-    win.copy_btn.click()
-    assert pyperclip.paste() == "result = era.image.minimum_gradient(data)"
+    assert win.copy_code() == "result = era.image.minimum_gradient(data)"
 
 
 def test_ktool(qtbot, anglemap):  # noqa: F811
     win = ktool(anglemap, execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitActive(win):
+    with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
         win.raise_()
@@ -74,9 +67,9 @@ def test_ktool(qtbot, anglemap):  # noqa: F811
     win._offset_spins["delta"].setValue(30.0)
     win._offset_spins["xi"].setValue(20.0)
     win._offset_spins["beta"].setValue(10.0)
-    win.copy_btn.click()
+
     assert (
-        pyperclip.paste()
+        win.copy_code()
         == """anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
 anglemap_kconv = anglemap.kspace.convert()"""
     )
@@ -94,7 +87,11 @@ def test_bzplot(qtbot):
     win = BZPlotter(execute=False)
     qtbot.addWidget(win)
     qtbot.addWidget(win.controls)
-    with qtbot.waitActive(win.controls):
+
+    with qtbot.waitExposed(win):
+        win.show()
+
+    with qtbot.waitExposed(win.controls):
         win.controls.show()
 
     win.controls.params_latt.set_values(

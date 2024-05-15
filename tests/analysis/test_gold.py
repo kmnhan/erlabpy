@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from erlab.analysis.gold import correct_with_edge, poly, spline
@@ -26,6 +27,7 @@ def test_poly(gold, parallel_kw: dict, fast: bool):
         plot=True,
         parallel_kw=parallel_kw,
     )
+    plt.close()
 
     assert_allclose(
         np.array(list(res.best_values.values())),
@@ -48,8 +50,10 @@ def test_spline(gold):
         lam=None,
         plot=True,
     )
+    plt.close()
 
     assert_allclose(spl(0.0, 0.0), 0.04, rtol=1e-4)
 
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
+    plt.close()

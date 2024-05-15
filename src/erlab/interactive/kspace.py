@@ -4,7 +4,7 @@ __all__ = ["ktool"]
 
 import os
 import sys
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -242,8 +242,8 @@ class KspaceTool(KspaceToolGUI):
         wait_dialog.close()
         self._itool.show()
 
-    def copy_code(self):
-        arg_dict = {}
+    def copy_code(self) -> str:
+        arg_dict: dict[str, Any] = {}
         if self.bounds is not None:
             arg_dict["bounds"] = self.bounds
         if self.resolution is not None:
@@ -274,7 +274,7 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-        copy_to_clipboard(out_lines)
+        return copy_to_clipboard(out_lines)
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:

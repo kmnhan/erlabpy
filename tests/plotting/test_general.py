@@ -67,3 +67,5 @@ def test_plot_slices():
     assert tuple(fig.get_size_inches()) == (8, 6)
     assert axes[0, 0].get_images()[0].norm.vmin == axes[0, 1].get_images()[0].norm.vmin
     assert axes[0, 0].get_images()[0].norm.vmax == axes[0, 1].get_images()[0].norm.vmax
+
+    plt.close()

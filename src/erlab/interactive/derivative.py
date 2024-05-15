@@ -5,7 +5,7 @@ __all__ = ["dtool"]
 import functools
 import os
 import sys
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -217,15 +217,15 @@ class DerivativeTool(
             case 3:
                 self.result = minimum_gradient(self.processed_data)
 
-    def copy_code(self):
+    def copy_code(self) -> str:
         lines: list[str] = []
 
         data_name = (
             self.data_name
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
         if self.interp_group.isChecked():
-            arg_dict = {
-                dim: f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
+            arg_dict: dict[str, Any] = {
+                str(dim): f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
                 for dim, n in zip(
                     [self.xdim, self.ydim],
                     [self.nx_spin.value(), self.ny_spin.value()],
@@ -307,7 +307,7 @@ class DerivativeTool(
                 )
             )
 
-        copy_to_clipboard(lines)
+        return copy_to_clipboard(lines)
 
 
 def dtool(data, data_name: str | None = None, *, execute: bool | None = None):

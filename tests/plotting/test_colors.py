@@ -35,12 +35,14 @@ def sample_plot(norms, kw0, kw1, cmap):
         eplt.proportional_colorbar(ax=ax)
 
     eplt.unify_clim(axs)
+    plt.close()
 
 
 @pytest.mark.parametrize("gamma", [0.5, 1, 2.0])
 def test_InversePowerNorm(gamma):
     cmap = "Greys"
     sample_plot([eplt.InversePowerNorm], {"vmin": 0, "vmax": 1}, {"gamma": gamma}, cmap)
+    plt.close()
 
 
 @pytest.mark.parametrize("gamma", [0.5, 1, 2.0])
@@ -57,6 +59,7 @@ def test_norms_diverging(gamma):
         {"gamma": gamma, "vcenter": 0.5},
         cmap,
     )
+    plt.close()
 
 
 def test_2d_cmap():
@@ -73,3 +76,5 @@ def test_2d_cmap():
         cnorm=eplt.CenteredInversePowerNorm(0.7, vcenter=0.0, halfrange=1.0),
     )
     assert cb.ax.get_ylim() == (-1.0, 1.0)
+
+    plt.close()

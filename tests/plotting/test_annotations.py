@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import pyperclip
 import pytest
 from erlab.plotting.annotations import copy_mathtext, mark_points
 
@@ -33,8 +32,11 @@ def test_mark_points():
         assert ax.texts[i].get_horizontalalignment() == "center"
         assert ax.texts[i].get_verticalalignment() == "baseline"
 
+    plt.close()
+
 
 @pytest.mark.parametrize("outline", [True, False])
 def test_copy_mathtext(outline):
-    copy_mathtext("$c_1$", outline=outline)
-    assert pyperclip.paste().startswith('<?xml version="1.0" encoding="utf-8"')
+    assert copy_mathtext("$c_1$", svg=True, outline=outline).startswith(
+        '<?xml version="1.0" encoding="utf-8"'
+    )

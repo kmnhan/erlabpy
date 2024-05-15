@@ -41,7 +41,7 @@ def test_itool(qtbot):
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitActive(win):
+    with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
         win.raise_()
@@ -100,31 +100,31 @@ def test_value_update(qtbot):
 
 def test_sync(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win = itool([data, data], link=True, execute=False)
+    win = itool([data, data], link=True, link_colors=True, execute=False)
     for w in win:
         qtbot.addWidget(w)
 
-        with qtbot.waitActive(w):
+        with qtbot.waitExposed(w):
             w.show()
             w.activateWindow()
             w.raise_()
 
-    move_and_compare_values(qtbot, win[1], [12.0, 7.0, 6.0, 11.0], target_win=win[0])
+    win[1].slicer_area.set_colormap("ColdWarm", gamma=1.5)
+    assert (
+        win[0].slicer_area.colormap_properties == win[1].slicer_area.colormap_properties
+    )
+
+    move_and_compare_values(qtbot, win[0], [12.0, 7.0, 6.0, 11.0], target_win=win[1])
 
     # Transpose
-    qtbot.keyClick(win[0], QtCore.Qt.Key.Key_T)
-    move_and_compare_values(qtbot, win[1], [12.0, 11.0, 6.0, 7.0], target_win=win[0])
+    qtbot.keyClick(win[1], QtCore.Qt.Key.Key_T)
+    move_and_compare_values(qtbot, win[0], [12.0, 11.0, 6.0, 7.0], target_win=win[1])
 
     # Set bin
-    win[0].slicer_area.set_bin(0, 2, update=False)
-    win[0].slicer_area.set_bin(1, 2, update=True)
+    win[1].slicer_area.set_bin(0, 2, update=False)
+    win[1].slicer_area.set_bin(1, 2, update=True)
 
     # Set all bins, same effect as above since we only have 1 cursor
-    win[0].slicer_area.set_bin_all(1, 2, update=True)
+    win[1].slicer_area.set_bin_all(1, 2, update=True)
 
-    move_and_compare_values(qtbot, win[1], [9.0, 8.0, 3.0, 4.0], target_win=win[0])
-
-    win[0].slicer_area.set_colormap("ColdWarm", gamma=1.5)
-    assert (
-        win[1].slicer_area.colormap_properties == win[0].slicer_area.colormap_properties
-    )
+    move_and_compare_values(qtbot, win[0], [9.0, 8.0, 3.0, 4.0], target_win=win[1])

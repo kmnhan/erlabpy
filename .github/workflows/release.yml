@@ -37,12 +37,12 @@ jobs:
       - name: Test with pytest
         if: matrix.python-version != '3.12'
         run: |
-          pytest -v -n 3 --dist worksteal
+          pytest -v
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12'
         run: |
-          pytest --cov erlab --cov-report xml -v -n 3 --dist worksteal
+          pytest --cov erlab --cov-report xml -v
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
