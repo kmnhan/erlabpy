@@ -97,7 +97,7 @@ prerelease = false
 [tool.semantic_release.changelog]
 template_dir = "templates"
 changelog_file = "CHANGELOG.md"
-exclude_commit_patterns = []
+exclude_commit_patterns = ["^Merge pull request #.*"]
 
 [tool.semantic_release.commit_author]
 env = "GIT_COMMIT_AUTHOR"
