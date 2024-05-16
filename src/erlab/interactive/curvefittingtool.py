@@ -198,7 +198,7 @@ class edctool(QtWidgets.QMainWindow):
     def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
         self.data = data
 
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
@@ -453,7 +453,7 @@ class mdctool(QtWidgets.QMainWindow):
     def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
         self.data = data
 
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
