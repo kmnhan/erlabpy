@@ -2,6 +2,41 @@
 
 
 
+## v2.5.2 (2024-05-16)
+
+### Ci
+
+* (**github**) re-enable parallel tests and tweak coverage ([`0fd910f`](https://github.com/kmnhan/erlabpy/commit/0fd910f63d576942fbf8d66d71c468b00157ca19))
+
+* (**github**) disable `.pyc` generation ([`54c7dd1`](https://github.com/kmnhan/erlabpy/commit/54c7dd1262db8fc3744cc154fe434672d2a7313b))
+
+* (**codecov**) update config path ([`47a833d`](https://github.com/kmnhan/erlabpy/commit/47a833dc90aa9e9b03f3155c15aecab9149f1ec5))
+
+### Documentation
+
+* update README ([`d90441a`](https://github.com/kmnhan/erlabpy/commit/d90441ac0d397439d63698c35677c5afe333ca09))
+
+### Fix
+
+* make mathtext copy default to svg ([`2f6e0e5`](https://github.com/kmnhan/erlabpy/commit/2f6e0e558f251c846bc3dec39cd150391802460d))
+
+* resolve MemoryError in prominent color estimation ([`3bdcd03`](https://github.com/kmnhan/erlabpy/commit/3bdcd0341c41b424ebbcb565b7cda0db839e4cb8))
+
+  Due to numpy/numpy/#11879 changed the auto method to sqrt. This should also improve memory usage and speed, with little to no impact on the end result.
+
+### Test
+
+* fix clipboard and interactive tests ([`08d7448`](https://github.com/kmnhan/erlabpy/commit/08d7448f80eb5a00debec89e6a9e949fab1fdeba))
+
+* add tests across multiple modules ([`cc35955`](https://github.com/kmnhan/erlabpy/commit/cc35955e2868d71fd522024c18d7e9cb168f98e1))
+
+* add tests interactive tools and `plotting.atoms` ([`a1b5154`](https://github.com/kmnhan/erlabpy/commit/a1b5154c54e6ae6278038ec11c8305fc09193481))
+
+* add tests for `goldtool` and `dtool` ([`99bac03`](https://github.com/kmnhan/erlabpy/commit/99bac03a6df882baa625aa5a065fd0be571d36a9))
+
+* increase test speed ([`031d2e3`](https://github.com/kmnhan/erlabpy/commit/031d2e346636d64976ea96386ac8eba9e638546c))
+
+
 ## v2.5.1 (2024-05-15)
 
 ### Chore
