@@ -29,6 +29,7 @@ import matplotlib
 import matplotlib.backends.backend_pdf
 import matplotlib.backends.backend_svg
 import matplotlib.figure
+import matplotlib.font_manager
 import matplotlib.mathtext
 import matplotlib.pyplot as plt
 import matplotlib.ticker
@@ -271,13 +272,15 @@ def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
 
 def copy_mathtext(
     s: str,
-    fontsize=None,
-    fontproperties=None,
-    outline=False,
-    svg=False,
+    fontsize: float
+    | Literal["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"]
+    | None = None,
+    fontproperties: matplotlib.font_manager.FontProperties | None = None,
+    outline: bool = False,
+    svg: bool = True,
     rcparams: dict | None = None,
     **mathtext_rc,
-):
+) -> str:
     if fontproperties is None:
         fontproperties = matplotlib.font_manager.FontProperties(size=fontsize)
     else:
@@ -313,7 +316,11 @@ def copy_mathtext(
             rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
             with plt.rc_context(rcparams):
                 fig.canvas.print_pdf(buffer)  # type: ignore[attr-defined]
-        pyperclip.copy(buffer.getvalue().decode("utf-8"))
+
+        buffer_str = buffer.getvalue().decode("utf-8")
+
+    pyperclip.copy(buffer_str)
+    return buffer_str
 
 
 def fancy_labels(ax=None, deg2rad=False):

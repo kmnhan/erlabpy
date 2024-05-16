@@ -9,6 +9,7 @@ from typing import ClassVar
 import erlab.io
 import numpy as np
 import pandas as pd
+import pytest
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles
 
@@ -279,8 +280,28 @@ def test_loader():
                 .set_index("File Name")
             )
 
+    with erlab.io.loader_context("example", tmp_dir.name):
+        erlab.io.load(1)
+
+    with pytest.raises(
+        FileNotFoundError, match="Directory some_nonexistent_dir not found"
+    ):
+        erlab.io.loaders.set_data_dir("some_nonexistent_dir")
+
+    # Test if the reprs are working
+    assert erlab.io.loaders.__repr__().startswith("Registered data loaders")
+    assert erlab.io.loaders._repr_html_().startswith("<table><thead>")
+
     erlab.io.set_loader("example")
     erlab.io.set_data_dir(tmp_dir.name)
     erlab.io.load(1)
     erlab.io.load(2)
-    assert len(erlab.io.summarize(display=False).index) == 2
+
+    df = erlab.io.summarize(display=False)
+    assert len(df.index) == 2
+
+    # Test if pretty printing works
+    erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
+
+    # Interactive summary
+    erlab.io.loaders.current_loader.isummarize(df)

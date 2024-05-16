@@ -5,7 +5,7 @@ __all__ = ["dtool"]
 import functools
 import os
 import sys
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -13,7 +13,6 @@ import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
 
-import erlab.analysis
 from erlab.analysis.image import (
     curvature,
     gaussian_filter,
@@ -218,15 +217,15 @@ class DerivativeTool(
             case 3:
                 self.result = minimum_gradient(self.processed_data)
 
-    def copy_code(self):
+    def copy_code(self) -> str:
         lines: list[str] = []
 
         data_name = (
             self.data_name
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
         if self.interp_group.isChecked():
-            arg_dict = {
-                dim: f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
+            arg_dict: dict[str, Any] = {
+                str(dim): f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
                 for dim, n in zip(
                     [self.xdim, self.ydim],
                     [self.nx_spin.value(), self.ny_spin.value()],
@@ -274,7 +273,9 @@ class DerivativeTool(
 
         if self.tab_widget.currentIndex() == 0:
             dim = self.xdim if self.x_radio.isChecked() else self.ydim
-            lines.append(f"{data_name}.differentiate('{dim}').differentiate('{dim}')")
+            lines.append(
+                f"result = {data_name}.differentiate('{dim}').differentiate('{dim}')"
+            )
         else:
             match self.tab_widget.currentIndex():
                 case 1:
@@ -306,7 +307,7 @@ class DerivativeTool(
                 )
             )
 
-        copy_to_clipboard(lines)
+        return copy_to_clipboard(lines)
 
 
 def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
@@ -340,12 +341,5 @@ def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
             pass
     if execute:
         qapp.exec()
-
-
-if __name__ == "__main__":
-    import erlab.io
-
-    dat = erlab.io.load_wave("/Users/khan/Downloads/dose5_k.ibw").T.sel(
-        W=slice(-0.7, 0.7)
-    )
-    dtool(dat)
+    if not execute:
+        return win

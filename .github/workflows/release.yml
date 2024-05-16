@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISPLAY: ':99.0'
+      PYTHONDONTWRITEBYTECODE : 1
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
@@ -37,12 +38,12 @@ jobs:
       - name: Test with pytest
         if: matrix.python-version != '3.12'
         run: |
-          pytest -v
+          pytest -v -n 2 --dist worksteal
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12'
         run: |
-          pytest --cov erlab --cov-report xml -v
+          pytest --cov erlab --cov-report xml -v -n 2 --dist worksteal
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'

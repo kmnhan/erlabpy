@@ -50,6 +50,7 @@ dev = [
     "pre-commit",
     "pytest-cov",
     "pytest-qt",
+    "pytest-xdist",
     "pytest",
     "python-semantic-release",
     "ruff",
@@ -218,6 +219,25 @@ testpaths = "tests"
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
+
+[tool.coverage.report]
+exclude_also = [
+    "@numba.njit",
+    "@cfunc",
+    "get_ipython()",
+    "from IPython",
+    "def mouseDragEvent",
+    "def .*_drag",
+    "def _link_splitters",
+    "def draw_mode",
+    "qapp = QtWidgets.QApplication(sys.argv)",
+    "if not qapp:",
+    "if execute is None:",
+    "qapp.exec()",
+    "if __name__ == __main__:",
+    "except varname.VarnameRetrievingError:",
+    "if TYPE_CHECKING:",
+]
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]

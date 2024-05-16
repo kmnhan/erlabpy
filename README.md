@@ -8,12 +8,17 @@ ERLabPy
         <img src="https://img.shields.io/pypi/v/erlab?logo=pypi&logoColor=white" /></a>
     <a href="https://anaconda.org/conda-forge/erlab" alt="Conda Version">
         <img src="https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white" /></a>
+</p><p align="center">
     <a href="https://github.com/kmnhan/erlabpy/actions/workflows/release.yml" alt="Workflow Status">
         <img src="https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/release.yml?logo=github&label=tests" /></a>
     <a href="https://erlabpy.readthedocs.io/" alt="Documentation Status">
         <img src="https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white" /></a>
     <a href="https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main" alt="pre-commit.ci status">
         <img src="https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg" /></a>
+    <a href="https://codecov.io/gh/kmnhan/erlabpy" alt="Codecov Coverage">
+        <img src="https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white" /></a>
+    <a href="https://github.com/astral-sh/ruff" alt="Ruff">
+        <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" /></a>
 </p>
 
 A library that provides a set of tools and utilities to handle, manipulate, and

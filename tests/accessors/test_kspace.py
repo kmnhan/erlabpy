@@ -5,8 +5,8 @@ from erlab.analysis.kspace import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles
 
 
-@pytest.fixture()
-def map():
+@pytest.fixture(scope="session")
+def anglemap():
     return generate_data_angles(shape=(10, 10, 10), assign_attributes=True)
 
 
@@ -20,29 +20,29 @@ def cut():
 
 
 @pytest.fixture()
-def config_1_map(map):
-    data = map.copy(deep=True)
+def config_1_kmap(anglemap):
+    data = anglemap.copy(deep=True)
     data.kspace.configuration = 1
     return data.kspace.convert(silent=True)
 
 
 @pytest.fixture()
-def config_2_map(map):
-    data = map.copy(deep=True)
+def config_2_kmap(anglemap):
+    data = anglemap.copy(deep=True)
     data.kspace.configuration = 2
     return data.kspace.convert(silent=True)
 
 
 @pytest.fixture()
-def config_3_map(map):
-    data = map.copy(deep=True)
+def config_3_kmap(anglemap):
+    data = anglemap.copy(deep=True)
     data.kspace.configuration = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
 @pytest.fixture()
-def config_4_map(map):
-    data = map.copy(deep=True)
+def config_4_kmap(anglemap):
+    data = anglemap.copy(deep=True)
     data.kspace.configuration = 4
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
@@ -75,7 +75,7 @@ def config_4_cut(cut):
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.mark.parametrize("data_type", ["map", "cut"])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
 def test_offsets(data_type, request):
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()
@@ -87,7 +87,7 @@ def test_offsets(data_type, request):
 
 @pytest.mark.parametrize("use_dask", [True, False])
 @pytest.mark.parametrize("energy_axis", ["kinetic", "binding"])
-@pytest.mark.parametrize("data_type", ["map", "cut"])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
 @pytest.mark.parametrize("configuration", AxesConfiguration)
 @pytest.mark.parametrize("extra_dims", [0, 1, 2])
 def test_kconv(
@@ -100,7 +100,9 @@ def test_kconv(
 ):
     data = request.getfixturevalue(data_type).copy(deep=True)
 
-    expected = request.getfixturevalue(f"config_{configuration.value}_{data_type}")
+    expected = request.getfixturevalue(
+        f"config_{configuration.value}_{data_type.replace('angle', 'k')}"
+    )
 
     if energy_axis == "kinetic":
         data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)
@@ -129,7 +131,7 @@ def test_kconv(
     else:
         xarray.testing.assert_allclose(expected, kconv)
 
-    if data_type == "map":
+    if data_type == "anglemap":
         assert len(kconv.shape) == 3 + extra_dims
         if extra_dims == 0:
             assert set(kconv.shape) == {10, 310}

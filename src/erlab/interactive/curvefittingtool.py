@@ -195,10 +195,10 @@ class PlotPeakPosition(pg.InfiniteLine):
 
 
 class edctool(QtWidgets.QMainWindow):
-    def __init__(self, data, n_bands: int = 1, parameters=None, *args, **kwargs):
+    def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
         self.data = data
 
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
@@ -313,7 +313,7 @@ class edctool(QtWidgets.QMainWindow):
 
         if parameters is not None:
             self.set_params(parameters)
-        self.__post_init__(execute=True)
+        self.__post_init__(execute=execute)
 
     @property
     def xdata(self):
@@ -450,10 +450,10 @@ class edctool(QtWidgets.QMainWindow):
 
 
 class mdctool(QtWidgets.QMainWindow):
-    def __init__(self, data, n_bands: int = 1, parameters=None, *args, **kwargs):
+    def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
         self.data = data
 
-        self.qapp = QtCore.QCoreApplication.instance()
+        self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         cast(QtWidgets.QApplication, self.qapp).setStyle("Fusion")
@@ -548,7 +548,7 @@ class mdctool(QtWidgets.QMainWindow):
 
         if parameters is not None:
             self.set_params(parameters)
-        self.__post_init__(execute=True)
+        self.__post_init__(execute=execute)
 
     @property
     def xdata(self):
