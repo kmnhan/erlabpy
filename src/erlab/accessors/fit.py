@@ -313,6 +313,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         ]
         n_coords = len(coords_)
 
+        # Call make_params before getting parameter names as it may add param hints
+        model.make_params()
+
         # Get the parameter names
         param_names: list[str] = model.param_names
         n_params = len(param_names)
@@ -444,6 +447,8 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                         ]
                     )
 
+                    # Fill in covariance matrix entries, entries for non-varying
+                    # parameters are left as NaN
                     if modres.covar is not None:
                         var_names = modres.var_names
                         for vi in range(modres.nvarys):
