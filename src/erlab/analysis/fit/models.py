@@ -213,7 +213,7 @@ class PolynomialModel(lmfit.Model):
     def guess(self, data, x=None, **kwargs):
         pars = self.make_params()
         if x is None:
-            pars["c0"].set(value=data.mean())
+            pars["c0"].set(value=float(data.mean()))
             for i in range(1, self.func.degree + 1):
                 pars[f"{self.prefix}c{i}"].set(value=0.0)
         else:
@@ -269,7 +269,7 @@ class MultiPeakModel(lmfit.Model):
         pars = self.make_params()
         # !TODO: better guesses
         if self.func.fd:
-            pars[f"{self.prefix}offset"].set(value=data[x >= 0].mean())
+            pars[f"{self.prefix}offset"].set(value=float(data[x >= 0].mean()))
 
         poly1 = PolynomialModel(1).guess(data, x)
         pars[f"{self.prefix}lin_bkg"].set(poly1["c1"].value)
@@ -278,11 +278,11 @@ class MultiPeakModel(lmfit.Model):
         # for i, func in enumerate(self.func.peak_funcs):
         # self.func.peak_argnames
 
-        xrange = x.max() - x.min()
+        xrange = float(x.max() - x.min())
 
         for i in range(self.func.npeaks):  # Number of peaks
             pars[f"{self.prefix}p{i}_center"].set(value=0.0)
-            pars[f"{self.prefix}p{i}_height"].set(value=data.mean())
+            pars[f"{self.prefix}p{i}_height"].set(value=float(data.mean()))
             pars[f"{self.prefix}p{i}_width"].set(value=0.1 * xrange)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
