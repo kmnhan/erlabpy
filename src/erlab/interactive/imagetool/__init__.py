@@ -36,7 +36,7 @@ from erlab.interactive.imagetool.controls import (
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
-from erlab.io.plugins.merlin import BL403Loader
+from erlab.io.plugins.merlin import MERLINLoader
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -439,7 +439,7 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     def _open_file(self):
-        merlin_loader = cast(BL403Loader, erlab.io.loaders["merlin"])
+        merlin_loader = cast(MERLINLoader, erlab.io.loaders["merlin"])
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
             "ALS BL4.0.3 Raw Data (*.pxt)": (merlin_loader.load, {}),

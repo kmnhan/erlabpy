@@ -16,7 +16,7 @@ from erlab.io.dataloader import LoaderBase
 from erlab.io.igor import load_experiment, load_wave
 
 
-class BL403Loader(LoaderBase):
+class MERLINLoader(LoaderBase):
     name = "merlin"
 
     aliases = ("ALS_BL4", "als_bl4", "BL403", "bl403")

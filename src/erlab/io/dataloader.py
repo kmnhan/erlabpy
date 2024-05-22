@@ -881,21 +881,6 @@ class LoaderBase:
             except:  # noqa: E722
                 return data_list
 
-    def post_process_general(
-        self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-        if isinstance(data, xr.DataArray):
-            return self.post_process(data)
-
-        elif isinstance(data, list):
-            return [self.post_process(d) for d in data]
-
-        elif isinstance(data, xr.Dataset):
-            return xr.Dataset(
-                {k: self.post_process(v) for k, v in data.data_vars.items()},
-                attrs=data.attrs,
-            )
-
     def process_keys(
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
     ) -> xr.DataArray:
@@ -934,6 +919,21 @@ class LoaderBase:
         )
         data = data.assign_coords(self.additional_coords)
         return data
+
+    def post_process_general(
+        self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]
+    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
+        if isinstance(data, xr.DataArray):
+            return self.post_process(data)
+
+        elif isinstance(data, list):
+            return [self.post_process(d) for d in data]
+
+        elif isinstance(data, xr.Dataset):
+            return xr.Dataset(
+                {k: self.post_process(v) for k, v in data.data_vars.items()},
+                attrs=data.attrs,
+            )
 
     @classmethod
     def validate(

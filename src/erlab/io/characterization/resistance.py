@@ -105,14 +105,12 @@ def _load_resistance_physlab_old(
     )
     ds = xr.Dataset(
         data_vars={
-            "time": ("temp", data[:, 0]),
-            "res": ("temp", data[:, 2]),
-            "curr": ("temp", data[:, 3]),
-            "temp_err": ("temp", data[:, 4]),
-            "res_err": ("temp", data[:, 5]),
+            "temp": ("time", data[:, 1]),
+            "res": ("time", data[:, 2]),
+            "curr": ("time", data[:, 3]),
+            "temp_err": ("time", data[:, 4]),
+            "res_err": ("time", data[:, 5]),
         },
-        coords={
-            "temp": data[:, 1],
-        },
+        coords={"time": data[:, 0]},
     )
     return ds

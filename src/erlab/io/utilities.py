@@ -7,6 +7,7 @@ __all__ = [
     "showfitsinfo",
 ]
 
+import importlib.util
 import os
 import warnings
 from collections.abc import Sequence
@@ -25,6 +26,9 @@ def showfitsinfo(path: str | os.PathLike):
         Local path to ``.fits`` file.
 
     """
+    if not importlib.util.find_spec("astropy"):
+        raise ImportError("`astropy` needs to be installed to handle FITS files")
+
     from astropy.io import fits
 
     with fits.open(path, ignore_missing_end=True) as hdul:
