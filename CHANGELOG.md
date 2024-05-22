@@ -2,6 +2,27 @@
 
 
 
+## v2.5.3 (2024-05-22)
+
+### Fix
+
+* (**io.utilities**) `get_files` now only list files, not directories ([`60f9230`](https://github.com/kmnhan/erlabpy/commit/60f92307f94484361e0ba11b10a52be4c4cc05a1))
+
+* (**accessors.fit**) add `make_params` call before determining param names, closes #38 ([`f1d161d`](https://github.com/kmnhan/erlabpy/commit/f1d161de089b93e16b2947b126ac075764d98f75))
+
+* (**analysis.fit**) make some models more robust to DataArray input ([`afe5ddd`](https://github.com/kmnhan/erlabpy/commit/afe5ddd9d1e6796ba0261a147c2733d607916d81))
+
+### Refactor
+
+* add loader for ALS BL7 MAESTRO `.h5` files ([`4f33402`](https://github.com/kmnhan/erlabpy/commit/4f3340228ae2e1cbd8baf57d5d426043f5e28688))
+
+* (**interactive**) add informative error message for missing Qt bindings ([`560615b`](https://github.com/kmnhan/erlabpy/commit/560615bb89d2646965d1a2a967133f0df08e3f6e))
+
+* (**io**) rename some internal variables and reorder ([`76fe284`](https://github.com/kmnhan/erlabpy/commit/76fe284b4bc9f1e0c3cb94857a65599b07ee04df))
+
+  Also added a check for astropy in FITS file related utility.
+
+
 ## v2.5.2 (2024-05-16)
 
 ### Ci
