@@ -80,7 +80,7 @@ class MAESTROMicroLoader(LoaderBase):
         "chi": "LMOTOR3",  # Theta, polar
         "xi": "LMOTOR4",  # Beta, tilt
         "delta": "LMOTOR5",  # Phi, azimuth
-        "beta": "Slit Defl",
+        "beta": ("Slit Defl", "LMOTOR9"),
         "hv": ("MONOEV", "BL_E"),
         "temp_sample": "Cryostat_A",
         "polarization": "EPU Polarization",

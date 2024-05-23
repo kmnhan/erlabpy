@@ -21,5 +21,5 @@ dependencies:
   - tqdm>=4.66.2
   - uncertainties>=3.1.4
   - varname>=0.13.0
-  - xarray>=2024.02.0
+  - xarray>=2024.05.0
   - pyside6>=6.7.0
