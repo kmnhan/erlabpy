@@ -2,6 +2,13 @@
 
 
 
+## v2.5.4 (2024-05-23)
+
+### Fix
+
+* (**io.plugins.maestro**) load correct beta for non deflector scans ([`5324c36`](https://github.com/kmnhan/erlabpy/commit/5324c362d7bdd1dcf0c21303f370fd2e77f12448))
+
+
 ## v2.5.3 (2024-05-22)
 
 ### Fix
