@@ -449,3 +449,41 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             )
 
         return out
+
+    def around(self, radius: float | dict[Hashable, float], **sel_kw) -> xr.DataArray:
+        """
+        Average data within a specified radius of a specified point.
+
+        For instance, consider an ARPES map with dimensions ``kx``, ``ky``, and ``eV``.
+        Providing ``kx`` and ``ky`` points will average the data within a cylindrical
+        region centered at that point. The radius of the cylinder is specified by the
+        ``radius`` parameter. If different radii is given for ``kx`` and ``ky``, the
+        region will be an elliptic cylinder.
+
+        Parameters
+        ----------
+        radius
+            The radius of the region. If a single number, the same radius is used for
+            all dimensions. If a dictionary, each value
+        **sel_kw
+            The center of the spherical region. Must be a mapping of valid dimension
+            names to coordinate values.
+
+        Returns
+        -------
+        xr.DataArray
+            The mean value of the data within the region.
+
+        Note
+        ----
+        The region is defined by a spherical mask, which is generated with
+        `erlab.analysis.mask.spherical_mask`. Depending on the radius and dimensions
+        provided, the mask will be hyperellipsoid in the dimensions specified in
+        `sel_kw`.
+
+        """
+        import erlab.analysis
+
+        return self._obj.where(
+            erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw), drop=True
+        ).mean(sel_kw.keys())
