@@ -11,7 +11,7 @@ import numpy.typing as npt
 import pandas as pd
 import xarray as xr
 
-import erlab.io.utilities
+import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
 from erlab.io.igor import load_experiment, load_wave
 
@@ -154,7 +154,7 @@ class MERLINLoader(LoaderBase):
     ) -> pd.DataFrame:
         files: dict[str, str] = {}
 
-        for path in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
+        for path in erlab.io.utils.get_files(data_dir, extensions=(".pxt",)):
             data_name = os.path.splitext(os.path.basename(path))[0]
             name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
             if name_match is not None:

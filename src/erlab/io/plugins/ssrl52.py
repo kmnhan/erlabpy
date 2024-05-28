@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-import erlab.io.utilities
+import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
 
 
@@ -118,11 +118,11 @@ class SSRL52Loader(LoaderBase):
         zap: bool = False,
     ):
         if zap:
-            target_files = erlab.io.utilities.get_files(
+            target_files = erlab.io.utils.get_files(
                 data_dir, extensions=(".h5",), contains="zap"
             )
         else:
-            target_files = erlab.io.utilities.get_files(
+            target_files = erlab.io.utils.get_files(
                 data_dir, extensions=(".h5",), notcontains="zap"
             )
 
@@ -152,11 +152,11 @@ class SSRL52Loader(LoaderBase):
         files: dict[str, str] = {}
 
         if exclude_zap:
-            target_files = erlab.io.utilities.get_files(
+            target_files = erlab.io.utils.get_files(
                 data_dir, extensions=(".h5",), notcontains="zap"
             )
         else:
-            target_files = erlab.io.utilities.get_files(data_dir, extensions=(".h5",))
+            target_files = erlab.io.utils.get_files(data_dir, extensions=(".h5",))
 
         for pth in target_files:
             base_name = os.path.splitext(os.path.basename(pth))[0]

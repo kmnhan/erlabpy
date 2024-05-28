@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable
 from typing import ClassVar
 
-import erlab.io.utilities
+import erlab.io.utils
 from erlab.io.plugins.da30 import DA30Loader
 
 
@@ -25,7 +25,7 @@ class KRISSLoader(DA30Loader):
     def identify(
         self, num: int, data_dir: str | os.PathLike
     ) -> tuple[list[str], dict[str, Iterable]]:
-        for file in erlab.io.utilities.get_files(data_dir, extensions=(".ibw", ".zip")):
+        for file in erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".zip")):
             if file.endswith(".zip"):
                 match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", file)
             else:

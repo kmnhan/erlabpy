@@ -93,7 +93,7 @@ class MAESTROMicroLoader(LoaderBase):
 
     def identify(self, num, data_dir):
         file = None
-        for f in erlab.io.utilities.get_files(data_dir, ".h5"):
+        for f in erlab.io.utils.get_files(data_dir, ".h5"):
             if re.match(rf"(\d+)_{str(num).zfill(5)}.h5", os.path.basename(f)):
                 file = f
 
