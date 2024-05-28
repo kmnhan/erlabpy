@@ -63,7 +63,7 @@ def shift(
     ...     np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float), dims=["x", "y"]
     ... )
     >>> shift_arr = xr.DataArray([1, 0, 2], dims=["x"])
-    >>> shifted = erlab.analysis.utilities.shift(darr, shift_arr, along="y")
+    >>> shifted = erlab.analysis.utils.shift(darr, shift_arr, along="y")
     >>> print(shifted)
     <xarray.DataArray (x: 3, y: 3)> Size: 72B
     nan 1.0 2.0 4.0 5.0 6.0 nan nan 7.0
@@ -143,7 +143,7 @@ def correct_with_edge(*args, **kwargs):
     from erlab.analysis.gold import correct_with_edge
 
     warnings.warn(
-        "erlab.analysis.utilities.correct_with_edge is deprecated, "
+        "erlab.analysis.utils.correct_with_edge is deprecated, "
         "use erlab.analysis.gold.correct_with_edge instead",
         DeprecationWarning,
         stacklevel=1,

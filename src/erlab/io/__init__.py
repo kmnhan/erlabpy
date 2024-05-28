@@ -13,7 +13,7 @@ Modules
 
    plugins
    dataloader
-   utilities
+   utils
    igor
    exampledata
    characterization

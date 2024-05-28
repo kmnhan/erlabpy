@@ -32,7 +32,7 @@ from erlab.analysis.fit.models import (
     PolynomialModel,
     StepEdgeModel,
 )
-from erlab.analysis.utilities import shift
+from erlab.analysis.utils import shift
 from erlab.parallel import joblib_progress
 from erlab.plotting.colors import proportional_colorbar
 from erlab.plotting.general import autoscale_to, figwh, plot_array
@@ -68,7 +68,7 @@ def correct_with_edge(
     plot_kw
         Additional keyword arguments for the plot. Defaults to `None`.
     **shift_kwargs
-        Additional keyword arguments to `erlab.analysis.utilities.shift`.
+        Additional keyword arguments to `erlab.analysis.utils.shift`.
 
     Returns
     -------

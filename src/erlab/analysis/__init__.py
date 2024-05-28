@@ -17,7 +17,7 @@ Modules
    interpolate
    kspace
    transform
-   utilities
+   utils
 
 """
 
@@ -43,4 +43,4 @@ from erlab.analysis.mask import (
     polygon_mask_points,
 )
 from erlab.analysis.transform import rotateinplane, rotatestackinplane
-from erlab.analysis.utilities import shift
+from erlab.analysis.utils import shift
