@@ -44,6 +44,7 @@ class MERLINLoader(LoaderBase):
         "z",
         "polarization",
         "mesh_current",
+        "temp_sample",
     )
     additional_attrs: ClassVar[dict] = {
         "configuration": 1,
@@ -127,6 +128,11 @@ class MERLINLoader(LoaderBase):
 
         if "eV" in data.coords:
             data = data.assign_coords(eV=-data.eV.values)
+
+        if "temp_sample" in data.coords:
+            # Add temperature to attributes
+            temp = float(data.temp_sample.mean())
+            data = data.assign_attrs(temp_sample=temp)
 
         return data
 
