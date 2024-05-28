@@ -13,7 +13,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab.analysis
 from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utilities import (
+from erlab.interactive.utils import (
     AnalysisWindow,
     ParameterGroup,
     ROIControls,
@@ -108,7 +108,7 @@ class GoldTool(AnalysisWindow):
     execute
         Whether to execute the tool immediately.
     **kwargs
-        Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
+        Arguments passed onto `erlab.interactive.utils.AnalysisWindow`.
 
     Signals
     -------
@@ -566,7 +566,7 @@ def goldtool(
         Name of the data used in generating the code snipped copied to the clipboard.
         Overrides automatic detection.
     **kwargs
-        Arguments passed onto `erlab.interactive.utilities.AnalysisWindow`.
+        Arguments passed onto `erlab.interactive.utils.AnalysisWindow`.
     """
     if data_name is None:
         try:

@@ -19,7 +19,7 @@ import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
-from erlab.interactive.utilities import BetterSpinBox
+from erlab.interactive.utils import BetterSpinBox
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

@@ -19,7 +19,7 @@ from erlab.analysis.image import (
     minimum_gradient,
     scaled_laplace,
 )
-from erlab.interactive.utilities import (
+from erlab.interactive.utils import (
     copy_to_clipboard,
     gen_function_code,
     parse_data,

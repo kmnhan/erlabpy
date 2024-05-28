@@ -17,7 +17,7 @@ Interactive tools
    kspace
    masktool
    derivative
-   utilities
+   utils
 
 """
 

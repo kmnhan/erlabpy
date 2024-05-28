@@ -13,7 +13,7 @@ import numpy.typing as npt
 from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
-from erlab.interactive.utilities import format_kwargs
+from erlab.interactive.utils import format_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence

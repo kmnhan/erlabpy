@@ -24,7 +24,7 @@ from erlab.interactive.colors import (
     pg_colormap_powernorm,
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utilities import BetterAxisItem, copy_to_clipboard
+from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence

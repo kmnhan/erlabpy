@@ -1,7 +1,7 @@
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 
-from erlab.interactive.utilities import AnalysisWindow, ParameterGroup
+from erlab.interactive.utils import AnalysisWindow, ParameterGroup
 
 __all__ = ["masktool"]
 

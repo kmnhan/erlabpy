@@ -35,7 +35,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
 from erlab.io.plugins.merlin import MERLINLoader
 
 if TYPE_CHECKING:
