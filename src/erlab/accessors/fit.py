@@ -23,7 +23,7 @@ from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
 )
-from erlab.parallel import joblib_progress
+from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     from xarray.core.types import Dims

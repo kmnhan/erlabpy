@@ -27,24 +27,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 import joblib
 import numpy as np
-import numpy.typing as npt
 import pandas
 import xarray as xr
+
+from erlab.utils.array import is_monotonic, is_uniform_spaced
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     DataFromSingleFile = xr.DataArray | xr.Dataset | list[xr.DataArray]
-
-
-def _is_uniform(arr: npt.NDArray) -> bool:
-    dif = np.diff(arr)
-    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
-
-
-def _is_monotonic(arr: npt.NDArray) -> np.bool_:
-    dif = np.diff(arr)
-    return np.all(dif >= 0) or np.all(dif <= 0)
 
 
 class ValidationError(Exception):
@@ -278,13 +269,13 @@ class LoaderBase:
             elif val.squeeze().ndim == 1:
                 val = val.squeeze()
 
-                if _is_uniform(val):
+                if is_uniform_spaced(val):
                     start, end, step = tuple(
                         cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
                     )
                     return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
 
-                elif _is_monotonic(val):
+                elif is_monotonic(val):
                     if val[0] == val[-1]:
                         return cls.formatter(val[0])
 

@@ -20,9 +20,9 @@ __all__ = [
     "hex_bz_mask_points",
     "mask_with_hex_bz",
     "mask_with_polygon",
-    "spherical_mask",
     "polygon_mask",
     "polygon_mask_points",
+    "spherical_mask",
 ]
 
 from collections.abc import Hashable, Iterable

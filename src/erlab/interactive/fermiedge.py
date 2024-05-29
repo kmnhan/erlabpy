@@ -20,7 +20,7 @@ from erlab.interactive.utils import (
     gen_function_code,
     xImageItem,
 )
-from erlab.parallel import joblib_progress_qt
+from erlab.utils.parallel import joblib_progress_qt
 
 if TYPE_CHECKING:
     import lmfit

@@ -15,6 +15,7 @@ Subpackage                 Description
 `erlab.plotting`           Functions related to static plotting with matplotlib.
 `erlab.interactive`        Interactive tools and widgets based on Qt and pyqtgraph
 `erlab.accessors`          `xarray accessors <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_. You will not need to import this module directly.
+`erlab.utils`              Utility functions and classes, typically used internally.
 ========================   ========================
 
 .. currentmodule:: erlab
@@ -27,6 +28,7 @@ Subpackage                 Description
    erlab.plotting
    erlab.interactive
    erlab.accessors
+   erlab.utils
 
 Submodules
 ==========
@@ -36,7 +38,6 @@ Submodule           Description
 ==================  ==================
 `erlab.lattice`     Tools for working with real and reciprocal lattices.
 `erlab.constants`   Physical constants and functions for unit conversion.
-`erlab.parallel`    Helpers for parallel processing.
 ==================  ==================
 
 .. toctree::
@@ -44,4 +45,3 @@ Submodule           Description
 
    erlab.lattice
    erlab.constants
-   erlab.parallel

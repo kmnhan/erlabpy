@@ -189,7 +189,7 @@ class MAESTROMicroLoader(LoaderBase):
         }
 
         data = data.rename(
-            {f"phony_dim_{i+1}": k for i, k in enumerate(coord_dict.keys())}
+            {f"phony_dim_{i + 1}": k for i, k in enumerate(coord_dict.keys())}
         ).assign_coords(coord_dict)
 
         if len(motors) == 1:
