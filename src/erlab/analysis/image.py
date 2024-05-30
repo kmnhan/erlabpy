@@ -25,6 +25,12 @@ import scipy.ndimage
 import xarray as xr
 from numba import carray, cfunc, types
 
+from erlab.utils.array import (
+    check_arg_2d_darr,
+    check_arg_uniform_dims,
+    is_uniform_spaced,
+)
+
 
 def _parse_dict_arg(
     dims: Sequence[Hashable],
@@ -182,6 +188,10 @@ def gaussian_filter(
         )
     else:
         radius_pix = None
+
+    for d in sigma_dict.keys():
+        if not is_uniform_spaced(darr[d].values):
+            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
@@ -616,6 +626,8 @@ def laplace(
     return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
+@check_arg_2d_darr
+@check_arg_uniform_dims
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
@@ -648,12 +660,8 @@ def minimum_gradient(
 
     Note
     ----
-    - The input array is assumed to be regularly spaced.
-    - Any zero gradient values are replaced with NaN.
+    Any zero gradient values are replaced with NaN.
     """
-    if darr.ndim != 2:
-        raise ValueError("DataArray must be 2D")
-
     xvals = darr[darr.dims[1]].values
     yvals = darr[darr.dims[0]].values
 
@@ -667,6 +675,8 @@ def minimum_gradient(
     return darr / darr.max(skipna=True) / grad
 
 
+@check_arg_2d_darr
+@check_arg_uniform_dims
 def scaled_laplace(
     darr,
     factor: float = 1.0,
@@ -709,18 +719,11 @@ def scaled_laplace(
     ValueError
         If the input DataArray is not 2D.
 
-    Note
-    ----
-    The input array is assumed to be regularly spaced.
-
     See Also
     --------
     :func:`scipy.ndimage.generic_laplace` : The underlying function used to apply the
         filter.
     """
-    if darr.ndim != 2:
-        raise ValueError("DataArray must be 2D")
-
     xvals = darr[darr.dims[1]].values
     yvals = darr[darr.dims[0]].values
 
@@ -747,6 +750,8 @@ def scaled_laplace(
     )
 
 
+@check_arg_2d_darr
+@check_arg_uniform_dims
 def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
     """2D curvature method for detecting dispersive features.
 
@@ -772,14 +777,7 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     ------
     ValueError
         If the input DataArray is not 2D.
-
-    Note
-    ----
-    The input array is assumed to be regularly spaced.
     """
-    if darr.ndim != 2:
-        raise ValueError("DataArray must be 2D")
-
     xvals = darr[darr.dims[1]].values
     yvals = darr[darr.dims[0]].values
 

@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
 import erlab.plotting.erplot as eplt
-from erlab.interactive.utilities import ParameterGroup
+from erlab.interactive.utils import ParameterGroup
 from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
 
 

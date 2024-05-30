@@ -35,7 +35,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utilities import DictMenuBar, copy_to_clipboard
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
 from erlab.io.plugins.merlin import MERLINLoader
 
 if TYPE_CHECKING:
@@ -143,8 +143,10 @@ def itool(
         gc.collect()
 
         return None
+
     if len(itool_list) == 1:
         return itool_list[0]
+
     return itool_list
 
 

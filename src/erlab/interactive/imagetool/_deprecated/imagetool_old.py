@@ -32,7 +32,7 @@ from erlab.interactive.colors import (
     pg_colormap_powernorm,
     pg_colormap_to_QPixmap,
 )
-from erlab.interactive.utilities import parse_data, xImageItem
+from erlab.interactive.utils import parse_data, xImageItem
 
 # pg.setConfigOption('useNumba', True)
 # pg.setConfigOption('background', 'w')

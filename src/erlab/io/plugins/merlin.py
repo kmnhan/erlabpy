@@ -11,7 +11,7 @@ import numpy.typing as npt
 import pandas as pd
 import xarray as xr
 
-import erlab.io.utilities
+import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
 from erlab.io.igor import load_experiment, load_wave
 
@@ -44,6 +44,7 @@ class MERLINLoader(LoaderBase):
         "z",
         "polarization",
         "mesh_current",
+        "temp_sample",
     )
     additional_attrs: ClassVar[dict] = {
         "configuration": 1,
@@ -128,6 +129,11 @@ class MERLINLoader(LoaderBase):
         if "eV" in data.coords:
             data = data.assign_coords(eV=-data.eV.values)
 
+        if "temp_sample" in data.coords:
+            # Add temperature to attributes
+            temp = float(data.temp_sample.mean())
+            data = data.assign_attrs(temp_sample=temp)
+
         return data
 
     def load_live(self, filename, data_dir=None):
@@ -148,7 +154,7 @@ class MERLINLoader(LoaderBase):
     ) -> pd.DataFrame:
         files: dict[str, str] = {}
 
-        for path in erlab.io.utilities.get_files(data_dir, extensions=(".pxt",)):
+        for path in erlab.io.utils.get_files(data_dir, extensions=(".pxt",)):
             data_name = os.path.splitext(os.path.basename(path))[0]
             name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
             if name_match is not None:

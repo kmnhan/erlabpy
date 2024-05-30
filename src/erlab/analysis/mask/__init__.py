@@ -22,7 +22,10 @@ __all__ = [
     "mask_with_polygon",
     "polygon_mask",
     "polygon_mask_points",
+    "spherical_mask",
 ]
+
+from collections.abc import Hashable, Iterable
 
 import numba
 import numpy as np
@@ -32,7 +35,12 @@ import xarray as xr
 from erlab.analysis.mask import polygon
 
 
-def mask_with_polygon(arr, vertices, dims=("kx", "ky"), invert=False):
+def mask_with_polygon(
+    arr: xr.DataArray,
+    vertices: npt.NDArray[np.floating],
+    dims: Iterable[Hashable] = ("kx", "ky"),
+    invert: bool = False,
+):
     mask = xr.DataArray(
         polygon_mask(
             vertices.astype(np.float64), *(arr[d].values for d in dims), invert=invert
@@ -152,10 +160,115 @@ def polygon_mask_points(
         return mask
 
 
+def spherical_mask(
+    darr: xr.DataArray,
+    radius: float | dict[Hashable, float],
+    boundary: bool = True,
+    **sel_kw,
+) -> xr.DataArray:
+    """Generate a spherical boolean mask.
+
+    Depending on the radius and dimensions provided, the mask will be hyperellipsoid in
+    the dimensions specified in sel_kw. Points at the boundary are included in the mask.
+
+    The resulting mask can be used with :meth:`xarray.DataArray.where` to mask the data.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    radius
+        The radius of the spherical mask. If a single number, the same radius is used
+        for all dimensions. If a dictionary, the keys should match the dimensions
+        provided in sel_kw.
+    boundary
+        Whether to consider points on the boundary to be inside the mask. Default is
+        `True`.
+    **sel_kw
+        Keyword arguments for selecting specific dimensions and values. Must be a
+        mapping of valid dimension names to coordinate values.
+
+    Returns
+    -------
+    mask : xr.DataArray
+        A boolean mask indicating whether each point in the data array is within the
+        spherical mask.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import xarray as xr
+    >>> from erlab.analysis.mask import spherical_mask
+    >>> darr = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    >>> darr
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[ 0,  1,  2,  3,  4],
+        [ 5,  6,  7,  8,  9],
+        [10, 11, 12, 13, 14],
+        [15, 16, 17, 18, 19],
+        [20, 21, 22, 23, 24]])
+    Dimensions without coordinates: x, y
+    >>> spherical_mask(darr, radius=2, x=2, y=2)
+    <xarray.DataArray (x: 5, y: 5)> Size: 25B
+    array([[False, False,  True, False, False],
+        [False,  True,  True,  True, False],
+        [ True,  True,  True,  True,  True],
+        [False,  True,  True,  True, False],
+        [False, False,  True, False, False]])
+    Dimensions without coordinates: x, y
+    >>> spherical_mask(darr, radius=1, x=2)
+    <xarray.DataArray (x: 5)> Size: 5B
+    array([False,  True,  True,  True, False])
+    Dimensions without coordinates: x
+    """
+    if isinstance(radius, dict):
+        if set(radius.keys()) != set(sel_kw.keys()):
+            raise ValueError("Keys in radius and sel_kw must match")
+
+    if len(sel_kw) == 0:
+        raise ValueError("No dimensions provided for mask")
+
+    delta_squared = xr.DataArray(0.0)
+
+    for k, v in sel_kw.items():
+        if k not in darr.dims:
+            raise ValueError(f"Dimension {k} not found in data")
+
+        if isinstance(radius, dict):
+            r = radius[k]
+        else:
+            r = float(radius)
+
+        delta_squared = delta_squared + ((darr[k] - v) / r) ** 2
+
+    if boundary:
+        return delta_squared <= 1.0
+    else:
+        return delta_squared < 1.0
+
+
 def mask_with_hex_bz(
     kxymap: xr.DataArray, a: float = 3.54, rotate: float = 0.0, invert: bool = False
 ) -> xr.DataArray:
-    """Return map masked with a hexagonal BZ."""
+    """Mask an ARPES map with a hexagonal Brillouin zone.
+
+    Parameters
+    ----------
+    kxymap
+        The input map to be masked.
+    a
+        The lattice constant of the hexagonal BZ. Default is 3.54.
+    rotate
+        The rotation angle of the BZ in degrees. Default is 0.0.
+    invert
+        Whether to invert the mask. Default is False.
+
+    Returns
+    -------
+    masked : xr.DataArray
+        The masked map.
+
+    """
     if "kx" in kxymap.dims or "qx" in kxymap.dims:
         dims = ("kx", "ky")
 

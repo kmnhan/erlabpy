@@ -1,6 +1,6 @@
 import numpy as np
 import xarray as xr
-from erlab.analysis.utilities import shift
+from erlab.analysis.utils import shift
 
 
 def test_shift():

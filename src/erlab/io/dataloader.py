@@ -27,24 +27,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 import joblib
 import numpy as np
-import numpy.typing as npt
 import pandas
 import xarray as xr
 
+from erlab.utils.array import is_monotonic, is_uniform_spaced
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
     DataFromSingleFile = xr.DataArray | xr.Dataset | list[xr.DataArray]
-
-
-def _is_uniform(arr: npt.NDArray) -> bool:
-    dif = np.diff(arr)
-    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
-
-
-def _is_monotonic(arr: npt.NDArray) -> np.bool_:
-    dif = np.diff(arr)
-    return np.all(dif >= 0) or np.all(dif <= 0)
 
 
 class ValidationError(Exception):
@@ -85,11 +76,28 @@ class LoaderBase:
     """
     Names of attributes (after renaming) that should be treated as coordinates.
 
+    Attributes mentioned here will be moved from attrs to coordinates. This means that
+    it will be propagated when concatenating data from multiple files. If a listed
+    attribute is not found, it will be silently skipped.
+
     Note
     ----
     Although the data loader tries to preserve the original attributes, the attributes
     given here, both before and after renaming, will be removed from attrs for
     consistency.
+    """
+
+    average_attrs: tuple[str, ...] = ()
+    """
+    Names of attributes or coordinates (after renaming) that should be averaged over.
+
+    This is useful for attributes that may slightly vary between scans. If a listed
+    attribute is not found, it will be silently skipped.
+
+    Note
+    ----
+    The attributes are just converted to coordinates upon loading and are averaged in
+    the post-processing step.
     """
 
     additional_attrs: ClassVar[dict[str, str | int | float]] = {}
@@ -121,6 +129,11 @@ class LoaderBase:
 
         """
         return self.reverse_mapping(self.name_map)
+
+    @property
+    def coordinate_and_average_attrs(self) -> tuple[str, ...]:
+        """Return a tuple of coordinate and average attributes."""
+        return self.coordinate_attrs + self.average_attrs
 
     @staticmethod
     def reverse_mapping(mapping: Mapping[str, str | Iterable[str]]) -> dict[str, str]:
@@ -256,13 +269,13 @@ class LoaderBase:
             elif val.squeeze().ndim == 1:
                 val = val.squeeze()
 
-                if _is_uniform(val):
+                if is_uniform_spaced(val):
                     start, end, step = tuple(
                         cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
                     )
                     return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
 
-                elif _is_monotonic(val):
+                elif is_monotonic(val):
                     if val[0] == val[-1]:
                         return cls.formatter(val[0])
 
@@ -849,6 +862,37 @@ class LoaderBase:
         """
         raise NotImplementedError("This loader does not support folder summaries")
 
+    def combine_attrs(
+        self,
+        variable_attrs: Sequence[dict[str, Any]],
+        context: xr.Context | None = None,
+    ) -> dict[str, Any]:
+        """Combine multiple attributes into a single attribute.
+
+        This method is used as the ``combine_attrs`` argument in :func:`xarray.concat`
+        and :func:`xarray.merge` when combining data from multiple files into a single
+        object. By default, it has the same behavior as specifying
+        `combine_attrs='override'` by taking the first set of attributes.
+
+        The method can be overridden to provide fine-grained control over how the
+        attributes are combined.
+
+        Parameters
+        ----------
+        variable_attrs
+            A sequence of attributes to be combined.
+        context
+            The context in which the attributes are being combined. This has no effect,
+            but is required by xarray.
+
+        Returns
+        -------
+        dict[str, Any]
+            The combined attributes.
+
+        """
+        return dict(variable_attrs[0])
+
     def combine_multiple(
         self,
         data_list: list[xr.DataArray | xr.Dataset | list[xr.DataArray]],
@@ -859,7 +903,7 @@ class LoaderBase:
         if len(coord_dict) == 0:
             try:
                 # Try to merge the data without conflicts
-                return xr.merge(data_list)
+                return xr.merge(data_list, combine_attrs=self.combine_attrs)
             except:  # noqa: E722
                 # On failure, return a list
                 return data_list
@@ -877,6 +921,7 @@ class LoaderBase:
                     data_list,
                     dim=next(iter(coord_dict.keys())),
                     coords="different",
+                    combine_attrs=self.combine_attrs,
                 )
             except:  # noqa: E722
                 return data_list
@@ -895,7 +940,10 @@ class LoaderBase:
         for k, v in dict(data.attrs).items():
             if k in key_mapping:
                 new_key = key_mapping[k]
-                if new_key in self.coordinate_attrs and new_key in data.coords:
+                if (
+                    new_key in self.coordinate_and_average_attrs
+                    and new_key in data.coords
+                ):
                     # Renamed attribute is already a coordinate, remove
                     del data.attrs[k]
                 else:
@@ -906,7 +954,7 @@ class LoaderBase:
         data = data.assign_coords(
             {
                 a: data.attrs.pop(a)
-                for a in self.coordinate_attrs
+                for a in self.coordinate_and_average_attrs
                 if a in data.attrs and a not in data.coords
             }
         )
@@ -914,6 +962,12 @@ class LoaderBase:
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = self.process_keys(data)
+
+        for k in self.average_attrs:
+            if k in data.coords:
+                v = data[k].values.mean()
+                data = data.drop(k).assign_attrs({k: v})
+
         data = data.assign_attrs(
             self.additional_attrs | {"data_loader_name": str(self.name)}
         )
@@ -972,7 +1026,7 @@ class LoaderBase:
 
         for a in ("configuration", "temp_sample"):
             if a not in data.attrs:
-                cls._raise_or_warn(f"Missing attribute {c}")
+                cls._raise_or_warn(f"Missing attribute {a}")
 
         if data.attrs["configuration"] not in (1, 2):
             if data.attrs["configuration"] not in (3, 4):

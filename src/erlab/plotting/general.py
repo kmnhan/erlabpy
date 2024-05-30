@@ -693,10 +693,15 @@ def gradient_fill(
     patch = matplotlib.patches.PathPatch(
         matplotlib.path.Path(np.array([xn, yn]).T), edgecolor="none", facecolor="none"
     )
-    ax.add_patch(patch)
 
     im = matplotlib.image.AxesImage(
-        ax, cmap=cmap, interpolation="bicubic", origin="lower", zorder=0, **kwargs
+        ax,
+        cmap=cmap,
+        interpolation="bicubic",
+        origin="lower",
+        zorder=0,
+        extent=(min(xn), max(xn), min(yn), max(yn)),
+        **kwargs,
     )
     im.use_sticky_edges = False  # type: ignore[attr-defined]
 
@@ -705,11 +710,11 @@ def gradient_fill(
     else:
         im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1))
 
-    # with autoscale_off(ax):
-    im.set_extent((min(xn), max(xn), min(yn), max(yn)))
-    im.set_clip_path(patch)
-    im.autoscale_None()
-    ax.add_image(im)
+    with autoscale_off(ax):
+        ax.add_patch(patch)
+        im.set_clip_path(patch)
+        im.autoscale_None()
+        ax.add_image(im)
 
     return im
 

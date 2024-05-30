@@ -185,7 +185,7 @@ def test_loader():
         def generate_summary(self, data_dir):
             # Get all valid data files in directory
             files = {}
-            for path in erlab.io.utilities.get_files(data_dir, extensions=[".h5"]):
+            for path in erlab.io.utils.get_files(data_dir, extensions=[".h5"]):
                 # Base name
                 data_name = os.path.splitext(os.path.basename(path))[0]
 

@@ -20,7 +20,7 @@ from erlab.interactive.colors import (
     ColorMapGammaWidget,  # noqa: F401
 )
 from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utilities import copy_to_clipboard, gen_function_code, xImageItem
+from erlab.interactive.utils import copy_to_clipboard, gen_function_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
 
 

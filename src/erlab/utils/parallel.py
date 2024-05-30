@@ -1,9 +1,4 @@
-"""
-Helper functions for parallel processing.
-
-.. currentmodule:: erlab.parallel
-
-"""
+"""Helper functions for parallel processing."""
 
 __all__ = ["joblib_progress", "joblib_progress_qt"]
 

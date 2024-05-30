@@ -13,7 +13,7 @@ import numpy.typing as npt
 from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
-from erlab.interactive.utilities import format_kwargs
+from erlab.interactive.utils import format_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -396,6 +396,19 @@ class ArraySlicer(QtCore.QObject):
     @QtCore.Slot(int, result=list)
     def get_bins(self, cursor: int) -> list[int]:
         return self._bins[cursor]
+
+    @QtCore.Slot(int, result=list)
+    def get_bin_values(self, cursor: int) -> list[float | None]:
+        bins = self.get_bins(cursor)
+        if self._nonuniform_axes:
+            return [
+                None if i in self._nonuniform_axes else b * np.abs(inc)
+                for i, (b, inc) in enumerate(zip(bins, self.incs_uniform, strict=True))
+            ]
+        else:
+            return [
+                b * np.abs(inc) for b, inc in zip(bins, self.incs_uniform, strict=True)
+            ]
 
     def set_bins(
         self, cursor: int, value: list[int | None], update: bool = True

@@ -13,7 +13,7 @@ Modules
 
    plugins
    dataloader
-   utilities
+   utils
    igor
    exampledata
    characterization
@@ -61,7 +61,7 @@ import warnings
 
 from erlab.io.dataloader import LoaderRegistry
 from erlab.io.igor import load_experiment, load_wave
-from erlab.io.utilities import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
+from erlab.io.utils import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
 # Import plugins last
 # isort: off

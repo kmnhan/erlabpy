@@ -30,9 +30,9 @@ ImageTool can be used to display *image-like* :class:`xarray.DataArray`\ s rangi
 2 to 4 dimensions. If a coordinate of the input data happens to be non-uniform, it will
 automatically be converted to an index array so that the data can be displayed.
 
-There are two main ways to invoke the ImageTool. First is to call the :func:`itool
-<erlab.interactive.imagetool.itool>` convenience function, which will create a new
-ImageTool instance and handle the event loop execution: ::
+There are two main ways to invoke the ImageTool. The first way is to call the
+:func:`itool <erlab.interactive.imagetool.itool>` convenience function, which will
+create a new ImageTool instance and handle the event loop execution: ::
 
     import erlab.interactive as eri
     eri.itool(data)
@@ -44,12 +44,13 @@ Another way is to use the ``qshow`` accessor: ::
 Tips
 ----
 
-- If you don't know what a button does, many buttons have tooltips that will appear when you hover over them.
+- If you don't know what a button does, many buttons have tooltips that will appear when
+  you hover over them.
 
 - Right-clicking on each plot will bring up a context menu with various options. One
-  useful option is ``Copy selection code`` that copies the selection code which can be
-  quickly pasted to a Python script or Jupyter notebook to reproduce the sliced data.
-  You can also save the data corresponding to each slice as a HDF5 file.
+  useful menu is ``Copy selection code`` that copies the selection code which can be
+  quickly pasted to a Python script or Jupyter notebook to reproduce the data in the
+  clicked region.
 
 - ImageTool is also very extensible. At our home lab, we use a modified version of
   ImageTool to plot data as it is being collected in real-time!
@@ -60,6 +61,10 @@ Keyboard shortcuts
 Hints for most keyboard shortcuts are displayed in the menu bar. Here, some shortcuts
 that are not found in the menu bar are listed. Mac users must replace :kbd:`Ctrl` with
 :kbd:`⌘` and :kbd:`Alt` with :kbd:`⌥`.
+
+The rule of thumb is that if you can do something that applies to a single cursor, you
+can do it to all cursors by holding :kbd:`Alt`. Also, keyboard shortcuts that are
+related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
 
 .. list-table::
     :header-rows: 1

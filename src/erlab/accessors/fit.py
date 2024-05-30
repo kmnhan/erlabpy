@@ -23,7 +23,7 @@ from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
 )
-from erlab.parallel import joblib_progress
+from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     from xarray.core.types import Dims
@@ -390,6 +390,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             if model.independent_vars is not None:
                 if n_coords == 1:
                     indep_var_kwargs = {model.independent_vars[0]: x}
+                    if len(model.independent_vars) == 2:
+                        # Y-dependent data, like background models
+                        indep_var_kwargs[model.independent_vars[1]] = y
                 else:
                     indep_var_kwargs = dict(
                         zip(model.independent_vars[:n_coords], x, strict=True)
