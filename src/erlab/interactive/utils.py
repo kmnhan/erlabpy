@@ -250,6 +250,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         significant: bool = False,
         scientific: bool = False,
         value: float = 0.0,
+        prefix: str = "",
         **kwargs,
     ):
         self._only_int = integer
@@ -264,6 +265,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._min = -np.inf
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
+        self._prefix = prefix
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
         kwargs.setdefault("keyboardTracking", False)
@@ -292,17 +294,26 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             self.setButtonSymbols(self.ButtonSymbols.NoButtons)
         self.setValue(self.value())
 
-    def setDecimals(self, decimals):
+    @QtCore.Slot(str)
+    def setPrefix(self, prefix: str):
+        self._prefix = prefix
+
+    def prefix(self) -> str:
+        return self._prefix
+
+    @QtCore.Slot(int)
+    def setDecimals(self, decimals: int):
         self._decimals = decimals
 
-    def decimals(self):
+    def decimals(self) -> int:
         return self._decimals
 
     def setRange(self, mn, mx):
         self.setMinimum(min(mn, mx))
         self.setMaximum(max(mn, mx))
 
-    def widthFromText(self, text):
+    @QtCore.Slot(str, result=int)
+    def widthFromText(self, text: str) -> int:
         return QtGui.QFontMetrics(self.font()).boundingRect(text).width()
 
     def widthFromValue(self, value):
@@ -344,13 +355,13 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         else:
             return self._value
 
-    def text(self):
+    def text(self) -> str:
         return self.textFromValue(self.value())
 
-    def textFromValue(self, value):
+    def textFromValue(self, value) -> str:
         if (not self._only_int) or (not np.isfinite(value)):
             if self._is_scientific:
-                return np.format_float_scientific(
+                return self.prefix() + np.format_float_scientific(
                     value,
                     precision=self.decimals(),
                     unique=False,
@@ -358,7 +369,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     exp_digits=1,
                 )
             else:
-                return np.format_float_positional(
+                return self.prefix() + np.format_float_positional(
                     value,
                     precision=self.decimals(),
                     unique=False,
@@ -366,9 +377,10 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     trim="k",
                 )
         else:
-            return str(int(value))
+            return self.prefix() + str(int(value))
 
-    def valueFromText(self, text):
+    def valueFromText(self, text: str):
+        text = text[len(self.prefix()) :]
         if text == "":
             return np.nan
         if self._only_int:
@@ -489,7 +501,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         spin.setDisabled(True)
         spin.setVisible(False)
         del spin
-        return w + 10
+        return w
 
     def _updateWidth(self):
         self.setMinimumWidth(

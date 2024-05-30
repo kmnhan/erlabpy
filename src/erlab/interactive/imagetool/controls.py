@@ -676,15 +676,26 @@ class ItoolBinningControls(ItoolControlsBase):
         super().__init__(*args, **kwargs)
 
     def initialize_layout(self):
-        self.setLayout(QtWidgets.QGridLayout(self))
-
-        layout = cast(QtWidgets.QGridLayout, self.layout())
+        layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
+
+        self.gridlayout = QtWidgets.QGridLayout()
+        self.gridlayout.setContentsMargins(0, 0, 0, 0)
+        self.gridlayout.setSpacing(3)
+
+        self.buttonslayout = QtWidgets.QVBoxLayout()
+        self.buttonslayout.setContentsMargins(0, 0, 0, 0)
+        self.buttonslayout.setSpacing(3)
+
+        layout.addLayout(self.gridlayout)
+        layout.addLayout(self.buttonslayout)
+        self.setLayout(layout)
 
     def initialize_widgets(self):
         super().initialize_widgets()
         self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
+        self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
             BetterSpinBox(
                 self,
@@ -707,15 +718,27 @@ class ItoolBinningControls(ItoolControlsBase):
         self.all_btn = IconButton(
             on="all_cursors",
             checkable=True,
-            toolTip="Apply for all cursors",
+            toolTip="When checked, apply bins to all cursors upon change",
         )
 
-        layout = cast(QtWidgets.QGridLayout, self.layout())
+        height = QtGui.QFontMetrics(self.labels[0].font()).height() + 3
+
         for i in range(self.data.ndim):
-            layout.addWidget(self.labels[i], 0, i, 1, 1)
-            layout.addWidget(self.spins[i], 1, i, 1, 1)
-        layout.addWidget(self.reset_btn, 2, 0, 1, 1)
-        layout.addWidget(self.all_btn, 2, 1, 1, 1)
+            self.gridlayout.addWidget(self.labels[i], 0, i, 1, 1)
+            self.gridlayout.addWidget(self.spins[i], 1, i, 1, 1)
+            self.gridlayout.addWidget(self.val_labels[i], 2, i, 1, 1)
+            self.val_labels[i].setMaximumHeight(height)
+            self.spins[i].setToolTip("Number of bins")
+            self.val_labels[i].setToolTip("Value corresponding to number of bins")
+
+        self.reset_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Expanding
+        )
+        self.all_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Minimum, QtWidgets.QSizePolicy.Policy.Expanding
+        )
+        self.buttonslayout.addWidget(self.reset_btn)
+        self.buttonslayout.addWidget(self.all_btn)
         # for spin in self.spins:
         # spin.setMinimumWidth(60)
 
@@ -742,15 +765,19 @@ class ItoolBinningControls(ItoolControlsBase):
     def update(self):
         super().update()
 
-        if len(self.labels) != self.data.ndim:
+        if len(self.val_labels) != self.data.ndim:
             clear_layout(self.layout())
             self.initialize_widgets()
 
+        bin_numbers = self.array_slicer.get_bins(self.current_cursor)
+        bin_values = self.array_slicer.get_bin_values(self.current_cursor)
+
         for i in range(self.data.ndim):
             self.spins[i].blockSignals(True)
-            self.labels[i].setText(str(self.data.dims[i]))
+            self.labels[i].setText(f"{self.data.dims[i]!s}")
             self.spins[i].setRange(1, self.data.shape[i] - 1)
-            self.spins[i].setValue(self.array_slicer.get_bins(self.current_cursor)[i])
+            self.spins[i].setValue(bin_numbers[i])
+            self.val_labels[i].setText(f"{bin_values[i]:.3g}")
             self.spins[i].blockSignals(False)
 
     def reset(self):
