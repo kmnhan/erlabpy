@@ -143,8 +143,10 @@ def itool(
         gc.collect()
 
         return None
+
     if len(itool_list) == 1:
         return itool_list[0]
+
     return itool_list
 
 

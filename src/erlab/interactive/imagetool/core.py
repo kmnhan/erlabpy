@@ -174,31 +174,35 @@ class SlicerLinkProxy:
 
     Parameters
     ----------
-    link_colors
-        Whether to sync color related changes.
     *slicers
         The slicers to link.
+    link_colors
+        Whether to sync color related changes, by default `True`.
 
     """
 
     def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True):
         self.link_colors = link_colors
-        self._slicers: set[ImageSlicerArea] = set()
+        self._children: set[ImageSlicerArea] = set()
         for s in slicers:
             self.add(s)
 
-    def add(self, slicer: ImageSlicerArea):
-        if slicer.is_linked:
-            if slicer._linking_proxy == self:
+    @property
+    def children(self) -> set[ImageSlicerArea]:
+        return self._children
+
+    def add(self, slicer_area: ImageSlicerArea):
+        if slicer_area.is_linked:
+            if slicer_area._linking_proxy == self:
                 return
             else:
                 raise ValueError("Already linked to another proxy.")
-        self._slicers.add(slicer)
-        slicer._linking_proxy = self
+        self._children.add(slicer_area)
+        slicer_area._linking_proxy = self
 
-    def remove(self, slicer: ImageSlicerArea):
-        self._slicers.remove(slicer)
-        slicer._linking_proxy = None
+    def remove(self, slicer_area: ImageSlicerArea):
+        self._children.remove(slicer_area)
+        slicer_area._linking_proxy = None
 
     def sync(
         self,
@@ -228,7 +232,7 @@ class SlicerLinkProxy:
         """
         if color and not self.link_colors:
             return
-        for target in self._slicers.difference({source}):
+        for target in self._children.difference({source}):
             getattr(target, funcname)(
                 **self.convert_args(source, target, arguments, indices, steps)
             )
@@ -650,7 +654,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if not isinstance(data, xr.DataArray):
             if isinstance(data, xr.Dataset):
-                data = data[next(iter(data.data_vars.keys()))]
+                data = cast(xr.DataArray, data[next(iter(data.data_vars.keys()))])
             else:
                 data = xr.DataArray(np.asarray(data))
         if hasattr(data.data, "flags"):
