@@ -2,7 +2,8 @@
 
 __all__ = ["is_dims_uniform", "is_monotonic", "is_uniform_spaced", "uniform_dims"]
 
-from collections.abc import Hashable, Iterable
+import functools
+from collections.abc import Callable, Hashable, Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -103,3 +104,39 @@ def is_dims_uniform(
         if not is_uniform_spaced(darr[dim].values, **kwargs):
             return False
     return True
+
+
+def check_arg_2d_darr(func: Callable | None = None):
+    """Decorate a function to check if the first argument is a 2D DataArray."""
+
+    def _decorator(func):
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs):
+            if not isinstance(args[0], xr.DataArray) or args[0].ndim != 2:
+                raise ValueError("Input must be a 2-dimensional xarray.DataArray")
+            return func(*args, **kwargs)
+
+        return _wrapper
+
+    if func is not None:
+        return _decorator(func)
+    return _decorator
+
+
+def check_arg_uniform_dims(func: Callable | None = None):
+    """Decorate a function to check if all dims in the first argument are uniform."""
+
+    def _decorator(func):
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs):
+            if not isinstance(args[0], xr.DataArray) or not is_dims_uniform(args[0]):
+                raise ValueError(
+                    "Coordinates for all dimensions must be uniformly spaced"
+                )
+            return func(*args, **kwargs)
+
+        return _wrapper
+
+    if func is not None:
+        return _decorator(func)
+    return _decorator

@@ -1,5 +1,6 @@
 import erlab.analysis as era
 import numpy as np
+import pytest
 import xarray as xr
 
 
@@ -122,6 +123,23 @@ def test_minimum_gradient():
 
     # Check if the result matches the expected output
     assert np.allclose(result, expected_output)
+
+    # Test decorators that check for input validity
+    darr = xr.DataArray(np.arange(5), dims=["x"])
+    with pytest.raises(
+        ValueError, match="Input must be a 2-dimensional xarray.DataArray"
+    ):
+        era.image.minimum_gradient(darr)
+
+    darr = xr.DataArray(
+        np.arange(50, step=2).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": [0, 1, 2, 4, 5]},
+    )
+    with pytest.raises(
+        ValueError, match="Coordinates for all dimensions must be uniformly spaced"
+    ):
+        era.image.minimum_gradient(darr)
 
 
 def test_scaled_laplace():
