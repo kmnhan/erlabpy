@@ -2,6 +2,66 @@
 
 
 
+## v2.6.0 (2024-05-30)
+
+### Ci
+
+* (**github**) disable parallel testing ([`fd024f5`](https://github.com/kmnhan/erlabpy/commit/fd024f5f1d6870ff6c30ee32ee8c3a708245a958))
+
+* (**github**) enable color output ([`44071db`](https://github.com/kmnhan/erlabpy/commit/44071db669e66a39d025d23d63962399c59d9e1b))
+
+* (**pre-commit**) pre-commit autoupdate ([`acb9c1c`](https://github.com/kmnhan/erlabpy/commit/acb9c1c31cfa8595512f30820b713c6bd1205983))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.4 → v0.4.5](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.4...v0.4.5)
+
+### Documentation
+
+* add `qsel.around` to indexing guide ([`1f95659`](https://github.com/kmnhan/erlabpy/commit/1f95659ae30a432d2fd91ec8c669c39a33b41f15))
+
+### Feature
+
+* (**interactive.imagetool**) add bin amount label to binning controls ([`7a7a692`](https://github.com/kmnhan/erlabpy/commit/7a7a692b881e4cc1bd49342f31f3fe50407d72b5))
+
+* add accessor for selecting around a point ([`aa24457`](https://github.com/kmnhan/erlabpy/commit/aa244576fcfa17f71be0a765be8f270a6ae28080))
+
+* (**accessors.fit**) add support for background models ([`550be2d`](https://github.com/kmnhan/erlabpy/commit/550be2deebf54fab77bef591ccbe059b5b219937))
+
+  If one coordinate is given but there are two independent variables are present in the model,  the second one will be treated as the data. This makes the accessor compatible with y-dependent background models, such as the Shirley background provided in `lmfitxps`.
+
+* (**io**) make the dataloader behavior more customizable ([`4824127`](https://github.com/kmnhan/erlabpy/commit/4824127181b4383788f6dbe5cbeae4b2060f1f4f))
+
+  Now, a new `average_attrs` class attribute exists for attributes that would be averaged over multiple file scans. The current default just takes the attributes from the first file. This also works when you wish to demote a coordinate to an attribute while averaging over its values.
+  For more fine-grained control of the resulting data attributes, a new method `combine_attrs` can be overridden to take care of attributes for scans over multiple files. The default behavior is to just use the attributes from the first file.
+
+### Fix
+
+* (**plotting**) make `gradient_fill` keep axis scaling ([`51507dd`](https://github.com/kmnhan/erlabpy/commit/51507dd966a0ce2db4aabff2aac8222bee184cf8))
+
+### Refactor
+
+* (**analysis.image**) add check for 2D and uniform inputs ([`22bb02d`](https://github.com/kmnhan/erlabpy/commit/22bb02dd8dfbd5eb6b5d577abe9138a769a079b3))
+
+* try to fix synced itool garbage collection ([`932cc5a`](https://github.com/kmnhan/erlabpy/commit/932cc5a690dcebc92c65ea3f17081ac9f9c3ef8f))
+
+  This only happens in GH actions, and it doesn&#39;t happen every time so it&#39;s hard to debug.
+
+* create utils subpackage to host internal methods ([`3fa2873`](https://github.com/kmnhan/erlabpy/commit/3fa287386fc0e94e8a558e2f0e5520be869acb43))
+
+  The parallel module is now part of utils, without a compatibiliity layer or deprecation warning since nobody is using the functions from parallel anyway.
+
+* add deprecation warnings for utilities ([`5d375b8`](https://github.com/kmnhan/erlabpy/commit/5d375b8fe0766ea3f2c5fe2421937ce7309e3da5))
+
+  All submodules named `utilities.py` have been renamed to `utils.py` for consistency. The old call to `utilities.py` will still work but will raise a warning. The modules will be removed on 3.0 release.
+
+* rename `erlab.interactive.utilities` to `erlab.interactive.utils` ([`d9f1fb0`](https://github.com/kmnhan/erlabpy/commit/d9f1fb081be8d2e8710ec08421780f927341b71a))
+
+* rename `erlab.analysis.utilities` to `erlab.analysis.utils` ([`ed81b62`](https://github.com/kmnhan/erlabpy/commit/ed81b6234bd2960da785875e0aaaf2e9e5e48f15))
+
+* rename `erlab.io.utilities` to `erlab.io.utils` ([`6e0813d`](https://github.com/kmnhan/erlabpy/commit/6e0813d3873b09593ec9d539d72c7512fac77c70))
+
+* (**io.plugins.merlin**) regard temperature as coordinate ([`2fda047`](https://github.com/kmnhan/erlabpy/commit/2fda04781961f2384c711a3b1c3c00ddaecaa617))
+
+
 ## v2.5.4 (2024-05-23)
 
 ### Fix
