@@ -19,7 +19,7 @@ If you are new to programming with python, `Scientific Python Lectures
 
 Data structures in ERLabPy are represented using `xarray <https://docs.xarray.dev/>`_\
 :cite:p:`hoyer2017xarray`, which provides a powerful data structure for working with
-multi-dimensional arrays. Visit the `xarray tutorial <https://tutorial.xarray.dev/>`_
+multi-dimensional arrays. Check out the `xarray tutorial <https://tutorial.xarray.dev/>`_
 and the `xarray user guide <https://docs.xarray.dev/en/stable/index.html>`_ to get
 familiar with xarray.
 
