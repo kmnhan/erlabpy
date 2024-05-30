@@ -2,6 +2,13 @@
 
 
 
+## v2.6.1 (2024-05-30)
+
+### Fix
+
+* re-trigger due to CI failure ([`b6d69b5`](https://github.com/kmnhan/erlabpy/commit/b6d69b556e3d0dbe6d8d71596e32d9d7cfdc5267))
+
+
 ## v2.6.0 (2024-05-30)
 
 ### Ci
