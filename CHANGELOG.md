@@ -2,6 +2,13 @@
 
 
 
+## v2.6.2 (2024-06-03)
+
+### Fix
+
+* (**interactive.imagetool**) fix regression with nonuniform data ([`67df972`](https://github.com/kmnhan/erlabpy/commit/67df9720193611816e2a562ce71d080fccbbec5e))
+
+
 ## v2.6.1 (2024-05-30)
 
 ### Fix
