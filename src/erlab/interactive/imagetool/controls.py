@@ -777,7 +777,10 @@ class ItoolBinningControls(ItoolControlsBase):
             self.labels[i].setText(f"{self.data.dims[i]!s}")
             self.spins[i].setRange(1, self.data.shape[i] - 1)
             self.spins[i].setValue(bin_numbers[i])
-            self.val_labels[i].setText(f"{bin_values[i]:.3g}")
+            if bin_values[i] is None:
+                self.val_labels[i].setText("")
+            else:
+                self.val_labels[i].setText(f"{bin_values[i]:.3g}")
             self.spins[i].blockSignals(False)
 
     def reset(self):
