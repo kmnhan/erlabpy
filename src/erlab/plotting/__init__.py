@@ -19,15 +19,6 @@ Modules
 
 """
 
-__all__ = [
-    "annotations",
-    "atoms",
-    "bz",
-    "colors",
-    "general",
-    "plot3d",
-]
-
 import importlib
 import io
 import os

@@ -45,7 +45,6 @@ __all__ = [
     "load",
     "load_experiment",
     "load_hdf5",
-    "load_live",
     "load_wave",
     "loader_context",
     "loaders",
