@@ -2,6 +2,24 @@
 
 
 
+## v2.6.3 (2024-06-07)
+
+### Ci
+
+* (**pre-commit**) pre-commit autoupdate (#41) ([`997e83d`](https://github.com/kmnhan/erlabpy/commit/997e83d1cd8c9b42d4072aa147ea55fcee7cb6ae))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.5 → v0.4.7](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.5...v0.4.7)
+  Co-authored-by: pre-commit-ci[bot] &lt;66853113+pre-commit-ci[bot]@users.noreply.github.com&gt;
+
+### Fix
+
+* (**erlab.io.plugins**) support SSRL hv dependent data ([`1529b6a`](https://github.com/kmnhan/erlabpy/commit/1529b6a0af43f09c51691ad8bebf9208d421940a))
+
+### Refactor
+
+* cleanup namespace ([`847fbbe`](https://github.com/kmnhan/erlabpy/commit/847fbbe4975b507905dc85ca5ae75fe16f5f887e))
+
+
 ## v2.6.2 (2024-06-03)
 
 ### Fix
