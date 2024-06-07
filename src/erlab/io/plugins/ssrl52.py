@@ -19,7 +19,7 @@ class SSRL52Loader(LoaderBase):
     aliases = ("ssrl52", "bl5-2")
 
     name_map: ClassVar[dict] = {
-        "eV": "Kinetic Energy",
+        "eV": ["Kinetic Energy", "Binding Energy"],
         "alpha": "ThetaX",
         "beta": ["ThetaY", "YDeflection", "DeflectionY"],
         "delta": ["A", "a"],  # azi
@@ -89,18 +89,46 @@ class SSRL52Loader(LoaderBase):
                     ).load()
 
                     # Apply coordinates
+                    is_hvdep: bool = False
                     for i, ax in enumerate(axes):
                         if compat_mode:
                             cnt = v.dimensions[f"phony_dim_{i}"].size
                         else:
-                            cnt = ax["count"]
-                        mn, mx = (
-                            ax["offset"],
-                            ax["offset"] + (cnt - 1) * ax["delta"],
-                        )
-                        data = data.assign_coords(
-                            {ax["label"]: np.linspace(mn, mx, cnt)}
-                        )
+                            cnt = int(ax["count"])
+
+                        if (
+                            isinstance(ax["offset"], str)
+                            and ax["label"] == "Kinetic Energy"
+                        ):
+                            is_hvdep = True
+                            # For hv dep scans, EKin is given for each scan
+                            data = data.rename({ax["label"]: "Binding Energy"})
+                            ax["label"] = "Binding Energy"
+                            # ax['offset'] will be something like "MapInfo:Data:Axes0:Offset"
+                            seg: str = ax["offset"][8:]
+                            # Take first kinetic energy
+                            offset = np.array(ncf["MapInfo"][seg])[0]
+
+                            if isinstance(ax["delta"], str):
+                                delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
+                                # may be ~1e-8 difference between values
+                                delta = np.mean(delta)
+
+                        else:
+                            offset = float(ax["offset"])
+                            delta = float(ax["delta"])
+
+                        mn, mx = (offset, offset + (cnt - 1) * delta)
+                        coord = np.linspace(mn, mx, cnt)
+
+                        if len(data[ax["label"]]) != cnt:
+                            # For premature data
+                            coord = coord[: len(data[ax["label"]])]
+
+                        data = data.assign_coords({ax["label"]: coord})
+
+        if is_hvdep:
+            data = data.rename(energy="hv")
 
         if "time" in data.variables:
             # Normalize by dwell time
