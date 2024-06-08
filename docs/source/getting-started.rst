@@ -2,6 +2,18 @@
 Getting Started
 ***************
 
+Welcome to ERLabPy! This documentation will guide you through the installation process
+and provide an overview of the package.
+
+If you are new to programming with python, `Scientific Python Lectures
+<https://github.com/jrjohansson/scientific-python-lectures>`_ is a great place to start.
+
+Data structures in ERLabPy are represented using `xarray <https://docs.xarray.dev/>`_\
+:cite:p:`hoyer2017xarray`, which provides a powerful data structure for working with
+multi-dimensional arrays. Check out the `xarray tutorial <https://tutorial.xarray.dev/>`_
+and the `xarray user guide <https://docs.xarray.dev/en/stable/index.html>`_ to get
+familiar with xarray.
+
 Installing
 ==========
 
@@ -10,8 +22,6 @@ follow the :ref:`installation instructions <Installing conda>`. Once you have a 
 conda environment, you can install ERLabPy with the conda command line tool: ::
 
   conda install -c conda-forge erlab
-
-Add any `optional dependencies`_ you want to install to the command above.
 
 .. hint::
 
@@ -44,13 +54,46 @@ Optional dependency groups can be installed with the following commands: ::
 
 If you wish to install ERLabPy from source, see the :doc:`contributing`.
 
+Importing
+=========
+
+Once installed, you can import ERLabPy in your Python scripts or interactive sessions.
+
+The following import conventions are recommended for ERLabPy modules: ::
+
+  import erlab.analysis as era
+  import erlab.interactive as eri
+  import erlab.io
+  import erlab.plotting.erplot as eplt
+
+Along with frequently used modules, your import statements may look like this: ::
+
+  import erlab.analysis as era
+  import erlab.interactive as eri
+  import erlab.io
+  import erlab.plotting.erplot as eplt
+  import matplotlib.pyplot as plt
+  import numpy as np
+  import xarray as xr
+
+  xr.set_options(keep_attrs=True)
+
+Of course, you may not need all of these modules for every script.
+
+.. note::
+
+  The interactive plotting module, :mod:`erlab.interactive`, requires a Qt library such
+  as PyQt6 or PySide6. If you do not have one installed, ERLabPy will notify you when
+  you try to import the module.
+
 Dependencies
 ============
 
-ERLabPy is installed with many different python libraries. Some key packages and
-links to their documentation are listed below as a reference. In particular,
-this documentation assumes basic familiarity with the first four packages, which
-will be sufficient for most use cases.
+ERLabPy is installed with many different python libraries.
+
+The following table lists some of the most important packages that ERLabPy depends on
+that are used in various fields of the scientific python ecosystem. Links to their
+documentation are listed below as a reference.
 
 .. list-table::
     :header-rows: 1
@@ -69,13 +112,11 @@ will be sufficient for most use cases.
       - Linear algebra, signal processing, and image processing
     * - `lmfit <https://lmfit.github.io/lmfit-py/>`_
       - Optimization problems including curve fitting
-    * - `pyqtgraph <https://pyqtgraph.readthedocs.io/en/latest/>`_
-      - Interactive plotting (i.e., imagetool)
 
-ERLabPy also requires a Qt library such as PyQt5, PyQt6, PySide2, or PySide6. To
-ensure compatibility and keep the namespace clean, ERLabPy imports Qt bindings
-from `qtpy <https://github.com/spyder-ide/qtpy>`_, which will automatically
-select the appropriate library based on what is installed.
+For interactive plotting, a Qt library such as PyQt6 or PySide6 is required. To ensure
+compatibility and keep the namespace clean, ERLabPy imports Qt bindings from `qtpy
+<https://github.com/spyder-ide/qtpy>`_, which will automatically select the appropriate
+library based on what is installed.
 
 See the :doc:`user-guide/index` to start using ERLabPy!
 

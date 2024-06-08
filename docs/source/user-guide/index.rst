@@ -14,14 +14,7 @@ Introduction
 Welcome to the ERLabPy user guide! This guide provides an overview of ERLabPy and its
 core features.
 
-If you are new to programming with python, `Scientific Python Lectures
-<https://github.com/jrjohansson/scientific-python-lectures>`_ is a great place to start.
-
-Data structures in ERLabPy are represented using `xarray <https://docs.xarray.dev/>`_\
-:cite:p:`hoyer2017xarray`, which provides a powerful data structure for working with
-multi-dimensional arrays. Check out the `xarray tutorial <https://tutorial.xarray.dev/>`_
-and the `xarray user guide <https://docs.xarray.dev/en/stable/index.html>`_ to get
-familiar with xarray.
+If you are new to using ERLabPy, you may want to start with the :doc:`getting started guide <../getting-started.rst>`.
 
 .. toctree::
    :caption: Table of Contents
