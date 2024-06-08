@@ -113,6 +113,8 @@ class SSRL52Loader(LoaderBase):
                                 delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
                                 # may be ~1e-8 difference between values
                                 delta = np.mean(delta)
+                            else:
+                                delta = float(ax["delta"])
 
                         else:
                             offset = float(ax["offset"])
