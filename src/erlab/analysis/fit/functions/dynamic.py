@@ -14,7 +14,7 @@ __all__ = [
 import functools
 import inspect
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar, TypedDict, no_type_check
+from typing import Any, ClassVar, Literal, TypedDict, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -154,6 +154,16 @@ class MultiPeakFunction(DynamicFunction):
         distribution. This adds three parameters to the model: `efermi`, `temp`, and
         `offset`, each corresponding to the Fermi level, temperature in K, and constant
         background.
+    background
+        The type of background to include in the model. The options are: ``'constant'``,
+        ``'linear'``, ``'polynomial'``, or ``'none'``. If ``'constant'``, adds a
+        ``const_bkg`` parameter. If ``'linear'``, adds a ``lin_bkg`` parameter and a
+        ``const_bkg`` parameter. If ``'polynomial'``, adds  ``c0``, ``c1``, ...
+        corresponding to the polynomial coefficients. The polynomial degree can be
+        specified with `degree`. If ``'none'``, no background is added.
+    degree
+        The degree of the polynomial background. Only used if `background` is
+        ``'polynomial'``. Default is 2.
     convolve
         Flag indicating whether the model should be convolved with a gaussian kernel. If
         `True`, adds a `resolution` parameter to the model, corresponding to the FWHM of
@@ -173,20 +183,28 @@ class MultiPeakFunction(DynamicFunction):
         npeaks: int,
         peak_shapes: list[str] | str | None = None,
         fd: bool = True,
+        background: Literal["constant", "linear", "polynomial", "none"] = "linear",
+        degree: int = 2,
         convolve: bool = True,
     ):
         super().__init__()
         self.npeaks = npeaks
         self.fd = fd
         self.convolve = convolve
+        self.background = background
+
+        if self.background == "polynomial":
+            self.bkg_degree = degree
 
         if peak_shapes is None:
             peak_shapes = [self.DEFAULT_PEAK] * self.npeaks
+
         if isinstance(peak_shapes, str):
             peak_shapes = peak_shapes.split(" ")
 
         if len(peak_shapes) == 1:
             peak_shapes = peak_shapes * self.npeaks
+
         elif len(peak_shapes) != self.npeaks:
             raise ValueError("Number of peaks does not match given peak shapes")
 
@@ -230,16 +248,22 @@ class MultiPeakFunction(DynamicFunction):
 
     @property
     def kwargs(self):
-        kws = [
-            ("lin_bkg", 0.0),
-            ("const_bkg", 0.0),
-        ]
+        kws: list[tuple[str, float]] = []
+
+        if self.background == "constant" or self.background == "linear":
+            kws.append(("const_bkg", 0.0))
+        if self.background == "linear":
+            kws.append(("lin_bkg", 0.0))
+        elif self.background == "polynomial":
+            kws += [(f"c{i}", 0.0) for i in range(self.bkg_degree + 1)]
+
         if self.fd:
             kws += [
                 ("efermi", 0.0),  # fermi level
                 ("temp", 30.0),  # temperature
                 ("offset", 0.0),
             ]
+
         if self.convolve:
             kws += [("resolution", 0.02)]
 
@@ -275,7 +299,17 @@ class MultiPeakFunction(DynamicFunction):
         )
 
     def eval_bkg(self, x, **params):
-        return params["lin_bkg"] * x + params["const_bkg"]
+        match self.background:
+            case "constant":
+                return 0.0 * x + params["const_bkg"]
+            case "linear":
+                return params["lin_bkg"] * x + params["const_bkg"]
+            case "polynomial":
+                return PolynomialFunction(self.bkg_degree)(
+                    x, **{f"c{i}": params[f"c{i}"] for i in range(self.bkg_degree + 1)}
+                )
+            case "none":
+                return 0.0 * x
 
     def pre_call(self, x, **params):
         x = np.asarray(x).copy()
@@ -286,7 +320,7 @@ class MultiPeakFunction(DynamicFunction):
                 x, **{arg: params[f"p{i}_{arg}"] for arg in self.peak_argnames[func]}
             )
 
-        y += params["lin_bkg"] * x + params["const_bkg"]
+        y += self.eval_bkg(x, **params)
 
         if self.fd:
             y *= fermi_dirac(x, center=params["efermi"], temp=params["temp"])
@@ -309,7 +343,7 @@ class MultiPeakFunction(DynamicFunction):
 
 
 class FermiEdge2dFunction(DynamicFunction):
-    def __init__(self, degree=1) -> None:
+    def __init__(self, degree: int = 1):
         super().__init__()
         self.poly = PolynomialFunction(degree)
 
@@ -318,7 +352,7 @@ class FermiEdge2dFunction(DynamicFunction):
         return ["eV", "alpha"] + self.poly.argnames[1:]
 
     @property
-    def kwargs(self):
+    def kwargs(self) -> list[tuple[str, float]]:
         return [
             ("temp", 30.0),
             ("lin_bkg", 0.0),

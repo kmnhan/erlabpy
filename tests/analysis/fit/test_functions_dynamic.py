@@ -62,18 +62,20 @@ def test_multi_peak_function_call():
         + params["const_bkg"]
     )
     assert np.allclose(
-        MultiPeakFunction(npeaks, peak_shapes, fd, convolve)(x, **params),
+        MultiPeakFunction(npeaks, peak_shapes, fd=fd, convolve=convolve)(x, **params),
         expected_result,
     )
     # Test case 2: With different peak shape signature
     assert np.allclose(
-        MultiPeakFunction(npeaks, "l g", fd, convolve)(x, **params),
+        MultiPeakFunction(npeaks, "l g", fd=fd, convolve=convolve)(x, **params),
         expected_result,
     )
 
     # Test case 3: Evaluate multi-peak function with xarray input
     x = xr.DataArray(np.linspace(-5, 5, 20, dtype=np.float64), dims="x")
-    result_xr = MultiPeakFunction(npeaks, peak_shapes, fd, convolve)(x, **params)
+    result_xr = MultiPeakFunction(npeaks, peak_shapes, fd=fd, convolve=convolve)(
+        x, **params
+    )
     assert isinstance(result_xr, xr.DataArray)
     assert np.allclose(result_xr, expected_result)
 
@@ -101,12 +103,64 @@ def test_multi_peak_function_call():
         "resolution": 0.1,
     }
 
-    expected_result = MultiPeakFunction(npeaks, "lorentzian", fd, convolve)(x, **params)
+    expected_result = MultiPeakFunction(npeaks, "lorentzian", fd=fd, convolve=convolve)(
+        x, **params
+    )
 
     for peak_shapes in ("l l l", ["lorentzian"] * 3):
         assert np.allclose(
-            MultiPeakFunction(npeaks, peak_shapes, fd, convolve)(x, **params),
+            MultiPeakFunction(npeaks, peak_shapes, fd=fd, convolve=convolve)(
+                x, **params
+            ),
             expected_result,
+        )
+    # Test case 5: Evaluate multi-peak function with different background shapes
+    x = np.linspace(-5, 5, 20, dtype=np.float64)
+    npeaks = 1
+    peak_shapes = ["lorentzian"]
+    fd = False
+    convolve = False
+    degree = 2
+
+    params = {
+        "p0_center": 0.0,
+        "p0_height": 1.0,
+        "p0_width": 0.5,
+    }
+
+    for background in ("constant", "linear", "polynomial", "none"):
+        expected_result = lorentzian_wh(
+            x, params["p0_center"], params["p0_width"], params["p0_height"]
+        )
+
+        if background == "constant":
+            params["const_bkg"] = 0.1
+            expected_bkg = params["const_bkg"]
+
+        elif background == "linear":
+            params["const_bkg"] = 0.1
+            params["lin_bkg"] = 0.2
+            expected_bkg = params["lin_bkg"] * x + params["const_bkg"]
+
+        elif background == "polynomial":
+            for d in range(degree + 1):
+                params[f"c{d}"] = 0.1 * degree
+
+            coeffs = tuple(params[f"c{d}"] for d in range(degree + 1))
+            expected_bkg = np.polynomial.polynomial.polyval(x, coeffs)
+        else:
+            expected_bkg = 0.0
+
+        assert np.allclose(
+            MultiPeakFunction(
+                npeaks,
+                peak_shapes,
+                background=background,
+                degree=degree,
+                fd=fd,
+                convolve=convolve,
+            )(x, **params),
+            expected_result + expected_bkg,
         )
 
 

@@ -24,11 +24,11 @@ def test_minuit_from_lmfit():
 
     # lmfit model
     model = MultiPeakModel(
-        npeaks=2, peak_shapes=["lorentzian"], fd=False, convolve=True
+        npeaks=2, peak_shapes=["lorentzian"], background="none", fd=False, convolve=True
     )
 
-    m = Minuit.from_lmfit(model, yval, xval, yerr)
-
+    m = Minuit.from_lmfit(model, yval, xval, yerr, p0_center=-0.5, p1_center=0.5)
+    m.scipy()
     m.migrad()
     m.minos()
     m.hesse()

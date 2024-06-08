@@ -10,6 +10,8 @@ __all__ = [
     "StepEdgeModel",
 ]
 
+from typing import Literal
+
 import lmfit
 import numba
 import numpy as np
@@ -109,6 +111,34 @@ def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
         deg=1,
     )
     return n0, m0, n1, m1
+
+
+def _get_edges(x, y, fraction=0.2):
+    """
+    Get the edges of the input arrays based on a given fraction.
+
+    Primarily used to make initial guesses for backgrounds.
+
+    Parameters
+    ----------
+    x
+        The input x-values.
+    y
+        The input y-values.
+    fraction
+        The fraction of the array length to consider as edges. Defaults to 0.2.
+
+    """
+    if len(x) != len(y):
+        raise ValueError("x and y must have the same length")
+    if fraction < 0 or fraction > 0.5:
+        raise ValueError("Fraction must be between 0 and 0.5")
+    if len(x) < 10:
+        raise ValueError("Array must have at least 10 elements")
+
+    num = max(5, round(len(x) * fraction))
+
+    return np.r_[x[:num], x[-num:]], np.r_[y[:num], y[-num:]]
 
 
 class FermiEdgeModel(lmfit.Model):
@@ -238,13 +268,20 @@ class MultiPeakModel(lmfit.Model):
         npeaks: int = 1,
         peak_shapes: list[str] | str | None = None,
         fd: bool = True,
+        background: Literal["constant", "linear", "polynomial", "none"] = "linear",
+        degree: int = 2,
         convolve: bool = True,
         **kwargs,
     ):
         kwargs.setdefault("name", f"{npeaks}Peak")
         super().__init__(
             MultiPeakFunction(
-                npeaks, peak_shapes=peak_shapes, fd=fd, convolve=convolve
+                npeaks,
+                peak_shapes=peak_shapes,
+                fd=fd,
+                background=background,
+                degree=degree,
+                convolve=convolve,
             ),
             **kwargs,
         )
@@ -271,12 +308,21 @@ class MultiPeakModel(lmfit.Model):
         if self.func.fd:
             pars[f"{self.prefix}offset"].set(value=float(data[x >= 0].mean()))
 
-        poly1 = PolynomialModel(1).guess(data, x)
-        pars[f"{self.prefix}lin_bkg"].set(poly1["c1"].value)
-        pars[f"{self.prefix}const_bkg"].set(poly1["c0"].value)
+        # Sample edges for background estimation
+        xc, yc = _get_edges(x, data, fraction=0.2)
+        if self.func.background == "constant":
+            poly = PolynomialModel(0).guess(yc, xc)
+            pars[f"{self.prefix}const_bkg"].set(poly["c0"].value)
 
-        # for i, func in enumerate(self.func.peak_funcs):
-        # self.func.peak_argnames
+        elif self.func.background == "linear":
+            poly = PolynomialModel(1).guess(yc, xc)
+            pars[f"{self.prefix}const_bkg"].set(poly["c0"].value)
+            pars[f"{self.prefix}lin_bkg"].set(poly["c1"].value)
+
+        elif self.func.background == "polynomial":
+            poly = PolynomialModel(self.func.bkg_degree).guess(yc, xc)
+            for i in range(self.func.bkg_degree + 1):
+                pars[f"{self.prefix}c{i}"].set(poly[f"c{i}"].value)
 
         xrange = float(x.max() - x.min())
 

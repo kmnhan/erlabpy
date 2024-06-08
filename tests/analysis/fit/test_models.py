@@ -118,6 +118,12 @@ def test_multi_peak_model():
         components["2Peak_bkg"], model.func.eval_bkg(x, **result.params.valuesdict())
     )
 
+    # Make sure guesses work for different backgrounds
+    for background in ["constant", "linear", "polynomial", "none"]:
+        model = models.MultiPeakModel(npeaks=2, background=background)
+        params = model.guess(y, x=x)
+        model.fit(y, params, x=x)
+
 
 def test_polynomial_model():
     # Create test data
