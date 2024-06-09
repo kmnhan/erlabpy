@@ -21,9 +21,9 @@ Modules
 
 """
 
-__all__ = ["correct_with_edge", "shift", "slice_along_path"]
+__all__ = ["correct_with_edge", "quick_resolution", "shift", "slice_along_path"]
 
 from erlab.analysis import fit, gold, image, interpolate, mask, transform  # noqa: F401
-from erlab.analysis.gold import correct_with_edge
+from erlab.analysis.gold import correct_with_edge, quick_resolution
 from erlab.analysis.interpolate import slice_along_path
 from erlab.analysis.utils import shift
