@@ -2,6 +2,23 @@
 
 
 
+## v2.7.0 (2024-06-09)
+
+### Documentation
+
+* improve getting started guide ([`fed2108`](https://github.com/kmnhan/erlabpy/commit/fed2108b77be5f83860e5967f487951fd1e77b67))
+
+### Feature
+
+* (**analysis.gold**) add function for quick resolution fitting ([`2fae1c3`](https://github.com/kmnhan/erlabpy/commit/2fae1c351f29b2fb1ceef39a69706b3f198e4659))
+
+* (**analysis.fit**) Add background option to `MultiPeakModel` and `MultiPeakFunction` ([`2ccd8ad`](https://github.com/kmnhan/erlabpy/commit/2ccd8ad835cbc8de9764d2f8bbadda425babddb1))
+
+### Fix
+
+* (**erlab.io.plugins**) fix for hv-dependent data ([`d52152f`](https://github.com/kmnhan/erlabpy/commit/d52152f24807b9334ad5ffcc22c45a4af7a8d9ec))
+
+
 ## v2.6.3 (2024-06-07)
 
 ### Ci
