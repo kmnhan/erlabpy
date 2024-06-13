@@ -5,7 +5,9 @@ name: Test
 
 on:
   pull_request:
-
+  schedule:
+    # Every monday at 00:00 UTC (09:00 KST/JST)
+    - cron: "0 0 * * MON"
 env:
   FORCE_COLOR: 1
 
