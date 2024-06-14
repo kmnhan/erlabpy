@@ -33,7 +33,14 @@ import xarray as xr
 from erlab.utils.array import is_monotonic, is_uniform_spaced
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import (
+        Callable,
+        ItemsView,
+        Iterable,
+        KeysView,
+        Mapping,
+        Sequence,
+    )
 
     DataFromSingleFile = xr.DataArray | xr.Dataset | list[xr.DataArray]
 
@@ -134,6 +141,24 @@ class LoaderBase:
     def coordinate_and_average_attrs(self) -> tuple[str, ...]:
         """Return a tuple of coordinate and average attributes."""
         return self.coordinate_attrs + self.average_attrs
+
+    @property
+    def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
+        """Map from file dialog names to the called method and its arguments.
+
+        This property can be overridden specify the file dialog methods to be called
+        from the load menu of the ImageTool GUI.
+
+        Returns
+        -------
+        loader_mapping
+            A dictionary mapping the file dialog names to the called method and its
+            arguments. The method should be a callable that takes a single positional
+            argument which is a path to a data file, for instance ``self.load``. The
+            arguments should be a dictionary containing keyword arguments to be passed
+            to the method. It can be left empty if no additional arguments are required.
+        """
+        return {}
 
     @staticmethod
     def reverse_mapping(mapping: Mapping[str, str | Iterable[str]]) -> dict[str, str]:
@@ -1114,6 +1139,12 @@ class LoaderRegistry(RegistryBase):
             for alias in loader_class.aliases:
                 self.alias_mapping[alias] = loader_class.name
 
+    def keys(self) -> KeysView[str]:
+        return self.loaders.keys()
+
+    def items(self) -> ItemsView[str, LoaderBase | type[LoaderBase]]:
+        return self.loaders.items()
+
     def get(self, key: str) -> LoaderBase:
         loader_name = self.alias_mapping.get(key)
         if loader_name is None:
@@ -1135,6 +1166,8 @@ class LoaderRegistry(RegistryBase):
         return self.get(key)
 
     def __getattr__(self, key: str) -> LoaderBase:
+        if hasattr(self, key):
+            return super().__getattr__(key)
         try:
             return self.get(key)
         except LoaderNotFoundError as e:

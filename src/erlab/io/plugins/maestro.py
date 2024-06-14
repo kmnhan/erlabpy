@@ -91,6 +91,10 @@ class MAESTROMicroLoader(LoaderBase):
     skip_validate: bool = True
     always_single: bool = True
 
+    @property
+    def file_dialog_methods(self):
+        return {"ALS BL7.0.2 Raw Data (*.h5)": (self.load, {})}
+
     def identify(self, num, data_dir):
         file = None
         for f in erlab.io.utils.get_files(data_dir, ".h5"):

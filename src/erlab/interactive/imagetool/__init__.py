@@ -36,7 +36,6 @@ from erlab.interactive.imagetool.controls import (
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
-from erlab.io.plugins.merlin import MERLINLoader
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -441,15 +440,12 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     def _open_file(self):
-        merlin_loader = cast(MERLINLoader, erlab.io.loaders["merlin"])
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
-            "ALS BL4.0.3 Raw Data (*.pxt)": (merlin_loader.load, {}),
-            "ALS BL4.0.3 Live (*.ibw)": (merlin_loader.load_live, {}),
-            "DA30 Raw Data (*.ibw *.pxt *.zip)": (erlab.io.loaders["da30"].load, {}),
-            "SSRL BL5-2 Raw Data (*.h5)": (erlab.io.loaders["ssrl52"].load, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
+        for k in erlab.io.loaders.keys():
+            valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)

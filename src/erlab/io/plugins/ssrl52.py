@@ -43,6 +43,10 @@ class SSRL52Loader(LoaderBase):
     always_single: bool = True
     skip_validate: bool = True
 
+    @property
+    def file_dialog_methods(self):
+        return {"SSRL BL5-2 Raw Data (*.h5)": (self.load, {})}
+
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         with h5netcdf.File(file_path, mode="r", phony_dims="sort") as ncf:
             attrs = dict(ncf.attrs)

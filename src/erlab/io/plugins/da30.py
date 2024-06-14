@@ -37,6 +37,10 @@ class DA30Loader(LoaderBase):
     always_single = True
     skip_validate = True
 
+    @property
+    def file_dialog_methods(self):
+        return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
+
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         ext = os.path.splitext(file_path)[-1]
 

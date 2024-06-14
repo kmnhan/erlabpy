@@ -52,6 +52,13 @@ class MERLINLoader(LoaderBase):
     }
     always_single = False
 
+    @property
+    def file_dialog_methods(self):
+        return {
+            "ALS BL4.0.3 Raw Data (*.pxt)": (self.load, {}),
+            "ALS BL4.0.3 Live (*.ibw)": (self.load_live, {}),
+        }
+
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         if os.path.splitext(file_path)[1] == ".ibw":
             return self.load_live(file_path)
