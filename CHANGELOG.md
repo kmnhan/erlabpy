@@ -2,6 +2,26 @@
 
 
 
+## v2.7.1 (2024-06-14)
+
+### Ci
+
+* (**github**) schedule test runs ([`b5fa6c8`](https://github.com/kmnhan/erlabpy/commit/b5fa6c83b229c846e1fff39dbf38fc281f031bd1))
+
+* (**pre-commit**) pre-commit autoupdate (#42) ([`a5a2de7`](https://github.com/kmnhan/erlabpy/commit/a5a2de7eae25071aaefaeddbabe7ff7c8bd33ac0))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.7 → v0.4.8](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.7...v0.4.8)
+  Co-authored-by: pre-commit-ci[bot] &lt;66853113+pre-commit-ci[bot]@users.noreply.github.com&gt;
+
+### Fix
+
+* (**interactive.imagetool**) Integrate data loaders to imagetool ([`7e7ea25`](https://github.com/kmnhan/erlabpy/commit/7e7ea25a8fbe3a43222fbc7baedaa04c6522e24d))
+
+  A new property called `file_dialog_methods` can be set in each loader which determines the method and name that is used in the file chooser window in imagetool.
+
+* (**accessors.kspace**) `hv_to_kz` now accepts iterables ([`36770d7`](https://github.com/kmnhan/erlabpy/commit/36770d723b1e3592bf83750f7559603026059bb1))
+
+
 ## v2.7.0 (2024-06-09)
 
 ### Documentation
