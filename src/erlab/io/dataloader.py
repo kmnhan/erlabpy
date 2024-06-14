@@ -1166,8 +1166,6 @@ class LoaderRegistry(RegistryBase):
         return self.get(key)
 
     def __getattr__(self, key: str) -> LoaderBase:
-        if hasattr(self, key):
-            return super().__getattr__(key)
         try:
             return self.get(key)
         except LoaderNotFoundError as e:
