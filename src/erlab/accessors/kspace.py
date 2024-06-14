@@ -870,7 +870,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return ktool(self._obj, **kwargs)
 
     @only_momentum
-    def hv_to_kz(self, hv: float) -> xr.DataArray:
+    def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
         """Return :math:`k_z` for a given photon energy.
 
         Useful when creating overlays on :math:`hν`-dependent data.
@@ -886,6 +886,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         center since we lost the exact angle values, i.e. the exact momentum
         perpendicular to the slit, during momentum conversion.
         """
+        if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
+            hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
+
         # Get kinetic energies for the given photon energy
         kinetic = hv - self.work_function + self._obj.eV
 
