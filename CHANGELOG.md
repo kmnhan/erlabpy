@@ -2,6 +2,13 @@
 
 
 
+## v2.7.2 (2024-06-14)
+
+### Fix
+
+* (**erlab.io**) regression in handling getattr of dataloader ([`dd0a568`](https://github.com/kmnhan/erlabpy/commit/dd0a5680c6aed6e3b7ab391a10fbeb5c3cdc9c14))
+
+
 ## v2.7.1 (2024-06-14)
 
 ### Ci
