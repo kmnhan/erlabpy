@@ -62,16 +62,47 @@ def test_itool(qtbot):
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "ColdWarm", gamma=1.5, reversed=True, highContrast=True, zeroCentered=True
+        "ColdWarm", gamma=1.5, reversed=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
     win.slicer_area.lock_levels(True)
     win.slicer_area.lock_levels(False)
 
+    # Check restoring the state works
+    old_state = dict(win.slicer_area.state)
+    win.slicer_area.state = old_state
+
     # Add and remove cursor
     win.slicer_area.add_cursor()
+    expected_state = {
+        "color": {
+            "cmap": "ColdWarm",
+            "gamma": 1.5,
+            "reversed": True,
+            "high_contrast": True,
+            "zero_centered": True,
+            "levels_locked": False,
+        },
+        "slice": {
+            "dims": ("y", "x"),
+            "bins": [[2, 2], [2, 2]],
+            "indices": [[2, 2], [2, 2]],
+            "values": [[2.0, 2.0], [2.0, 2.0]],
+            "snap_to_data": True,
+        },
+        "current_cursor": 1,
+        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
+        "splitter_sizes": list(old_state["splitter_sizes"]),
+        "cursor_colors": ["#cccccc", "#ffff00"],
+    }
+    assert win.slicer_area.state == expected_state
     win.slicer_area.remove_current_cursor()
+    assert win.slicer_area.state == old_state
+
+    # See if restoring the state works for the second cursor
+    win.slicer_area.state = expected_state
+    assert win.slicer_area.state == expected_state
 
 
 def test_value_update(qtbot):
@@ -111,7 +142,9 @@ def test_sync(qtbot):
             w.raise_()
 
     win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
-    assert win0.slicer_area.colormap_properties == win1.slicer_area.colormap_properties
+    assert (
+        win0.slicer_area._colormap_properties == win1.slicer_area._colormap_properties
+    )
 
     move_and_compare_values(qtbot, win0, [12.0, 7.0, 6.0, 11.0], target_win=win1)
 

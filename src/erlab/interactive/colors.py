@@ -259,16 +259,16 @@ class BetterImageItem(pg.ImageItem):
         cmap: pg.ColorMap | str,
         gamma: float,
         reverse: bool = False,
-        highContrast: bool = False,
-        zeroCentered: bool = False,
+        high_contrast: bool = False,
+        zero_centered: bool = False,
         update: bool = True,
     ):
         cmap = pg_colormap_powernorm(
             cmap,
             gamma,
             reverse,
-            highContrast=highContrast,
-            zeroCentered=zeroCentered,
+            high_contrast=high_contrast,
+            zero_centered=zero_centered,
         )
         self.set_pg_colormap(cmap, update=update)
 
@@ -377,12 +377,18 @@ class BetterColorBarItem(pg.PlotItem):
         if not self.isVisible():
             return
         for img_ref in self.images:
-            img_ref().setLevels(self._span.getRegion())
+            img_ref().setLevels(self.spanRegion())
         self.limit_changed()
 
     @QtCore.Slot()
     def level_change_fin(self):
         pass
+
+    def spanRegion(self) -> tuple[float, float]:
+        return self._span.getRegion()
+
+    def setSpanRegion(self, levels: tuple[float, float]):
+        self._span.setRegion(levels)
 
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
@@ -625,8 +631,8 @@ def pg_colormap_powernorm(
     cmap: str | pg.ColorMap,
     gamma: float,
     reverse: bool = False,
-    highContrast: bool = False,
-    zeroCentered: bool = False,
+    high_contrast: bool = False,
+    zero_centered: bool = False,
     N: int = 65536,
 ) -> pg.ColorMap:
     if isinstance(cmap, str):
@@ -637,7 +643,7 @@ def pg_colormap_powernorm(
         def mapping_fn(x):
             return x
 
-    elif highContrast:
+    elif high_contrast:
 
         def mapping_fn(x):
             return 1 - np.power(np.flip(x), 1.0 / gamma)
@@ -648,7 +654,7 @@ def pg_colormap_powernorm(
             return np.power(x, gamma)
 
     x = np.linspace(0, 1, N)
-    if zeroCentered:
+    if zero_centered:
         mapping = np.piecewise(
             x,
             [x < 0.5, x >= 0.5],

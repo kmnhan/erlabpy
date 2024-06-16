@@ -4,8 +4,9 @@ from __future__ import annotations
 
 __all__ = ["ArraySlicer"]
 
+import copy
 import functools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import numba
 import numpy as np
@@ -19,6 +20,14 @@ if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
     import xarray as xr
+
+    class ArraySlicerState(TypedDict):
+        dims: tuple[Hashable, ...]
+        bins: list[list[int]]
+        indices: list[list[int]]
+        values: list[list[np.float32]]
+        snap_to_data: bool
+
 
 VALID_NDIM = (2, 3, 4)
 
@@ -150,11 +159,6 @@ class ArraySlicer(QtCore.QObject):
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
         self.set_array(xarray_obj, validate=True, reset=True)
-
-    @property
-    def n_cursors(self) -> int:
-        """The number of cursors."""
-        return len(self._bins)
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
@@ -745,3 +749,36 @@ class ArraySlicer(QtCore.QObject):
             return fast_nanmean_skipcheck(selected, axis=axis)
         else:
             return selected
+
+    @property
+    def n_cursors(self) -> int:
+        """The number of cursors."""
+        return len(self._bins)
+
+    @property
+    def state(self) -> ArraySlicerState:
+        return copy.deepcopy(
+            {
+                "dims": self._obj.dims,
+                "bins": self._bins,
+                "indices": self._indices,
+                "values": self._values,
+                "snap_to_data": self.snap_to_data,
+            }
+        )
+
+    @state.setter
+    def state(self, state: ArraySlicerState) -> None:
+        if self._obj.dims != state["dims"]:
+            self._obj = self._obj.transpose(*state["dims"])
+
+        self.snap_to_data = state["snap_to_data"]
+        self.clear_cache()
+
+        for i, (bins, indices, values) in enumerate(
+            zip(state["bins"], state["indices"], state["values"], strict=True)
+        ):
+            self.center_cursor(i)
+            self.set_indices(i, indices, update=False)
+            self.set_values(i, values, update=True)
+            self.set_bins(i, bins, update=True)

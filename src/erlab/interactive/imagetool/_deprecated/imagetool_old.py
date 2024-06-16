@@ -1605,8 +1605,8 @@ class pg_itool(pg.GraphicsLayoutWidget):
         cmap=None,
         gamma=None,
         reverse=None,
-        highContrast=False,
-        zeroCentered=None,
+        high_contrast=False,
+        zero_centered=None,
     ):
         if cmap is not None:
             self.cmap = cmap
@@ -1614,16 +1614,16 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.gamma = gamma
         if reverse is not None:
             self.reverse = reverse
-        if zeroCentered is None:
-            zeroCentered = self.zero_centered
+        if zero_centered is None:
+            zero_centered = self.zero_centered
         else:
-            self.zero_centered = zeroCentered
+            self.zero_centered = zero_centered
         self.norm_cmap = pg_colormap_powernorm(
             self.cmap,
             self.gamma,
             reverse=self.reverse,
-            highContrast=highContrast,
-            zeroCentered=zeroCentered,
+            high_contrast=high_contrast,
+            zero_centered=zero_centered,
         )
         for im in self.maps:
             im._colorMap = self.norm_cmap
@@ -2920,7 +2920,7 @@ class itoolColorControls(QtWidgets.QWidget):
             toolTip="Center colormap at zero",
         )
         self._zero_center_button.toggled.connect(
-            lambda z: self.itool.set_cmap(zeroCentered=z)
+            lambda z: self.itool.set_cmap(zero_centered=z)
         )
 
         axes_names = [
@@ -2995,7 +2995,7 @@ class itoolColorControls(QtWidgets.QWidget):
         else:
             cmap = self._cmap_combo.currentText()
         mode = self._cmap_mode_button.isChecked()
-        self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, highContrast=mode)
+        self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, high_contrast=mode)
 
     def _color_button_clicked(self, s):
         # print("click", s)

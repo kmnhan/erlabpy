@@ -421,9 +421,11 @@ class ItoolMenuBar(DictMenuBar):
 
         cmap_props = self.slicer_area.colormap_properties
         for ca, k in zip(
-            self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
+            self.colorAct, ["reversed", "high_contrast", "zero_centered"], strict=True
         ):
-            k = cast(Literal["reversed", "highContrast", "zeroCentered"], k)  # for mypy
+            k = cast(
+                Literal["reversed", "high_contrast", "zero_centered"], k
+            )  # for mypy
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
@@ -431,8 +433,8 @@ class ItoolMenuBar(DictMenuBar):
     def _set_colormap_options(self):
         self.slicer_area.set_colormap(
             reversed=self.colorAct[0].isChecked(),
-            highContrast=self.colorAct[1].isChecked(),
-            zeroCentered=self.colorAct[2].isChecked(),
+            high_contrast=self.colorAct[1].isChecked(),
+            zero_centered=self.colorAct[2].isChecked(),
         )
 
     def _copy_cursor_val(self):
@@ -472,12 +474,12 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
 
-        valid_savers: dict[str, tuple[Callable, dict]] = {
+        valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.save_as_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (erlab.io.save_as_netcdf, {}),
         }
         dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
+        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()

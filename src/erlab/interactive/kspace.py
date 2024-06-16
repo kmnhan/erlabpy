@@ -83,7 +83,7 @@ class KspaceToolGUI(
                 name,
                 self.gamma_widget.value(),
                 reverse=self.invert_check.isChecked(),
-                highContrast=self.contrast_check.isChecked(),
+                high_contrast=self.contrast_check.isChecked(),
                 update=True,
             )
 

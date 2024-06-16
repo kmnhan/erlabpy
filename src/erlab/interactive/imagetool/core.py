@@ -5,12 +5,14 @@ from __future__ import annotations
 __all__ = ["ImageSlicerArea"]
 
 import collections
+import copy
 import functools
 import inspect
 import os
 import time
+import warnings
 import weakref
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -32,12 +34,24 @@ if TYPE_CHECKING:
     from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
     from pyqtgraph.GraphicsScene import mouseEvents
 
-    class ColorMapProperties(TypedDict):
+    from erlab.interactive.imagetool.slicer import ArraySlicerState
+
+    class ColorMapState(TypedDict):
         cmap: str | pg.ColorMap
         gamma: float
         reversed: bool
-        highContrast: bool
-        zeroCentered: bool
+        high_contrast: bool
+        zero_centered: bool
+        levels_locked: bool
+        levels: NotRequired[tuple[float, float]]
+
+    class ImageSlicerState(TypedDict):
+        color: ColorMapState
+        slice: ArraySlicerState
+        current_cursor: int
+        manual_limits: dict[str, list[float]]
+        splitter_sizes: list[list[int]]
+        cursor_colors: list[str]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -296,7 +310,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Default colormap of the data.
     gamma
         Default power law normalization of the colormap.
-    zeroCentered
+    zero_centered
         If `True`, the normalization is applied symmetrically from the midpoint of
         the colormap.
     rad2deg
@@ -365,7 +379,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.ArrayLike | None = None,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
-        zeroCentered: bool = False,
+        zero_centered: bool = False,
         rad2deg: bool | Iterable[str] = False,
         *,
         bench: bool = False,
@@ -396,11 +410,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for s in self._splitters:
             s.setHandleWidth(4)
             s.setStyleSheet("QSplitter::handle{background: #222222;}")
-            # palette = s.palette()
-            # palette.setColor(QtGui.QPalette.ColorRole.Light, QtGui.QColor("yellow"))
-            # s.setPalette(palette)
-            # print(s.handleWidth())
-            # pass
+
         layout.addWidget(self._splitters[0])
         for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):
             self._splitters[i].addWidget(self._splitters[j])
@@ -409,8 +419,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
 
         self._colorbar = ItoolColorBar(self)
-        layout.addWidget(self._colorbar)
         self._colorbar.setVisible(False)
+        layout.addWidget(self._colorbar)
+
+        cmap_reversed = False
+        if isinstance(cmap, str):
+            if cmap.endswith("_r"):
+                cmap = cmap[:-2]
+                cmap_reversed = True
+            if cmap.startswith("cet_CET"):
+                cmap = cmap[4:]
+        self._colormap_properties: ColorMapState = {
+            "cmap": cmap,
+            "gamma": gamma,
+            "reversed": cmap_reversed,
+            "high_contrast": False,
+            "zero_centered": zero_centered,
+            "levels_locked": False,
+        }
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str, list[float]] = {}
@@ -435,27 +461,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         self.qapp.aboutToQuit.connect(self.on_close)
 
-        cmap_reversed = False
-
-        if isinstance(cmap, str):
-            if cmap.endswith("_r"):
-                cmap = cmap[:-2]
-                cmap_reversed = True
-            if cmap.startswith("cet_CET"):
-                cmap = cmap[4:]
-
-        self.colormap_properties: ColorMapProperties = {
-            "cmap": cmap,
-            "gamma": gamma,
-            "reversed": cmap_reversed,
-            "highContrast": False,
-            "zeroCentered": zeroCentered,
-        }
-
         self._data: xr.DataArray | None = None
         self.current_cursor: int = 0
-
-        self.levels_locked: bool = False
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -463,33 +470,50 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
-    def on_close(self):
-        self.array_slicer.clear_cache()
-        self.data.close()
-        if hasattr(self, "_data") and self._data is not None:
-            self._data.close()
-            del self._data
+    @property
+    def colormap_properties(self) -> ColorMapState:
+        prop = copy.deepcopy(self._colormap_properties)
+        if prop["levels_locked"]:
+            prop["levels"] = self.levels
+        return prop
 
-    def connect_axes_signals(self):
-        for ax in self.axes:
-            ax.connect_signals()
+    @property
+    def state(self) -> ImageSlicerState:
+        return copy.deepcopy(
+            {
+                "color": self.colormap_properties,
+                "slice": self.array_slicer.state,
+                "current_cursor": self.current_cursor,
+                "manual_limits": self.manual_limits,
+                "splitter_sizes": self.splitter_sizes,
+                "cursor_colors": [c.name() for c in self.cursor_colors],
+            }
+        )
 
-    def disconnect_axes_signals(self):
-        for ax in self.axes:
-            ax.disconnect_signals()
+    @state.setter
+    def state(self, state: ImageSlicerState):
+        self.splitter_sizes = state["splitter_sizes"]
+        self.make_cursors(len(state["cursor_colors"]), colors=state["cursor_colors"])
+        self.set_current_cursor(state["current_cursor"], update=False)
+        self.manual_limits = state.get("manual_limits", {})
+        self.array_slicer.state = state["slice"]
+        self.refresh_all()
 
-    def connect_signals(self):
-        self.connect_axes_signals()
-        self.sigDataChanged.connect(self.refresh_all)
-        self.sigShapeChanged.connect(self.refresh_all)
-        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+        try:
+            self.set_colormap(**state.get("color", {}), update=True)
+        except Exception as e:
+            warnings.warn(
+                "Failed to restore colormap settings, skipping", stacklevel=1, source=e
+            )
 
-    def add_link(self, proxy: SlicerLinkProxy):
-        proxy.add(self)
+    @property
+    def splitter_sizes(self) -> list[list[int]]:
+        return [s.sizes() for s in self._splitters]
 
-    def remove_link(self):
-        if self.is_linked:
-            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
+    @splitter_sizes.setter
+    def splitter_sizes(self, sizes: list[list[int]]):
+        for s, size in zip(self._splitters, sizes, strict=True):
+            s.setSizes(size)
 
     @property
     def is_linked(self) -> bool:
@@ -498,6 +522,26 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def colormap(self) -> str | pg.ColorMap:
         return self.colormap_properties["cmap"]
+
+    @colormap.setter
+    def colormap(self, cmap: str | pg.ColorMap):
+        self.set_colormap(cmap)
+
+    @property
+    def levels_locked(self) -> bool:
+        return self.colormap_properties["levels_locked"]
+
+    @levels_locked.setter
+    def levels_locked(self, value: bool):
+        self.lock_levels(value)
+
+    @property
+    def levels(self) -> tuple[float, float]:
+        return self._colorbar.cb.spanRegion()
+
+    @levels.setter
+    def levels(self, levels: tuple[float, float]):
+        self._colorbar.cb.setSpanRegion(levels)
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
@@ -563,9 +607,33 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
 
-    @property
-    def color_locked(self) -> bool:
-        return self._colorbar.isVisible()
+    def on_close(self):
+        self.array_slicer.clear_cache()
+        self.data.close()
+        if hasattr(self, "_data") and self._data is not None:
+            self._data.close()
+            del self._data
+
+    def connect_axes_signals(self):
+        for ax in self.axes:
+            ax.connect_signals()
+
+    def disconnect_axes_signals(self):
+        for ax in self.axes:
+            ax.disconnect_signals()
+
+    def connect_signals(self):
+        self.connect_axes_signals()
+        self.sigDataChanged.connect(self.refresh_all)
+        self.sigShapeChanged.connect(self.refresh_all)
+        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+
+    def add_link(self, proxy: SlicerLinkProxy):
+        proxy.add(self)
+
+    def remove_link(self):
+        if self.is_linked:
+            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
 
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
@@ -617,6 +685,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @link_slicer
     def set_current_cursor(self, cursor: int, update=True):
+        cursor = cursor % self.n_cursors
         if cursor > self.n_cursors - 1:
             raise IndexError("Cursor index out of range")
         self.current_cursor = cursor
@@ -718,22 +787,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         """
         if isinstance(values, xr.DataArray):
-            if self.array_slicer._obj.ndim != values.ndim:
+            if self.data.ndim != values.ndim:
                 raise ValueError("DataArray dimensions do not match")
-            if set(self.array_slicer._obj.dims) != set(values.dims):
+            if set(self.data.dims) != set(values.dims):
                 raise ValueError("DataArray dimensions do not match")
 
-            if self.array_slicer._obj.dims != values.dims:
-                values = values.transpose(*self.array_slicer._obj.dims)
-            if self.array_slicer._obj.shape != values.shape:
+            if self.data.dims != values.dims:
+                values = values.transpose(*self.data.dims)
+            if self.data.shape != values.shape:
                 raise ValueError("DataArray shape does not match")
 
             values = values.values
         else:
-            if self.array_slicer._obj.shape != values.shape:
+            if self.data.shape != values.shape:
                 raise ValueError(
                     "Data shape does not match. Array is "
-                    f"{self.array_slicer._obj.shape} but {values.shape} given"
+                    f"{self.data.shape} but {values.shape} given"
                 )
         self.array_slicer._obj[:] = values
 
@@ -803,11 +872,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
 
+    def make_cursors(self, n: int, colors: Iterable[QtGui.QColor | str] | None):
+        # Used when restoring state to match the number of cursors
+        while self.n_cursors > 1:
+            self.remove_cursor(0)
+
+        if colors is None:
+            colors = [self.gen_cursor_color(i) for i in range(n)]
+        else:
+            colors = list(colors)
+
+        if len(colors) != n:
+            raise ValueError("Number of colors must match number of cursors")
+
+        for clr in colors:
+            self.add_cursor(color=clr)
+
+        self.remove_cursor(0)
+        self.refresh_all()
+
     @QtCore.Slot()
+    @QtCore.Slot(object)
     @link_slicer
-    def add_cursor(self):
+    def add_cursor(self, color: QtGui.QColor | str | None = None):
         self.array_slicer.add_cursor(self.current_cursor, update=False)
-        self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+        if color is None:
+            self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+        else:
+            self.cursor_colors.append(QtGui.QColor(color))
+
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
@@ -819,6 +912,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot(int)
     @link_slicer
     def remove_cursor(self, index: int):
+        index = index % self.n_cursors
         if self.n_cursors == 1:
             return
         self.array_slicer.remove_cursor(index, update=False)
@@ -827,6 +921,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if index == 0:
                 self.current_cursor = 1
             self.current_cursor -= 1
+        elif self.current_cursor > index:
+            self.current_cursor -= 1
+
         for ax in self.axes:
             ax.remove_cursor(index)
         self.refresh_current()
@@ -869,27 +966,33 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap: str | pg.ColorMap | None = None,
         gamma: float | None = None,
         reversed: bool | None = None,
-        highContrast: bool | None = None,
-        zeroCentered: bool | None = None,
+        high_contrast: bool | None = None,
+        zero_centered: bool | None = None,
+        levels_locked: bool | None = None,
+        levels: tuple[float, float] | None = None,
         update: bool = True,
     ):
         if cmap is not None:
-            self.colormap_properties["cmap"] = cmap
+            self._colormap_properties["cmap"] = cmap
         if gamma is not None:
-            self.colormap_properties["gamma"] = gamma
+            self._colormap_properties["gamma"] = gamma
         if reversed is not None:
-            self.colormap_properties["reversed"] = reversed
-        if highContrast is not None:
-            self.colormap_properties["highContrast"] = highContrast
-        if zeroCentered is not None:
-            self.colormap_properties["zeroCentered"] = zeroCentered
+            self._colormap_properties["reversed"] = reversed
+        if high_contrast is not None:
+            self._colormap_properties["high_contrast"] = high_contrast
+        if zero_centered is not None:
+            self._colormap_properties["zero_centered"] = zero_centered
+        if levels_locked is not None:
+            self.lock_levels(levels_locked)
+        if levels is not None:
+            self.levels = levels
 
         cmap = pg_colormap_powernorm(
-            self.colormap_properties["cmap"],
-            self.colormap_properties["gamma"],
-            self.colormap_properties["reversed"],
-            highContrast=self.colormap_properties["highContrast"],
-            zeroCentered=self.colormap_properties["zeroCentered"],
+            self._colormap_properties["cmap"],
+            self._colormap_properties["gamma"],
+            self._colormap_properties["reversed"],
+            high_contrast=self._colormap_properties["high_contrast"],
+            zero_centered=self._colormap_properties["zero_centered"],
         )
         for im in self._imageitems:
             im.set_pg_colormap(cmap, update=update)
@@ -897,7 +1000,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool):
-        self.levels_locked = lock
+        self._colormap_properties["levels_locked"] = lock
 
         if self.levels_locked:
             levels = self.array_slicer.limits
@@ -1388,7 +1491,7 @@ class ItoolPlotItem(pg.PlotItem):
         if self.slicer_area.bench:
             self._time_end = time.perf_counter()
 
-    def add_cursor(self, update=True):
+    def add_cursor(self, update: bool = True):
         new_cursor = len(self.slicer_data_items)
         line_angles = (90, 0)
 
@@ -1408,7 +1511,7 @@ class ItoolPlotItem(pg.PlotItem):
                 axisOrder="row-major",
                 **self._item_kw,
             )
-            if self.slicer_area.color_locked:
+            if self.slicer_area.levels_locked:
                 item.setLevels(self.array_slicer.limits, update=True)
         else:
             item = self.plotdata_cls(
