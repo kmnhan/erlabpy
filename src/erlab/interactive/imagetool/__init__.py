@@ -232,6 +232,8 @@ class ItoolMenuBar(DictMenuBar):
         self.refreshMenus()
         self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
 
+        self._recent_name_filter: str | None = None
+
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
@@ -405,6 +407,7 @@ class ItoolMenuBar(DictMenuBar):
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
 
+        # Disable/Enable remove cursor action based on cursor count
         self.menu_dict["viewMenu"].aboutToShow.connect(
             lambda: self.action_dict["remCursorAct"].setDisabled(
                 self.slicer_area.n_cursors == 1
@@ -420,10 +423,9 @@ class ItoolMenuBar(DictMenuBar):
         for ca, k in zip(
             self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
         ):
+            k = cast(Literal["reversed", "highContrast", "zeroCentered"], k)  # for mypy
             ca.blockSignals(True)
-            ca.setChecked(
-                cmap_props[cast(Literal["reversed", "highContrast", "zeroCentered"], k)]
-            )
+            ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
 
     def _set_colormap_options(self):
@@ -451,11 +453,14 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilters(valid_loaders.keys())
+        if self._recent_name_filter is not None:
+            dialog.selectNameFilter(self._recent_name_filter)
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             files = dialog.selectedFiles()
-            fn, kargs = valid_loaders[dialog.selectedNameFilter()]
+            self._recent_name_filter = dialog.selectedNameFilter()
+            fn, kargs = valid_loaders[self._recent_name_filter]
             # !TODO: handle ambiguous datasets
             self.slicer_area.set_data(fn(files[0], **kargs))
             self.slicer_area.view_all()
