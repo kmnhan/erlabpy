@@ -2,15 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from erlab.analysis.gold import correct_with_edge, poly, spline
-from erlab.io.exampledata import generate_gold_edge
 from numpy.testing import assert_allclose
-
-
-@pytest.fixture(scope="session")
-def gold():
-    return generate_gold_edge(
-        temp=100, seed=1, nx=15, ny=150, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
-    )
 
 
 @pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1, "return_as": "list"}])
