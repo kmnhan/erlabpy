@@ -91,9 +91,19 @@ a blocking call. This means that you cannot run any other code while the tool is
 running. To get around this, you can use the :class:`ImageToolManager
 <erlab.interactive.imagetool.ImageToolManager>`.
 
-In the environment where ERLabPy installed, run ``itool-manager`` to start the manager.
-Any subsequent invocation with :class:`qshow <erlab.accessors.utils.InteractiveDataArrayAccessor>` will be handled by the manager.
+In the environment where ERLabPy installed, run ``itool-manager`` in a shell to start
+the manager application. Subsequent invocations with :func:`itool
+<erlab.interactive.imagetool.itool>` and :class:`qshow
+<erlab.accessors.utils.InteractiveDataArrayAccessor>` will be handled by the manager.
 
-Note that the manager is designed to be global, so you can only have one manager running
-on a single machine that will handle all ImageTool instances opened from different
-notebooks.
+.. note::
+
+  - The manager is designed to be global, so you can only have one manager running on a
+    single machine that will handle all ImageTool instances opened from different
+    notebooks.
+
+  - Opening in the manager has a slight delay compared to opening directly from the
+    notebook. The delay is bigger for larger data. You can still open directly while the
+    manager is running by providing the `use_manager=False` argument to :func:`itool
+    <erlab.interactive.imagetool.itool>` or :class:`qshow
+    <erlab.accessors.utils.InteractiveDataArrayAccessor>`.
