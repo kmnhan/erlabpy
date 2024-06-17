@@ -239,6 +239,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     valueChanged = QtCore.Signal(object)  #: :meta private:
     textChanged = QtCore.Signal(object)  #: :meta private:
+    editingStarted = QtCore.Signal()  #: :meta private:
 
     def __init__(
         self,
@@ -389,6 +390,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             return float(text)
 
     def stepBy(self, steps):
+        self.editingStarted.emit()
         inc = self.singleStep()
         if (
             all(np.isfinite([self.maximum(), self.minimum(), self.value()]))
@@ -484,6 +486,10 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                 super().keyPressEvent(evt)
         else:
             super().keyPressEvent(evt)
+
+    def focusInEvent(self, evt):
+        self.editingStarted.emit()
+        super().focusInEvent(evt)
 
     def _updateHeight(self):
         if self._is_compact:

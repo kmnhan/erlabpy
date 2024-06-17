@@ -69,6 +69,17 @@ def test_itool(qtbot):
     win.slicer_area.lock_levels(True)
     win.slicer_area.lock_levels(False)
 
+    # Undo and redo
+    win.slicer_area.undo()
+    qtbot.keyClick(win, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.ControlModifier)
+    qtbot.keyClick(
+        win,
+        QtCore.Qt.Key.Key_Z,
+        QtCore.Qt.KeyboardModifier.ControlModifier
+        | QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
+    win.slicer_area.redo()
+
     # Check restoring the state works
     old_state = dict(win.slicer_area.state)
     win.slicer_area.state = old_state

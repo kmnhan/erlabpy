@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.io
 from erlab.interactive.imagetool.controls import (
@@ -230,7 +230,9 @@ class ItoolMenuBar(DictMenuBar):
 
         self.createMenus()
         self.refreshMenus()
+        self.refreshEditMenus()
         self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
+        self.slicer_area.sigHistoryChanged.connect(self.refreshEditMenus)
 
         self._recent_name_filter: str | None = None
 
@@ -251,20 +253,12 @@ class ItoolMenuBar(DictMenuBar):
                 "title": "&File",
                 "actions": {
                     "&Open...": {
-                        "shortcut": "Ctrl+O",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Open,
                         "triggered": self._open_file,
                     },
                     "&Save As...": {
-                        "shortcut": "Ctrl+Shift+S",
+                        "shortcut": QtGui.QKeySequence.StandardKey.SaveAs,
                         "triggered": self._export_file,
-                    },
-                    "&Copy Cursor Values": {
-                        "shortcut": "Ctrl+C",
-                        "triggered": self._copy_cursor_val,
-                    },
-                    "&Copy Cursor Indices": {
-                        "shortcut": "Ctrl+Alt+C",
-                        "triggered": self._copy_cursor_idx,
                     },
                 },
             },
@@ -318,6 +312,31 @@ class ItoolMenuBar(DictMenuBar):
                         "text": "Center At Zero",
                         "checkable": True,
                         "toggled": self._set_colormap_options,
+                        "sep_after": True,
+                    },
+                },
+            },
+            "editMenu": {
+                "title": "&Edit",
+                "actions": {
+                    "undoAct": {
+                        "text": "Undo",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Undo,
+                        "triggered": self.slicer_area.undo,
+                    },
+                    "redoAct": {
+                        "text": "Redo",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Redo,
+                        "triggered": self.slicer_area.redo,
+                        "sep_after": True,
+                    },
+                    "&Copy Cursor Values": {
+                        "shortcut": "Ctrl+C",
+                        "triggered": self._copy_cursor_val,
+                    },
+                    "&Copy Cursor Indices": {
+                        "shortcut": "Ctrl+Alt+C",
+                        "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
                 },
@@ -407,13 +426,14 @@ class ItoolMenuBar(DictMenuBar):
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
 
-        # Disable/Enable remove cursor action based on cursor count
+        # Disable/Enable menus based on context
         self.menu_dict["viewMenu"].aboutToShow.connect(
             lambda: self.action_dict["remCursorAct"].setDisabled(
                 self.slicer_area.n_cursors == 1
             )
         )
 
+    @QtCore.Slot()
     def refreshMenus(self):
         self.action_dict["snapCursorAct"].blockSignals(True)
         self.action_dict["snapCursorAct"].setChecked(self.array_slicer.snap_to_data)
@@ -429,6 +449,11 @@ class ItoolMenuBar(DictMenuBar):
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
+
+    @QtCore.Slot()
+    def refreshEditMenus(self):
+        self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
+        self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
     def _set_colormap_options(self):
         self.slicer_area.set_colormap(

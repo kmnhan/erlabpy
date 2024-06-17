@@ -415,7 +415,7 @@ class ArraySlicer(QtCore.QObject):
             ]
 
     def set_bins(
-        self, cursor: int, value: list[int | None], update: bool = True
+        self, cursor: int, value: list[int] | list[int | None], update: bool = True
     ) -> None:
         if not len(value) == self._obj.ndim:
             raise ValueError("length of bin array must match the number of dimensions.")
@@ -757,15 +757,13 @@ class ArraySlicer(QtCore.QObject):
 
     @property
     def state(self) -> ArraySlicerState:
-        return copy.deepcopy(
-            {
-                "dims": self._obj.dims,
-                "bins": self._bins,
-                "indices": self._indices,
-                "values": self._values,
-                "snap_to_data": self.snap_to_data,
-            }
-        )
+        return {
+            "dims": copy.deepcopy(self._obj.dims),
+            "bins": copy.deepcopy(self._bins),
+            "indices": copy.deepcopy(self._indices),
+            "values": copy.deepcopy(self._values),
+            "snap_to_data": bool(self.snap_to_data),
+        }
 
     @state.setter
     def state(self, state: ArraySlicerState) -> None:

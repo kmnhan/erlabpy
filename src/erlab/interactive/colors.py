@@ -155,7 +155,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
-    valueChanged = QtCore.Signal(float)  #: :meta private:
+    valueChanged = QtCore.Signal(float)
 
     def __init__(
         self,
@@ -278,6 +278,37 @@ class BetterImageItem(pg.ImageItem):
         self.sigColorChanged.emit()
 
 
+class TrackableLinearRegionItem(pg.LinearRegionItem):
+    sigRegionChangeStarted = QtCore.Signal(object)  #: :meta private:
+
+    def mouseDragEvent(self, ev):
+        if not self.movable or ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        ev.accept()
+
+        if ev.isStart():
+            bdp = ev.buttonDownPos()
+            self.cursorOffsets = [ln.pos() - bdp for ln in self.lines]
+            self.startPositions = [ln.pos() for ln in self.lines]
+            self.moving = True
+            self.sigRegionChangeStarted.emit(self)
+
+        if not self.moving:
+            return
+
+        self.lines[0].blockSignals(True)  # only want to update once
+        for i, ln in enumerate(self.lines):
+            ln.setPos(self.cursorOffsets[i] + ev.pos())
+        self.lines[0].blockSignals(False)
+        self.prepareGeometryChange()
+
+        if ev.isFinish():
+            self.moving = False
+            self.sigRegionChangeFinished.emit(self)
+        else:
+            self.sigRegionChanged.emit(self)
+
+
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
         self,
@@ -304,7 +335,7 @@ class BetterColorBarItem(pg.PlotItem):
         )
         self.addItem(self._colorbar)
 
-        self._span = pg.LinearRegionItem(
+        self._span = TrackableLinearRegionItem(
             (0, 1),
             "horizontal",
             swapMode="block",
