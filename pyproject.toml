@@ -67,6 +67,8 @@ docs = [
     "sphinx-design",
 ]
 
+[project.gui-scripts]
+itool-manager = "erlab.interactive.imagetool.manager:main"
 
 [project.urls]
 Documentation = "https://erlabpy.readthedocs.io"
@@ -219,6 +221,7 @@ testpaths = "tests"
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
+concurrency = ["multiprocessing", "thread"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -230,13 +233,14 @@ exclude_also = [
     "def .*_drag",
     "def _link_splitters",
     "def draw_mode",
-    "qapp = QtWidgets.QApplication(sys.argv)",
+    "QtWidgets.QApplication(sys.argv)",
     "if not qapp:",
     "if execute is None:",
     "qapp.exec()",
     "if __name__ == __main__:",
     "except varname.VarnameRetrievingError:",
     "if TYPE_CHECKING:",
+    "QtCore.QThread",
 ]
 
 [tool.mypy]

@@ -7,11 +7,8 @@ from erlab.interactive.fermiedge import goldtool
 from erlab.interactive.kspace import ktool
 from numpy.testing import assert_allclose
 
-from ..accessors.test_kspace import anglemap  # noqa: TID252, F401
-from ..analysis.test_gold import gold  # noqa: TID252, F401
 
-
-def test_goldtool(qtbot, gold):  # noqa: F811
+def test_goldtool(qtbot, gold):
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
@@ -56,7 +53,7 @@ result = _processed.differentiate('y').differentiate('y')"""
     assert win.copy_code() == "result = era.image.minimum_gradient(data)"
 
 
-def test_ktool(qtbot, anglemap):  # noqa: F811
+def test_ktool(qtbot, anglemap):
     win = ktool(anglemap, execute=False)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):

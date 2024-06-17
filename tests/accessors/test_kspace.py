@@ -5,11 +5,6 @@ from erlab.analysis.kspace import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles
 
 
-@pytest.fixture(scope="session")
-def anglemap():
-    return generate_data_angles(shape=(10, 10, 10), assign_attributes=True)
-
-
 @pytest.fixture()
 def cut():
     return generate_data_angles(

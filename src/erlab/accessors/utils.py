@@ -113,9 +113,9 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
             return self.itool(*args, **kwargs)
         else:
             if importlib.util.find_spec("hvplot"):
-                return self._obj.hvplot(*args, **kwargs)
-
-            raise ValueError("Data must have at least two dimensions.")
+                self.hvplot(*args, **kwargs)
+            else:
+                raise ValueError("Data must have at least two dimensions.")
 
     def itool(self, *args, **kwargs):
         """Shortcut for :func:`itool <erlab.interactive.imagetool.itool>`.
@@ -123,9 +123,11 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         Parameters
         ----------
         *args
-            Positional arguments passed onto :func:`itool <erlab.interactive.imagetool.itool>`.
+            Positional arguments passed onto :func:`itool
+            <erlab.interactive.imagetool.itool>`.
         **kwargs
-            Keyword arguments passed onto :func:`itool <erlab.interactive.imagetool.itool>`.
+            Keyword arguments passed onto :func:`itool
+            <erlab.interactive.imagetool.itool>`.
 
         """
         from erlab.interactive.imagetool import itool

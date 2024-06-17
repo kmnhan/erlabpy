@@ -108,7 +108,10 @@ class LoaderBase:
     """
 
     additional_attrs: ClassVar[dict[str, str | int | float]] = {}
-    """Additional attributes to be added to the data after loading."""
+    """Additional attributes to be added to the data after loading.
+
+    If an attribute with the same name is already present, it will be skipped.
+    """
 
     additional_coords: ClassVar[dict[str, str | int | float]] = {}
     """Additional non-dimension coordinates to be added to the data after loading."""
@@ -985,19 +988,34 @@ class LoaderBase:
         )
         return data
 
-    def post_process(self, data: xr.DataArray) -> xr.DataArray:
-        data = self.process_keys(data)
+    def post_process(self, darr: xr.DataArray) -> xr.DataArray:
+        darr = self.process_keys(darr)
 
         for k in self.average_attrs:
-            if k in data.coords:
-                v = data[k].values.mean()
-                data = data.drop(k).assign_attrs({k: v})
+            if k in darr.coords:
+                v = darr[k].values.mean()
+                darr = darr.drop_vars(k).assign_attrs({k: v})
 
-        data = data.assign_attrs(
-            self.additional_attrs | {"data_loader_name": str(self.name)}
+        darr = darr.assign_attrs(
+            {k: v for k, v in self.additional_attrs.items() if k not in darr.attrs}
+            | {"data_loader_name": str(self.name)}
         )
-        data = data.assign_coords(self.additional_coords)
-        return data
+        darr = darr.assign_coords(self.additional_coords)
+
+        # Make coordinate order pretty
+        new_coords = {}
+        coord_dict = dict(darr.coords)
+        for d in darr.dims:
+            new_coords[d] = coord_dict.pop(d)
+        for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
+            if d in coord_dict:
+                new_coords[d] = coord_dict.pop(d)
+        new_coords = new_coords | coord_dict
+
+        darr = xr.DataArray(
+            darr.values, coords=new_coords, dims=darr.dims, attrs=darr.attrs
+        )
+        return darr
 
     def post_process_general(
         self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]

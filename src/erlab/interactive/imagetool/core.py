@@ -5,17 +5,22 @@ from __future__ import annotations
 __all__ = ["ImageSlicerArea"]
 
 import collections
+import contextlib
+import copy
 import functools
 import inspect
 import os
+import queue
 import time
+import warnings
 import weakref
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import xarray as xr
+from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import (
@@ -30,14 +35,25 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
-    from pyqtgraph.GraphicsScene import mouseEvents
 
-    class ColorMapProperties(TypedDict):
+    from erlab.interactive.imagetool.slicer import ArraySlicerState
+
+    class ColorMapState(TypedDict):
         cmap: str | pg.ColorMap
         gamma: float
         reversed: bool
-        highContrast: bool
-        zeroCentered: bool
+        high_contrast: bool
+        zero_centered: bool
+        levels_locked: bool
+        levels: NotRequired[tuple[float, float]]
+
+    class ImageSlicerState(TypedDict):
+        color: ColorMapState
+        slice: ArraySlicerState
+        current_cursor: int
+        manual_limits: dict[str, list[float]]
+        cursor_colors: list[str]
+        splitter_sizes: NotRequired[list[list[int]]]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -106,6 +122,48 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
     def getPlotItemViewBox(self) -> pg.ViewBox:
         return self.getPlotItem().vb
+
+
+def suppress_history(method: Callable | None = None):
+    """Ignore history changes when calling the decorated method."""
+
+    def my_decorator(method: Callable):
+        @functools.wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if hasattr(self, "slicer_area"):
+                area = self.slicer_area
+            else:
+                area = self
+            with area.history_suppressed():
+                return method(self, *args, **kwargs)
+
+        return wrapped
+
+    if method is not None:
+        return my_decorator(method)
+    return my_decorator
+
+
+def record_history(method: Callable | None = None):
+    """Log history when calling the decorated method."""
+
+    def my_decorator(method: Callable):
+        @functools.wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if hasattr(self, "slicer_area"):
+                area = self.slicer_area
+            else:
+                area = self
+            area.sigWriteHistory.emit()
+            with area.history_suppressed():
+                # Duplicate records within the same method are squashed
+                return method(self, *args, **kwargs)
+
+        return wrapped
+
+    if method is not None:
+        return my_decorator(method)
+    return my_decorator
 
 
 def link_slicer(
@@ -190,6 +248,15 @@ class SlicerLinkProxy:
     @property
     def children(self) -> set[ImageSlicerArea]:
         return self._children
+
+    @property
+    def num_children(self) -> int:
+        return len(self._children)
+
+    def unlink_all(self):
+        for s in self._children:
+            s._linking_proxy = None
+        self._children.clear()
 
     def add(self, slicer_area: ImageSlicerArea):
         if slicer_area.is_linked:
@@ -296,7 +363,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Default colormap of the data.
     gamma
         Default power law normalization of the colormap.
-    zeroCentered
+    zero_centered
         If `True`, the normalization is applied symmetrically from the midpoint of
         the colormap.
     rad2deg
@@ -313,6 +380,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigCurrentCursorChanged(index)
 
     sigViewOptionChanged()
+
+    sigHistoryChanged()
+
+    sigWriteHistory()
 
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
@@ -338,6 +409,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
     sigViewOptionChanged = QtCore.Signal()  #: :meta private:
+    sigHistoryChanged = QtCore.Signal()  #: :meta private:
+    sigWriteHistory = QtCore.Signal()  #: :meta private:
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
@@ -365,7 +438,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.ArrayLike | None = None,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
-        zeroCentered: bool = False,
+        zero_centered: bool = False,
         rad2deg: bool | Iterable[str] = False,
         *,
         bench: bool = False,
@@ -376,7 +449,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
-        self.bench = bench
+        self.bench: bool = bench
+
+        # LIFO queues to handle undo and redo
+        self._prev_states: queue.LifoQueue = queue.LifoQueue(maxsize=1000)
+        self._next_states: queue.LifoQueue = queue.LifoQueue(maxsize=1000)
+
+        # Flag to prevent writing history when restoring state
+        self._write_history: bool = True
 
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
@@ -384,7 +464,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._splitters = (
+        self._splitters: tuple[QtWidgets.QSplitter, ...] = (
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal),
             QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical),
@@ -396,11 +476,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for s in self._splitters:
             s.setHandleWidth(4)
             s.setStyleSheet("QSplitter::handle{background: #222222;}")
-            # palette = s.palette()
-            # palette.setColor(QtGui.QPalette.ColorRole.Light, QtGui.QColor("yellow"))
-            # s.setPalette(palette)
-            # print(s.handleWidth())
-            # pass
+
         layout.addWidget(self._splitters[0])
         for i, j in ((0, 1), (1, 2), (1, 3), (0, 4), (4, 5), (4, 6)):
             self._splitters[i].addWidget(self._splitters[j])
@@ -409,8 +485,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.cursor_colors: list[QtGui.QColor] = [self.COLORS[0]]
 
         self._colorbar = ItoolColorBar(self)
-        layout.addWidget(self._colorbar)
         self._colorbar.setVisible(False)
+        layout.addWidget(self._colorbar)
+
+        cmap_reversed: bool = False
+        if isinstance(cmap, str):
+            if cmap.endswith("_r"):
+                cmap = cmap[:-2]
+                cmap_reversed = True
+            if cmap.startswith("cet_CET"):
+                cmap = cmap[4:]
+        self._colormap_properties: ColorMapState = {
+            "cmap": cmap,
+            "gamma": gamma,
+            "reversed": cmap_reversed,
+            "high_contrast": False,
+            "zero_centered": zero_centered,
+            "levels_locked": False,
+        }
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str, list[float]] = {}
@@ -435,27 +527,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         self.qapp.aboutToQuit.connect(self.on_close)
 
-        cmap_reversed = False
-
-        if isinstance(cmap, str):
-            if cmap.endswith("_r"):
-                cmap = cmap[:-2]
-                cmap_reversed = True
-            if cmap.startswith("cet_CET"):
-                cmap = cmap[4:]
-
-        self.colormap_properties: ColorMapProperties = {
-            "cmap": cmap,
-            "gamma": gamma,
-            "reversed": cmap_reversed,
-            "highContrast": False,
-            "zeroCentered": zeroCentered,
-        }
-
         self._data: xr.DataArray | None = None
         self.current_cursor: int = 0
-
-        self.levels_locked: bool = False
 
         if data is not None:
             self.set_data(data, rad2deg=rad2deg)
@@ -463,33 +536,56 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
-    def on_close(self):
-        self.array_slicer.clear_cache()
-        self.data.close()
-        if hasattr(self, "_data") and self._data is not None:
-            self._data.close()
-            del self._data
+    @property
+    def colormap_properties(self) -> ColorMapState:
+        prop = copy.deepcopy(self._colormap_properties)
+        if prop["levels_locked"]:
+            prop["levels"] = copy.deepcopy(self.levels)
+        return prop
 
-    def connect_axes_signals(self):
-        for ax in self.axes:
-            ax.connect_signals()
+    @property
+    def state(self) -> ImageSlicerState:
+        return {
+            "color": self.colormap_properties,
+            "slice": self.array_slicer.state,
+            "current_cursor": int(self.current_cursor),
+            "manual_limits": copy.deepcopy(self.manual_limits),
+            "splitter_sizes": self.splitter_sizes,
+            "cursor_colors": [c.name() for c in self.cursor_colors],
+        }
 
-    def disconnect_axes_signals(self):
-        for ax in self.axes:
-            ax.disconnect_signals()
+    @state.setter
+    def state(self, state: ImageSlicerState):
+        if "splitter_sizes" in state:
+            self.splitter_sizes = state["splitter_sizes"]
 
-    def connect_signals(self):
-        self.connect_axes_signals()
-        self.sigDataChanged.connect(self.refresh_all)
-        self.sigShapeChanged.connect(self.refresh_all)
-        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+        # Restore cursor number and colors
+        self.make_cursors(len(state["cursor_colors"]), colors=state["cursor_colors"])
 
-    def add_link(self, proxy: SlicerLinkProxy):
-        proxy.add(self)
+        # Set current cursor before restoring coordinates
+        self.set_current_cursor(state["current_cursor"], update=False)
 
-    def remove_link(self):
-        if self.is_linked:
-            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
+        # Restore coordinates, bins, etc.
+        self.array_slicer.state = state["slice"]
+
+        self.manual_limits = state.get("manual_limits", {})
+        self.sigShapeChanged.emit()  # to trigger manual limits update
+        self.refresh_all()
+
+        # Restore colormap settings
+        try:
+            self.set_colormap(**state.get("color", {}), update=True)
+        except Exception:
+            warnings.warn("Failed to restore colormap settings, skipping", stacklevel=1)
+
+    @property
+    def splitter_sizes(self) -> list[list[int]]:
+        return [s.sizes() for s in self._splitters]
+
+    @splitter_sizes.setter
+    def splitter_sizes(self, sizes: list[list[int]]):
+        for s, size in zip(self._splitters, sizes, strict=True):
+            s.setSizes(size)
 
     @property
     def is_linked(self) -> bool:
@@ -498,6 +594,26 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def colormap(self) -> str | pg.ColorMap:
         return self.colormap_properties["cmap"]
+
+    @colormap.setter
+    def colormap(self, cmap: str | pg.ColorMap):
+        self.set_colormap(cmap)
+
+    @property
+    def levels_locked(self) -> bool:
+        return self.colormap_properties["levels_locked"]
+
+    @levels_locked.setter
+    def levels_locked(self, value: bool):
+        self.lock_levels(value)
+
+    @property
+    def levels(self) -> tuple[float, float]:
+        return self._colorbar.cb.spanRegion()
+
+    @levels.setter
+    def levels(self, levels: tuple[float, float]):
+        self._colorbar.cb.setSpanRegion(levels)
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
@@ -564,8 +680,97 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self.array_slicer._obj
 
     @property
-    def color_locked(self) -> bool:
-        return self._colorbar.isVisible()
+    def undoable(self) -> bool:
+        return not self._prev_states.empty()
+
+    @property
+    def redoable(self) -> bool:
+        return not self._next_states.empty()
+
+    @contextlib.contextmanager
+    def history_suppressed(self):
+        original = bool(self._write_history)
+        self._write_history = False
+        try:
+            yield
+        finally:
+            self._write_history = original
+
+    def on_close(self):
+        self.array_slicer.clear_cache()
+        self.data.close()
+        if hasattr(self, "_data") and self._data is not None:
+            self._data.close()
+            del self._data
+
+    @QtCore.Slot()
+    def write_state(self) -> None:
+        if not self._write_history:
+            return
+        last_state = (
+            self._prev_states.queue[-1] if not self._prev_states.empty() else None
+        )
+        curr_state = self.state
+
+        # Don't store splitter sizes in history
+        if last_state is not None:
+            last_state.pop("splitter_sizes", None)
+        curr_state.pop("splitter_sizes", None)
+
+        if last_state is None or last_state != curr_state:
+            self._prev_states.put(curr_state)
+            with self._next_states.mutex:
+                self._next_states.queue.clear()
+            self.sigHistoryChanged.emit()
+
+    @QtCore.Slot()
+    @suppress_history
+    def flush_history(self) -> None:
+        with self._prev_states.mutex:
+            self._prev_states.queue.clear()
+        with self._next_states.mutex:
+            self._next_states.queue.clear()
+        self.sigHistoryChanged.emit()
+
+    @QtCore.Slot()
+    @suppress_history
+    def undo(self) -> None:
+        if not self.undoable:
+            raise RuntimeError("Nothing to undo")
+        self._next_states.put(self.state)
+        self.state = self._prev_states.get()
+        self.sigHistoryChanged.emit()
+
+    @QtCore.Slot()
+    @suppress_history
+    def redo(self) -> None:
+        if not self.redoable:
+            raise RuntimeError("Nothing to redo")
+        self._prev_states.put(self.state)
+        self.state = self._next_states.get()
+        self.sigHistoryChanged.emit()
+
+    def connect_axes_signals(self):
+        for ax in self.axes:
+            ax.connect_signals()
+
+    def disconnect_axes_signals(self):
+        for ax in self.axes:
+            ax.disconnect_signals()
+
+    def connect_signals(self):
+        self.connect_axes_signals()
+        self.sigDataChanged.connect(self.refresh_all)
+        self.sigShapeChanged.connect(self.refresh_all)
+        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
+        self.sigWriteHistory.connect(self.write_state)
+
+    def link(self, proxy: SlicerLinkProxy):
+        proxy.add(self)
+
+    def unlink(self):
+        if self.is_linked:
+            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
 
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
@@ -607,16 +812,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ax.vb.updateAutoRange()
 
     @link_slicer
+    @record_history
     def center_all_cursors(self):
         for i in range(self.n_cursors):
             self.array_slicer.center_cursor(i)
 
     @link_slicer
+    @record_history
     def center_cursor(self):
         self.array_slicer.center_cursor(self.current_cursor)
 
     @link_slicer
-    def set_current_cursor(self, cursor: int, update=True):
+    @record_history
+    def set_current_cursor(self, cursor: int, update: bool = True):
+        cursor = cursor % self.n_cursors
         if cursor > self.n_cursors - 1:
             raise IndexError("Cursor index out of range")
         self.current_cursor = cursor
@@ -694,6 +903,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_colormap(update=True)
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
+        self.flush_history()
 
     def update_values(self, values: npt.NDArray | xr.DataArray, update: bool = True):
         """Update only the values of the data.
@@ -718,22 +928,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         """
         if isinstance(values, xr.DataArray):
-            if self.array_slicer._obj.ndim != values.ndim:
+            if self.data.ndim != values.ndim:
                 raise ValueError("DataArray dimensions do not match")
-            if set(self.array_slicer._obj.dims) != set(values.dims):
+            if set(self.data.dims) != set(values.dims):
                 raise ValueError("DataArray dimensions do not match")
 
-            if self.array_slicer._obj.dims != values.dims:
-                values = values.transpose(*self.array_slicer._obj.dims)
-            if self.array_slicer._obj.shape != values.shape:
+            if self.data.dims != values.dims:
+                values = values.transpose(*self.data.dims)
+            if self.data.shape != values.shape:
                 raise ValueError("DataArray shape does not match")
 
             values = values.values
         else:
-            if self.array_slicer._obj.shape != values.shape:
+            if self.data.shape != values.shape:
                 raise ValueError(
                     "Data shape does not match. Array is "
-                    f"{self.array_slicer._obj.shape} but {values.shape} given"
+                    f"{self.data.shape} but {values.shape} given"
                 )
         self.array_slicer._obj[:] = values
 
@@ -743,11 +953,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int)
     @link_slicer
+    @record_history
     def swap_axes(self, ax1: int, ax2: int):
         self.array_slicer.swap_axes(ax1, ax2)
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True)
+    @record_history
     def set_index(
         self, axis: int, value: int, update: bool = True, cursor: int | None = None
     ):
@@ -757,6 +969,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True, steps=True)
+    @record_history
     def step_index(
         self, axis: int, value: int, update: bool = True, cursor: int | None = None
     ):
@@ -766,12 +979,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True, steps=True)
+    @record_history
     def step_index_all(self, axis: int, value: int, update: bool = True):
         for i in range(self.n_cursors):
             self.array_slicer.step_index(i, axis, value, update)
 
     @QtCore.Slot(int, float, bool, bool)
     @link_slicer
+    @record_history
     def set_value(
         self,
         axis: int,
@@ -786,6 +1001,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True, steps=True)
+    @record_history
     def set_bin(
         self, axis: int, value: int, update: bool = True, cursor: int | None = None
     ):
@@ -797,17 +1013,43 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True, steps=True)
+    @record_history
     def set_bin_all(self, axis: int, value: int, update: bool = True):
         new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
 
+    def make_cursors(self, n: int, colors: Iterable[QtGui.QColor | str] | None):
+        # Used when restoring state to match the number of cursors
+        while self.n_cursors > 1:
+            self.remove_cursor(0)
+
+        if colors is None:
+            colors = [self.gen_cursor_color(i) for i in range(n)]
+        else:
+            colors = list(colors)
+
+        if len(colors) != n:
+            raise ValueError("Number of colors must match number of cursors")
+
+        for clr in colors:
+            self.add_cursor(color=clr)
+
+        self.remove_cursor(0)
+        self.refresh_all()
+
     @QtCore.Slot()
+    @QtCore.Slot(object)
     @link_slicer
-    def add_cursor(self):
+    @record_history
+    def add_cursor(self, color: QtGui.QColor | str | None = None):
         self.array_slicer.add_cursor(self.current_cursor, update=False)
-        self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+        if color is None:
+            self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+        else:
+            self.cursor_colors.append(QtGui.QColor(color))
+
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
@@ -818,7 +1060,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(int)
     @link_slicer
+    @record_history
     def remove_cursor(self, index: int):
+        index = index % self.n_cursors
         if self.n_cursors == 1:
             return
         self.array_slicer.remove_cursor(index, update=False)
@@ -827,6 +1071,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if index == 0:
                 self.current_cursor = 1
             self.current_cursor -= 1
+        elif self.current_cursor > index:
+            self.current_cursor -= 1
+
         for ax in self.axes:
             ax.remove_cursor(index)
         self.refresh_current()
@@ -834,6 +1081,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot()
+    @record_history
     def remove_current_cursor(self):
         self.remove_cursor(self.current_cursor)
 
@@ -869,27 +1117,37 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap: str | pg.ColorMap | None = None,
         gamma: float | None = None,
         reversed: bool | None = None,
-        highContrast: bool | None = None,
-        zeroCentered: bool | None = None,
+        high_contrast: bool | None = None,
+        zero_centered: bool | None = None,
+        levels_locked: bool | None = None,
+        levels: tuple[float, float] | None = None,
         update: bool = True,
     ):
+        if gamma is None and levels_locked is None and levels is None:
+            # These will be handled in their respective methods or calling widgets
+            self.sigWriteHistory.emit()
+
         if cmap is not None:
-            self.colormap_properties["cmap"] = cmap
+            self._colormap_properties["cmap"] = cmap
         if gamma is not None:
-            self.colormap_properties["gamma"] = gamma
+            self._colormap_properties["gamma"] = gamma
         if reversed is not None:
-            self.colormap_properties["reversed"] = reversed
-        if highContrast is not None:
-            self.colormap_properties["highContrast"] = highContrast
-        if zeroCentered is not None:
-            self.colormap_properties["zeroCentered"] = zeroCentered
+            self._colormap_properties["reversed"] = reversed
+        if high_contrast is not None:
+            self._colormap_properties["high_contrast"] = high_contrast
+        if zero_centered is not None:
+            self._colormap_properties["zero_centered"] = zero_centered
+        if levels_locked is not None:
+            self.levels_locked = levels_locked
+        if levels is not None:
+            self.levels = levels
 
         cmap = pg_colormap_powernorm(
-            self.colormap_properties["cmap"],
-            self.colormap_properties["gamma"],
-            self.colormap_properties["reversed"],
-            highContrast=self.colormap_properties["highContrast"],
-            zeroCentered=self.colormap_properties["zeroCentered"],
+            self._colormap_properties["cmap"],
+            self._colormap_properties["gamma"],
+            self._colormap_properties["reversed"],
+            high_contrast=self._colormap_properties["high_contrast"],
+            zero_centered=self._colormap_properties["zero_centered"],
         )
         for im in self._imageitems:
             im.set_pg_colormap(cmap, update=update)
@@ -897,7 +1155,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool):
-        self.levels_locked = lock
+        if lock != self.levels_locked:
+            self.sigWriteHistory.emit()
+
+        self._colormap_properties["levels_locked"] = lock
 
         if self.levels_locked:
             levels = self.array_slicer.limits
@@ -1015,6 +1276,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
         )
 
+    @record_history
     def toggle_snap(self, value: bool | None = None):
         if value is None:
             value = not self.array_slicer.snap_to_data
@@ -1032,6 +1294,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
 
 class ItoolCursorLine(pg.InfiniteLine):
+    sigDragStarted = QtCore.Signal(object)
+
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
 
@@ -1063,6 +1327,7 @@ class ItoolCursorLine(pg.InfiniteLine):
                         ev.buttonDownPos()
                     )
                     self.startPosition = self.pos()
+                    self.sigDragStarted.emit(self)
                 ev.accept()
 
                 if not self.moving:
@@ -1163,6 +1428,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.is_vertical = is_vertical
+        self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def refresh_data(self):
         ItoolDisplayObject.refresh_data(self)
@@ -1184,6 +1450,7 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
     ):
         BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def updateImage(self, *args, **kargs):
         defaults = {"autoLevels": not self.slicer_area.levels_locked}
@@ -1331,18 +1598,28 @@ class ItoolPlotItem(pg.PlotItem):
     def getViewBoxMenu(self) -> ViewBoxMenu:
         return self.getViewBox().menu
 
-    def mouseDragEvent(self, ev: mouseEvents.MouseDragEvent):
+    def mouseDragEvent(
+        self, ev: mouseEvents.MouseDragEvent | mouseEvents.MouseClickEvent
+    ):
         modifiers = self.slicer_area.qapp.keyboardModifiers()
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
         ):
             ev.accept()
+            if isinstance(ev, mouseEvents.MouseDragEvent):
+                if ev.isStart():
+                    self.slicer_area.sigWriteHistory.emit()
+            else:
+                self.slicer_area.sigWriteHistory.emit()
+
             self.sigDragged.emit(ev, modifiers)
             # self.process_drag((ev, modifiers))
         else:
             ev.ignore()
 
+    @QtCore.Slot(tuple)
+    @suppress_history
     def process_drag(
         self, sig: tuple[mouseEvents.MouseDragEvent, QtCore.Qt.KeyboardModifier]
     ):
@@ -1388,7 +1665,7 @@ class ItoolPlotItem(pg.PlotItem):
         if self.slicer_area.bench:
             self._time_end = time.perf_counter()
 
-    def add_cursor(self, update=True):
+    def add_cursor(self, update: bool = True):
         new_cursor = len(self.slicer_data_items)
         line_angles = (90, 0)
 
@@ -1408,7 +1685,7 @@ class ItoolPlotItem(pg.PlotItem):
                 axisOrder="row-major",
                 **self._item_kw,
             )
-            if self.slicer_area.color_locked:
+            if self.slicer_area.levels_locked:
                 item.setLevels(self.array_slicer.limits, update=True)
         else:
             item = self.plotdata_cls(
@@ -1458,6 +1735,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
+            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
 
         if update:
             self.refresh_cursor(new_cursor)
@@ -1667,6 +1945,9 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.blockSignals(True)
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
+        self._span.sigRegionChangeStarted.connect(
+            lambda: self._slicer_area.sigWriteHistory.emit()
+        )
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
         self.color_changed()

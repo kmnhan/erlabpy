@@ -1,7 +1,10 @@
+import time
+
 import numpy as np
 import pytest
 import xarray as xr
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool.manager import ImageToolManager
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore
 
@@ -60,18 +63,63 @@ def test_itool(qtbot):
     win.array_slicer.set_bin(0, 1, 2, update=True)
     move_and_compare_values(qtbot, win, [9.0, 8.0, 3.0, 4.0])
 
+    # Test code generation
+    assert win.array_slicer.qsel_code(0, (0,)) == ".qsel(x=1.5, x_width=2.0)"
+
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "ColdWarm", gamma=1.5, reversed=True, highContrast=True, zeroCentered=True
+        "ColdWarm", gamma=1.5, reversed=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
     win.slicer_area.lock_levels(True)
     win.slicer_area.lock_levels(False)
 
+    # Undo and redo
+    win.slicer_area.undo()
+    qtbot.keyClick(win, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.ControlModifier)
+    qtbot.keyClick(
+        win,
+        QtCore.Qt.Key.Key_Z,
+        QtCore.Qt.KeyboardModifier.ControlModifier
+        | QtCore.Qt.KeyboardModifier.ShiftModifier,
+    )
+    win.slicer_area.redo()
+
+    # Check restoring the state works
+    old_state = dict(win.slicer_area.state)
+    win.slicer_area.state = old_state
+
     # Add and remove cursor
     win.slicer_area.add_cursor()
+    expected_state = {
+        "color": {
+            "cmap": "ColdWarm",
+            "gamma": 1.5,
+            "reversed": True,
+            "high_contrast": True,
+            "zero_centered": True,
+            "levels_locked": False,
+        },
+        "slice": {
+            "dims": ("y", "x"),
+            "bins": [[2, 2], [2, 2]],
+            "indices": [[2, 2], [2, 2]],
+            "values": [[2.0, 2.0], [2.0, 2.0]],
+            "snap_to_data": True,
+        },
+        "current_cursor": 1,
+        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
+        "splitter_sizes": list(old_state["splitter_sizes"]),
+        "cursor_colors": ["#cccccc", "#ffff00"],
+    }
+    assert win.slicer_area.state == expected_state
     win.slicer_area.remove_current_cursor()
+    assert win.slicer_area.state == old_state
+
+    # See if restoring the state works for the second cursor
+    win.slicer_area.state = expected_state
+    assert win.slicer_area.state == expected_state
 
 
 def test_value_update(qtbot):
@@ -99,19 +147,31 @@ def test_value_update(qtbot):
 
 
 def test_sync(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win0, win1 = itool([data, data], link=True, link_colors=True, execute=False)
-    for w in (win0, win1):
-        qtbot.addWidget(w)
+    manager = ImageToolManager()
 
-    for w in (win0, win1):
-        with qtbot.waitExposed(w):
-            w.show()
-            w.activateWindow()
-            w.raise_()
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+        manager.raise_()
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    itool([data, data], link=True, link_colors=True, use_manager=True)
+
+    t0 = time.perf_counter()
+    while True:
+        if len(manager.tools) == 2:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
+    win0, win1 = manager.tools["0"], manager.tools["1"]
 
     win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
-    assert win0.slicer_area.colormap_properties == win1.slicer_area.colormap_properties
+    assert (
+        win0.slicer_area._colormap_properties == win1.slicer_area._colormap_properties
+    )
 
     move_and_compare_values(qtbot, win0, [12.0, 7.0, 6.0, 11.0], target_win=win1)
 
@@ -127,3 +187,33 @@ def test_sync(qtbot):
     win1.slicer_area.set_bin_all(1, 2, update=True)
 
     move_and_compare_values(qtbot, win0, [9.0, 8.0, 3.0, 4.0], target_win=win1)
+
+    manager.remove_tool("0")
+    manager.remove_tool("1")
+    manager.close()
+
+
+def test_manager(qtbot):
+    win = ImageToolManager()
+
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data.qshow()
+
+    t0 = time.perf_counter()
+    while True:
+        if len(win.tools) > 0:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
+    assert win.tools["0"].array_slicer.point_value(0) == 12.0
+
+    win.remove_tool("0")
+    win.close()

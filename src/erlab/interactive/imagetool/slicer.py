@@ -4,8 +4,9 @@ from __future__ import annotations
 
 __all__ = ["ArraySlicer"]
 
+import copy
 import functools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import numba
 import numpy as np
@@ -19,6 +20,14 @@ if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
     import xarray as xr
+
+    class ArraySlicerState(TypedDict):
+        dims: tuple[Hashable, ...]
+        bins: list[list[int]]
+        indices: list[list[int]]
+        values: list[list[np.float32]]
+        snap_to_data: bool
+
 
 VALID_NDIM = (2, 3, 4)
 
@@ -150,11 +159,6 @@ class ArraySlicer(QtCore.QObject):
     def __init__(self, xarray_obj: xr.DataArray):
         super().__init__()
         self.set_array(xarray_obj, validate=True, reset=True)
-
-    @property
-    def n_cursors(self) -> int:
-        """The number of cursors."""
-        return len(self._bins)
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
@@ -411,7 +415,7 @@ class ArraySlicer(QtCore.QObject):
             ]
 
     def set_bins(
-        self, cursor: int, value: list[int | None], update: bool = True
+        self, cursor: int, value: list[int] | list[int | None], update: bool = True
     ) -> None:
         if not len(value) == self._obj.ndim:
             raise ValueError("length of bin array must match the number of dimensions.")
@@ -605,9 +609,11 @@ class ArraySlicer(QtCore.QObject):
     def isel_args(
         self, cursor: int, disp: Sequence[int], int_if_one: bool = False
     ) -> dict[str, slice | int]:
-        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        axis: list[int] = sorted(set(range(self._obj.ndim)) - set(disp))
         return {
-            str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
+            str(self._obj.dims[ax]).rstrip("_idx")
+            if ax in self._nonuniform_axes
+            else str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
             for ax in axis
         }
 
@@ -643,7 +649,9 @@ class ArraySlicer(QtCore.QObject):
         return out
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        if self._nonuniform_axes:
+        if any(
+            a in self._nonuniform_axes for a in set(range(self._obj.ndim)) - set(disp)
+        ):
             # Has non-uniform axes, fallback to isel
             return self.isel_code(cursor, disp)
 
@@ -745,3 +753,34 @@ class ArraySlicer(QtCore.QObject):
             return fast_nanmean_skipcheck(selected, axis=axis)
         else:
             return selected
+
+    @property
+    def n_cursors(self) -> int:
+        """The number of cursors."""
+        return len(self._bins)
+
+    @property
+    def state(self) -> ArraySlicerState:
+        return {
+            "dims": copy.deepcopy(self._obj.dims),
+            "bins": copy.deepcopy(self._bins),
+            "indices": copy.deepcopy(self._indices),
+            "values": copy.deepcopy(self._values),
+            "snap_to_data": bool(self.snap_to_data),
+        }
+
+    @state.setter
+    def state(self, state: ArraySlicerState) -> None:
+        if self._obj.dims != state["dims"]:
+            self._obj = self._obj.transpose(*state["dims"])
+
+        self.snap_to_data = state["snap_to_data"]
+        self.clear_cache()
+
+        for i, (bins, indices, values) in enumerate(
+            zip(state["bins"], state["indices"], state["values"], strict=True)
+        ):
+            self.center_cursor(i)
+            self.set_indices(i, indices, update=False)
+            self.set_values(i, values, update=True)
+            self.set_bins(i, bins, update=True)

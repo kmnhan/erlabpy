@@ -3,6 +3,7 @@
 import datetime
 import os
 import re
+import warnings
 from typing import ClassVar
 
 import h5netcdf
@@ -28,7 +29,7 @@ class SSRL52Loader(LoaderBase):
         "x": "X",
         "y": "Y",
         "z": "Z",
-        "hv": ["BL_energy", "BL_photon_energy"],
+        "hv": ["energy", "photon_energy"],
         "temp_sample": ["TB", "sample_stage_temperature"],
         "sample_workfunction": "WorkFunction",
     }
@@ -48,24 +49,24 @@ class SSRL52Loader(LoaderBase):
         return {"SSRL BL5-2 Raw Data (*.h5)": (self.load, {})}
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+        is_hvdep: bool = False
+
+        dim_mapping: dict[str, str] = {}
+
         with h5netcdf.File(file_path, mode="r", phony_dims="sort") as ncf:
             attrs = dict(ncf.attrs)
             compat_mode = "data" in ncf.groups  # Compatibility with older data
+
             for k, v in ncf.groups.items():
                 ds = xr.open_dataset(xr.backends.H5NetCDFStore(v, autoclose=True))
 
-                if k.casefold() == "Beamline".casefold():
-                    attrs[k] = ds.attrs
-                    hv = ds.attrs.get("energy", None)
-                    hv = ds.attrs.get("photon_energy", hv)
-                    if hv is not None:
-                        attrs["hv"] = hv
+                # if k.casefold() == "Beamline".casefold():
+                #     attrs[k] = ds.attrs
+                #     attrs["polarization"] = ds.attrs.get("polarization")
 
-                    attrs["polarization"] = ds.attrs.get("polarization")
-
-                else:
-                    # Merge group attributes
-                    attrs = attrs | ds.attrs
+                # else:
+                # Merge group attributes
+                attrs = attrs | ds.attrs
 
                 if k.casefold() == "Data".casefold():
                     if compat_mode:
@@ -88,35 +89,60 @@ class SSRL52Loader(LoaderBase):
                         axes[i] = {name.lower(): val for name, val in ax.items()}
 
                     # Apply dim labels
-                    data = ds.rename_dims(
-                        {f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)}
-                    ).load()
+                    dim_mapping = {
+                        f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)
+                    }
+                    data = ds.rename_dims(dim_mapping).load()
 
                     # Apply coordinates
-                    is_hvdep: bool = False
                     for i, ax in enumerate(axes):
                         if compat_mode:
                             cnt = v.dimensions[f"phony_dim_{i}"].size
                         else:
                             cnt = int(ax["count"])
 
-                        if (
-                            isinstance(ax["offset"], str)
-                            and ax["label"] == "Kinetic Energy"
-                        ):
+                        if isinstance(ax["offset"], str):
+                            if ax["label"] == "energy":
+                                data = data.assign_coords(
+                                    {
+                                        ax["label"]: np.array(
+                                            ncf["MapInfo"]["Beamline:energy"]
+                                        )
+                                    }
+                                )
+                                # Axes2 may have some values... not sure what they are
+                                # For now, just ignore them and use beamline attributes
+                                continue
+                            elif ax["label"] != "Kinetic Energy":
+                                warnings.warn(
+                                    "Undefined offset for non-energy axis. This was "
+                                    "not taken into account while writing the loader "
+                                    "code. Please report this issue. Resulting data "
+                                    "may be incorrect",
+                                    stacklevel=1,
+                                )
+                                continue
                             is_hvdep = True
                             # For hv dep scans, EKin is given for each scan
                             data = data.rename({ax["label"]: "Binding Energy"})
                             ax["label"] = "Binding Energy"
                             # ax['offset'] will be something like "MapInfo:Data:Axes0:Offset"
-                            seg: str = ax["offset"][8:]
+                            offset_key: str = ax["offset"][8:]
                             # Take first kinetic energy
-                            offset = np.array(ncf["MapInfo"][seg])[0]
+                            offset = np.array(ncf["MapInfo"][offset_key])[0]
 
                             if isinstance(ax["delta"], str):
                                 delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
                                 # may be ~1e-8 difference between values
-                                delta = np.mean(delta)
+                                if not np.allclose(delta, delta[0], atol=1e-7):
+                                    warnings.warn(
+                                        "Non-uniform delta for hv-dependent scan. This "
+                                        "was not taken into account while writing the "
+                                        "loader code. Please report this issue. "
+                                        "Resulting data may be incorrect",
+                                        stacklevel=1,
+                                    )
+                                delta = delta[0]
                             else:
                                 delta = float(ax["delta"])
 
@@ -133,8 +159,45 @@ class SSRL52Loader(LoaderBase):
 
                         data = data.assign_coords({ax["label"]: coord})
 
+            coord_names = list(data.coords.keys())
+            coord_sizes = [len(data[coord]) for coord in coord_names]
+            coord_attrs: dict = {}
+            for k, v in dict(attrs).items():
+                if isinstance(v, str) and v.startswith("MapInfo:"):
+                    del attrs[k]
+                    var = np.array(ncf["MapInfo"][v[8:]])
+                    same_length_indices = [
+                        i for i, s in enumerate(coord_sizes) if s == len(var)
+                    ]
+                    for idx in list(same_length_indices):
+                        # Attributes should not be dependent on these dims
+                        if coord_names[idx] in (
+                            "ThetaX",
+                            "Kinetic Energy",
+                            "Binding Energy",
+                        ):
+                            same_length_indices.remove(idx)
+                    if len(same_length_indices) != 1:
+                        # Multiple dimensions with the same length, ambiguous
+                        warnings.warn(
+                            f"Ambiguous length for {k}. This was not taken into account "
+                            "while writing the loader code. Please report this issue. "
+                            "Resulting data may be incorrect",
+                            stacklevel=1,
+                        )
+                    idx = same_length_indices[-1]
+                    coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
+
         if is_hvdep:
-            data = data.rename(energy="hv")
+            data = data.assign_coords(
+                {
+                    "Binding Energy": data["Binding Energy"]
+                    - data["energy"].values[0]
+                    + attrs.get("WorkFunction", 4.465)
+                }
+            )
+
+            # data = data.rename(energy="hv")
 
         if "time" in data.variables:
             # Normalize by dwell time
@@ -143,7 +206,26 @@ class SSRL52Loader(LoaderBase):
             data = data["spectrum"]
 
         data = data.assign_attrs(attrs)
+        data = data.assign_coords(coord_attrs)
+
         return self.process_keys(data)
+
+    def post_process(self, data: xr.DataArray) -> xr.DataArray:
+        data = super().post_process(data)
+
+        if "temp_sample" in data.coords:
+            # Add temperature to attributes
+            temp = float(data.temp_sample.mean())
+            data = data.assign_attrs(temp_sample=temp)
+
+        # Convert to binding energy
+        if "sample_workfunction" in data.attrs and "eV" in data.dims:
+            if data.eV.min() > 0:
+                data = data.assign_coords(
+                    eV=data.eV - float(data.hv) + data.attrs["sample_workfunction"]
+                )
+
+        return data
 
     def identify(
         self,

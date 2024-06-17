@@ -155,7 +155,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
-    valueChanged = QtCore.Signal(float)  #: :meta private:
+    valueChanged = QtCore.Signal(float)
 
     def __init__(
         self,
@@ -259,16 +259,16 @@ class BetterImageItem(pg.ImageItem):
         cmap: pg.ColorMap | str,
         gamma: float,
         reverse: bool = False,
-        highContrast: bool = False,
-        zeroCentered: bool = False,
+        high_contrast: bool = False,
+        zero_centered: bool = False,
         update: bool = True,
     ):
         cmap = pg_colormap_powernorm(
             cmap,
             gamma,
             reverse,
-            highContrast=highContrast,
-            zeroCentered=zeroCentered,
+            high_contrast=high_contrast,
+            zero_centered=zero_centered,
         )
         self.set_pg_colormap(cmap, update=update)
 
@@ -276,6 +276,37 @@ class BetterImageItem(pg.ImageItem):
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
         self.sigColorChanged.emit()
+
+
+class TrackableLinearRegionItem(pg.LinearRegionItem):
+    sigRegionChangeStarted = QtCore.Signal(object)  #: :meta private:
+
+    def mouseDragEvent(self, ev):
+        if not self.movable or ev.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        ev.accept()
+
+        if ev.isStart():
+            bdp = ev.buttonDownPos()
+            self.cursorOffsets = [ln.pos() - bdp for ln in self.lines]
+            self.startPositions = [ln.pos() for ln in self.lines]
+            self.moving = True
+            self.sigRegionChangeStarted.emit(self)
+
+        if not self.moving:
+            return
+
+        self.lines[0].blockSignals(True)  # only want to update once
+        for i, ln in enumerate(self.lines):
+            ln.setPos(self.cursorOffsets[i] + ev.pos())
+        self.lines[0].blockSignals(False)
+        self.prepareGeometryChange()
+
+        if ev.isFinish():
+            self.moving = False
+            self.sigRegionChangeFinished.emit(self)
+        else:
+            self.sigRegionChanged.emit(self)
 
 
 class BetterColorBarItem(pg.PlotItem):
@@ -304,7 +335,7 @@ class BetterColorBarItem(pg.PlotItem):
         )
         self.addItem(self._colorbar)
 
-        self._span = pg.LinearRegionItem(
+        self._span = TrackableLinearRegionItem(
             (0, 1),
             "horizontal",
             swapMode="block",
@@ -377,12 +408,18 @@ class BetterColorBarItem(pg.PlotItem):
         if not self.isVisible():
             return
         for img_ref in self.images:
-            img_ref().setLevels(self._span.getRegion())
+            img_ref().setLevels(self.spanRegion())
         self.limit_changed()
 
     @QtCore.Slot()
     def level_change_fin(self):
         pass
+
+    def spanRegion(self) -> tuple[float, float]:
+        return self._span.getRegion()
+
+    def setSpanRegion(self, levels: tuple[float, float]):
+        self._span.setRegion(levels)
 
     def setLimits(self, limits: tuple[float, float] | None):
         self._fixedlimits = limits
@@ -625,8 +662,8 @@ def pg_colormap_powernorm(
     cmap: str | pg.ColorMap,
     gamma: float,
     reverse: bool = False,
-    highContrast: bool = False,
-    zeroCentered: bool = False,
+    high_contrast: bool = False,
+    zero_centered: bool = False,
     N: int = 65536,
 ) -> pg.ColorMap:
     if isinstance(cmap, str):
@@ -637,7 +674,7 @@ def pg_colormap_powernorm(
         def mapping_fn(x):
             return x
 
-    elif highContrast:
+    elif high_contrast:
 
         def mapping_fn(x):
             return 1 - np.power(np.flip(x), 1.0 / gamma)
@@ -648,7 +685,7 @@ def pg_colormap_powernorm(
             return np.power(x, gamma)
 
     x = np.linspace(0, 1, N)
-    if zeroCentered:
+    if zero_centered:
         mapping = np.piecewise(
             x,
             [x < 0.5, x >= 0.5],

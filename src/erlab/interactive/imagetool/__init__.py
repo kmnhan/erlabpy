@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.io
 from erlab.interactive.imagetool.controls import (
@@ -43,6 +43,23 @@ if TYPE_CHECKING:
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
+def _parse_input(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset,
+) -> list[xr.DataArray]:
+    if isinstance(data, xr.Dataset):
+        data = [d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4]
+        if len(data) == 0:
+            raise ValueError("No valid data for ImageTool found in the Dataset")
+
+    if isinstance(data, np.ndarray | xr.DataArray):
+        data = (data,)
+
+    return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
+
+
 def itool(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
@@ -50,10 +67,11 @@ def itool(
     | xr.Dataset,
     link: bool = False,
     link_colors: bool = True,
+    use_manager: bool = True,
     execute: bool | None = None,
     **kwargs,
 ) -> ImageTool | list[ImageTool] | None:
-    """Create and display an ImageTool window.
+    """Create and display ImageTool windows.
 
     Parameters
     ----------
@@ -66,9 +84,14 @@ def itool(
     link_colors
         Whether to link the color maps between multiple linked ImageTool windows, by
         default `True`.
+    use_manager
+        Whether to open the ImageTool windows using the ImageToolManager if it is
+        running, by default `True`.
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
-        If `None`, the execution is determined based on the current IPython shell.
+        If `None`, the execution is determined based on the current IPython shell. This
+        argument has no effect if the ImageToolManager is running and `use_manager` is
+        set to `True`.
     **kwargs
         Additional keyword arguments to be passed onto the underlying slicer area. For a
         full list of supported arguments, see the
@@ -93,6 +116,17 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool(data_list, link=True)
     """
+    if use_manager:
+        from erlab.interactive.imagetool.manager import is_running
+
+        if not is_running():
+            use_manager = False
+
+    if use_manager:
+        from erlab.interactive.imagetool.manager import show_in_manager
+
+        return show_in_manager(data, link=link, link_colors=link_colors, **kwargs)
+
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
@@ -100,15 +134,7 @@ def itool(
     if isinstance(qapp, QtWidgets.QApplication):
         qapp.setStyle("Fusion")
 
-    if isinstance(data, xr.Dataset):
-        data = [d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4]
-        if len(data) == 0:
-            raise ValueError("No valid data for ImageTool found in the Dataset")
-
-    if isinstance(data, np.ndarray | xr.DataArray):
-        data = (data,)
-
-    itool_list = [ImageTool(d, **kwargs) for d in data]
+    itool_list = [ImageTool(d, **kwargs) for d in _parse_input(data)]
 
     for w in itool_list:
         w.show()
@@ -116,13 +142,13 @@ def itool(
     if len(itool_list) == 0:
         raise ValueError("No data provided")
 
-    itool_list[-1].activateWindow()
-    itool_list[-1].raise_()
-
     if link:
         linker = SlicerLinkProxy(  # noqa: F841
             *[w.slicer_area for w in itool_list], link_colors=link_colors
         )
+
+    itool_list[-1].activateWindow()
+    itool_list[-1].raise_()
 
     if execute is None:
         execute = True
@@ -137,7 +163,9 @@ def itool(
             pass
 
     if execute:
-        qapp.exec()
+        if isinstance(qapp, QtWidgets.QApplication):
+            qapp.exec()
+
         del itool_list
         gc.collect()
 
@@ -230,7 +258,11 @@ class ItoolMenuBar(DictMenuBar):
 
         self.createMenus()
         self.refreshMenus()
+        self.refreshEditMenus()
         self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
+        self.slicer_area.sigHistoryChanged.connect(self.refreshEditMenus)
+
+        self._recent_name_filter: str | None = None
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -249,20 +281,12 @@ class ItoolMenuBar(DictMenuBar):
                 "title": "&File",
                 "actions": {
                     "&Open...": {
-                        "shortcut": "Ctrl+O",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Open,
                         "triggered": self._open_file,
                     },
                     "&Save As...": {
-                        "shortcut": "Ctrl+Shift+S",
+                        "shortcut": QtGui.QKeySequence.StandardKey.SaveAs,
                         "triggered": self._export_file,
-                    },
-                    "&Copy Cursor Values": {
-                        "shortcut": "Ctrl+C",
-                        "triggered": self._copy_cursor_val,
-                    },
-                    "&Copy Cursor Indices": {
-                        "shortcut": "Ctrl+Alt+C",
-                        "triggered": self._copy_cursor_idx,
                     },
                 },
             },
@@ -316,6 +340,31 @@ class ItoolMenuBar(DictMenuBar):
                         "text": "Center At Zero",
                         "checkable": True,
                         "toggled": self._set_colormap_options,
+                        "sep_after": True,
+                    },
+                },
+            },
+            "editMenu": {
+                "title": "&Edit",
+                "actions": {
+                    "undoAct": {
+                        "text": "Undo",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Undo,
+                        "triggered": self.slicer_area.undo,
+                    },
+                    "redoAct": {
+                        "text": "Redo",
+                        "shortcut": QtGui.QKeySequence.StandardKey.Redo,
+                        "triggered": self.slicer_area.redo,
+                        "sep_after": True,
+                    },
+                    "&Copy Cursor Values": {
+                        "shortcut": "Ctrl+C",
+                        "triggered": self._copy_cursor_val,
+                    },
+                    "&Copy Cursor Indices": {
+                        "shortcut": "Ctrl+Alt+C",
+                        "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
                 },
@@ -405,12 +454,14 @@ class ItoolMenuBar(DictMenuBar):
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
 
+        # Disable/Enable menus based on context
         self.menu_dict["viewMenu"].aboutToShow.connect(
             lambda: self.action_dict["remCursorAct"].setDisabled(
                 self.slicer_area.n_cursors == 1
             )
         )
 
+    @QtCore.Slot()
     def refreshMenus(self):
         self.action_dict["snapCursorAct"].blockSignals(True)
         self.action_dict["snapCursorAct"].setChecked(self.array_slicer.snap_to_data)
@@ -418,19 +469,25 @@ class ItoolMenuBar(DictMenuBar):
 
         cmap_props = self.slicer_area.colormap_properties
         for ca, k in zip(
-            self.colorAct, ["reversed", "highContrast", "zeroCentered"], strict=True
+            self.colorAct, ["reversed", "high_contrast", "zero_centered"], strict=True
         ):
+            k = cast(
+                Literal["reversed", "high_contrast", "zero_centered"], k
+            )  # for mypy
             ca.blockSignals(True)
-            ca.setChecked(
-                cmap_props[cast(Literal["reversed", "highContrast", "zeroCentered"], k)]
-            )
+            ca.setChecked(cmap_props[k])
             ca.blockSignals(False)
+
+    @QtCore.Slot()
+    def refreshEditMenus(self):
+        self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
+        self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
     def _set_colormap_options(self):
         self.slicer_area.set_colormap(
             reversed=self.colorAct[0].isChecked(),
-            highContrast=self.colorAct[1].isChecked(),
-            zeroCentered=self.colorAct[2].isChecked(),
+            high_contrast=self.colorAct[1].isChecked(),
+            zero_centered=self.colorAct[2].isChecked(),
         )
 
     def _copy_cursor_val(self):
@@ -451,11 +508,14 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilters(valid_loaders.keys())
+        if self._recent_name_filter is not None:
+            dialog.selectNameFilter(self._recent_name_filter)
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             files = dialog.selectedFiles()
-            fn, kargs = valid_loaders[dialog.selectedNameFilter()]
+            self._recent_name_filter = dialog.selectedNameFilter()
+            fn, kargs = valid_loaders[self._recent_name_filter]
             # !TODO: handle ambiguous datasets
             self.slicer_area.set_data(fn(files[0], **kargs))
             self.slicer_area.view_all()
@@ -467,12 +527,12 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
 
-        valid_savers: dict[str, tuple[Callable, dict]] = {
+        valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.save_as_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (erlab.io.save_as_netcdf, {}),
         }
         dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
+        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()
