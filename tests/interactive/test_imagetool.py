@@ -60,6 +60,9 @@ def test_itool(qtbot):
     win.array_slicer.set_bin(0, 1, 2, update=True)
     move_and_compare_values(qtbot, win, [9.0, 8.0, 3.0, 4.0])
 
+    # Test code generation
+    assert win.array_slicer.qsel_code(0, (0,)) == ".qsel(x=1.5, x_width=2.0)"
+
     # Set colormap and gamma
     win.slicer_area.set_colormap(
         "ColdWarm", gamma=1.5, reversed=True, high_contrast=True, zero_centered=True

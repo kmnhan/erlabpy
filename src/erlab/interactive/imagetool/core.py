@@ -527,8 +527,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
-        self.flush_history()
-
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
@@ -799,21 +797,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh(self, cursor: int, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(cursor, axes)
 
+    @record_history
     def view_all(self):
         for ax in self.axes:
             ax.vb.enableAutoRange()
             ax.vb.updateAutoRange()
 
     @link_slicer
+    @record_history
     def center_all_cursors(self):
         for i in range(self.n_cursors):
             self.array_slicer.center_cursor(i)
 
     @link_slicer
+    @record_history
     def center_cursor(self):
         self.array_slicer.center_cursor(self.current_cursor)
 
     @link_slicer
+    @record_history
     def set_current_cursor(self, cursor: int, update: bool = True):
         cursor = cursor % self.n_cursors
         if cursor > self.n_cursors - 1:
@@ -893,6 +895,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.set_colormap(update=True)
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
+        self.flush_history()
 
     def update_values(self, values: npt.NDArray | xr.DataArray, update: bool = True):
         """Update only the values of the data.
@@ -1283,6 +1286,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
 
 class ItoolCursorLine(pg.InfiniteLine):
+    sigDragStarted = QtCore.Signal(object)
+
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
 
@@ -1314,7 +1319,7 @@ class ItoolCursorLine(pg.InfiniteLine):
                         ev.buttonDownPos()
                     )
                     self.startPosition = self.pos()
-                    self.slicer_area.sigWriteHistory.emit()
+                    self.sigDragStarted.emit(self)
                 ev.accept()
 
                 if not self.moving:
@@ -1720,6 +1725,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
+            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
 
         if update:
             self.refresh_cursor(new_cursor)

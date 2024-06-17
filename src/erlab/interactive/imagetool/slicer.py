@@ -609,9 +609,11 @@ class ArraySlicer(QtCore.QObject):
     def isel_args(
         self, cursor: int, disp: Sequence[int], int_if_one: bool = False
     ) -> dict[str, slice | int]:
-        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        axis: list[int] = sorted(set(range(self._obj.ndim)) - set(disp))
         return {
-            str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
+            str(self._obj.dims[ax]).rstrip("_idx")
+            if ax in self._nonuniform_axes
+            else str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
             for ax in axis
         }
 
@@ -647,7 +649,9 @@ class ArraySlicer(QtCore.QObject):
         return out
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        if self._nonuniform_axes:
+        if any(
+            a in self._nonuniform_axes for a in set(range(self._obj.ndim)) - set(disp)
+        ):
             # Has non-uniform axes, fallback to isel
             return self.isel_code(cursor, disp)
 
