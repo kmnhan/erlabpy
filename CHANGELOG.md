@@ -2,6 +2,47 @@
 
 
 
+## v2.8.0 (2024-06-17)
+
+### Documentation
+
+* update user guide with ImageTool manager ([`21a2c09`](https://github.com/kmnhan/erlabpy/commit/21a2c09cba58479bdbc8c22bc83b6ab994b44ec6))
+
+### Feature
+
+* (**erlab.io.plugins.ssrl52**) changes to loader ([`512a89b`](https://github.com/kmnhan/erlabpy/commit/512a89b051911c88bafd59bdc9bd993ec727321a))
+
+  The loader now promotes all attributes that varies during the scan to coordinates. Also, if the energy axis is given in kinetic energy and the work function is inferrable from the data attributes, the energy values are automatically converted to binding energy. This may require changes to existing code. This commit also includes a fix for hv-dependent swept cuts.
+
+* (**erlab.io.dataloader**) reorder output coordinates ([`178edd2`](https://github.com/kmnhan/erlabpy/commit/178edd27f3e58387b12b7a7928a26e87766fa9be))
+
+  Coordinates on the loaded data will now respect the order given in `name_map` and `additional_coords`, improving readability.
+
+* (**interactive.imagetool**) add ImageTool window manager ([`b52d249`](https://github.com/kmnhan/erlabpy/commit/b52d2490ec61053b7b933e274a68a163761827ce))
+
+  Start the manager with the cli command `itool-manager`. While running, all calls to `erlab.interactive.imagetool.itool` will make the ImageTool open in a separate process. The behavior can be controlled with a new keyword argument, `use_manager`.
+
+* (**interactive.imagetool**) add undo and redo ([`e7e8213`](https://github.com/kmnhan/erlabpy/commit/e7e8213964c9739468b65e6a56dcc1a0d9d648e4))
+
+  Adjustments made in ImageTool can now be undone with Ctrl+Z. Virtually all actions except window size change and splitter position change should be undoable. Up to 1000 recent actions are stored in memory.
+
+* (**interactive.imagetool**) remember last used loader for each tool ([`eb0cd2f`](https://github.com/kmnhan/erlabpy/commit/eb0cd2f41992845988f5e500416ed98f5d078c14))
+
+### Fix
+
+* (**interactive.imagetool**) fix code generation behaviour for non-uniform coordinates ([`3652a21`](https://github.com/kmnhan/erlabpy/commit/3652a21cf126ebcde015d5b7373bf5d5a675b177))
+
+### Refactor
+
+* (**interactive.imagetool**) preparation for saving and loading state ([`eca8262`](https://github.com/kmnhan/erlabpy/commit/eca8262defe8d135168ca7da115d947bda3c1040))
+
+### Test
+
+* change coverage configuration ([`dca143f`](https://github.com/kmnhan/erlabpy/commit/dca143f72147a0a0c094b8f31c62379c04872363))
+
+* add conftest.py ([`5d573be`](https://github.com/kmnhan/erlabpy/commit/5d573be103f20c1d288b9fdb2ee9398298a02877))
+
+
 ## v2.7.2 (2024-06-14)
 
 ### Fix
