@@ -249,6 +249,15 @@ class SlicerLinkProxy:
     def children(self) -> set[ImageSlicerArea]:
         return self._children
 
+    @property
+    def num_children(self) -> int:
+        return len(self._children)
+
+    def unlink_all(self):
+        for s in self._children:
+            s._linking_proxy = None
+        self._children.clear()
+
     def add(self, slicer_area: ImageSlicerArea):
         if slicer_area.is_linked:
             if slicer_area._linking_proxy == self:
@@ -756,10 +765,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
         self.sigWriteHistory.connect(self.write_state)
 
-    def add_link(self, proxy: SlicerLinkProxy):
+    def link(self, proxy: SlicerLinkProxy):
         proxy.add(self)
 
-    def remove_link(self):
+    def unlink(self):
         if self.is_linked:
             cast(SlicerLinkProxy, self._linking_proxy).remove(self)
 
@@ -797,7 +806,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh(self, cursor: int, axes: tuple[int, ...] | None = None):
         self.sigIndexChanged.emit(cursor, axes)
 
-    @record_history
     def view_all(self):
         for ax in self.axes:
             ax.vb.enableAutoRange()
@@ -1420,6 +1428,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.is_vertical = is_vertical
+        self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def refresh_data(self):
         ItoolDisplayObject.refresh_data(self)
@@ -1441,6 +1450,7 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
     ):
         BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def updateImage(self, *args, **kargs):
         defaults = {"autoLevels": not self.slicer_area.levels_locked}

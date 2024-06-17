@@ -37,7 +37,8 @@ create a new ImageTool instance and handle the event loop execution: ::
     import erlab.interactive as eri
     eri.itool(data)
 
-Another way is to use the ``qshow`` accessor: ::
+Another way is to use the :class:`qshow
+<erlab.accessors.utils.InteractiveDataArrayAccessor>` accessor: ::
 
     data.qshow()
 
@@ -81,3 +82,18 @@ related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
       - Move all cursors around
     * - :kbd:`Alt` while dragging a cursor line
       - Make all cursor lines move together
+
+
+Using the ImageTool manager
+---------------------------
+One drawback of using interactive tools with Jupyter notebooks is that the tool will be
+a blocking call. This means that you cannot run any other code while the tool is
+running. To get around this, you can use the :class:`ImageToolManager
+<erlab.interactive.imagetool.ImageToolManager>`.
+
+In the environment where ERLabPy installed, run ``itool-manager`` to start the manager.
+Any subsequent invocation with :class:`qshow <erlab.accessors.utils.InteractiveDataArrayAccessor>` will be handled by the manager.
+
+Note that the manager is designed to be global, so you can only have one manager running
+on a single machine that will handle all ImageTool instances opened from different
+notebooks.

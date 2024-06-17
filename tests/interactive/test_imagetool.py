@@ -1,7 +1,10 @@
+import time
+
 import numpy as np
 import pytest
 import xarray as xr
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool.manager import ImageToolManager
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore
 
@@ -144,16 +147,26 @@ def test_value_update(qtbot):
 
 
 def test_sync(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win0, win1 = itool([data, data], link=True, link_colors=True, execute=False)
-    for w in (win0, win1):
-        qtbot.addWidget(w)
+    manager = ImageToolManager()
 
-    for w in (win0, win1):
-        with qtbot.waitExposed(w):
-            w.show()
-            w.activateWindow()
-            w.raise_()
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+        manager.raise_()
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    itool([data, data], link=True, link_colors=True, use_manager=True)
+
+    t0 = time.perf_counter()
+    while True:
+        if len(manager.tools) == 2:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
+    win0, win1 = manager.tools["0"], manager.tools["1"]
 
     win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
     assert (
@@ -174,3 +187,33 @@ def test_sync(qtbot):
     win1.slicer_area.set_bin_all(1, 2, update=True)
 
     move_and_compare_values(qtbot, win0, [9.0, 8.0, 3.0, 4.0], target_win=win1)
+
+    manager.remove_tool("0")
+    manager.remove_tool("1")
+    manager.close()
+
+
+def test_manager(qtbot):
+    win = ImageToolManager()
+
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data.qshow()
+
+    t0 = time.perf_counter()
+    while True:
+        if len(win.tools) > 0:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
+    assert win.tools["0"].array_slicer.point_value(0) == 12.0
+
+    win.remove_tool("0")
+    win.close()
