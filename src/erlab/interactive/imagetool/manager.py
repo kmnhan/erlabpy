@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import pickle
 import socket
@@ -42,6 +43,17 @@ class ItoolManagerParseError(Exception):
     """Raised when the data received from the client cannot be parsed."""
 
 
+def _coverage_resolve_trace(fn):
+    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+    @functools.wraps(fn)
+    def _wrapped_for_coverage(*args, **kwargs):
+        if threading._trace_hook:
+            sys.settrace(threading._trace_hook)
+        fn(*args, **kwargs)
+
+    return _wrapped_for_coverage
+
+
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
 
@@ -49,6 +61,7 @@ class _ManagerServer(QtCore.QThread):
         super().__init__()
         self.stopped = threading.Event()
 
+    @_coverage_resolve_trace
     def run(self):
         self.stopped.clear()
         soc = socket.socket()

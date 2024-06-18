@@ -234,13 +234,14 @@ exclude_also = [
     "def _link_splitters",
     "def draw_mode",
     "QtWidgets.QApplication(sys.argv)",
+    "QtWidgets.QMessageBox.question",
     "if not qapp:",
     "if execute is None:",
     "qapp.exec()",
-    "if __name__ == __main__:",
+    'if __name__ == "__main__:"',
     "except varname.VarnameRetrievingError:",
     "if TYPE_CHECKING:",
-    "QtCore.QThread",
+    "def _wrapped_for_coverage",
 ]
 
 [tool.mypy]
