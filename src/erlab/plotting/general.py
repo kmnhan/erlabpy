@@ -347,8 +347,8 @@ def plot_array(
         iterable of `str` is given, only the coordinates that correspond to the given
         strings are converted.
     func
-        A callable that processes the values prior to display. Its output must have the
-        same shape as the input.
+        A callable that processes the data prior to display. Its output must be an array
+        that has the same shape as the input.
     func_args
         Keyword arguments passed onto `func`.
     rtol, atol
@@ -421,7 +421,7 @@ def plot_array(
             arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
 
     if func is not None:
-        img = ax.imshow(func(arr.values, **func_args), norm=norm, **improps)
+        img = ax.imshow(func(arr, **func_args), norm=norm, **improps)
     else:
         img = ax.imshow(arr.values, norm=norm, **improps)
 
@@ -1072,7 +1072,7 @@ def plot_slices(
             ax.get_images()[0].norm.vmin = vmn
             ax.get_images()[0].norm.vmax = vmx
 
-    for ax in axes.flatten():
+    for ax in axes.flat:
         if not show_all_labels:
             if ax not in axes[:, 0]:
                 ax.set_ylabel("")
@@ -1084,11 +1084,15 @@ def plot_slices(
             ax.set_xlim(*xlim)
         if ylim is not None:
             ax.set_ylim(*ylim)
-        if colorbar not in ["none", "rightspan"]:
-            if colorbar == "all" or ax in axes[:, -1]:
-                nice_colorbar(mappable=ax.images[0], ax=ax, **colorbar_kw)
-    if colorbar == "rightspan":
-        nice_colorbar(ax=axes, **colorbar_kw)
+        if colorbar == "all":
+            nice_colorbar(ax, **colorbar_kw)
+
+    if colorbar == "right":
+        for row in axes:
+            nice_colorbar(row, **colorbar_kw)
+    elif colorbar == "rightspan":
+        nice_colorbar(axes, **colorbar_kw)
+
     if annotate and slice_dim is not None:
         if slice_dim == "eV":
             slice_dim = "Eb"
