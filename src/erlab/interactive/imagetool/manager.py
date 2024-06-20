@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-import erlab.io
 from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.controls import IconButton
 from erlab.interactive.imagetool.core import SlicerLinkProxy
@@ -54,6 +53,16 @@ def _coverage_resolve_trace(fn):
     return _wrapped_for_coverage
 
 
+def _save_pickle(obj: Any, filename: str) -> None:
+    with open(filename, "wb") as file:
+        pickle.dump(obj, file)
+
+
+def _load_pickle(filename: str) -> Any:
+    with open(filename, "rb") as file:
+        return pickle.load(file)
+
+
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
 
@@ -86,7 +95,7 @@ class _ManagerServer(QtCore.QThread):
             try:
                 kwargs = pickle.loads(kwargs)
                 files = kwargs.pop("__filename")
-                self.sigReceived.emit([erlab.io.load_hdf5(f) for f in files], kwargs)
+                self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
                 for f in files:
                     os.remove(f)
                     dirname = os.path.dirname(f)
@@ -390,7 +399,7 @@ def show_in_manager(
     for darr in darr_list:
         fname = str(uuid.uuid4())
         fname = os.path.join(tmp_dir, fname)
-        erlab.io.save_as_hdf5(darr, fname, igor_compat=False)
+        _save_pickle(darr, fname)
         files.append(fname)
 
     kwargs["__filename"] = files
