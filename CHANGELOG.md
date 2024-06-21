@@ -2,6 +2,31 @@
 
 
 
+## v2.8.1 (2024-06-21)
+
+### Ci
+
+* (**pre-commit**) pre-commit autoupdate ([`856aa0f`](https://github.com/kmnhan/erlabpy/commit/856aa0fe825eb94424a546c855ee8d8e941897a2))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.8 → v0.4.9](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.8...v0.4.9)
+
+### Fix
+
+* (**interactive.imagetool**) properly implement caching and linking from GUI ([`ffacdce`](https://github.com/kmnhan/erlabpy/commit/ffacdce93d1ff89e1be823317a6d59a400a6dee2))
+
+* (**plotting.general**) pass DataArray to `func` argument to `plot_array` ([`ed76e64`](https://github.com/kmnhan/erlabpy/commit/ed76e64e45eb3ea93fba61380bc0d63864446fd3))
+
+### Performance
+
+* (**interactive.imagetool**) speedup file loading and saving ([`a6c869b`](https://github.com/kmnhan/erlabpy/commit/a6c869b7d6ce0419d84a46086004d451845c23e3))
+
+  Use pickle to save and load files instead of `erlab.io.load_hdf5` and `erlab.io.save_as_hdf5`.
+
+### Test
+
+* add coverage for QThread ([`ed74df0`](https://github.com/kmnhan/erlabpy/commit/ed74df0be007c8d0caeff7d9b4d44072184ff3ee))
+
+
 ## v2.8.0 (2024-06-17)
 
 ### Documentation
