@@ -372,6 +372,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         correspond to the given strings are converted.
     bench
         Prints the fps on Ctrl + drag, for debug purposes
+    state
+        Initial state containing the settings and cursor position.
 
     Signals
     -------
@@ -442,6 +444,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         *,
         bench: bool = False,
+        state: ImageSlicerState | None = None,
         image_cls=None,
         plotdata_cls=None,
     ):
@@ -536,6 +539,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
+        if state is not None:
+            self.state = state
+
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
@@ -590,6 +596,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def is_linked(self) -> bool:
         return self._linking_proxy is not None
+
+    @property
+    def linked_slicers(self) -> set[ImageSlicerArea]:
+        return (
+            cast(SlicerLinkProxy, self._linking_proxy).children - {self}
+            if self.is_linked
+            else set()
+        )
 
     @property
     def colormap(self) -> str | pg.ColorMap:
@@ -707,6 +721,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def write_state(self) -> None:
         if not self._write_history:
             return
+
+        # with self._prev_states.mutex:
         last_state = (
             self._prev_states.queue[-1] if not self._prev_states.empty() else None
         )
@@ -852,7 +868,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             correspond to the given strings are converted.
 
         """
-        if hasattr(self, "_array_slicer"):
+        if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):
                 self._data.close()

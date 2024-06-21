@@ -20,6 +20,7 @@ from __future__ import annotations
 __all__ = ["ImageTool", "itool"]
 
 import gc
+import pickle
 import sys
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -40,6 +41,7 @@ from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
+    from erlab.interactive.imagetool.core import ImageSlicerState
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -211,6 +213,20 @@ class BaseImageTool(QtWidgets.QMainWindow):
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
+
+    def to_pickle(self, filename: str):
+        info: tuple[xr.DataArray, ImageSlicerState] = (
+            self.slicer_area.data,
+            self.slicer_area.state,
+        )
+        with open(filename, "wb") as file:
+            pickle.dump(info, file)
+
+    @classmethod
+    def from_pickle(cls, filename: str):
+        with open(filename, "rb") as file:
+            data, state = pickle.load(file)
+        return cls(data, state=state)
 
     def _sync_dock_float(self, floating: bool, index: int):
         for i in range(len(self.docks)):
@@ -496,7 +512,8 @@ class ItoolMenuBar(DictMenuBar):
     def _copy_cursor_idx(self):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
-    def _open_file(self):
+    @QtCore.Slot()
+    def _open_file(self, *, name_filter: str | None = None):
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
@@ -508,8 +525,12 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilters(valid_loaders.keys())
-        if self._recent_name_filter is not None:
-            dialog.selectNameFilter(self._recent_name_filter)
+
+        if name_filter is None:
+            name_filter = self._recent_name_filter
+
+        if name_filter is not None:
+            dialog.selectNameFilter(name_filter)
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
