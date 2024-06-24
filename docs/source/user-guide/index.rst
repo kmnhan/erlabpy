@@ -14,7 +14,8 @@ Introduction
 Welcome to the ERLabPy user guide! This guide provides an overview of ERLabPy and its
 core features.
 
-If you are new to using ERLabPy, you may want to start with the :doc:`getting started guide <../getting-started.rst>`.
+If you are new to using ERLabPy, you may want to start with the `getting started guide
+<../getting-started.rst>`_.
 
 .. toctree::
    :caption: Table of Contents

@@ -155,7 +155,15 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
-    valueChanged = QtCore.Signal(float)
+    """Slider and spinbox for adjusting colormap gamma.
+
+    Signals
+    -------
+    valueChanged(float)
+
+    """
+
+    valueChanged = QtCore.Signal(float)  #: :meta private:
 
     def __init__(
         self,
