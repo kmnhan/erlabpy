@@ -90,17 +90,15 @@ Installing conda
 ----------------
 
 Before starting any development, you'll need to create an isolated environment under a
-package manager like conda. If you don't have conda installed, `install conda
-<https://docs.conda.io/projects/conda/en/stable/user-guide/install/>`_ or `install mamba
-<https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html>`_.
+package manager like conda. If you don't have conda installed, the recommended way is to
+install `miniforge <https://github.com/conda-forge/miniforge>`_. The Scikit-HEP project
+has a `great guide <https://scikit-hep.org/user/installing-conda>`_  for installing
+conda.
 
 .. hint::
 
-  - When using conda, miniconda is recommended to save disk space.
   - `Mamba <https://mamba.readthedocs.io>`_ is a faster alternative to conda with
-    additional features.
-  - Installing `miniforge <https://github.com/conda-forge/miniforge>`_ will install both
-    conda and mamba, and is recommended.
+    additional features. It is installed alongside conda when you install miniforge.
 
 Editable installation from source
 ---------------------------------
