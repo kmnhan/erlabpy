@@ -10,6 +10,8 @@
 
 ### Ci
 
+* (**github**) allow manual trigger upload ([`a4c5959`](https://github.com/kmnhan/erlabpy/commit/a4c59599e6da5a3372d1c47b969b0968d7f669e7))
+
 * (**github**) rename workflow file ([`e3615c4`](https://github.com/kmnhan/erlabpy/commit/e3615c4b0f6c33c11a7878027e55add26d6a57f9))
 
 * (**github**) use single workflow file and test for different Qt libs ([`cd7d057`](https://github.com/kmnhan/erlabpy/commit/cd7d057bbf6948627084e2aa4a8fee3d338c84c4))
