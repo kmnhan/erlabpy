@@ -10,7 +10,6 @@ import copy
 import functools
 import inspect
 import os
-import queue
 import time
 import warnings
 import weakref
@@ -454,9 +453,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.bench: bool = bench
 
-        # LIFO queues to handle undo and redo
-        self._prev_states: queue.LifoQueue = queue.LifoQueue(maxsize=1000)
-        self._next_states: queue.LifoQueue = queue.LifoQueue(maxsize=1000)
+        # Queues to handle undo and redo
+        self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
+            maxlen=1000
+        )
+        self._next_states: collections.deque[ImageSlicerState] = collections.deque(
+            maxlen=1000
+        )
 
         # Flag to prevent writing history when restoring state
         self._write_history: bool = True
@@ -695,11 +698,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def undoable(self) -> bool:
-        return not self._prev_states.empty()
+        return len(self._prev_states) > 0
 
     @property
     def redoable(self) -> bool:
-        return not self._next_states.empty()
+        return len(self._next_states) > 0
 
     @contextlib.contextmanager
     def history_suppressed(self):
@@ -722,10 +725,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if not self._write_history:
             return
 
-        # with self._prev_states.mutex:
-        last_state = (
-            self._prev_states.queue[-1] if not self._prev_states.empty() else None
-        )
+        last_state = self._prev_states[-1] if self.undoable else None
         curr_state = self.state
 
         # Don't store splitter sizes in history
@@ -734,18 +734,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         curr_state.pop("splitter_sizes", None)
 
         if last_state is None or last_state != curr_state:
-            self._prev_states.put(curr_state)
-            with self._next_states.mutex:
-                self._next_states.queue.clear()
+            self._prev_states.append(curr_state)
+            self._next_states.clear()
             self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
     @suppress_history
     def flush_history(self) -> None:
-        with self._prev_states.mutex:
-            self._prev_states.queue.clear()
-        with self._next_states.mutex:
-            self._next_states.queue.clear()
+        self._prev_states.clear()
+        self._next_states.clear()
         self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
@@ -753,8 +750,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def undo(self) -> None:
         if not self.undoable:
             raise RuntimeError("Nothing to undo")
-        self._next_states.put(self.state)
-        self.state = self._prev_states.get()
+        self._next_states.append(self.state)
+        self.state = self._prev_states.pop()
         self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
@@ -762,8 +759,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def redo(self) -> None:
         if not self.redoable:
             raise RuntimeError("Nothing to redo")
-        self._prev_states.put(self.state)
-        self.state = self._next_states.get()
+        self._prev_states.append(self.state)
+        self.state = self._next_states.pop()
         self.sigHistoryChanged.emit()
 
     def connect_axes_signals(self):
