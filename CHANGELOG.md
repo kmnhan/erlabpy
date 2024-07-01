@@ -2,6 +2,41 @@
 
 
 
+## v2.8.2 (2024-07-01)
+
+### Chore
+
+* (**deps**) pin numpy&lt;2.0 until upstream dependencies are fixed ([`5b538ba`](https://github.com/kmnhan/erlabpy/commit/5b538badbaf116677da9624b21103b68d309be85))
+
+### Ci
+
+* (**github**) rename workflow file ([`e3615c4`](https://github.com/kmnhan/erlabpy/commit/e3615c4b0f6c33c11a7878027e55add26d6a57f9))
+
+* (**github**) use single workflow file and test for different Qt libs ([`cd7d057`](https://github.com/kmnhan/erlabpy/commit/cd7d057bbf6948627084e2aa4a8fee3d338c84c4))
+
+* (**pre-commit**) pre-commit autoupdate ([`1a86288`](https://github.com/kmnhan/erlabpy/commit/1a86288e921f8325a9d15fbf37b815535fd29338))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.9 → v0.4.10](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.9...v0.4.10)
+
+### Documentation
+
+* update conda installation instructions ([`a475543`](https://github.com/kmnhan/erlabpy/commit/a475543746eaa8720a83ff2bc3f6fa7d07366192))
+
+* improve user guide ([`400080e`](https://github.com/kmnhan/erlabpy/commit/400080e130e394d1604dc758eaba7a7baf9ef4b0))
+
+  Added some more information in the indexing guide and fixed typos in the curve fitting guide.
+
+### Fix
+
+* (**interactive.imagetool**) fix crash while linking more than 3 tools ([`d5f8a30`](https://github.com/kmnhan/erlabpy/commit/d5f8a30224f72d7159216fa5638056569521f75f))
+
+* update resistance loader ([`6fcf2ab`](https://github.com/kmnhan/erlabpy/commit/6fcf2abe797313ee3c21fd3cd2f4daebf412225f))
+
+### Refactor
+
+* (**interactive.imagetool**) show error message in GUI when opening file ([`287a7e8`](https://github.com/kmnhan/erlabpy/commit/287a7e84e5110ac08e17d9a852b0d2b0da830e42))
+
+
 ## v2.8.1 (2024-06-21)
 
 ### Ci
