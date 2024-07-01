@@ -9,6 +9,7 @@ import os
 import re
 from io import StringIO
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -17,13 +18,25 @@ import xarray as xr
 __all__ = ["load_resistance_physlab"]
 
 
-def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
+def load_resistance_physlab(
+    path: str,
+    get: Literal["full", "cool", "heat"] = "full",
+    as_temperature: bool = False,
+    **kwargs,
+) -> xr.Dataset:
     """Load resistance measurement acquired with physics lab III equipment.
 
     Parameters
     ----------
     path
-        Local path to ``.dat`` file.
+        Local path to ``.dat`` or ``.csv`` file.
+    get
+        For data acquired after July 2024, you can choose to only load the data acquired
+        during heating or cooling. Defaults to the full dataset.
+    as_temperature
+        If ``True``, the dataset is returned with temperature as the index, and all
+        values are sorted by temperature. If ``False``, the dataset is returned in a
+        form that retains the original order of the data. Defaults to ``False``.
 
     Returns
     -------
@@ -32,9 +45,9 @@ def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
 
     """
     if os.path.splitext(path)[1] == ".dat":
-        return _load_resistance_physlab_old(path, **kwargs)
+        out = _load_resistance_physlab_old(path, **kwargs)
     else:
-        return (
+        out = (
             pd.read_csv(path, index_col=0, usecols=[1, 2, 3, 4])
             .to_xarray()
             .rename(
@@ -46,6 +59,20 @@ def load_resistance_physlab(path: str, **kwargs) -> xr.Dataset:
                 }
             )
         )
+
+        if get != "full":
+            delim_time = out.time.where(out.res.isnull(), drop=True).values
+            if get == "cool":
+                out_sel = out.where(out.time < delim_time, drop=True)
+            else:
+                out_sel = out.where(out.time > delim_time, drop=True)
+            if out_sel.time.size != 0:
+                out = out_sel
+
+    if as_temperature:
+        return out.swap_dims({"time": "temp"}).sortby("temp")
+    else:
+        return out
 
 
 def _load_resistance_physlab_old(
