@@ -20,6 +20,7 @@ from __future__ import annotations
 __all__ = ["ImageTool", "itool"]
 
 import gc
+import os
 import pickle
 import sys
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -279,6 +280,7 @@ class ItoolMenuBar(DictMenuBar):
         self.slicer_area.sigHistoryChanged.connect(self.refreshEditMenus)
 
         self._recent_name_filter: str | None = None
+        self._recent_directory: str | None = None
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -513,7 +515,9 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     @QtCore.Slot()
-    def _open_file(self, *, name_filter: str | None = None):
+    def _open_file(
+        self, *, name_filter: str | None = None, directory: str | None = None
+    ):
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
@@ -531,15 +535,34 @@ class ItoolMenuBar(DictMenuBar):
 
         if name_filter is not None:
             dialog.selectNameFilter(name_filter)
+
+        if directory is None:
+            directory = self._recent_directory
+
+        if directory is not None:
+            dialog.setDirectory(directory)
+
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
-            files = dialog.selectedFiles()
+            fname = dialog.selectedFiles()[0]
             self._recent_name_filter = dialog.selectedNameFilter()
+            self._recent_directory = os.path.dirname(fname)
             fn, kargs = valid_loaders[self._recent_name_filter]
-            # !TODO: handle ambiguous datasets
-            self.slicer_area.set_data(fn(files[0], **kargs))
-            self.slicer_area.view_all()
+
+            try:
+                self.slicer_area.set_data(fn(fname, **kargs))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An error occurred while loading the file: {e}"
+                    "\n\nTry again with a different loader.",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                self._open_file()
+            else:
+                self.slicer_area.view_all()
 
     def _export_file(self):
         if self.slicer_area._data is None:

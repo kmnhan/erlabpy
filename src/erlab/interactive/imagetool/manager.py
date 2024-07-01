@@ -290,8 +290,9 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         # Temporary directory for storing archived data
         self._tmp_dir = tempfile.TemporaryDirectory()
 
-        # Store most recent name filter for new windows
+        # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
+        self._recent_directory: str | None = None
 
         self.setCentralWidget(self.options)
         self.sigLinkersChanged.connect(self.changed)
@@ -324,8 +325,11 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         tool = ImageTool(np.zeros((2, 2)))
         self.add_tool(tool, activate=True)
 
-        tool.mnb._open_file(name_filter=self._recent_name_filter)
+        tool.mnb._open_file(
+            name_filter=self._recent_name_filter, directory=self._recent_directory
+        )
         self._recent_name_filter = tool.mnb._recent_name_filter
+        self._recent_directory = tool.mnb._recent_directory
 
     def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
         idx = self.linkers.index(linker)

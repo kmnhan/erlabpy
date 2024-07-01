@@ -876,7 +876,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if not isinstance(data, xr.DataArray):
             if isinstance(data, xr.Dataset):
-                data = cast(xr.DataArray, data[next(iter(data.data_vars.keys()))])
+                try:
+                    data = cast(xr.DataArray, data[next(iter(data.data_vars.keys()))])
+                except StopIteration as e:
+                    raise ValueError("No data variables found in Dataset") from e
             else:
                 data = xr.DataArray(np.asarray(data))
         if hasattr(data.data, "flags"):
