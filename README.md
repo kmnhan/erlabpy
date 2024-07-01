@@ -9,8 +9,8 @@ ERLabPy
     <a href="https://anaconda.org/conda-forge/erlab" alt="Conda Version">
         <img src="https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white" /></a>
 </p><p align="center">
-    <a href="https://github.com/kmnhan/erlabpy/actions/workflows/release.yml" alt="Workflow Status">
-        <img src="https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/release.yml?logo=github&label=tests" /></a>
+    <a href="https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml" alt="Workflow Status">
+        <img src="https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?logo=github&label=tests" /></a>
     <a href="https://erlabpy.readthedocs.io/" alt="Documentation Status">
         <img src="https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white" /></a>
     <a href="https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main" alt="pre-commit.ci status">
