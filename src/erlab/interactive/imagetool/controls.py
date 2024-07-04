@@ -104,14 +104,24 @@ class IconButton(QtWidgets.QPushButton):
 
 
 def clear_layout(layout: QtWidgets.QLayout | None) -> None:
+    """Clear the given layout by removing all its child widgets and layouts recursively.
+
+    Parameters
+    ----------
+    layout
+        The layout to be cleared.
+    """
     if layout is None:
         return
     while layout.count():
         child = layout.takeAt(0)
         if child is not None:
-            w = child.widget()
-            if w is not None:
-                w.deleteLater()
+            wi, lo = child.widget(), child.layout()
+            if wi:
+                wi.deleteLater()
+            elif lo:
+                clear_layout(lo)
+                lo.deleteLater()
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
@@ -680,11 +690,8 @@ class ItoolBinningControls(ItoolControlsBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def initialize_layout(self):
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
-
+    def initialize_widgets(self):
+        super().initialize_widgets()
         self.gridlayout = QtWidgets.QGridLayout()
         self.gridlayout.setContentsMargins(0, 0, 0, 0)
         self.gridlayout.setSpacing(3)
@@ -693,12 +700,9 @@ class ItoolBinningControls(ItoolControlsBase):
         self.buttonslayout.setContentsMargins(0, 0, 0, 0)
         self.buttonslayout.setSpacing(3)
 
-        layout.addLayout(self.gridlayout)
-        layout.addLayout(self.buttonslayout)
-        self.setLayout(layout)
+        self.layout().addLayout(self.gridlayout)
+        self.layout().addLayout(self.buttonslayout)
 
-    def initialize_widgets(self):
-        super().initialize_widgets()
         self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
@@ -779,7 +783,7 @@ class ItoolBinningControls(ItoolControlsBase):
 
         for i in range(self.data.ndim):
             self.spins[i].blockSignals(True)
-            self.labels[i].setText(f"{self.data.dims[i]!s}")
+            self.labels[i].setText(str(self.data.dims[i]))
             self.spins[i].setRange(1, self.data.shape[i] - 1)
             self.spins[i].setValue(bin_numbers[i])
             if bin_values[i] is None:
