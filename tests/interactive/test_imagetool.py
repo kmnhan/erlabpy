@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -6,7 +7,50 @@ import xarray as xr
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from numpy.testing import assert_almost_equal
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
+
+
+def accept_dialog(dialog_trigger: Callable, time_out: int = 5) -> QtWidgets.QDialog:
+    """Accept a dialog during testing.
+
+    If there is no dialog, it waits until one is created for a maximum of 5 seconds (by
+    default). Adapted from `this issue comment on pytest-qt
+    <https://github.com/pytest-dev/pytest-qt/issues/256#issuecomment-1915675942>`_.
+
+    Parameters
+    ----------
+    dialog_trigger
+        Callable that triggers the dialog creation.
+    time_out
+        Maximum time (seconds) to wait for the dialog creation.
+    """
+    dialog = None
+    start_time = time.time()
+
+    # Helper function to catch the dialog instance and hide it
+    def dialog_creation():
+        # Wait for the dialog to be created or timeout
+        nonlocal dialog
+        while dialog is None and time.time() - start_time < time_out:
+            dialog = QtWidgets.QApplication.activeModalWidget()
+
+        # Avoid errors when dialog is not created
+        if isinstance(dialog, QtWidgets.QDialog):
+            if (
+                isinstance(dialog, QtWidgets.QMessageBox)
+                and dialog.defaultButton() is not None
+            ):
+                dialog.defaultButton().click()
+            else:
+                dialog.accept()
+
+    # Create a thread to get the dialog instance and call dialog_creation trigger
+    QtCore.QTimer.singleShot(1, dialog_creation)
+    dialog_trigger()
+
+    assert isinstance(
+        dialog, QtWidgets.QDialog
+    ), f"No dialog was created after {time_out} seconds. Dialog type: {type(dialog)}"
 
 
 def move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
@@ -231,8 +275,8 @@ def test_manager(qtbot):
     # Unlinking one unlinks both
     win.tool_options["1"].check.setChecked(True)
     win.unlink_selected()
-    assert ~win._tools["1"].slicer_area.is_linked
-    assert ~win._tools["2"].slicer_area.is_linked
+    assert not win._tools["1"].slicer_area.is_linked
+    assert not win._tools["2"].slicer_area.is_linked
 
     # Linking again
     win.tool_options["1"].check.setChecked(True)
@@ -248,9 +292,12 @@ def test_manager(qtbot):
     # Removing archived tool
     win.archive("0")
     win.remove_tool("0")
+    qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
 
-    # Remove for cleanup
-    win.remove_tool("1")
-    win.remove_tool("2")
+    # Remove all checked
+    win.tool_options["1"].check.setChecked(True)
+    win.tool_options["2"].check.setChecked(True)
+    accept_dialog(win.close_selected)
+    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
 
     win.close()

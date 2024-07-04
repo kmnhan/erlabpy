@@ -173,11 +173,11 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
         self.visibility_btn = IconButton(on="mdi6.eye", off="mdi6.eye-off")
         self.visibility_btn.toggled.connect(self.toggle_visibility)
 
-        self.close_btn = IconButton("mdi6.trash-can")
+        self.close_btn = IconButton("mdi6.window-close")
         self.close_btn.clicked.connect(self.close_clicked)
 
         self.archive_btn = IconButton(
-            on="mdi6.archive-arrow-down", off="mdi6.archive-arrow-up"
+            on="mdi6.archive-outline", off="mdi6.archive-off-outline"
         )
         self.archive_btn.toggled.connect(self.toggle_archive)
 
@@ -254,6 +254,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
 
     def __init__(self: ImageToolManagerGUI):
         super().__init__()
+        self.setWindowTitle("ImageTool Manager")
         self._tools: dict[str, ImageTool | str] = {}
         self.tool_options: dict[str, ImageToolOptionsWidget] = {}
         self.linkers: list[SlicerLinkProxy] = []
@@ -267,15 +268,18 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.add_button = IconButton("mdi6.plus")
         self.add_button.clicked.connect(self.add_new)
 
+        self.close_button = IconButton("mdi6.close-box-multiple-outline")
+        self.close_button.clicked.connect(self.close_selected)
+
         self.link_button = IconButton("mdi6.link-variant")
         self.link_button.clicked.connect(self.link_selected)
 
         self.unlink_button = IconButton("mdi6.link-variant-off")
         self.unlink_button.clicked.connect(self.unlink_selected)
 
-        self.titlebar_layout.addWidget(QtWidgets.QLabel("ImageTool windows"))
-        self.titlebar_layout.addStretch()
         self.titlebar_layout.addWidget(self.add_button)
+        self.titlebar_layout.addStretch()
+        self.titlebar_layout.addWidget(self.close_button)
         self.titlebar_layout.addWidget(self.link_button)
         self.titlebar_layout.addWidget(self.unlink_button)
 
@@ -308,6 +312,10 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
     def selected_tool_names(self) -> list[str]:
         """Names of currently checked tools."""
         return [t for t, opt in self.tool_options.items() if opt.check.isChecked()]
+
+    @property
+    def ntools(self) -> int:
+        return len(self._tools)
 
     def get_tool(self, title: str) -> ImageTool:
         if not isinstance(self._tools[title], ImageTool):
@@ -362,6 +370,8 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def changed(self) -> None:
         selection = self.selected_tool_names
+        self.close_button.setEnabled(len(selection) != 0)
+
         match len(selection):
             case 0:
                 self.link_button.setDisabled(True)
@@ -443,6 +453,21 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.sigLinkersChanged.emit()
 
     @QtCore.Slot()
+    def close_selected(self):
+        checked_names = self.selected_tool_names
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            "Close selected windows?",
+            "All selected windows will be closed.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if ret == QtWidgets.QMessageBox.StandardButton.Yes:
+            for name in checked_names:
+                self.remove_tool(name)
+
+    @QtCore.Slot()
     @QtCore.Slot(bool)
     @QtCore.Slot(bool, bool)
     def link_selected(self, link_colors: bool = True, deselect: bool = True):
@@ -467,10 +492,6 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.linkers.append(linker)
         self.sigReloadLinkers.emit()
 
-    @property
-    def ntools(self) -> int:
-        return len(self._tools)
-
 
 class ImageToolManager(ImageToolManagerGUI):
     def __init__(self):
@@ -494,9 +515,12 @@ class ImageToolManager(ImageToolManagerGUI):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None):
         if self.ntools != 0:
-            ret = QtWidgets.QMessageBox.question(
-                self, "Do you want to close?", "All windows will be closed."
-            )
+            if self.ntools == 1:
+                msg = "1 remaining tool will be closed."
+            else:
+                msg = f"All {self.ntools} remaining tools will be closed."
+
+            ret = QtWidgets.QMessageBox.question(self, "Do you want to close?", msg)
             if not ret == QtWidgets.QMessageBox.StandardButton.Yes:
                 if event:
                     event.ignore()
