@@ -377,9 +377,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                 x = x[:, mask]
                 y = y[mask]
                 if not len(y):
-                    modres: lmfit.model.ModelResult = lmfit.model.ModelResult(
-                        model, model.make_params(), data=y
-                    )
+                    modres = lmfit.model.ModelResult(model, model.make_params(), data=y)
                     modres.success = False
                     return popt, perr, pcov, stats, data, best, modres
             else:

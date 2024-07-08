@@ -97,7 +97,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             fill_value=fill_value,
         )
 
-    def __call__(self, xi, method=None):
+    def __call__(self, xi, method: str | None = None):
         is_linear: bool = method == "linear" or self.method == "linear"
         nd_supported: bool = self.values.ndim in (1, 2, 3)
         no_extrap: bool = self.fill_value is not None

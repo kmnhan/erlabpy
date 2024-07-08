@@ -181,7 +181,7 @@ def itool(
 
 
 class BaseImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data=None, parent=None, **kwargs):
+    def __init__(self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs):
         super().__init__(parent=parent)
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
         self.setCentralWidget(self.slicer_area)

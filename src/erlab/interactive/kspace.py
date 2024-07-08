@@ -27,7 +27,7 @@ from erlab.plotting.bz import get_bz_edge
 class KspaceToolGUI(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
 ):
-    def __init__(self):
+    def __init__(self) -> None:
         # Initialize UI
         super().__init__()
         self.setupUi(self)

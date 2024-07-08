@@ -198,7 +198,7 @@ def link_slicer(
         @functools.wraps(func)
         def wrapped(*args, **kwargs):
             # skip sync if already synced
-            skip_sync: bool = kwargs.pop("__slicer_skip_sync", False)
+            skip_sync = kwargs.pop("__slicer_skip_sync", False)
 
             out = func(*args, **kwargs)
             if args[0].is_linked:
@@ -207,7 +207,7 @@ def link_slicer(
                         *args, **kwargs
                     )
                     all_args.apply_defaults()
-                    obj: ImageSlicerArea = all_args.arguments.pop("self")
+                    obj = all_args.arguments.pop("self")
                     if obj._linking_proxy is not None:
                         obj._linking_proxy.sync(
                             obj,

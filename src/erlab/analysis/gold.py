@@ -676,25 +676,27 @@ def quick_resolution(
     center = result.modelfit_results.item().uvars["center"]
     resolution = result.modelfit_results.item().uvars["resolution"]
 
-    ax.text(
-        0,
-        0,
-        "\n".join(
-            [
-                f"$T ={coeffs.sel(param='temp'):.3f}$ K",
-                f"$E_F = {center * 1e3:L}$ meV"
-                if center < 0.1
-                else f"$E_F = {center:L}$ eV",
-                f"$\\Delta E = {resolution * 1e3:L}$ meV",
-            ]
-        ),
-        ha="left",
-        va="baseline",
-        transform=ax.transAxes
-        + matplotlib.transforms.ScaledTranslation(
-            6 / 72, 6 / 72, ax.figure.dpi_scale_trans
-        ),
-    )
+    fig = ax.figure
+    if fig is not None:
+        ax.text(
+            0,
+            0,
+            "\n".join(
+                [
+                    f"$T ={coeffs.sel(param='temp'):.3f}$ K",
+                    f"$E_F = {center * 1e3:L}$ meV"
+                    if center < 0.1
+                    else f"$E_F = {center:L}$ eV",
+                    f"$\\Delta E = {resolution * 1e3:L}$ meV",
+                ]
+            ),
+            ha="left",
+            va="baseline",
+            transform=ax.transAxes
+            + matplotlib.transforms.ScaledTranslation(
+                6 / 72, 6 / 72, fig.dpi_scale_trans
+            ),
+        )
     ax.set_xlim(darr.eV[[0, -1]])
     ax.set_title("")
     ax.axvline(coeffs.sel(param="center"), ls="--", c="k", lw=0.4, alpha=0.5)

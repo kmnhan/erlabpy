@@ -599,7 +599,7 @@ class BetterAxisItem(pg.AxisItem):
 
         return f"<span style='{style}'>{s}</span>"
 
-    def setLabel(self, text=None, units=None, unitPrefix=None, **args):
+    def setLabel(self, text=None, units=None, unitPrefix=None, **args) -> None:
         # `None` input is kept for backward compatibility!
         self.labelText = text or ""
         self.labelUnits = units or ""
@@ -1232,7 +1232,7 @@ class ROIControls(ParameterGroup):
         self.roi.setPos((x0, y0), update=False)
         self.roi.setSize((x1 - x0, y1 - y0), update=update)
 
-    def draw_mode(self, toggle):
+    def draw_mode(self, toggle) -> None:
         vb = self.roi.parentItem().getViewBox()
 
         if not toggle:
@@ -1319,7 +1319,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         analysisWidget=None,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
