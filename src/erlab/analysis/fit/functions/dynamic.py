@@ -99,8 +99,8 @@ class DynamicFunction:
         return ["x"]
 
     @property
-    def kwargs(self) -> dict[str, int | float]:
-        return {}
+    def kwargs(self) -> list[tuple[str, float]]:
+        return []
 
     @no_type_check
     def __call__(self, **kwargs):
@@ -247,7 +247,7 @@ class MultiPeakFunction(DynamicFunction):
         return args
 
     @property
-    def kwargs(self):
+    def kwargs(self) -> list[tuple[str, float]]:
         kws: list[tuple[str, float]] = []
 
         if self.background == "constant" or self.background == "linear":
