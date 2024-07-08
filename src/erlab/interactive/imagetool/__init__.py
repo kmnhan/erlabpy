@@ -215,19 +215,24 @@ class BaseImageTool(QtWidgets.QMainWindow):
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
-    def to_pickle(self, filename: str):
-        info: tuple[xr.DataArray, ImageSlicerState] = (
+    def to_pickle(self, filename: str) -> None:
+        info: tuple[xr.DataArray, ImageSlicerState, str, QtCore.QRect] = (
             self.slicer_area.data,
             self.slicer_area.state,
+            self.windowTitle(),
+            self.geometry(),
         )
         with open(filename, "wb") as file:
             pickle.dump(info, file)
 
     @classmethod
-    def from_pickle(cls, filename: str):
+    def from_pickle(cls, filename: str) -> BaseImageTool:
         with open(filename, "rb") as file:
-            data, state = pickle.load(file)
-        return cls(data, state=state)
+            data, state, title, rect = pickle.load(file)
+        tool = cls(data, state=state)
+        tool.setWindowTitle(title)
+        tool.setGeometry(rect)
+        return tool
 
     def _sync_dock_float(self, floating: bool, index: int):
         for i in range(len(self.docks)):
@@ -253,6 +258,8 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
 
 class ImageTool(BaseImageTool):
+    sigTitleChanged = QtCore.Signal(str)
+
     def __init__(self, data=None, **kwargs):
         super().__init__(data, **kwargs)
         self.mnb = ItoolMenuBar(self.slicer_area, self)
@@ -260,10 +267,26 @@ class ImageTool(BaseImageTool):
         self.slicer_area.sigDataChanged.connect(self.update_title)
         self.update_title()
 
-    def update_title(self):
+    def update_title(self) -> None:
         if self.slicer_area._data is not None:
-            if self.slicer_area._data.name:
-                self.setWindowTitle(str(self.slicer_area._data.name))
+            name: str | None = cast(str | None, self.slicer_area._data.name)
+            path: str | None = self.slicer_area._file_path
+
+            if name is not None and name.strip() == "":
+                name = None
+            if path is not None:
+                path = os.path.basename(path)
+
+            if name is None and path is None:
+                title = ""
+            elif name is None:
+                title = f"{path}"
+            elif path is None:
+                title = f"{name}"
+            else:
+                title = f"{name} ({path})"
+            self.setWindowTitle(title)
+            self.sigTitleChanged.emit(title)
 
 
 class ItoolMenuBar(DictMenuBar):
@@ -551,7 +574,7 @@ class ItoolMenuBar(DictMenuBar):
             fn, kargs = valid_loaders[self._recent_name_filter]
 
             try:
-                self.slicer_area.set_data(fn(fname, **kargs))
+                self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -564,7 +587,7 @@ class ItoolMenuBar(DictMenuBar):
             else:
                 self.slicer_area.view_all()
 
-    def _export_file(self):
+    def _export_file(self) -> None:
         if self.slicer_area._data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)

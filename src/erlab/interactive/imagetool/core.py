@@ -124,7 +124,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
 
 def suppress_history(method: Callable | None = None):
-    """Ignore history changes when calling the decorated method."""
+    """Ignore history changes made within the decorated method."""
 
     def my_decorator(method: Callable):
         @functools.wraps(method)
@@ -144,7 +144,7 @@ def suppress_history(method: Callable | None = None):
 
 
 def record_history(method: Callable | None = None):
-    """Log history when calling the decorated method."""
+    """Log history before calling the decorated method."""
 
     def my_decorator(method: Callable):
         @functools.wraps(method)
@@ -155,7 +155,7 @@ def record_history(method: Callable | None = None):
                 area = self
             area.sigWriteHistory.emit()
             with area.history_suppressed():
-                # Duplicate records within the same method are squashed
+                # Prevent making additional records within the method
                 return method(self, *args, **kwargs)
 
         return wrapped
@@ -534,6 +534,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp.aboutToQuit.connect(self.on_close)
 
         self._data: xr.DataArray | None = None
+        self._file_path: str | None = None
         self.current_cursor: int = 0
 
         if data is not None:
@@ -746,6 +747,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
+    @link_slicer
     @suppress_history
     def undo(self) -> None:
         if not self.undoable:
@@ -755,6 +757,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
+    @link_slicer
     @suppress_history
     def redo(self) -> None:
         if not self.redoable:
@@ -847,7 +850,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCurrentCursorChanged.emit(cursor)
 
     def set_data(
-        self, data: xr.DataArray | npt.ArrayLike, rad2deg: bool | Iterable[str] = False
+        self,
+        data: xr.DataArray | npt.ArrayLike,
+        rad2deg: bool | Iterable[str] = False,
+        file_path: str | None = None,
     ):
         """Set the data to be displayed.
 
@@ -863,8 +869,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             If `True`, converts coords along dimensions that have angle-like names to
             degrees. If an iterable of strings is given, coordinates for dimensions that
             correspond to the given strings are converted.
+        file_path
+            Path to the file from which the data was loaded. If given, the file path is
+            used to set the window title.
 
         """
+        self._file_path = file_path
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):

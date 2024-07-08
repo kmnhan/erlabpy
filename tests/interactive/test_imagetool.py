@@ -205,12 +205,12 @@ def test_sync(qtbot):
 
     t0 = time.perf_counter()
     while True:
-        if len(manager._tools) == 2:
+        if manager.ntools == 2:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
 
-    win0, win1 = manager._tools["0"], manager._tools["1"]
+    win0, win1 = manager.get_tool(0), manager.get_tool(1)
 
     win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
     assert (
@@ -232,8 +232,8 @@ def test_sync(qtbot):
 
     move_and_compare_values(qtbot, win0, [9.0, 8.0, 3.0, 4.0], target_win=win1)
 
-    manager.remove_tool("0")
-    manager.remove_tool("1")
+    manager.remove_tool(0)
+    manager.remove_tool(1)
     manager.close()
 
 
@@ -252,51 +252,51 @@ def test_manager(qtbot):
 
     t0 = time.perf_counter()
     while True:
-        if len(win._tools) > 0:
+        if win.ntools > 0:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
 
-    assert win._tools["0"].array_slicer.point_value(0) == 12.0
+    assert win.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
     itool([data, data], link=False)
     while True:
-        if len(win._tools) == 3:
+        if win.ntools == 3:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
 
     # Linking
-    win.tool_options["1"].check.setChecked(True)
-    win.tool_options["2"].check.setChecked(True)
+    win.tool_options[1].check.setChecked(True)
+    win.tool_options[2].check.setChecked(True)
     win.link_selected()
 
     # Unlinking one unlinks both
-    win.tool_options["1"].check.setChecked(True)
+    win.tool_options[1].check.setChecked(True)
     win.unlink_selected()
-    assert not win._tools["1"].slicer_area.is_linked
-    assert not win._tools["2"].slicer_area.is_linked
+    assert not win.get_tool(1).slicer_area.is_linked
+    assert not win.get_tool(2).slicer_area.is_linked
 
     # Linking again
-    win.tool_options["1"].check.setChecked(True)
-    win.tool_options["2"].check.setChecked(True)
+    win.tool_options[1].check.setChecked(True)
+    win.tool_options[2].check.setChecked(True)
     win.link_selected()
-    assert win._tools["1"].slicer_area.is_linked
-    assert win._tools["2"].slicer_area.is_linked
+    assert win.get_tool(1).slicer_area.is_linked
+    assert win.get_tool(2).slicer_area.is_linked
 
     # Archiving and unarchiving
-    win.archive("1")
-    win.unarchive("1")
+    win.tool_options[1].archive()
+    win.tool_options[1].unarchive()
 
     # Removing archived tool
-    win.archive("0")
-    win.remove_tool("0")
+    win.tool_options[0].archive()
+    win.remove_tool(0)
     qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
 
     # Remove all checked
-    win.tool_options["1"].check.setChecked(True)
-    win.tool_options["2"].check.setChecked(True)
+    win.tool_options[1].check.setChecked(True)
+    win.tool_options[2].check.setChecked(True)
     accept_dialog(win.close_selected)
     qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
 
