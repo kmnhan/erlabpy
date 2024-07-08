@@ -2,6 +2,38 @@
 
 
 
+## v2.8.3 (2024-07-08)
+
+### Ci
+
+* (**pre-commit**) pre-commit autoupdate ([`4257d0c`](https://github.com/kmnhan/erlabpy/commit/4257d0c53a10895e9a3e40b3f6a3a2549d1544c9))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.4.10 → v0.5.0](https://github.com/astral-sh/ruff-pre-commit/compare/v0.4.10...v0.5.0)
+
+### Fix
+
+* (**interactive.imagetool**) various fixes related to manager ([`3d3f55e`](https://github.com/kmnhan/erlabpy/commit/3d3f55e84c2837dc86592bc2f5aa68282ca44fa5))
+
+  This fix incorporates many changes to the ImageTool and ImageTool Manager.
+  First, the archiving function of the manager now works properly, and tries to clear memory eagerly.
+  When opening data from a file using the GUI, the name of the file will now be displayed in the title bar of the ImageTool. This file name is also propagated to the name displayed in the manager.
+  Furthermore, the archiving and show/hide functionality of the manager has been updated to restore the window geometry automatically. When the user shows or unarchives a hidden or archived window, the previous position of the window  is restored.
+  Some icons and the layout of the manager has been modified, and tooltips has been added to the buttons.
+  Also, some unexpected behavior regarding linking has been resolved.
+
+* (**plotting.plot3d**) temporarily disable broken monkey patch ([`220f23f`](https://github.com/kmnhan/erlabpy/commit/220f23fd078a4563f0eb33371af66d5b486d34cd))
+
+* replace broken signature for dynamic functions ([`39a3954`](https://github.com/kmnhan/erlabpy/commit/39a39549b074055bafb93238492dc2dd3ba3c834))
+
+* (**interactive.imagetool**) fix broken binning controls on loading fron GUI ([`0ca5437`](https://github.com/kmnhan/erlabpy/commit/0ca5437481e4b7c269acde8bb1badec1070752e7))
+
+### Refactor
+
+* satisfy type checker ([`042a7b1`](https://github.com/kmnhan/erlabpy/commit/042a7b1f72a9a29b93736fe1eea61f18cc8ea49d))
+
+* (**interactive.imagetool**) add batch close button to manager ([`efc6089`](https://github.com/kmnhan/erlabpy/commit/efc6089669d73ec5ba39acbbeb08720f0543fe3e))
+
+
 ## v2.8.2 (2024-07-01)
 
 ### Chore
@@ -486,38 +518,7 @@
 
   DA30 dataloader now preserves case for attribute names from zip files. Post processing for datasets now works properly
 
-
-## v2.3.1 (2024-04-25)
-
-### Chore
-
-* (**deps**) make `iminuit` and `superqt` optional ([`1bbcc24`](https://github.com/kmnhan/erlabpy/commit/1bbcc24268312f8c285df0774e1e5d5c8c775650))
-
-* (**deps**) reduce dependencies ([`6a03518`](https://github.com/kmnhan/erlabpy/commit/6a0351859ace99dbfb4f251ccbb78e581d6f7218))
-
-* (**github**) update issue templates ([`6a2dd50`](https://github.com/kmnhan/erlabpy/commit/6a2dd504ac05c5c47a39499dab991d44daee57f9))
-
-* (**deps**) update lmfit dependencies to include &gt;1.3.0 ([`942a810`](https://github.com/kmnhan/erlabpy/commit/942a810783fb574cc36a446333be09a82b1d22ae))
-
-### Fix
-
-* (**interactive**) keep pointer for imagetool, fix typing issues ([`c98c38e`](https://github.com/kmnhan/erlabpy/commit/c98c38ea11bce50ed9bfd8d374064bb2b1659d0c))
-
-* (**kspace**) allow explicit coordinate kwargs ([`fe47efc`](https://github.com/kmnhan/erlabpy/commit/fe47efcde941767c02b582ce8b29d4b3678fd843))
-
-### Refactor
-
-* move `characterization` to `io` ([`9c30f1b`](https://github.com/kmnhan/erlabpy/commit/9c30f1b7df51460f502dcbf999e3fac34be1cf99))
-
-* make zip strict (ruff B905) ([`78bf5f5`](https://github.com/kmnhan/erlabpy/commit/78bf5f5a2db52c14ccf5bfd3c83659ca53c4a408))
-
-### Style
-
-* add mypy compatible type hints ([`c97724d`](https://github.com/kmnhan/erlabpy/commit/c97724dcd9095a3cdc1842e5afb1f29b3c472c45))
-
 ### Unknown
-
-* Merge branch &#39;main&#39; into dev ([`184afb0`](https://github.com/kmnhan/erlabpy/commit/184afb023dc704b4ab6ffe8ef5c098c19ca19084))
 
 * [pre-commit.ci] pre-commit autoupdate ([`43bfbab`](https://github.com/kmnhan/erlabpy/commit/43bfbabc93720a3afb232a75de05d43aa2567ace))
 
@@ -525,9 +526,34 @@
   - [github.com/astral-sh/ruff-pre-commit: v0.3.7 → v0.4.1](https://github.com/astral-sh/ruff-pre-commit/compare/v0.3.7...v0.4.1)
 
 
+## v2.3.1 (2024-04-25)
+
+### Chore
+
+* (**deps**) make `iminuit` and `superqt` optional ([`1bbcc24`](https://github.com/kmnhan/erlabpy/commit/1bbcc24268312f8c285df0774e1e5d5c8c775650))
+
+* (**deps**) update lmfit dependencies to include &gt;1.3.0 ([`942a810`](https://github.com/kmnhan/erlabpy/commit/942a810783fb574cc36a446333be09a82b1d22ae))
+
+### Fix
+
+* (**interactive**) keep pointer for imagetool, fix typing issues ([`c98c38e`](https://github.com/kmnhan/erlabpy/commit/c98c38ea11bce50ed9bfd8d374064bb2b1659d0c))
+
+### Refactor
+
+* move `characterization` to `io` ([`9c30f1b`](https://github.com/kmnhan/erlabpy/commit/9c30f1b7df51460f502dcbf999e3fac34be1cf99))
+
+### Unknown
+
+* Merge branch &#39;main&#39; into dev ([`184afb0`](https://github.com/kmnhan/erlabpy/commit/184afb023dc704b4ab6ffe8ef5c098c19ca19084))
+
+
 ## v2.3.0 (2024-04-22)
 
 ### Chore
+
+* (**deps**) reduce dependencies ([`6a03518`](https://github.com/kmnhan/erlabpy/commit/6a0351859ace99dbfb4f251ccbb78e581d6f7218))
+
+* (**github**) update issue templates ([`6a2dd50`](https://github.com/kmnhan/erlabpy/commit/6a2dd504ac05c5c47a39499dab991d44daee57f9))
 
 * cleanup directory ([`40e1f8d`](https://github.com/kmnhan/erlabpy/commit/40e1f8dcce66d53f9de6fd5905cef3c690633c98))
 
@@ -591,6 +617,8 @@
 
 ### Fix
 
+* (**kspace**) allow explicit coordinate kwargs ([`fe47efc`](https://github.com/kmnhan/erlabpy/commit/fe47efcde941767c02b582ce8b29d4b3678fd843))
+
 * (**exampledata**) change noise generation parameters ([`b213f11`](https://github.com/kmnhan/erlabpy/commit/b213f1151ed2555fc80374e9ebe3fc0856a13948))
 
 * (**fit**) make FermiEdge2dModel compatible with flattened meshgrid-like input arrays ([`c0dba26`](https://github.com/kmnhan/erlabpy/commit/c0dba261670774862f2dfae62c770bbab81aac2f))
@@ -604,6 +632,8 @@
   Allow images including nan to be plotted with gen_2d_colormap, also handle plot_array_2d colorbar aspect
 
 ### Refactor
+
+* make zip strict (ruff B905) ([`78bf5f5`](https://github.com/kmnhan/erlabpy/commit/78bf5f5a2db52c14ccf5bfd3c83659ca53c4a408))
 
 * fix some type hints ([`2dfa5e1`](https://github.com/kmnhan/erlabpy/commit/2dfa5e1b4582e00d0631376ee32aa7d0b1b945b6))
 
@@ -620,6 +650,10 @@
   Calling from utilities will now raise a DeprecationWarning. The erlab.analysis namespace is unchanged, so the affect will be minimal.
 
 * qsel now raises a warning upon scalar indexing outside coordinate bounds ([`d6ed628`](https://github.com/kmnhan/erlabpy/commit/d6ed628111be8ac594d3a1b83cc2785a31e3f06e))
+
+### Style
+
+* add mypy compatible type hints ([`c97724d`](https://github.com/kmnhan/erlabpy/commit/c97724dcd9095a3cdc1842e5afb1f29b3c472c45))
 
 ### Unknown
 
@@ -1719,9 +1753,9 @@
 
 * add curve fitting tool (alpha) ([`68356ab`](https://github.com/kmnhan/erlabpy/commit/68356ab6d7fc4ecb6653d36213acc8c22ef4f23b))
 
-* add new module for curve fitting ([`20c8be9`](https://github.com/kmnhan/erlabpy/commit/20c8be92116a0ce95f1dd55a2de131a1a9a16efe))
-
 * added boltzmann const. at constants ([`038930e`](https://github.com/kmnhan/erlabpy/commit/038930ebd9a48c000990c006ca794f8fc34b3d94))
+
+* add new module for curve fitting ([`20c8be9`](https://github.com/kmnhan/erlabpy/commit/20c8be92116a0ce95f1dd55a2de131a1a9a16efe))
 
 * add module for 3D plotting ([`4ec1bd2`](https://github.com/kmnhan/erlabpy/commit/4ec1bd2c81b17c775321d7b8197fe7ca84f1d03b))
 
@@ -2115,9 +2149,9 @@
 
 * add PyQt6 compatibility ([`713cea2`](https://github.com/kmnhan/erlabpy/commit/713cea28683643f27c5b163c1aba0e332c168b30))
 
-* pyqt-compatible multiple inheritance, fixes #7 ([`de37753`](https://github.com/kmnhan/erlabpy/commit/de377534db051b852d528ab8dd6abf212bf3e1a0))
-
 * pyqt-compatible multiple inheritance, fixes #7 ([`7fb28d8`](https://github.com/kmnhan/erlabpy/commit/7fb28d834b149c1a7dd8bd09162d09fcf4890004))
+
+* pyqt-compatible multiple inheritance, fixes #7 ([`de37753`](https://github.com/kmnhan/erlabpy/commit/de377534db051b852d528ab8dd6abf212bf3e1a0))
 
 * minor fixes ([`2b4e61c`](https://github.com/kmnhan/erlabpy/commit/2b4e61cb086ae5f813aa1d784c722fbbc8613330))
 
