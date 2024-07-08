@@ -80,6 +80,6 @@ def to_3d(pathpatch, z=0.0, zdir="z", delta=(0, 0, 0)):
     return pathpatch
 
 
-mpl_toolkits.mplot3d.art3d.Patch3D.set_3d_properties = set_3d_properties
+# mpl_toolkits.mplot3d.art3d.Patch3D.set_3d_properties = set_3d_properties
 mpl_toolkits.mplot3d.art3d.Patch3D.translate = pathpatch_translate
 # matplotlib.patches.Patch.to_3d = to_3d
