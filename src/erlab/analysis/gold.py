@@ -103,8 +103,7 @@ def correct_with_edge(
             raise ValueError(
                 "Length of modelresult must be equal to the length of alpha in data"
             )
-        else:
-            edge_quad = modelresult
+        edge_quad = modelresult
 
     else:
         raise TypeError(
@@ -263,7 +262,7 @@ def edge(
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
 
-        res = model.fit(
+        return model.fit(
             data,
             x=data["eV"],
             params=pars,
@@ -272,7 +271,6 @@ def edge(
             weights=w,
             **kwargs,
         )
-        return res
 
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
@@ -325,7 +323,7 @@ def poly_from_edge(
 ) -> lmfit.model.ModelResult:
     model = PolynomialModel(degree=degree)
     pars = model.guess(center.values, x=center[center.dims[0]].values)
-    modelresult = model.fit(
+    return model.fit(
         center,
         x=center[center.dims[0]].values,
         params=pars,
@@ -333,19 +331,17 @@ def poly_from_edge(
         method=method,
         scale_covar=scale_covar,
     )
-    return modelresult
 
 
 def spline_from_edge(
     center, weights: npt.ArrayLike | None = None, lam: float | None = None
 ) -> scipy.interpolate.BSpline:
-    spl = scipy.interpolate.make_smoothing_spline(
+    return scipy.interpolate.make_smoothing_spline(
         center.alpha.values,
         center.values,
         w=np.asarray(weights),
         lam=lam,
     )
-    return spl
 
 
 def _plot_gold_fit(
@@ -499,8 +495,7 @@ def poly(
             gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
         corr = correct_with_edge(gold, modelresult, plot=False)
         return modelresult, corr
-    else:
-        return modelresult
+    return modelresult
 
 
 def spline(
@@ -541,8 +536,7 @@ def spline(
             gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
         corr = correct_with_edge(gold, spl, plot=False)
         return spl, corr
-    else:
-        return spl
+    return spl
 
 
 def quick_fit(

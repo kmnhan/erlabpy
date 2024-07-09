@@ -363,7 +363,7 @@ def fast_nanmean(
     """
     if a.ndim == 1 or axis is None:
         return _nanmean_all(a)
-    elif a.ndim > 4:
+    if a.ndim > 4:
         return np.ascontiguousarray(
             _general_nanmean_func(a.astype(np.float64), axis), dtype=a.dtype
         )

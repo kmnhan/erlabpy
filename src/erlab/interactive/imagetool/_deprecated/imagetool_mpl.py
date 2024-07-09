@@ -960,11 +960,10 @@ class mpl_itool(Widget):
                 self.canvas.restore_region(self.background)
             if self.parallel:
                 raise NotImplementedError
-            else:
-                for i, art in list(
-                    zip(self.ax_index, self.all + self.scaling_axes, strict=True)
-                ):
-                    self.axes[i].draw_artist(art)
+            for i, art in list(
+                zip(self.ax_index, self.all + self.scaling_axes, strict=True)
+            ):
+                self.axes[i].draw_artist(art)
             if any(self.averaged):
                 self.update_spans()
             self.canvas.blit()

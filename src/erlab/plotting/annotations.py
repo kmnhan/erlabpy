@@ -189,11 +189,10 @@ def get_si_str(si: int) -> str:
     """
     if plt.rcParams["text.usetex"] and si == -6:
         return "\\ensuremath{\\mu}"
-    else:
-        try:
-            return SI_PREFIXES[si]
-        except KeyError as e:
-            raise ValueError("Invalid SI prefix.") from e
+    try:
+        return SI_PREFIXES[si]
+    except KeyError as e:
+        raise ValueError("Invalid SI prefix.") from e
 
 
 def name_for_dim(dim_name: str, escaped: bool = True) -> str:
@@ -227,8 +226,7 @@ def label_for_dim(dim_name: str, deg2rad: bool = False, escaped: bool = True) ->
     unit = unit_for_dim(dim_name, deg2rad=deg2rad)
     if unit == "":
         return name
-    else:
-        return f"{name} ({unit})"
+    return f"{name} ({unit})"
 
 
 def parse_special_point(name: str) -> str:
@@ -236,8 +234,8 @@ def parse_special_point(name: str) -> str:
 
     if name in special_points.keys():
         return special_points[name]
-    else:
-        return name
+
+    return name
 
 
 def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
@@ -844,8 +842,7 @@ def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str
         if value == 0:
             if delim == "":
                 return "$E_F$"
-            else:
-                return "$E = E_F$"
+            return "$E = E_F$"
         if delim == "":
             name = "E_F"
         else:

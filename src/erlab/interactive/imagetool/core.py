@@ -261,8 +261,7 @@ class SlicerLinkProxy:
         if slicer_area.is_linked:
             if slicer_area._linking_proxy == self:
                 return
-            else:
-                raise ValueError("Already linked to another proxy.")
+            raise ValueError("Already linked to another proxy.")
         self._children.add(slicer_area)
         slicer_area._linking_proxy = self
 
@@ -340,14 +339,11 @@ class SlicerLinkProxy:
             return round(
                 index * source.array_slicer.incs[axis] / target.array_slicer.incs[axis]
             )
-        else:
-            value: np.float32 = source.array_slicer.value_of_index(
-                axis, index, uniform=False
-            )
-            new_index: int = target.array_slicer.index_of_value(
-                axis, value, uniform=False
-            )
-            return new_index
+        value: np.float32 = source.array_slicer.value_of_index(
+            axis, index, uniform=False
+        )
+        new_index: int = target.array_slicer.index_of_value(axis, value, uniform=False)
+        return new_index
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -636,23 +632,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
-        if self.data.ndim == 2:
-            return ()
-        elif self.data.ndim == 3:
-            return tuple(self.get_axes(ax) for ax in (4, 5))
-        elif self.data.ndim == 4:
-            return tuple(self.get_axes(ax) for ax in (4, 5, 7))
-        else:
-            raise ValueError("Data must have 2 to 4 dimensions")
+        match self.data.ndim:
+            case 2:
+                return ()
+            case 3:
+                return tuple(self.get_axes(ax) for ax in (4, 5))
+            case 4:
+                return tuple(self.get_axes(ax) for ax in (4, 5, 7))
+            case _:
+                raise ValueError("Data must have 2 to 4 dimensions")
 
     @property
     def profiles(self) -> tuple[ItoolPlotItem, ...]:
-        if self.data.ndim == 2:
-            profile_axes = [1, 2]
-        elif self.data.ndim == 3:
-            profile_axes = [1, 2, 3]
-        else:
-            profile_axes = [1, 2, 3, 6]
+        match self.data.ndim:
+            case 2:
+                profile_axes: tuple[int, ...] = (1, 2)
+            case 3:
+                profile_axes = (1, 2, 3)
+            case _:
+                profile_axes = (1, 2, 3, 6)
 
         return tuple(self.get_axes(ax) for ax in profile_axes)
 

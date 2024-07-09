@@ -294,7 +294,7 @@ class LoaderBase:
             if val.size == 1:
                 return cls.formatter(val.item())
 
-            elif val.squeeze().ndim == 1:
+            if val.squeeze().ndim == 1:
                 val = val.squeeze()
 
                 if is_uniform_spaced(val):
@@ -303,7 +303,7 @@ class LoaderBase:
                     )
                     return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
 
-                elif is_monotonic(val):
+                if is_monotonic(val):
                     if val[0] == val[-1]:
                         return cls.formatter(val[0])
 
@@ -311,34 +311,30 @@ class LoaderBase:
                         f"{cls.formatter(val[0])}→{cls.formatter(val[-1])} ({len(val)})"
                     )
 
-                else:
-                    mn, mx = tuple(cls.formatter(v) for v in (np.min(val), np.max(val)))
-                    return f"{mn}~{mx} ({len(val)})"
+                mn, mx = tuple(cls.formatter(v) for v in (np.min(val), np.max(val)))
+                return f"{mn}~{mx} ({len(val)})"
 
-            else:
-                return val
+            return val
 
-        elif isinstance(val, list):
+        if isinstance(val, list):
             return ", ".join(
                 [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
             )
 
-        elif np.issubdtype(type(val), np.floating):
+        if np.issubdtype(type(val), np.floating):
             val = cast(np.floating, val)
             if val.is_integer():
                 return cls.formatter(np.int64(val))
-            else:
-                return np.format_float_positional(val, precision=4, trim="-").replace(
-                    "-", "−"
-                )
-        elif np.issubdtype(type(val), np.integer):
+            return np.format_float_positional(val, precision=4, trim="-").replace(
+                "-", "−"
+            )
+        if np.issubdtype(type(val), np.integer):
             return str(val).replace("-", "−")
 
-        elif isinstance(val, datetime.datetime):
+        if isinstance(val, datetime.datetime):
             return val.strftime("%Y-%m-%d %H:%M:%S")
 
-        else:
-            return val
+        return val
 
     @classmethod
     def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
@@ -418,7 +414,7 @@ class LoaderBase:
                     f"Failed to resolve identifier {identifier} "
                     f"for data directory {data_dir}"
                 )
-            elif len(file_paths) == 1:
+            if len(file_paths) == 1:
                 # Single file resolved
                 data = self.load_single(file_paths[0])
             else:
@@ -446,9 +442,8 @@ class LoaderBase:
                     return self.load(
                         new_identifier, new_dir, single=single, **new_kwargs
                     )
-                else:
-                    # On failure, assume single file
-                    single = True
+                # On failure, assume single file
+                single = True
 
             data = self.load_single(identifier)
 
@@ -979,14 +974,13 @@ class LoaderBase:
         data = data.assign_attrs(new_attrs)
 
         # Move from attrs to coordinate if coordinate is not found
-        data = data.assign_coords(
+        return data.assign_coords(
             {
                 a: data.attrs.pop(a)
                 for a in self.coordinate_and_average_attrs
                 if a in data.attrs and a not in data.coords
             }
         )
-        return data
 
     def post_process(self, darr: xr.DataArray) -> xr.DataArray:
         darr = self.process_keys(darr)
@@ -1012,10 +1006,9 @@ class LoaderBase:
                 new_coords[d] = coord_dict.pop(d)
         new_coords = new_coords | coord_dict
 
-        darr = xr.DataArray(
+        return xr.DataArray(
             darr.values, coords=new_coords, dims=darr.dims, attrs=darr.attrs
         )
-        return darr
 
     def post_process_general(
         self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]
@@ -1023,14 +1016,15 @@ class LoaderBase:
         if isinstance(data, xr.DataArray):
             return self.post_process(data)
 
-        elif isinstance(data, list):
+        if isinstance(data, list):
             return [self.post_process(d) for d in data]
 
-        elif isinstance(data, xr.Dataset):
+        if isinstance(data, xr.Dataset):
             return xr.Dataset(
                 {k: self.post_process(v) for k, v in data.data_vars.items()},
                 attrs=data.attrs,
             )
+        return None
 
     @classmethod
     def validate(
@@ -1110,8 +1104,7 @@ class LoaderBase:
     def _raise_or_warn(cls, msg: str) -> None:
         if cls.strict_validation:
             raise ValidationError(msg)
-        else:
-            warnings.warn(msg, ValidationWarning, stacklevel=2)
+        warnings.warn(msg, ValidationWarning, stacklevel=2)
 
 
 class RegistryBase:

@@ -166,10 +166,9 @@ def do_convolve_2d(
 
     if idx_x is None:
         return convolved.T
-    elif idx_x == 0:
+    if idx_x == 0:
         return convolved.T.ravel()
-    else:
-        return convolved.ravel()
+    return convolved.ravel()
 
 
 @numba.njit(cache=True)

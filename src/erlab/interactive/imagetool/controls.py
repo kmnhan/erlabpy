@@ -192,8 +192,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def slicer_area(self) -> ImageSlicerArea:
         if isinstance(self._slicer_area, ItoolControlsBase):
             return self._slicer_area.slicer_area
-        else:
-            return self._slicer_area
+        return self._slicer_area
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea) -> None:
@@ -510,7 +509,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def update_cursor_count(self, count: int) -> None:
         if count == self.cb_cursors.count():
             return
-        elif count > self.cb_cursors.count():
+        if count > self.cb_cursors.count():
             self.addCursor()
         else:
             self.remCursor()

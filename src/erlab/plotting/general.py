@@ -625,8 +625,7 @@ def plot_array_2d(
 
     if colorbar:
         return im, cb
-    else:
-        return im, None
+    return im, None
 
 
 def gradient_fill(

@@ -31,20 +31,18 @@ class Side(enum.Enum):
 def _comp_x(p0, p1):
     if np.float32(p0[0]) < np.float32(p1[0]):
         return Comparison.SMALLER
-    elif np.float32(p0[0]) == np.float32(p1[0]):
+    if np.float32(p0[0]) == np.float32(p1[0]):
         return Comparison.EQUAL
-    else:
-        return Comparison.LARGER
+    return Comparison.LARGER
 
 
 @numba.njit(nogil=True, cache=True)
 def _comp_y(p0, p1):
     if np.float32(p0[1]) < np.float32(p1[1]):
         return Comparison.SMALLER
-    elif np.float32(p0[1]) == np.float32(p1[1]):
+    if np.float32(p0[1]) == np.float32(p1[1]):
         return Comparison.EQUAL
-    else:
-        return Comparison.LARGER
+    return Comparison.LARGER
 
 
 @numba.njit(nogil=True, cache=True)
@@ -271,5 +269,4 @@ def bounded_side(points: npt.NDArray[np.float64], point: tuple[float, float]) ->
 
     if is_inside:
         return Side.ON_BOUNDED_SIDE
-    else:
-        return Side.ON_UNBOUNDED_SIDE
+    return Side.ON_UNBOUNDED_SIDE

@@ -81,15 +81,15 @@ class PlotAccessor(ERLabDataArrayAccessor):
         """
         if len(self._obj.dims) == 2:
             return eplt.plot_array(self._obj, *args, **kwargs)
-        else:
-            ax = kwargs.pop("ax", None)
-            if ax is None:
-                ax = plt.gca()
-            kwargs["ax"] = ax
 
-            out = self._obj.plot(*args, **kwargs)
-            eplt.fancy_labels(ax)
-            return out
+        ax = kwargs.pop("ax", None)
+        if ax is None:
+            ax = plt.gca()
+        kwargs["ax"] = ax
+
+        out = self._obj.plot(*args, **kwargs)
+        eplt.fancy_labels(ax)
+        return out
 
 
 @xr.register_dataarray_accessor("qshow")
@@ -111,11 +111,10 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         """
         if self._obj.ndim >= 2 and self._obj.ndim <= 4:
             return self.itool(*args, **kwargs)
-        else:
-            if importlib.util.find_spec("hvplot"):
-                self.hvplot(*args, **kwargs)
-            else:
-                raise ValueError("Data must have at least two dimensions.")
+        if importlib.util.find_spec("hvplot"):
+            self.hvplot(*args, **kwargs)
+            return None
+        raise ValueError("Data must have at least two dimensions.")
 
     def itool(self, *args, **kwargs):
         """Shortcut for :func:`itool <erlab.interactive.imagetool.itool>`.
@@ -175,8 +174,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         """
         if self._is_fitresult:
             return self.fit(*args, **kwargs)
-        else:
-            return self.itool(*args, **kwargs)
+        return self.itool(*args, **kwargs)
 
     @property
     def _is_fitresult(self) -> bool:
@@ -399,8 +397,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     raise ValueError(
                         f"Slice not allowed for width of dimension `{dim}`"
                     )
-                else:
-                    bin_widths[dim] = float(width)
+                bin_widths[dim] = float(width)
                 if dim not in self._obj.dims:
                     raise ValueError(f"Dimension `{dim}` not found in data.")
 

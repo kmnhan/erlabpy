@@ -52,8 +52,7 @@ def _coeff_mat(x, deg):
 @numba.njit("f8[:](f8[:,:], f8[:])", cache=True)
 def _fit_x(a, b):
     # linalg solves ax = b
-    det_ = np.linalg.lstsq(a, b)[0]
-    return det_
+    return np.linalg.lstsq(a, b)[0]
 
 
 @numba.njit("f8[:](f8[:], f8[:], i8)", cache=True)
@@ -77,8 +76,7 @@ def fit_poly_jit(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], deg: np
 
     """
     a = _coeff_mat(x, deg)
-    p = _fit_x(a, y)
-    return p
+    return _fit_x(a, y)
 
 
 def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:

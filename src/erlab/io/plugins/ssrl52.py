@@ -113,7 +113,7 @@ class SSRL52Loader(LoaderBase):
                                 # Axes2 may have some values... not sure what they are
                                 # For now, just ignore them and use beamline attributes
                                 continue
-                            elif ax["label"] != "Kinetic Energy":
+                            if ax["label"] != "Kinetic Energy":
                                 warnings.warn(
                                     "Undefined offset for non-energy axis. This was "
                                     "not taken into account while writing the loader "

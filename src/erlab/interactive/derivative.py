@@ -343,3 +343,4 @@ def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
         qapp.exec()
     if not execute:
         return win
+    return None

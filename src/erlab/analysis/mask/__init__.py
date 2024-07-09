@@ -106,8 +106,7 @@ def polygon_mask(
             mask[i, j] = polygon.bounded_side_bool(vertices, (x[i], y[j]))
     if invert:
         return ~mask
-    else:
-        return mask
+    return mask
 
 
 @numba.njit(parallel=True, cache=True)
@@ -156,8 +155,7 @@ def polygon_mask_points(
         mask[i] = polygon.bounded_side_bool(vertices, (x[i], y[i]))
     if invert:
         return ~mask
-    else:
-        return mask
+    return mask
 
 
 def spherical_mask(
@@ -243,8 +241,7 @@ def spherical_mask(
 
     if boundary:
         return delta_squared <= 1.0
-    else:
-        return delta_squared < 1.0
+    return delta_squared < 1.0
 
 
 def mask_with_hex_bz(

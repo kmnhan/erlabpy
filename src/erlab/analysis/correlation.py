@@ -43,8 +43,7 @@ def nanacf(arr, *args, **kwargs):
         acf_nan = autocorrelate(nan_mask.astype(float), *args, **kwargs)
         acf_nan[acf_nan < 1e7 * np.finfo(float).eps] = np.nan
         return acf / acf_nan
-    else:
-        return acf
+    return acf
 
 
 def acf2(arr, mode: str = "full", method: str = "fft"):
@@ -101,7 +100,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
 def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
     if arr.ndim == 2:
         return acf2(arr, mode, method)
-    elif arr.ndim >= 3:
+    if arr.ndim >= 3:
         if arr.ndim - len(stack_dims) != 2:
             raise ValueError(
                 "The number of dimensions excluding the stacking dimensions must be 2"

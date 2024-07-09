@@ -114,7 +114,7 @@ class InversePowerNorm(matplotlib.colors.Normalize):
         vmin, vmax = self.vmin, self.vmax
         if vmin > vmax:
             raise ValueError("minvalue must be less than or equal to maxvalue")
-        elif vmin == vmax:
+        if vmin == vmax:
             result.fill(0)
         else:
             if clip:
@@ -146,8 +146,7 @@ class InversePowerNorm(matplotlib.colors.Normalize):
         if np.iterable(value):
             val = np.ma.asarray(value)
             return np.ma.power(1 - val, gamma) * (vmin - vmax) + vmax
-        else:
-            return pow(1 - value, gamma) * (vmin - vmax) + vmax
+        return pow(1 - value, gamma) * (vmin - vmax) + vmax
 
 
 def _diverging_powernorm(result, gamma, vmin, vmax, vcenter):
@@ -172,8 +171,7 @@ def _diverging_powernorm(result, gamma, vmin, vmax, vcenter):
     resdat_u += 0.5
     resdat[resdat_ >= vcenter] = resdat_u
 
-    result = np.ma.array(resdat, mask=result.mask, copy=False)
-    return result
+    return np.ma.array(resdat, mask=result.mask, copy=False)
 
 
 def _diverging_powernorm_inv(value, gamma, vmin, vmax, vcenter):
@@ -189,10 +187,9 @@ def _diverging_powernorm_inv(value, gamma, vmin, vmax, vcenter):
             np.ma.power(2 * val_u - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
         )
         return np.ma.asarray(val_)
-    elif value < 0.5:
+    if value < 0.5:
         return pow(1 - 2 * value, 1.0 / gamma) * (vmin - vcenter) + vcenter
-    else:
-        return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
+    return pow(2 * value - 1, 1.0 / gamma) * (vmax - vcenter) + vcenter
 
 
 def _diverging_inversepowernorm(result, gamma, vmin, vmax, vcenter):
@@ -218,8 +215,7 @@ def _diverging_inversepowernorm(result, gamma, vmin, vmax, vcenter):
     resdat_u += 1
     resdat[resdat_ >= vcenter] = resdat_u
 
-    result = np.ma.array(resdat, mask=result.mask, copy=False)
-    return result
+    return np.ma.array(resdat, mask=result.mask, copy=False)
 
 
 def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
@@ -231,10 +227,9 @@ def _diverging_inversepowernorm_inv(value, gamma, vmin, vmax, vcenter):
         val_[val < 0.5] = np.ma.power(2 * val_l, gamma) * (vcenter - vmin) + vmin
         val_[val >= 0.5] = np.ma.power(2 - 2 * val_u, gamma) * (vcenter - vmax) + vmax
         return np.ma.asarray(val_)
-    elif value < 0.5:
+    if value < 0.5:
         return pow(2 * value, gamma) * (vcenter - vcenter) + vmin
-    else:
-        return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
+    return pow(2 - 2 * value, gamma) * (vcenter - vmax) + vmax
 
 
 class TwoSlopePowerNorm(matplotlib.colors.TwoSlopeNorm):

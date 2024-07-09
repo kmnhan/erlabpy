@@ -63,17 +63,14 @@ def _parse_dict_arg(
             f"{'' if len(required_dims) == 1 else 's'}: {required_dims}"
         )
 
-    else:
-        for d in sigma_dict.keys():
-            if d not in dims:
-                raise ValueError(
-                    f"Dimension `{d}` in {arg_name} not found in {reference_name}"
-                )
+    for d in sigma_dict.keys():
+        if d not in dims:
+            raise ValueError(
+                f"Dimension `{d}` in {arg_name} not found in {reference_name}"
+            )
 
     # Make sure that sigma_dict is ordered in temrs of data dims
-    sigma_dict = {d: sigma_dict[d] for d in dims if d in sigma_dict.keys()}
-
-    return sigma_dict
+    return {d: sigma_dict[d] for d in dims if d in sigma_dict.keys()}
 
 
 def gaussian_filter(
@@ -309,10 +306,9 @@ def _ndsavgol_vandermonde(window_shape: tuple[int, ...], polyorder: int):
     )
 
     # Create the Vandermonde matrix
-    vander = np.prod(
+    return np.prod(
         np.power(indices[:, None, :], degree_combinations[None, :, :]), axis=-1
     )
-    return vander
 
 
 def _ndsavgol_scale(deriv_idx: int, delta: tuple[float, ...], polyorder: int):
@@ -321,9 +317,7 @@ def _ndsavgol_scale(deriv_idx: int, delta: tuple[float, ...], polyorder: int):
     deriv_for_ax = _ndpoly_degree_combinations(polyorder, len(delta))[deriv_idx]
 
     # Calculate the correction factor for the derivative order and sample point spacing
-    scale = math.factorial(sum(deriv_for_ax)) / sum(np.power(delta, deriv_for_ax))
-
-    return scale
+    return math.factorial(sum(deriv_for_ax)) / sum(np.power(delta, deriv_for_ax))
 
 
 def _ndsavgol_coeffs(
@@ -337,12 +331,10 @@ def _ndsavgol_coeffs(
     scale = _ndsavgol_scale(deriv_idx, delta, polyorder)
 
     # Invert the Vandermonde matrix to get the filter coefficients
-    coeffs = np.linalg.pinv(vander)[deriv_idx] * scale
+    return np.linalg.pinv(vander)[deriv_idx] * scale
 
     # SciPy uses lstsq for this, but calculating the pseudo-inverse directly seems to
     # return more accurate results
-
-    return coeffs
 
 
 def ndsavgol(
@@ -489,8 +481,7 @@ def ndsavgol(
             if accurate:
                 out, _, _, _ = np.linalg.lstsq(vander, values, rcond=-1.0)
                 return out[deriv_idx] * scale
-            else:
-                return np.dot(coeffs, values)
+            return np.dot(coeffs, values)
 
     else:
 

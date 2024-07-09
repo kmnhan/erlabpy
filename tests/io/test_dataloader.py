@@ -39,7 +39,7 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
     )
 
     # Assign some attributes that real data would have
-    data = data.assign_attrs(
+    return data.assign_attrs(
         {
             "LensMode": "Angular30",  # Lens mode of the analyzer
             "SpectrumType": "Fixed",  # Acquisition mode of the analyzer
@@ -52,7 +52,6 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
             "Z": 0.0,
         }
     )
-    return data
 
 
 def test_loader():
@@ -179,8 +178,7 @@ def test_loader():
 
             if scan_num.isdigit():
                 return int(scan_num), {}
-            else:
-                return None, None
+            return None, None
 
         def generate_summary(self, data_dir):
             # Get all valid data files in directory
@@ -221,7 +219,8 @@ def test_loader():
                 index, _ = self.infer_index(name)
                 if index in processed_indices:
                     continue
-                elif index is not None:
+
+                if index is not None:
                     processed_indices.add(index)
 
                 # Load data

@@ -70,7 +70,7 @@ def get_args_kwargs(func: Callable) -> tuple[list[str], dict[str, Any]]:
     for fnam, fpar in sig.parameters.items():
         if fpar.kind == fpar.VAR_POSITIONAL or fpar.kind == fpar.VAR_KEYWORD:
             raise ValueError(f"varargs '*{fnam}' is not supported")
-        elif fpar.default == fpar.empty:
+        if fpar.default == fpar.empty:
             args.append(fnam)
         else:
             args_default[fnam] = fpar.default
@@ -130,11 +130,10 @@ class PolynomialFunction(DynamicFunction):
             coeffs = tuple(params[f"c{d}"] for d in range(self.degree + 1))
         if isinstance(x, np.ndarray):
             return np.polynomial.polynomial.polyval(x, coeffs)
-        else:
-            coeffs_xr = xr.DataArray(
-                np.asarray(coeffs), coords={"degree": np.arange(self.degree + 1)}
-            )
-            return xr.polyval(x, coeffs_xr)
+        coeffs_xr = xr.DataArray(
+            np.asarray(coeffs), coords={"degree": np.arange(self.degree + 1)}
+        )
+        return xr.polyval(x, coeffs_xr)
 
 
 class MultiPeakFunction(DynamicFunction):
@@ -275,18 +274,16 @@ class MultiPeakFunction(DynamicFunction):
     def sigma_expr(self, index: int, prefix: str) -> str | None:
         if self._peak_funcs[index] == gaussian_wh:
             return f"{prefix}p{index}_width / (2 * sqrt(2 * log(2)))"
-        elif self._peak_funcs[index] == lorentzian_wh:
+        if self._peak_funcs[index] == lorentzian_wh:
             return f"{prefix}p{index}_width / 2"
-        else:
-            return None
+        return None
 
     def amplitude_expr(self, index: int, prefix: str) -> str | None:
         if self._peak_funcs[index] == gaussian_wh:
             return f"{prefix}p{index}_height * {prefix}p{index}_sigma / sqrt(2 * pi)"
-        elif self._peak_funcs[index] == lorentzian_wh:
+        if self._peak_funcs[index] == lorentzian_wh:
             return f"{prefix}p{index}_height * {prefix}p{index}_sigma * pi"
-        else:
-            return None
+        return None
 
     def eval_peak(self, index: int, x, **params):
         return self.peak_funcs[index](
@@ -338,8 +335,7 @@ class MultiPeakFunction(DynamicFunction):
                     "Missing parameter `resolution` required for convolution"
                 )
             return do_convolve(x, self.pre_call, **params)
-        else:
-            return self.pre_call(x, **params)
+        return self.pre_call(x, **params)
 
 
 class FermiEdge2dFunction(DynamicFunction):

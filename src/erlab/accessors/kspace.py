@@ -117,11 +117,10 @@ class OffsetView:
     def __getitem__(self, key: str) -> float:
         if key in self._obj.kspace.valid_offset_keys:
             return float(self._obj.attrs[key + "_offset"])
-        else:
-            raise KeyError(
-                f"Invalid offset key `{key}` for experimental configuration "
-                f"{self._obj.kspace.configuration}"
-            )
+        raise KeyError(
+            f"Invalid offset key `{key}` for experimental configuration "
+            f"{self._obj.kspace.configuration}"
+        )
 
     def __setitem__(self, key: str, value: float) -> None:
         if key in self._obj.kspace.valid_offset_keys:
@@ -130,8 +129,7 @@ class OffsetView:
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
             return dict(self) == dict(other)
-        else:
-            return False
+        return False
 
     def __repr__(self) -> str:
         return dict(self).__repr__()
@@ -224,12 +222,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
-        else:
-            warnings.warn(
-                "Inner potential not found in data attributes, assuming 10 eV",
-                stacklevel=1,
-            )
-            return 10.0
+        warnings.warn(
+            "Inner potential not found in data attributes, assuming 10 eV",
+            stacklevel=1,
+        )
+        return 10.0
 
     @inner_potential.setter
     def inner_potential(self, value: float) -> None:
@@ -256,12 +253,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
-        else:
-            warnings.warn(
-                "Work function not found in data attributes, assuming 4.5 eV",
-                stacklevel=1,
-            )
-            return 4.5
+        warnings.warn(
+            "Work function not found in data attributes, assuming 4.5 eV",
+            stacklevel=1,
+        )
+        return 4.5
 
     @work_function.setter
     def work_function(self, value: float) -> None:
@@ -334,10 +330,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if self.has_hv:
             return (self.slit_axis, "kz")
-        elif self.has_beta:
+        if self.has_beta:
             return ("kx", "ky")
-        else:
-            return (self.slit_axis,)
+        return (self.slit_axis,)
 
     @property
     def angle_params(self) -> dict[str, float]:
@@ -375,8 +370,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self.hv + self.work_function
             return binding.assign_coords(eV=binding.values)
-        else:
-            return self._obj.eV
+        return self._obj.eV
 
     @property
     def kinetic_energy(self) -> xr.DataArray:
@@ -534,8 +528,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if "hv" in kx.dims:
             kz = kz_func(self.kinetic_energy, self.inner_potential, kx, ky)
             return {"kx": kx, "ky": ky, "kz": kz}
-        else:
-            return {"kx": kx, "ky": ky}
+        return {"kx": kx, "ky": ky}
 
     def estimate_bounds(self) -> dict[Literal["kx", "ky", "kz"], tuple[float, float]]:
         """
@@ -603,10 +596,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         if from_numpoints and (lims is not None):
             return float((lims[1] - lims[0]) / len(self._obj[dim]))
-        elif axis == "kz":
+
+        if axis == "kz":
             return self.best_kz_resolution
-        else:
-            return self.best_kp_resolution
+
+        return self.best_kp_resolution
 
     def _forward_func(self, alpha, beta):
         return get_kconv_func(
@@ -674,8 +668,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if name == "eV":
             return self.binding_energy
-        else:
-            return self._obj[name]
+        return self._obj[name]
 
     @only_angles
     def _data_ensure_binding(self) -> xr.DataArray:
@@ -901,6 +894,4 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
 
         # Calculate kz
-        kz = kz_func(kinetic, self.inner_potential, kx, ky)
-
-        return kz
+        return kz_func(kinetic, self.inner_potential, kx, ky)

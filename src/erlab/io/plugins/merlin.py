@@ -127,8 +127,7 @@ class MERLINLoader(LoaderBase):
 
         if scan_num.isdigit():
             return int(scan_num), {}
-        else:
-            return None, {}
+        return None, {}
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)

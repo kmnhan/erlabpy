@@ -5,7 +5,7 @@ __all__ = ["FastInterpolator", "interpn", "slice_along_path"]
 import itertools
 import math
 import warnings
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import cast
 
 import numba
@@ -123,13 +123,12 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                     stacklevel=1,
                 )
             else:
-                result = _get_interp_func(self.values.ndim)(
+                return _get_interp_func(self.values.ndim)(
                     *self.grid,
                     self.values,
                     *(c.ravel() for c in xi),
                     fill_value=self.fill_value,
                 ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
-                return result
 
         if (len(self.uneven_dims) != 0) and is_linear:
             warnings.warn(
@@ -255,8 +254,7 @@ def _calc_interp3(values, v0, v1, v2):
 def _val2ind(val, coord):
     if val > coord[-1] or val < coord[0]:
         return np.nan
-    else:
-        return np.divide(val - coord[0], coord[1] - coord[0])
+    return np.divide(val - coord[0], coord[1] - coord[0])
 
 
 @numba.njit(nogil=True, parallel=True)
@@ -307,18 +305,19 @@ def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     return arr_new
 
 
-def _get_interp_func(ndim):
-    if ndim == 3:
-        return _interp3
-    elif ndim == 2:
-        return _interp2
-    elif ndim == 1:
-        return _interp1
-    else:
-        raise ValueError("Fast interpolation only supported for 2D or 3D")
+def _get_interp_func(ndim: int) -> Callable:
+    match ndim:
+        case 3:
+            return _interp3
+        case 2:
+            return _interp2
+        case 1:
+            return _interp1
+        case _:
+            raise ValueError("Fast interpolation only supported for 2D or 3D")
 
 
-def _check_even(arr):
+def _check_even(arr) -> bool:
     dif = np.diff(arr)
     if dif.size == 0:
         return False
@@ -465,8 +464,7 @@ def _get_interpolator_fast(method, **kwargs):
 def _get_interpolator_nd_fast(method, **kwargs):
     if method == "linearfast":
         return interpn, kwargs
-    else:
-        return _get_interpolator_nd_original(method, **kwargs)
+    return _get_interpolator_nd_original(method, **kwargs)
 
 
 xarray.core.missing._get_interpolator = _get_interpolator_fast  # type: ignore[assignment]

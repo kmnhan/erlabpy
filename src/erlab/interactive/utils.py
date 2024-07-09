@@ -45,7 +45,7 @@ def parse_data(data) -> xr.DataArray:
             "first, either with indexing on the Dataset or by "
             "invoking the `to_array()` method."
         ) from None
-    elif isinstance(data, np.ndarray):
+    if isinstance(data, np.ndarray):
         data = xr.DataArray(data)
     return data  # .astype(float, order="C")
 
@@ -175,8 +175,7 @@ def gen_function_code(copy: bool = True, **kwargs):
 
     if copy:
         return copy_to_clipboard(code_str)
-    else:
-        return code_str
+    return code_str
 
 
 def format_kwargs(d: dict[str, Any]) -> str:
@@ -193,9 +192,8 @@ def format_kwargs(d: dict[str, Any]) -> str:
     """
     if all(s.isidentifier() for s in d.keys()):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    else:
-        out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
-        return "{" + out + "}"
+    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+    return "{" + out + "}"
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):
@@ -353,8 +351,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def value(self):
         if self._only_int:
             return int(self._value)
-        else:
-            return self._value
+        return self._value
 
     def text(self) -> str:
         return self.textFromValue(self.value())
@@ -369,16 +366,14 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     trim="k",
                     exp_digits=1,
                 )
-            else:
-                return self.prefix() + np.format_float_positional(
-                    value,
-                    precision=self.decimals(),
-                    unique=False,
-                    fractional=not self._decimal_significant,
-                    trim="k",
-                )
-        else:
-            return self.prefix() + str(int(value))
+            return self.prefix() + np.format_float_positional(
+                value,
+                precision=self.decimals(),
+                unique=False,
+                fractional=not self._decimal_significant,
+                trim="k",
+            )
+        return self.prefix() + str(int(value))
 
     def valueFromText(self, text: str):
         text = text[len(self.prefix()) :]
@@ -386,8 +381,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             return np.nan
         if self._only_int:
             return int(text)
-        else:
-            return float(text)
+        return float(text)
 
     def stepBy(self, steps) -> None:
         self.editingStarted.emit()
@@ -426,12 +420,10 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     self.StepEnabledFlag.StepDownEnabled
                     | self.StepEnabledFlag.StepUpEnabled
                 )
-            else:
-                return self.StepEnabledFlag.StepUpEnabled
-        elif self.value() > self.minimum():
+            return self.StepEnabledFlag.StepUpEnabled
+        if self.value() > self.minimum():
             return self.StepEnabledFlag.StepDownEnabled
-        else:
-            return self.StepEnabledFlag.StepNone
+        return self.StepEnabledFlag.StepNone
 
     def setValue(self, val) -> None:
         if np.isnan(val):
@@ -691,8 +683,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
     def fixed(self):
         if self.checkable():
             return self.check.isChecked()
-        else:
-            return False
+        return False
 
     def setFixed(self, value: bool) -> None:
         if isinstance(value, QtCore.Qt.CheckState):
@@ -985,7 +976,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
             if not isinstance(widget, QtWidgets.QWidget):
                 raise ValueError("widget is not a valid QWidget")
             return widget
-        elif qwtype not in ParameterGroup.VALID_QWTYPE:
+        if qwtype not in ParameterGroup.VALID_QWTYPE:
             raise ValueError(
                 f"qwtype must be one of {list(ParameterGroup.VALID_QWTYPE.keys())}"
             )
@@ -1081,43 +1072,42 @@ class ParameterGroup(QtWidgets.QGroupBox):
             | FittingParameterWidget,
         ):
             return widget.value()
-        elif isinstance(widget, QtWidgets.QAbstractSpinBox):
+        if isinstance(widget, QtWidgets.QAbstractSpinBox):
             return widget.text()
-        elif isinstance(widget, QtWidgets.QAbstractSlider):
+        if isinstance(widget, QtWidgets.QAbstractSlider):
             return widget.value()
-        elif isinstance(widget, QtWidgets.QCheckBox):
+        if isinstance(widget, QtWidgets.QCheckBox):
             if widget.isTristate():
                 return widget.checkState()
-            else:
-                return widget.isChecked()
-        elif isinstance(widget, QtWidgets.QAbstractButton):
+            return widget.isChecked()
+        if isinstance(widget, QtWidgets.QAbstractButton):
             if widget.isCheckable():
                 return widget.isChecked()
-            else:
-                return widget.isDown()
-        elif isinstance(widget, QtWidgets.QComboBox):
+            return widget.isDown()
+        if isinstance(widget, QtWidgets.QComboBox):
             return widget.currentText()
+        return None
 
     def widget_change_signal(self, widget):
         if isinstance(
             widget, QtWidgets.QSpinBox | QtWidgets.QDoubleSpinBox | BetterSpinBox
         ):
             return widget.valueChanged
-        elif isinstance(widget, FittingParameterWidget):
+        if isinstance(widget, FittingParameterWidget):
             return widget.sigParamChanged
-        elif isinstance(widget, QtWidgets.QAbstractSpinBox):
+        if isinstance(widget, QtWidgets.QAbstractSpinBox):
             return widget.editingFinished
-        elif isinstance(widget, QtWidgets.QAbstractSlider):
+        if isinstance(widget, QtWidgets.QAbstractSlider):
             return widget.valueChanged
-        elif isinstance(widget, QtWidgets.QCheckBox):
+        if isinstance(widget, QtWidgets.QCheckBox):
             return widget.stateChanged
-        elif isinstance(widget, QtWidgets.QAbstractButton):
+        if isinstance(widget, QtWidgets.QAbstractButton):
             if widget.isCheckable():
                 return widget.clicked
-            else:
-                return widget.toggled
-        elif isinstance(widget, QtWidgets.QComboBox):
+            return widget.toggled
+        if isinstance(widget, QtWidgets.QComboBox):
             return widget.currentTextChanged
+        return None
 
     def global_connect(self) -> None:
         for k, v in self.widgets.items():
@@ -1468,14 +1458,12 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
     def get_axis_pos(self, ax):
         if self.is_vertical:
             return ax, 0, 1, 1
-        else:
-            return 0, 2 * ax, 1, 1
+        return 0, 2 * ax, 1, 1
 
     def get_hist_pos(self, ax):
         if self.is_vertical:
             return ax, 1, 1, 1
-        else:
-            return 0, 2 * ax + 1, 1, 1
+        return 0, 2 * ax + 1, 1, 1
 
     def setStretchFactors(self, factors) -> None:
         for i, f in enumerate(factors):

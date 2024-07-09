@@ -168,8 +168,7 @@ class FlowLayout(QtWidgets.QLayout):
         return True
 
     def heightForWidth(self, width):
-        height = self._do_layout(QtCore.QRect(0, 0, width, 0), True)
-        return height
+        return self._do_layout(QtCore.QRect(0, 0, width, 0), True)
 
     def setGeometry(self, rect) -> None:
         super().setGeometry(rect)
@@ -540,8 +539,7 @@ def get_pixmap_label(s: str, prop=None, dpi=300, **text_kw):
     buf, size = fig.canvas.print_to_buffer()
     img = QtGui.QImage(buf, size[0], size[1], QtGui.QImage.Format_ARGB32)
     img.setDevicePixelRatio(fig._dpi / 100.0)
-    pixmap = QtGui.QPixmap(img.rgbSwapped())
-    return pixmap
+    return QtGui.QPixmap(img.rgbSwapped())
 
 
 def get_svg_label(
@@ -1471,10 +1469,11 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def data_vals_T(self):
         if self.data_ndim == 2:
             return self.data.values.T
-        elif self.data_ndim == 3:
+        if self.data_ndim == 3:
             return self.data.values.transpose(1, 2, 0)
-        elif self.data_ndim == 4:
+        if self.data_ndim == 4:
             return self.data.values.transpose(1, 2, 3, 0)
+        return None
 
     def _assign_vals_T(self) -> None:
         return
@@ -1685,8 +1684,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             center = self._last_ind[axis]
             window = self.avg_win[axis]
             return slice(center - window // 2, center + (window - 1) // 2 + 1)
-        else:
-            return slice(self._last_ind[axis], self._last_ind[axis] + 1)
+        return slice(self._last_ind[axis], self._last_ind[axis] + 1)
 
     def _get_binned_data(self, axis):
         axis -= 1
@@ -1695,14 +1693,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 (slice(None),) * (axis % self.data_ndim)
                 + (self._get_bin_slice(axis + 1),)
             ].squeeze(axis=axis)
-        else:
-            return _general_nanmean_func(
-                self.data_vals_T[
-                    (slice(None),) * (axis % self.data_ndim)
-                    + (self._get_bin_slice(axis + 1),)
-                ],
-                axis=axis,
-            )
+        return _general_nanmean_func(
+            self.data_vals_T[
+                (slice(None),) * (axis % self.data_ndim)
+                + (self._get_bin_slice(axis + 1),)
+            ],
+            axis=axis,
+        )
 
     def _binned_profile(self, avg_axis):
         if not any(self.averaged):

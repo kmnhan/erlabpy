@@ -28,9 +28,7 @@ def get_cache_file(file_path):
     file_path = Path(file_path)
     data_dir = file_path.parent
     cache_dir = data_dir.with_name(f".{data_dir.name}_cache")
-    cache_file = cache_dir.joinpath(file_path.stem + "_2D_Data" + file_path.suffix)
-
-    return cache_file
+    return cache_dir.joinpath(file_path.stem + "_2D_Data" + file_path.suffix)
 
 
 def cache_as_float32(file_path):
@@ -45,7 +43,7 @@ def cache_as_float32(file_path):
 
     cache_file = get_cache_file(file_path)
     if cache_file.is_file():
-        return
+        return None
 
     if not cache_file.parent.is_dir():
         cache_file.parent.mkdir(parents=True)
@@ -122,11 +120,11 @@ class MAESTROMicroLoader(LoaderBase):
                 v = float(v)
                 if v.is_integer():
                     return int(v)
-                else:
-                    return v
             except ValueError:
                 if v.startswith("'") and v.endswith("'"):
                     return v[1:-1]
+                return v
+            else:
                 return v
 
         nested_attrs: dict[Hashable, dict[str, tuple[str, str | int | float]]] = {}
@@ -215,6 +213,4 @@ class MAESTROMicroLoader(LoaderBase):
             "configuration": 3,
             "nested_attrs": nested_attrs,
         }
-        data = data.assign_attrs(combined_attrs).squeeze()
-
-        return data
+        return data.assign_attrs(combined_attrs).squeeze()

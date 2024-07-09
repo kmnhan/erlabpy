@@ -105,11 +105,9 @@ def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
 
         if as_str:
             return out_arr.astype(str)
-        else:
-            return out_arr
+        return out_arr
 
-    da = da.reduce(_reduce_to_param, ("__dict_keys", "__param_names"))
-    return da
+    return da.reduce(_reduce_to_param, ("__dict_keys", "__param_names"))
 
 
 class _ParametersWraper:

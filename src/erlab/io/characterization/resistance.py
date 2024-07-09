@@ -71,8 +71,7 @@ def load_resistance_physlab(
 
     if as_temperature:
         return out.swap_dims({"time": "temp"}).sortby("temp")
-    else:
-        return out
+    return out
 
 
 def _load_resistance_physlab_old(
@@ -130,7 +129,7 @@ def _load_resistance_physlab_old(
         usecols=[2, 3, 4, 5, 6, 7],
         **kwargs,
     )
-    ds = xr.Dataset(
+    return xr.Dataset(
         data_vars={
             "temp": ("time", data[:, 1]),
             "res": ("time", data[:, 2]),
@@ -140,4 +139,3 @@ def _load_resistance_physlab_old(
         },
         coords={"time": data[:, 0]},
     )
-    return ds

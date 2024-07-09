@@ -208,12 +208,10 @@ def load_wave(
         if dim == "":
             if unit == "":
                 return DEFAULT_DIMS[index]
-            else:
-                return unit
-        elif unit == "":
+            return unit
+        if unit == "":
             return dim
-        else:
-            return f"{dim} ({unit})"
+        return f"{dim} ({unit})"
 
     dims = [get_dim_name(i) for i in range(_MAXDIM)]
     coords = {

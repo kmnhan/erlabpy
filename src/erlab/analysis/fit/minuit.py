@@ -164,8 +164,7 @@ class Minuit(iminuit.Minuit):
                         "Parameters constrained with expressions "
                         "are not supported by iminuit"
                     )
-                else:
-                    continue
+                continue
 
             param_names.append(k)
             if not par.vary:

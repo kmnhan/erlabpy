@@ -140,7 +140,7 @@ def test_itool(qtbot):
         "color": {
             "cmap": "ColdWarm",
             "gamma": 1.5,
-            "reversed": True,
+            "reverse": True,
             "high_contrast": True,
             "zero_centered": True,
             "levels_locked": False,

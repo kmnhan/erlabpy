@@ -287,8 +287,7 @@ class KspaceTool(KspaceToolGUI):
                 )
                 for k in self.data.kspace.momentum_axes
             }
-        else:
-            return None
+        return None
 
     @property
     def resolution(self) -> dict[str, float] | None:
@@ -297,8 +296,7 @@ class KspaceTool(KspaceToolGUI):
                 k: self._resolution_spins[k].value()
                 for k in self.data.kspace.momentum_axes
             }
-        else:
-            return None
+        return None
 
     @property
     def offset_dict(self) -> dict[str, float]:
@@ -312,18 +310,14 @@ class KspaceTool(KspaceToolGUI):
             center, width = self.center_spin.value(), self.width_spin.value()
             if width == 0:
                 return self.data.sel(eV=center, method="nearest")
-            else:
-                arr = self.data.eV.values
-                idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
-                return (
-                    self.data.isel(
-                        eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1)
-                    )
-                    .mean("eV", skipna=True, keep_attrs=True)
-                    .assign_coords(eV=center)
-                )
-        else:
-            return self.data
+            arr = self.data.eV.values
+            idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
+            return (
+                self.data.isel(eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1))
+                .mean("eV", skipna=True, keep_attrs=True)
+                .assign_coords(eV=center)
+            )
+        return self.data
 
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets

@@ -230,13 +230,13 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.slider.blockSignals(False)
         self.valueChanged.emit(value)
 
-    def slider_changed(self, value: float | int) -> None:
+    def slider_changed(self, value: float) -> None:
         self.spin.setValue(self.gamma_scale_inv(value))
 
     def gamma_scale(self, y: float) -> int:
         return round(1e4 * np.log10(y))
 
-    def gamma_scale_inv(self, x: float | int) -> float:
+    def gamma_scale_inv(self, x: float) -> float:
         return np.power(10, x * 1e-4)
 
 
@@ -385,8 +385,7 @@ class BetterColorBarItem(pg.PlotItem):
     def limits(self) -> tuple[float, float]:
         if self._fixedlimits is not None:
             return self._fixedlimits
-        else:
-            return self.primary_image().quickMinMax(targetSize=2**16)
+        return self.primary_image().quickMinMax(targetSize=2**16)
 
     def set_width(self, width: int) -> None:
         self.layout.setColumnFixedWidth(1, width)
@@ -612,32 +611,31 @@ def pg_colormap_names(
     local = sorted(pg.colormap.listMaps())
     if source == "local":
         return local
-    else:
-        _mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
-        for cmap in _mpl:
-            if (
-                cmap.startswith("cet_")
-                or cmap.endswith(("_r", "_r_i"))
-                or cmap in EXCLUDED_CMAPS
-            ):
-                _mpl = list(filter((cmap).__ne__, _mpl))
-        if source == "all":
-            cet = sorted(pg.colormap.listMaps(source="colorcet"))
-            for cmap in cet:
-                if cmap.startswith("glasbey"):
-                    cet = list(filter((cmap).__ne__, cet))
+    _mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
+    for cmap in _mpl:
+        if (
+            cmap.startswith("cet_")
+            or cmap.endswith(("_r", "_r_i"))
+            or cmap in EXCLUDED_CMAPS
+        ):
+            _mpl = list(filter((cmap).__ne__, _mpl))
+    if source == "all":
+        cet = sorted(pg.colormap.listMaps(source="colorcet"))
+        for cmap in cet:
+            if cmap.startswith("glasbey"):
+                cet = list(filter((cmap).__ne__, cet))
 
-            # if (_mpl != []) and (cet != []):
-            # local = []
+        # if (_mpl != []) and (cet != []):
+        # local = []
 
-            if exclude_local:
-                all_cmaps = cet + _mpl
-            else:
-                all_cmaps = local + cet + _mpl
-        elif exclude_local:
-            all_cmaps = _mpl
+        if exclude_local:
+            all_cmaps = cet + _mpl
         else:
-            all_cmaps = local + _mpl
+            all_cmaps = local + cet + _mpl
+    elif exclude_local:
+        all_cmaps = _mpl
+    else:
+        all_cmaps = local + _mpl
     return list(dict.fromkeys(all_cmaps))
 
 
