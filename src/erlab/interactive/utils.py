@@ -646,7 +646,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         layout.addWidget(self.check)
 
         for spin in (self.spin_value, self.spin_lb, self.spin_ub):
-            spin.valueChanged.connect(lambda: self.sigParamChanged.emit())
+            spin.valueChanged.connect(self.sigParamChanged.emit)
         self.spin_lb.valueChanged.connect(self._refresh_bounds)
         self.spin_ub.valueChanged.connect(self._refresh_bounds)
         self.check.stateChanged.connect(self.setFixed)
@@ -1576,7 +1576,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
 
         self.add_items(**kwargs)
 
-    def __getattribute__(self, __name: str) -> Any:
+    def __getattribute__(self, __name: str, /) -> Any:
         try:
             return super().__getattribute__(__name)
         except AttributeError:

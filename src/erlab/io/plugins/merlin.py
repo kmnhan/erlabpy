@@ -94,7 +94,7 @@ class MERLINLoader(LoaderBase):
             )
 
             coord_arr = np.loadtxt(motor_file, skiprows=1)
-            with open(motor_file) as f:
+            with open(motor_file, encoding="utf-8") as f:
                 header = f.readline().strip().split("\t")
 
             if coord_arr.ndim == 1:

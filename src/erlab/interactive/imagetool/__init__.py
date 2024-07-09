@@ -430,7 +430,7 @@ class ItoolMenuBar(DictMenuBar):
         ] = {
             "text": "&Center Current Cursor",
             "shortcut": "Shift+C",
-            "triggered": lambda: self.slicer_area.center_cursor(),
+            "triggered": self.slicer_area.center_cursor,
         }
         for i, ((t, s), axis, amount) in enumerate(
             zip(
@@ -463,7 +463,7 @@ class ItoolMenuBar(DictMenuBar):
         ] = {
             "text": "&Center All Cursors",
             "shortcut": "Alt+Shift+C",
-            "triggered": lambda: self.slicer_area.center_all_cursors(),
+            "triggered": self.slicer_area.center_all_cursors,
             "sep_before": True,
         }
         for i, ((t, s), axis, amount) in enumerate(

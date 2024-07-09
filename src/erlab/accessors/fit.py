@@ -636,7 +636,7 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
             <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` for details.
 
         """
-        if self._obj.chunks is None is not None:
+        if self._obj.chunks is not None:
             raise ValueError(
                 "The input DataArray is chunked. Parallel fitting will not offer any "
                 "performance benefits. Use `modelfit` instead"

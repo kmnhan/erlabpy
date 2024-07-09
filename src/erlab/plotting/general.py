@@ -719,7 +719,7 @@ def plot_slices(
     crop: bool = True,
     same_limits: bool = False,
     axis: Literal[
-        "on", "off", "equal", "scaled", "tight", "auto", "image", "scaled", "square"
+        "on", "off", "equal", "scaled", "tight", "auto", "image", "square"
     ] = "auto",
     show_all_labels: bool = False,
     colorbar: Literal["none", "right", "rightspan", "all"] = "none",

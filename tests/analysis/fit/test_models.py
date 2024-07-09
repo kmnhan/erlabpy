@@ -1,6 +1,6 @@
-import erlab.analysis.fit.models as models
 import numpy as np
 import xarray as xr
+from erlab.analysis.fit import models
 
 
 def test_fermi_edge_model():

@@ -69,7 +69,9 @@ def test_loader():
         )
 
     # Write scan coordinates to a csv file
-    with open(f"{tmp_dir.name}/data_001_axis.csv", "w", newline="") as file:
+    with open(
+        f"{tmp_dir.name}/data_001_axis.csv", "w", newline="", encoding="utf-8"
+    ) as file:
         writer = csv.writer(file)
         writer.writerow(["Index", "Polar"])
 
@@ -144,7 +146,7 @@ def test_loader():
             else:
                 # If files found, extract coordinate values from the filenames
                 axis_file = f"{data_dir}/data_{str(num).zfill(3)}_axis.csv"
-                with open(axis_file) as f:
+                with open(axis_file, encoding="locale") as f:
                     header = f.readline().strip().split(",")
 
                 coord_arr = np.loadtxt(axis_file, delimiter=",", skiprows=1)
@@ -288,7 +290,7 @@ def test_loader():
         erlab.io.loaders.set_data_dir("some_nonexistent_dir")
 
     # Test if the reprs are working
-    assert erlab.io.loaders.__repr__().startswith("Registered data loaders")
+    assert repr(erlab.io.loaders).startswith("Registered data loaders")
     assert erlab.io.loaders._repr_html_().startswith("<table><thead>")
 
     erlab.io.set_loader("example")

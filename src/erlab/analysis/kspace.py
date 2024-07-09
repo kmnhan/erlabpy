@@ -132,7 +132,7 @@ def get_kconv_func(
         case AxesConfiguration.Type2DA:
             func = _kconv_func_type2_da
         case _:
-            ValueError(f"Invalid configuration {configuration}")
+            raise ValueError(f"Invalid configuration {configuration}")
 
     return func(k_tot, **angle_params)
 

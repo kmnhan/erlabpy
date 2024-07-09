@@ -648,10 +648,10 @@ class ItoolColormapControls(ItoolControlsBase):
             lambda g: self.slicer_area.set_colormap(gamma=g)
         )
         self.gamma_widget.slider.sliderPressed.connect(
-            lambda: self.slicer_area.sigWriteHistory.emit()
+            self.slicer_area.sigWriteHistory.emit
         )
         self.gamma_widget.spin.editingStarted.connect(
-            lambda: self.slicer_area.sigWriteHistory.emit()
+            self.slicer_area.sigWriteHistory.emit
         )
         self.gamma_widget.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed

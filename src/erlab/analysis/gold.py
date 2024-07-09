@@ -282,18 +282,17 @@ def edge(
             ),
             **tqdm_kw,
         )
-    else:
-        if progress:
-            with joblib_progress(**tqdm_kw) as _:
-                fitresults = parallel_obj(
-                    joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
-                    for i in range(n_fits)
-                )
-        else:
+    elif progress:
+        with joblib_progress(**tqdm_kw) as _:
             fitresults = parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
             )
+    else:
+        fitresults = parallel_obj(
+            joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+            for i in range(n_fits)
+        )
 
     if return_full:
         return list(fitresults)

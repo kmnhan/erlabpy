@@ -122,7 +122,7 @@ def load_zip(
 def parse_ini(filename: str | os.PathLike) -> dict:
     parser = CasePreservingConfigParser(strict=False)
     out = {}
-    with open(filename) as f:
+    with open(filename, encoding="utf-8") as f:
         parser.read_file(f)
         for section in parser.sections():
             out[section] = dict(parser.items(section))

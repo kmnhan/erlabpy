@@ -3165,7 +3165,7 @@ class ImageTool(QtWidgets.QMainWindow):
             "L": ("Lock color levels", self.tab2._cmap_lock_button.click),
             "S": ("Toggle cursor snap", self.tab1._snap_button.click),
             "T": ("Transpose main image", self.tab1._transpose_button[1].click),
-            "Ctrl+A": ("View All", lambda: self.itool.autoRange()),
+            "Ctrl+A": ("View All", self.itool.autoRange),
         }
         for k, v in self.keyboard_shortcuts.items():
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)

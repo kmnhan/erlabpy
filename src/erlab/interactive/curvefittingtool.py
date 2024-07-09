@@ -272,7 +272,6 @@ class edctool(QtWidgets.QMainWindow):
                 "clicked": self.do_fit,
             },
         )
-        #
 
         # label_width = 0
         # for w in self._params_init.widgets_of_type(FittingParameterWidget):
@@ -509,7 +508,6 @@ class mdctool(QtWidgets.QMainWindow):
                 "clicked": self.do_fit,
             },
         )
-        #
 
         # label_width = 0
         # for w in self._params_init.widgets_of_type(FittingParameterWidget):

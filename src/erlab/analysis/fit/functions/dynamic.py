@@ -68,7 +68,7 @@ def get_args_kwargs(func: Callable) -> tuple[list[str], dict[str, Any]]:
     args_default = {}
     sig = inspect.signature(func)
     for fnam, fpar in sig.parameters.items():
-        if fpar.kind == fpar.VAR_POSITIONAL or fpar.kind == fpar.VAR_KEYWORD:
+        if fpar.kind in (fpar.VAR_POSITIONAL, fpar.VAR_KEYWORD):
             raise ValueError(f"varargs '*{fnam}' is not supported")
         if fpar.default == fpar.empty:
             args.append(fnam)
@@ -249,7 +249,7 @@ class MultiPeakFunction(DynamicFunction):
     def kwargs(self) -> list[tuple[str, float]]:
         kws: list[tuple[str, float]] = []
 
-        if self.background == "constant" or self.background == "linear":
+        if self.background in {"constant", "linear"}:
             kws.append(("const_bkg", 0.0))
         if self.background == "linear":
             kws.append(("lin_bkg", 0.0))

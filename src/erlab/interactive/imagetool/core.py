@@ -817,12 +817,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ax.vb.enableAutoRange()
             ax.vb.updateAutoRange()
 
+    @QtCore.Slot()
     @link_slicer
     @record_history
     def center_all_cursors(self) -> None:
         for i in range(self.n_cursors):
             self.array_slicer.center_cursor(i)
 
+    @QtCore.Slot()
     @link_slicer
     @record_history
     def center_cursor(self) -> None:
@@ -956,12 +958,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 raise ValueError("DataArray shape does not match")
 
             values = values.values
-        else:
-            if self.data.shape != values.shape:
-                raise ValueError(
-                    "Data shape does not match. Array is "
-                    f"{self.data.shape} but {values.shape} given"
-                )
+        elif self.data.shape != values.shape:
+            raise ValueError(
+                "Data shape does not match. Array is "
+                f"{self.data.shape} but {values.shape} given"
+            )
         self.array_slicer._obj[:] = values
 
         if update:
@@ -1524,7 +1525,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.setContextMenuActionVisible(act, False)
 
         save_action = self.vb.menu.addAction("Save data as HDF5")
-        save_action.triggered.connect(lambda: self.save_current_data())
+        save_action.triggered.connect(self.save_current_data)
 
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
@@ -1752,7 +1753,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
-            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
+            c.sigDragStarted.connect(self.slicer_area.sigWriteHistory.emit)
 
         if update:
             self.refresh_cursor(new_cursor)
@@ -1873,6 +1874,7 @@ class ItoolPlotItem(pg.PlotItem):
             for i, item in enumerate(self.slicer_data_items):
                 item.setVisible(i == index)
 
+    @QtCore.Slot()
     def save_current_data(self, fileName=None) -> None:
         default_name = "data"
         if self.slicer_area._data is not None:
@@ -1962,7 +1964,7 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
         self._span.sigRegionChangeStarted.connect(
-            lambda: self._slicer_area.sigWriteHistory.emit()
+            self._slicer_area.sigWriteHistory.emit
         )
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
