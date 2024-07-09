@@ -10,6 +10,7 @@ __all__ = [
     "StepEdgeModel",
 ]
 
+import contextlib
 from typing import Literal
 
 import lmfit
@@ -179,10 +180,8 @@ class FermiEdgeModel(lmfit.Model):
 
         temp = 30.0
         if isinstance(data, xr.DataArray):
-            try:
+            with contextlib.suppress(KeyError):
                 temp = float(data.attrs["temp_sample"])
-            except KeyError:
-                pass
 
         pars[f"{self.prefix}center"].set(
             value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()

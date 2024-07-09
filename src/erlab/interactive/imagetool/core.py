@@ -129,10 +129,7 @@ def suppress_history(method: Callable | None = None):
     def my_decorator(method: Callable):
         @functools.wraps(method)
         def wrapped(self, *args, **kwargs):
-            if hasattr(self, "slicer_area"):
-                area = self.slicer_area
-            else:
-                area = self
+            area = self.slicer_area if hasattr(self, "slicer_area") else self
             with area.history_suppressed():
                 return method(self, *args, **kwargs)
 
@@ -149,10 +146,7 @@ def record_history(method: Callable | None = None):
     def my_decorator(method: Callable):
         @functools.wraps(method)
         def wrapped(self, *args, **kwargs):
-            if hasattr(self, "slicer_area"):
-                area = self.slicer_area
-            else:
-                area = self
+            area = self.slicer_area if hasattr(self, "slicer_area") else self
             area.sigWriteHistory.emit()
             with area.history_suppressed():
                 # Prevent making additional records within the method
@@ -201,22 +195,19 @@ def link_slicer(
             skip_sync = kwargs.pop("__slicer_skip_sync", False)
 
             out = func(*args, **kwargs)
-            if args[0].is_linked:
-                if not skip_sync:
-                    all_args = inspect.Signature.from_callable(func).bind(
-                        *args, **kwargs
+            if args[0].is_linked and not skip_sync:
+                all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
+                all_args.apply_defaults()
+                obj = all_args.arguments.pop("self")
+                if obj._linking_proxy is not None:
+                    obj._linking_proxy.sync(
+                        obj,
+                        func.__name__,
+                        all_args.arguments,
+                        indices,
+                        steps,
+                        color,
                     )
-                    all_args.apply_defaults()
-                    obj = all_args.arguments.pop("self")
-                    if obj._linking_proxy is not None:
-                        obj._linking_proxy.sync(
-                            obj,
-                            func.__name__,
-                            all_args.arguments,
-                            indices,
-                            steps,
-                            color,
-                        )
             return out
 
         return wrapped
@@ -311,7 +302,7 @@ class SlicerLinkProxy:
         steps: bool,
     ):
         if indices:
-            index: int | None = args.get("value", None)
+            index: int | None = args.get("value")
 
             if index is not None:
                 axis: int | None = args.get("axis")
@@ -891,9 +882,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     raise ValueError("No data variables found in Dataset") from e
             else:
                 data = xr.DataArray(np.asarray(data))
-        if hasattr(data.data, "flags"):
-            if not data.data.flags["WRITEABLE"]:
-                data = data.copy()
+        if hasattr(data.data, "flags") and not data.data.flags["WRITEABLE"]:
+            data = data.copy()
 
         if not rad2deg:
             self._data = data
@@ -1611,10 +1601,8 @@ class ItoolPlotItem(pg.PlotItem):
     def set_range_from(self, limits: dict[str, list[float]], **kwargs) -> None:
         for dim, key in zip(self.axis_dims, ("xRange", "yRange"), strict=True):
             if dim is not None:
-                try:
+                with contextlib.suppress(KeyError):
                     kwargs[key] = limits[dim]
-                except KeyError:
-                    pass
         if len(kwargs) != 0:
             self.setRange(**kwargs)
 
@@ -1836,10 +1824,9 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
         self.refresh_cursor(cursor)
-        if axes is not None:
+        if axes is not None and all(elem in self.display_axis for elem in axes):
             # display_axis는 축 dim 표시하는거임. 즉 해당 축만 바뀌면 데이터 변화 없음
-            if all(elem in self.display_axis for elem in axes):
-                return
+            return
         for item in self.slicer_data_items:
             if item.cursor_index != cursor:
                 continue

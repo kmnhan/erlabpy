@@ -548,7 +548,7 @@ class ItoolMenuBar(DictMenuBar):
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
-        for k in erlab.io.loaders.keys():
+        for k in erlab.io.loaders:
             valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
 
         dialog = QtWidgets.QFileDialog(self)

@@ -10,6 +10,7 @@ __all__ = [
     "ItoolCrosshairControls",
 ]
 
+import contextlib
 import types
 from typing import TYPE_CHECKING, cast
 
@@ -89,10 +90,9 @@ class IconButton(QtWidgets.QPushButton):
             return qta.icon(icon)
 
     def refresh_icons(self) -> None:
-        if self.icon_key_off is not None:
-            if self.isChecked():
-                self.setIcon(self.get_icon(self.icon_key_off))
-                return
+        if self.icon_key_off is not None and self.isChecked():
+            self.setIcon(self.get_icon(self.icon_key_off))
+            return
         if self.icon_key_on is not None:
             self.setIcon(self.get_icon(self.icon_key_on))
 
@@ -210,10 +210,8 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
         """
         # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
-        try:
+        with contextlib.suppress(RuntimeError):
             self.disconnect_signals()
-        except RuntimeError:
-            pass
         self._slicer_area = value
         clear_layout(self.layout())
         self.sub_controls = []

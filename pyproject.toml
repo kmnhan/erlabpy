@@ -163,6 +163,7 @@ select = [
     "Q",
     "RSE",
     "RET",
+    "SIM",
     "TID",
     "TCH",
     "INT",

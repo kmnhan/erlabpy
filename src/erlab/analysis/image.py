@@ -63,14 +63,14 @@ def _parse_dict_arg(
             f"{'' if len(required_dims) == 1 else 's'}: {required_dims}"
         )
 
-    for d in sigma_dict.keys():
+    for d in sigma_dict:
         if d not in dims:
             raise ValueError(
                 f"Dimension `{d}` in {arg_name} not found in {reference_name}"
             )
 
     # Make sure that sigma_dict is ordered in temrs of data dims
-    return {d: sigma_dict[d] for d in dims if d in sigma_dict.keys()}
+    return {d: sigma_dict[d] for d in dims if d in sigma_dict}
 
 
 def gaussian_filter(
@@ -164,14 +164,14 @@ def gaussian_filter(
     )
 
     # Get the axis indices to apply the filter
-    axes = tuple(darr.get_axis_num(d) for d in sigma_dict.keys())
+    axes = tuple(darr.get_axis_num(d) for d in sigma_dict)
 
     # Convert arguments to tuples acceptable by scipy
     if isinstance(order, Mapping):
-        order = tuple(order.get(str(d), 0) for d in sigma_dict.keys())
+        order = tuple(order.get(str(d), 0) for d in sigma_dict)
 
     if isinstance(mode, Mapping):
-        mode = tuple(mode[str(d)] for d in sigma_dict.keys())
+        mode = tuple(mode[str(d)] for d in sigma_dict)
 
     if radius is not None:
         radius_dict = _parse_dict_arg(
@@ -186,7 +186,7 @@ def gaussian_filter(
     else:
         radius_pix = None
 
-    for d in sigma_dict.keys():
+    for d in sigma_dict:
         if not is_uniform_spaced(darr[d].values):
             raise ValueError(f"Dimension `{d}` is not uniformly spaced")
 
@@ -268,7 +268,7 @@ def gaussian_laplace(
 
     # Convert mode to tuple acceptable by scipy
     if isinstance(mode, dict):
-        mode = tuple(mode[d] for d in sigma_dict.keys())
+        mode = tuple(mode[d] for d in sigma_dict)
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
@@ -433,10 +433,7 @@ def ndsavgol(
     if method not in ["pinv", "lstsq"]:
         raise ValueError("method must be 'pinv' or 'lstsq'")
 
-    if method == "lstsq":
-        accurate = True
-    else:
-        accurate = False
+    accurate = method == "lstsq"
 
     if isinstance(window_shape, int):
         window_shape = (window_shape,) * arr.ndim

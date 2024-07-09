@@ -59,10 +59,7 @@ def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=
     if isinstance(ratio, str):
         ratio = float(ratio) * 2 / (1 + np.sqrt(5))
     w = figure_width_ref[style][wide]
-    if fixed_height:
-        h = w * ratio
-    else:
-        h = w * wscale * ratio
+    h = w * ratio if fixed_height else w * wscale * ratio
     return w * wscale, h
 
 
@@ -529,14 +526,8 @@ def plot_array_2d(
     >>> carr = xr.DataArray([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
     >>> eplt.plot_array_2d(larr, carr)
     """
-    if lnorm is None:
-        lnorm = plt.Normalize()
-    else:
-        lnorm = copy.deepcopy(lnorm)
-    if cnorm is None:
-        cnorm = plt.Normalize()
-    else:
-        cnorm = copy.deepcopy(cnorm)
+    lnorm = plt.Normalize() if lnorm is None else copy.deepcopy(lnorm)
+    cnorm = plt.Normalize() if cnorm is None else copy.deepcopy(cnorm)
     if colorbar_kw is None:
         colorbar_kw = {}
     if imshow_kw is None:

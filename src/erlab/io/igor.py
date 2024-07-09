@@ -1,3 +1,4 @@
+import contextlib
 import os
 from typing import Any
 
@@ -44,9 +45,8 @@ def _load_experiment_raw(
     def unpack_folders(expt) -> None:
         for name, record in expt.items():
             if isinstance(record, igor2.record.WaveRecord):
-                if prefix is not None:
-                    if not name.decode().startswith(prefix):
-                        continue
+                if prefix is not None and not name.decode().startswith(prefix):
+                    continue
                 if name.decode() in ignore:
                     continue
                 waves[name.decode()] = load_wave(record, **kwargs)
@@ -227,10 +227,8 @@ def load_wave(
             try:
                 v = int(v)
             except ValueError:
-                try:
+                with contextlib.suppress(ValueError):
                     v = float(v)
-                except ValueError:
-                    pass
             attrs[k] = v
 
     return xr.DataArray(

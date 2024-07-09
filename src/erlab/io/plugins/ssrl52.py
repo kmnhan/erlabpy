@@ -223,11 +223,14 @@ class SSRL52Loader(LoaderBase):
             data = data.assign_attrs(temp_sample=temp)
 
         # Convert to binding energy
-        if "sample_workfunction" in data.attrs and "eV" in data.dims:
-            if data.eV.min() > 0:
-                data = data.assign_coords(
-                    eV=data.eV - float(data.hv) + data.attrs["sample_workfunction"]
-                )
+        if (
+            "sample_workfunction" in data.attrs
+            and "eV" in data.dims
+            and data["eV"].min() > 0
+        ):
+            data = data.assign_coords(
+                eV=data["eV"] - float(data["hv"]) + data.attrs["sample_workfunction"]
+            )
 
         return data
 

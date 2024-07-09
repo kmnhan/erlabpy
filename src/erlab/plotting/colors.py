@@ -45,6 +45,7 @@ __all__ = [
     "unify_clim",
 ]
 
+import contextlib
 from collections.abc import Iterable, Sequence
 from numbers import Number
 from typing import Any, Literal, cast
@@ -484,14 +485,13 @@ def get_mappable(
         except (IndexError, AttributeError):
             mappable = None
 
-    if mappable is None:
-        if not silent:
-            raise RuntimeError(
-                "No mappable was found to use for colorbar "
-                "creation. First define a mappable such as "
-                "an image (with imshow) or a contour set ("
-                "with contourf)."
-            )
+    if mappable is None and not silent:
+        raise RuntimeError(
+            "No mappable was found to use for colorbar "
+            "creation. First define a mappable such as "
+            "an image (with imshow) or a contour set ("
+            "with contourf)."
+        )
     return mappable
 
 
@@ -978,9 +978,8 @@ def _get_segment_for_color(
     cmap: matplotlib.colors.LinearSegmentedColormap,
     color: Literal["red", "green", "blue", "alpha"],
 ) -> Any:
-    if hasattr(cmap, "_segmentdata"):
-        if color in cmap._segmentdata:
-            return cmap._segmentdata[color]
+    if hasattr(cmap, "_segmentdata") and color in cmap._segmentdata:
+        return cmap._segmentdata[color]
     return None
 
 
@@ -988,9 +987,14 @@ def _is_segment_iterable(cmap: matplotlib.colors.Colormap) -> bool:
     if not isinstance(cmap, matplotlib.colors.LinearSegmentedColormap):
         return False
 
-    if any(callable(_get_segment_for_color(cmap, c)) for c in ["red", "green", "blue"]):  # type: ignore[arg-type]
-        return False
-    return True
+    return not any(
+        callable(
+            _get_segment_for_color(
+                cmap, cast(Literal["red", "green", "blue", "alpha"], c)
+            )
+        )
+        for c in ["red", "green", "blue"]
+    )
 
 
 def combined_cmap(
@@ -1255,16 +1259,16 @@ def axes_textcolor(
     """
     c = light
     mappable = get_mappable(ax, silent=True)
-    if mappable is not None:
-        if isinstance(
+    if (
+        mappable is not None
+        and isinstance(
             mappable, matplotlib.image._ImageBase | matplotlib.collections.QuadMesh
-        ):
-            if not image_is_light(mappable):
-                c = dark
+        )
+        and not image_is_light(mappable)
+    ):
+        c = dark
     return c
 
 
-try:
+with contextlib.suppress(ValueError):
     combined_cmap("bone_r", "hot", "bonehot", register=True)
-except ValueError:
-    pass

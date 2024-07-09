@@ -207,9 +207,7 @@ def save_as_hdf5(
         if isinstance(v, dict):
             data = data.assign_attrs({k: str(v)})
 
-    if isinstance(data, xr.Dataset):
-        igor_compat = False
-    elif data.ndim > 4:
+    if isinstance(data, xr.Dataset) or data.ndim > 4:
         igor_compat = False
 
     if igor_compat:

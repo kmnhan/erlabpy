@@ -82,13 +82,9 @@ def copy_to_clipboard(content: str | list[str]) -> str:
 
 def _parse_single_arg(arg):
     if isinstance(arg, str):
-        if arg.startswith("|") and arg.endswith("|"):
-            # If the string is surrounded by vertical bars, remove them
-            arg = arg[1:-1]
-
-        else:
-            # Otherwise, quote the string
-            arg = f'"{arg}"'
+        # If the string is surrounded by vertical bars, remove them
+        # Otherwise, quote the string
+        arg = arg[1:-1] if arg.startswith("|") and arg.endswith("|") else f'"{arg}"'
 
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string with double quotes
@@ -190,7 +186,7 @@ def format_kwargs(d: dict[str, Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(s.isidentifier() for s in d.keys()):
+    if all(s.isidentifier() for s in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
     return "{" + out + "}"
@@ -426,10 +422,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return self.StepEnabledFlag.StepNone
 
     def setValue(self, val) -> None:
-        if np.isnan(val):
-            val = np.nan
-        else:
-            val = max(self.minimum(), min(val, self.maximum()))
+        val = np.nan if np.isnan(val) else max(self.minimum(), min(val, self.maximum()))
 
         if self._only_int and np.isfinite(val):
             val = round(val)
@@ -516,10 +509,7 @@ class BetterAxisItem(pg.AxisItem):
 
     def updateAutoSIPrefix(self) -> None:
         if self.label.isVisible():
-            if self.logMode:
-                _range = 10 ** np.array(self.range)
-            else:
-                _range = self.range
+            _range = 10 ** np.array(self.range) if self.logMode else self.range
             (scale, prefix) = pg.siScale(
                 max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
             )
@@ -582,10 +572,7 @@ class BetterAxisItem(pg.AxisItem):
         else:
             units = f"({self.labelUnitPrefix}{self.labelUnits})"
 
-        if self.labelText == "":
-            s = units
-        else:
-            s = f"{self.labelText} {units}"
+        s = units if self.labelText == "" else f"{self.labelText} {units}"
 
         style = ";".join([f"{k}: {v}" for k, v in self.labelStyle.items()])
 
@@ -904,10 +891,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.untracked = []
         self.widgets: dict[str, QtWidgets.QWidget] = {}
 
-        if widgets is not None:
-            kwargs = widgets
-        else:
-            kwargs = widgets_kwargs
+        kwargs = widgets if widgets is not None else widgets_kwargs
 
         j = 0
         for i, (k, v) in enumerate(kwargs.items()):
@@ -1513,10 +1497,7 @@ class ComparisonWidget(AnalysisWidgetBase):
         self.mainfunc_kwargs: dict[str, Any] = {}
 
     def call_prefunc(self, x):
-        if self.prefunc_only_values:
-            xval = np.asarray(x)
-        else:
-            xval = x
+        xval = np.asarray(x) if self.prefunc_only_values else x
         return self.prefunc(xval, **self.prefunc_kwargs)
 
     def set_input(self, data=None) -> None:

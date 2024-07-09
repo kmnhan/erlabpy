@@ -201,10 +201,7 @@ class MERLINLoader(LoaderBase):
         for name, path in files.items():
             if os.path.splitext(path)[1] == ".ibw":
                 data = self.load_live(path)
-                if "beta" in data.dims:
-                    data_type = "LP"
-                else:
-                    data_type = "LXY"
+                data_type = "LP" if "beta" in data.dims else "LXY"
             else:
                 idx, _ = self.infer_index(os.path.splitext(os.path.basename(path))[0])
                 if idx in processed_indices:

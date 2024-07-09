@@ -33,7 +33,7 @@ def qt_style_names():
     """Return a list of styles, default platform style first."""
     default_style_name = QtWidgets.QApplication.style().objectName().lower()
     result = []
-    for style in QtWidgets.QStyleFactory.keys():
+    for style in QtWidgets.QStyleFactory.keys():  # noqa: SIM118
         if style.lower() == default_style_name:
             result.insert(0, style)
         else:
@@ -852,9 +852,8 @@ class mpl_itool(Widget):
     def onmove(self, event) -> None:
         if self.ignore(event):
             return
-        if not event.button:
-            if not self._shift:
-                return
+        if not event.button and not self._shift:
+            return
         if event.inaxes not in self.axes:
             return
         if not self.canvas.widgetlock.available(self):
@@ -1365,9 +1364,8 @@ class ImageTool(QtWidgets.QMainWindow):
     def onmove_super(self, event) -> None:
         if event.inaxes not in self.axes:
             return
-        if not event.button:
-            if not self.itool._shift:
-                return
+        if not event.button and not self.itool._shift:
+            return
         for i in range(self.ndim):
             self._cursor_spin[i].blockSignals(True)
             self._cursor_spin[i].setValue(self.itool._last_ind[i])
@@ -1430,18 +1428,20 @@ def itoolmpl(data, *args, **kwargs) -> None:
         qapp = QtWidgets.QApplication(sys.argv)
     # print(qapp.devicePixelRatio())
     mpl_style = "default"
-    with plt.rc_context(
-        {
-            "text.usetex": False,
-            # 'font.family':'SF Pro',
-            # 'font.size':8,
-            # 'font.stretch':'condensed',
-            # 'mathtext.fontset':'cm',
-            # 'font.family':'fantasy',
-        }
+    with (
+        plt.rc_context(
+            {
+                "text.usetex": False,
+                # 'font.family':'SF Pro',
+                # 'font.size':8,
+                # 'font.stretch':'condensed',
+                # 'mathtext.fontset':'cm',
+                # 'font.family':'fantasy',
+            }
+        ),
+        plt.style.context(mpl_style),
     ):
-        with plt.style.context(mpl_style):
-            app = ImageTool(data, *args, **kwargs)
+        app = ImageTool(data, *args, **kwargs)
     change_style("Fusion")
     app.show()
     app.activateWindow()

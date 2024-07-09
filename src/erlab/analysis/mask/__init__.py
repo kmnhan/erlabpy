@@ -219,9 +219,8 @@ def spherical_mask(
     array([False,  True,  True,  True, False])
     Dimensions without coordinates: x
     """
-    if isinstance(radius, dict):
-        if set(radius.keys()) != set(sel_kw.keys()):
-            raise ValueError("Keys in radius and sel_kw must match")
+    if isinstance(radius, dict) and set(radius.keys()) != set(sel_kw.keys()):
+        raise ValueError("Keys in radius and sel_kw must match")
 
     if len(sel_kw) == 0:
         raise ValueError("No dimensions provided for mask")
@@ -232,10 +231,7 @@ def spherical_mask(
         if k not in darr.dims:
             raise ValueError(f"Dimension {k} not found in data")
 
-        if isinstance(radius, dict):
-            r = radius[k]
-        else:
-            r = float(radius)
+        r = radius[k] if isinstance(radius, dict) else float(radius)
 
         delta_squared = delta_squared + ((darr[k] - v) / r) ** 2
 
@@ -287,10 +283,7 @@ def hex_bz_mask_points(
     invert: bool = False,
 ) -> npt.NDArray[np.bool_]:
     """Return a mask for given points."""
-    if reciprocal:
-        d = 2 * np.pi / (a * 3)
-    else:
-        d = a
+    d = 2 * np.pi / (a * 3) if reciprocal else a
     ang = rotate + np.array([0, 60, 120, 180, 240, 300])
     vertices = np.array(
         [

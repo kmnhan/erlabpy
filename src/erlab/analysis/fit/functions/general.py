@@ -53,10 +53,7 @@ def _infer_meshgrid_shape(arr: np.ndarray) -> tuple[tuple[int, int], int, np.nda
     # The shape of the original meshgrid
     shape = len(arr) // (change_index[0] + 1), change_index[0] + 1
 
-    if axis == 0:
-        coord = arr.reshape(shape)[:, 0]
-    else:
-        coord = arr.reshape(shape)[0, :]
+    coord = arr.reshape(shape)[:, 0] if axis == 0 else arr.reshape(shape)[0, :]
 
     return shape, axis, coord
 

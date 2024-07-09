@@ -786,7 +786,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         target_dict: dict[str, xr.DataArray] = self._inverse_broadcast(
             momentum_coords.get("kx"),
             momentum_coords.get("ky"),
-            momentum_coords.get("kz", None),
+            momentum_coords.get("kz"),
         )
 
         # Coords of first value in target_dict. Output of inverse_broadcast are all

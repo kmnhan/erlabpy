@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import gc
 import os
@@ -119,10 +120,8 @@ class _ManagerServer(QtCore.QThread):
                     os.remove(f)
                     dirname = os.path.dirname(f)
                     if os.path.isdir(dirname):
-                        try:
+                        with contextlib.suppress(OSError):
                             os.rmdir(dirname)
-                        except OSError:
-                            pass
             except (
                 pickle.UnpicklingError,
                 AttributeError,
@@ -594,7 +593,7 @@ class ImageToolManager(ImageToolManagerGUI):
                 msg = f"All {self.ntools} remaining windows will be closed."
 
             ret = QtWidgets.QMessageBox.question(self, "Do you want to close?", msg)
-            if not ret == QtWidgets.QMessageBox.StandardButton.Yes:
+            if ret != QtWidgets.QMessageBox.StandardButton.Yes:
                 if event:
                     event.ignore()
                 return

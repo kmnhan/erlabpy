@@ -100,10 +100,7 @@ def is_dims_uniform(
     if dims is None:
         dims = darr.dims
 
-    for dim in dims:
-        if not is_uniform_spaced(darr[dim].values, **kwargs):
-            return False
-    return True
+    return all(is_uniform_spaced(darr[dim].values, **kwargs) for dim in dims)
 
 
 def check_arg_2d_darr(func: Callable | None = None):

@@ -446,10 +446,7 @@ class GoldTool(AnalysisWindow):
             method=params["Method"],
             scale_covar=params["Scale cov"],
         )
-        if self.data_corr is None:
-            target = self.data
-        else:
-            target = self.data_corr
+        target = self.data if self.data_corr is None else self.data_corr
         self.corrected = erlab.analysis.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
@@ -465,10 +462,7 @@ class GoldTool(AnalysisWindow):
             lam=params["lambda"],
         )
 
-        if self.data_corr is None:
-            target = self.data
-        else:
-            target = self.data_corr
+        target = self.data if self.data_corr is None else self.data_corr
         self.corrected = erlab.analysis.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
@@ -515,9 +509,8 @@ class GoldTool(AnalysisWindow):
         if not p0["Scale cov"]:
             arg_dict["scale_covar_edge"] = False
 
-        if mode == "poly":
-            if not p1["Scale cov"]:
-                arg_dict["scale_covar"] = False
+        if mode == "poly" and not p1["Scale cov"]:
+            arg_dict["scale_covar"] = False
 
         if self.data_corr is None:
             gen_function_code(

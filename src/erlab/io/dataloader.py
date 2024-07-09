@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         Callable,
         ItemsView,
         Iterable,
+        Iterator,
         KeysView,
         Mapping,
         Sequence,
@@ -718,12 +719,13 @@ class LoaderBase:
                 plt.title("")  # Remove automatically generated title
 
                 # Add line at Fermi level if the data is 2D and has an energy dimension
-                if plot_data.ndim == 2 and "eV" in plot_data.dims:
-                    # Check if binding
-                    if plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0:
-                        eplt.fermiline(
-                            orientation="h" if plot_data.dims[0] == "eV" else "v"
-                        )
+                # that includes zero
+                if (plot_data.ndim == 2 and "eV" in plot_data.dims) and (
+                    plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0
+                ):
+                    eplt.fermiline(
+                        orientation="h" if plot_data.dims[0] == "eV" else "v"
+                    )
                 show_inline_matplotlib_plots()
 
         def _next(_) -> None:
@@ -1091,10 +1093,7 @@ class LoaderBase:
         A list of the loaded data.
         """
         if n_jobs is None:
-            if len(file_paths) < 15:
-                n_jobs = 1
-            else:
-                n_jobs = -1
+            n_jobs = 1 if len(file_paths) < 15 else -1
 
         return joblib.Parallel(n_jobs=n_jobs)(
             joblib.delayed(self.load_single)(f) for f in file_paths
@@ -1172,6 +1171,9 @@ class LoaderRegistry(RegistryBase):
             self.loaders[loader_name] = loader
 
         return loader
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.loaders)
 
     def __getitem__(self, key: str) -> LoaderBase:
         return self.get(key)

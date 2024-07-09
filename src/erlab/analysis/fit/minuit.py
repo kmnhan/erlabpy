@@ -114,9 +114,10 @@ class Minuit(iminuit.Minuit):
         return_cost: bool = False,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
-        if len(model.independent_vars) == 1:
-            if isinstance(ivars, np.ndarray | xarray.DataArray):
-                ivars = [ivars]
+        if len(model.independent_vars) == 1 and isinstance(
+            ivars, np.ndarray | xarray.DataArray
+        ):
+            ivars = [ivars]
 
         x: npt.NDArray | list[npt.NDArray] = [np.asarray(a) for a in ivars]
 

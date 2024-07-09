@@ -589,10 +589,7 @@ def quick_fit(
     """
     data = darr.mean([d for d in darr.dims if d != "eV"])
 
-    if eV_range is not None:
-        data_fit = data.sel(eV=slice(*eV_range))
-    else:
-        data_fit = data
+    data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
 
     if temp is None:
         if "temp_sample" in data.attrs:

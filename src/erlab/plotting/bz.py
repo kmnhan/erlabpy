@@ -130,10 +130,7 @@ def plot_hex_bz(
         ]
     kwargs["edgecolor"] = kwargs.pop("edgecolor", kwargs.pop("ec", axes_textcolor(ax)))
 
-    if reciprocal:
-        r = 4 * np.pi / (a * 3)
-    else:
-        r = 2 * a
+    r = 4 * np.pi / (a * 3) if reciprocal else 2 * a
 
     clip = kwargs.pop("clip_path", None)
     poly = RegularPolygon(offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs)

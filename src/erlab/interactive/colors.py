@@ -14,6 +14,7 @@ __all__ = [
     "pg_colormap_to_QPixmap",
 ]
 
+import contextlib
 import weakref
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -74,10 +75,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def load_thumbnail(self, index: int) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
-            try:
+            with contextlib.suppress(KeyError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
-            except KeyError:
-                pass
 
     def load_all(self) -> None:
         self.clear()
@@ -628,10 +627,7 @@ def pg_colormap_names(
         # if (_mpl != []) and (cet != []):
         # local = []
 
-        if exclude_local:
-            all_cmaps = cet + _mpl
-        else:
-            all_cmaps = local + cet + _mpl
+        all_cmaps = cet + _mpl if exclude_local else local + cet + _mpl
     elif exclude_local:
         all_cmaps = _mpl
     else:

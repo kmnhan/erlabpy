@@ -178,9 +178,11 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
             proj_sizes = np.sqrt(self.sizes_orig)
 
         super().set_sizes(proj_sizes**2, self.figure.dpi)
-        with self._use_zordered_offset():
-            with matplotlib.cbook._setattr_cm(self, _in_draw=True):
-                matplotlib.collections.Collection.draw(self, renderer)
+        with (
+            self._use_zordered_offset(),
+            matplotlib.cbook._setattr_cm(self, _in_draw=True),
+        ):
+            matplotlib.collections.Collection.draw(self, renderer)
 
     # def draw(self, renderer):
     #     # Note: unlike in the 2D case, where we can enforce equal

@@ -6,6 +6,7 @@ __all__ = [
     "ParallelFitDataArrayAccessor",
 ]
 
+import contextlib
 import copy
 import itertools
 import warnings
@@ -73,7 +74,7 @@ def _parse_params(
 
 
 def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
-    for k in d.keys():
+    for k in d:
         if isinstance(d[k], int | float | complex | xr.DataArray):
             d[k] = {"value": d[k]}
 
@@ -269,11 +270,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         else:
             reduce_dims_ = list(reduce_dims)
 
-        if (
-            isinstance(coords, str)
-            or isinstance(coords, xr.DataArray)
-            or not isinstance(coords, Iterable)
-        ):
+        if isinstance(coords, str | xr.DataArray) or not isinstance(coords, Iterable):
             coords = [coords]
         coords_: Sequence[xr.DataArray] = [
             self._obj[coord] if isinstance(coord, str) else coord for coord in coords
@@ -339,10 +336,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             coords__ = args[:n_coords]
             init_params_ = args[n_coords]
 
-            if guess:
-                initial_params = lmfit.create_params()
-            else:
-                initial_params = model.make_params()
+            initial_params = lmfit.create_params() if guess else model.make_params()
 
             if isinstance(init_params_, _ParametersWraper):
                 initial_params.update(init_params_.params)
@@ -400,10 +394,8 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                 if isinstance(model, lmfit.model.CompositeModel):
                     guessed_params = model.make_params()
                     for comp in model.components:
-                        try:
+                        with contextlib.suppress(NotImplementedError):
                             guessed_params.update(comp.guess(y, **indep_var_kwargs))
-                        except NotImplementedError:
-                            pass
                     # Given parameters must override guessed parameters
                     initial_params = guessed_params.update(initial_params)
 
@@ -461,10 +453,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             return popt, perr, pcov, stats, data, best, modres
 
         def _output_wrapper(name, da, out=None) -> dict:
-            if name is _THIS_ARRAY:
-                name = ""
-            else:
-                name = f"{name!s}_"
+            name = "" if name is _THIS_ARRAY else f"{name!s}_"
 
             if out is None:
                 out = {}
@@ -472,13 +461,13 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             input_core_dims = [reduce_dims_ for _ in range(n_coords + 1)]
             input_core_dims.extend([[] for _ in range(1)])  # core_dims for parameters
 
-            if isinstance(params, xr.Dataset):
+            if not isinstance(params, xr.Dataset):
+                params_to_apply = params
+            else:
                 try:
                     params_to_apply = params[name.rstrip("_")]
                 except KeyError:
                     params_to_apply = params[float(name.rstrip("_"))]
-            else:
-                params_to_apply = params
 
             popt, perr, pcov, stats, data, best, modres = xr.apply_ufunc(
                 _wrapper,
@@ -668,7 +657,7 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
 
         drop_keys = []
         concat_vars: dict[Hashable, list[xr.DataArray]] = {}
-        for k in ds.data_vars.keys():
+        for k in ds.data_vars:
             for var in self._VAR_KEYS:
                 key = f"{k}_{var}"
                 if key in fitres:

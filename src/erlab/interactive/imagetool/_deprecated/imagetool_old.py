@@ -7,6 +7,7 @@
 """
 
 import colorsys
+import contextlib
 import enum
 import importlib
 import sys
@@ -91,10 +92,9 @@ class IconButton(QtWidgets.QPushButton):
             self.toggled.connect(self.refresh_icons)
 
     def refresh_icons(self) -> None:
-        if self.icon_key_off is not None:
-            if self.isChecked():
-                self.setIcon(qta.icon(ICON_NAME[self.icon_key_off]))
-                return
+        if self.icon_key_off is not None and self.isChecked():
+            self.setIcon(qta.icon(ICON_NAME[self.icon_key_off]))
+            return
         self.setIcon(qta.icon(ICON_NAME[self.icon_key_on]))
 
     def changeEvent(self, evt) -> None:
@@ -253,7 +253,7 @@ def qt_style_names():
     """Return a list of styles, default platform style first."""
     default_style_name = QtWidgets.QApplication.style().objectName().lower()
     result = []
-    for style in QtWidgets.QStyleFactory.keys():
+    for style in QtWidgets.QStyleFactory.keys():  # noqa: SIM118
         if style.lower() == default_style_name:
             result.insert(0, style)
         else:
@@ -722,7 +722,7 @@ class ItoolPlotItem(pg.PlotItem):
     def setLabels(
         self, mode: ItoolAxisItem.LabelType = ItoolAxisItem.LabelType.TextLabel, **kwds
     ) -> None:
-        for k in kwds.keys():
+        for k in kwds:
             if k != "title":
                 self.getAxis(k).set_label_mode(mode)
         super().setLabels(**kwds)
@@ -751,13 +751,14 @@ class ItoolPlotItem(pg.PlotItem):
 
             if k in axisItems:
                 axis = axisItems[k]
-                if axis.scene() is not None:
-                    if k not in self.axes or axis != self.axes[k]["item"]:
-                        raise RuntimeError(
-                            "Can't add an axis to multiple plots. Shared axes"
-                            " can be achieved with multiple AxisItem instances"
-                            " and set[X/Y]Link."
-                        )
+                if axis.scene() is not None and (
+                    k not in self.axes or axis != self.axes[k]["item"]
+                ):
+                    raise RuntimeError(
+                        "Can't add an axis to multiple plots. Shared axes"
+                        " can be achieved with multiple AxisItem instances"
+                        " and set[X/Y]Link."
+                    )
             else:
                 axis = ItoolAxisItem(orientation=k, parent=self)
 
@@ -1022,10 +1023,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 row_factor = (100000, 150000, 300000)
         else:
             row_factor = row
-        if col is None:
-            col_factor = row_factor
-        else:
-            col_factor = col
+        col_factor = row_factor if col is None else col
 
         self._stretch_factors = (row_factor, col_factor)
 
@@ -1340,7 +1338,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def toggle_axes(self, axis) -> None:
         target = self.axes[axis]
-        toggle = False if target in self.ci.items.keys() else True
+        toggle = target not in self.ci.items
 
         if self.data_ndim == 2:
             ref_dims = ((1, 0, 1, 1), (0, 0, 1, 1), (1, 1, 1, 1))
@@ -1390,11 +1388,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
             return
 
         anchors = tuple(ref_dims[i][:2] for i in group)
-        other_index = [
-            x for x in group if x != axis and self.axes[x] in self.ci.items.keys()
-        ]
+        other_index = [x for x in group if x != axis and self.axes[x] in self.ci.items]
         other = [self.axes[i] for i in other_index]
-        unique = True if len(other) == 0 else False
+        unique = len(other) == 0
         if not toggle:
             self.removeItem(target)
             if not unique:
@@ -1567,9 +1563,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
         for i, ax in enumerate(self.axes):
             if ax.vb.sceneBoundingRect().contains(pos):
                 return i, self._get_mouse_datapos(ax, pos)
-        if self.colorbar is not None:
-            if self.colorbar.sceneBoundingRect().contains(pos):
-                return -1, self._get_mouse_datapos(self.colorbar, pos)
+        if self.colorbar is not None and self.colorbar.sceneBoundingRect().contains(
+            pos
+        ):
+            return -1, self._get_mouse_datapos(self.colorbar, pos)
         return None, None
 
     def _measure_fps(self) -> None:
@@ -2377,10 +2374,9 @@ def fast_isocurve_chain(points):
                 break
     lines_linked = [np.float64(x) for x in range(0)]
     for ch in points.values():
-        if len(ch) == 2:
-            ch = ch[1][1:][::-1] + ch[0]  # join together ends of chain
-        else:
-            ch = ch[0]
+        ch = (
+            ch[1][1:][::-1] + ch[0] if len(ch) == 2 else ch[0]
+        )  # join together ends of chain
         lines_linked.append([p[0] for p in ch])
     return lines_linked
 
@@ -2404,10 +2400,7 @@ class betterIsocurve(pg.IsocurveItem):
             self.path = None
             return
 
-        if self.axisOrder == "row-major":
-            data = self.data.T
-        else:
-            data = self.data
+        data = self.data.T if self.axisOrder == "row-major" else self.data
 
         lines = fast_isocurve(data, self.level, self.connected, self.extendToEdge)
         # lines = pg.functions.isocurve(
@@ -2507,7 +2500,7 @@ class ItoolColorBar(ItoolPlotItem):
         self.cmap = self.imageItem()._colorMap
         self.lut = self.imageItem().lut
         # self.lut = self.cmap.getStops()[1]
-        if not self.npts == self.lut.shape[0]:
+        if self.npts != self.lut.shape[0]:
             self.npts = self.lut.shape[0]
             self.cbar.setImage(self.cmap.pos.reshape((-1, 1)))
         self.cbar._colorMap = self.cmap
@@ -2986,10 +2979,7 @@ class itoolColorControls(QtWidgets.QWidget):
         self._gamma_slider.blockSignals(True)
         self._gamma_slider.setValue(self.gamma_scale(gamma))
         self._gamma_slider.blockSignals(False)
-        if isinstance(name, str):
-            cmap = name
-        else:
-            cmap = self._cmap_combo.currentText()
+        cmap = name if isinstance(name, str) else self._cmap_combo.currentText()
         mode = self._cmap_mode_button.isChecked()
         self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, high_contrast=mode)
 
@@ -3024,10 +3014,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def load_thumbnail(self, index) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
-            try:
+            with contextlib.suppress(KeyError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
-            except KeyError:
-                pass
 
     def load_all(self) -> None:
         self.clear()

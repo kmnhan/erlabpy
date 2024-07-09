@@ -148,10 +148,7 @@ def _alph_label(val, prefix, suffix, numeric, capital):
         if numeric:
             val = str(val)
         else:
-            if capital:
-                ref_char = "A"
-            else:
-                ref_char = "a"
+            ref_char = "A" if capital else "a"
             val = chr(int(val) + ord(ref_char) - 1)
     elif not isinstance(val, str):
         raise TypeError("Input values must be integers or strings.")
@@ -232,7 +229,7 @@ def label_for_dim(dim_name: str, deg2rad: bool = False, escaped: bool = True) ->
 def parse_special_point(name: str) -> str:
     special_points = {"G": r"\Gamma", "D": r"\Delta"}
 
-    if name in special_points.keys():
+    if name in special_points:
         return special_points[name]
 
     return name
@@ -243,16 +240,10 @@ def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
 
     if name.endswith("*"):
         name = name[:-1]
-        if roman:
-            format_str = r"\mathdefault{{{}}}^*"
-        else:
-            format_str = r"{}^*"
+        format_str = "\\mathdefault{{{}}}^*" if roman else "{}^*"
     elif name.endswith("'"):
         name = name[:-1]
-        if roman:
-            format_str = r"\mathdefault{{{}}}\prime"
-        else:
-            format_str = r"{}\prime"
+        format_str = "\\mathdefault{{{}}}\\prime" if roman else "{}\\prime"
     elif roman:
         format_str = r"\mathdefault{{{}}}"
     else:
@@ -260,12 +251,7 @@ def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
 
     name = format_str.format(parse_special_point(name))
 
-    if bar:
-        name = rf"$\overline{{{name}}}$"
-    else:
-        name = rf"${name}$"
-
-    return name
+    return f"$\\overline{{{name}}}$" if bar else f"${name}$"
 
 
 def copy_mathtext(
@@ -506,10 +492,7 @@ def label_subplots(
 
     for i, ax in enumerate(axlist):
         if fontsize is None:
-            if isinstance(ax, matplotlib.figure.Figure):
-                fontsize = "large"
-            else:
-                fontsize = "medium"
+            fontsize = "large" if isinstance(ax, matplotlib.figure.Figure) else "medium"
 
         label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
         with plt.rc_context({"text.color": axes_textcolor(ax)}):
@@ -818,10 +801,7 @@ def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs) -> None:
 
 
 def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:
-    if name == "":
-        delim = ""
-    else:
-        delim = " = "
+    delim = "" if name == "" else " = "
     if name is None:
         name = name_for_dim(key, escaped=False)
         if name is None:
