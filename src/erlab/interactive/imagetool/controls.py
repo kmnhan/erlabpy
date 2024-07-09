@@ -60,7 +60,7 @@ class IconButton(QtWidgets.QPushButton):
         }
     )
 
-    def __init__(self, on: str | None = None, off: str | None = None, **kwargs):
+    def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
 
@@ -78,7 +78,7 @@ class IconButton(QtWidgets.QPushButton):
         if self.isCheckable() and off is not None:
             self.toggled.connect(self.refresh_icons)
 
-    def setChecked(self, value: bool):
+    def setChecked(self, value: bool) -> None:
         super().setChecked(value)
         self.refresh_icons()
 
@@ -88,7 +88,7 @@ class IconButton(QtWidgets.QPushButton):
         except KeyError:
             return qta.icon(icon)
 
-    def refresh_icons(self):
+    def refresh_icons(self) -> None:
         if self.icon_key_off is not None:
             if self.isChecked():
                 self.setIcon(self.get_icon(self.icon_key_off))
@@ -96,7 +96,7 @@ class IconButton(QtWidgets.QPushButton):
         if self.icon_key_on is not None:
             self.setIcon(self.get_icon(self.icon_key_on))
 
-    def changeEvent(self, evt: QtCore.QEvent | None):  # handles dark mode
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:  # handles dark mode
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
             qta.reset_cache()
             self.refresh_icons()
@@ -127,14 +127,14 @@ def clear_layout(layout: QtWidgets.QLayout | None) -> None:
 class ItoolControlsBase(QtWidgets.QWidget):
     def __init__(
         self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._slicer_area = slicer_area
-        self.sub_controls: list[QtWidgets.QWidget] = []
+        self.sub_controls: list[ItoolControlsBase] = []
         self.initialize_layout()
         self.initialize_widgets()
         self.connect_signals()
-        self.update()
+        self.update_content()
 
     @property
     def data(self) -> xr.DataArray:
@@ -152,23 +152,23 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def current_cursor(self) -> int:
         return self.slicer_area.current_cursor
 
-    def initialize_layout(self):
+    def initialize_layout(self) -> None:
         layout = QtWidgets.QHBoxLayout(self)
         self.setLayout(layout)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.initialize_widgets()
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.connect_signals()
 
-    def disconnect_signals(self):
+    def disconnect_signals(self) -> None:
         # Multiple inheritance disconnection is broken
         # https://bugreports.qt.io/browse/PYSIDE-229
         # Will not work correctly until this is fixed
@@ -176,11 +176,11 @@ class ItoolControlsBase(QtWidgets.QWidget):
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.disconnect_signals()
 
-    def update(self):
+    def update_content(self) -> None:
         for ctrl in self.sub_controls:
-            ctrl.update()
+            ctrl.update_content()
 
-    def add_control(self, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+    def add_control(self, widget: ItoolControlsBase) -> ItoolControlsBase:
         self.sub_controls.append(widget)
         return widget
 
@@ -196,7 +196,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
             return self._slicer_area
 
     @slicer_area.setter
-    def slicer_area(self, value: ImageSlicerArea):
+    def slicer_area(self, value: ImageSlicerArea) -> None:
         """Set the `ImageSlicerArea` instance for the control widget.
 
         Initially, the goal was to be able to control multiple `ImageSlicerArea`s with a
@@ -219,7 +219,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         clear_layout(self.layout())
         self.sub_controls = []
         self.initialize_widgets()
-        self.update()
+        self.update_content()
         self.connect_signals()
 
         print("called!")
@@ -241,12 +241,14 @@ class ItoolControlsBase(QtWidgets.QWidget):
 #     def disconnect_signals(self):
 #         pass
 
-#     def update(self):
+#     def update_content(self):
 #         pass
 
 
 class ItoolCrosshairControls(ItoolControlsBase):
-    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
+    def __init__(
+        self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs
+    ) -> None:
         if isinstance(orientation, QtCore.Qt.Orientation):
             self.orientation = orientation
         elif orientation == "vertical":
@@ -255,7 +257,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.orientation = QtCore.Qt.Orientation.Horizontal
         super().__init__(*args, **kwargs)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         super().initialize_widgets()
         self.values_groups = tuple(
             QtWidgets.QWidget() for _ in range(self.data.ndim + 1)
@@ -384,7 +386,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
             cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[i + 1])
 
-    def _transpose_axes(self, idx):
+    def _transpose_axes(self, idx) -> None:
         if self.data.ndim == 4:
             if idx == 3:
                 self.slicer_area.swap_axes(0, 2)
@@ -393,20 +395,20 @@ class ItoolCrosshairControls(ItoolControlsBase):
         else:
             self.slicer_area.swap_axes(idx, (idx + 1) % self.data.ndim)
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         super().connect_signals()
-        self.slicer_area.sigDataChanged.connect(self.update)
-        self.slicer_area.sigShapeChanged.connect(self.update)
+        self.slicer_area.sigDataChanged.connect(self.update_content)
+        self.slicer_area.sigShapeChanged.connect(self.update_content)
         self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
         self.slicer_area.sigCursorCountChanged.connect(self.update_cursor_count)
         self.slicer_area.sigViewOptionChanged.connect(self.update_options)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
 
-    def disconnect_signals(self):
+    def disconnect_signals(self) -> None:
         super().disconnect_signals()
-        self.slicer_area.sigDataChanged.disconnect(self.update)
-        self.slicer_area.sigShapeChanged.disconnect(self.update)
+        self.slicer_area.sigDataChanged.disconnect(self.update_content)
+        self.slicer_area.sigShapeChanged.disconnect(self.update_content)
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
         self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
         self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
@@ -414,8 +416,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
 
     @QtCore.Slot()
-    def update(self):
-        super().update()
+    def update_content(self) -> None:
+        super().update_content()
         if len(self.label_dim) != self.data.ndim:
             # number of required cursors changed, resetting
             clear_layout(self.layout())
@@ -461,7 +463,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
 
-    def update_spins(self, *, axes=None):
+    def update_spins(self, *, axes=None) -> None:
         if axes is None:
             axes = range(self.data.ndim)
         if len(axes) != len(self.spin_idx):
@@ -481,7 +483,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
 
     @QtCore.Slot()
-    def update_options(self):
+    def update_options(self) -> None:
         self.btn_snap.blockSignals(True)
         self.btn_snap.setChecked(self.array_slicer.snap_to_data)
         # self.btn_snap.refresh_icons()
@@ -505,7 +507,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
 
     @QtCore.Slot(int)
-    def update_cursor_count(self, count: int):
+    def update_cursor_count(self, count: int) -> None:
         if count == self.cb_cursors.count():
             return
         elif count > self.cb_cursors.count():
@@ -513,7 +515,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         else:
             self.remCursor()
 
-    def addCursor(self):
+    def addCursor(self) -> None:
         self.cb_cursors.setDisabled(False)
         # self.slicer_area.add_cursor()
         self.cb_cursors.addItem(
@@ -523,7 +525,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.cb_cursors.setCurrentIndex(self.current_cursor)
         self.btn_rem.setDisabled(False)
 
-    def remCursor(self):
+    def remCursor(self) -> None:
         # self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
         for i in range(self.cb_cursors.count()):
@@ -535,20 +537,20 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.btn_rem.setDisabled(True)
 
     @QtCore.Slot(int)
-    def cursorChangeEvent(self, idx: int):
+    def cursorChangeEvent(self, idx: int) -> None:
         self.cb_cursors.setCurrentIndex(idx)
         self.update_spins()
 
     @QtCore.Slot(str)
-    def setActiveCursor(self, value: str):
+    def setActiveCursor(self, value: str) -> None:
         self.slicer_area.set_current_cursor(self.cb_cursors.findText(value))
 
 
 class ItoolColorControls(ItoolControlsBase):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         self.btn_reverse = IconButton(
             on="invert",
             off="invert_off",
@@ -582,7 +584,7 @@ class ItoolColorControls(ItoolControlsBase):
         layout.addWidget(self.btn_zero)
         layout.addWidget(self.btn_lock)
 
-    def update(self):
+    def update_content(self) -> None:
         self.btn_reverse.blockSignals(True)
         self.btn_contrast.blockSignals(True)
         self.btn_zero.blockSignals(True)
@@ -599,26 +601,28 @@ class ItoolColorControls(ItoolControlsBase):
         self.btn_zero.blockSignals(False)
         self.btn_lock.blockSignals(False)
 
-    def update_colormap(self):
+    def update_colormap(self) -> None:
         self.slicer_area.set_colormap(
             reversed=self.btn_reverse.isChecked(),
             high_contrast=self.btn_contrast.isChecked(),
             zero_centered=self.btn_zero.isChecked(),
         )
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         super().connect_signals()
         self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.connect(self.update)
+        self.slicer_area.sigViewOptionChanged.connect(self.update_content)
 
-    def disconnect_signals(self):
+    def disconnect_signals(self) -> None:
         super().disconnect_signals()
         self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update_content)
 
 
 class ItoolColormapControls(ItoolControlsBase):
-    def __init__(self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs):
+    def __init__(
+        self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs
+    ) -> None:
         if isinstance(orientation, QtCore.Qt.Orientation):
             self.orientation = orientation
         elif orientation == "vertical":
@@ -627,7 +631,7 @@ class ItoolColormapControls(ItoolControlsBase):
             self.orientation = QtCore.Qt.Orientation.Horizontal
         super().__init__(*args, **kwargs)
 
-    def initialize_layout(self):
+    def initialize_layout(self) -> None:
         if self.orientation == QtCore.Qt.Orientation.Vertical:
             self.setLayout(QtWidgets.QVBoxLayout(self))
         else:
@@ -637,7 +641,7 @@ class ItoolColormapControls(ItoolControlsBase):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         super().initialize_widgets()
         self.cb_colormap = ColorMapComboBox(self, maximumWidth=175)
         self.cb_colormap.textActivated.connect(self.change_colormap)
@@ -663,34 +667,34 @@ class ItoolColormapControls(ItoolControlsBase):
         layout.addWidget(self.gamma_widget)
         layout.addWidget(self.misc_controls)
 
-    def update(self):
-        super().update()
+    def update_content(self) -> None:
+        super().update_content()
         if isinstance(self.slicer_area.colormap, str):
             self.cb_colormap.setDefaultCmap(self.slicer_area.colormap)
         self.gamma_widget.blockSignals(True)
         self.gamma_widget.setValue(self.slicer_area.colormap_properties["gamma"])
         self.gamma_widget.blockSignals(False)
 
-    def change_colormap(self, name):
+    def change_colormap(self, name) -> None:
         if name == self.cb_colormap.LOAD_ALL_TEXT:
             self.cb_colormap.load_all()
         else:
             self.slicer_area.set_colormap(name)
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         super().connect_signals()
-        self.slicer_area.sigViewOptionChanged.connect(self.update)
+        self.slicer_area.sigViewOptionChanged.connect(self.update_content)
 
-    def disconnect_signals(self):
+    def disconnect_signals(self) -> None:
         super().disconnect_signals()
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update)
+        self.slicer_area.sigViewOptionChanged.disconnect(self.update_content)
 
 
 class ItoolBinningControls(ItoolControlsBase):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         super().initialize_widgets()
         self.gridlayout = QtWidgets.QGridLayout()
         self.gridlayout.setContentsMargins(0, 0, 0, 0)
@@ -700,8 +704,9 @@ class ItoolBinningControls(ItoolControlsBase):
         self.buttonslayout.setContentsMargins(0, 0, 0, 0)
         self.buttonslayout.setSpacing(3)
 
-        self.layout().addLayout(self.gridlayout)
-        self.layout().addLayout(self.buttonslayout)
+        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout.addLayout(self.gridlayout)
+        layout.addLayout(self.buttonslayout)
 
         self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
@@ -751,28 +756,28 @@ class ItoolBinningControls(ItoolControlsBase):
         # for spin in self.spins:
         # spin.setMinimumWidth(60)
 
-    def _update_bin(self, axis, n):
+    def _update_bin(self, axis, n) -> None:
         if self.all_btn.isChecked():
             self.slicer_area.set_bin_all(axis, n)
         else:
             self.slicer_area.set_bin(axis, n)
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         super().connect_signals()
-        self.slicer_area.sigCurrentCursorChanged.connect(self.update)
-        self.slicer_area.sigBinChanged.connect(self.update)
-        self.slicer_area.sigDataChanged.connect(self.update)
-        self.slicer_area.sigShapeChanged.connect(self.update)
+        self.slicer_area.sigCurrentCursorChanged.connect(self.update_content)
+        self.slicer_area.sigBinChanged.connect(self.update_content)
+        self.slicer_area.sigDataChanged.connect(self.update_content)
+        self.slicer_area.sigShapeChanged.connect(self.update_content)
 
-    def disconnect_signals(self):
+    def disconnect_signals(self) -> None:
         super().disconnect_signals()
-        self.slicer_area.sigCurrentCursorChanged.disconnect(self.update)
-        self.slicer_area.sigBinChanged.disconnect(self.update)
-        self.slicer_area.sigDataChanged.disconnect(self.update)
-        self.slicer_area.sigShapeChanged.disconnect(self.update)
+        self.slicer_area.sigCurrentCursorChanged.disconnect(self.update_content)
+        self.slicer_area.sigBinChanged.disconnect(self.update_content)
+        self.slicer_area.sigDataChanged.disconnect(self.update_content)
+        self.slicer_area.sigShapeChanged.disconnect(self.update_content)
 
-    def update(self):
-        super().update()
+    def update_content(self) -> None:
+        super().update_content()
 
         if len(self.val_labels) != self.data.ndim:
             clear_layout(self.layout())
@@ -792,6 +797,6 @@ class ItoolBinningControls(ItoolControlsBase):
                 self.val_labels[i].setText(f"{bin_values[i]:.3g}")
             self.spins[i].blockSignals(False)
 
-    def reset(self):
+    def reset(self) -> None:
         for spin in self.spins:
             spin.setValue(1)

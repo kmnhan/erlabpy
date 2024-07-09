@@ -9,7 +9,7 @@ plt.style.use("khan")
 gamma = 0.3
 
 
-def example_1():
+def example_1() -> None:
     cmap = "Greys"
     sample_plot(
         [mcolors.Normalize, mcolors.PowerNorm, eplt.InversePowerNorm],
@@ -24,7 +24,7 @@ def example_1():
     )
 
 
-def example_2():
+def example_2() -> None:
     cmap = "RdYlBu"
     sample_plot(
         [mcolors.CenteredNorm, eplt.CenteredPowerNorm, eplt.CenteredInversePowerNorm],
@@ -43,7 +43,7 @@ def example_2():
     )
 
 
-def sample_plot(norms, labels, kw0, kw1, cmap):
+def sample_plot(norms, labels, kw0, kw1, cmap) -> None:
     if isinstance(kw0, dict):
         kw0 = (kw0, kw0, kw0)
     if isinstance(kw1, dict):

@@ -165,7 +165,7 @@ class FermiEdgeModel(lmfit.Model):
             x, center, temp, resolution, back0, back1, dos0, dos1
         )
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(self.LinearBroadFermiDirac, **kwargs)
         self.set_param_hint("temp", min=0.0)
         self.set_param_hint("resolution", min=0.0)
@@ -202,7 +202,9 @@ class FermiEdgeModel(lmfit.Model):
 
 
 class StepEdgeModel(lmfit.Model):
-    def __init__(self, independent_vars=("x",), prefix="", missing="raise", **kwargs):
+    def __init__(
+        self, independent_vars=("x",), prefix="", missing="raise", **kwargs
+    ) -> None:
         kwargs.update(
             {
                 "prefix": prefix,
@@ -236,7 +238,7 @@ class StepEdgeModel(lmfit.Model):
 
 
 class PolynomialModel(lmfit.Model):
-    def __init__(self, degree=9, **kwargs):
+    def __init__(self, degree=9, **kwargs) -> None:
         kwargs.setdefault("name", f"Poly{degree}")
         super().__init__(PolynomialFunction(degree), **kwargs)
 
@@ -272,7 +274,7 @@ class MultiPeakModel(lmfit.Model):
         degree: int = 2,
         convolve: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         kwargs.setdefault("name", f"{npeaks}Peak")
         super().__init__(
             MultiPeakFunction(
@@ -381,7 +383,7 @@ class FermiEdge2dModel(lmfit.Model):
         degree: int = 2,
         independent_vars=("eV", "alpha"),
         **kwargs,
-    ):
+    ) -> None:
         kwargs.update({"independent_vars": independent_vars})
         super().__init__(FermiEdge2dFunction(degree), **kwargs)
         self.name = f"FermiEdge2dModel (deg {degree})"
@@ -433,7 +435,7 @@ class FermiEdge2dModel(lmfit.Model):
 
 
 class BCSGapModel(lmfit.Model):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(bcs_gap, **kwargs)
         self.set_param_hint("a", min=0.0)
         self.set_param_hint("tc", min=0.0)
@@ -443,7 +445,7 @@ class BCSGapModel(lmfit.Model):
 
 
 class DynesModel(lmfit.Model):
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs) -> None:
         super().__init__(dynes, **kwargs)
         self.set_param_hint("gamma", min=0.0)
         self.set_param_hint("delta", min=0.0)

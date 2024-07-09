@@ -73,7 +73,9 @@ ICON_NAME = {
 
 
 class IconButton(QtWidgets.QPushButton):
-    def __init__(self, *args, on: str | None = None, off: str | None = None, **kwargs):
+    def __init__(
+        self, *args, on: str | None = None, off: str | None = None, **kwargs
+    ) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
         if on is not None:
@@ -88,14 +90,14 @@ class IconButton(QtWidgets.QPushButton):
         if self.isCheckable() and off is not None:
             self.toggled.connect(self.refresh_icons)
 
-    def refresh_icons(self):
+    def refresh_icons(self) -> None:
         if self.icon_key_off is not None:
             if self.isChecked():
                 self.setIcon(qta.icon(ICON_NAME[self.icon_key_off]))
                 return
         self.setIcon(qta.icon(ICON_NAME[self.icon_key_on]))
 
-    def changeEvent(self, evt):
+    def changeEvent(self, evt) -> None:
         if evt.type() == QtCore.QEvent.PaletteChange:
             qta.reset_cache()
             self.refresh_icons()
@@ -108,7 +110,7 @@ class IconButton(QtWidgets.QPushButton):
 
 
 class FlowLayout(QtWidgets.QLayout):
-    def __init__(self, parent=None, margin=0):
+    def __init__(self, parent=None, margin=0) -> None:
         super().__init__(parent)
 
         # if parent is not None:
@@ -119,7 +121,7 @@ class FlowLayout(QtWidgets.QLayout):
         self.setVerticalSpacing(self.spacing())
         # self.setVerticalSpacing(0)
 
-    def __del__(self):
+    def __del__(self) -> None:
         item = self.takeAt(0)
         while item:
             item = self.takeAt(0)
@@ -130,18 +132,18 @@ class FlowLayout(QtWidgets.QLayout):
     def verticalSpacing(self):
         return self._spacing_vertical
 
-    def setHorizontalSpacing(self, spacing: int):
+    def setHorizontalSpacing(self, spacing: int) -> None:
         self._spacing_horizontal = spacing
 
-    def setVerticalSpacing(self, spacing: int):
+    def setVerticalSpacing(self, spacing: int) -> None:
         self._spacing_vertical = spacing
 
-    def setSpacing(self, spacing: int):
+    def setSpacing(self, spacing: int) -> None:
         super().setSpacing(spacing)
         self.setHorizontalSpacing(spacing)
         self.setVerticalSpacing(spacing)
 
-    def addItem(self, item):
+    def addItem(self, item) -> None:
         self._item_list.append(item)
 
     def count(self):
@@ -162,14 +164,14 @@ class FlowLayout(QtWidgets.QLayout):
     def expandingDirections(self):
         return QtCore.Qt.Orientation(0)
 
-    def hasHeightForWidth(self):
+    def hasHeightForWidth(self) -> bool:
         return True
 
     def heightForWidth(self, width):
         height = self._do_layout(QtCore.QRect(0, 0, width, 0), True)
         return height
 
-    def setGeometry(self, rect):
+    def setGeometry(self, rect) -> None:
         super().setGeometry(rect)
         self._do_layout(rect, False)
 
@@ -223,20 +225,20 @@ class FlowLayout(QtWidgets.QLayout):
 
 
 class InnerQHBoxLayout(QtWidgets.QHBoxLayout):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setContentsMargins(0, 0, 0, 0)
 
 
 class InnerQGridLayout(QtWidgets.QGridLayout):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setContentsMargins(0, 0, 0, 0)
         # self.setSpacing(1)
 
 
 class BorderlessGroupBox(QtWidgets.QWidget):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         name = self.objectName()
         if name == "":
@@ -260,7 +262,7 @@ def qt_style_names():
     return result
 
 
-def change_style(style_name):
+def change_style(style_name) -> None:
     QtWidgets.QApplication.setStyle(QtWidgets.QStyleFactory.create(style_name))
 
 
@@ -351,7 +353,7 @@ class ColorButton(QtWidgets.QPushButton):
 
     colorChanged = QtCore.Signal(object)
 
-    def __init__(self, *args, color=None, **kwargs):
+    def __init__(self, *args, color=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self._color = None
@@ -361,7 +363,7 @@ class ColorButton(QtWidgets.QPushButton):
         # Set the initial/default state.
         self.setColor(self._default)
 
-    def setColor(self, color):
+    def setColor(self, color) -> None:
         self._color = color
         self.colorChanged.emit(color.getRgbF())
         if self._color:
@@ -373,7 +375,7 @@ class ColorButton(QtWidgets.QPushButton):
     def color(self):
         return self._color
 
-    def onColorPicker(self):
+    def onColorPicker(self) -> None:
         """
         Show color-picker dialog to select color.
 
@@ -393,13 +395,13 @@ class ColorButton(QtWidgets.QPushButton):
 
 
 class ItoolImageItem(xImageItem):
-    def __init__(self, itool, *args, **kargs):
+    def __init__(self, itool, *args, **kargs) -> None:
         self.itool = itool
         super().__init__(*args, **kargs)
 
 
 class ItoolDockLabel(DockLabel):
-    def __init__(self, *args, color="#591e71", **kwargs):
+    def __init__(self, *args, color="#591e71", **kwargs) -> None:
         self.bg_color = mcolors.to_hex(color)
         super().__init__(*args, **kwargs)
 
@@ -409,7 +411,7 @@ class ItoolDockLabel(DockLabel):
             *colorsys.hls_to_rgb(h, min(1, l * l_factor), min(1, s * s_factor))
         ).name()
 
-    def set_fg_color(self):
+    def set_fg_color(self) -> None:
         rgb = list(mcolors.to_rgb(self.bg_color))
         # for i in range(3):
         #     if rgb[i] <= 0.04045:
@@ -424,7 +426,7 @@ class ItoolDockLabel(DockLabel):
         else:
             self.fg_color = "#ffffff"
 
-    def updateStyle(self):
+    def updateStyle(self) -> None:
         r = "3px"
         self.set_fg_color()
         if self.dim:
@@ -480,7 +482,7 @@ class ItoolDock(Dock):
         closable=False,
         fontSize="13px",
         color="#591e71",
-    ):
+    ) -> None:
         super().__init__(
             name,
             area=area,
@@ -499,7 +501,7 @@ class ItoolDock(Dock):
         # self.topLayout.addWidget(self.label, 0, 1)
         self.topLayout.setContentsMargins(0, 0, 0, 0)
 
-    def changeEvent(self, evt):
+    def changeEvent(self, evt) -> None:
         if evt.type() == QtCore.QEvent.PaletteChange:
             self.label.updateStyle()
         super().changeEvent(evt)
@@ -588,12 +590,12 @@ class ItoolAxisItem(pg.AxisItem):
         SvgLabel = 1
         PixmapLabel = 2
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         self.label_mode = self.LabelType.TextLabel
         super().__init__(*args, **kwargs)
         self.set_label_mode(self.LabelType.TextLabel)
 
-    def set_label_mode(self, labelmode: LabelType):
+    def set_label_mode(self, labelmode: LabelType) -> None:
         self.label_mode = labelmode
         match self.label_mode:
             case self.LabelType.TextLabel:
@@ -627,7 +629,7 @@ class ItoolAxisItem(pg.AxisItem):
             case self.LabelType.PixmapLabel:
                 return get_pixmap_label(s, **self.labelStyle)
 
-    def _updateLabel(self):
+    def _updateLabel(self) -> None:
         match self.label_mode:
             case self.LabelType.TextLabel:
                 self.label.setHtml(self.labelString())
@@ -642,7 +644,7 @@ class ItoolAxisItem(pg.AxisItem):
         self.picture = None
         self.update()
 
-    def resizeEvent(self, ev=None):
+    def resizeEvent(self, ev=None) -> None:
         # s = self.size()
 
         # Set the position of the label
@@ -685,7 +687,7 @@ class ItoolAxisItem(pg.AxisItem):
 
 
 class ItoolPlotItem(pg.PlotItem):
-    def __init__(self, itool, *args, **kargs):
+    def __init__(self, itool, *args, **kargs) -> None:
         self.itool = itool
         super().__init__(*args, **kargs)
         self.setSizePolicy(
@@ -709,7 +711,7 @@ class ItoolPlotItem(pg.PlotItem):
         # self.ctrlMenu.menuAction().setVisible(False)
         # self.setMenuEnabled(False, enableViewBoxMenu=None)
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev) -> None:
         if (
             self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
@@ -721,13 +723,13 @@ class ItoolPlotItem(pg.PlotItem):
 
     def setLabels(
         self, mode: ItoolAxisItem.LabelType = ItoolAxisItem.LabelType.TextLabel, **kwds
-    ):
+    ) -> None:
         for k in kwds.keys():
             if k != "title":
                 self.getAxis(k).set_label_mode(mode)
         super().setLabels(**kwds)
 
-    def setAxisItems(self, axisItems=None):
+    def setAxisItems(self, axisItems=None) -> None:
         if axisItems is None:
             axisItems = {}
 
@@ -772,11 +774,11 @@ class ItoolPlotItem(pg.PlotItem):
 
 
 class ItoolCursorLine(pg.InfiniteLine):
-    def __init__(self, itool, *args, **kargs):
+    def __init__(self, itool, *args, **kargs) -> None:
         self.itool = itool
         super().__init__(*args, **kargs)
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev) -> None:
         if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
             self.setMovable(True)
             super().mouseDragEvent(ev)
@@ -785,7 +787,7 @@ class ItoolCursorLine(pg.InfiniteLine):
             self.setMouseHover(False)
             ev.ignore()
 
-    def mouseClickEvent(self, ev):
+    def mouseClickEvent(self, ev) -> None:
         if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
             self.setMovable(True)
             super().mouseClickEvent(ev)
@@ -794,7 +796,7 @@ class ItoolCursorLine(pg.InfiniteLine):
             self.setMouseHover(False)
             ev.ignore()
 
-    def hoverEvent(self, ev):
+    def hoverEvent(self, ev) -> None:
         if self.itool.qapp.queryKeyboardModifiers() != QtCore.Qt.ControlModifier:
             self.setMovable(True)
             super().hoverEvent(ev)
@@ -913,7 +915,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         zero_centered=False,
         rad2deg=False,
         **kwargs,
-    ):
+    ) -> None:
         if fermi_kw is None:
             fermi_kw = {}
         if span_kw is None:
@@ -1014,7 +1016,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         self.setFocus()
         self.connect_signals()
 
-    def _update_stretch(self, row=None, col=None):
+    def _update_stretch(self, row=None, col=None) -> None:
         if row is None:
             if self.data_ndim == 2:
                 row_factor = (250000, 750000)
@@ -1103,7 +1105,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def _initialize_layout(
         self, horiz_pad=45, vert_pad=30, inner_pad=15, font_size=11.0
-    ):
+    ) -> None:
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
         self.ci.layout.setSpacing(inner_pad)
@@ -1174,7 +1176,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         y += 0.5 * self.data_incs[j]
         return QtCore.QRectF(x, y, w, h)
 
-    def _initialize_plots(self):
+    def _initialize_plots(self) -> None:
         if self.data_ndim == 2:
             self.maps = (ItoolImageItem(self, name="Main Image", **self.image_kw),)
             self.hists = (
@@ -1333,12 +1335,12 @@ class pg_itool(pg.GraphicsLayoutWidget):
     def all(self):
         return self.maps + self.hists + self.cursors
 
-    def autoRange(self, padding=None):
+    def autoRange(self, padding=None) -> None:
         for ax in self.axes:
             if not all(ax.autoRangeEnabled()):
                 ax.autoRange(padding=padding)
 
-    def toggle_axes(self, axis):
+    def toggle_axes(self, axis) -> None:
         target = self.axes[axis]
         toggle = False if target in self.ci.items.keys() else True
 
@@ -1419,7 +1421,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.addItem(self.axes[group[0]], *anchors[0], *ref_dims[axis][2:])
             self.addItem(self.axes[group[1]], *anchors[1], *ref_dims[axis][2:])
 
-    def set_labels(self, labels=None):
+    def set_labels(self, labels=None) -> None:
         """labels: list or tuple of str."""
         if labels is None:
             labels = self.data_dims
@@ -1474,7 +1476,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         elif self.data_ndim == 4:
             return self.data.values.transpose(1, 2, 3, 0)
 
-    def _assign_vals_T(self):
+    def _assign_vals_T(self) -> None:
         return
 
     #     if self.data_ndim == 2:
@@ -1490,7 +1492,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     #     else:
     #         raise NotImplementedError("Wrong data dimensions")
 
-    def set_data(self, data, update_all=False, reset_cursor=True):
+    def set_data(self, data, update_all=False, reset_cursor=True) -> None:
         # Data properties
         if self.data is not None:
             ndim_old = self.data_ndim
@@ -1533,21 +1535,21 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
         self.sigDataChanged.emit(self)
 
-    def toggle_colorbar(self, val):
+    def toggle_colorbar(self, val) -> None:
         if self.colorbar is None:
             self.colorbar = ItoolColorBar(self, width=20)
             self.addItem(self.colorbar, None, None, self.ci.layout.rowCount(), 1)
         self.colorbar.setVisible(val)
 
-    def reset_cursor(self, update=False):
+    def reset_cursor(self, update=False) -> None:
         """Return the cursor to the center of the image."""
         for axis, coord in enumerate(self.data_coords):
             self.set_index(axis, self._get_middle_index(coord), update=update)
 
-    def _cursor_drag(self, axis, line):
+    def _cursor_drag(self, axis, line) -> None:
         self.set_value(axis, line.value())
 
-    def connect_signals(self):
+    def connect_signals(self) -> None:
         """Connect events."""
         for axis, cursors in enumerate(self.cursors):
             for c in cursors:
@@ -1571,7 +1573,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 return -1, self._get_mouse_datapos(self.colorbar, pos)
         return None, None
 
-    def _measure_fps(self):
+    def _measure_fps(self) -> None:
         now = perf_counter()
         fps = 1.0 / (now - self._fpsLastUpdate)
         self._fpsLastUpdate = now
@@ -1604,7 +1606,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         reverse=None,
         high_contrast=False,
         zero_centered=None,
-    ):
+    ) -> None:
         if cmap is not None:
             self.cmap = cmap
         if gamma is not None:
@@ -1627,7 +1629,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             im.setLookupTable(self.norm_cmap.getStops()[1], update=False)
         self._apply_change(self._only_maps)
 
-    def set_clim_lock(self, lock):
+    def set_clim_lock(self, lock) -> None:
         if self.colorbar is not None:
             self.colorbar.autolevels = ~lock
         if lock:
@@ -1637,29 +1639,29 @@ class pg_itool(pg.GraphicsLayoutWidget):
         else:
             self.clim_locked = False
 
-    def set_index(self, axis, index, update=True):
+    def set_index(self, axis, index, update=True) -> None:
         self._last_ind[axis] = index
         self.cursor_pos[axis] = self.data_coords[axis][index]
         if update is True:
             self._apply_change(self._only_axis[axis])
 
-    def set_value(self, axis, val, update=True):
+    def set_value(self, axis, val, update=True) -> None:
         self._last_ind[axis] = self.get_index_of_value(axis, val)
         self.cursor_pos[axis] = val
         if update is True:
             self._apply_change(self._only_axis[axis])
 
-    def set_cursor_color(self, c):
+    def set_cursor_color(self, c) -> None:
         for cursor in self.cursors:
             cursor.setPen(pg.mkPen(c))
         self._apply_change()
 
-    def set_line_color(self, c):
+    def set_line_color(self, c) -> None:
         for line in self.hists:
             line.setPen(pg.mkPen(c))
         self._apply_change()
 
-    def set_navg(self, axis, n, update=True):
+    def set_navg(self, axis, n, update=True) -> None:
         self.avg_win[axis] = n
         if n == 1:
             self.averaged[axis] = False
@@ -1668,7 +1670,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         if update:
             self._refresh_navg(reset=False)
 
-    def _refresh_navg(self, reset=False):
+    def _refresh_navg(self, reset=False) -> None:
         if reset:
             for axis in range(self.data_ndim):
                 self.averaged[axis] = False
@@ -1733,7 +1735,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             )
         ]
 
-    def update_spans(self, axis):
+    def update_spans(self, axis) -> None:
         slc = self._get_bin_slice(axis)
         lb = max(0, slc.start)
         ub = min(self.data_shape[axis] - 1, slc.stop - 1)
@@ -1750,10 +1752,10 @@ class pg_itool(pg.GraphicsLayoutWidget):
             return 0
         return ind
 
-    def set_axis_lock(self, axis, lock):
+    def set_axis_lock(self, axis, lock) -> None:
         self.axis_locked[axis] = lock
 
-    def transpose_axes(self, axis1, axis2):
+    def transpose_axes(self, axis1, axis2) -> None:
         dims_new = list(self.data_dims)
         dims_new[axis1], dims_new[axis2] = self.data_dims[axis2], self.data_dims[axis1]
         data_new = self.data.transpose(*dims_new)
@@ -1799,7 +1801,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         mouse_point = plot.vb.mapSceneToView(pos)
         return mouse_point.x(), mouse_point.y()
 
-    def onMouseDrag(self, evt):
+    def onMouseDrag(self, evt) -> None:
         try:
             axis_ind, datapos = self._get_curr_axes_index(evt.scenePos())
         except AttributeError:
@@ -1855,7 +1857,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self.cursor_pos = V
         self._apply_change(D)
 
-    def _apply_change(self, cond=None):
+    def _apply_change(self, cond=None) -> None:
         if cond is None:
             update = (True,) * len(self.all)
         elif isinstance(cond, str):
@@ -1910,7 +1912,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._measure_fps()
 
     @suppressnanwarning
-    def _refresh_data(self, i):
+    def _refresh_data(self, i) -> None:
         if self.snap:
             self.cursor_pos = [
                 self.data_coords[i][self._last_ind[i]] for i in range(self.data_ndim)
@@ -1935,7 +1937,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
     #             self.data_coords[2], self.maps[1].image[:, self._last_ind[0]]
     #         )
 
-    def _refresh_data_2d(self, i):
+    def _refresh_data_2d(self, i) -> None:
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
@@ -1965,7 +1967,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 if self.averaged[i - 3]:
                     self.update_spans(i - 3)
 
-    def _refresh_data_3d(self, i):
+    def _refresh_data_3d(self, i) -> None:
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
@@ -2034,7 +2036,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 if self.averaged[i - 6]:
                     self.update_spans(i - 6)
 
-    def _refresh_data_4d(self, i):
+    def _refresh_data_4d(self, i) -> None:
         if i == 0:
             if self.clim_locked:
                 self.all[i].setImage(
@@ -2107,23 +2109,23 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 if self.averaged[i - 7]:
                     self.update_spans(i - 7)
 
-    def changeEvent(self, evt):
+    def changeEvent(self, evt) -> None:
         if evt.type() == QtCore.QEvent.PaletteChange:
             self.update()
         super().changeEvent(evt)
 
-    def _drawpath(self):
+    def _drawpath(self) -> None:
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
         # print(points)
         pass
 
-    def _onselectpath(self, verts):
+    def _onselectpath(self, verts) -> None:
         print(verts)
 
 
 class ImageToolColors(QtWidgets.QDialog):
-    def __init__(self, parent):
+    def __init__(self, parent) -> None:
         self.parent = parent
         super().__init__(self.parent)
         self.setWindowTitle("Colors")
@@ -2395,12 +2397,12 @@ class betterIsocurve(pg.IsocurveItem):
         axisOrder=None,
         connected=False,
         extendToEdge=False,
-    ):
+    ) -> None:
         super().__init__(data, level, pen, axisOrder)
         self.connected = connected
         self.extendToEdge = extendToEdge
 
-    def generatePath(self):
+    def generatePath(self) -> None:
         if self.data is None:
             self.path = None
             return
@@ -2420,7 +2422,7 @@ class betterIsocurve(pg.IsocurveItem):
             for p in line[1:]:
                 self.path.lineTo(*p)
 
-    def setData(self, data, level=None):
+    def setData(self, data, level=None) -> None:
         if self.parentItem() is not None:
             self.axisOrder = self.parentItem().axisOrder
         super().setData(data, level)
@@ -2439,7 +2441,7 @@ class ItoolColorBar(ItoolPlotItem):
         line_kw=None,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         if line_kw is None:
             line_kw = {"pen": "cyan"}
         if curve_kw is None:
@@ -2486,13 +2488,13 @@ class ItoolColorBar(ItoolPlotItem):
 
         # self.getAxis('left').setWidth(inner_pad)
 
-    def setImageItem(self, img):
+    def setImageItem(self, img) -> None:
         self.imageItem = weakref.ref(img)
         self.isocurve.setParentItem(img)
         img.sigImageChanged.connect(self.image_changed)
         self.image_changed()
 
-    def image_changed(self):
+    def image_changed(self) -> None:
         self.cmap_changed()
         levels = self.imageItem().getLevels()
         if self.autolevels:
@@ -2504,7 +2506,7 @@ class ItoolColorBar(ItoolPlotItem):
         self.isoline.setBounds(levels)
         self.update_isodata()
 
-    def cmap_changed(self):
+    def cmap_changed(self) -> None:
         self.cmap = self.imageItem()._colorMap
         self.lut = self.imageItem().lut
         # self.lut = self.cmap.getStops()[1]
@@ -2516,13 +2518,13 @@ class ItoolColorBar(ItoolPlotItem):
         # self.cbar.setColorMap(self.cmap)
         # pg.ImageItem
 
-    def update_isodata(self):
+    def update_isodata(self) -> None:
         self.isocurve.setData(self.imageItem().image)
 
-    def update_level(self, line):
+    def update_level(self, line) -> None:
         self.isocurve.setLevel(line.value())
 
-    def setVisible(self, visible, *args, **kwargs):
+    def setVisible(self, visible, *args, **kwargs) -> None:
         super().setVisible(visible, *args, **kwargs)
         self.isocurve.setVisible(visible, *args, **kwargs)
         # self.showAxes((False, False, True, False),
@@ -2534,7 +2536,7 @@ class itoolJoystick(pg.JoystickButton):
     sigJoystickHeld = QtCore.Signal(object, object)
     sigJoystickReset = QtCore.Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         QtWidgets.QPushButton.__init__(self, parent)
         self.radius = 100
         self.marker_r = 3
@@ -2546,19 +2548,19 @@ class itoolJoystick(pg.JoystickButton):
         # self.setFixedWidth(50)
         # self.setFixedHeight(50)
 
-    def mousePressEvent(self, ev):
+    def mousePressEvent(self, ev) -> None:
         super().mousePressEvent(ev)
         self.timer.start(1000 / 30)
 
-    def mouseReleaseEvent(self, ev):
+    def mouseReleaseEvent(self, ev) -> None:
         super().mouseReleaseEvent(ev)
         self.timer.stop()
 
-    def mouseDoubleClickEvent(self, ev):
+    def mouseDoubleClickEvent(self, ev) -> None:
         self.sigJoystickReset.emit(self)
         ev.accept()
 
-    def setState(self, *xy):
+    def setState(self, *xy) -> None:
         xy = list(xy)
         d = np.sqrt(xy[0] ** 2 + xy[1] ** 2)  # length
         nxy = [0, 0]
@@ -2582,7 +2584,7 @@ class itoolJoystick(pg.JoystickButton):
 
 
 class itoolCursorControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
+    def __init__(self, itool, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.ndim = self.itool.data_ndim
@@ -2593,7 +2595,7 @@ class itoolCursorControls(QtWidgets.QWidget):
         self.itool.sigIndexChanged.connect(self.update_spin)
         self.itool.sigDataChanged.connect(self.update_content)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         self._cursor_group = BorderlessGroupBox(self, objectName="CursorGroup")
         self._transpose_group = BorderlessGroupBox(self, objectName="TransposeGroup")
         cursor_layout = InnerQHBoxLayout(self._cursor_group)
@@ -2711,13 +2713,13 @@ class itoolCursorControls(QtWidgets.QWidget):
 
         # self.layout.addStretch()
 
-    def _joystick_reset(self, _):
+    def _joystick_reset(self, _) -> None:
         if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
             self.itool._update_stretch()
         else:
             self.itool.reset_cursor(update=True)
 
-    def _joystick_held(self, _, state):
+    def _joystick_held(self, _, state) -> None:
         if self.itool.qapp.queryKeyboardModifiers() == QtCore.Qt.ControlModifier:
             self._assign_stretch(row=20000 * state[1], col=20000 * state[0])
         else:
@@ -2743,7 +2745,7 @@ class itoolCursorControls(QtWidgets.QWidget):
                             * np.float_power(np.abs(state[i]), linearity)
                         )
 
-    def update_content(self):
+    def update_content(self) -> None:
         ndim = self.itool.data_ndim
         if ndim != self.ndim:
             self.layout.clear()
@@ -2795,7 +2797,7 @@ class itoolCursorControls(QtWidgets.QWidget):
             # self._spin[i].setMaximumWidth(max(width_spin))
             # self._dblspin[i].setMaximumWidth(max(width_dblspin))
 
-    def _assign_stretch(self, row=None, col=None):
+    def _assign_stretch(self, row=None, col=None) -> None:
         if row is None:
             row = 0
         if col is None:
@@ -2812,22 +2814,22 @@ class itoolCursorControls(QtWidgets.QWidget):
             col_factor = (c0, c1 - col, c2 + col)
         self.itool._update_stretch(row=row_factor, col=col_factor)
 
-    def _assign_snap(self, value):
+    def _assign_snap(self, value) -> None:
         self.itool.snap = value
 
-    def _index_changed(self, axis, index):
+    def _index_changed(self, axis, index) -> None:
         self._dblspin[axis].blockSignals(True)
         self.itool.set_index(axis, index)
         self._dblspin[axis].setValue(self.itool.data_coords[axis][index])
         self._dblspin[axis].blockSignals(False)
 
-    def _value_changed(self, axis, value):
+    def _value_changed(self, axis, value) -> None:
         self._spin[axis].blockSignals(True)
         self.itool.set_value(axis, value)
         self._spin[axis].setValue(self.itool._last_ind[axis])
         self._spin[axis].blockSignals(False)
 
-    def update_spin(self, index, value):
+    def update_spin(self, index, value) -> None:
         for i in range(self.ndim):
             self._spin[i].blockSignals(True)
             self._dblspin[i].blockSignals(True)
@@ -2838,7 +2840,7 @@ class itoolCursorControls(QtWidgets.QWidget):
 
 
 class itoolColorControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
+    def __init__(self, itool, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.layout = FlowLayout(self)
@@ -2846,7 +2848,7 @@ class itoolColorControls(QtWidgets.QWidget):
         # self._button_group = BorderlessGroupBox(self, objectName="ClrCntrls")
         self.initialize_widgets()
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         cmap_layout = InnerQHBoxLayout(self._cmap_group)
         # button_layout = InnerQHBoxLayout(self._button_group)
         # cmap_layout.setContentsMargins(0, 0, 0, 0)
@@ -2975,13 +2977,13 @@ class itoolColorControls(QtWidgets.QWidget):
 
         # self.layout.addWidget(self._button_group)
 
-    def _cmap_combo_changed(self, text=None):
+    def _cmap_combo_changed(self, text=None) -> None:
         if text == "Load all...":
             self._cmap_combo.load_all()
         else:
             self.set_cmap(name=text)
 
-    def set_cmap(self, name=None):
+    def set_cmap(self, name=None) -> None:
         reverse = self._cmap_r_button.isChecked()
         gamma = self._gamma_spin.value()
         self._gamma_slider.blockSignals(True)
@@ -2994,7 +2996,7 @@ class itoolColorControls(QtWidgets.QWidget):
         mode = self._cmap_mode_button.isChecked()
         self.itool.set_cmap(cmap, gamma=gamma, reverse=reverse, high_contrast=mode)
 
-    def _color_button_clicked(self, s):
+    def _color_button_clicked(self, s) -> None:
         # print("click", s)
         dialog = ImageToolColors(self)
         if dialog.exec():
@@ -3008,7 +3010,7 @@ class itoolColorControls(QtWidgets.QWidget):
 class ColorMapComboBox(QtWidgets.QComboBox):
     LOAD_ALL_TEXT = "Load all..."
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setPlaceholderText("Select colormap...")
         self.setToolTip("Colormap")
@@ -3022,7 +3024,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.currentIndexChanged.connect(self.load_thumbnail)
         self.default_cmap = None
 
-    def load_thumbnail(self, index):
+    def load_thumbnail(self, index) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
             try:
@@ -3030,13 +3032,13 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             except KeyError:
                 pass
 
-    def load_all(self):
+    def load_all(self) -> None:
         self.clear()
         for name in pg_colormap_names("all"):
             self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
-    def showPopup(self):
+    def showPopup(self) -> None:
         maxWidth = self.maximumWidth()
         if maxWidth and maxWidth < 16777215:
             self.setPopupMinimumWidthForItems()
@@ -3046,31 +3048,31 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self.thumbnails_loaded = True
         super().showPopup()
 
-    def setPopupMinimumWidthForItems(self):
+    def setPopupMinimumWidthForItems(self) -> None:
         view = self.view()
         fm = self.fontMetrics()
         maxWidth = max(fm.width(self.itemText(i)) for i in range(self.count()))
         if maxWidth:
             view.setMinimumWidth(maxWidth)
 
-    def hidePopup(self):
+    def hidePopup(self) -> None:
         self.activated.emit(self.currentIndex())
         self.textActivated.emit(self.currentText())
         self.currentIndexChanged.emit(self.currentIndex())
         self.currentTextChanged.emit(self.currentText())
         super().hidePopup()
 
-    def setDefaultCmap(self, cmap: str):
+    def setDefaultCmap(self, cmap: str) -> None:
         self.default_cmap = cmap
         self.setCurrentText(cmap)
 
-    def resetCmap(self):
+    def resetCmap(self) -> None:
         if self.default_cmap is not None:
             self.setCurrentText(self.default_cmap)
 
 
 class itoolBinningControls(QtWidgets.QWidget):
-    def __init__(self, itool, *args, **kwargs):
+    def __init__(self, itool, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.itool = itool
         self.ndim = self.itool.data_ndim
@@ -3080,7 +3082,7 @@ class itoolBinningControls(QtWidgets.QWidget):
         self.update_content()
         self.itool.sigDataChanged.connect(self.update_content)
 
-    def initialize_widgets(self):
+    def initialize_widgets(self) -> None:
         # bin_layout = InnerQHBoxLayout(self._bin_group)
         self._spinlabels = tuple(QtWidgets.QLabel(self) for _ in range(self.ndim))
         self._spin = tuple(QtWidgets.QSpinBox(self) for _ in range(self.ndim))
@@ -3101,14 +3103,14 @@ class itoolBinningControls(QtWidgets.QWidget):
         # bin_layout.addStretch()
         # self.layout.addWidget(self._bin_group)
 
-    def _navg_reset(self):
+    def _navg_reset(self) -> None:
         for i in range(self.ndim):
             self._spin[i].blockSignals(True)
             self._spin[i].setValue(1)
             self._spin[i].blockSignals(False)
         self.itool._refresh_navg(reset=True)
 
-    def update_content(self):
+    def update_content(self) -> None:
         ndim = self.itool.data_ndim
         if ndim != self.ndim:
             self.layout.clear()
@@ -3125,7 +3127,7 @@ class itoolBinningControls(QtWidgets.QWidget):
 
 # from qtpy import QtWidgets, QtCore
 class ImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data, title=None, *args, **kwargs):
+    def __init__(self, data, title=None, *args, **kwargs) -> None:
         super().__init__()
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         self.qapp = QtCore.QCoreApplication.instance()
@@ -3187,12 +3189,12 @@ class ImageTool(QtWidgets.QMainWindow):
         self.itool.setFocusPolicy(QtCore.Qt.ClickFocus)
         self.itool.setFocus()
 
-    def changeEvent(self, evt):
+    def changeEvent(self, evt) -> None:
         if evt.type() == QtCore.QEvent.PaletteChange:
             self.qapp.setStyle(self.qapp.style().name())
         super().changeEvent(evt)
 
-    def tab_changed(self, i):
+    def tab_changed(self, i) -> None:
         pass
         # if i == self.tabwidget.indexOf(self.tab3):
         # lazy loading

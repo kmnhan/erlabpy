@@ -126,7 +126,7 @@ class LabeledCursor(AxesWidget):
         useblit: bool = True,
         textprops: dict | None = None,
         **lineprops,
-    ):
+    ) -> None:
         super().__init__(ax)
 
         if textprops is None:
@@ -1153,7 +1153,7 @@ def clean_labels(
     axes: Iterable[matplotlib.axes.Axes],
     remove_inner_ticks: bool = False,
     **kwargs,
-):
+) -> None:
     """Clean the labels of the given axes.
 
     This function removes the labels from the axes except for the outermost axes and

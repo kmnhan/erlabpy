@@ -156,7 +156,7 @@ class ArraySlicer(QtCore.QObject):
     sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
     sigShapeChanged = QtCore.Signal()  #: :meta private:
 
-    def __init__(self, xarray_obj: xr.DataArray):
+    def __init__(self, xarray_obj: xr.DataArray) -> None:
         super().__init__()
         self.set_array(xarray_obj, validate=True, reset=True)
 
@@ -293,7 +293,7 @@ class ArraySlicer(QtCore.QObject):
     def reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def clear_dim_cache(self, include_vals: bool = False):
+    def clear_dim_cache(self, include_vals: bool = False) -> None:
         for prop in (
             "coords",
             "coords_uniform",
@@ -307,14 +307,14 @@ class ArraySlicer(QtCore.QObject):
         if include_vals:
             self.reset_property_cache("data_vals_T")
 
-    def clear_val_cache(self, include_vals: bool = False):
+    def clear_val_cache(self, include_vals: bool = False) -> None:
         for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
             self.reset_property_cache(prop)
 
         if include_vals:
             self.reset_property_cache("data_vals_T")
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         self.clear_dim_cache()
         self.clear_val_cache(include_vals=True)
 

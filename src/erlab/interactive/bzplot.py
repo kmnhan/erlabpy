@@ -100,7 +100,7 @@ class BZPlotter(QtWidgets.QMainWindow):
 class LatticeWidget(QtWidgets.QTabWidget):
     sigChanged = QtCore.Signal(np.ndarray)  #: :meta private:
 
-    def __init__(self, bvec):
+    def __init__(self, bvec) -> None:
         super().__init__()
 
         # self.setLayout(QtWidgets.QVBoxLayout(self))
@@ -279,40 +279,40 @@ class LatticeWidget(QtWidgets.QTabWidget):
         # self.params_avec.sigParameterChanged.connect(self.avec_changed)
         # self.params_bvec.sigParameterChanged.connect(self.bvec_changed)
 
-    def block_params_signals(self, b: bool):
+    def block_params_signals(self, b: bool) -> None:
         self.params_latt.blockSignals(b)
         self.params_avec.blockSignals(b)
         self.params_bvec.blockSignals(b)
 
-    def latt_changed(self):
+    def latt_changed(self) -> None:
         self.block_params_signals(True)
         self.set_avec(abc2avec(*self.latt_vals))
         self.block_params_signals(False)
         self.avec_changed()
 
-    def avec_changed(self):
+    def avec_changed(self) -> None:
         self.block_params_signals(True)
         self.set_latt(*avec2abc(self.avec_val))
         self.block_params_signals(False)
         self.set_bvec(to_reciprocal(self.avec_val))
         self.bvec_changed()
 
-    def bvec_changed(self):
+    def bvec_changed(self) -> None:
         self.block_params_signals(True)
         self.set_avec(to_real(self.bvec_val))
         self.set_latt(*avec2abc(self.avec_val))
         self.block_params_signals(False)
         self.sigChanged.emit(self.bvec_val)
 
-    def set_latt(self, a, b, c, alpha, beta, gamma):
+    def set_latt(self, a, b, c, alpha, beta, gamma) -> None:
         self.params_latt.set_values(a=a, b=b, c=c, alpha=alpha, beta=beta, gamma=gamma)
 
-    def set_avec(self, avec):
+    def set_avec(self, avec) -> None:
         self.params_avec.set_values(
             **{f"a{i + 1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(avec)}
         )
 
-    def set_bvec(self, bvec):
+    def set_bvec(self, bvec) -> None:
         self.params_bvec.set_values(
             **{f"b{i + 1}{('x', 'y', 'z')[j]}": v for (i, j), v in np.ndenumerate(bvec)}
         )
@@ -344,7 +344,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
 
 
 class BZPlotWidget(QtWidgets.QWidget):
-    def __init__(self, bvec):
+    def __init__(self, bvec) -> None:
         super().__init__()
         self.setLayout(QtWidgets.QVBoxLayout(self))
 
@@ -395,13 +395,13 @@ class BZPlotWidget(QtWidgets.QWidget):
 
         # self._canvas.figure.tight_layout()
 
-    def set_bvec(self, bvec, update=True):
+    def set_bvec(self, bvec, update=True) -> None:
         self.bvec = bvec
         self.lines, self.vertices = eplt.get_bz_edge(self.bvec, reciprocal=True)
         if update:
             self._update_canvas()
 
-    def _update_canvas(self):
+    def _update_canvas(self) -> None:
         for i, b in enumerate(self.bvec):
             self._bvecs[i][0].set_data_3d(*[(0, bi) for bi in b])
             self._bvecs[i][1].set_position_3d(b + 0.15 * b / np.linalg.norm(b))

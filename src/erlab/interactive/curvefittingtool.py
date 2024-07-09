@@ -57,7 +57,7 @@ LMFIT_METHODS = [
 class SinglePeakWidget(ParameterGroup):
     VALID_LINESHAPE: tuple[str, ...] = ("lorentzian", "gaussian")
 
-    def __init__(self, peak_index):
+    def __init__(self, peak_index) -> None:
         self.peak_index = peak_index
         super().__init__(
             **{
@@ -101,27 +101,27 @@ class SinglePeakWidget(ParameterGroup):
 
 
 class PlotPeakItem(pg.PlotCurveItem):
-    def __init__(self, param_widget: SinglePeakWidget, *args, **kargs):
+    def __init__(self, param_widget: SinglePeakWidget, *args, **kargs) -> None:
         self.param_widget = param_widget
         super().__init__(*args, **kargs)
         self._pen_color = self.opts["pen"].color()
         self._pen_width = self.opts["pen"].width()
 
-    def setTempPen(self, *args, **kargs):
+    def setTempPen(self, *args, **kargs) -> None:
         self.opts["pen"] = pg.mkPen(*args, **kargs)
         self.invalidateBounds()
         self.update()
 
-    def setPen(self, *args, **kargs):
+    def setPen(self, *args, **kargs) -> None:
         super().setPen(*args, **kargs)
         self._pen_color = self.opts["pen"].color()
         self._pen_width = self.opts["pen"].width()
 
-    def viewRangeChanged(self):
+    def viewRangeChanged(self) -> None:
         super().viewRangeChanged()
         self._mouseShape = None
 
-    def setMouseHover(self, hover):
+    def setMouseHover(self, hover) -> None:
         # Inform the item that the mouse is (not) hovering over it
         # if self.mouseHovering == hover:
         # return
@@ -137,7 +137,7 @@ class PlotPeakItem(pg.PlotCurveItem):
 class PlotPeakPosition(pg.InfiniteLine):
     def __init__(
         self, param_widget: SinglePeakWidget, curve: PlotPeakItem, *args, **kargs
-    ):
+    ) -> None:
         self.param_widget = param_widget
         self.curve = curve
         super().__init__(*args, movable=True, **kargs)
@@ -147,7 +147,7 @@ class PlotPeakPosition(pg.InfiniteLine):
     def boundingRect(self):
         return super().boundingRect()
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev) -> None:
         if not self.movable:
             ev.ignore()
             return
@@ -185,7 +185,7 @@ class PlotPeakPosition(pg.InfiniteLine):
 
         self.setMouseHover(self.moving)
 
-    def refresh_pos(self):
+    def refresh_pos(self) -> None:
         self.setPos(self.param_widget.widgets["center"].value())
 
     def setMouseHover(self, hover):
@@ -195,7 +195,9 @@ class PlotPeakPosition(pg.InfiniteLine):
 
 
 class edctool(QtWidgets.QMainWindow):
-    def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
+    def __init__(
+        self, data, n_bands: int = 1, parameters=None, execute: bool = True
+    ) -> None:
         self.data = data
 
         self.qapp = QtWidgets.QApplication.instance()
@@ -350,7 +352,7 @@ class edctool(QtWidgets.QMainWindow):
             ],
         )
 
-    def refresh_n_peaks(self):
+    def refresh_n_peaks(self) -> None:
         if not hasattr(self, "_params_peak"):
             return
         current = int(self._params_peak.count())
@@ -370,7 +372,7 @@ class edctool(QtWidgets.QMainWindow):
 
         self._refresh_plot_peaks()
 
-    def _refresh_plot_peaks(self):
+    def _refresh_plot_peaks(self) -> None:
         model = self.model
         params = self.params
         for i in range(self.n_bands):
@@ -396,7 +398,7 @@ class edctool(QtWidgets.QMainWindow):
 
         self.modelplot.setData(x=self.xdata, y=model.eval(x=self.xdata, **params))
 
-    def do_fit(self):
+    def do_fit(self) -> None:
         params = lmfit.create_params(**self.params_dict)
         model = self.model
         params = model.guess(self.data, self.data[self.data.dims[0]]).update(params)
@@ -412,7 +414,7 @@ class edctool(QtWidgets.QMainWindow):
 
         self.result = res
 
-    def set_params(self, params: dict):
+    def set_params(self, params: dict) -> None:
         params = copy.deepcopy(params)
         self._params_init.set_values(
             **{
@@ -450,7 +452,9 @@ class edctool(QtWidgets.QMainWindow):
 
 
 class mdctool(QtWidgets.QMainWindow):
-    def __init__(self, data, n_bands: int = 1, parameters=None, execute: bool = True):
+    def __init__(
+        self, data, n_bands: int = 1, parameters=None, execute: bool = True
+    ) -> None:
         self.data = data
 
         self.qapp = QtWidgets.QApplication.instance()
@@ -586,7 +590,7 @@ class mdctool(QtWidgets.QMainWindow):
             fd=False,
         )
 
-    def refresh_n_peaks(self):
+    def refresh_n_peaks(self) -> None:
         if not hasattr(self, "_params_peak"):
             return
         current = int(self._params_peak.count())
@@ -606,7 +610,7 @@ class mdctool(QtWidgets.QMainWindow):
 
         self._refresh_plot_peaks()
 
-    def _refresh_plot_peaks(self):
+    def _refresh_plot_peaks(self) -> None:
         model = self.model
         params = self.params
         for i in range(self.n_bands):
@@ -632,7 +636,7 @@ class mdctool(QtWidgets.QMainWindow):
 
         self.modelplot.setData(x=self.xdata, y=model.eval(x=self.xdata, **params))
 
-    def do_fit(self):
+    def do_fit(self) -> None:
         params = lmfit.create_params(**self.params_dict)
         model = self.model
         params = model.guess(self.data, self.data[self.data.dims[0]]).update(params)
@@ -648,7 +652,7 @@ class mdctool(QtWidgets.QMainWindow):
 
         self.result = res
 
-    def set_params(self, params: dict):
+    def set_params(self, params: dict) -> None:
         params = copy.deepcopy(params)
         self._params_init.set_values(
             **{

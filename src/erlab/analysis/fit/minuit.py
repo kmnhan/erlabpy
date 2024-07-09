@@ -60,7 +60,7 @@ class LeastSq(iminuit.cost.LeastSquares):
 
 
 class _TempFig:
-    def __init__(self, w, h):
+    def __init__(self, w, h) -> None:
         self.fig = plt.figure(figsize=(w, h), layout="constrained")
 
     def __enter__(self) -> None:

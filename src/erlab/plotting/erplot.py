@@ -84,7 +84,7 @@ from erlab.plotting.general import (
 )
 
 
-def integer_ticks(axes):
+def integer_ticks(axes) -> None:
     if np.iterable(axes):
         for ax in np.asarray(axes, dtype=object):
             integer_ticks(ax)

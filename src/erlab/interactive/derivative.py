@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 class DerivativeTool(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))  # type: ignore[misc]
 ):
-    def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
+    def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
             try:
                 data_name = cast(
@@ -120,12 +120,12 @@ class DerivativeTool(
         self.update_result()
 
     @QtCore.Slot()
-    def reset_smooth(self):
+    def reset_smooth(self) -> None:
         self.sx_spin.setValue(self.xinc)
         self.sy_spin.setValue(self.yinc)
 
     @QtCore.Slot()
-    def reset_interp(self):
+    def reset_interp(self) -> None:
         self.nx_spin.setValue(self.data.sizes[self.xdim])
         self.ny_spin.setValue(self.data.sizes[self.ydim])
 
@@ -134,7 +134,7 @@ class DerivativeTool(
         return self._result
 
     @result.setter
-    def result(self, value: xr.DataArray):
+    def result(self, value: xr.DataArray) -> None:
         self._result = value
         self.update_image()
 
@@ -169,7 +169,7 @@ class DerivativeTool(
         return out
 
     @QtCore.Slot()
-    def update_image(self):
+    def update_image(self) -> None:
         self.images[1].setDataArray(
             self.result, levels=self.get_levels(self.result.values)
         )
@@ -187,12 +187,12 @@ class DerivativeTool(
         return max(pl, data.min()), min(pu, data.max())
 
     @QtCore.Slot()
-    def update_preprocess(self):
+    def update_preprocess(self) -> None:
         self.__dict__.pop("processed_data", None)
         self.update_result()
 
     @QtCore.Slot()
-    def update_result(self):
+    def update_result(self) -> None:
         match self.tab_widget.currentIndex():
             case 0:
                 dim = self.xdim if self.x_radio.isChecked() else self.ydim

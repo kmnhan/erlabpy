@@ -323,7 +323,7 @@ def copy_mathtext(
     return buffer_str
 
 
-def fancy_labels(ax=None, deg2rad=False):
+def fancy_labels(ax=None, deg2rad=False) -> None:
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
@@ -346,7 +346,7 @@ def label_subplot_properties(
     unit: str | None = None,
     order: Literal["C", "F", "A", "K"] = "C",
     **kwargs,
-):
+) -> None:
     r"""Labels subplots with automatically generated labels.
 
     Parameters
@@ -444,7 +444,7 @@ def label_subplots(
         | None
     ) = None,
     **kwargs,
-):
+) -> None:
     r"""Labels subplots with automatically generated labels.
 
     Parameters
@@ -566,7 +566,7 @@ def label_subplots_nature(
         ]
     ) = 8,
     **kwargs,
-):
+) -> None:
     r"""Labels subplots with automatically generated labels.
 
     Parameters
@@ -656,7 +656,7 @@ def mark_points(
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
     **kwargs,
-):
+) -> None:
     """Mark points above the horizontal axis.
 
     Useful when annotating high symmetry points along a cut.
@@ -722,7 +722,7 @@ def mark_points_outside(
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
-):
+) -> None:
     """Mark points above the horizontal axis.
 
     Useful when annotating high symmetry points along a cut.
@@ -770,7 +770,7 @@ def mark_points_outside(
         label_ax.set_frame_on(False)
 
 
-def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
+def mark_points_y(pts, labels, roman=True, bar=False, ax=None) -> None:
     if ax is None:
         ax = plt.gca()
     if not isinstance(ax, tuple | list | np.ndarray):
@@ -787,7 +787,7 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None):
         label_ax.set_frame_on(False)
 
 
-def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs):
+def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs) -> None:
     name = name_for_dim("hv", escaped=False)
     unit = unit_for_dim("hv")
     s = f"${name}={val}$ {unit}"
@@ -803,7 +803,7 @@ def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs):
     )
 
 
-def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs):
+def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs) -> None:
     name = name_for_dim("hv", escaped=False)
     unit = unit_for_dim("hv")
     s = f"${name}={val}$ {unit}"
@@ -858,7 +858,7 @@ def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str
 
 
 class _SIFormatter(matplotlib.ticker.ScalarFormatter):
-    def __init__(self, si: int = 0, *args, **kwargs):
+    def __init__(self, si: int = 0, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._si_exponent = int(si)
 
@@ -887,7 +887,7 @@ def scale_units(
     *,
     prefix: bool = True,
     power: bool = False,
-):
+) -> None:
     """Rescales ticks and adds an SI prefix to the axis label.
 
     Useful when you want to rescale the ticks without actually rescaling the data. For
@@ -935,14 +935,14 @@ def scale_units(
             setlabel(label.replace(f"({unit})", f"({get_si_str(si)}{unit})"))
 
 
-def set_titles(axes, labels, order="C", **kwargs):
+def set_titles(axes, labels, order="C", **kwargs) -> None:
     axlist = np.array(axes, dtype=object).flatten(order=order)
     labels = np.asarray(labels)
     for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_title(label, **kwargs)
 
 
-def set_xlabels(axes, labels, order="C", **kwargs):
+def set_xlabels(axes, labels, order="C", **kwargs) -> None:
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
@@ -951,7 +951,7 @@ def set_xlabels(axes, labels, order="C", **kwargs):
         ax.set_xlabel(label, **kwargs)
 
 
-def set_ylabels(axes, labels, order="C", **kwargs):
+def set_ylabels(axes, labels, order="C", **kwargs) -> None:
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if isinstance(labels, str):
         labels = [labels] * len(axlist)

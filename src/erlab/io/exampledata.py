@@ -37,7 +37,7 @@ def spectral_function(w, bareband, Sreal, Simag):
     return Simag / (np.pi * ((w - bareband - Sreal) ** 2 + Simag**2))
 
 
-def add_fd_norm(image, eV, temp=30, efermi=0, count=1e7):
+def add_fd_norm(image, eV, temp=30, efermi=0, count=1e7) -> None:
     if temp != 0:
         image *= fermi_dirac(eV - efermi, temp)[None, None, :]
     image += 0.1e-2

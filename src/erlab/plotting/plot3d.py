@@ -9,7 +9,7 @@ import numpy as np
 
 
 class FancyArrow3D(matplotlib.patches.FancyArrow):
-    def __init__(self, x, y, z, dx, dy, dz, **kwargs):
+    def __init__(self, x, y, z, dx, dy, dz, **kwargs) -> None:
         super().__init__(0, 0, 0, 0, **kwargs)
         posA, posB = (x, y, z), (x + dx, y + dy, z + dz)
         self._verts3d = tuple((posA[i], posB[i]) for i in range(3))
@@ -24,7 +24,7 @@ class FancyArrow3D(matplotlib.patches.FancyArrow):
 
 
 class FancyArrowPatch3D(matplotlib.patches.FancyArrowPatch):
-    def __init__(self, posA, posB, *args, **kwargs):
+    def __init__(self, posA, posB, *args, **kwargs) -> None:
         super().__init__((0, 0), (0, 0), *args, **kwargs)
 
         self._verts3d = tuple((posA[i], posB[i]) for i in range(3))
@@ -58,7 +58,7 @@ def _transform_zdir(zdir):
     return ddt + cos_angle * (np.eye(3) - ddt) + sin_angle * skew
 
 
-def set_3d_properties(self, verts, zs=0, zdir="z"):
+def set_3d_properties(self, verts, zs=0, zdir="z") -> None:
     zs = np.broadcast_to(zs, len(verts))
     self._segment3d = np.asarray(
         [
@@ -68,7 +68,7 @@ def set_3d_properties(self, verts, zs=0, zdir="z"):
     )
 
 
-def pathpatch_translate(pathpatch, delta):
+def pathpatch_translate(pathpatch, delta) -> None:
     pathpatch._segment3d += np.asarray(delta)
 
 

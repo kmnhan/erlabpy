@@ -19,7 +19,7 @@ def joblib_progress(file=None, **kwargs):
 
     tqdm_object = tqdm.auto.tqdm(iterable=None, file=file, **kwargs)
 
-    def tqdm_print_progress(self):
+    def tqdm_print_progress(self) -> None:
         if self.n_completed_tasks > tqdm_object.n:
             n_completed = self.n_completed_tasks - tqdm_object.n
             tqdm_object.update(n=n_completed)
@@ -41,7 +41,7 @@ def joblib_progress_qt(signal: QtCore.Signal):
     The number of completed tasks are emitted by the given signal.
     """
 
-    def qt_print_progress(self):
+    def qt_print_progress(self) -> None:
         signal.emit(self.n_completed_tasks)
 
     original_print_progress = joblib.parallel.Parallel.print_progress

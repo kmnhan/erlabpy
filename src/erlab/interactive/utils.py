@@ -253,7 +253,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         value: float = 0.0,
         prefix: str = "",
         **kwargs,
-    ):
+    ) -> None:
         self._only_int = integer
         self._is_compact = compact
         self._is_discrete = discrete
@@ -296,20 +296,20 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self.setValue(self.value())
 
     @QtCore.Slot(str)
-    def setPrefix(self, prefix: str):
+    def setPrefix(self, prefix: str) -> None:
         self._prefix = prefix
 
     def prefix(self) -> str:
         return self._prefix
 
     @QtCore.Slot(int)
-    def setDecimals(self, decimals: int):
+    def setDecimals(self, decimals: int) -> None:
         self._decimals = decimals
 
     def decimals(self) -> int:
         return self._decimals
 
-    def setRange(self, mn, mx):
+    def setRange(self, mn, mx) -> None:
         self.setMinimum(min(mn, mx))
         self.setMaximum(max(mn, mx))
 
@@ -320,7 +320,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def widthFromValue(self, value):
         return self.widthFromText(self.textFromValue(value))
 
-    def setMaximum(self, mx):
+    def setMaximum(self, mx) -> None:
         if self._only_int and np.isfinite(mx):
             mx = round(mx)
         elif np.isnan(mx):
@@ -328,7 +328,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._max = mx
         self._updateWidth()
 
-    def setMinimum(self, mn):
+    def setMinimum(self, mn) -> None:
         if self._only_int and np.isfinite(mn):
             mn = round(mn)
         elif np.isnan(mn):
@@ -336,7 +336,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._min = mn
         self._updateWidth()
 
-    def setSingleStep(self, step):
+    def setSingleStep(self, step) -> None:
         if self._only_int:
             step = round(step)
         self._step = abs(step)
@@ -389,7 +389,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         else:
             return float(text)
 
-    def stepBy(self, steps):
+    def stepBy(self, steps) -> None:
         self.editingStarted.emit()
         inc = self.singleStep()
         if (
@@ -433,7 +433,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         else:
             return self.StepEnabledFlag.StepNone
 
-    def setValue(self, val):
+    def setValue(self, val) -> None:
         if np.isnan(val):
             val = np.nan
         else:
@@ -471,12 +471,12 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         # will be forced to its previous state anyway
         return (ret, strn, pos)
 
-    def editingFinishedEvent(self):
+    def editingFinishedEvent(self) -> None:
         line = self.lineEdit()
         if line is not None:
             self.setValue(self.valueFromText(line.text()))
 
-    def keyPressEvent(self, evt):
+    def keyPressEvent(self, evt) -> None:
         line = self.lineEdit()
         if line is not None:
             if evt == QtGui.QKeySequence.StandardKey.Copy:
@@ -487,11 +487,11 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         else:
             super().keyPressEvent(evt)
 
-    def focusInEvent(self, evt):
+    def focusInEvent(self, evt) -> None:
         self.editingStarted.emit()
         super().focusInEvent(evt)
 
-    def _updateHeight(self):
+    def _updateHeight(self) -> None:
         if self._is_compact:
             self.setFixedHeight(QtGui.QFontMetrics(self.font()).height() + 3)
 
@@ -509,7 +509,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         del spin
         return w
 
-    def _updateWidth(self):
+    def _updateWidth(self) -> None:
         self.setMinimumWidth(
             max(
                 self.widthFromValue(self.maximum()), self.widthFromValue(self.minimum())
@@ -519,10 +519,10 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
 
 class BetterAxisItem(pg.AxisItem):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-    def updateAutoSIPrefix(self):
+    def updateAutoSIPrefix(self) -> None:
         if self.label.isVisible():
             if self.logMode:
                 _range = 10 ** np.array(self.range)
@@ -559,7 +559,7 @@ class BetterAxisItem(pg.AxisItem):
             strings.append(vstr.replace("-", "−"))
         return strings
 
-    def labelString(self):
+    def labelString(self) -> str:
         if self.labelUnits == "":
             if not self.autoSIPrefix or self.autoSIPrefixScale == 1.0:
                 units = ""
@@ -625,7 +625,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         fixed: bool = False,
         label: str | None = None,
         show_label: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         if spin_kw is None:
             spin_kw = {}
@@ -675,16 +675,16 @@ class FittingParameterWidget(QtWidgets.QWidget):
         self.setCheckable(checkable)
         self.setFixed(fixed)
 
-    def _refresh_bounds(self):
+    def _refresh_bounds(self) -> None:
         self.spin_value.setRange(self.spin_lb.value(), self.spin_ub.value())
 
-    def setValue(self, value):
+    def setValue(self, value) -> None:
         self.spin_value.setValue(value)
 
     def checkable(self):
         return self._checkable
 
-    def setCheckable(self, value: bool):
+    def setCheckable(self, value: bool) -> None:
         self._checkable = value
         self.check.setVisible(value)
 
@@ -694,7 +694,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         else:
             return False
 
-    def setFixed(self, value: bool):
+    def setFixed(self, value: bool) -> None:
         if isinstance(value, QtCore.Qt.CheckState):
             if value == QtCore.Qt.CheckState.Unchecked:
                 value = False
@@ -715,7 +715,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
     def prefix(self):
         return self._prefix
 
-    def set_prefix(self, prefix):
+    def set_prefix(self, prefix) -> None:
         self._prefix = prefix
 
     def minimum(self):
@@ -757,12 +757,12 @@ class xImageItem(BetterImageItem):
 
     sigToleranceChanged = QtCore.Signal(float, float)  #: :meta private:
 
-    def __init__(self, image: npt.NDArray | None = None, **kwargs):
+    def __init__(self, image: npt.NDArray | None = None, **kwargs) -> None:
         super().__init__(image, **kwargs)
         self.cut_tolerance = [30, 30]
         self.data_array: None | xr.DataArray = None
 
-    def set_cut_tolerance(self, cut_tolerance):
+    def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
             self.cut_tolerance = list(cut_tolerance.__iter__)
         except AttributeError:
@@ -786,13 +786,15 @@ class xImageItem(BetterImageItem):
         mn, mx = max(min(pl, ql), data.min()), min(max(pu, qu), data.max())
         return (mn, mx)
 
-    def setImage(self, image=None, autoLevels=None, cut_to_data=False, **kargs):
+    def setImage(self, image=None, autoLevels=None, cut_to_data=False, **kargs) -> None:
         if cut_to_data:
             kargs["levels"] = self.data_cut_levels(data=image)
         super().setImage(image=image, autoLevels=autoLevels, **kargs)
         self.data_array = None
 
-    def setDataArray(self, data: xr.DataArray, update_labels: bool = True, **kargs):
+    def setDataArray(
+        self, data: xr.DataArray, update_labels: bool = True, **kargs
+    ) -> None:
         rect = array_rect(data)
         if self.axisOrder == "row-major":
             img = np.ascontiguousarray(data.values)
@@ -834,7 +836,7 @@ class xImageItem(BetterImageItem):
             if isinstance(p, pg.PlotItem):
                 return p
 
-    def open_itool(self):
+    def open_itool(self) -> None:
         from erlab.interactive.imagetool import ImageTool
 
         if self.data_array is None:
@@ -900,7 +902,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         ncols: int = 1,
         groupbox_kw: dict | None = None,
         **widgets_kwargs,
-    ):
+    ) -> None:
         if groupbox_kw is None:
             groupbox_kw = {}
         super().__init__(**groupbox_kw)
@@ -1058,7 +1060,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         return widget
 
-    def set_values(self, **kwargs):
+    def set_values(self, **kwargs) -> None:
         for k, v in kwargs.items():
             widget = self.widgets[k]
             widget.blockSignals(True)
@@ -1117,7 +1119,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         elif isinstance(widget, QtWidgets.QComboBox):
             return widget.currentTextChanged
 
-    def global_connect(self):
+    def global_connect(self) -> None:
         for k, v in self.widgets.items():
             if k not in self.untracked:
                 self.widget_change_signal(v).connect(
@@ -1143,7 +1145,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
 
 class ROIControls(ParameterGroup):
-    def __init__(self, roi: pg.ROI, spinbox_kw: dict | None = None, **kwargs):
+    def __init__(self, roi: pg.ROI, spinbox_kw: dict | None = None, **kwargs) -> None:
         if spinbox_kw is None:
             spinbox_kw = {}
         self.roi = roi
@@ -1211,7 +1213,7 @@ class ROIControls(ParameterGroup):
         return x0, y0, x1, y1
 
     @no_type_check
-    def update_pos(self):
+    def update_pos(self) -> None:
         self.widgets["x0"].setMaximum(self.widgets["x1"].value())
         self.widgets["y0"].setMaximum(self.widgets["y1"].value())
         self.widgets["x1"].setMinimum(self.widgets["x0"].value())
@@ -1221,7 +1223,7 @@ class ROIControls(ParameterGroup):
             spin.setValue(pos)
             spin.blockSignals(False)
 
-    def modify_roi(self, x0=None, y0=None, x1=None, y1=None, update=True):
+    def modify_roi(self, x0=None, y0=None, x1=None, y1=None, update=True) -> None:
         lim_new = (x0, y0, x1, y1)
         lim_old = self.roi_limits
         x0, y0, x1, y1 = (
@@ -1252,7 +1254,7 @@ class ROIControls(ParameterGroup):
         vb.rbScaleBox.setPen(pg.mkPen((255, 255, 255), width=1))
         vb.rbScaleBox.setBrush(pg.mkBrush(255, 255, 255, 100))
 
-        def mouseDragEventCustom(ev, axis=None):
+        def mouseDragEventCustom(ev, axis=None) -> None:
             ev.accept()
             pos = ev.pos()
             lastPos = ev.lastPos()
@@ -1428,7 +1430,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         link: Literal["x", "y", "both", "none"] = "both",
         cut_to_data: Literal["in", "out", "both", "none"] = "none",
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(**kwargs)
         if orientation == "horizontal":
             self.is_vertical = False
@@ -1448,7 +1450,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             if link in ("y", "both"):
                 self.axes[i].setYLink(self.axes[0])
 
-    def initialize_layout(self, nax: int):
+    def initialize_layout(self, nax: int) -> None:
         self.hists: pg.HistogramLUTItem = [pg.HistogramLUTItem() for _ in range(nax)]
         self.axes: list[pg.PlotItem] = [pg.PlotItem() for _ in range(nax)]
         self.images: list[xImageItem] = [
@@ -1475,17 +1477,17 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         else:
             return 0, 2 * ax + 1, 1, 1
 
-    def setStretchFactors(self, factors):
+    def setStretchFactors(self, factors) -> None:
         for i, f in enumerate(factors):
             self.setStretchFactor(i, f)
 
-    def setStretchFactor(self, i, factor):
+    def setStretchFactor(self, i, factor) -> None:
         if self.is_vertical:
             self.ci.layout.setRowStretchFactor(i, factor)
         else:
             self.ci.layout.setColumnStretchFactor(i, factor)
 
-    def set_input(self, data=None):
+    def set_input(self, data=None) -> None:
         if data is not None:
             self.input = parse_data(data)
             self.images[0].setDataArray(
@@ -1512,15 +1514,15 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
 
 
 class ComparisonWidget(AnalysisWidgetBase):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         kwargs["num_ax"] = 2
         super().__init__(*args, **kwargs)
         self.prefunc = lambda x: x
         self.mainfunc = lambda x: x
         self.prefunc_only_values = False
         self.mainfunc_only_values = False
-        self.prefunc_kwargs = {}
-        self.mainfunc_kwargs = {}
+        self.prefunc_kwargs: dict[str, Any] = {}
+        self.mainfunc_kwargs: dict[str, Any] = {}
 
     def call_prefunc(self, x):
         if self.prefunc_only_values:
@@ -1529,7 +1531,7 @@ class ComparisonWidget(AnalysisWidgetBase):
             xval = x
         return self.prefunc(xval, **self.prefunc_kwargs)
 
-    def set_input(self, data=None):
+    def set_input(self, data=None) -> None:
         if data is not None:
             self.input_ = parse_data(data)
 
@@ -1554,29 +1556,29 @@ class ComparisonWidget(AnalysisWidgetBase):
                 cut_to_data=self.cut_to_data in ("in", "both"),
             )
 
-    def set_pre_function(self, func, only_values=False, **kwargs):
+    def set_pre_function(self, func, only_values=False, **kwargs) -> None:
         self.prefunc_only_values = only_values
         self.prefunc = func
         self.set_pre_function_args(**kwargs)
         self.set_input()
 
-    def set_main_function(self, func, only_values=False, **kwargs):
+    def set_main_function(self, func, only_values=False, **kwargs) -> None:
         self.mainfunc_only_values = only_values
         self.mainfunc = func
         self.set_main_function_args(**kwargs)
         self.refresh_output()
 
-    def set_pre_function_args(self, **kwargs):
+    def set_pre_function_args(self, **kwargs) -> None:
         for k, v in kwargs.items():
             self.prefunc_kwargs[k] = v
         self.refresh_output()
 
-    def set_main_function_args(self, **kwargs):
+    def set_main_function_args(self, **kwargs) -> None:
         for k, v in kwargs.items():
             self.mainfunc_kwargs[k] = v
         self.refresh_output()
 
-    def refresh_output(self):
+    def refresh_output(self) -> None:
         if self.mainfunc_only_values:
             self.output = self.mainfunc(np.asarray(self.input_), **self.mainfunc_kwargs)
             self.images[1].setImage(
@@ -1591,7 +1593,7 @@ class ComparisonWidget(AnalysisWidgetBase):
                 cut_to_data=self.cut_to_data in ("out", "both"),
             )
 
-    def refresh_all(self):
+    def refresh_all(self) -> None:
         self.set_input()
         self.refresh_output()
 
@@ -1620,10 +1622,12 @@ class DictMenuBar(QtWidgets.QMenuBar):
             )
             return out
 
-    def add_items(self, **kwargs):
+    def add_items(self, **kwargs) -> None:
         self.parse_menu(self, **kwargs)
 
-    def parse_menu(self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs):
+    def parse_menu(
+        self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs
+    ) -> None:
         for name, opts in kwargs.items():
             menu = opts.pop("menu", None)
             actions = opts.pop("actions")

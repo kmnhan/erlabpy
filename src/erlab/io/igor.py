@@ -41,7 +41,7 @@ def _load_experiment_raw(
     for dirname in split_path:
         expt = expt[dirname]
 
-    def unpack_folders(expt):
+    def unpack_folders(expt) -> None:
         for name, record in expt.items():
             if isinstance(record, igor2.record.WaveRecord):
                 if prefix is not None:

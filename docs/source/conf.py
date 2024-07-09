@@ -70,7 +70,7 @@ highlight_language = "python3"
 
 
 # based on numpy doc/source/conf.py
-def linkcode_resolve(domain, info):
+def linkcode_resolve(domain, info) -> str | None:
     """Determine the URL corresponding to Python object."""
     if domain != "py":
         return None
@@ -226,7 +226,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
     library<https://github.com/unitaryfund/mitiq>`_.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.abbreviate_names = True
 

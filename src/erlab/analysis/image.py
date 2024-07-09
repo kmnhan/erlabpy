@@ -502,7 +502,7 @@ def ndsavgol(
                 types.voidptr,
             )
         )
-        def _calc_savgol(values_ptr, len_values, result, data):
+        def _calc_savgol(values_ptr, len_values, result, data) -> int:
             values = carray(values_ptr, (len_values,), dtype=types.float64)
 
             if accurate:
@@ -574,7 +574,7 @@ def gradient_magnitude(
             types.voidptr,
         )
     )
-    def _kernel(values_ptr, len_values, result, data):
+    def _kernel(values_ptr, len_values, result, data) -> int:
         values = carray(values_ptr, (len_values,), dtype=types.float64)
         val = 0.0
         for i in range(9):

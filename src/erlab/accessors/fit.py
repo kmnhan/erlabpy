@@ -113,7 +113,7 @@ def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
 
 
 class _ParametersWraper:
-    def __init__(self, params: lmfit.Parameters):
+    def __init__(self, params: lmfit.Parameters) -> None:
         self.params = params
 
 

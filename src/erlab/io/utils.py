@@ -17,7 +17,7 @@ import numpy.typing as npt
 import xarray as xr
 
 
-def showfitsinfo(path: str | os.PathLike):
+def showfitsinfo(path: str | os.PathLike) -> None:
     """Print raw metadata from a ``.fits`` file.
 
     Parameters
@@ -177,7 +177,7 @@ def save_as_hdf5(
     filename: str | os.PathLike,
     igor_compat: bool = True,
     **kwargs,
-):
+) -> None:
     """Save data in ``HDF5`` format.
 
     Parameters
@@ -231,7 +231,7 @@ def save_as_hdf5(
     )
 
 
-def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs):
+def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs) -> None:
     """Save data in ``netCDF4`` format.
 
     Discards invalid ``netCDF4`` attributes and produces a warning.

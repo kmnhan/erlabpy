@@ -23,7 +23,7 @@ import gc
 import os
 import pickle
 import sys
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -128,7 +128,8 @@ def itool(
     if use_manager:
         from erlab.interactive.imagetool.manager import show_in_manager
 
-        return show_in_manager(data, link=link, link_colors=link_colors, **kwargs)
+        show_in_manager(data, link=link, link_colors=link_colors, **kwargs)
+        return None
 
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
@@ -181,7 +182,9 @@ def itool(
 
 
 class BaseImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs):
+    def __init__(
+        self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
+    ) -> None:
         super().__init__(parent=parent)
         self.slicer_area = ImageSlicerArea(self, data, **kwargs)
         self.setCentralWidget(self.slicer_area)
@@ -226,7 +229,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             pickle.dump(info, file)
 
     @classmethod
-    def from_pickle(cls, filename: str) -> BaseImageTool:
+    def from_pickle(cls, filename: str) -> Self:
         with open(filename, "rb") as file:
             data, state, title, rect = pickle.load(file)
         tool = cls(data, state=state)
@@ -234,7 +237,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         tool.setGeometry(rect)
         return tool
 
-    def _sync_dock_float(self, floating: bool, index: int):
+    def _sync_dock_float(self, floating: bool, index: int) -> None:
         for i in range(len(self.docks)):
             if i != index:
                 self.docks[i].blockSignals(True)
@@ -260,7 +263,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
 class ImageTool(BaseImageTool):
     sigTitleChanged = QtCore.Signal(str)
 
-    def __init__(self, data=None, **kwargs):
+    def __init__(self, data=None, **kwargs) -> None:
         super().__init__(data, **kwargs)
         self.mnb = ItoolMenuBar(self.slicer_area, self)
 
@@ -491,7 +494,7 @@ class ItoolMenuBar(DictMenuBar):
             }
         return menu_kwargs
 
-    def createMenus(self):
+    def createMenus(self) -> None:
         menu_kwargs = self._generate_menu_kwargs()
         self.add_items(**menu_kwargs)
 
@@ -503,7 +506,7 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     @QtCore.Slot()
-    def refreshMenus(self):
+    def refreshMenus(self) -> None:
         self.action_dict["snapCursorAct"].blockSignals(True)
         self.action_dict["snapCursorAct"].setChecked(self.array_slicer.snap_to_data)
         self.action_dict["snapCursorAct"].blockSignals(False)
@@ -520,27 +523,27 @@ class ItoolMenuBar(DictMenuBar):
             ca.blockSignals(False)
 
     @QtCore.Slot()
-    def refreshEditMenus(self):
+    def refreshEditMenus(self) -> None:
         self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
         self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
-    def _set_colormap_options(self):
+    def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
             reversed=self.colorAct[0].isChecked(),
             high_contrast=self.colorAct[1].isChecked(),
             zero_centered=self.colorAct[2].isChecked(),
         )
 
-    def _copy_cursor_val(self):
+    def _copy_cursor_val(self) -> None:
         copy_to_clipboard(str(self.slicer_area.array_slicer._values))
 
-    def _copy_cursor_idx(self):
+    def _copy_cursor_idx(self) -> None:
         copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
 
     @QtCore.Slot()
     def _open_file(
         self, *, name_filter: str | None = None, directory: str | None = None
-    ):
+    ) -> None:
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),

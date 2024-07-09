@@ -104,7 +104,7 @@ class OffsetView:
         Returns an HTML representation of the offset view.
     """
 
-    def __init__(self, xarray_obj: xr.DataArray):
+    def __init__(self, xarray_obj: xr.DataArray) -> None:
         self._obj = xarray_obj
         for k in self._obj.kspace.valid_offset_keys:
             if k + "_offset" not in self._obj.attrs:
@@ -200,7 +200,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
     @configuration.setter
-    def configuration(self, value: AxesConfiguration | int):
+    def configuration(self, value: AxesConfiguration | int) -> None:
         self._obj.attrs["configuration"] = int(value)
 
     @property
@@ -232,7 +232,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return 10.0
 
     @inner_potential.setter
-    def inner_potential(self, value: float):
+    def inner_potential(self, value: float) -> None:
         self._obj.attrs["inner_potential"] = float(value)
 
     @property
@@ -264,7 +264,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return 4.5
 
     @work_function.setter
-    def work_function(self, value: float):
+    def work_function(self, value: float) -> None:
         self._obj.attrs["sample_workfunction"] = float(value)
 
     @property
@@ -286,7 +286,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return 0.1
 
     @angle_resolution.setter
-    def angle_resolution(self, value: float):
+    def angle_resolution(self, value: float) -> None:
         self._obj.attrs["angle_resolution"] = float(value)
 
     @property
@@ -485,7 +485,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._offsetview
 
     @offsets.setter
-    def offsets(self, offset_dict: dict[str, float]):
+    def offsets(self, offset_dict: dict[str, float]) -> None:
         if not hasattr(self, "_offsetview"):
             self._offsetview = OffsetView(self._obj)
 

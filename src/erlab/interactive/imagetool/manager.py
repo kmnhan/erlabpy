@@ -60,9 +60,9 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 def _coverage_resolve_trace(fn):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
     @functools.wraps(fn)
-    def _wrapped_for_coverage(*args, **kwargs):
-        if threading._trace_hook:
-            sys.settrace(threading._trace_hook)
+    def _wrapped_for_coverage(*args, **kwargs) -> None:
+        if threading._trace_hook:  # type: ignore[attr-defined]
+            sys.settrace(threading._trace_hook)  # type: ignore[attr-defined]
         fn(*args, **kwargs)
 
     return _wrapped_for_coverage
@@ -85,16 +85,16 @@ class ItoolManagerParseError(Exception):
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.stopped = threading.Event()
 
     @_coverage_resolve_trace
-    def run(self):
+    def run(self) -> None:
         self.stopped.clear()
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
-        soc.setblocking(0)
+        soc.setblocking(False)
         soc.listen(1)
         print("Server is listening...")
 
@@ -105,7 +105,7 @@ class _ManagerServer(QtCore.QThread):
                 time.sleep(0.01)
                 continue
 
-            conn.setblocking(1)
+            conn.setblocking(True)
             # Receive the size of the data first
             data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
 
@@ -136,14 +136,16 @@ class _ManagerServer(QtCore.QThread):
 
 
 class _QHLine(QtWidgets.QFrame):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setFrameShape(QtWidgets.QFrame.Shape.HLine)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
 
 
 class ImageToolOptionsWidget(QtWidgets.QWidget):
-    def __init__(self, manager: ImageToolManagerGUI, index: int, tool: ImageTool):
+    def __init__(
+        self, manager: ImageToolManagerGUI, index: int, tool: ImageTool
+    ) -> None:
         super().__init__()
         self._tool: ImageTool | None = None
 
@@ -163,7 +165,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
         return self._tool
 
     @tool.setter
-    def tool(self, value: ImageTool | None):
+    def tool(self, value: ImageTool | None) -> None:
         if self._tool is None:
             if self._archived_fname is not None:
                 # Remove the archived file
@@ -203,7 +205,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             self.visibility_changed()
         return super().eventFilter(obj, event)
 
-    def _destroyed_callback(self):
+    def _destroyed_callback(self) -> None:
         print("DESTROYED!")
         self.manager.sigReloadLinkers.emit()
 
@@ -252,7 +254,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     @QtCore.Slot(str)
-    def update_title(self, title: str | None = None):
+    def update_title(self, title: str | None = None) -> None:
         if not self.archived:
             if title is None:
                 title = cast(ImageTool, self.tool).windowTitle()
@@ -264,7 +266,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             self.check.setText(new_title)
 
     @QtCore.Slot()
-    def update_link_icon(self):
+    def update_link_icon(self) -> None:
         if self.archived or not self.slicer_area.is_linked:
             self.link_icon.setIcon(qta.icon("mdi6.link-variant", opacity=0.0))
         else:
@@ -272,44 +274,53 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
                 qta.icon(
                     "mdi6.link-variant",
                     color=self.manager.color_for_linker(
-                        self.slicer_area._linking_proxy
+                        cast(SlicerLinkProxy, self.slicer_area._linking_proxy)
                     ),
                 )
             )
 
     @QtCore.Slot()
-    def visibility_changed(self):
-        self._recent_geometry = self.tool.geometry()
+    def visibility_changed(self) -> None:
+        if self.archived:
+            return
+        tool = cast(ImageTool, self.tool)
+        self._recent_geometry = tool.geometry()
         self.visibility_btn.blockSignals(True)
-        self.visibility_btn.setChecked(self.tool.isVisible())
+        self.visibility_btn.setChecked(tool.isVisible())
         self.visibility_btn.blockSignals(False)
 
     @QtCore.Slot()
-    def toggle_visibility(self):
-        if self.tool.isVisible():
-            self.tool.close()
+    def toggle_visibility(self) -> None:
+        if self.archived:
+            return
+        tool = cast(ImageTool, self.tool)
+        if tool.isVisible():
+            tool.close()
         else:
             if self._recent_geometry is not None:
-                self.tool.setGeometry(self._recent_geometry)
-            self.tool.show()
-            self.tool.activateWindow()
+                tool.setGeometry(self._recent_geometry)
+            tool.show()
+            tool.activateWindow()
 
     @QtCore.Slot()
-    def show_clicked(self):
-        self.tool.show()
-        self.tool.activateWindow()
+    def show_clicked(self) -> None:
+        if self.archived:
+            return
+        tool = cast(ImageTool, self.tool)
+        tool.show()
+        tool.activateWindow()
 
     @QtCore.Slot()
-    def close_tool(self):
+    def close_tool(self) -> None:
         self.tool = None
 
     @QtCore.Slot()
-    def archive(self):
+    def archive(self) -> None:
         if not self.archived:
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            self.tool.to_pickle(self._archived_fname)
+            cast(ImageTool, self.tool).to_pickle(self._archived_fname)
 
             self.close_tool()
             self.check.blockSignals(True)
@@ -323,18 +334,18 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             gc.collect()
 
     @QtCore.Slot()
-    def unarchive(self):
+    def unarchive(self) -> None:
         if self.archived:
             self.check.setDisabled(False)
             self.visibility_btn.setDisabled(False)
 
-            self.tool = ImageTool.from_pickle(self._archived_fname)
+            self.tool = ImageTool.from_pickle(cast(str, self._archived_fname))
             self.tool.show()
 
             self.manager.sigReloadLinkers.emit()
 
     @QtCore.Slot()
-    def toggle_archive(self):
+    def toggle_archive(self) -> None:
         if self.archived:
             self.unarchive()
         else:
@@ -345,7 +356,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
     sigLinkersChanged = QtCore.Signal()
     sigReloadLinkers = QtCore.Signal()
 
-    def __init__(self: ImageToolManagerGUI):
+    def __init__(self: ImageToolManagerGUI) -> None:
         super().__init__()
         self.setWindowTitle("ImageTool Manager")
         self.tool_options: dict[int, ImageToolOptionsWidget] = {}
@@ -427,13 +438,13 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
                 raise KeyError(f"Tool of index '{index}' is archived")
         return cast(ImageTool, opt.tool)
 
-    def deselect_all(self):
+    def deselect_all(self) -> None:
         """Clear selection."""
         for opt in self.tool_options.values():
             opt.check.setChecked(False)
 
     @QtCore.Slot()
-    def add_new(self):
+    def add_new(self) -> None:
         """Add a new ImageTool window and open a file dialog."""
         tool = ImageTool(np.zeros((2, 2)))
         self.add_tool(tool, activate=True)
@@ -493,7 +504,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
             if all(p == proxies[0] for p in proxies):
                 self.link_button.setEnabled(False)
 
-    def remove_tool(self, index: int):
+    def remove_tool(self, index: int) -> None:
         opt = self.tool_options.pop(index)
         if not opt.archived:
             cast(ImageTool, opt.tool).removeEventFilter(opt)
@@ -505,7 +516,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         gc.collect()
 
     @QtCore.Slot()
-    def cleanup_linkers(self):
+    def cleanup_linkers(self) -> None:
         for linker in list(self.linkers):
             if linker.num_children <= 1:
                 linker.unlink_all()
@@ -513,7 +524,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.sigLinkersChanged.emit()
 
     @QtCore.Slot()
-    def close_selected(self):
+    def close_selected(self) -> None:
         checked_names = self.selected_tool_indices
         ret = QtWidgets.QMessageBox.question(
             self,
@@ -532,7 +543,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
     @QtCore.Slot()
     @QtCore.Slot(bool)
     @QtCore.Slot(bool, bool)
-    def link_selected(self, link_colors: bool = True, deselect: bool = True):
+    def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
         self.unlink_selected(deselect=False)
         self.link_tools(*self.selected_tool_indices, link_colors=link_colors)
         if deselect:
@@ -540,14 +551,14 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
-    def unlink_selected(self, deselect: bool = True):
+    def unlink_selected(self, deselect: bool = True) -> None:
         for index in self.selected_tool_indices:
             self.get_tool(index).slicer_area.unlink()
         self.sigReloadLinkers.emit()
         if deselect:
             self.deselect_all()
 
-    def link_tools(self, *indices, link_colors: bool = True):
+    def link_tools(self, *indices, link_colors: bool = True) -> None:
         linker = SlicerLinkProxy(
             *[self.get_tool(t).slicer_area for t in indices], link_colors=link_colors
         )
@@ -556,7 +567,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
 
 
 class ImageToolManager(ImageToolManagerGUI):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.server = _ManagerServer()
         self.server.sigReceived.connect(self.data_recv)
@@ -565,7 +576,7 @@ class ImageToolManager(ImageToolManagerGUI):
         self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
 
     @QtCore.Slot(list, dict)
-    def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]):
+    def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]) -> None:
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = [
@@ -575,7 +586,7 @@ class ImageToolManager(ImageToolManagerGUI):
         if link:
             self.link_tools(*indices, link_colors=link_colors)
 
-    def closeEvent(self, event: QtGui.QCloseEvent | None):
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         if self.ntools != 0:
             if self.ntools == 1:
                 msg = "1 remaining window will be closed."
@@ -603,21 +614,24 @@ class ImageToolManager(ImageToolManagerGUI):
 
 
 class _InitDialog(QtWidgets.QDialog):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.setLayout(QtWidgets.QVBoxLayout())
+        layout = QtWidgets.QVBoxLayout()
+        self.setLayout(layout)
 
         self.label = QtWidgets.QLabel(
             "An instance of ImageToolManager is already running.\n"
             "Retry after closing the existing instance."
         )
         self.buttonBox = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
         self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
-        self.layout().addWidget(self.label)
-        self.layout().addWidget(self.buttonBox)
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.buttonBox)
 
 
 def _recv_all(conn, size):
@@ -645,7 +659,7 @@ def is_running() -> bool:
         return False
 
 
-def main():
+def main() -> None:
     """Start the ImageToolManager application.
 
     Running ``itool-manager`` from a shell will invoke this function.
@@ -655,7 +669,7 @@ def main():
 
     while is_running():
         dialog = _InitDialog()
-        if dialog.exec() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
     else:
         win = ImageToolManager()
@@ -670,7 +684,7 @@ def show_in_manager(
     | npt.NDArray
     | xarray.Dataset,
     **kwargs,
-):
+) -> None:
     """Create and display ImageTool windows in the ImageToolManager.
 
     Parameters

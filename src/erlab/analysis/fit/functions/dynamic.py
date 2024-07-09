@@ -186,7 +186,7 @@ class MultiPeakFunction(DynamicFunction):
         background: Literal["constant", "linear", "polynomial", "none"] = "linear",
         degree: int = 2,
         convolve: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         self.npeaks = npeaks
         self.fd = fd
@@ -343,7 +343,7 @@ class MultiPeakFunction(DynamicFunction):
 
 
 class FermiEdge2dFunction(DynamicFunction):
-    def __init__(self, degree: int = 1):
+    def __init__(self, degree: int = 1) -> None:
         super().__init__()
         self.poly = PolynomialFunction(degree)
 

@@ -52,7 +52,7 @@ continuous data, and looks horrible.
 class ColorMapComboBox(QtWidgets.QComboBox):
     LOAD_ALL_TEXT = "Load all..."
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setPlaceholderText("Select colormap...")
         self.setToolTip("Colormap")
@@ -64,14 +64,14 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         # self.insertItem(0, self.LOAD_ALL_TEXT)
         self.thumbnails_loaded = False
         self.currentIndexChanged.connect(self.load_thumbnail)
-        self.default_cmap = None
+        self.default_cmap: str | None = None
 
         sc_p = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Up"), self)
         sc_p.activated.connect(self.previousIndex)
         sc_m = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Down"), self)
         sc_m.activated.connect(self.nextIndex)
 
-    def load_thumbnail(self, index: int):
+    def load_thumbnail(self, index: int) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
             try:
@@ -79,7 +79,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             except KeyError:
                 pass
 
-    def load_all(self):
+    def load_all(self) -> None:
         self.clear()
         for name in pg_colormap_names("all", exclude_local=True):
             self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
@@ -87,7 +87,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.showPopup()
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
-    def showPopup(self):
+    def showPopup(self) -> None:
         maxWidth = self.maximumWidth()
         if maxWidth and maxWidth < 16777215:
             self.setPopupMinimumWidthForItems()
@@ -97,7 +97,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self.thumbnails_loaded = True
         super().showPopup()
 
-    def setPopupMinimumWidthForItems(self):
+    def setPopupMinimumWidthForItems(self) -> None:
         view = self.view()
         fm = self.fontMetrics()
         maxWidth = max(
@@ -107,7 +107,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             view.setMinimumWidth(maxWidth)
 
     @QtCore.Slot()
-    def nextIndex(self):
+    def nextIndex(self) -> None:
         self.wheelEvent(
             QtGui.QWheelEvent(
                 QtCore.QPointF(0, 0),
@@ -122,7 +122,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         )
 
     @QtCore.Slot()
-    def previousIndex(self):
+    def previousIndex(self) -> None:
         self.wheelEvent(
             QtGui.QWheelEvent(
                 QtCore.QPointF(0, 0),
@@ -136,18 +136,18 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             )
         )
 
-    def hidePopup(self):
+    def hidePopup(self) -> None:
         self.activated.emit(self.currentIndex())
         self.textActivated.emit(self.currentText())
         self.currentIndexChanged.emit(self.currentIndex())
         self.currentTextChanged.emit(self.currentText())
         super().hidePopup()
 
-    def setDefaultCmap(self, cmap: str):
+    def setDefaultCmap(self, cmap: str) -> None:
         self.default_cmap = cmap
         self.setCurrentText(cmap)
 
-    def resetCmap(self):
+    def resetCmap(self) -> None:
         if self.default_cmap is None:
             self.setCurrentIndex(0)
         else:
@@ -171,7 +171,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         value: float = 1.0,
         slider_cls: type | None = None,
         spin_cls: type | None = None,
-    ):
+    ) -> None:
         super().__init__(parent=parent)
         layout = QtWidgets.QHBoxLayout(self)
         self.setLayout(layout)
@@ -220,17 +220,17 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
     def value(self) -> float:
         return self.spin.value()
 
-    def setValue(self, value: float):
+    def setValue(self, value: float) -> None:
         self.spin.setValue(value)
         self.slider.setValue(self.gamma_scale(value))
 
-    def spin_changed(self, value: float):
+    def spin_changed(self, value: float) -> None:
         self.slider.blockSignals(True)
         self.slider.setValue(self.gamma_scale(value))
         self.slider.blockSignals(False)
         self.valueChanged.emit(value)
 
-    def slider_changed(self, value: float | int):
+    def slider_changed(self, value: float | int) -> None:
         self.spin.setValue(self.gamma_scale_inv(value))
 
     def gamma_scale(self, y: float) -> int:
@@ -259,7 +259,7 @@ class BetterImageItem(pg.ImageItem):
 
     sigColorChanged = QtCore.Signal()  #: :meta private:
 
-    def __init__(self, image: npt.NDArray | None = None, **kwargs):
+    def __init__(self, image: npt.NDArray | None = None, **kwargs) -> None:
         super().__init__(image, **kwargs)
 
     def set_colormap(
@@ -270,7 +270,7 @@ class BetterImageItem(pg.ImageItem):
         high_contrast: bool = False,
         zero_centered: bool = False,
         update: bool = True,
-    ):
+    ) -> None:
         cmap = pg_colormap_powernorm(
             cmap,
             gamma,
@@ -280,7 +280,7 @@ class BetterImageItem(pg.ImageItem):
         )
         self.set_pg_colormap(cmap, update=update)
 
-    def set_pg_colormap(self, cmap: pg.ColorMap, update: bool = True):
+    def set_pg_colormap(self, cmap: pg.ColorMap, update: bool = True) -> None:
         self._colorMap = cmap
         self.setLookupTable(cmap.getStops()[1], update=update)
         self.sigColorChanged.emit()
@@ -289,7 +289,7 @@ class BetterImageItem(pg.ImageItem):
 class TrackableLinearRegionItem(pg.LinearRegionItem):
     sigRegionChangeStarted = QtCore.Signal(object)  #: :meta private:
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev) -> None:
         if not self.movable or ev.button() != QtCore.Qt.MouseButton.LeftButton:
             return
         ev.accept()
@@ -328,7 +328,7 @@ class BetterColorBarItem(pg.PlotItem):
         hoverPen: QtGui.QPen | str = "m",
         hoverBrush: QtGui.QBrush | str = "#FFFFFF33",
         **kargs,
-    ):
+    ) -> None:
         super().__init__(parent, **kargs)
 
         self.setDefaultPadding(0)
@@ -388,7 +388,7 @@ class BetterColorBarItem(pg.PlotItem):
         else:
             return self.primary_image().quickMinMax(targetSize=2**16)
 
-    def set_width(self, width: int):
+    def set_width(self, width: int) -> None:
         self.layout.setColumnFixedWidth(1, width)
 
     def set_dimensions(
@@ -396,7 +396,7 @@ class BetterColorBarItem(pg.PlotItem):
         horiz_pad: int | None = None,
         vert_pad: int | None = None,
         font_size: float = 11.0,
-    ):
+    ) -> None:
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Expanding
         )
@@ -412,7 +412,7 @@ class BetterColorBarItem(pg.PlotItem):
             self.getAxis(axis).setTickFont(font)
 
     @QtCore.Slot()
-    def level_change(self):
+    def level_change(self) -> None:
         if not self.isVisible():
             return
         for img_ref in self.images:
@@ -420,28 +420,28 @@ class BetterColorBarItem(pg.PlotItem):
         self.limit_changed()
 
     @QtCore.Slot()
-    def level_change_fin(self):
+    def level_change_fin(self) -> None:
         pass
 
     def spanRegion(self) -> tuple[float, float]:
         return self._span.getRegion()
 
-    def setSpanRegion(self, levels: tuple[float, float]):
+    def setSpanRegion(self, levels: tuple[float, float]) -> None:
         self._span.setRegion(levels)
 
-    def setLimits(self, limits: tuple[float, float] | None):
+    def setLimits(self, limits: tuple[float, float] | None) -> None:
         self._fixedlimits = limits
         if self._primary_image is not None:
             self.limit_changed()
 
-    def addImage(self, image: Iterable[BetterImageItem] | BetterImageItem):
+    def addImage(self, image: Iterable[BetterImageItem] | BetterImageItem) -> None:
         if not isinstance(image, Iterable):
             self._images.add(weakref.ref(image))
         else:
             for img in image:
                 self._images.add(weakref.ref(img))
 
-    def removeImage(self, image: Iterable[BetterImageItem] | BetterImageItem):
+    def removeImage(self, image: Iterable[BetterImageItem] | BetterImageItem) -> None:
         if isinstance(image, Iterable):
             for img in image:
                 self._images.remove(weakref.ref(img))
@@ -452,7 +452,7 @@ class BetterColorBarItem(pg.PlotItem):
         self,
         image: Iterable[BetterImageItem] | BetterImageItem,
         insert_in: pg.PlotItem | None = None,
-    ):
+    ) -> None:
         self.addImage(image)
         for img_ref in self._images:
             img = img_ref()
@@ -490,20 +490,20 @@ class BetterColorBarItem(pg.PlotItem):
         # self.color_changed()
         self.limit_changed()
 
-    def image_level_changed(self):
+    def image_level_changed(self) -> None:
         levels = self.primary_image().getLevels()
         if levels is not None:
             self._span.setRegion(levels)
 
-    def image_changed(self):
+    def image_changed(self) -> None:
         self.level_change()
         if self._auto_levels:
             self.reset_levels()
 
-    def reset_levels(self):
+    def reset_levels(self) -> None:
         self._span.setRegion(self.limits)
 
-    def setAutoLevels(self, value):
+    def setAutoLevels(self, value) -> None:
         self._auto_levels = bool(value)
         self._span.setVisible(not self._auto_levels)
 
@@ -527,7 +527,7 @@ class BetterColorBarItem(pg.PlotItem):
     # print('e')
     # self.isocurve.setVisible(visible, *args, **kwargs)
 
-    def color_changed(self):
+    def color_changed(self) -> None:
         if not self.isVisible():
             return
         cmap = self.primary_image()._colorMap
@@ -538,7 +538,7 @@ class BetterColorBarItem(pg.PlotItem):
         self._colorbar.setLookupTable(lut, update=True)
 
     # def limit_changed(self, mn: float | None = None, mx: float | None = None):
-    def limit_changed(self):
+    def limit_changed(self) -> None:
         if not self.isVisible():
             return
         if not hasattr(self, "limits"):
@@ -570,7 +570,7 @@ class BetterColorBarItem(pg.PlotItem):
     #     self._colorbar.setLookupTable(lut)
     #     # self._colorbar.setColorMap(cmap)
 
-    def mouseDragEvent(self, ev):
+    def mouseDragEvent(self, ev) -> None:
         ev.ignore()
 
 

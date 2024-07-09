@@ -98,7 +98,7 @@ class InversePowerNorm(matplotlib.colors.Normalize):
         vmin: float | None = None,
         vmax: float | None = None,
         clip: bool = False,
-    ):
+    ) -> None:
         super().__init__(vmin, vmax, clip)
         self.gamma = gamma
 
@@ -266,7 +266,7 @@ class TwoSlopePowerNorm(matplotlib.colors.TwoSlopeNorm):
         vcenter: float = 0.0,
         vmin: float | None = None,
         vmax: float | None = None,
-    ):
+    ) -> None:
         super().__init__(vcenter=vcenter, vmin=vmin, vmax=vmax)
         self.gamma = gamma
         self._func = _diverging_powernorm
@@ -337,7 +337,7 @@ class CenteredPowerNorm(matplotlib.colors.CenteredNorm):
         vcenter: float = 0,
         halfrange: float | None = None,
         clip: bool = False,
-    ):
+    ) -> None:
         super().__init__(vcenter=vcenter, halfrange=halfrange, clip=clip)
         self.gamma = gamma
         self._func = _diverging_powernorm
@@ -407,7 +407,7 @@ class TwoSlopeInversePowerNorm(TwoSlopePowerNorm):
         vcenter: float = 0.0,
         vmin: float | None = None,
         vmax: float | None = None,
-    ):
+    ) -> None:
         super().__init__(gamma, vcenter, vmin, vmax)
         self._func = _diverging_inversepowernorm
         self._func_i = _diverging_inversepowernorm_inv
@@ -451,7 +451,7 @@ class CenteredInversePowerNorm(CenteredPowerNorm):
         vcenter: float = 0,
         halfrange: float | None = None,
         clip: bool = False,
-    ):
+    ) -> None:
         super().__init__(gamma, vcenter, halfrange, clip)
         self._func = _diverging_inversepowernorm
         self._func_i = _diverging_inversepowernorm_inv
@@ -741,7 +741,7 @@ def _ez_inset(
 
 
 class InsetAxesLocator:
-    def __init__(self, ax, width, height, pad, loc):
+    def __init__(self, ax, width, height, pad, loc) -> None:
         self._ax = ax
         self._transAxes = ax.transAxes
         self._width = width
@@ -759,7 +759,7 @@ class InsetAxesLocator:
             - ax.figure.transSubfigure,
         )
 
-    def set_pad(self, pad):
+    def set_pad(self, pad) -> None:
         pad_num = False
         if isinstance(pad, Number):
             pad_num = True
@@ -781,7 +781,7 @@ class InsetAxesLocator:
         if "lower" in self._loc:
             self.pads[1] *= -1
 
-    def add_pad(self, delta):
+    def add_pad(self, delta) -> None:
         self.pads[0] += delta[0]
         self.pads[1] += delta[1]
 

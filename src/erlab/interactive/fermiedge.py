@@ -57,7 +57,7 @@ class EdgeFitter(QtCore.QThread):
     sigIterated = QtCore.Signal(int)
     sigFinished = QtCore.Signal()
 
-    def set_params(self, data, x0, y0, x1, y1, params):
+    def set_params(self, data, x0, y0, x1, y1, params) -> None:
         self.data = data
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
@@ -70,11 +70,11 @@ class EdgeFitter(QtCore.QThread):
         )
 
     @QtCore.Slot()
-    def abort_fit(self):
+    def abort_fit(self) -> None:
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
 
-    def run(self):
+    def run(self) -> None:
         self.sigIterated.emit(0)
         with joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
@@ -130,7 +130,7 @@ class GoldTool(AnalysisWindow):
         data_name: str | None = None,
         execute: bool = True,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(
             data,
             link="x",
@@ -347,11 +347,11 @@ class GoldTool(AnalysisWindow):
 
         self.__post_init__(execute=execute)
 
-    def _toggle_fast(self):
+    def _toggle_fast(self) -> None:
         self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
         self.params_edge.widgets["Fix T"].setDisabled(self.params_edge.values["Fast"])
 
-    def iterated(self, n: int):
+    def iterated(self, n: int) -> None:
         self.step_times.append(time.perf_counter() - self.start_time)
         self.progress.setValue(n)
 
@@ -365,7 +365,7 @@ class GoldTool(AnalysisWindow):
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
     @QtCore.Slot()
-    def perform_edge_fit(self):
+    def perform_edge_fit(self) -> None:
         self.start_time = time.perf_counter()
         self.step_times = [0.0]
 
@@ -383,14 +383,14 @@ class GoldTool(AnalysisWindow):
         self.fitter.start()
 
     @QtCore.Slot()
-    def abort_fit(self):
+    def abort_fit(self) -> None:
         self.sigAbortFitting.emit()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         super().closeEvent(event)
 
     @QtCore.Slot()
-    def post_fit(self):
+    def post_fit(self) -> None:
         self.progress.reset()
         self.edge_center, self.edge_stderr = (
             self.fitter.edge_center,
@@ -408,7 +408,7 @@ class GoldTool(AnalysisWindow):
         self.params_tab.setDisabled(False)
         self.perform_fit("poly")
 
-    def perform_fit(self, mode="poly"):
+    def perform_fit(self, mode="poly") -> None:
         match mode:
             case "poly":
                 edgefunc = self._perform_poly_fit()
@@ -474,11 +474,11 @@ class GoldTool(AnalysisWindow):
         )
         return self.result
 
-    def open_itool(self):
+    def open_itool(self) -> None:
         self.itool = ImageTool(self.corrected)
         self.itool.show()
 
-    def gen_code(self, mode: str):
+    def gen_code(self, mode: str) -> None:
         p0 = self.params_edge.values
         match mode:
             case "poly":

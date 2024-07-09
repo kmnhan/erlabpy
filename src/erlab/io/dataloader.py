@@ -56,7 +56,7 @@ class ValidationWarning(UserWarning):
 class LoaderNotFoundError(Exception):
     """Raised when a loader is not found in the registry."""
 
-    def __init__(self, key: str):
+    def __init__(self, key: str) -> None:
         super().__init__(f"Loader for name or alias {key} not found in the registry")
 
 
@@ -190,7 +190,7 @@ class LoaderBase:
         return out
 
     @classmethod
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
 
         if not hasattr(cls, "name"):
@@ -562,7 +562,7 @@ class LoaderBase:
 
         return styled
 
-    def isummarize(self, df: pandas.DataFrame | None = None, **kwargs):
+    def isummarize(self, df: pandas.DataFrame | None = None, **kwargs) -> None:
         """Display an interactive summary.
 
         This method provides an interactive summary of the data using ipywidgets and
@@ -632,7 +632,7 @@ class LoaderBase:
             table += "</div>"
             return table
 
-        def _update_data(_, *, full: bool = False):
+        def _update_data(_, *, full: bool = False) -> None:
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -690,7 +690,7 @@ class LoaderBase:
 
             _update_plot(None)
 
-        def _update_sliders(_):
+        def _update_sliders(_) -> None:
             if out.block:
                 return
             if self._temp_data is None:
@@ -709,7 +709,7 @@ class LoaderBase:
             coord_sel.observe(_update_plot, "value")
             dim_sel.observe(_update_sliders, "value")
 
-        def _update_plot(_):
+        def _update_plot(_) -> None:
             if self._temp_data is None:
                 return
             if not coord_sel.disabled:
@@ -731,13 +731,13 @@ class LoaderBase:
                         )
                 show_inline_matplotlib_plots()
 
-        def _next(_):
+        def _next(_) -> None:
             # Select next row
             idx = list(df.index).index(data_select.value)
             if idx + 1 < len(df.index):
                 data_select.value = list(df.index)[idx + 1]
 
-        def _prev(_):
+        def _prev(_) -> None:
             # Select previous row
             idx = list(df.index).index(data_select.value)
             if idx - 1 >= 0:
@@ -1107,7 +1107,7 @@ class LoaderBase:
         )
 
     @classmethod
-    def _raise_or_warn(cls, msg: str):
+    def _raise_or_warn(cls, msg: str) -> None:
         if cls.strict_validation:
             raise ValidationError(msg)
         else:
@@ -1147,7 +1147,7 @@ class LoaderRegistry(RegistryBase):
     default_data_dir: str | os.PathLike | None = None
     """Default directory to search for data files \n\n:meta hide-value:"""
 
-    def register(self, loader_class: type[LoaderBase]):
+    def register(self, loader_class: type[LoaderBase]) -> None:
         # Add class to loader
         self.loaders[loader_class.name] = loader_class
 
@@ -1189,7 +1189,7 @@ class LoaderRegistry(RegistryBase):
         except LoaderNotFoundError as e:
             raise AttributeError(str(e)) from e
 
-    def set_loader(self, loader: str | LoaderBase | None):
+    def set_loader(self, loader: str | LoaderBase | None) -> None:
         """Set the current data loader.
 
         All subsequent calls to `load` will use the loader set here.
@@ -1265,7 +1265,7 @@ class LoaderRegistry(RegistryBase):
             if data_dir is not None:
                 self.set_data_dir(old_data_dir)
 
-    def set_data_dir(self, data_dir: str | os.PathLike | None):
+    def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
         """Set the default data directory for the data loader.
 
         All subsequent calls to `load` will use the `data_dir` set here unless

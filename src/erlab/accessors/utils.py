@@ -26,14 +26,14 @@ _THIS_ARRAY: str = "<this-array>"
 class ERLabDataArrayAccessor:
     """Base class for accessors."""
 
-    def __init__(self, xarray_obj: xr.DataArray):
+    def __init__(self, xarray_obj: xr.DataArray) -> None:
         self._obj = xarray_obj
 
 
 class ERLabDatasetAccessor:
     """Base class for accessors."""
 
-    def __init__(self, xarray_obj: xr.Dataset):
+    def __init__(self, xarray_obj: xr.Dataset) -> None:
         self._obj = xarray_obj
 
 

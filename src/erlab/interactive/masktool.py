@@ -7,22 +7,21 @@ __all__ = ["masktool"]
 
 
 class PolyLineROIControls(ParameterGroup):
-    def __init__(self, roi: pg.PolyLineROI, spinbox_kw=None, **kwargs):
+    def __init__(self, roi: pg.PolyLineROI, spinbox_kw=None, **kwargs) -> None:
         pass
 
 
 class masktool(AnalysisWindow):
     # sigProgressUpdated = QtCore.Signal(int)
 
-    def __init__(self, data, *args, **kwargs):
+    def __init__(self, data, **kwargs):
         super().__init__(
             data,
-            *args,
-            link="x",
             layout="horizontal",
+            data_is_input=False,
             orientation="vertical",
             num_ax=2,
-            data_is_input=False,
+            link="x",
             **kwargs,
         )
         self._argnames = {}

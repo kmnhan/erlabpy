@@ -56,7 +56,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
         method="linear",
         bounds_error=False,
         fill_value=np.nan,
-    ):
+    ) -> None:
         super().__init__(
             points,
             values,

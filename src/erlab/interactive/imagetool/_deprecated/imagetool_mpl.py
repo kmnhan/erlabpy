@@ -41,7 +41,7 @@ def qt_style_names():
     return result
 
 
-def change_style(style_name):
+def change_style(style_name) -> None:
     QtWidgets.QApplication.setStyle(QtWidgets.QStyleFactory.create(style_name))
 
 
@@ -156,7 +156,7 @@ class ColorButton(QtWidgets.QPushButton):
 
     colorChanged = QtCore.Signal(object)
 
-    def __init__(self, *args, color=None, **kwargs):
+    def __init__(self, *args, color=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self._color = None
@@ -166,7 +166,7 @@ class ColorButton(QtWidgets.QPushButton):
         # Set the initial/default state.
         self.setColor(self._default)
 
-    def setColor(self, color):
+    def setColor(self, color) -> None:
         self._color = color
         self.colorChanged.emit(color.getRgbF())
         if self._color:
@@ -178,7 +178,7 @@ class ColorButton(QtWidgets.QPushButton):
     def color(self):
         return self._color
 
-    def onColorPicker(self):
+    def onColorPicker(self) -> None:
         """
         Show color-picker dialog to select color.
 
@@ -260,7 +260,7 @@ class mpl_itool(Widget):
         lineprops=None,
         fermilineprops=None,
         **improps,
-    ):
+    ) -> None:
         if fermilineprops is None:
             fermilineprops = {}
         if lineprops is None:
@@ -698,21 +698,21 @@ class mpl_itool(Widget):
         # self.axes[1].xaxis.get_major_ticks()[0].label1.set_visible(False)
         # self.axes[3].xaxis.get_major_ticks()[-1].label1.set_visible(False)
 
-    def connect(self):
+    def connect(self) -> None:
         """Connect events."""
         self._cidmotion = self.canvas.mpl_connect("motion_notify_event", self.onmove)
         self._ciddraw = self.canvas.mpl_connect("draw_event", self.clear)
         self._cidpress = self.canvas.mpl_connect("key_press_event", self.onpress)
         self._cidrelease = self.canvas.mpl_connect("key_release_event", self.onrelease)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Disconnect events."""
         self.canvas.mpl_disconnect(self._cidmotion)
         self.canvas.mpl_disconnect(self._ciddraw)
         self.canvas.mpl_disconnect(self._cidpress)
         self.canvas.mpl_disconnect(self._cidrelease)
 
-    def clear(self, event):
+    def clear(self, event) -> None:
         """Clear objects and save background."""
         if self.ignore(event):
             return
@@ -744,21 +744,21 @@ class mpl_itool(Widget):
         except KeyError:
             return dim
 
-    def onpress(self, event):
+    def onpress(self, event) -> None:
         if event.key == "shift":
             self._shift = True
 
-    def onrelease(self, event):
+    def onrelease(self, event) -> None:
         if event.key == "shift":
             self._shift = False
 
-    def _assign_vals_T(self):
+    def _assign_vals_T(self) -> None:
         if self.ndim == 2:
             self.vals_T = self.vals.T
         elif self.ndim == 3:
             self.vals_T = np.transpose(self.vals, axes=(1, 2, 0))
 
-    def set_cmap(self, cmap):
+    def set_cmap(self, cmap) -> None:
         self.cmap = cmap
         for im in self.maps:
             im.set_cmap(self.cmap)
@@ -766,7 +766,7 @@ class mpl_itool(Widget):
             obj.set_visible(False)
         self._apply_change()
 
-    def toggle_clim_lock(self, lock):
+    def toggle_clim_lock(self, lock) -> None:
         if lock:
             self.clim_locked = True
             for i, m in enumerate(self.maps):
@@ -774,31 +774,31 @@ class mpl_itool(Widget):
         else:
             self.clim_locked = False
 
-    def set_gamma(self, gamma):
+    def set_gamma(self, gamma) -> None:
         self.gamma = gamma
         self._apply_change()
 
-    def set_index(self, axis, index):
+    def set_index(self, axis, index) -> None:
         self._last_ind[axis] = index
         self.cursor_pos[axis] = self.coords[axis][index]
         self._apply_change(self._only_axis[axis])
 
-    def set_value(self, axis, val):
+    def set_value(self, axis, val) -> None:
         self._last_ind[axis] = self.get_index_of_value(axis, val)
         self.cursor_pos[axis] = val
         self._apply_change(self._only_axis[axis])
 
-    def set_cursor_color(self, c):
+    def set_cursor_color(self, c) -> None:
         for cursor in self.cursors:
             cursor.set_color(c)
         self._apply_change()
 
-    def set_line_color(self, c):
+    def set_line_color(self, c) -> None:
         for line in self.hists:
             line.set_color(c)
         self._apply_change()
 
-    def set_navg(self, axis, n):
+    def set_navg(self, axis, n) -> None:
         self.avg_win[axis] = n
         if n == 1:
             self.averaged[axis] = False
@@ -822,7 +822,7 @@ class mpl_itool(Widget):
         self._assign_vals_T()
         self._apply_change()
 
-    def update_spans(self):
+    def update_spans(self) -> None:
         for axis in range(self.ndim):
             domain = (
                 self.coords[axis][self._last_ind[axis]]
@@ -849,7 +849,7 @@ class mpl_itool(Widget):
             self.shape[axis] - 1,
         )
 
-    def onmove(self, event):
+    def onmove(self, event) -> None:
         if self.ignore(event):
             return
         if not event.button:
@@ -931,7 +931,7 @@ class mpl_itool(Widget):
         if self.bench:
             self.print_time()
 
-    def _apply_change(self, cond=None):
+    def _apply_change(self, cond=None) -> None:
         if cond is None:
             cond = (True,) * len(self.all)
         if self.parallel:
@@ -945,7 +945,7 @@ class mpl_itool(Widget):
                 a.set_visible(self.visible)
             self._update()
 
-    def _update(self):
+    def _update(self) -> None:
         for ax in self.scaling_axes:
             ax.set_major_locator(AutoLocator())
             ax.axes.relim()
@@ -973,7 +973,7 @@ class mpl_itool(Widget):
                 self.update_spans()
             self.canvas.draw_idle()
 
-    def print_time(self):
+    def print_time(self) -> None:
         now = time.time()
         dt = now - self.lastupdate
         if dt <= 0:
@@ -984,13 +984,13 @@ class mpl_itool(Widget):
         tx = f"Mean Frame Rate:  {self.fps:.3f} FPS"
         print(tx, end="\r")
 
-    def set_data(self, i):
+    def set_data(self, i) -> None:
         if self.ndim == 2:
             self.set_data_2d(i)
         elif self.ndim == 3:
             self.set_data_3d(i)
 
-    def set_data_2d(self, i):
+    def set_data_2d(self, i) -> None:
         if i == 0:
             self.all[i].set_data(self.vals_T)
         elif i == 1:
@@ -1002,7 +1002,7 @@ class mpl_itool(Widget):
         elif i in [5, 6]:
             self.all[i].set_ydata((self.cursor_pos[1], self.cursor_pos[1]))
 
-    def set_data_3d(self, i):
+    def set_data_3d(self, i) -> None:
         if i == 0:
             self.all[i].set_data(self.vals_T[:, self._last_ind[2], :])
         elif i == 1:
@@ -1024,18 +1024,18 @@ class mpl_itool(Widget):
         elif i == 14:
             self.all[i].set_ydata((self.cursor_pos[2], self.cursor_pos[2]))
 
-    def _drawpath(self):
+    def _drawpath(self) -> None:
         # ld = LineDrawer(self.canvas, self.axes[0])
         # points = ld.draw_line()
         # print(points)
         pass
 
-    def _onselectpath(self, verts):
+    def _onselectpath(self, verts) -> None:
         print(verts)
 
 
 class ImageToolNavBar(NavigationToolbar2QT):
-    def __init__(self, canvas, parent, coordinates=True):
+    def __init__(self, canvas, parent, coordinates=True) -> None:
         self.parent = parent
         NavigationToolbar2QT.__init__(self, canvas, parent, coordinates=coordinates)
 
@@ -1079,7 +1079,7 @@ class ImageToolNavBar(NavigationToolbar2QT):
 
 
 class ImageToolColors(QtWidgets.QDialog):
-    def __init__(self, parent):
+    def __init__(self, parent) -> None:
         self.parent = parent
         super().__init__(self.parent)
         self.setWindowTitle("Colors")
@@ -1122,18 +1122,18 @@ class ImageToolColors(QtWidgets.QDialog):
         layout.addWidget(buttons)
         self.setLayout(layout)
 
-    def reject(self):
+    def reject(self) -> None:
         self.cursorpicker.setColor(self.cursor_current)
         self.linepicker.setColor(self.line_current)
         super().reject()
 
-    def reset_colors(self):
+    def reset_colors(self) -> None:
         self.cursorpicker.setColor(self.cursor_default)
         self.linepicker.setColor(self.line_default)
 
 
 class ImageTool(QtWidgets.QMainWindow):
-    def __init__(self, data, *args, **kwargs):
+    def __init__(self, data, *args, **kwargs) -> None:
         super().__init__()
         self._main = QtWidgets.QWidget()
         self.setCentralWidget(self._main)
@@ -1184,7 +1184,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.NavBar = ImageToolNavBar
         home_old = self.NavBar.home
 
-        def home_new(self, *args):
+        def home_new(self, *args) -> None:
             home_old(self, *args)
             axes = self.canvas.figure.axes
             axes[1].set_ylim(auto=True)
@@ -1194,7 +1194,7 @@ class ImageTool(QtWidgets.QMainWindow):
 
         pan_old = self.NavBar.pan
 
-        def pan_new(self, *args):
+        def pan_new(self, *args) -> None:
             if self.mode == _Mode.PAN:
                 self.parent.itool.connect()
             else:
@@ -1203,7 +1203,7 @@ class ImageTool(QtWidgets.QMainWindow):
 
         zoom_old = self.NavBar.zoom
 
-        def zoom_new(self, *args):
+        def zoom_new(self, *args) -> None:
             if self.mode == _Mode.ZOOM:
                 self.parent.itool.connect()
             else:
@@ -1363,7 +1363,7 @@ class ImageTool(QtWidgets.QMainWindow):
         self.main_canvas.setFocus()
         self.main_canvas.draw()
 
-    def onmove_super(self, event):
+    def onmove_super(self, event) -> None:
         if event.inaxes not in self.axes:
             return
         if not event.button:
@@ -1379,39 +1379,39 @@ class ImageTool(QtWidgets.QMainWindow):
             )
             self._cursor_dblspin[i].blockSignals(False)
 
-    def reverse_cmap(self, v):
+    def reverse_cmap(self, v) -> None:
         if v:
             self.itool.set_cmap(plt.get_cmap(self._cmap_combo.currentText()).reversed())
         else:
             self.itool.set_cmap(plt.get_cmap(self._cmap_combo.currentText()))
 
-    def _toggle_clim_lock(self, v):
+    def _toggle_clim_lock(self, v) -> None:
         if v:
             self._lock_check.setIcon(self.icons["lock"])
         else:
             self._lock_check.setIcon(self.icons["unlock"])
         self.itool.toggle_clim_lock(v)
 
-    def _navg_changed(self, axis, n):
+    def _navg_changed(self, axis, n) -> None:
         self.itool.set_navg(axis, n)
 
-    def _navg_reset(self):
+    def _navg_reset(self) -> None:
         for i in range(self.ndim):
             self._navg_spin[i].setValue(1)
 
-    def _cursor_index_changed(self, axis, index):
+    def _cursor_index_changed(self, axis, index) -> None:
         self._cursor_dblspin[axis].blockSignals(True)
         self.itool.set_index(axis, index)
         self._cursor_dblspin[axis].setValue(self.itool.coords[axis][index])
         self._cursor_dblspin[axis].blockSignals(False)
 
-    def _cursor_value_changed(self, axis, value):
+    def _cursor_value_changed(self, axis, value) -> None:
         self._cursor_spin[axis].blockSignals(True)
         self.itool.set_value(axis, value)
         self._cursor_spin[axis].setValue(self.itool._last_ind[axis])
         self._cursor_spin[axis].blockSignals(False)
 
-    def _color_button_clicked(self, s):
+    def _color_button_clicked(self, s) -> None:
         # print("click", s)
         dialog = ImageToolColors(self)
         if dialog.exec():
@@ -1421,11 +1421,11 @@ class ImageTool(QtWidgets.QMainWindow):
             pass
             # print("Cancel!")
 
-    def _assign_snap(self, value):
+    def _assign_snap(self, value) -> None:
         self.itool.snap = value
 
 
-def itoolmpl(data, *args, **kwargs):
+def itoolmpl(data, *args, **kwargs) -> None:
     qapp = QtWidgets.QApplication.instance()
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)

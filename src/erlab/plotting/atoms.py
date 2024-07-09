@@ -124,7 +124,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
 
     """
 
-    def __init__(self, *args, scale_size: bool = True, **kwargs):
+    def __init__(self, *args, scale_size: bool = True, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._scale_size = scale_size
 
@@ -140,7 +140,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
             color_array = color_array[self._z_markers_idx]
         return matplotlib.colors.to_rgba_array(color_array, self._alpha)
 
-    def set_sizes(self, sizes: np.ndarray, dpi: float = 72.0):
+    def set_sizes(self, sizes: np.ndarray, dpi: float = 72.0) -> None:
         super().set_sizes(sizes, dpi)
         self.sizes_orig = np.asarray(sizes) if np.iterable(sizes) else sizes
 
@@ -166,7 +166,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
                 self._sizes = old_sizes
                 self._offsets = old_offset
 
-    def draw(self, renderer):
+    def draw(self, renderer) -> None:
         if self._scale_size:  # and np.isfinite(self.axes._focal_length):
             # proj_sizes = projected_length(self.axes, np.sqrt(self.sizes_orig))
             proj_sizes = projected_length_pos(
@@ -210,15 +210,15 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 
     """
 
-    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs):
+    def __init__(self, segments, *, scale_linewidths: bool = True, **kwargs) -> None:
         super().__init__(segments, **kwargs)
         self._scale_linewidths: bool = scale_linewidths
 
-    def set_linewidth(self, lw):
+    def set_linewidth(self, lw) -> None:
         super().set_linewidth(lw)
         self.linewidths_orig = np.asarray(lw) if np.iterable(lw) else lw
 
-    def draw(self, renderer):
+    def draw(self, renderer) -> None:
         if self._scale_linewidths:  # and np.isfinite(self.axes._focal_length):
             proj_len = projected_length(self.axes, self.linewidths_orig)
             args = self.axes.transData.frozen().to_values()
@@ -256,7 +256,7 @@ class CrystalProperty:
         bounds: Mapping[Literal["x", "y", "z"], tuple[float, float]] | None = None,
         mask: Callable | None = None,
         r_factor: float = 0.4,
-    ):
+    ) -> None:
         """Properties of a crystal structure for plotting.
 
         Stores the information required to plot a three dimensional crystal structure.
@@ -449,7 +449,7 @@ class CrystalProperty:
         clean_axes: bool = True,
         bond_kw: dict | None = None,
         atom_kw: dict | None = None,
-    ):
+    ) -> None:
         """
         Plot the crystal structure.
 

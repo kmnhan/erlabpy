@@ -348,7 +348,9 @@ def spline_from_edge(
     return spl
 
 
-def _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, res):
+def _plot_gold_fit(
+    fig, gold, angle_range, eV_range, center_arr, center_stderr, res
+) -> None:
     if isinstance(res, lmfit.model.ModelResult):
         is_callable = False
     elif callable(res):

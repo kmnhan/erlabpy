@@ -72,7 +72,7 @@ class KspaceToolGUI(
             lambda: self.plotitems[0].setVisible(self.angle_plot_check.isChecked())
         )
 
-    def update_cmap(self):
+    def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
         if name == self.cmap_combo.LOAD_ALL_TEXT:
             self.cmap_combo.load_all()
@@ -90,7 +90,7 @@ class KspaceToolGUI(
     def get_bz_lines(self):
         raise NotImplementedError
 
-    def update_bz(self):
+    def update_bz(self) -> None:
         self.plotitems[1].clearPlots()
         if not self.bz_group.isChecked():
             return
@@ -123,7 +123,7 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
-    def __init__(self, data: xr.DataArray, *, data_name: str | None = None):
+    def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         super().__init__()
 
         self._argnames = {}
@@ -218,7 +218,7 @@ class KspaceTool(KspaceToolGUI):
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
 
-    def calculate_resolution(self):
+    def calculate_resolution(self) -> None:
         for k, spin in self._resolution_spins.items():
             spin.setValue(
                 self.data.kspace.estimate_resolution(
@@ -226,15 +226,16 @@ class KspaceTool(KspaceToolGUI):
                 )
             )
 
-    def show_converted(self):
+    def show_converted(self) -> None:
         self.data.kspace.offsets = self.offset_dict
 
         if self.data.kspace.has_hv:
             self.data.kspace.inner_potential = self._offset_spins["V0"].value()
 
         wait_dialog = QtWidgets.QDialog(self)
-        wait_dialog.setLayout(QtWidgets.QVBoxLayout())
-        wait_dialog.layout().addWidget(QtWidgets.QLabel("Converting..."))
+        dialog_layout = QtWidgets.QVBoxLayout()
+        wait_dialog.setLayout(dialog_layout)
+        dialog_layout.addWidget(QtWidgets.QLabel("Converting..."))
         wait_dialog.open()
         self._itool = ImageTool(
             self.data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
@@ -338,7 +339,7 @@ class KspaceTool(KspaceToolGUI):
         )
         return data_ang, data_k
 
-    def update(self):
+    def update(self) -> None:
         ang, k = self.get_data()
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
@@ -390,7 +391,7 @@ class KspaceTool(KspaceToolGUI):
 
         return lines, vertices
 
-    def closeEvent(self, event: QtGui.QCloseEvent):
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         del self.data
         super().closeEvent(event)
 
