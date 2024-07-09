@@ -120,11 +120,11 @@ def test_loader():
             "polarization",
             "photon_flux",
         )
-        # Attributes to be used as coordinates. Place all attributes that we don't want to
-        # lose when merging multiple file scans here.
+        # Attributes to be used as coordinates. Place all attributes that we don't want
+        # to lose when merging multiple file scans here.
 
         additional_attrs: ClassVar[dict] = {
-            "configuration": 1,  # Experimental geometry. Required for momentum conversion
+            "configuration": 1,  # Experimental geometry required for kspace conversion
             "sample_workfunction": 4.3,
         }  # Any additional metadata you want to add to the data
 
@@ -166,8 +166,8 @@ def test_loader():
         def load_single(self, file_path):
             data = erlab.io.load_hdf5(file_path)
 
-            # To prevent conflicts when merging multiple scans, we rename the coordinates
-            # prior to concatenation
+            # To prevent conflicts when merging multiple scans, we rename the
+            # coordinates prior to concatenation
             return self.process_keys(data)
 
         def infer_index(self, name):

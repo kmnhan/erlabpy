@@ -170,9 +170,8 @@ class ColorButton(QtWidgets.QPushButton):
         self._color = color
         self.colorChanged.emit(color.getRgbF())
         if self._color:
-            self.setStyleSheet(
-                f"QWidget {{ background-color: {self._color.name(QtGui.QColor.HexArgb)}; border: 0; }}"
-            )
+            clr = self._color.name(QtGui.QColor.HexArgb)
+            self.setStyleSheet(f"QWidget {{ background-color: {clr}; border: 0; }}")
         else:
             self.setStyleSheet("")
 
@@ -961,13 +960,6 @@ class mpl_itool(Widget):
                 self.canvas.restore_region(self.background)
             if self.parallel:
                 raise NotImplementedError
-                # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-                #     (0, 4, 5, 1, 2, 3, 1, 2, 3),
-                #     self.maps + self.hists + (self.axes[1].yaxis,
-                #                               self.axes[2].xaxis,
-                #                               self.axes[3].yaxis))))
-                # self.pool(delayed(self.axes[i].draw_artist)(art) for i, art in list(zip(
-                #     (0, 1, 4, 0, 2, 5, 3, 5, 4), self.cursors)))
             else:
                 for i, art in list(
                     zip(self.ax_index, self.all + self.scaling_axes, strict=True)
@@ -1349,7 +1341,9 @@ class ImageTool(QtWidgets.QMainWindow):
 
         # self.pathtab = QtWidgets.QWidget()
         # pathtabcontent = QtWidgets.QHBoxLayout()
-        # pathlabel = QtWidgets.QLabel('Add point: `space`\nRemove point: `delete`\nFinish selection: `enter`')
+        # pathlabel = QtWidgets.QLabel(
+        #     "Add point: `space`\nRemove point: `delete`\nFinish selection: `enter`"
+        # )
         # pathstart = QtWidgets.QPushButton()
         # pathstart.clicked.connect(self.itool._drawpath)
         # pathtabcontent.addWidget(pathlabel)

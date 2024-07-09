@@ -264,13 +264,11 @@ def change_style(style_name):
     QtWidgets.QApplication.setStyle(QtWidgets.QStyleFactory.create(style_name))
 
 
-# @numba.njit(nogil=True, cache=True, fastmath={'nnan','ninf', 'nsz', 'contract', 'reassoc', 'afn', 'arcp'})
 @numba.njit(
     nogil=True,
     cache=True,
     fastmath={"ninf", "nsz", "contract", "reassoc", "afn", "arcp"},
 )
-# @numba.njit(nogil=True, cache=True)
 def move_mean1d(a, window, min_count):
     out = np.empty_like(a)
     asum = 0.0
@@ -367,9 +365,8 @@ class ColorButton(QtWidgets.QPushButton):
         self._color = color
         self.colorChanged.emit(color.getRgbF())
         if self._color:
-            self.setStyleSheet(
-                f"QWidget {{ background-color: {self._color.name(QtGui.QColor.HexArgb)}; border: 0; }}"
-            )
+            clr = self._color.name(QtGui.QColor.HexArgb)
+            self.setStyleSheet(f"QWidget {{ background-color: {clr}; border: 0; }}")
         else:
             self.setStyleSheet("")
 
@@ -1711,7 +1708,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
         slices = tuple(self._get_bin_slice(ax) for ax in avg_axis)
         return self._block_slice_avg(avg_axis, slices)
         # self._slice_block = self._block_slicer(avg_axis, slices)
-        # return _general_nanmean_func(self._slice_block, axis=[(ax - 1) for ax in avg_axis])
+        # return _general_nanmean_func(
+        # self._slice_block, axis=[(ax - 1) for ax in avg_axis]
+        # )
 
     def _block_slice_avg(self, axis=None, slices=None):
         axis = [(ax - 1) % self.data_ndim for ax in axis]
@@ -1924,19 +1923,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._refresh_data_4d(i)
         self.sigIndexChanged.emit(self._last_ind, self.cursor_pos)
 
-    # def get_levels(self, i):
-    #     if self.clim_locked:
-    #         if self.zero_centered:
-
-    #         else:
-    #             return self.clim_list[i]
-    #     else:
-    #         self.all[i].getLevels()
     # def _refresh_histograms(self):
-    #     self.hists[0].setData(self.data_coords[0], self.maps[0].image[self._last_ind[1], :])
-    #     self.hists[1].setData(self.maps[0].image[:, self._last_ind[0]], self.data_coords[1])
+    #     self.hists[0].setData(
+    #         self.data_coords[0], self.maps[0].image[self._last_ind[1], :]
+    #     )
+    #     self.hists[1].setData(
+    #         self.maps[0].image[:, self._last_ind[0]], self.data_coords[1]
+    #     )
     #     if self.data_ndim == 3:
-    #         self.hists[2].setData(self.data_coords[2], self.maps[1].image[:, self._last_ind[0]])
+    #         self.hists[2].setData(
+    #             self.data_coords[2], self.maps[1].image[:, self._last_ind[0]]
+    #         )
 
     def _refresh_data_2d(self, i):
         if i == 0:
@@ -2132,43 +2129,41 @@ class ImageToolColors(QtWidgets.QDialog):
         self.setWindowTitle("Colors")
         raise NotImplementedError
 
-    #     self.cursor_default = color_to_QColor(self.parent.itool.cursor_kw["color"])
-    #     self.line_default = color_to_QColor(self.parent.itool.profile_kw["color"])
-    #     self.cursor_current = color_to_QColor(self.parent.itool.cursors[0].get_color())
-    #     self.line_current = color_to_QColor(self.parent.itool.hists[0].get_color())
+    #   self.cursor_default = color_to_QColor(self.parent.itool.cursor_kw["color"])
+    #   self.line_default = color_to_QColor(self.parent.itool.profile_kw["color"])
+    #   self.cursor_current = color_to_QColor(self.parent.itool.cursors[0].get_color())
+    #   self.line_current = color_to_QColor(self.parent.itool.hists[0].get_color())
 
-    #     if (self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) & (
-    #         self.line_default.getRgbF() == self.line_current.getRgbF()
-    #     ):
-    #         buttons = QtWidgets.QDialogButtonBox(
-    #             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-    #         )
-    #     else:
-    #         buttons = QtWidgets.QDialogButtonBox(
-    #             QtWidgets.QDialogButtonBox.RestoreDefaults
-    #             | QtWidgets.QDialogButtonBox.Ok
-    #             | QtWidgets.QDialogButtonBox.Cancel
-    #         )
-    #         buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
-    #             self.reset_colors
-    #         )
-    #     buttons.rejected.connect(self.reject)
-    #     buttons.accepted.connect(self.accept)
-
-    #     cursorlabel = QtWidgets.QLabel("Cursors:")
-    #     linelabel = QtWidgets.QLabel("Lines:")
-    #     self.cursorpicker = ColorButton(color=self.cursor_current)
-    #     self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
-    #     self.linepicker = ColorButton(color=self.line_current)
-    #     self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
-
-    #     layout = QtWidgets.QGridLayout()
-    #     layout.addWidget(cursorlabel, 0, 0)
-    #     layout.addWidget(self.cursorpicker, 0, 1)
-    #     layout.addWidget(linelabel, 1, 0)
-    #     layout.addWidget(self.linepicker, 1, 1)
-    #     layout.addWidget(buttons)
-    #     self.setLayout(layout)
+    #    if (self.cursor_default.getRgbF() == self.cursor_current.getRgbF()) & (
+    #        self.line_default.getRgbF() == self.line_current.getRgbF()
+    #    ):
+    #        buttons = QtWidgets.QDialogButtonBox(
+    #            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+    #        )
+    #    else:
+    #        buttons = QtWidgets.QDialogButtonBox(
+    #            QtWidgets.QDialogButtonBox.RestoreDefaults
+    #            | QtWidgets.QDialogButtonBox.Ok
+    #            | QtWidgets.QDialogButtonBox.Cancel
+    #        )
+    #        buttons.button(QtWidgets.QDialogButtonBox.RestoreDefaults).clicked.connect(
+    #            self.reset_colors
+    #        )
+    #    buttons.rejected.connect(self.reject)
+    #    buttons.accepted.connect(self.accept)
+    #    cursorlabel = QtWidgets.QLabel("Cursors:")
+    #    linelabel = QtWidgets.QLabel("Lines:")
+    #    self.cursorpicker = ColorButton(color=self.cursor_current)
+    #    self.cursorpicker.colorChanged.connect(self.parent.itool.set_cursor_color)
+    #    self.linepicker = ColorButton(color=self.line_current)
+    #    self.linepicker.colorChanged.connect(self.parent.itool.set_line_color)
+    #    layout = QtWidgets.QGridLayout()
+    #    layout.addWidget(cursorlabel, 0, 0)
+    #    layout.addWidget(self.cursorpicker, 0, 1)
+    #    layout.addWidget(linelabel, 1, 0)
+    #    layout.addWidget(self.linepicker, 1, 1)
+    #    layout.addWidget(buttons)
+    #    self.setLayout(layout)
 
     # def reject(self):
     #     self.cursorpicker.setColor(self.cursor_current)
@@ -2416,7 +2411,9 @@ class betterIsocurve(pg.IsocurveItem):
             data = self.data
 
         lines = fast_isocurve(data, self.level, self.connected, self.extendToEdge)
-        # lines = pg.functions.isocurve(data, self.level, connected=True, extendToEdge=True)
+        # lines = pg.functions.isocurve(
+        #     data, self.level, connected=True, extendToEdge=True
+        # )
         self.path = QtGui.QPainterPath()
         for line in lines:
             self.path.moveTo(*line[0])

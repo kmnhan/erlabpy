@@ -142,13 +142,12 @@ indent-width = 4
 [tool.ruff.lint]
 select = [
     "F",
-    "E4",
-    "E7",
-    "E9",
+    "E",
     "W",
     "I",
     "D",
     "UP",
+    "YTT",
     "B",
     "C4",
     "FA",

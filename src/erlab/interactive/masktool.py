@@ -78,8 +78,8 @@ class masktool(AnalysisWindow):
             self.images[0].setDataArray(new_arr.T)
         else:
             self.images[0].setDataArray(new_arr)
-        # else:
-        # self.images[0].setDataArray(new_arr)
-        # self.images[0].setImage(self.data.isel({dim_z:self.cursor.widgets["slider"].value()}).values)
+            # self.images[0].setImage(
+            #     self.data.isel({dim_z: self.cursor.widgets["slider"].value()}).values
+            # )
 
         # self.cursor.values["slider"]

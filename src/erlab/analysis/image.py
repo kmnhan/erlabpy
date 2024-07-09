@@ -689,7 +689,9 @@ def scaled_laplace(
     derivatives, taking the different scaling for each axis into account.
 
     .. math::
-        \Delta f \sim \frac{\partial^2 f}{\partial x^2} \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
+
+        \Delta f \sim \frac{\partial^2 f}{\partial x^2}
+        \left(\frac{\Delta x}{\Delta y}\right)^{\!2} + \frac{\partial^2 f}{\partial y^2}
 
     See Ref. :cite:p:`zhang2011curvature` for more information.
 

@@ -319,7 +319,8 @@ class SlicerLinkProxy:
 
                 if axis is None:
                     raise ValueError(
-                        "Axis argument not found in decorated method with `indices=True`"
+                        "Axis argument not found in method decorated "
+                        "with the `indices=True` argument"
                     )
 
                 args["value"] = self.convert_index(source, target, axis, index, steps)

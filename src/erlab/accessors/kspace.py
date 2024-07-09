@@ -499,7 +499,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         The resolution is estimated with the kinetic energy and angular resolution:
 
-        .. math:: \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
+        .. math::
+
+            \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
         """
         min_Ek = np.amin(self.kinetic_energy.values)

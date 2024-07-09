@@ -161,7 +161,8 @@ class Minuit(iminuit.Minuit):
             if par.expr is not None:
                 if par.vary:
                     raise ValueError(
-                        "Parameters constrained with expressions are not supported by Minuit."
+                        "Parameters constrained with expressions "
+                        "are not supported by iminuit"
                     )
                 else:
                     continue

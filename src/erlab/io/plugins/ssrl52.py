@@ -123,11 +123,15 @@ class SSRL52Loader(LoaderBase):
                                 )
                                 continue
                             is_hvdep = True
+
                             # For hv dep scans, EKin is given for each scan
                             data = data.rename({ax["label"]: "Binding Energy"})
                             ax["label"] = "Binding Energy"
-                            # ax['offset'] will be something like "MapInfo:Data:Axes0:Offset"
+
+                            # ax['offset'] will be something like:
+                            # "MapInfo:Data:Axes0:Offset"
                             offset_key: str = ax["offset"][8:]
+
                             # Take first kinetic energy
                             offset = np.array(ncf["MapInfo"][offset_key])[0]
 
@@ -180,9 +184,9 @@ class SSRL52Loader(LoaderBase):
                     if len(same_length_indices) != 1:
                         # Multiple dimensions with the same length, ambiguous
                         warnings.warn(
-                            f"Ambiguous length for {k}. This was not taken into account "
-                            "while writing the loader code. Please report this issue. "
-                            "Resulting data may be incorrect",
+                            f"Ambiguous length for {k}. This was not taken into "
+                            "account while writing the loader code. Please report this "
+                            "issue. Resulting data may be incorrect",
                             stacklevel=1,
                         )
                     idx = same_length_indices[-1]

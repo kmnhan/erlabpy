@@ -298,8 +298,8 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             unexpected = set(params.dims) - set(preserved_dims)
             if unexpected:
                 raise ValueError(
-                    f"Parameters object has unexpected dimensions {tuple(unexpected)}. It "
-                    "should only have dimensions that are in data dimensions "
+                    f"Parameters object has unexpected dimensions {tuple(unexpected)}. "
+                    "It should only have dimensions that are in data dimensions "
                     f"{preserved_dims}."
                 )
 
