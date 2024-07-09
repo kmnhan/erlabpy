@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     class ColorMapState(TypedDict):
         cmap: str | pg.ColorMap
         gamma: float
-        reversed: bool
+        reverse: bool
         high_contrast: bool
         zero_centered: bool
         levels_locked: bool
@@ -505,7 +505,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colormap_properties: ColorMapState = {
             "cmap": cmap,
             "gamma": gamma,
-            "reversed": cmap_reversed,
+            "reverse": cmap_reversed,
             "high_contrast": False,
             "zero_centered": zero_centered,
             "levels_locked": False,
@@ -1145,7 +1145,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self,
         cmap: str | pg.ColorMap | None = None,
         gamma: float | None = None,
-        reversed: bool | None = None,
+        reverse: bool | None = None,
         high_contrast: bool | None = None,
         zero_centered: bool | None = None,
         levels_locked: bool | None = None,
@@ -1160,8 +1160,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._colormap_properties["cmap"] = cmap
         if gamma is not None:
             self._colormap_properties["gamma"] = gamma
-        if reversed is not None:
-            self._colormap_properties["reversed"] = reversed
+        if reverse is not None:
+            self._colormap_properties["reverse"] = reverse
         if high_contrast is not None:
             self._colormap_properties["high_contrast"] = high_contrast
         if zero_centered is not None:
@@ -1174,7 +1174,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap = pg_colormap_powernorm(
             self._colormap_properties["cmap"],
             self._colormap_properties["gamma"],
-            self._colormap_properties["reversed"],
+            self._colormap_properties["reverse"],
             high_contrast=self._colormap_properties["high_contrast"],
             zero_centered=self._colormap_properties["zero_centered"],
         )

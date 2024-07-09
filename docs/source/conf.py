@@ -25,7 +25,7 @@ os.environ["QT_API"] = "pyqt6"
 
 
 project = "ERLab"
-copyright = "2023, Kimoon Han"
+copyright = "2023, Kimoon Han"  # noqa: A001
 author = "Kimoon Han"
 release = importlib.metadata.version("erlab")
 version = release

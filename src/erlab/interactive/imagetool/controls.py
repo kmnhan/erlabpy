@@ -591,7 +591,7 @@ class ItoolColorControls(ItoolControlsBase):
         self.btn_lock.blockSignals(True)
 
         props = self.slicer_area.colormap_properties
-        self.btn_reverse.setChecked(props["reversed"])
+        self.btn_reverse.setChecked(props["reverse"])
         self.btn_contrast.setChecked(props["high_contrast"])
         self.btn_zero.setChecked(props["zero_centered"])
         self.btn_lock.setChecked(props["levels_locked"])
@@ -603,7 +603,7 @@ class ItoolColorControls(ItoolControlsBase):
 
     def update_colormap(self) -> None:
         self.slicer_area.set_colormap(
-            reversed=self.btn_reverse.isChecked(),
+            reverse=self.btn_reverse.isChecked(),
             high_contrast=self.btn_contrast.isChecked(),
             zero_centered=self.btn_zero.isChecked(),
         )

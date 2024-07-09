@@ -450,7 +450,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             line.setText(self.text())
         self.textChanged.emit(self.text())
 
-    def fixup(self, input):
+    def fixup(self, _):
         # Called when the spinbox loses focus with an invalid or intermediate string
         return self.textFromValue(self._lastvalue)
 

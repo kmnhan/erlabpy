@@ -513,10 +513,10 @@ class ItoolMenuBar(DictMenuBar):
 
         cmap_props = self.slicer_area.colormap_properties
         for ca, k in zip(
-            self.colorAct, ["reversed", "high_contrast", "zero_centered"], strict=True
+            self.colorAct, ["reverse", "high_contrast", "zero_centered"], strict=True
         ):
             k = cast(
-                Literal["reversed", "high_contrast", "zero_centered"], k
+                Literal["reverse", "high_contrast", "zero_centered"], k
             )  # for mypy
             ca.blockSignals(True)
             ca.setChecked(cmap_props[k])
@@ -529,7 +529,7 @@ class ItoolMenuBar(DictMenuBar):
 
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
-            reversed=self.colorAct[0].isChecked(),
+            reverse=self.colorAct[0].isChecked(),
             high_contrast=self.colorAct[1].isChecked(),
             zero_centered=self.colorAct[2].isChecked(),
         )

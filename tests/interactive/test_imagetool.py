@@ -112,7 +112,7 @@ def test_itool(qtbot):
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "ColdWarm", gamma=1.5, reversed=True, high_contrast=True, zero_centered=True
+        "ColdWarm", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels

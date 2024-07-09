@@ -128,13 +128,13 @@ def shift(
         slices: tuple[slice | int, ...] = tuple(_slices)
 
         # Initialize arguments to `scipy.ndimage.shift`
-        input = out[slices]
-        shifts: list[float] = [0.0] * input.ndim
+        arr = out[slices]
+        shifts: list[float] = [0.0] * arr.ndim
         shift_val: float = float(shift.isel(dict(zip(shift.dims, idxs, strict=True))))
-        shifts[cast(int, input.get_axis_num(along))] = shift_val
+        shifts[cast(int, arr.get_axis_num(along))] = shift_val
 
         # Apply shift
-        out[slices] = scipy.ndimage.shift(input.values, shifts, **shift_kwargs)
+        out[slices] = scipy.ndimage.shift(arr.values, shifts, **shift_kwargs)
 
     return out
 

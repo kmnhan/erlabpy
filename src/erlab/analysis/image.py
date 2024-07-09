@@ -523,7 +523,7 @@ def ndsavgol(
 
 
 def gradient_magnitude(
-    input: npt.NDArray[np.float64],
+    arr: npt.NDArray[np.float64],
     dx: np.float64,
     dy: np.float64,
     mode: str = "nearest",
@@ -588,7 +588,7 @@ def gradient_magnitude(
         _kernel.ctypes, signature="int (double *, npy_intp, double *, void *)"
     )
 
-    return scipy.ndimage.generic_filter(input, func, size=(3, 3), mode=mode, cval=cval)
+    return scipy.ndimage.generic_filter(arr, func, size=(3, 3), mode=mode, cval=cval)
 
 
 def laplace(
@@ -741,8 +741,8 @@ def scaled_laplace(
     if isinstance(mode, dict):
         mode = tuple(mode[d] for d in darr.dims)
 
-    def d2_scaled(input, axis, output, mode, cval):
-        out = scipy.ndimage.correlate1d(input, [1, -2, 1], axis, output, mode, cval, 0)
+    def d2_scaled(arr, axis, output, mode, cval):
+        out = scipy.ndimage.correlate1d(arr, [1, -2, 1], axis, output, mode, cval, 0)
         if axis == 1:
             out *= weight
         return out
