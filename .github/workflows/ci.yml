@@ -6,8 +6,8 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # Every monday at 00:00 UTC (09:00 KST/JST)
-    - cron: "0 0 * * MON"
+    # Every friday at 22:00 UTC (Every saturday at 07:00 KST/JST)
+    - cron: "0 22 * * FRI"
 env:
   FORCE_COLOR: 1
 
@@ -55,7 +55,7 @@ jobs:
           pytest --cov erlab --cov-report xml
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'
         uses: codecov/codecov-action@v4.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -86,14 +86,14 @@ jobs:
 
       - name: Publish package distributions to PyPI
         id: pypi-publish
-        if: ${{ steps.release.outputs.released == 'true' || github.event_name == 'workflow_dispatch' }}
+        if: steps.release.outputs.released == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
 
       - name: Publish package distributions to GitHub Releases
         id: github-release
-        if: ${{ steps.release.outputs.released == 'true' || github.event_name == 'workflow_dispatch' }}
+        if: steps.release.outputs.released == 'true'
         uses: python-semantic-release/upload-to-gh-release@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
