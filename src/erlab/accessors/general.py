@@ -1,3 +1,5 @@
+"""Miscellaneous accessors for general data manipulation and visualization."""
+
 __all__ = [
     "InteractiveDataArrayAccessor",
     "InteractiveDatasetAccessor",

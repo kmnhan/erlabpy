@@ -1,6 +1,18 @@
-"""Manager for multiple ImageTool windows."""
+"""Manager for multiple ImageTool windows.
+
+This module provides a GUI application for managing multiple ImageTool windows. The
+application can be started by running the script `itool-manager` from the command line
+in the environment where the package is installed.
+
+Python scripts communicate with the manager using a socket connection with the default
+port number 45555. The port number can be changed by setting the environment variable
+``ITOOL_MANAGER_PORT``.
+
+"""
 
 from __future__ import annotations
+
+__all__ = ["is_running", "main", "show_in_manager"]
 
 import contextlib
 import functools
@@ -34,14 +46,14 @@ if TYPE_CHECKING:
     from erlab.interactive.imagetool.core import ImageSlicerArea
 
 PORT: int = int(os.getenv("ITOOL_MANAGER_PORT", "45555"))
-"""Port number for the ImageToolManager server
+"""Port number for the ImageToolManager server.
 
 The default port number is 45555. This can be changed by setting the environment
 variable `ITOOL_MANAGER_PORT`.
 """
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
-"""Name of the shared memory object that enforces single instance of ImageToolManager"""
+"""Name of the sharedmemory object that enforces single instance of ImageToolManager."""
 
 
 _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
@@ -56,6 +68,7 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
     QtGui.QColor(204, 185, 116),
     QtGui.QColor(100, 181, 205),
 )
+"""Colors for different linkers."""
 
 
 def _coverage_resolve_trace(fn):
@@ -79,6 +92,14 @@ def _load_pickle(filename: str) -> Any:
         return pickle.load(file)
 
 
+def _recv_all(conn, size):
+    data = b""
+    while len(data) < size:
+        part = conn.recv(size - len(data))
+        data += part
+    return data
+
+
 class ItoolManagerParseError(Exception):
     """Raised when the data received from the client cannot be parsed."""
 
@@ -93,6 +114,7 @@ class _ManagerServer(QtCore.QThread):
     @_coverage_resolve_trace
     def run(self) -> None:
         self.stopped.clear()
+
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
         soc.setblocking(False)
@@ -135,6 +157,8 @@ class _ManagerServer(QtCore.QThread):
 
 
 class _QHLine(QtWidgets.QFrame):
+    """Horizontal line widget."""
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setFrameShape(QtWidgets.QFrame.Shape.HLine)
@@ -214,7 +238,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
         self.setLayout(layout)
 
         self.check = QtWidgets.QCheckBox(cast(ImageTool, self.tool).windowTitle())
-        self.check.toggled.connect(self.manager.changed)
+        self.check.toggled.connect(self.manager._update_button_state)
 
         self.link_icon = qta.IconWidget("mdi6.link-variant", opacity=0.0)
 
@@ -403,9 +427,9 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self._recent_directory: str | None = None
 
         self.setCentralWidget(self.options)
-        self.sigLinkersChanged.connect(self.changed)
-        self.sigReloadLinkers.connect(self.cleanup_linkers)
-        self.changed()
+        self.sigLinkersChanged.connect(self._update_button_state)
+        self.sigReloadLinkers.connect(self._cleanup_linkers)
+        self._update_button_state()
 
     @property
     def cache_dir(self) -> str:
@@ -419,13 +443,30 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
 
     @property
     def ntools(self) -> int:
+        """Number of ImageTool windows being handled by the manager."""
         return len(self.tool_options)
 
     @property
     def next_idx(self) -> int:
+        """Index for the next ImageTool window."""
         return max(self.tool_options.keys(), default=-1) + 1
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
+        """Get the ImageTool object corresponding to the index.
+
+        Parameters
+        ----------
+        index
+            Index of the ImageTool window to retrieve.
+        unarchive
+            Whether to unarchive the tool if it is archived, by default `True`. If set
+            to `False`, an error will be raised if the tool is archived.
+
+        Returns
+        -------
+        ImageTool
+            The ImageTool object corresponding to the index.
+        """
         if index not in self.tool_options:
             raise KeyError(f"Tool of index '{index}' not found")
 
@@ -455,10 +496,20 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self._recent_directory = tool.mnb._recent_directory
 
     def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
+        """Get the color that should represent the given linker."""
         idx = self.linkers.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
     def add_tool(self, tool: ImageTool, activate: bool = False) -> int:
+        """Add a new ImageTool window to the manager and show it.
+
+        Parameters
+        ----------
+        tool
+            ImageTool object to be added.
+        activate
+            Whether to focus on the window after adding, by default `False`.
+        """
         index = int(self.next_idx)
         opt = ImageToolOptionsWidget(self, index, tool)
         self.tool_options[index] = opt
@@ -477,7 +528,8 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         return index
 
     @QtCore.Slot()
-    def changed(self) -> None:
+    def _update_button_state(self) -> None:
+        """Update the state of the buttons based on the current selection."""
         selection = self.selected_tool_indices
         self.close_button.setEnabled(len(selection) != 0)
 
@@ -515,7 +567,8 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         gc.collect()
 
     @QtCore.Slot()
-    def cleanup_linkers(self) -> None:
+    def _cleanup_linkers(self) -> None:
+        """Remove linkers with one or no children."""
         for linker in list(self.linkers):
             if linker.num_children <= 1:
                 linker.unlink_all()
@@ -566,6 +619,16 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
 
 
 class ImageToolManager(ImageToolManagerGUI):
+    """The ImageToolManager window.
+
+    This class provides a GUI application for managing multiple ImageTool windows.
+
+    Users do not need to create an instance of this class directly. Instead, use the
+    command line script `itool-manager` or the function :func:`main` to start the
+    application.
+
+    """
+
     def __init__(self) -> None:
         super().__init__()
         self.server = _ManagerServer()
@@ -576,6 +639,18 @@ class ImageToolManager(ImageToolManagerGUI):
 
     @QtCore.Slot(list, dict)
     def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]) -> None:
+        """
+        Slot function to receive data from the server.
+
+        Args:
+            data (list[xarray.DataArray]): The data received from the server.
+            kwargs (dict[str, Any]): Additional keyword arguments.
+
+        Returns
+        -------
+            None
+
+        """
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = [
@@ -586,6 +661,17 @@ class ImageToolManager(ImageToolManagerGUI):
             self.link_tools(*indices, link_colors=link_colors)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        """
+        Event handler for the close event.
+
+        Args:
+            event (QtGui.QCloseEvent | None): The close event.
+
+        Returns
+        -------
+            None
+
+        """
         if self.ntools != 0:
             if self.ntools == 1:
                 msg = "1 remaining window will be closed."
@@ -631,14 +717,6 @@ class _InitDialog(QtWidgets.QDialog):
 
         layout.addWidget(self.label)
         layout.addWidget(self.buttonBox)
-
-
-def _recv_all(conn, size):
-    data = b""
-    while len(data) < size:
-        part = conn.recv(size - len(data))
-        data += part
-    return data
 
 
 def is_running() -> bool:
@@ -705,6 +783,12 @@ def show_in_manager(
         <erlab.interactive.imagetool.ImageTool>`.
 
     """
+    if not is_running():
+        raise RuntimeError(
+            "ImageToolManager is not running. Please start the ImageToolManager "
+            "application before using this function"
+        )
+
     client_socket = socket.socket()
     client_socket.connect(("localhost", PORT))
 

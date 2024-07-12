@@ -447,6 +447,7 @@ html_theme = "furo"
 pygments_dark_style = "monokai"
 language = "en"
 
+html_title = "ERLabPy"
 html_static_path = ["_static"]
 html_css_files = ["pied-piper-admonition.css"]
 html_theme_options: dict[str, object] = {

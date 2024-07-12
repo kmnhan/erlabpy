@@ -1,5 +1,7 @@
 """Utility functions for creating accessors."""
 
+__all__ = ["ERLabDataArrayAccessor", "ERLabDatasetAccessor"]
+
 from collections.abc import Hashable, Mapping
 from typing import Any, TypeGuard, TypeVar, cast
 
@@ -13,20 +15,21 @@ _THIS_ARRAY: str = "<this-array>"
 
 
 class ERLabDataArrayAccessor:
-    """Base class for accessors."""
+    """Base class for DataArray accessors."""
 
     def __init__(self, xarray_obj: xr.DataArray) -> None:
         self._obj = xarray_obj
 
 
 class ERLabDatasetAccessor:
-    """Base class for accessors."""
+    """Base class for Dataset accessors."""
 
     def __init__(self, xarray_obj: xr.Dataset) -> None:
         self._obj = xarray_obj
 
 
 def is_dict_like(value: Any) -> TypeGuard[Mapping[Any, Any]]:
+    # From xarray.namedarray.utils.is_dict_like
     return hasattr(value, "keys") and hasattr(value, "__getitem__")
 
 
@@ -35,6 +38,7 @@ def either_dict_or_kwargs(
     kw_kwargs: Mapping[str, T],
     func_name: str,
 ) -> Mapping[Hashable, T]:
+    # From xarray.namedarray.utils.either_dict_or_kwargs
     if pos_kwargs is None or pos_kwargs == {}:
         # Need an explicit cast to appease mypy due to invariance; see
         # https://github.com/python/mypy/issues/6228

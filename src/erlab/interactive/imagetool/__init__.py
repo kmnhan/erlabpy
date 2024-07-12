@@ -9,6 +9,7 @@ Modules
    :toctree:
 
    core
+   manager
    slicer
    fastbinning
    controls
@@ -17,7 +18,7 @@ Modules
 
 from __future__ import annotations
 
-__all__ = ["ImageTool", "itool"]
+__all__ = ["ImageTool", "BaseImageTool", "itool"]
 
 import gc
 import os
@@ -68,6 +69,7 @@ def itool(
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset,
+    *,
     link: bool = False,
     link_colors: bool = True,
     use_manager: bool = True,
@@ -79,22 +81,41 @@ def itool(
     Parameters
     ----------
     data
-        Array-like object or a sequence of such object with 2 to 4 dimensions. See
-        notes.
+        The data to be displayed. Data can be provided as:
+
+        - A `xarray.DataArray` with 2 to 4 dimensions
+
+          The DataArray will be displayed in an ImageTool window.
+
+        - A numpy array with 2 to 4 dimensions
+
+          The array will be converted to a DataArray and displayed in an ImageTool.
+
+        - A sequence of the above objects
+
+          Multiple ImageTool windows will be created and displayed.
+
+        - A `xarray.Dataset`
+
+          Every DataArray in the Dataset will be displayed across multiple ImageTool
+          windows. Data variables that have less than 2 dimensions or more than 4
+          dimensions are ignored.
     link
-        Whether to enable linking between multiple ImageTool windows, by default
-        `False`.
+        Whether to enable linking between multiple ImageTool windows when `data` is a
+        sequence or a `xarray.Dataset`, by default `False`.
     link_colors
         Whether to link the color maps between multiple linked ImageTool windows, by
-        default `True`.
+        default `True`. This argument has no effect if `link` is set to `False`.
     use_manager
-        Whether to open the ImageTool windows using the ImageToolManager if it is
-        running, by default `True`.
+        Whether to open the ImageTool window(s) using the :class:`ImageToolManager
+        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running, by
+        default `True`.
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
         If `None`, the execution is determined based on the current IPython shell. This
-        argument has no effect if the ImageToolManager is running and `use_manager` is
-        set to `True`.
+        argument has no effect if the :class:`ImageToolManager
+        <erlab.interactive.imagetool.manager.ImageToolManager>` is running and
+        `use_manager` is set to `True`. In most cases, the default value should be used.
     **kwargs
         Additional keyword arguments to be passed onto the underlying slicer area. For a
         full list of supported arguments, see the
@@ -102,22 +123,23 @@ def itool(
 
     Returns
     -------
-    ImageTool or list of ImageTool
+    ImageTool or list of ImageTool or None
         The created ImageTool window(s).
 
-    Notes
-    -----
-    - If `data` is a sequence of valid data, multiple ImageTool windows will be created
-      and displayed.
-    - If `data` is a Dataset, each DataArray in the Dataset will be displayed in a
-      separate ImageTool window. Data variables with 2 to 4 dimensions are considered as
-      valid. Other variables are ignored.
-    - If `link` is True, the ImageTool windows will be synchronized.
+        If the window(s) are executed, the function will return `None`, since the event
+        loop will prevent the function from returning until the window(s) are closed.
+
+        If the window(s) are not executed, for example while running in an IPython shell
+        with ``%gui qt``, the function will not block and return the ImageTool window(s)
+        or a list of ImageTool windows depending on the input data.
+
+        The function will also return `None` if the windows are opened in the
+        :class:`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`
 
     Examples
     --------
     >>> itool(data, cmap="gray", gamma=0.5)
-    >>> itool(data_list, link=True)
+    >>> itool([data1, data2], link=True)
     """
     if use_manager:
         from erlab.interactive.imagetool.manager import is_running
@@ -182,11 +204,33 @@ def itool(
 
 
 class BaseImageTool(QtWidgets.QMainWindow):
+    """Base class for an ImageTool window.
+
+    This class combines the :class:`ImageSlicerArea
+    <erlab.interactive.imagetool.core.ImageSlicerArea>` and the controls into a single
+    window.
+
+    Use this class only if you want to extend ImageTool without the menubar or keyboard
+    shortcuts. Otherwise, use :class:`ImageTool
+    <erlab.interactive.imagetool.ImageTool>`.
+
+    Parameters
+    ----------
+    data
+        The data to be displayed.
+    parent
+        The parent widget.
+    **kwargs
+        Additional keyword arguments to the underlying :class:`ImageSlicerArea
+        <erlab.interactive.imagetool.core.ImageSlicerArea>`.
+
+    """
+
     def __init__(
         self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
     ) -> None:
         super().__init__(parent=parent)
-        self.slicer_area = ImageSlicerArea(self, data, **kwargs)
+        self._slicer_area = ImageSlicerArea(self, data, **kwargs)
         self.setCentralWidget(self.slicer_area)
 
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
@@ -215,10 +259,37 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.resize(720, 720)
 
     @property
+    def slicer_area(self) -> ImageSlicerArea:
+        """
+        The underlying :class:`ImageSlicerArea
+        <erlab.interactive.imagetool.core.ImageSlicerArea>`.
+        """  # noqa: D205
+        return self._slicer_area
+
+    @property
     def array_slicer(self) -> ArraySlicer:
+        """
+        The underlying :class:`ArraySlicer
+        <erlab.interactive.imagetool.slicer.ArraySlicer>`.
+        """  # noqa: D205
         return self.slicer_area.array_slicer
 
     def to_pickle(self, filename: str) -> None:
+        """Save the data, state, title, and geometry of the tool to a pickle file.
+
+        The saved pickle file can be used to recreate the ImageTool with the class
+        method :meth:`from_pickle`.
+
+        This method is only meant for short-term storage of a tool's state. For
+        long-term storage, consider saving the data separately and use the data to
+        recreate the tool.
+
+        Parameters
+        ----------
+        filename
+            The name of the pickle file.
+
+        """
         info: tuple[xr.DataArray, ImageSlicerState, str, QtCore.QRect] = (
             self.slicer_area.data,
             self.slicer_area.state,
@@ -230,6 +301,14 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
     @classmethod
     def from_pickle(cls, filename: str) -> Self:
+        """Restore a window from a pickle file saved using :meth:`to_pickle`.
+
+        Parameters
+        ----------
+        filename
+            The name of the pickle file.
+
+        """
         with open(filename, "rb") as file:
             data, state, title, rect = pickle.load(file)
         tool = cls(data, state=state)
@@ -238,6 +317,16 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return tool
 
     def _sync_dock_float(self, floating: bool, index: int) -> None:
+        """Synchronize the floating state of the dock widgets.
+
+        Parameters
+        ----------
+        floating
+            The floating state.
+        index
+            The index of the dock widget.
+
+        """
         for i in range(len(self.docks)):
             if i != index:
                 self.docks[i].blockSignals(True)
@@ -248,7 +337,22 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.docks[index].blockSignals(False)
 
     # !TODO: this is ugly and temporary, fix it
-    def widget_box(self, widget: QtWidgets.QWidget, **kwargs):
+    def widget_box(self, widget: QtWidgets.QWidget, **kwargs) -> QtWidgets.QGroupBox:
+        """Create a box that surrounds the given widget.
+
+        Parameters
+        ----------
+        widget
+            The widget to be added to the box.
+        **kwargs
+            Additional keyword arguments passed to :class:`QtWidgets.QGroupBox`
+
+        Returns
+        -------
+        group
+            The created widget box.
+
+        """
         group = QtWidgets.QGroupBox(**kwargs)
         group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
@@ -261,16 +365,39 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
 
 class ImageTool(BaseImageTool):
-    sigTitleChanged = QtCore.Signal(str)
+    """The ImageTool window class.
+
+    This class adds the menubar with keyboard shortcuts to :class:`BaseImageTool
+    <erlab.interactive.imagetool.BaseImageTool>`. Use this class to create an ImageTool
+    window.
+
+    Parameters
+    ----------
+    data
+        The data to be displayed.
+    **kwargs
+        Additional keyword arguments to :class:`BaseImageTool
+        <erlab.interactive.imagetool.BaseImageTool>`.
+
+    Signals
+    -------
+    sigTitleChanged(str)
+        Emitted when the title of the window is changed by setting a new data or file.
+        It is *not* emitted when the title is changed by other means such as
+        :meth:`setWindowTitle`.
+
+    """
+
+    sigTitleChanged = QtCore.Signal(str)  #: :meta private:
 
     def __init__(self, data=None, **kwargs) -> None:
         super().__init__(data, **kwargs)
         self.mnb = ItoolMenuBar(self.slicer_area, self)
 
-        self.slicer_area.sigDataChanged.connect(self.update_title)
-        self.update_title()
+        self.slicer_area.sigDataChanged.connect(self._update_title)
+        self._update_title()
 
-    def update_title(self) -> None:
+    def _update_title(self) -> None:
         if self.slicer_area._data is not None:
             name: str | None = cast(str | None, self.slicer_area._data.name)
             path: str | None = self.slicer_area._file_path

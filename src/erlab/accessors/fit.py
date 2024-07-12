@@ -1,3 +1,5 @@
+"""Accessors for curve fitting."""
+
 from __future__ import annotations
 
 __all__ = [

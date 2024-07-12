@@ -1,7 +1,6 @@
-__all__ = [
-    "MomentumAccessor",
-    "OffsetView",
-]
+"""Accessor for momentum-space related utilities."""
+
+__all__ = ["MomentumAccessor", "OffsetView"]
 
 import functools
 import time

@@ -620,8 +620,8 @@ def plot_array_2d(
 
 
 def gradient_fill(
-    x: Collection[int | float],
-    y: Collection[int | float],
+    x: Collection[float],
+    y: Collection[float],
     y0: float | None = None,
     color: str | tuple[float, float, float] | tuple[float, float, float, float] = "C0",
     cmap: str | matplotlib.colors.Colormap | None = None,
