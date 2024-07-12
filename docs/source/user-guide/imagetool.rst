@@ -38,7 +38,7 @@ create a new ImageTool instance and handle the event loop execution: ::
     eri.itool(data)
 
 Another way is to use the :class:`qshow
-<erlab.accessors.utils.InteractiveDataArrayAccessor>` accessor: ::
+<erlab.accessors.general.InteractiveDataArrayAccessor>` accessor: ::
 
     data.qshow()
 
@@ -94,7 +94,7 @@ running. To get around this, you can use the :class:`ImageToolManager
 In the environment where ERLabPy installed, run ``itool-manager`` in a shell to start
 the manager application. Subsequent invocations with :func:`itool
 <erlab.interactive.imagetool.itool>` and :class:`qshow
-<erlab.accessors.utils.InteractiveDataArrayAccessor>` will be handled by the manager.
+<erlab.accessors.general.InteractiveDataArrayAccessor>` will be handled by the manager.
 
 .. note::
 
@@ -106,4 +106,4 @@ the manager application. Subsequent invocations with :func:`itool
     notebook. The delay is bigger for larger data. You can still open directly while the
     manager is running by providing the `use_manager=False` argument to :func:`itool
     <erlab.interactive.imagetool.itool>` or :class:`qshow
-    <erlab.accessors.utils.InteractiveDataArrayAccessor>`.
+    <erlab.accessors.general.InteractiveDataArrayAccessor>`.
