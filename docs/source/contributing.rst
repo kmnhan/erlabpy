@@ -126,7 +126,7 @@ reflected in the package without having to reinstall it. Before installing:
      mamba activate <envname>
 
 
-2. Install the repository.
+2. Build and install the package.
 
    .. note::
 
@@ -138,6 +138,16 @@ reflected in the package without having to reinstall it. Before installing:
 
      pip install -e ".[dev]" --config-settings editable_mode=compat
 
+These two steps will create the new environment, and not touch any of your existing
+environments, nor any existing Python installation.
+
+To view your environments::bash
+
+    mamba env list
+
+To return to your root environment::bash
+
+    mamba deactivate
 
 Updating the editable installation
 ----------------------------------
@@ -367,12 +377,6 @@ Check whether all documentation dependencies are installed with
 .. code-block:: sh
 
     pip install -r docs/requirements.txt
-
-or
-
-.. code-block:: sh
-
-    mamba env update -f docs/environment.yml -n <envname>
 
 then build the documentation by running:
 
