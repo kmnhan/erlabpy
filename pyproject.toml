@@ -93,9 +93,19 @@ tag_format = "v{version}"
 version_variables = ["src/erlab/__init__.py:__version__"]
 
 [tool.semantic_release.branches.main]
-match = "(main|master)"
+match = "main"
 prerelease_token = "rc"
 prerelease = false
+
+[tool.semantic_release.branches.rc]
+match = "^rc-.+"
+prerelease = true
+prerelease_token = "rc"
+
+[tool.semantic_release.branches.dev]
+match = "^dev-.+"
+prerelease = true
+prerelease_token = "dev"
 
 [tool.semantic_release.changelog]
 template_dir = "templates"

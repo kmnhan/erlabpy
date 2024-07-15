@@ -141,13 +141,13 @@ reflected in the package without having to reinstall it. Before installing:
 These two steps will create the new environment, and not touch any of your existing
 environments, nor any existing Python installation.
 
-To view your environments::bash
+To view your environments::
 
-    mamba env list
+      mamba env list
 
-To return to your root environment::bash
+To return to your root environment::
 
-    mamba deactivate
+      mamba deactivate
 
 Updating the editable installation
 ----------------------------------
@@ -285,7 +285,8 @@ Code standards
 
 - If you wish to contribute, using `pre-commit <https://pre-commit.com>`_ is
   recommended. This will ensure that your code is properly formatted before you commit
-  it. A pre-commit configuration file for ruff is included in the repository.
+  it. A pre-commit configuration file is included in the repository, and you can install
+  it by running ``pre-commit install`` in the repository root.
 
 - When writing code that uses Qt, please adhere to the following rules:
 

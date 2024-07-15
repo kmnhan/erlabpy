@@ -63,9 +63,10 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    concurrency: push
+    concurrency:
+      group: release
     needs: test
-    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch'}}
+    if: github.event_name != 'schedule' && github.repository == 'kmnhan/erlabpy'
     environment:
       name: pypi
       url: https://pypi.org/p/erlab
@@ -75,6 +76,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request'
         with:
           fetch-depth: 0
 
