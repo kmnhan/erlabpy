@@ -17,6 +17,7 @@ from erlab.interactive.utils import (
     AnalysisWindow,
     ParameterGroup,
     ROIControls,
+    _coverage_resolve_trace,
     gen_function_code,
     xImageItem,
 )
@@ -74,6 +75,7 @@ class EdgeFitter(QtCore.QThread):
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
 
+    @_coverage_resolve_trace
     def run(self) -> None:
         self.sigIterated.emit(0)
         with joblib_progress_qt(self.sigIterated) as _:

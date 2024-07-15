@@ -1,4 +1,5 @@
 import numpy as np
+import pyperclip
 import xarray as xr
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
@@ -15,6 +16,23 @@ def test_goldtool(qtbot, gold):
         win.show()
         win.activateWindow()
         win.raise_()
+    win.params_edge.widgets["# CPU"].setValue(1)
+    win.params_edge.widgets["Fast"].setChecked(True)
+    with qtbot.waitSignal(win.fitter.sigFinished):
+        win.params_edge.widgets["go"].click()
+    win.params_poly.widgets["copy"].click()
+    assert (
+        pyperclip.paste()
+        == """modelresult = era.gold.poly(
+    gold,
+    angle_range=(-13.5, 13.5),
+    eV_range=(-0.204, 0.276),
+    bin_size=(1, 1),
+    method="leastsq",
+    degree=4,
+    fast=True,
+)"""
+    )
 
 
 def test_dtool(qtbot):

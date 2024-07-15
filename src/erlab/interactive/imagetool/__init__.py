@@ -53,13 +53,12 @@ def _parse_input(
     | npt.NDArray
     | xr.Dataset,
 ) -> list[xr.DataArray]:
-    if isinstance(data, xr.Dataset):
-        data = [d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4]
-        if len(data) == 0:
-            raise ValueError("No valid data for ImageTool found in the Dataset")
-
     if isinstance(data, np.ndarray | xr.DataArray):
         data = (data,)
+    elif isinstance(data, xr.Dataset):
+        data = tuple(d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4)
+        if len(data) == 0:
+            raise ValueError("No valid data for ImageTool found in the Dataset")
 
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
@@ -164,9 +163,6 @@ def itool(
 
     for w in itool_list:
         w.show()
-
-    if len(itool_list) == 0:
-        raise ValueError("No data provided")
 
     if link:
         linker = SlicerLinkProxy(  # noqa: F841
@@ -403,8 +399,11 @@ class ImageTool(BaseImageTool):
             path: str | None = self.slicer_area._file_path
 
             if name is not None and name.strip() == "":
+                # Name contains only whitespace
                 name = None
+
             if path is not None:
+                # If opened from a file
                 path = os.path.basename(path)
 
             if name is None and path is None:
