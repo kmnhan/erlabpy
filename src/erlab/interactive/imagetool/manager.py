@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import qtawesome as qta
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.imagetool import ImageTool, _parse_input
@@ -195,10 +196,12 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
                 os.remove(self._archived_fname)
         else:
             # Close and cleanup existing tool
-            self.slicer_area.unlink()
+            self._tool.slicer_area.unlink()
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
-            self._tool.slicer_area.set_data(np.zeros((2, 2)))
+            self._tool.slicer_area.set_data(
+                xr.DataArray(np.zeros((2, 2)), name=self._tool.slicer_area.data.name)
+            )
             self._tool.destroyed.connect(self._destroyed_callback)
             self._tool.close()
 
@@ -229,7 +232,6 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
     def _destroyed_callback(self) -> None:
-        print("DESTROYED!")
         self.manager.sigReloadLinkers.emit()
 
     def _setup_gui(self) -> None:
