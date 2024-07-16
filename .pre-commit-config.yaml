@@ -14,24 +14,23 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
-      - id: debug-statements
-      - id: detect-aws-credentials
-        args: ["--allow-missing-credentials"]
-      - id: detect-private-key
-      - id: check-builtin-literals
-      - id: check-yaml
-      - id: check-toml
-      - id: check-case-conflict
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: check-merge-conflict
-      - id: mixed-line-ending
       - id: check-ast
+      - id: check-builtin-literals
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-vcs-permalinks
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
 
   # Lint and format with ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.5.1
+    rev: v0.5.2
     hooks:
       # Run the linter.
       - id: ruff
