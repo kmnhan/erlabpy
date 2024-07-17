@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "LabeledCursor",
     "autoscale_off",
     "autoscale_to",
     "clean_labels",
@@ -32,7 +31,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
-from matplotlib.widgets import AxesWidget
 
 from erlab.plotting.annotations import fancy_labels, label_subplot_properties
 from erlab.plotting.colors import (
@@ -82,139 +80,6 @@ def autoscale_to(arr, margin=0.2):
     mn, mx = min(arr), max(arr)
     diff = margin * (mx - mn)
     return mn - diff, mx + diff
-
-
-class LabeledCursor(AxesWidget):
-    r"""A crosshair cursor that spans the axes and moves with mouse cursor.
-
-    For the cursor to remain responsive you must keep a reference to it.
-    Unlike `matplotlib.widgets.Cursor`, this also shows the current
-    cursor location.
-
-    Parameters
-    ----------
-    ax
-        The `matplotlib.axes.Axes` to attach the cursor to.
-    horizOn
-        Whether to draw the horizontal line.
-    vertOn
-        Whether to draw the vertical line.
-    textOn
-        Whether to show current cursor location.
-    useblit
-        Use blitting for faster drawing if supported by the backend.
-    textprops
-        Keyword arguments to pass onto the text object.
-
-    Other Parameters
-    ----------------
-    **lineprops
-        `matplotlib.lines.Line2D` properties that control the appearance of the
-        lines. See also `matplotlib.axes.Axes.axhline`.
-
-    """
-
-    def __init__(
-        self,
-        ax: matplotlib.axes.Axes,
-        horizOn: bool = True,
-        vertOn: bool = True,
-        textOn: bool = True,
-        useblit: bool = True,
-        textprops: dict | None = None,
-        **lineprops,
-    ) -> None:
-        super().__init__(ax)
-
-        if textprops is None:
-            textprops = {}
-
-        self.connect_event("motion_notify_event", self.onmove)  # type: ignore[arg-type]
-        self.connect_event("draw_event", self.clear)  # type: ignore[arg-type]
-
-        self.visible = True
-        self.horizOn = horizOn
-        self.vertOn = vertOn
-        self.textOn = textOn
-        if self.canvas is None:
-            raise RuntimeError("No canvas found to attach to")
-        self.useblit = useblit and self.canvas.supports_blit
-
-        if self.useblit:
-            lineprops["animated"] = True
-            textprops["animated"] = True
-
-        lcolor = lineprops.pop("color", lineprops.pop("c", "0.35"))
-        ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
-        lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.5))
-        lineprops.update({"color": lcolor, "ls": ls, "lw": lw, "visible": False})
-
-        tcolor = textprops.pop("color", textprops.pop("c", lcolor))
-        textprops.update(
-            {
-                "color": tcolor,
-                "visible": False,
-                "horizontalalignment": "right",
-                "verticalalignment": "top",
-                "transform": ax.transAxes,
-            }
-        )
-
-        self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
-        self.linev = ax.axvline(ax.get_xbound()[0], **lineprops)
-        with plt.rc_context({"text.usetex": False}):
-            self.label = ax.text(0.95, 0.95, "", **textprops)
-        self.background = None
-        self.needclear = False
-
-    def clear(self, event):
-        """Clear the cursor."""
-        if self.ignore(event):
-            return
-        if self.useblit:
-            self.background = self.canvas.copy_from_bbox(self.ax.bbox)
-        self.linev.set_visible(False)
-        self.lineh.set_visible(False)
-        self.label.set_visible(False)
-
-    def onmove(self, event):
-        """Draw the cursor when the mouse moves."""
-        if self.ignore(event):
-            return
-        if not self.canvas.widgetlock.available(self):
-            return
-        if event.inaxes != self.ax:
-            self.linev.set_visible(False)
-            self.lineh.set_visible(False)
-            self.label.set_visible(False)
-
-            if self.needclear:
-                self.canvas.draw()
-                self.needclear = False
-            return
-        self.needclear = True
-        if not self.visible:
-            return
-        self.linev.set_xdata((event.xdata, event.xdata))
-        self.lineh.set_ydata((event.ydata, event.ydata))
-        self.label.set_text(f"({event.xdata:1.3f}, {event.ydata:1.3f})")
-        self.linev.set_visible(self.visible and self.vertOn)
-        self.lineh.set_visible(self.visible and self.horizOn)
-        self.label.set_visible(self.visible and self.textOn)
-
-        self._update()
-
-    def _update(self):
-        if self.useblit:
-            if self.background is not None:
-                self.canvas.restore_region(self.background)
-            self.ax.draw_artist(self.linev)
-            self.ax.draw_artist(self.lineh)
-            self.ax.draw_artist(self.label)
-            self.canvas.blit(self.ax.bbox)
-        else:
-            self.canvas.draw_idle()
-        return False
 
 
 def place_inset(
