@@ -18,8 +18,10 @@ def test_goldtool(qtbot, gold):
         win.raise_()
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
+
     with qtbot.waitSignal(win.fitter.sigFinished):
         win.params_edge.widgets["go"].click()
+
     win.params_poly.widgets["copy"].click()
     assert (
         pyperclip.paste()
