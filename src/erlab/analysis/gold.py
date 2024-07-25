@@ -13,6 +13,7 @@ __all__ = [
 ]
 
 from collections.abc import Callable
+from typing import cast
 
 import joblib
 import lmfit
@@ -120,7 +121,9 @@ def correct_with_edge(
     corrected = shift(darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs)
 
     if plot is True:
-        _, axes = plt.subplots(1, 2, layout="constrained", figsize=(10, 5))
+        axes = cast(
+            npt.NDArray, plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
+        )
 
         plot_kw.setdefault("cmap", "copper")
         plot_kw.setdefault("gamma", 0.5)

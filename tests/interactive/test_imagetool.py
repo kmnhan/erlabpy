@@ -210,6 +210,10 @@ def test_itool_ds(qtbot):
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
 
+    wins[0].slicer_area.unlink()
+    wins[0].close()
+    wins[1].close()
+
 
 def test_value_update(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])

@@ -47,12 +47,12 @@ jobs:
       - name: Test with pytest
         if: matrix.python-version != '3.12' || matrix.qt-api != 'pyqt6'
         run: |
-          pytest
+          pytest -v
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'
         run: |
-          pytest --cov erlab --cov-report xml
+          pytest -v --cov erlab --cov-report xml
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'

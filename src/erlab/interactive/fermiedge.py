@@ -373,7 +373,7 @@ class GoldTool(AnalysisWindow):
 
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
-        x0, y0, x1, y1 = (np.round(x, 3) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
         params = self.params_edge.values
         n_total = len(
             self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
@@ -481,7 +481,7 @@ class GoldTool(AnalysisWindow):
                 p1 = self.params_poly.values
             case "spl":
                 p1 = self.params_spl.values
-        x0, y0, x1, y1 = (np.round(x, 3) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
 
         arg_dict = {
             "angle_range": (x0, x1),

@@ -18,7 +18,7 @@ Modules
 
 from __future__ import annotations
 
-__all__ = ["ImageTool", "BaseImageTool", "itool"]
+__all__ = ["BaseImageTool", "ImageTool", "itool"]
 
 import gc
 import os
