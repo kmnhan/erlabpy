@@ -686,19 +686,19 @@ def plot_slices(
         along the same row or the same column. 'C' means to flatten in row-major
         (C-style) order, and 'F' means to flatten in column-major (Fortran-style) order.
     cmap_order
-        The order to flatten when given a nested sequence for `cmap`,
-        Defaults to `order`.
+        The order to flatten when given a nested sequence for `cmap`, Defaults to
+        ``'C'``.
     norm_order
-        The order to flatten when given a nested sequence for `norm`,
-        Defaults to `cmap_order`.
+        The order to flatten when given a nested sequence for `norm`, Defaults to
+        `cmap_order`.
     gradient
         If `True`, for 1D slices, fills the area under the curve with a gradient. Has no
         effect for 2D slices.
     gradient_kw
         Extra arguments to :func:`gradient_fill`.
     subplot_kw
-        Extra arguments to :func:`matplotlib.pyplot.subplots`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
+        Extra arguments to :func:`matplotlib.pyplot.subplots`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
     annotate_kw
         Extra arguments to :func:`erlab.plotting.annotations.label_subplot_properties`.
         Only applied when `annotate` is `True`.
@@ -708,8 +708,8 @@ def plot_slices(
         A nested sequence of :class:`matplotlib.axes.Axes`. If supplied, the returned
         :class:`matplotlib.figure.Figure` is inferred from the first axes.
     **values
-        Key-value pair of cut location and bin widths. See examples.
-        Remaining arguments are passed onto :func:`plot_array`.
+        Key-value pair of cut location and bin widths. See examples. Remaining arguments
+        are passed onto :func:`plot_array`.
 
     Returns
     -------
@@ -733,9 +733,6 @@ def plot_slices(
     if transpose:
         maps = [m.T for m in maps]
 
-    if cmap_order is None:
-        cmap_order = order
-
     if norm_order is None:
         norm_order = cmap_order
 
@@ -751,27 +748,38 @@ def plot_slices(
     if colorbar_kw is None:
         colorbar_kw = {}
 
+    for m in maps[1:]:
+        if m.dims != maps[0].dims:
+            raise ValueError("All input arrays must have the same dimensions")
+
     dims = maps[0].dims
-    kwargs = {k: v for k, v in values.items() if k not in dims}
-    slice_kw = {k: v for k, v in values.items() if k not in kwargs}
 
-    if len(slice_kw) == 0:
-        slice_dim = None
-        slice_levels = [None]
-        slice_width = None
+    qsel_kw: dict[str, slice | float | Iterable[float]] = {
+        k: v for k, v in values.items() if k in dims
+    }
+    sel_dims: list[str] = list(qsel_kw.keys())
+    slice_dim: str | None = None
+    slice_levels: list[float] = [np.nan]
+    slice_width: float | None = None
 
-    else:
-        slice_dim = next(k for k in slice_kw if not k.endswith("_width"))
-        slice_levels = slice_kw[slice_dim]
-        slice_width = kwargs.pop(slice_dim + "_width", None)
+    for k in list(qsel_kw.keys()):
+        values.pop(k)
 
-    plot_dims: list[str] = [str(d) for d in dims if d != slice_dim]
+        if isinstance(qsel_kw[k], Iterable):
+            if slice_dim is not None:
+                raise ValueError("Only one slice dimension is allowed")
+            slice_dim = k
+            slice_levels = list(cast(Iterable[float], qsel_kw.pop(k)))
+            slice_width = values.pop(f"{k}_width", None)
+        elif f"{k}_width" in values:
+            qsel_kw[f"{k}_width"] = values.pop(f"{k}_width")
+
+    kwargs = values.copy()
+
+    plot_dims: list[str] = [str(d) for d in dims if d not in sel_dims]
 
     if len(plot_dims) not in (1, 2):
         raise ValueError("The data to plot must be 1D or 2D")
-
-    if not isinstance(slice_levels, Iterable):
-        slice_levels = [slice_levels]
 
     if xlim is not None and not isinstance(xlim, Iterable):
         xlim = (-xlim, xlim)
@@ -812,8 +820,6 @@ def plot_slices(
 
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
-
-    qsel_kw: dict[str, Any] = {}
 
     if crop:
         if len(plot_dims) == 1:
