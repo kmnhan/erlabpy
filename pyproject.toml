@@ -105,7 +105,7 @@ prerelease_token = "rc"
 [tool.semantic_release.branches.dev]
 match = "^dev-.+"
 prerelease = true
-prerelease_token = "dev"
+prerelease_token = "alpha"
 
 [tool.semantic_release.changelog]
 template_dir = "templates"
