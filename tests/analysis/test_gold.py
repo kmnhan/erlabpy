@@ -1,11 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from erlab.analysis.gold import correct_with_edge, poly, spline
+from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 from numpy.testing import assert_allclose
 
 
-@pytest.mark.parametrize("parallel_kw", [{"n_jobs": 1, "return_as": "list"}])
+@pytest.mark.parametrize("parallel_kw", [None, {"n_jobs": 1, "return_as": "list"}])
 @pytest.mark.parametrize("fast", [True, False])
 def test_poly(gold, parallel_kw: dict, fast: bool):
     res = poly(
@@ -49,3 +49,26 @@ def test_spline(gold):
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
     plt.close()
+
+
+@pytest.mark.parametrize("bkg_slope", [True, False])
+@pytest.mark.parametrize("fix_resolution", [False, True])
+@pytest.mark.parametrize("fix_center", [False, True])
+@pytest.mark.parametrize("fix_temp", [True, False])
+@pytest.mark.parametrize("resolution", [None, 1e-2])
+@pytest.mark.parametrize("temp", [None, 100.0])
+@pytest.mark.parametrize("eV_range", [None, (-0.2, 0.2)])
+def test_quick_fit(
+    gold, eV_range, temp, resolution, fix_temp, fix_center, fix_resolution, bkg_slope
+):
+    ds = quick_fit(
+        gold,
+        eV_range=eV_range,
+        temp=temp,
+        resolution=resolution,
+        fix_temp=fix_temp,
+        fix_center=fix_center,
+        fix_resolution=fix_resolution,
+        bkg_slope=bkg_slope,
+    )
+    assert ds.modelfit_results.item().success

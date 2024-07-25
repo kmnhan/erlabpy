@@ -548,6 +548,7 @@ def quick_fit(
     fix_center: bool = False,
     fix_resolution: bool = False,
     bkg_slope: bool = True,
+    **kwargs,
 ) -> xr.Dataset:
     """Perform a quick Fermi edge fit on the given data.
 
@@ -579,6 +580,9 @@ def quick_fit(
     bkg_slope
         Whether to include a linear background above the Fermi level. If `False`, the
         background above the Fermi level is fit with a constant. Defaults to `True`.
+    **kwargs
+        Additional keyword arguments to :class:`modelfit
+        <erlab.accessors.fit.ModelFitDataArrayAccessor>`.
 
     Returns
     -------
@@ -586,9 +590,9 @@ def quick_fit(
         The result of the fit.
 
     """
-    data = darr.mean([d for d in darr.dims if d != "eV"])
-
-    data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
+    with xr.set_options(keep_attrs=True):
+        data = darr.mean([d for d in darr.dims if d != "eV"])
+        data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
 
     if temp is None:
         if "temp_sample" in data.attrs:
@@ -615,8 +619,9 @@ def quick_fit(
     if fix_center:
         params["center"] = {"value": 0, "vary": False}
 
+    kwargs.setdefault("guess", True)
     return data_fit.modelfit(
-        "eV", model=FermiEdgeModel(), method=method, params=params, guess=True
+        "eV", model=FermiEdgeModel(), method=method, params=params, **kwargs
     )
 
 
