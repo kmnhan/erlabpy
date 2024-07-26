@@ -3,6 +3,13 @@ This project tries to follow [Semantic Versioning](https://semver.org/).
 
 
 
+## v2.8.4 (2024-07-26)
+
+### Ci
+
+* (**pre-commit**) update ruff hook ([`709f0d2`](https://github.com/kmnhan/erlabpy/commit/709f0d26a69a335581a2efa63814b7d00349aab8))
+
+
 ## v2.8.4-alpha.1 (2024-07-26)
 
 ### Chore
