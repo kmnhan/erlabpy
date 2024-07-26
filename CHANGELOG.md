@@ -3,9 +3,17 @@ This project tries to follow [Semantic Versioning](https://semver.org/).
 
 
 
-## v2.8.4-dev.1 (2024-07-15)
+## v2.8.4-alpha.1 (2024-07-26)
+
+### Chore
+
+* support numpy 2.0 ([`7927392`](https://github.com/kmnhan/erlabpy/commit/79273929105faff2ccc32ce7e183ebf379289361))
 
 ### Ci
+
+* (**semantic-release**) change prerelease token to avoid conflict with setuptools-scm ([`8e0c726`](https://github.com/kmnhan/erlabpy/commit/8e0c726d5817b5d5503845f3e962d2f086c33bfe))
+
+* (**pre-commit**) update config ([`f242ca0`](https://github.com/kmnhan/erlabpy/commit/f242ca00961e9347f7b81a1d728ad457577d6a97))
 
 * add pre-release configuration ([`81a63a5`](https://github.com/kmnhan/erlabpy/commit/81a63a5eb36ca08299e695fe23070e6406e03624))
 
@@ -19,13 +27,25 @@ This project tries to follow [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
+* fix typos ([`e22d200`](https://github.com/kmnhan/erlabpy/commit/e22d2004a2c2694f3d3d71208050c1c1b3f70938))
+
 * improve accessor and imagetool docstrings ([`5371767`](https://github.com/kmnhan/erlabpy/commit/5371767f5f26511b4ca22f569cf3787b418a491d))
 
 ### Fix
 
+* (**erlab.plotting.general**) improve `plot_array` keyword versatility ([`1dc41cd`](https://github.com/kmnhan/erlabpy/commit/1dc41cd52f8d7f879cfe54f2adf3a512b78ac007))
+
+  Enables additional kwargs with valid data dimensions as the key to be passed onto `qsel`.
+
+* (**erlab.analysis.gold**) fix `quick_fit` attribute detection ([`3797f93`](https://github.com/kmnhan/erlabpy/commit/3797f93e1a578e356ce21e7b7c933341099ab156))
+
 * (**interactive.imagetool**) retain window title upon archiving ([`b5d8aa4`](https://github.com/kmnhan/erlabpy/commit/b5d8aa4884562ba4b53351baf58d598e27a1e757))
 
 ### Refactor
+
+* (**plotting.general**) remove `LabeledCursor` ([`912b4fb`](https://github.com/kmnhan/erlabpy/commit/912b4fb73f88e3a529d1e3880a2253e0cb26e7ae))
+
+  We skip the deprecation step since nobody is likely to be using it anyway.
 
 * (**accessors**) split submodule ([`6ed5c03`](https://github.com/kmnhan/erlabpy/commit/6ed5c039889624d3589d9ce71a75ed6047f4406f))
 
@@ -46,6 +66,8 @@ This project tries to follow [Semantic Versioning](https://semver.org/).
 * enforce ruff E501 ([`885174f`](https://github.com/kmnhan/erlabpy/commit/885174f851410e98d1a7c43d0409ae45c7f7b59c))
 
 ### Test
+
+* add missing tests ([`20e7634`](https://github.com/kmnhan/erlabpy/commit/20e7634691856e31414c6f5b35839b4adb9d0de8))
 
 * (**interactive**) improve interactive tool test coverage ([`7f24b81`](https://github.com/kmnhan/erlabpy/commit/7f24b81b5d6b6f2186ad62457b40c4e16deb2193))
 
