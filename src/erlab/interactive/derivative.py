@@ -245,7 +245,7 @@ class DerivativeTool(
                     zip(
                         (self.xdim, self.ydim),
                         [
-                            np.round(s.value(), s.decimals())
+                            float(np.round(s.value(), s.decimals()))
                             for s in (self.sx_spin, self.sy_spin)
                         ],
                         strict=True,
@@ -281,20 +281,26 @@ class DerivativeTool(
                 case 1:
                     fname = "era.image.scaled_laplace"
                     arg_dict = {
-                        "factor": np.round(
-                            self.lapl_factor_spin.value(),
-                            self.lapl_factor_spin.decimals(),
+                        "factor": float(
+                            np.round(
+                                self.lapl_factor_spin.value(),
+                                self.lapl_factor_spin.decimals(),
+                            )
                         )
                     }
                 case 2:
                     fname = "era.image.curvature"
                     arg_dict = {
-                        "a0": np.round(
-                            self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
+                        "a0": float(
+                            np.round(
+                                self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
+                            )
                         ),
-                        "factor": np.round(
-                            self.curv_factor_spin.value(),
-                            self.curv_factor_spin.decimals(),
+                        "factor": float(
+                            np.round(
+                                self.curv_factor_spin.value(),
+                                self.curv_factor_spin.decimals(),
+                            )
                         ),
                     }
                 case 3:

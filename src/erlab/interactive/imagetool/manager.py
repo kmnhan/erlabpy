@@ -15,7 +15,6 @@ from __future__ import annotations
 __all__ = ["is_running", "main", "show_in_manager"]
 
 import contextlib
-import functools
 import gc
 import os
 import pickle
@@ -31,11 +30,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import qtawesome as qta
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.controls import IconButton
 from erlab.interactive.imagetool.core import SlicerLinkProxy
+from erlab.interactive.utils import _coverage_resolve_trace
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -69,17 +70,6 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
     QtGui.QColor(100, 181, 205),
 )
 """Colors for different linkers."""
-
-
-def _coverage_resolve_trace(fn):
-    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-    @functools.wraps(fn)
-    def _wrapped_for_coverage(*args, **kwargs) -> None:
-        if threading._trace_hook:  # type: ignore[attr-defined]
-            sys.settrace(threading._trace_hook)  # type: ignore[attr-defined]
-        fn(*args, **kwargs)
-
-    return _wrapped_for_coverage
 
 
 def _save_pickle(obj: Any, filename: str) -> None:
@@ -195,10 +185,12 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
                 os.remove(self._archived_fname)
         else:
             # Close and cleanup existing tool
-            self.slicer_area.unlink()
+            self._tool.slicer_area.unlink()
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
-            self._tool.slicer_area.set_data(np.zeros((2, 2)))
+            self._tool.slicer_area.set_data(
+                xr.DataArray(np.zeros((2, 2)), name=self._tool.slicer_area.data.name)
+            )
             self._tool.destroyed.connect(self._destroyed_callback)
             self._tool.close()
 
@@ -229,7 +221,6 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
     def _destroyed_callback(self) -> None:
-        print("DESTROYED!")
         self.manager.sigReloadLinkers.emit()
 
     def _setup_gui(self) -> None:

@@ -165,6 +165,55 @@ def test_itool(qtbot):
     win.slicer_area.state = expected_state
     assert win.slicer_area.state == expected_state
 
+    # Setting data
+    win.slicer_area.set_data(data.rename("new_data"))
+    assert win.windowTitle() == "new_data"
+
+
+def test_itool_ds(qtbot):
+    # If no 2D to 4D data is present in given Dataset, ValueError is raised
+    with pytest.raises(
+        ValueError, match="No valid data for ImageTool found in the Dataset"
+    ):
+        itool(
+            xr.Dataset(
+                {
+                    "data1d": xr.DataArray(np.arange(5), dims=["x"]),
+                    "data0d": 1,
+                }
+            ),
+            execute=False,
+        )
+
+    data = xr.Dataset(
+        {
+            "data1d": xr.DataArray(np.arange(5), dims=["x"]),
+            "a": xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]),
+            "b": xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]),
+        }
+    )
+    wins = itool(data, execute=False, link=True)
+    assert isinstance(wins, list)
+    assert len(wins) == 2
+
+    qtbot.addWidget(wins[0])
+    qtbot.addWidget(wins[1])
+
+    with qtbot.waitExposed(wins[0]):
+        wins[0].show()
+    with qtbot.waitExposed(wins[1]):
+        wins[1].show()
+
+    assert wins[0].windowTitle() == "a"
+    assert wins[1].windowTitle() == "b"
+
+    # Check if properly linked
+    assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
+
+    wins[0].slicer_area.unlink()
+    wins[0].close()
+    wins[1].close()
+
 
 def test_value_update(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])

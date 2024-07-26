@@ -1,4 +1,3 @@
-dask>=2024.4.1
 pyqt6>=6.2.2
 ipykernel
 -e '.[viz,perf,misc,docs]'

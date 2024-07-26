@@ -126,7 +126,7 @@ reflected in the package without having to reinstall it. Before installing:
      mamba activate <envname>
 
 
-2. Install the repository.
+2. Build and install the package.
 
    .. note::
 
@@ -138,6 +138,16 @@ reflected in the package without having to reinstall it. Before installing:
 
      pip install -e ".[dev]" --config-settings editable_mode=compat
 
+These two steps will create the new environment, and not touch any of your existing
+environments, nor any existing Python installation.
+
+To view your environments::
+
+      mamba env list
+
+To return to your root environment::
+
+      mamba deactivate
 
 Updating the editable installation
 ----------------------------------
@@ -275,7 +285,8 @@ Code standards
 
 - If you wish to contribute, using `pre-commit <https://pre-commit.com>`_ is
   recommended. This will ensure that your code is properly formatted before you commit
-  it. A pre-commit configuration file for ruff is included in the repository.
+  it. A pre-commit configuration file is included in the repository, and you can install
+  it by running ``pre-commit install`` in the repository root.
 
 - When writing code that uses Qt, please adhere to the following rules:
 
@@ -367,12 +378,6 @@ Check whether all documentation dependencies are installed with
 .. code-block:: sh
 
     pip install -r docs/requirements.txt
-
-or
-
-.. code-block:: sh
-
-    mamba env update -f docs/environment.yml -n <envname>
 
 then build the documentation by running:
 

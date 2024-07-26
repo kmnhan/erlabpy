@@ -380,7 +380,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
 
     def get_incollection_template(self, e):
         return top_level[
-            pybtex.style.template.sentence[self.format_names("author")],
+            self.format_names("author"),
             self.format_title(e, "title"),
             pybtex.style.template.words[
                 "In",
@@ -406,7 +406,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
 
     def get_inproceedings_template(self, e):
         return top_level[
-            pybtex.style.template.sentence[self.format_names("author")],
+            self.format_names("author"),
             self.format_title(e, "title"),
             pybtex.style.template.words[
                 "in",

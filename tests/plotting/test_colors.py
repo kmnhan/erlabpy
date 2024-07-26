@@ -38,14 +38,14 @@ def sample_plot(norms, kw0, kw1, cmap):
     plt.close()
 
 
-@pytest.mark.parametrize("gamma", [0.5, 1, 2.0])
+@pytest.mark.parametrize("gamma", [0.1, 0.5, 1, 2.0, 10.0])
 def test_InversePowerNorm(gamma):
     cmap = "Greys"
     sample_plot([eplt.InversePowerNorm], {"vmin": 0, "vmax": 1}, {"gamma": gamma}, cmap)
     plt.close()
 
 
-@pytest.mark.parametrize("gamma", [0.5, 1, 2.0])
+@pytest.mark.parametrize("gamma", [0.1, 0.5, 1, 2.0, 10.0])
 def test_norms_diverging(gamma):
     cmap = "RdYlBu"
     sample_plot(
@@ -62,7 +62,13 @@ def test_norms_diverging(gamma):
     plt.close()
 
 
-def test_2d_cmap():
+@pytest.mark.parametrize("background", [None, "black"])
+@pytest.mark.parametrize(
+    "cnorm", [None, eplt.CenteredInversePowerNorm(0.7, vcenter=0.0, halfrange=16.0)]
+)
+@pytest.mark.parametrize("lnorm", [None, eplt.InversePowerNorm(0.5)])
+@pytest.mark.parametrize("cmap", [None, "bwr"])
+def test_2d_cmap(cmap, lnorm, cnorm, background):
     test = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]).astype(
         np.float64
     )
@@ -72,9 +78,12 @@ def test_2d_cmap():
     _, cb = eplt.plot_array_2d(
         test + test_t,
         test - test_t,
-        lnorm=eplt.InversePowerNorm(0.5),
-        cnorm=eplt.CenteredInversePowerNorm(0.7, vcenter=0.0, halfrange=1.0),
+        cmap=cmap,
+        lnorm=lnorm,
+        cnorm=cnorm,
+        background=background,
     )
-    assert cb.ax.get_ylim() == (-1.0, 1.0)
+    assert cb.ax.get_ylim() == (-16.0, 16.0)
+    assert cb.ax.get_xlim() == (0.0, 48.0)
 
     plt.close()

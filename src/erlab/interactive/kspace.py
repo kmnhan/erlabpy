@@ -301,7 +301,7 @@ class KspaceTool(KspaceToolGUI):
     @property
     def offset_dict(self) -> dict[str, float]:
         return {
-            k: np.round(self._offset_spins[k].value(), 5)
+            k: float(np.round(self._offset_spins[k].value(), 5))
             for k in self.data.kspace.valid_offset_keys
         }
 

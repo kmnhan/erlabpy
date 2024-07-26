@@ -616,8 +616,8 @@ class ArraySlicer(QtCore.QObject):
             if binned[self._obj.dims.index(dim)]:
                 coord = self._obj[dim][selector].values
 
-                out[dim] = np.round(coord.mean(), order)
-                width = np.round(abs(coord[-1] - coord[0]) + inc, order)
+                out[dim] = float(np.round(coord.mean(), order))
+                width = float(np.round(abs(coord[-1] - coord[0]) + inc, order))
 
                 if not np.allclose(
                     self._obj[dim]
@@ -632,7 +632,7 @@ class ArraySlicer(QtCore.QObject):
                 out[dim + "_width"] = width
 
             else:
-                out[dim] = np.round(self._obj[dim].values[selector], order)
+                out[dim] = float(np.round(self._obj[dim].values[selector], order))
 
         return out
 

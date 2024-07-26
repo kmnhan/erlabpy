@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "LabeledCursor",
     "autoscale_off",
     "autoscale_to",
     "clean_labels",
@@ -32,7 +31,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
-from matplotlib.widgets import AxesWidget
 
 from erlab.plotting.annotations import fancy_labels, label_subplot_properties
 from erlab.plotting.colors import (
@@ -82,139 +80,6 @@ def autoscale_to(arr, margin=0.2):
     mn, mx = min(arr), max(arr)
     diff = margin * (mx - mn)
     return mn - diff, mx + diff
-
-
-class LabeledCursor(AxesWidget):
-    r"""A crosshair cursor that spans the axes and moves with mouse cursor.
-
-    For the cursor to remain responsive you must keep a reference to it.
-    Unlike `matplotlib.widgets.Cursor`, this also shows the current
-    cursor location.
-
-    Parameters
-    ----------
-    ax
-        The `matplotlib.axes.Axes` to attach the cursor to.
-    horizOn
-        Whether to draw the horizontal line.
-    vertOn
-        Whether to draw the vertical line.
-    textOn
-        Whether to show current cursor location.
-    useblit
-        Use blitting for faster drawing if supported by the backend.
-    textprops
-        Keyword arguments to pass onto the text object.
-
-    Other Parameters
-    ----------------
-    **lineprops
-        `matplotlib.lines.Line2D` properties that control the appearance of the
-        lines. See also `matplotlib.axes.Axes.axhline`.
-
-    """
-
-    def __init__(
-        self,
-        ax: matplotlib.axes.Axes,
-        horizOn: bool = True,
-        vertOn: bool = True,
-        textOn: bool = True,
-        useblit: bool = True,
-        textprops: dict | None = None,
-        **lineprops,
-    ) -> None:
-        super().__init__(ax)
-
-        if textprops is None:
-            textprops = {}
-
-        self.connect_event("motion_notify_event", self.onmove)  # type: ignore[arg-type]
-        self.connect_event("draw_event", self.clear)  # type: ignore[arg-type]
-
-        self.visible = True
-        self.horizOn = horizOn
-        self.vertOn = vertOn
-        self.textOn = textOn
-        if self.canvas is None:
-            raise RuntimeError("No canvas found to attach to")
-        self.useblit = useblit and self.canvas.supports_blit
-
-        if self.useblit:
-            lineprops["animated"] = True
-            textprops["animated"] = True
-
-        lcolor = lineprops.pop("color", lineprops.pop("c", "0.35"))
-        ls = lineprops.pop("ls", lineprops.pop("linestyle", "--"))
-        lw = lineprops.pop("lw", lineprops.pop("linewidth", 0.5))
-        lineprops.update({"color": lcolor, "ls": ls, "lw": lw, "visible": False})
-
-        tcolor = textprops.pop("color", textprops.pop("c", lcolor))
-        textprops.update(
-            {
-                "color": tcolor,
-                "visible": False,
-                "horizontalalignment": "right",
-                "verticalalignment": "top",
-                "transform": ax.transAxes,
-            }
-        )
-
-        self.lineh = ax.axhline(ax.get_ybound()[0], **lineprops)
-        self.linev = ax.axvline(ax.get_xbound()[0], **lineprops)
-        with plt.rc_context({"text.usetex": False}):
-            self.label = ax.text(0.95, 0.95, "", **textprops)
-        self.background = None
-        self.needclear = False
-
-    def clear(self, event):
-        """Clear the cursor."""
-        if self.ignore(event):
-            return
-        if self.useblit:
-            self.background = self.canvas.copy_from_bbox(self.ax.bbox)
-        self.linev.set_visible(False)
-        self.lineh.set_visible(False)
-        self.label.set_visible(False)
-
-    def onmove(self, event):
-        """Draw the cursor when the mouse moves."""
-        if self.ignore(event):
-            return
-        if not self.canvas.widgetlock.available(self):
-            return
-        if event.inaxes != self.ax:
-            self.linev.set_visible(False)
-            self.lineh.set_visible(False)
-            self.label.set_visible(False)
-
-            if self.needclear:
-                self.canvas.draw()
-                self.needclear = False
-            return
-        self.needclear = True
-        if not self.visible:
-            return
-        self.linev.set_xdata((event.xdata, event.xdata))
-        self.lineh.set_ydata((event.ydata, event.ydata))
-        self.label.set_text(f"({event.xdata:1.3f}, {event.ydata:1.3f})")
-        self.linev.set_visible(self.visible and self.vertOn)
-        self.lineh.set_visible(self.visible and self.horizOn)
-        self.label.set_visible(self.visible and self.textOn)
-
-        self._update()
-
-    def _update(self):
-        if self.useblit:
-            if self.background is not None:
-                self.canvas.restore_region(self.background)
-            self.ax.draw_artist(self.linev)
-            self.ax.draw_artist(self.lineh)
-            self.ax.draw_artist(self.label)
-            self.canvas.blit(self.ax.bbox)
-        else:
-            self.canvas.draw_idle()
-        return False
 
 
 def place_inset(
@@ -821,19 +686,19 @@ def plot_slices(
         along the same row or the same column. 'C' means to flatten in row-major
         (C-style) order, and 'F' means to flatten in column-major (Fortran-style) order.
     cmap_order
-        The order to flatten when given a nested sequence for `cmap`,
-        Defaults to `order`.
+        The order to flatten when given a nested sequence for `cmap`, Defaults to
+        ``'C'``.
     norm_order
-        The order to flatten when given a nested sequence for `norm`,
-        Defaults to `cmap_order`.
+        The order to flatten when given a nested sequence for `norm`, Defaults to
+        `cmap_order`.
     gradient
         If `True`, for 1D slices, fills the area under the curve with a gradient. Has no
         effect for 2D slices.
     gradient_kw
         Extra arguments to :func:`gradient_fill`.
     subplot_kw
-        Extra arguments to :func:`matplotlib.pyplot.subplots`: refer to the
-        `matplotlib` documentation for a list of all possible arguments.
+        Extra arguments to :func:`matplotlib.pyplot.subplots`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
     annotate_kw
         Extra arguments to :func:`erlab.plotting.annotations.label_subplot_properties`.
         Only applied when `annotate` is `True`.
@@ -843,8 +708,8 @@ def plot_slices(
         A nested sequence of :class:`matplotlib.axes.Axes`. If supplied, the returned
         :class:`matplotlib.figure.Figure` is inferred from the first axes.
     **values
-        Key-value pair of cut location and bin widths. See examples.
-        Remaining arguments are passed onto :func:`plot_array`.
+        Key-value pair of cut location and bin widths. See examples. Remaining arguments
+        are passed onto :func:`plot_array`.
 
     Returns
     -------
@@ -868,9 +733,6 @@ def plot_slices(
     if transpose:
         maps = [m.T for m in maps]
 
-    if cmap_order is None:
-        cmap_order = order
-
     if norm_order is None:
         norm_order = cmap_order
 
@@ -886,27 +748,38 @@ def plot_slices(
     if colorbar_kw is None:
         colorbar_kw = {}
 
+    for m in maps[1:]:
+        if m.dims != maps[0].dims:
+            raise ValueError("All input arrays must have the same dimensions")
+
     dims = maps[0].dims
-    kwargs = {k: v for k, v in values.items() if k not in dims}
-    slice_kw = {k: v for k, v in values.items() if k not in kwargs}
 
-    if len(slice_kw) == 0:
-        slice_dim = None
-        slice_levels = [None]
-        slice_width = None
+    qsel_kw: dict[str, slice | float | Iterable[float]] = {
+        k: v for k, v in values.items() if k in dims
+    }
+    sel_dims: list[str] = list(qsel_kw.keys())
+    slice_dim: str | None = None
+    slice_levels: list[float] = [np.nan]
+    slice_width: float | None = None
 
-    else:
-        slice_dim = next(k for k in slice_kw if not k.endswith("_width"))
-        slice_levels = slice_kw[slice_dim]
-        slice_width = kwargs.pop(slice_dim + "_width", None)
+    for k in list(qsel_kw.keys()):
+        values.pop(k)
 
-    plot_dims: list[str] = [str(d) for d in dims if d != slice_dim]
+        if isinstance(qsel_kw[k], Iterable):
+            if slice_dim is not None:
+                raise ValueError("Only one slice dimension is allowed")
+            slice_dim = k
+            slice_levels = list(cast(Iterable[float], qsel_kw.pop(k)))
+            slice_width = values.pop(f"{k}_width", None)
+        elif f"{k}_width" in values:
+            qsel_kw[f"{k}_width"] = values.pop(f"{k}_width")
+
+    kwargs = values.copy()
+
+    plot_dims: list[str] = [str(d) for d in dims if d not in sel_dims]
 
     if len(plot_dims) not in (1, 2):
         raise ValueError("The data to plot must be 1D or 2D")
-
-    if not isinstance(slice_levels, Iterable):
-        slice_levels = [slice_levels]
 
     if xlim is not None and not isinstance(xlim, Iterable):
         xlim = (-xlim, xlim)
@@ -947,8 +820,6 @@ def plot_slices(
 
     if ncol == 1:
         axes = axes[:, np.newaxis].reshape(-1, 1)
-
-    qsel_kw: dict[str, Any] = {}
 
     if crop:
         if len(plot_dims) == 1:

@@ -1,5 +1,75 @@
-# CHANGELOG
+# Changelog
+This project tries to follow [Semantic Versioning](https://semver.org/).
 
+
+
+## v2.8.4-alpha.1 (2024-07-26)
+
+### Chore
+
+* support numpy 2.0 ([`7927392`](https://github.com/kmnhan/erlabpy/commit/79273929105faff2ccc32ce7e183ebf379289361))
+
+### Ci
+
+* (**semantic-release**) change prerelease token to avoid conflict with setuptools-scm ([`8e0c726`](https://github.com/kmnhan/erlabpy/commit/8e0c726d5817b5d5503845f3e962d2f086c33bfe))
+
+* (**pre-commit**) update config ([`f242ca0`](https://github.com/kmnhan/erlabpy/commit/f242ca00961e9347f7b81a1d728ad457577d6a97))
+
+* add pre-release configuration ([`81a63a5`](https://github.com/kmnhan/erlabpy/commit/81a63a5eb36ca08299e695fe23070e6406e03624))
+
+* (**rtd**) cleanup obsolete environment and requirement files ([`37d93bc`](https://github.com/kmnhan/erlabpy/commit/37d93bc841e05b70367e4744da2ba78944c4567d))
+
+* (**pre-commit**) pre-commit autoupdate ([`ea5720d`](https://github.com/kmnhan/erlabpy/commit/ea5720d5e035f74733208118686766474e2af0ef))
+
+  updates: - [github.com/astral-sh/ruff-pre-commit: v0.5.0 → v0.5.1](https://github.com/astral-sh/ruff-pre-commit/compare/v0.5.0...v0.5.1)
+
+* (**github**) change schedule ([`144b554`](https://github.com/kmnhan/erlabpy/commit/144b554a179cd86394236b205c94506751b3ad67))
+
+### Documentation
+
+* fix typos ([`e22d200`](https://github.com/kmnhan/erlabpy/commit/e22d2004a2c2694f3d3d71208050c1c1b3f70938))
+
+* improve accessor and imagetool docstrings ([`5371767`](https://github.com/kmnhan/erlabpy/commit/5371767f5f26511b4ca22f569cf3787b418a491d))
+
+### Fix
+
+* (**erlab.plotting.general**) improve `plot_array` keyword versatility ([`1dc41cd`](https://github.com/kmnhan/erlabpy/commit/1dc41cd52f8d7f879cfe54f2adf3a512b78ac007))
+
+  Enables additional kwargs with valid data dimensions as the key to be passed onto `qsel`.
+
+* (**erlab.analysis.gold**) fix `quick_fit` attribute detection ([`3797f93`](https://github.com/kmnhan/erlabpy/commit/3797f93e1a578e356ce21e7b7c933341099ab156))
+
+* (**interactive.imagetool**) retain window title upon archiving ([`b5d8aa4`](https://github.com/kmnhan/erlabpy/commit/b5d8aa4884562ba4b53351baf58d598e27a1e757))
+
+### Refactor
+
+* (**plotting.general**) remove `LabeledCursor` ([`912b4fb`](https://github.com/kmnhan/erlabpy/commit/912b4fb73f88e3a529d1e3880a2253e0cb26e7ae))
+
+  We skip the deprecation step since nobody is likely to be using it anyway.
+
+* (**accessors**) split submodule ([`6ed5c03`](https://github.com/kmnhan/erlabpy/commit/6ed5c039889624d3589d9ce71a75ed6047f4406f))
+
+  Accessors in `utils.py` has been moved to `general.py`, so that `utils.py` only contains utilities for creating accessors.
+
+* improve type annotations ([`b242f44`](https://github.com/kmnhan/erlabpy/commit/b242f44d49239e51b4bd9e4b1ae7fd952c59e2c2))
+
+### Style
+
+* apply ruff pylint checks ([`8265b90`](https://github.com/kmnhan/erlabpy/commit/8265b90898819af3461789c9d8762a62ad5a2b91))
+
+* enforce ruff SIM ([`1ce4d36`](https://github.com/kmnhan/erlabpy/commit/1ce4d362ad96c583a1211aee1c7a714992125367))
+
+* enforce ruff RET ([`99dd897`](https://github.com/kmnhan/erlabpy/commit/99dd8974ed382b26c5a3a5fba829ae1a6ee601ab))
+
+* enforce ruff A ([`c6aa21c`](https://github.com/kmnhan/erlabpy/commit/c6aa21ca5df4f3dd2e37a85403f1102d5f9d44ae))
+
+* enforce ruff E501 ([`885174f`](https://github.com/kmnhan/erlabpy/commit/885174f851410e98d1a7c43d0409ae45c7f7b59c))
+
+### Test
+
+* add missing tests ([`20e7634`](https://github.com/kmnhan/erlabpy/commit/20e7634691856e31414c6f5b35839b4adb9d0de8))
+
+* (**interactive**) improve interactive tool test coverage ([`7f24b81`](https://github.com/kmnhan/erlabpy/commit/7f24b81b5d6b6f2186ad62457b40c4e16deb2193))
 
 
 ## v2.8.3 (2024-07-08)

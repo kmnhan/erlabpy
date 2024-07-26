@@ -96,7 +96,7 @@ def shift(
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        rigid_shift: float = np.round(shift.values.mean())
+        rigid_shift: float = float(np.round(shift.values.mean()))
         shift = shift - rigid_shift
 
         # Apply coordinate shift

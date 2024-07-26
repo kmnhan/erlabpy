@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import sys
+import threading
 import types
 import warnings
 from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
@@ -35,6 +37,17 @@ __all__ = [
     "parse_data",
     "xImageItem",
 ]
+
+
+def _coverage_resolve_trace(fn):
+    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+    @functools.wraps(fn)
+    def _wrapped_for_coverage(*args, **kwargs) -> None:
+        if threading._trace_hook:  # type: ignore[attr-defined]
+            sys.settrace(threading._trace_hook)  # type: ignore[attr-defined]
+        fn(*args, **kwargs)
+
+    return _wrapped_for_coverage
 
 
 def parse_data(data) -> xr.DataArray:
