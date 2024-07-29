@@ -67,6 +67,9 @@ jobs:
       group: release
     needs: test
     if: github.event_name != 'schedule' && github.repository == 'kmnhan/erlabpy'
+    env:
+      BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+      RELEASE_TYPE: 'none'
     environment:
       name: pypi
       url: https://pypi.org/p/erlab
@@ -86,23 +89,56 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Python Semantic Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@master
+      # - name: Python Semantic Release
+      #   id: release
+      #   uses: python-semantic-release/python-semantic-release@master
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - if: env.BRANCH_NAME == 'main'
+        run: |
+          echo "RELEASE_TYPE=full" >> $GITHUB_ENV
+
+      - if: startsWith(env.BRANCH_NAME, 'dev-')
+        run: |
+          echo "RELEASE_TYPE=alpha" >> $GITHUB_ENV
+
+      - if: startsWith(env.BRANCH_NAME, 'rc-')
+        run: |
+          echo "RELEASE_TYPE=rc" >> $GITHUB_ENV
+
+      - name: Run commitizen full release
+        if: ${{ env.RELEASE_TYPE == 'full' }}
+        id: cz-full
+        continue-on-error: true
+        uses: commitizen-tools/commitizen-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          changelog_increment_filename: body.md
+
+      - name: Run commitizen on PR
+        if: ${{ env.RELEASE_TYPE != 'full' && env.RELEASE_TYPE != 'none' }}
+        id: cz-pr
+        continue-on-error: true
+        uses: commitizen-tools/commitizen-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          changelog_increment_filename: body.md
+          prerelease: ${{ env.RELEASE_TYPE }}
 
       - name: Publish package distributions to PyPI
         id: pypi-publish
-        if: steps.release.outputs.released == 'true'
+        if: steps.cz-full.outcome == 'success' || steps.cz-pr.outcome == 'success'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
 
       - name: Publish package distributions to GitHub Releases
         id: github-release
-        if: steps.release.outputs.released == 'true'
-        uses: python-semantic-release/upload-to-gh-release@main
+        if: steps.cz-full.outcome == 'success' || steps.cz-pr.outcome == 'success'
+        uses: softprops/action-gh-release@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.release.outputs.tag }}
+          body_path: "body.md"
+          tag_name: ${{ steps.cz-full.outputs.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: ${{ env.RELEASE_TYPE != 'full' }}
