@@ -80,6 +80,10 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 [tool.commitizen]
 version_provider = "pep621"
 update_changelog_on_bump = true
+tag_format = "v$version"
+template = "./templates/CHANGELOG.md.j2"
+changelog_start_rev = "v1.2.1"
+changelog_merge_prerelease = true
 
 [tool.setuptools]
 package-dir = { "" = "src" }

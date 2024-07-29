@@ -66,7 +66,7 @@ jobs:
     concurrency:
       group: release
     needs: test
-    if: github.event_name != 'schedule' && github.repository == 'kmnhan/erlabpy'
+    if: github.event_name == 'push' && github.repository == 'kmnhan/erlabpy'
     environment:
       name: pypi
       url: https://pypi.org/p/erlab
@@ -86,23 +86,40 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Python Semantic Release
-        id: release
-        uses: python-semantic-release/python-semantic-release@master
+      # - name: Python Semantic Release
+      #   id: release
+      #   uses: python-semantic-release/python-semantic-release@master
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run commitizen
+        if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
+        id: cz
+        continue-on-error: true
+        uses: commitizen-tools/commitizen-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          changelog_increment_filename: body.md
+
+      - name: Build package distributions
+        id: build
+        if: steps.cz.outcome == 'success'
+        run: |
+          python -m pip install --upgrade build
+          python -m build
 
       - name: Publish package distributions to PyPI
         id: pypi-publish
-        if: steps.release.outputs.released == 'true'
+        if: steps.cz.outcome == 'success'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
 
       - name: Publish package distributions to GitHub Releases
         id: github-release
-        if: steps.release.outputs.released == 'true'
-        uses: python-semantic-release/upload-to-gh-release@main
+        if: steps.cz.outcome == 'success'
+        uses: softprops/action-gh-release@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ steps.release.outputs.tag }}
+          body_path: "body.md"
+          tag_name: ${{ steps.cz.outputs.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
