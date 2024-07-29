@@ -169,6 +169,8 @@ def test_itool(qtbot):
     win.slicer_area.set_data(data.rename("new_data"))
     assert win.windowTitle() == "new_data"
 
+    win.close()
+
 
 def test_itool_ds(qtbot):
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
@@ -237,6 +239,8 @@ def test_value_update(qtbot):
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
+
+    win.close()
 
 
 def test_sync(qtbot):
