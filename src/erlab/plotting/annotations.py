@@ -13,7 +13,7 @@ __all__ = [
     "mark_points",
     "mark_points_outside",
     "plot_hv_text",
-    "property_label",
+    "property_labels",
     "scale_units",
     "set_titles",
     "set_xlabels",
@@ -38,6 +38,7 @@ import numpy as np
 import pyperclip
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
+from erlab.accessors.utils import either_dict_or_kwargs
 from erlab.plotting.colors import axes_textcolor
 
 if TYPE_CHECKING:
@@ -94,6 +95,7 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
 PRETTY_NAMES: dict[str, tuple[str, str]] = {
     "temperature": ("Temperature", "Temperature"),
     "T": (r"\ensuremath{T}", r"$T$"),
+    "t": (r"\ensuremath{t}", r"$t$"),
     "beta": (r"\ensuremath{\beta}", r"$\beta$"),
     "theta": (r"\ensuremath{\theta}", r"$\theta$"),
     "chi": (r"\ensuremath{\chi}", r"$\chi$"),
@@ -119,6 +121,7 @@ The first element is for LaTeX, and the second is for plain text.
 PRETTY_UNITS: dict[str, tuple[str, str]] = {
     "temperature": (r"K", r"K"),
     "T": (r"K", r"K"),
+    "t": (r"s", r"s"),
     "theta": (r"deg", r"deg"),
     "beta": (r"deg", r"deg"),
     "psi": (r"deg", r"deg"),
@@ -321,6 +324,66 @@ def fancy_labels(ax=None, deg2rad=False) -> None:
         ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), deg2rad=deg2rad))
 
 
+def property_labels(
+    values: dict | None = None,
+    decimals: int | None = None,
+    si: int = 0,
+    name: str | None = None,
+    unit: str | None = None,
+    order: Literal["C", "F", "A", "K"] = "C",
+    **values_kwargs,
+) -> list[str]:
+    """Generate labels from a dictionary of values.
+
+    Given a dictionary of values, this function generates a list of label strings  with
+    the key as the dimension name and the value as the dimension value. Multiple
+    key-value pairs will be separated by a newline character in each label. The name and
+    unit will be automatically determined from the key.
+
+    Parameters
+    ----------
+    values
+        Key-value pair of annotations. The values may be a single value or an array-like
+        of values. If a single value, it will be converted to a list of length 1. If an
+        array of 2 or more dimensions is given, it will be flattened with the order
+        given by `order`. All values must be of the same length when flattened.
+    decimals
+        Number of decimal places to round to. If decimals is None, no rounding is
+        performed. If decimals is negative, it specifies the number of positions to the
+        left of the decimal point.
+    si
+        Powers of 10 for automatic SI prefix setting.
+    name
+        When set, overrides automatic dimension name setting.
+    unit
+        When set, overrides automatic unit setting.
+    order
+        Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
+        order. 'F' means to flatten in column-major (Fortran- style) order. 'A' means to
+        flatten in column-major order if a is Fortran contiguous in memory, row-major
+        order otherwise. 'K' means to flatten a in the order the elements occur in
+        memory. The default is 'C'.
+
+    """
+    values = either_dict_or_kwargs(values, values_kwargs, "property_labels")
+    strlist: Any = []
+    for k, v in values.items():
+        if not isinstance(v, tuple | list | np.ndarray):
+            v = [v]
+        else:
+            v = np.array(v).flatten(order=order)
+        strlist.append(
+            [
+                property_label(
+                    k, val, decimals=decimals, si=si, name=name, unit=unit
+                ).strip()
+                for val in v
+            ]
+        )
+    strlist = list(zip(*strlist, strict=True))
+    return ["\n".join(strlist[i]) for i in range(len(strlist))]
+
+
 def label_subplot_properties(
     axes: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
     values: dict,
@@ -339,11 +402,14 @@ def label_subplot_properties(
         `matplotlib.axes.Axes` to label. If an array is given, the order will be
         determined by the flattening method given by `order`.
     values
-        key-value pair of annotations.
+        Key-value pair of annotations. The values may be a single value or an array-like
+        of values. If a single value, it will be converted to a list of length 1. If an
+        array of 2 or more dimensions is given, it will be flattened with the order
+        given by `order`. All values must be of the same length when flattened.
     decimals
-        Number of decimal places to round to. If decimals is None, no
-        rounding is performed. If decimals is negative, it specifies the
-        number of positions to the left of the decimal point.
+        Number of decimal places to round to. If decimals is None, no rounding is
+        performed. If decimals is negative, it specifies the number of positions to the
+        left of the decimal point.
     si
         Powers of 10 for automatic SI prefix setting.
     name
@@ -351,12 +417,11 @@ def label_subplot_properties(
     unit
         When set, overrides automatic unit setting.
     order
-        Order in which to flatten `ax`. 'C' means to flatten in
-        row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran- style) order. 'A' means to flatten in column-major
-        order if a is Fortran contiguous in memory, row-major order
-        otherwise. 'K' means to flatten a in the order the elements
-        occur in memory. The default is 'C'.
+        Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
+        order. 'F' means to flatten in column-major (Fortran- style) order. 'A' means to
+        flatten in column-major order if a is Fortran contiguous in memory, row-major
+        order otherwise. 'K' means to flatten a in the order the elements occur in
+        memory. The default is 'C'.
     **kwargs
         Extra arguments to `erlab.plotting.annotations.label_subplots`.
 
@@ -366,21 +431,14 @@ def label_subplot_properties(
     kwargs.setdefault("suffix", "")
     kwargs.setdefault("loc", "upper right")
 
-    strlist: Any = []
-    for k, v in values.items():
-        if not isinstance(v, tuple | list | np.ndarray):
-            v = [v]
-        else:
-            v = np.array(v).flatten(order=order)
-        strlist.append(
-            [
-                property_label(k, val, decimals=decimals, si=si, name=name, unit=unit)
-                for val in v
-            ]
-        )
-    strlist = list(zip(*strlist, strict=True))
-    strlist = ["\n".join(strlist[i]) for i in range(len(strlist))]
-    label_subplots(axes, strlist, order=order, **kwargs)
+    label_subplots(
+        axes,
+        property_labels(
+            values, decimals=decimals, si=si, name=name, unit=unit, order=order
+        ),
+        order=order,
+        **kwargs,
+    )
 
 
 def label_subplots(
