@@ -359,10 +359,8 @@ def property_labels(
         When set, overrides automatic unit setting.
     order
         Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
-        order. 'F' means to flatten in column-major (Fortran- style) order. 'A' means to
-        flatten in column-major order if a is Fortran contiguous in memory, row-major
-        order otherwise. 'K' means to flatten a in the order the elements occur in
-        memory. The default is 'C'.
+        order. 'F' means to flatten in column-major (Fortran-style) order. The default
+        is 'C'.
 
     """
     values = either_dict_or_kwargs(values, values_kwargs, "property_labels")
@@ -418,10 +416,8 @@ def label_subplot_properties(
         When set, overrides automatic unit setting.
     order
         Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
-        order. 'F' means to flatten in column-major (Fortran- style) order. 'A' means to
-        flatten in column-major order if a is Fortran contiguous in memory, row-major
-        order otherwise. 'K' means to flatten a in the order the elements occur in
-        memory. The default is 'C'.
+        order. 'F' means to flatten in column-major (Fortran-style) order. The default
+        is 'C'.
     **kwargs
         Extra arguments to `erlab.plotting.annotations.label_subplots`.
 
@@ -503,7 +499,7 @@ def label_subplots(
     order
         Order in which to flatten `ax`. 'C' means to flatten in
         row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran- style) order. 'A' means to flatten in column-major
+        (Fortran-style) order. 'A' means to flatten in column-major
         order if a is Fortran contiguous in memory, row-major order
         otherwise. 'K' means to flatten a in the order the elements
         occur in memory. The default is 'C'.
@@ -622,7 +618,7 @@ def label_subplots_nature(
     order
         Order in which to flatten `ax`. 'C' means to flatten in
         row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran- style) order. 'A' means to flatten in column-major
+        (Fortran-style) order. 'A' means to flatten in column-major
         order if a is Fortran contiguous in memory, row-major order
         otherwise. 'K' means to flatten a in the order the elements
         occur in memory. The default is 'C'.
@@ -761,6 +757,7 @@ def mark_points_outside(
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    **kwargs,
 ) -> None:
     """Mark points above the horizontal axis.
 
@@ -782,6 +779,9 @@ def mark_points_outside(
         If ``True``, prints a bar over the label.
     ax
         `matplotlib.axes.Axes` to annotate.
+    **kwargs
+        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
 
     """
     if ax is None:
@@ -795,16 +795,18 @@ def mark_points_outside(
         if axis == "x":
             label_ax = ax.twiny()
             label_ax.set_xlim(ax.get_xlim())
-            label_ax.set_xticks(points)
-            label_ax.set_xticklabels(
-                [parse_point_labels(lab, roman, bar) for lab in labels]
+            label_ax.set_xticks(
+                points,
+                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                **kwargs,
             )
         else:
             label_ax = ax.twinx()
             label_ax.set_ylim(ax.get_ylim())
-            label_ax.set_yticks(points)
-            label_ax.set_yticklabels(
-                [parse_point_labels(lab, roman, bar) for lab in labels]
+            label_ax.set_yticks(
+                points,
+                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                **kwargs,
             )
         label_ax.set_frame_on(False)
 
@@ -970,14 +972,49 @@ def scale_units(
             setlabel(label.replace(f"({unit})", f"({get_si_str(si)}{unit})"))
 
 
-def set_titles(axes, labels, order="C", **kwargs) -> None:
+def set_titles(axes, labels: Iterable[str] | str, order="C", **kwargs) -> None:
+    """Set titles for multiple axes.
+
+    Parameters
+    ----------
+    axes
+        Axes to set titles for.
+    labels
+        Title strings to set. If a single string is given, it will be used for all axes.
+    order
+        Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
+        order. 'F' means to flatten in column-major (Fortran-style) order. The default
+        is 'C'.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.set_title`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
+
+    """
     axlist = np.array(axes, dtype=object).flatten(order=order)
+    if isinstance(labels, str):
+        labels = [labels] * len(axlist)
     labels = np.asarray(labels)
     for ax, label in zip(axlist.flat, labels.flat, strict=True):
         ax.set_title(label, **kwargs)
 
 
-def set_xlabels(axes, labels, order="C", **kwargs) -> None:
+def set_xlabels(axes, labels: Iterable[str] | str, order="C", **kwargs) -> None:
+    """Set x-axis labels for multiple axes.
+
+    Parameters
+    ----------
+    axes
+        Axes to set x-axis labels for.
+    labels
+        Label strings to set. If a single string is given, it will be used for all axes.
+    order
+        Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
+        order. 'F' means to flatten in column-major (Fortran-style) order. The default
+        is 'C'.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.set_xlabel`: refer to the `matplotlib`
+        documentation for a list of all possible arguments.
+    """
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
@@ -986,7 +1023,23 @@ def set_xlabels(axes, labels, order="C", **kwargs) -> None:
         ax.set_xlabel(label, **kwargs)
 
 
-def set_ylabels(axes, labels, order="C", **kwargs) -> None:
+def set_ylabels(axes, labels: Iterable[str] | str, order="C", **kwargs) -> None:
+    """Set y-axis labels for multiple axes.
+
+    Parameters
+    ----------
+    axes
+        Axes to set y-axis labels for.
+    labels
+        Label strings to set. If a single string is given, it will be used for all axes.
+    order
+        Order in which to flatten `ax`. 'C' means to flatten in row-major (C-style)
+        order. 'F' means to flatten in column-major (Fortran-style) order. The default
+        is 'C'.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.set_ylabel`: refer to the `matplotlib`
+
+    """
     axlist = np.array(axes, dtype=object).flatten(order=order)
     if isinstance(labels, str):
         labels = [labels] * len(axlist)
