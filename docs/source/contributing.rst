@@ -252,11 +252,8 @@ Commit and push your changes
 ----------------------------
 
 1. To commit all modified files into the local copy of your repo, do ``git commit -am 'A
-   commit message'``. Note that *erlabpy* uses `python-semantic-release
-   <https://python-semantic-release.readthedocs.io/>`_ for versioning, so the commit
-   message must follow the `Conventional Commits
-   <https://www.conventionalcommits.org/en/v1.0.0/>`_ standard. This will automatically
-   determine the version number for the next release.
+   commit message'``. The commit message must follow the `Conventional Commits
+   <https://www.conventionalcommits.org/en/v1.0.0/>`_ specification.
 
 2. To push the changes up to your forked repo on GitHub, do a ``git push``.
 
@@ -284,9 +281,9 @@ Code standards
   <https://github.com/astral-sh/ruff>`_.
 
 - If you wish to contribute, using `pre-commit <https://pre-commit.com>`_ is
-  recommended. This will ensure that your code is properly formatted before you commit
-  it. A pre-commit configuration file is included in the repository, and you can install
-  it by running ``pre-commit install`` in the repository root.
+  recommended. This will ensure that your code and commit message is properly formatted
+  before you commit it. A pre-commit configuration file is included in the repository,
+  and you can install it by running ``pre-commit install`` in the repository root.
 
 - When writing code that uses Qt, please adhere to the following rules:
 
