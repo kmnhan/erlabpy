@@ -1,13 +1,19 @@
-# Changelog
-This project tries to follow [Semantic Versioning](https://semver.org/).
-{% import ".macros.j2" as macros -%}
-{% if context.history.unreleased | length > 0 %}
-{# UNRELEASED #}
-## Unreleased
-{{ macros.render_elements(context.history.unreleased) -}}
+{% for entry in tree %}
+
+## {{ entry.version }}{% if entry.date %} ({{ entry.date }}){% endif %}
+
+{% for change_key, changes in entry.changes.items() %}
+
+{% if change_key %}
+### {{ change_key }}
 {% endif %}
-{% for version, release in context.history.released.items() %}
-{# RELEASED #}
-## {{ version.as_semver_tag() }} ({{ release.tagged_date.strftime("%Y-%m-%d") }})
-{{ macros.render_elements(release["elements"]) -}}
+
+{% for change in changes %}
+{% if change.scope %}
+- **{{ change.scope }}**: {{ change.message }} ([`{{ change.sha1[:7] }}`](https://github.com/kmnhan/erlabpy/commit/{{ change.sha1 }}))
+{% elif change.message %}
+- {{ change.message }} ([`{{ change.sha1[:7] }}`](https://github.com/kmnhan/erlabpy/commit/{{ change.sha1 }}))
+{% endif %}
+{% endfor %}
+{% endfor %}
 {% endfor %}
