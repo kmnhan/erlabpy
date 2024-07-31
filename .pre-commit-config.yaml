@@ -1,6 +1,7 @@
 ci:
   autoupdate_commit_msg: "ci(pre-commit): pre-commit autoupdate"
   autofix_commit_msg: "style: pre-commit auto fixes [...]"
+  autoupdate_schedule: monthly
 
 repos:
 
