@@ -3,6 +3,13 @@ This project tries to follow [Semantic Versioning](https://semver.org/).
 
 
 
+## v2.8.5 (2024-07-31)
+
+### Fix
+
+- **plotting.annotations**: properly pass keyword arguments in `mark_points_outside` ([`2136939`](https://github.com/kmnhan/erlabpy/commit/2136939e09656f921aed7204ca11cc6615605b7f))
+- **plotting.annotations**: expose property label generation to public api ([`545781d`](https://github.com/kmnhan/erlabpy/commit/545781d1aa5d04b5dd3bf6d0498821d104f837ac))
+
 ## v2.8.4 (2024-07-26)
 
 ### Ci
