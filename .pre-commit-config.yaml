@@ -3,6 +3,8 @@ ci:
   autofix_commit_msg: "style: pre-commit auto fixes [...]"
   autoupdate_schedule: monthly
 
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
 
   # Meta hooks
