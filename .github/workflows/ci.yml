@@ -86,12 +86,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # - name: Python Semantic Release
-      #   id: release
-      #   uses: python-semantic-release/python-semantic-release@master
-      #   with:
-      #     github_token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Run commitizen
         if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
         id: cz
