@@ -104,7 +104,7 @@ documentation are listed below as a reference.
       - Used in
     * - `numpy <https://numpy.org/doc/stable/>`_
       - Computation and array manipulation, linear algebra
-    * - `xarray <https://docs.xarray.dev/en/stable/>`_
+    * - `xarray <https://docs.xarray.dev/>`_
       - Data storage and manipulation
     * - `matplotlib <https://matplotlib.org>`_
       - Plotting

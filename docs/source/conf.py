@@ -44,6 +44,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "matplotlib.sphinxext.plot_directive",
     "matplotlib.sphinxext.figmpl_directive",
+    "matplotlib.sphinxext.roles",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     # "sphinx.ext.inheritance_diagram",
