@@ -332,7 +332,7 @@ class BetterColorBarItem(pg.PlotItem):
 
         self.setDefaultPadding(0)
         # self.hideButtons()
-        self.setMenuEnabled(False)
+        self.setMenuEnabled(False, enableViewBoxMenu=True)
         self.vb.setMouseEnabled(x=False, y=True)
 
         self._colorbar = pg.ImageItem(

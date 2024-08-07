@@ -80,7 +80,8 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     Parameters
     ----------
     content
-        The content to be copied.
+        The content to be copied. If a list of strings is passed, the strings are joined
+        by newlines.
 
     Returns
     -------

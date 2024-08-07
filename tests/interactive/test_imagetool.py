@@ -117,6 +117,8 @@ def test_itool(qtbot):
 
     # Lock levels
     win.slicer_area.lock_levels(True)
+    win.slicer_area.levels = (1.0, 23.0)
+    assert win.slicer_area._colorbar.cb._copy_limits() == str((1.0, 23.0))
     win.slicer_area.lock_levels(False)
 
     # Undo and redo
