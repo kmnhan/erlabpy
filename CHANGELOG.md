@@ -1,3 +1,9 @@
+## v2.8.6 (2024-08-07)
+
+### Refactor
+
+- improve initial import time ([`f720973`](https://github.com/kmnhan/erlabpy/commit/f7209735840355c9fa6ab799b578aecf65008d31))
+
 ## v2.8.5 (2024-07-31)
 
 ### Fix
