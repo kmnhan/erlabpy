@@ -1945,6 +1945,9 @@ class ItoolColorBarItem(BetterColorBarItem):
         )
         super().__init__(**kwargs)
 
+        copy_action = self.vb.menu.addAction("Copy color limits to clipboard")
+        copy_action.triggered.connect(self._copy_limits)
+
     @property
     def slicer_area(self) -> ImageSlicerArea:
         return self._slicer_area
@@ -1956,6 +1959,10 @@ class ItoolColorBarItem(BetterColorBarItem):
     @property
     def primary_image(self):
         return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
+
+    @QtCore.Slot()
+    def _copy_limits(self) -> str:
+        return copy_to_clipboard(str(self._slicer_area.levels))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
