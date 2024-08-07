@@ -774,7 +774,7 @@ def mark_points_outside(
         If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points
         along the vertical axis.
     roman
-        If ``False``, *True*, itallic fonts are used.
+        If ``False``, itallic fonts are used.
     bar
         If ``True``, prints a bar over the label.
     ax

@@ -15,7 +15,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-import erlab.plotting.erplot as eplt
 from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
@@ -42,8 +41,10 @@ class PlotAccessor(ERLabDataArrayAccessor):
             Keyword arguments to be passed to the plotting function.
 
         """
+        from erlab.plotting.erplot import fancy_labels, plot_array
+
         if len(self._obj.dims) == 2:
-            return eplt.plot_array(self._obj, *args, **kwargs)
+            return plot_array(self._obj, *args, **kwargs)
 
         ax = kwargs.pop("ax", None)
         if ax is None:
@@ -51,7 +52,7 @@ class PlotAccessor(ERLabDataArrayAccessor):
         kwargs["ax"] = ax
 
         out = self._obj.plot(*args, **kwargs)
-        eplt.fancy_labels(ax)
+        fancy_labels(ax)
         return out
 
 
