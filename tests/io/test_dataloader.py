@@ -306,3 +306,6 @@ def test_loader():
 
     # Interactive summary
     erlab.io.loaders.current_loader.isummarize(df)
+
+    # Cleanup the temporary directory
+    tmp_dir.cleanup()
