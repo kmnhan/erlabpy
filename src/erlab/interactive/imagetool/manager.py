@@ -145,6 +145,8 @@ class _ManagerServer(QtCore.QThread):
 
             conn.close()
 
+        soc.close()
+
 
 class _QHLine(QtWidgets.QFrame):
     """Horizontal line widget."""
@@ -678,6 +680,9 @@ class ImageToolManager(ImageToolManagerGUI):
             for tool in list(self.tool_options.keys()):
                 self.remove_tool(tool)
 
+        # Clean up temporary directory
+        self._tmp_dir.cleanup()
+
         # Clean up shared memory
         self._shm.close()
         self._shm.unlink()
@@ -803,9 +808,7 @@ def show_in_manager(
 
     # Send the size of the data first
     client_socket.sendall(struct.pack(">L", len(kwargs)))
-
     client_socket.sendall(kwargs)
-
     client_socket.close()
 
 
