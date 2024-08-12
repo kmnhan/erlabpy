@@ -40,6 +40,7 @@ from erlab.plotting.colors import (
     gen_2d_colormap,
     nice_colorbar,
 )
+from erlab.utils.array import is_dims_uniform
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
@@ -170,6 +171,56 @@ def array_extent(
     return x0, x1, y0, y1
 
 
+def _imshow_nonuniform(
+    ax,
+    x,
+    y,
+    A,
+    cmap=None,
+    norm=None,
+    *,
+    aspect=None,
+    interpolation=None,
+    alpha=None,
+    vmin=None,
+    vmax=None,
+    url=None,
+    **kwargs,
+):
+    """Display data as an image on a non-uniform grid.
+
+    :func:`matplotlib.pyplot.imshow` creates a :class:`matplotlib.image.AxesImage`, but
+    this function creates a :class:`matplotlib.image.NonUniformImage` instead.
+
+    """
+    im = matplotlib.image.NonUniformImage(
+        ax,
+        cmap=cmap,
+        norm=norm,
+        interpolation=interpolation,
+        **kwargs,
+    )
+
+    if aspect is None and not (
+        im.is_transform_set() and not im.get_transform().contains_branch(ax.transData)
+    ):
+        aspect = matplotlib.rcParams["image.aspect"]
+    if aspect is not None:
+        ax.set_aspect(aspect)
+
+    im.set_data(x, y, A)
+    im.set_alpha(alpha)
+    if im.get_clip_path() is None:
+        im.set_clip_path(ax.patch)
+    im._scale_norm(norm, vmin, vmax)
+    im.set_url(url)
+
+    im.set_extent(im.get_extent())
+
+    ax.add_image(im)
+    return im
+
+
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
@@ -186,9 +237,13 @@ def plot_array(
     func_args: dict | None = None,
     rtol: float = 1.0e-5,
     atol: float = 1.0e-8,
+    rasterized: bool = True,
     **improps,
 ) -> matplotlib.image.AxesImage:
     """Plot a 2D :class:`xarray.DataArray` using :func:`matplotlib.pyplot.imshow`.
+
+    If the input array is detected to have non-evenly spaced coordinates, it is plotted
+    as a :class:`matplotlib.image.NonUniformImage`.
 
     Parameters
     ----------
@@ -214,15 +269,29 @@ def plot_array(
     func_args
         Keyword arguments passed onto `func`.
     rtol, atol
-        By default, the input array is checked for evenly spaced coordinates. ``rtol``
-        and ``atol`` are the tolerances for the coordinates to be considered evenly
-        spaced. The default values are consistent with `numpy.isclose`.
+        By default, the input array is checked for evenly spaced coordinates. If it is
+        not evenly spaced, it is plotted as a :class:`matplotlib.image.NonUniformImage`
+        instead of a :class:`matplotlib.image.AxesImage`. ``rtol`` and ``atol`` are the
+        tolerances for the coordinates to be considered evenly spaced. The default
+        values are consistent with `numpy.isclose`.
+    rasterized
+        Force rasterized output.
     **improps
-        Keyword arguments passed onto :func:`matplotlib.axes.Axes.imshow`.
+        Keyword arguments passed onto :func:`matplotlib.pyplot.imshow`.
 
     Returns
     -------
     matplotlib.image.AxesImage
+
+    Notes
+    -----
+    Some keyword arguments have different default behavior compared to matplotlib.
+
+    - `interpolation` is set to ``'none'`` for evenly spaced data and ``'nearest'`` for
+      nonuniform data.
+    - `aspect` is set to ``'auto'``.
+    - `origin` is set to ``'lower'``.
+    - The image is rasterized by default.
 
     """
     if colorbar_kw is None:
@@ -232,6 +301,8 @@ def plot_array(
 
     if isinstance(arr, np.ndarray):
         arr = xr.DataArray(arr)
+    if arr.ndim != 2:
+        raise ValueError("Input array must be 2D")
 
     if ax is None:
         ax = plt.gca()
@@ -266,13 +337,7 @@ def plot_array(
     if norm is None:
         norm = copy.deepcopy(matplotlib.colors.PowerNorm(gamma, **norm_kw))
 
-    improps_default = {
-        "interpolation": "none",
-        "extent": array_extent(arr, rtol, atol),
-        "aspect": "auto",
-        "origin": "lower",
-        "rasterized": True,
-    }
+    improps_default = {"aspect": "auto", "origin": "lower", "rasterized": rasterized}
     for k, v in improps_default.items():
         improps.setdefault(k, v)
 
@@ -283,9 +348,23 @@ def plot_array(
             arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
 
     if func is not None:
-        img = ax.imshow(func(arr, **func_args), norm=norm, **improps)
+        arr = func(arr.copy(deep=True), **func_args)
+
+    if is_dims_uniform(arr, rtol=rtol, atol=atol):
+        improps.setdefault("interpolation", "none")
+        img = ax.imshow(
+            arr.values, norm=norm, extent=array_extent(arr, rtol, atol), **improps
+        )
     else:
-        img = ax.imshow(arr.values, norm=norm, **improps)
+        improps.setdefault("interpolation", "nearest")
+        img = _imshow_nonuniform(
+            ax,
+            x=arr[arr.dims[1]].values,
+            y=arr[arr.dims[0]].values,
+            A=arr.values,
+            norm=norm,
+            **improps,
+        )
 
     ax.set_xlabel(str(arr.dims[1]))
     ax.set_ylabel(str(arr.dims[0]))
