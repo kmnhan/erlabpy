@@ -108,7 +108,7 @@ class _ManagerServer(QtCore.QThread):
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
         soc.setblocking(False)
-        soc.listen(1)
+        soc.listen()
         print("Server is listening...")
 
         while not self.stopped.is_set():
