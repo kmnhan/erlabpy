@@ -37,27 +37,27 @@ version = release
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
-    "sphinx.ext.napoleon",
-    # "sphinx_autodoc_typehints",
-    "sphinx.ext.linkcode",
-    "sphinx.ext.mathjax",
     "sphinx.ext.intersphinx",
-    "matplotlib.sphinxext.plot_directive",
-    "matplotlib.sphinxext.figmpl_directive",
-    "matplotlib.sphinxext.roles",
+    "sphinx.ext.mathjax",
+    "sphinx.ext.napoleon",
+    "sphinx_autodoc_typehints",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     # "sphinx.ext.inheritance_diagram",
+    "nbsphinx",
+    "sphinx.ext.linkcode",
+    "sphinx_copybutton",
+    "sphinx_design",
+    "matplotlib.sphinxext.plot_directive",
+    "matplotlib.sphinxext.figmpl_directive",
+    "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
-    "sphinx_copybutton",
-    "nbsphinx",
-    "sphinx_design",
 ]
 
 
-templates_path = ["_templates"]
-exclude_patterns = []
+# templates_path = ["_templates"]
+# exclude_patterns = []
 
 default_role = "obj"
 
@@ -128,11 +128,15 @@ autodoc_default_options = {
 }
 autodoc_typehints = "description"
 autodoc_typehints_description_target = "documented"
-# autodoc_type_aliases = {}
 autodoc_typehints_format = "short"
 autodoc_preserve_defaults = True
 autodoc_inherit_docstrings = False
 
+# -- sphinx_autodoc_typehints settings ---------------------------------------
+always_use_bars_union = True
+typehints_defaults = "comma"
+simplify_optional_unions = False
+typehints_document_rtype = False  # handled by napoleon
 
 # -- Napoleon settings -------------------------------------------------------
 
@@ -147,9 +151,8 @@ napoleon_use_admonition_for_notes = True
 napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_keyword = False
-# napoleon_use_rtype = True
+napoleon_use_rtype = False
 napoleon_preprocess_types = True
-
 napoleon_type_aliases = {
     "np.float32": "float32",
     "numpy.float32": "float32",
@@ -157,12 +160,10 @@ napoleon_type_aliases = {
     "numpy.float64": "float64",
     "xr.DataArray": "xarray.DataArray",
     "array-like": "`array-like <numpy.typing.ArrayLike>`",
-    "array_like": "`array-like <numpy.typing.ArrayLike>`",
     "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
     "RGBAColorType": "`RGBAColorType <matplotlib.typing.RGBAColorType>`",
 }
-napoleon_attr_annotations = True
 napoleon_custom_sections = [("Signals", "params_style")]
 
 # -- nbsphinx options --------------------------------------------------------
@@ -450,7 +451,8 @@ language = "en"
 
 html_title = "ERLabPy"
 html_static_path = ["_static"]
-html_css_files = ["pied-piper-admonition.css"]
+html_css_files = ["custom.css"]
+
 html_theme_options: dict[str, object] = {
     "footer_icons": [
         {

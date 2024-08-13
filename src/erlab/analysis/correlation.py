@@ -47,7 +47,7 @@ def nanacf(arr, *args, **kwargs):
 
 
 def acf2(arr, mode: str = "full", method: str = "fft"):
-    """Calculate the autocorrelation function (ACF) of a 2D array including nans.
+    """Calculate the autocorrelation function (ACF) of a 2D array including NaNs.
 
     Parameters
     ----------

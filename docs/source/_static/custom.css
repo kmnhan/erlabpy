@@ -1,0 +1,9 @@
+dl[class]:not(.option-list):not(.field-list):not(.footnote):not(.glossary):not(.simple) .field-list>dt {
+  font-size: var(--font-size--small);
+  text-transform: uppercase;
+  background-color: var(--color-background-secondary);
+}
+
+span.default_value {
+  font-weight: normal;
+}

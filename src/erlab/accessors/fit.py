@@ -12,8 +12,8 @@ import contextlib
 import copy
 import itertools
 import warnings
-from collections.abc import Hashable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, cast
+from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
+from typing import Any, Literal, cast
 
 import joblib
 import lmfit
@@ -27,9 +27,6 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
 )
 from erlab.utils.parallel import joblib_progress
-
-if TYPE_CHECKING:
-    from xarray.core.types import Dims
 
 
 def _nested_dict_vals(d):
@@ -126,7 +123,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         self,
         coords: str | xr.DataArray | Iterable[str | xr.DataArray],
         model: lmfit.Model,
-        reduce_dims: Dims = None,
+        reduce_dims: str | Collection[Hashable] | None = None,
         skipna: bool = True,
         params: lmfit.Parameters
         | dict[str, float | dict[str, Any]]
