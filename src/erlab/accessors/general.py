@@ -412,7 +412,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
         return out
 
-    def around(self, radius: float | dict[Hashable, float], **sel_kw) -> xr.DataArray:
+    def around(
+        self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw
+    ) -> xr.DataArray:
         """
         Average data within a specified radius of a specified point.
 
@@ -426,7 +428,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         ----------
         radius
             The radius of the region. If a single number, the same radius is used for
-            all dimensions. If a dictionary, each value
+            all dimensions. If a dictionary, keys must be valid dimension names and the
+            values are the radii for the corresponding dimensions.
+        average
+            If `True`, return the mean value of the data within the region. If `False`,
+            return the masked data.
         **sel_kw
             The center of the spherical region. Must be a mapping of valid dimension
             names to coordinate values.
@@ -446,6 +452,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         """
         import erlab.analysis
 
-        return self._obj.where(
-            erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw), drop=True
-        ).mean(sel_kw.keys())
+        masked = self._obj.where(
+            erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw),
+            drop=average,
+        )
+        if average:
+            return masked.mean(sel_kw.keys())
+        return masked
