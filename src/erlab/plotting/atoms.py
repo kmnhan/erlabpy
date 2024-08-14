@@ -422,7 +422,7 @@ class CrystalProperty:
 
     @property
     def _atom_pos_array(self) -> npt.NDArray[np.float64]:
-        return np.r_[*list(self.atom_pos.values())]
+        return np.concatenate(list(self.atom_pos.values()))
 
     def clear_bonds(self) -> None:
         self.segments.clear()
