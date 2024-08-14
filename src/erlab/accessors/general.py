@@ -76,8 +76,7 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         if self._obj.ndim >= 2 and self._obj.ndim <= 4:
             return self.itool(*args, **kwargs)
         if importlib.util.find_spec("hvplot"):
-            self.hvplot(*args, **kwargs)
-            return None
+            return self.hvplot(*args, **kwargs)
         raise ValueError("Data must have at least two dimensions.")
 
     def itool(self, *args, **kwargs):
