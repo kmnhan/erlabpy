@@ -1530,6 +1530,15 @@ class ItoolPlotItem(pg.PlotItem):
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
+        if image:
+            goldtool_action = self.vb.menu.addAction("Open in goldtool")
+            self._goldtool: None | QtWidgets.QWidget = None
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            dtool_action = self.vb.menu.addAction("Open in dtool")
+            self._dtool: None | QtWidgets.QWidget = None
+            dtool_action.triggered.connect(self.open_in_dtool)
+
         for i in (0, 1):
             self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
             self.getViewBoxMenu().ctrl[i].label.setVisible(False)
@@ -1580,10 +1589,60 @@ class ItoolPlotItem(pg.PlotItem):
         return self.vb.state["linkedViews"] == [None, None]
 
     @property
+    def current_data(self) -> xr.DataArray:
+        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+
+    @property
     def selection_code(self) -> str:
         return self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
+
+    @QtCore.Slot()
+    def close_associated_windows(self) -> None:
+        if self.is_image:
+            if self._goldtool is not None:
+                self._goldtool.close()
+            if self._dtool is not None:
+                self._dtool.close()
+
+    @QtCore.Slot()
+    def open_in_goldtool(self) -> None:
+        if self.is_image:
+            data = self.current_data
+
+            if "alpha" not in data.dims:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Data must have an 'alpha' dimension to be opened in GoldTool",
+                )
+                return
+
+            from erlab.interactive.fermiedge import GoldTool
+
+            if self._goldtool is not None:
+                self._goldtool.close()
+                self._goldtool = None
+
+            self._goldtool = GoldTool(
+                data, data_name="data" + self.selection_code, execute=False
+            )
+            self._goldtool.show()
+
+    @QtCore.Slot()
+    def open_in_dtool(self) -> None:
+        if self.is_image:
+            from erlab.interactive.derivative import DerivativeTool
+
+            if self._dtool is not None:
+                self._dtool.close()
+                self._dtool = None
+
+            self._dtool = DerivativeTool(
+                self.current_data, data_name="data" + self.selection_code
+            )
+            self._dtool.show()
 
     def refresh_manual_range(self) -> None:
         if self.is_independent:
@@ -1908,10 +1967,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         import erlab.io
 
-        erlab.io.save_as_hdf5(
-            self.slicer_data_items[self.slicer_area.current_cursor].sliced_data,
-            fileName,
-        )
+        erlab.io.save_as_hdf5(self.current_data, fileName)
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:

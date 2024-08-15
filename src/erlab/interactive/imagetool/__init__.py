@@ -359,6 +359,11 @@ class BaseImageTool(QtWidgets.QMainWindow):
         group_layout.addWidget(widget)
         return group
 
+    def closeEvent(self, evt: QtGui.QCloseEvent | None) -> None:
+        for ax in self.slicer_area.images:
+            ax.close_associated_windows()
+        super().closeEvent(evt)
+
 
 class ImageTool(BaseImageTool):
     """The ImageTool window class.
