@@ -1579,6 +1579,12 @@ class ItoolPlotItem(pg.PlotItem):
     def is_independent(self) -> bool:
         return self.vb.state["linkedViews"] == [None, None]
 
+    @property
+    def selection_code(self) -> str:
+        return self.array_slicer.qsel_code(
+            self.slicer_area.current_cursor, self.display_axis
+        )
+
     def refresh_manual_range(self) -> None:
         if self.is_independent:
             return
@@ -1909,11 +1915,12 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:
-        copy_to_clipboard(
-            self.array_slicer.qsel_code(
-                self.slicer_area.current_cursor, self.display_axis
+        if self.selection_code == "":
+            QtWidgets.QMessageBox.critical(
+                self, "Error", "Selection code is undefined for main image of 2D data."
             )
-        )
+            return
+        copy_to_clipboard(self.selection_code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:

@@ -647,11 +647,16 @@ class ArraySlicer(QtCore.QObject):
             qsel_kw = self.qsel_args(cursor, disp)
         except ValueError:
             return self.isel_code(cursor, disp)
-
-        return f".qsel({format_kwargs(qsel_kw)})"
+        kwargs_str = format_kwargs(qsel_kw)
+        if kwargs_str:
+            return f".qsel({kwargs_str})"
+        return ""
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        return f".isel({format_kwargs(self.isel_args(cursor, disp, int_if_one=True))})"
+        kwargs_str = format_kwargs(self.isel_args(cursor, disp, int_if_one=True))
+        if kwargs_str:
+            return f".isel({kwargs_str})"
+        return ""
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
         isel_kw = self.isel_args(cursor, disp, int_if_one=False)
