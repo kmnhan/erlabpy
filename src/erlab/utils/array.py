@@ -1,6 +1,12 @@
 """Utility functions for working with numpy and xarray."""
 
-__all__ = ["is_dims_uniform", "is_monotonic", "is_uniform_spaced", "uniform_dims"]
+__all__ = [
+    "is_dims_uniform",
+    "is_monotonic",
+    "is_uniform_spaced",
+    "uniform_dims",
+    "check_arg_has_no_nans",
+]
 
 import functools
 from collections.abc import Callable, Hashable, Iterable
@@ -130,6 +136,23 @@ def check_arg_uniform_dims(func: Callable | None = None):
                 raise ValueError(
                     "Coordinates for all dimensions must be uniformly spaced"
                 )
+            return func(*args, **kwargs)
+
+        return _wrapper
+
+    if func is not None:
+        return _decorator(func)
+    return _decorator
+
+
+def check_arg_has_no_nans(func: Callable | None = None):
+    """Decorate a function to check if the first argument has no NaNs."""
+
+    def _decorator(func):
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs):
+            if np.isnan(args[0]).any():
+                raise ValueError("Input must not contain any NaN values")
             return func(*args, **kwargs)
 
         return _wrapper

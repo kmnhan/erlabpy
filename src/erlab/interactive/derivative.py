@@ -50,6 +50,15 @@ class DerivativeTool(
         self.setupUi(self)
         self.setWindowTitle("")
 
+        if data.isnull().any():
+            self.show()
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Warning",
+                "Input DataArray contains NaN values. These will be filled with zeros.",
+            )
+            data = data.fillna(0.0)
+
         if data.ndim != 2:
             raise ValueError("Input DataArray must be 2D")
 

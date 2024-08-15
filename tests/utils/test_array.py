@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 import xarray as xr
 from erlab.utils.array import (
+    check_arg_has_no_nans,
     is_dims_uniform,
     is_monotonic,
     is_uniform_spaced,
@@ -60,3 +62,27 @@ def test_uniform():
     darr = xr.DataArray(np.array(1), dims=(), coords={})
     assert uniform_dims(darr) == set()
     assert is_dims_uniform(darr)
+
+
+def test_check_arg_has_no_nans():
+    @check_arg_has_no_nans
+    def decorated_func(arr):
+        pass
+
+    # Test case 1: No NaN values
+    arr = np.array([1, 2, 3])
+    decorated_func(arr)
+
+    # Test case 2: NaN values present
+    arr = np.array([1, np.nan, 3])
+    with pytest.raises(ValueError, match="Input must not contain any NaN values"):
+        decorated_func(arr)
+
+    # Test case 3: NaN values present, DataArray
+    arr = xr.DataArray([1, np.nan, 3])
+    with pytest.raises(ValueError, match="Input must not contain any NaN values"):
+        decorated_func(arr)
+
+    # Test case 4: Empty array
+    arr = np.array([])
+    assert decorated_func(arr) is None

@@ -27,6 +27,7 @@ from numba import carray, cfunc, types
 
 from erlab.utils.array import (
     check_arg_2d_darr,
+    check_arg_has_no_nans,
     check_arg_uniform_dims,
     is_uniform_spaced,
 )
@@ -616,6 +617,7 @@ def laplace(
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
@@ -665,6 +667,7 @@ def minimum_gradient(
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def scaled_laplace(
     darr,
     factor: float = 1.0,
@@ -742,6 +745,7 @@ def scaled_laplace(
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
     """2D curvature method for detecting dispersive features.
 
