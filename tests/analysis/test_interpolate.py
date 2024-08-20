@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.interpolate
 import xarray as xr
-from erlab.analysis.interpolate import interpn, slice_along_path
+from erlab.analysis.interpolate import interpn, slice_along_path, slice_along_vector
 
 
 def value_func_1d(x):
@@ -122,3 +122,71 @@ def test_slice_along_path():
             ]
         ),
     )
+
+
+def test_slice_along_vector():
+    x = np.linspace(0, 1, 5)
+    y = np.linspace(0, 1, 5)
+    z = np.linspace(0, 1, 5)
+
+    darr = xr.DataArray(
+        np.random.default_rng(1).random((5, 5, 5)),
+        coords={"x": x, "y": y, "z": z},
+        dims=["x", "y", "z"],
+    )
+
+    # Test with tuple stretch
+    interp = slice_along_vector(
+        darr,
+        center={"x": 0.5, "y": 0.3},
+        direction={"x": np.sqrt(3), "y": 1.0},
+        stretch=(0.1, 0.3),
+    )
+
+    np.testing.assert_allclose(
+        interp.values,
+        np.array(
+            [
+                [0.23207336, 0.59910469, 0.77890933, 0.84194666, 0.52078597],
+                [0.18583922, 0.68822936, 0.28374755, 0.36078411, 0.42699386],
+            ]
+        ),
+    )
+    np.testing.assert_allclose(interp.x.values, np.array([0.41339746, 0.75980762]))
+    np.testing.assert_allclose(interp.y.values, np.array([0.25, 0.45]))
+    np.testing.assert_allclose(interp.z.values, z)
+    np.testing.assert_allclose(interp.path.values, np.array([0.0, 0.4]))
+
+    # Test with scalar stretch
+
+    interp = slice_along_vector(
+        darr,
+        center={"x": 0.5, "y": 0.3},
+        direction={"x": np.sqrt(3), "y": 1.0},
+        stretch=0.2,
+    )
+    np.testing.assert_allclose(
+        interp.values,
+        np.array(
+            [
+                [0.4484835, 0.39773655, 0.60736742, 0.71743957, 0.60188075],
+                [0.26960418, 0.5175887, 0.50620098, 0.45499338, 0.57402158],
+            ]
+        ),
+    )
+    np.testing.assert_allclose(interp.x.values, np.array([0.32679492, 0.67320508]))
+    np.testing.assert_allclose(interp.y.values, np.array([0.2, 0.4]))
+    np.testing.assert_allclose(interp.z.values, z)
+    np.testing.assert_allclose(interp.path.values, np.array([0.0, 0.4]))
+
+    # Test with 3D input
+    interp = slice_along_vector(
+        darr,
+        center={"x": 0.5, "y": 0.3, "z": 0.5},
+        direction={"x": np.sqrt(3), "y": 1.0, "z": 1.0},
+        stretch=0.2,
+    )
+    np.testing.assert_allclose(interp.values, np.array([0.56640928, 0.52730286]))
+    np.testing.assert_allclose(interp.x.values, np.array([0.34508067, 0.65491933]))
+    np.testing.assert_allclose(interp.y.values, np.array([0.21055728, 0.38944272]))
+    np.testing.assert_allclose(interp.path.values, np.array([0.0, 0.4]))

@@ -1,11 +1,11 @@
 """Utilities for interpolation."""
 
-__all__ = ["FastInterpolator", "interpn", "slice_along_path"]
+__all__ = ["FastInterpolator", "interpn", "slice_along_path", "slice_along_vector"]
 
 import itertools
 import math
 import warnings
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import cast
 
 import numba
@@ -326,7 +326,7 @@ def _check_even(arr) -> bool:
 
 def slice_along_path(
     darr: xr.DataArray,
-    vertices: Mapping[Hashable, Sequence],
+    vertices: Mapping[Hashable, Sequence[float]],
     step_size: float | None = None,
     dim_name: str = "path",
     interp_kwargs: dict | None = None,
@@ -447,6 +447,81 @@ def slice_along_path(
     return darr.interp(
         dict(zip(vertices.keys(), interp_coords, strict=False)), **interp_kwargs
     )
+
+
+def slice_along_vector(
+    data: xr.DataArray,
+    center: dict[str, float],
+    direction: dict[str, float],
+    stretch: float | tuple[float, float],
+    **kwargs,
+):
+    """Slice along a vector defined by the center point, direction vector, and lengths.
+
+    Parameters
+    ----------
+    data
+        The data to be sliced.
+    center
+        The center point of the vector given as a dictionary. The keys should correspond
+        to dimensions in `data`.
+    direction
+        The direction vector given as a dictionary with the same keys as `center`. The
+        direction is normalized before slicing.
+    stretch
+        The length of the vector in both directions in data units. If a single value is
+        given, the vector is stretched in both directions by the same amount. If a tuple
+        is given, the vector is stretched by different amounts in the negative and
+        positive directions.
+    **kwargs
+        Additional keyword arguments to be passed to `slice_along_path`.
+
+    Returns
+    -------
+    xr.DataArray
+        The sliced data array.
+
+    Examples
+    --------
+    ::
+
+        import erlab.analysis as era
+        import numpy as np
+        from erlab.io.exampledata import generate_data
+
+        # Generate some example data: a 3D kx-ky-eV ARPES map.
+        data = generate_data()
+
+        # Slice along a vector centered at (kx, ky) = (-0.5, -0.3).
+        # The direction of the vector is defined by (kx, ky) = (sqrt(3), 1.0).
+        # The slice starts from -0.1 inverse Å and ends at 0.2 inverse Å.
+
+        era.interpolate.slice_along_vector(
+            data,
+            center=dict(kx=-0.5, ky=-0.3),
+            direction=dict(kx=np.sqrt(3), ky=1.0),
+            stretch=(0.1, 0.3),
+        )
+
+    See Also
+    --------
+    :func:`erlab.analysis.interpolate.slice_along_path`
+
+    """
+    direction: dict[str, float] = {
+        k: float(v / np.linalg.norm(list(direction.values())))
+        for k, v in direction.items()
+    }
+    if isinstance(stretch, Iterable):
+        lm, lp = stretch
+    else:
+        lm = lp = stretch
+
+    vert: Mapping[Hashable, Sequence[float]] = {
+        k: (center[k] - lm * direction[k], center[k] + lp * direction[k])
+        for k in center
+    }
+    return slice_along_path(data, vertices=vert, **kwargs)
 
 
 # Monkey patch xarray to make fast interpolator available
