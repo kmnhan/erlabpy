@@ -174,6 +174,29 @@ def test_itool(qtbot):
     win.close()
 
 
+def test_itool_tools(qtbot, gold):
+    win = itool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    # Test code generation
+    assert win.slicer_area.images[0].selection_code == ""
+
+    # Open goldtool from main image
+    win.slicer_area.images[0].open_in_goldtool()
+    assert isinstance(win.slicer_area.images[0]._goldtool, QtWidgets.QWidget)
+
+    # Open dtool from main image
+    win.slicer_area.images[0].open_in_dtool()
+    assert isinstance(win.slicer_area.images[0]._dtool, QtWidgets.QWidget)
+
+    win.close()
+
+
 def test_itool_ds(qtbot):
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
