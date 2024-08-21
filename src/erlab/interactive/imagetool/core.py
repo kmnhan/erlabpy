@@ -2017,15 +2017,15 @@ class ItoolColorBarItem(BetterColorBarItem):
 
     @property
     def images(self):
-        return [weakref.ref(x) for x in self._slicer_area._imageitems]
+        return [weakref.ref(x) for x in self.slicer_area._imageitems]
 
     @property
     def primary_image(self):
-        return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
+        return weakref.ref(self.slicer_area.main_image.slicer_data_items[0])
 
     @QtCore.Slot()
     def _copy_limits(self) -> str:
-        return copy_to_clipboard(str(self._slicer_area.levels))
+        return copy_to_clipboard(str(self.slicer_area.levels))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
@@ -2033,9 +2033,7 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.blockSignals(True)
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
-        self._span.sigRegionChangeStarted.connect(
-            self._slicer_area.sigWriteHistory.emit
-        )
+        self._span.sigRegionChangeStarted.connect(self.slicer_area.sigWriteHistory.emit)
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
         self.color_changed()
