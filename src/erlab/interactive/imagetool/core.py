@@ -1818,7 +1818,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
-            c.sigDragStarted.connect(self.slicer_area.sigWriteHistory.emit)
+            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
 
         if update:
             self.refresh_cursor(new_cursor)
@@ -2033,7 +2033,9 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.blockSignals(True)
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
-        self._span.sigRegionChangeStarted.connect(self.slicer_area.sigWriteHistory.emit)
+        self._span.sigRegionChangeStarted.connect(
+            lambda: self.slicer_area.sigWriteHistory.emit()
+        )
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
         self.color_changed()

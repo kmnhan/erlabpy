@@ -660,7 +660,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         layout.addWidget(self.check)
 
         for spin in (self.spin_value, self.spin_lb, self.spin_ub):
-            spin.valueChanged.connect(self.sigParamChanged.emit)
+            spin.valueChanged.connect(lambda: self.sigParamChanged.emit())
         self.spin_lb.valueChanged.connect(self._refresh_bounds)
         self.spin_ub.valueChanged.connect(self._refresh_bounds)
         self.check.stateChanged.connect(self.setFixed)
