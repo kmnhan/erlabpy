@@ -1,6 +1,6 @@
-"""Generates simple simulated ARPES data for testing purposes."""
+"""Generates simple simulated ARPES data for testing and demonstration."""
 
-__all__ = ["generate_data", "generate_data_angles"]
+__all__ = ["generate_data", "generate_data_angles", "generate_gold_edge"]
 
 from collections.abc import Hashable, Sequence
 from typing import cast
@@ -14,7 +14,7 @@ import erlab.analysis.kspace
 from erlab.constants import kb_eV
 
 
-def func(kvec, a):
+def _func(kvec, a):
     n1 = np.array([a / np.sqrt(3), 0])
     n2 = np.array([-a / 2 / np.sqrt(3), a / 2])
     n3 = np.array([-a / 2 / np.sqrt(3), -a / 2])
@@ -25,24 +25,27 @@ def func(kvec, a):
     )
 
 
-def fermi_dirac(E, T):
+def _fermi_dirac(E, T):
     return 1 / (np.exp(E / (8.61733e-5 * T)) + 1)
 
 
-def band(kvec, t, a):
-    return -t * np.abs(func(kvec, a))
+def _band(kvec, t, a):
+    return -t * np.abs(_func(kvec, a))
 
 
-def spectral_function(w, bareband, Sreal, Simag):
+def _spectral_function(w, bareband, Sreal, Simag):
     return Simag / (np.pi * ((w - bareband - Sreal) ** 2 + Simag**2))
 
 
-def add_fd_norm(image, eV, temp=30, efermi=0, count=1e7) -> None:
+def _add_fd_norm(image, eV, temp=30, efermi=0, count=1e7) -> None:
     if temp != 0:
-        image *= fermi_dirac(eV - efermi, temp)[None, None, :]
+        image *= _fermi_dirac(eV - efermi, temp)[None, None, :]
     image += 0.1e-2
     image /= image.sum()
     image *= count
+
+
+# Changing default values may break tests
 
 
 def generate_data(
@@ -122,17 +125,17 @@ def generate_data(
 
     point_iter = np.array(np.meshgrid(kx, ky)).T.reshape(-1, 2)
 
-    Eij = band(point_iter, t, a).reshape(*shape[:-1], 1)
+    Eij = _band(point_iter, t, a).reshape(*shape[:-1], 1)
 
-    Akw_p = spectral_function(eV[None, None, :], Eij + bandshift, Sreal, Simag)
-    Akw_m = spectral_function(eV[None, None, :], -Eij + bandshift, Sreal, Simag)
+    Akw_p = _spectral_function(eV[None, None, :], Eij + bandshift, Sreal, Simag)
+    Akw_m = _spectral_function(eV[None, None, :], -Eij + bandshift, Sreal, Simag)
 
-    phase = np.angle(func(point_iter, a)).reshape(shape[0], shape[1])
+    phase = np.angle(_func(point_iter, a)).reshape(shape[0], shape[1])
     Akw_p *= (1 + np.cos(phase))[:, :, None]
     Akw_m *= (1 - np.cos(phase))[:, :, None]
     out = Akw_p + Akw_m
 
-    add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
+    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
 
     if noise:
         rng = np.random.default_rng(seed)
@@ -251,17 +254,17 @@ def generate_data_angles(
     kxv, kyv = forward_func(a_mesh[:, :, None], b_mesh[:, :, None])
     point_iter = np.stack([kxv, kyv], axis=3)
 
-    Eij = band(point_iter, t, a)
+    Eij = _band(point_iter, t, a)
 
-    Akw_p = spectral_function(eV, Eij + bandshift, Sreal, Simag)
-    Akw_m = spectral_function(eV, -Eij + bandshift, Sreal, Simag)
+    Akw_p = _spectral_function(eV, Eij + bandshift, Sreal, Simag)
+    Akw_m = _spectral_function(eV, -Eij + bandshift, Sreal, Simag)
 
-    phase = np.angle(func(point_iter, a))
+    phase = np.angle(_func(point_iter, a))
     Akw_p *= 1 + np.cos(phase)
     Akw_m *= 1 - np.cos(phase)
     out = Akw_p + Akw_m
 
-    add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
+    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
 
     if noise:
         rng = np.random.default_rng(seed)
