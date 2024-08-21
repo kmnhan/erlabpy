@@ -119,6 +119,18 @@ def test_itool(qtbot):
     win.slicer_area.lock_levels(True)
     win.slicer_area.levels = (1.0, 23.0)
     assert win.slicer_area._colorbar.cb._copy_limits() == str((1.0, 23.0))
+
+    # Test color limits editor
+    clw = win.slicer_area._colorbar.cb._clim_menu.actions()[0].defaultWidget()
+    assert clw.min_spin.value() == win.slicer_area.levels[0]
+    assert clw.max_spin.value() == win.slicer_area.levels[1]
+    clw.min_spin.setValue(1.0)
+    assert clw.min_spin.value() == 1.0
+    clw.max_spin.setValue(2.0)
+    assert clw.max_spin.value() == 2.0
+    clw.rst_btn.click()
+    assert win.slicer_area.levels == (0.0, 24.0)
+    win.slicer_area.levels = (1.0, 23.0)
     win.slicer_area.lock_levels(False)
 
     # Undo and redo
