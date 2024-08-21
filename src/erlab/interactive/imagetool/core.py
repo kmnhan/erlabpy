@@ -241,10 +241,10 @@ class SlicerLinkProxy:
 
     @property
     def num_children(self) -> int:
-        return len(self._children)
+        return len(self.children)
 
     def unlink_all(self) -> None:
-        for s in self._children:
+        for s in self.children:
             s._linking_proxy = None
         self._children.clear()
 
@@ -288,7 +288,7 @@ class SlicerLinkProxy:
         """
         if color and not self.link_colors:
             return
-        for target in self._children.difference({source}):
+        for target in self.children.difference({source}):
             getattr(target, funcname)(
                 **self.convert_args(source, target, arguments, indices, steps)
             )

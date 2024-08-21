@@ -164,8 +164,7 @@ For a full list of dependencies and optional dependencies, take a look at the
 Notes on compatibility
 ----------------------
 
-- ERLabPy is tested on Python 3.11 and 3.12. It is not guaranteed to work on older
-  versions of Python.
+- ERLabPy supports Python 3.11 and later.
 - There are some `known compatibility issues
   <https://github.com/kmnhan/erlabpy/issues/17>`_ with PyQt5 and PySide2, so it is
   recommended to use the newer PyQt6 or PySide6 if possible.

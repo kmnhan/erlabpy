@@ -133,7 +133,8 @@ def itool(
         or a list of ImageTool windows depending on the input data.
 
         The function will also return `None` if the windows are opened in the
-        :class:`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`
+        :class:`ImageToolManager
+        <erlab.interactive.imagetool.manager.ImageToolManager>`.
 
     Examples
     --------
