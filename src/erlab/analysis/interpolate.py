@@ -56,6 +56,9 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
         method="linear",
         bounds_error=False,
         fill_value=np.nan,
+        *,
+        solver=None,
+        solver_args=None,
     ) -> None:
         super().__init__(
             points,
@@ -63,6 +66,8 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             method=method,
             bounds_error=bounds_error,
             fill_value=fill_value,
+            solver=solver,
+            solver_args=solver_args,
         )
 
         self.uneven_dims = tuple(
@@ -174,7 +179,6 @@ def interpn(
     -------
     values_x : numpy.ndarray
         Interpolated values at input coordinates.
-
 
     Note
     ----
