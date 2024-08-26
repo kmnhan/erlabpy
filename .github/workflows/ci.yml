@@ -123,3 +123,4 @@ jobs:
           body_path: "body.md"
           tag_name: v${{ steps.cz.outputs.version }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*
