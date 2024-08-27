@@ -1,11 +1,13 @@
 import numpy as np
 import pytest
 import xarray as xr
+import xarray.testing
 from erlab.utils.array import (
     check_arg_has_no_nans,
     is_dims_uniform,
     is_monotonic,
     is_uniform_spaced,
+    trim_na,
     uniform_dims,
 )
 
@@ -86,3 +88,42 @@ def test_check_arg_has_no_nans():
     # Test case 4: Empty array
     arr = np.array([])
     assert decorated_func(arr) is None
+
+
+def test_trim_na():
+    # Test case 1: Trim along all dimensions
+    darr = xr.DataArray(
+        np.array([[np.nan, 2, 3], [np.nan, 5, 6], [np.nan, np.nan, np.nan]]),
+        dims=("x", "y"),
+        coords={"x": [1, 2, 3], "y": [1, 2, 3]},
+    )
+    expected_result = xr.DataArray(
+        np.array([[2, 3], [5, 6]]),
+        dims=("x", "y"),
+        coords={"x": [1, 2], "y": [2, 3]},
+    )
+    xarray.testing.assert_identical(trim_na(darr), expected_result)
+
+    darr = xr.DataArray(
+        np.array([[np.nan, 2, 3], [np.nan, 5, 6], [np.nan, 8, 9]]),
+        dims=("x", "y"),
+        coords={"x": [1, 2, 3], "y": [1, 2, 3]},
+    )
+    expected_result = xr.DataArray(
+        np.array([[2, 3], [5, 6], [8, 9]]),
+        dims=("x", "y"),
+        coords={"x": [1, 2, 3], "y": [2, 3]},
+    )
+    xarray.testing.assert_identical(trim_na(darr), expected_result)
+
+    # Test case 2: Trim along specific dimension
+    xarray.testing.assert_identical(trim_na(darr, dims=("x",)), darr)
+
+    # Test case 3: No NaN values
+    xarray.testing.assert_identical(trim_na(darr.fillna(0)), darr.fillna(0))
+
+    # Test case 4: Size 1 and size 0 arrays
+    darr1 = xr.DataArray(np.array([np.nan]), dims=("x",), coords={"x": [1]})
+    darr0 = xr.DataArray(np.array([]), dims=("x",), coords={"x": []})
+    xarray.testing.assert_identical(trim_na(darr1), darr0)
+    xarray.testing.assert_identical(trim_na(darr0), darr0)

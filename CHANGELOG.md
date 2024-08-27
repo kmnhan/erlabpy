@@ -2,6 +2,18 @@
 
 ### Feat
 
+- **accessors.kspace**: add method argument ([204073e](https://github.com/kmnhan/erlabpy/commit/204073e9b748bf8c86fd0cd5b6aa98acfa86d3aa))
+
+  Momentum conversion through the `convert()` method of the kspace accessor now supports an additional keyword argument `method` that can be used to choose different interpolation methods supported by `scipy.interpolate.RegularGridInterpolator`. Note that methods other than `'linear'` will take much longer to execute.
+- **analysis.interpolate**: add solver args ([24be3b0](https://github.com/kmnhan/erlabpy/commit/24be3b0d86e4418010a5a69abf354a86987c0712))
+
+  `FastInterpolator` now supports `solver` and `solver_args` keyword arguments introduced in scipy 1.13.0.
+- **interactive.colors**: implement `BetterColorBarItem` limit editor ([7dd1477](https://github.com/kmnhan/erlabpy/commit/7dd1477d694b883326a0dfc8f8e552f2b905da06))
+
+  A new context menu in `BetterColorBarItem`'s viewbox enables manually editing color limits.
+- **analysis.interpolate**: implement slicing along a vector ([cba8567](https://github.com/kmnhan/erlabpy/commit/cba85675ea68925c39ed184f062f81aaded4d37b))
+
+  A new function `slice_along_vector` has been added which enables interpolating through a line defined by a vector and a point.
 - **interactive.imagetool**: add goldtool and dtool to menu ([33d5e35](https://github.com/kmnhan/erlabpy/commit/33d5e35dc7deb5c730da21cade55fd814a24268d))
 
   The interactive tools goldtool and dtool are now directly accessible from the right-click menu of 2D images in ImageTool.
@@ -15,6 +27,7 @@
 
 ### Fix
 
+- **interactive**: fix compatibility issue with PySide6 ([da5f4af](https://github.com/kmnhan/erlabpy/commit/da5f4af139988e38f1c9b0534a5957644e01b9aa))
 - **interactive.imagetool**: do not copy code when unnecessary ([9131029](https://github.com/kmnhan/erlabpy/commit/91310295fb9ffab994b0b681c84a4646680583b0))
 - **accessors.general**: qshow now triggers hvplot properly for 1D data ([8a84813](https://github.com/kmnhan/erlabpy/commit/8a84813e561a52eaf5ef5fc7118b992e7537b1f6))
 - **interactive.imagetool**: make manager socket use default backlog ([0ac7f0b](https://github.com/kmnhan/erlabpy/commit/0ac7f0b35b3288a62708c1c5e2c54a483e563bd7))
