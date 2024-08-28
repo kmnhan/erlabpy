@@ -267,7 +267,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._is_discrete = discrete
         self._is_scientific = scientific
         self._decimal_significant = significant
-        self.setDecimals(decimals)
+        self._decimals = decimals
 
         self._value = value
         self._lastvalue: float | None = None
@@ -313,6 +313,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     @QtCore.Slot(int)
     def setDecimals(self, decimals: int) -> None:
         self._decimals = decimals
+        self._updateWidth()
 
     def decimals(self) -> int:
         return self._decimals
@@ -325,7 +326,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def widthFromText(self, text: str) -> int:
         return QtGui.QFontMetrics(self.font()).boundingRect(text).width()
 
-    def widthFromValue(self, value):
+    def widthFromValue(self, value) -> int:
         return self.widthFromText(self.textFromValue(value))
 
     def setMaximum(self, mx) -> None:
