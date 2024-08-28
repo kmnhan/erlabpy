@@ -449,7 +449,7 @@ class GoldTool(AnalysisWindow):
             scale_covar=params["Scale cov"],
         )
         target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.correct_with_edge(
+        self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
         return lambda x: self.result.eval(self.result.params, x=x)
@@ -465,7 +465,7 @@ class GoldTool(AnalysisWindow):
         )
 
         target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.correct_with_edge(
+        self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
         return self.result
