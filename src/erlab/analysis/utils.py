@@ -18,8 +18,8 @@ def shift(
 ) -> xr.DataArray:
     """Shifts the values of a DataArray along a single dimension.
 
-    The shift is applied using `scipy.ndimage.shift` with the specified keyword
-    arguments. Linear interpolation is used by default.
+    The shift is applied using `scipy.ndimage.shift` which uses spline interpolation. By
+    default, the spline is of order 1 (linear interpolation).
 
     Parameters
     ----------
