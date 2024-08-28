@@ -369,6 +369,11 @@ class ArraySlicer(QtCore.QObject):
         """
         return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
 
+    def get_significant(self, axis: int) -> int:
+        """Return the number of significant digits for a given axis."""
+        step = self.incs[axis]
+        return int(np.clip(np.ceil(-np.log10(abs(step)) + 1), 0, None))
+
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)

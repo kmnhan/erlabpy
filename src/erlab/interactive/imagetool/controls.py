@@ -445,6 +445,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setRange(*self.array_slicer.lims[i])
             self.spin_val[i].setSingleStep(self.array_slicer.incs[i])
             self.spin_val[i].setValue(self.slicer_area.get_current_value(i))
+            self.spin_val[i].setDecimals(self.array_slicer.get_significant(i))
 
             self.label_dim[i].blockSignals(False)
             self.spin_idx[i].blockSignals(False)
