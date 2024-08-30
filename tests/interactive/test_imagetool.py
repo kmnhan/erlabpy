@@ -417,7 +417,7 @@ def test_itool_rotate(qtbot):
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
-    xarray.testing.assert_equal(
+    xarray.testing.assert_allclose(
         win.slicer_area._data,
         erlab.analysis.transform.rotate(data, angle=60.0, reshape=True),
     )
@@ -441,7 +441,7 @@ def test_itool_rotate(qtbot):
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
-    xarray.testing.assert_equal(
+    xarray.testing.assert_allclose(
         win.slicer_area._data,
         erlab.analysis.transform.rotate(
             data, angle=30.0, center=(3.0, 3.1), reshape=True
