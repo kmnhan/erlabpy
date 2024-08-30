@@ -38,7 +38,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, gen_function_code
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, generate_code
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -784,7 +784,7 @@ class _DataEditDialog(QtWidgets.QDialog):
         if self.show_copy_button:
             self.copy_button = QtWidgets.QPushButton("Copy Code")
             self.copy_button.clicked.connect(
-                lambda: copy_to_clipboard(self.generate_code())
+                lambda: copy_to_clipboard(self.make_code())
             )
             self.buttonBox.addButton(
                 self.copy_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
@@ -823,7 +823,7 @@ class _DataEditDialog(QtWidgets.QDialog):
         # Overridden by subclasses
         return self.slicer_area.data
 
-    def generate_code(self) -> str:
+    def make_code(self) -> str:
         # Overridden by subclasses
         return ""
 
@@ -889,7 +889,9 @@ class RotationDialog(_DataEditDialog):
 
         return rotate(self.slicer_area.data, **self._rotate_params)
 
-    def generate_code(self) -> str:
+    def make_code(self) -> str:
+        from erlab.analysis.transform import rotate
+
         placeholder = " "
         params = dict(self._rotate_params)
 
@@ -899,7 +901,6 @@ class RotationDialog(_DataEditDialog):
             else:
                 params[k] = str(v)
 
-        return gen_function_code(
-            copy=False,
-            **{"era.transform.rotate": [f"|{placeholder}|", self._rotate_params]},
+        return generate_code(
+            rotate, [f"|{placeholder}|"], self._rotate_params, module="era.transform"
         )

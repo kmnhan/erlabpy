@@ -20,7 +20,7 @@ from erlab.interactive.colors import (
     ColorMapGammaWidget,  # noqa: F401
 )
 from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utils import copy_to_clipboard, gen_function_code, xImageItem
+from erlab.interactive.utils import copy_to_clipboard, generate_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
 
 
@@ -265,12 +265,18 @@ class KspaceTool(KspaceToolGUI):
             )
 
         offset_dict_repr = str(self.offset_dict).replace("'", '"')
+
+        from erlab.accessors.kspace import MomentumAccessor
+
         out_lines.extend(
             (
                 f"{input_name}.kspace.offsets = {offset_dict_repr}",
-                gen_function_code(
-                    copy=False,
-                    **{f"{input_name}_kconv = {input_name}.kspace.convert": [arg_dict]},
+                generate_code(
+                    MomentumAccessor.convert,
+                    [],
+                    arg_dict,
+                    module=f"{input_name}.kspace",
+                    assign=f"{input_name}_kconv",
                 ),
             )
         )

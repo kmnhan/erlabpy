@@ -18,7 +18,8 @@ from erlab.interactive.utils import (
     ParameterGroup,
     ROIControls,
     _coverage_resolve_trace,
-    gen_function_code,
+    copy_to_clipboard,
+    generate_code,
     xImageItem,
 )
 from erlab.utils.parallel import joblib_progress_qt
@@ -493,10 +494,10 @@ class GoldTool(AnalysisWindow):
 
         match mode:
             case "poly":
-                fname = "poly"
+                func = erlab.analysis.gold.poly
                 arg_dict["degree"] = p1["Degree"]
             case "spl":
-                fname = "spline"
+                func = erlab.analysis.gold.spline
                 if p1["Auto"]:
                     arg_dict["lam"] = None
                 else:
@@ -514,32 +515,22 @@ class GoldTool(AnalysisWindow):
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
 
-        if self.data_corr is None:
-            gen_function_code(
-                copy=True,
-                **{
-                    f"modelresult = era.gold.{fname}": [
-                        f"|{self._argnames['data']}|",
-                        arg_dict,
-                    ]
-                },
+        code_str = generate_code(
+            func,
+            [f"|{self._argnames['data']}|"],
+            arg_dict,
+            module="era.gold",
+            assign="modelresult",
+        )
+        if self.data_corr is not None:
+            code_str += "\n" + generate_code(
+                erlab.analysis.gold.correct_with_edge,
+                [f"|{self._argnames['data_corr']}|", "|modelresult|"],
+                {"shift_coords": p1["Shift coords"]},
+                module="era.gold",
+                assign="corrected",
             )
-        else:
-            arg_dict["correct"] = True
-            gen_function_code(
-                copy=True,
-                **{
-                    f"modelresult = era.gold.{fname}": [
-                        f"|{self._argnames['data']}|",
-                        arg_dict,
-                    ],
-                    "corrected = era.correct_with_edge": [
-                        f"|{self._argnames['data_corr']}|",
-                        "|modelresult|",
-                        {"shift_coords": p1["Shift coords"]},
-                    ],
-                },
-            )
+        copy_to_clipboard(code_str)
 
 
 def goldtool(

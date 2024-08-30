@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 import itertools
 import re
 import sys
@@ -21,7 +22,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
@@ -34,8 +35,8 @@ __all__ = [
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
-    "gen_function_code",
-    "gen_single_function_code",
+    "format_kwargs",
+    "generate_code",
     "make_crosshairs",
     "parse_data",
     "xImageItem",
@@ -97,6 +98,24 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
+def format_kwargs(d: dict[str, Any]) -> str:
+    """Format a dictionary of keyword arguments for a function call.
+
+    If the keys are valid Python identifiers, the output will be formatted as keyword
+    arguments. Otherwise, the output will be formatted as a dictionary.
+
+    Parameters
+    ----------
+    d
+        Dictionary of keyword arguments.
+
+    """
+    if all(s.isidentifier() for s in d):
+        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
+    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+    return "{" + out + "}"
+
+
 def _parse_single_arg(arg):
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
@@ -110,7 +129,118 @@ def _parse_single_arg(arg):
     return arg
 
 
-def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
+def generate_code(
+    func: Callable,
+    args: Collection[Any],
+    kwargs: Mapping[str, Any],
+    module: str | None = None,
+    name: str | None = None,
+    assign: str | None = None,
+    prefix: str | None = None,
+    remove_defaults: bool = True,
+    line_length: int = 88,
+    copy: bool = False,
+) -> str:
+    r"""Generate Python code for a function call.
+
+    The result can be copied to your clipboard in a form that can be pasted into an
+    interactive Python session or Jupyter notebook cell.
+
+    Parameters
+    ----------
+    func
+        Function to generate code for.
+    args
+        Positional arguments passed onto the function. Non-string arguments are
+        converted to strings. If given a string, quotes are added. If surrounded by
+        vertical bars (``|``), the string is not quoted.
+    kwargs
+        Keyword arguments passed onto the function.
+    module
+        Prefix to add to the function name. For example, ``"scipy.ndimage"``.
+    name
+        Name of the function. If `None`, `func.__name__` is used.
+    assign
+        If provided, the return value will be assigned to this variable.
+    prefix
+        Prefix to add to the generated string.
+    remove_defaults
+        If `True`, keyword arguments that have values identical to the defaults are
+        removed.
+    line_length
+        Maximum length of the line. If the line is longer than this, it will be split
+        into multiple lines.
+    copy
+        If `True`, the result is copied to the clipboard.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from erlab.interactive.utils import generate_code
+    >>> generate_code(
+    >>>     np.linalg.norm,
+    >>>     args=["|np.array([1, 2, 3])|"],
+    >>>     kwargs=dict(ord=2, keepdims=False),
+    >>>     module="np.linalg",
+    >>>     assign="value",
+    >>> )
+    'value = numpy.linalg.norm(numpy.array([1, 2, 3]), ord=2)'
+
+    """
+    if remove_defaults:
+        kwargs = _remove_default_kwargs(func, dict(kwargs))
+
+    module = "" if module is None else f"{module.strip(' .')}."
+
+    if name is None:
+        name = func.__name__
+    if assign is not None:
+        module = f"{assign} = {module}"
+    if prefix is not None:
+        module = f"{prefix}{module}"
+
+    code_str = _gen_single_function_code(
+        f"{module}{name}", args, kwargs, line_length=line_length
+    )
+
+    if copy:
+        return copy_to_clipboard(code_str)
+    return code_str
+
+
+def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Clean up keyword arguments for a function.
+
+    Given a function and a dictionary of keyword arguments, remove any keys that already
+    have the default value in the function signature.
+
+    Parameters
+    ----------
+    func
+        Function to clean up keyword arguments for.
+    kwargs
+        Dictionary of keyword arguments.
+
+    Returns
+    -------
+    dict
+        Cleaned up dictionary of keyword arguments.
+    """
+    params = inspect.signature(func).parameters
+
+    for k, v in dict(kwargs).items():
+        if params[k].default is not inspect.Parameter.empty and v == params[k].default:
+            kwargs.pop(k)
+    return kwargs
+
+
+def _gen_single_function_code(
+    funcname: str,
+    args: Collection[Any],
+    kwargs: Mapping[str, Any],
+    *,
+    line_length: int = 88,
+) -> str:
     """Generate the string for a Python function call.
 
     The first argument is the name of the function, and subsequent arguments are passed
@@ -122,10 +252,13 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     ----------
     funcname
         Name of the function.
-    *args
+    args
         Mandatory arguments passed onto the function.
-    **kwargs
+    kwargs
         Keyword arguments passed onto the function.
+    line_length
+        Maximum length of the line. If the line is longer than this, it will be split
+        into multiple lines.
 
     Returns
     -------
@@ -153,60 +286,13 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     # Add closing parenthesis
     code += ")"
 
-    if len(code.replace("\n", "")) <= 88:
+    if len(code.replace("\n", "")) <= line_length:
         # If code fits in one line, remove newlines
         code = " ".join([s.strip() for s in code.split("\n")])
         # Remove trailing comma and space
         code = code.replace(", )", ")").replace("( ", "(")
 
     return code
-
-
-def gen_function_code(copy: bool = True, **kwargs):
-    r"""Copy the Python code for function calls to the clipboard.
-
-    The result can be copied to your clipboard in a form that can be pasted into an
-    interactive Python session or Jupyter notebook cell.
-
-    Parameters
-    ----------
-    copy
-        If `True`, the code string is copied.
-    **kwargs
-        Dictionary where the keys are the string of the function call and the values are
-        a list of function arguments. The last item, if a dictionary, is interpreted as
-        keyword arguments.
-
-    """
-    code_list = []
-    for fname, fargs in kwargs.items():
-        if not isinstance(fargs[-1], dict):
-            fargs.append({})
-        code_list.append(gen_single_function_code(fname, *fargs[:-1], **fargs[-1]))
-
-    code_str = "\n".join(code_list)
-
-    if copy:
-        return copy_to_clipboard(code_str)
-    return code_str
-
-
-def format_kwargs(d: dict[str, Any]) -> str:
-    """Format a dictionary of keyword arguments for a function call.
-
-    If the keys are valid Python identifiers, the output will be formatted as keyword
-    arguments. Otherwise, the output will be formatted as a dictionary.
-
-    Parameters
-    ----------
-    d
-        Dictionary of keyword arguments.
-
-    """
-    if all(s.isidentifier() for s in d):
-        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
-    return "{" + out + "}"
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):
