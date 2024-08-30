@@ -38,7 +38,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, gen_function_code
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -452,6 +452,7 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     def _generate_menu_kwargs(self) -> dict:
+        _guideline_actions = self.slicer_area.main_image._guideline_actions
         menu_kwargs: dict[str, Any] = {
             "fileMenu": {
                 "title": "&File",
@@ -543,12 +544,19 @@ class ItoolMenuBar(DictMenuBar):
                         "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
+                    "Rotate": {"triggered": self._rotate},
+                    "Rotation Guidelines": {
+                        "actions": {
+                            f"guide{i}": act for i, act in enumerate(_guideline_actions)
+                        },
+                        "sep_after": True,
+                    },
                 },
             },
             "helpMenu": {
                 "title": "&Help",
                 "actions": {
-                    "helpAction": {"text": "DataSlicer Help (WIP)"},
+                    "helpAction": {"text": "Help (WIP)"},
                     "shortcutsAction": {
                         "text": "Keyboard Shortcuts Reference (WIP)",
                         "sep_before": True,
@@ -659,6 +667,11 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
         self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
+    @QtCore.Slot()
+    def _rotate(self) -> None:
+        dialog = RotationDialog(self.slicer_area)
+        dialog.exec()
+
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
             reverse=self.colorAct[0].isChecked(),
@@ -740,3 +753,153 @@ class ItoolMenuBar(DictMenuBar):
             files = dialog.selectedFiles()
             fn, kargs = valid_savers[dialog.selectedNameFilter()]
             fn(self.slicer_area._data, files[0], **kargs)
+
+
+class _DataEditDialog(QtWidgets.QDialog):
+    title: str | None = None
+    prefix: str = ""
+    suffix: str = ""
+    show_copy_button: bool = False
+
+    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+        super().__init__()
+        if self.title is not None:
+            self.setWindowTitle(self.title)
+
+        self.slicer_area = slicer_area
+
+        self._layout = QtWidgets.QFormLayout()
+        self.setLayout(self._layout)
+
+        self.setup_widgets()
+
+        self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
+        self.new_window_check.setChecked(True)
+        self.layout_.addRow(self.new_window_check)
+
+        self.buttonBox = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        if self.show_copy_button:
+            self.copy_button = QtWidgets.QPushButton("Copy Code")
+            self.copy_button.clicked.connect(
+                lambda: copy_to_clipboard(self.generate_code())
+            )
+            self.buttonBox.addButton(
+                self.copy_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            )
+
+        self.buttonBox.accepted.connect(self.accept)
+        self.buttonBox.rejected.connect(self.reject)
+        self.layout_.addRow(self.buttonBox)
+
+    @property
+    def layout_(self) -> QtWidgets.QFormLayout:
+        return self._layout
+
+    @property
+    def array_slicer(self) -> ArraySlicer:
+        return self.slicer_area.array_slicer
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self.slicer_area.data.name is not None:
+            new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
+        else:
+            new_name = None
+
+        if self.new_window_check.isChecked():
+            itool(self.process_data().rename(new_name))
+        else:
+            self.slicer_area.set_data(self.process_data().rename(new_name))
+        super().accept()
+
+    def setup_widgets(self) -> None:
+        # Overridden by subclasses
+        pass
+
+    def process_data(self) -> xr.DataArray:
+        # Overridden by subclasses
+        return self.slicer_area.data
+
+    def generate_code(self) -> str:
+        # Overridden by subclasses
+        return ""
+
+
+class RotationDialog(_DataEditDialog):
+    suffix = " Rotated"
+    show_copy_button = True
+
+    @property
+    def _rotate_params(self) -> dict[str, Any]:
+        return {
+            "angle": self.angle_spin.value(),
+            "axes": cast(tuple[str, str], tuple(self.slicer_area.main_image.axis_dims)),
+            "center": cast(
+                tuple[float, float], tuple(spin.value() for spin in self.center_spins)
+            ),
+            "reshape": self.reshape_check.isChecked(),
+            "order": self.order_spin.value(),
+        }
+
+    def setup_widgets(self) -> None:
+        main_image = self.slicer_area.main_image
+        self.angle_spin = QtWidgets.QDoubleSpinBox()
+        self.angle_spin.setRange(-360, 360)
+        self.angle_spin.setSingleStep(1)
+        self.angle_spin.setValue(0)
+        self.angle_spin.setDecimals(2)
+        self.angle_spin.setSuffix("°")
+        self.layout_.addRow("Angle", self.angle_spin)
+
+        self.center_spins = (QtWidgets.QDoubleSpinBox(), QtWidgets.QDoubleSpinBox())
+        for i in range(2):
+            axis: int = main_image.display_axis[i]
+            dim: str = str(main_image.axis_dims[i])
+
+            self.center_spins[i].setRange(*map(float, self.array_slicer.lims[i]))
+            self.center_spins[i].setSingleStep(float(self.array_slicer.incs[i]))
+            self.center_spins[i].setValue(0.0)
+            self.center_spins[i].setDecimals(self.array_slicer.get_significant(i))
+
+            self.layout_.addRow(f"Center {dim}", self.center_spins[i])
+            self.array_slicer.get_significant(axis)
+
+        self.order_spin: QtWidgets.QSpinBox = QtWidgets.QSpinBox()
+        self.order_spin.setRange(0, 5)
+        self.order_spin.setValue(1)
+        self.layout_.addRow("Spline Order", self.order_spin)
+
+        self.reshape_check = QtWidgets.QCheckBox("Reshape")
+        self.reshape_check.setChecked(True)
+        self.layout_.addRow(self.reshape_check)
+
+        if main_image.is_guidelines_visible:
+            # Fill values from guideline
+            self.angle_spin.setValue(-main_image._guideline_angle)
+            for spin, val in zip(
+                self.center_spins, main_image._guideline_offset, strict=True
+            ):
+                spin.setValue(val)
+
+    def process_data(self) -> xr.DataArray:
+        from erlab.analysis.transform import rotate
+
+        return rotate(self.slicer_area.data, **self._rotate_params)
+
+    def generate_code(self) -> str:
+        placeholder = " "
+        params = dict(self._rotate_params)
+
+        for k, v in params.items():
+            if isinstance(v, tuple):
+                params[k] = f"({', '.join(map(str, v))})"
+            else:
+                params[k] = str(v)
+
+        return gen_function_code(
+            copy=False,
+            **{"era.transform.rotate": [f"|{placeholder}|", self._rotate_params]},
+        )

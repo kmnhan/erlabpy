@@ -28,7 +28,7 @@ from erlab.interactive.colors import (
     pg_colormap_powernorm,
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard
+from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -1574,6 +1574,27 @@ class ItoolPlotItem(pg.PlotItem):
             self._single_queue = collections.deque([0.0], maxlen=9)
             self._next_queue = collections.deque([0.0], maxlen=9)
 
+        if image:
+            # Rotatable alignment guidelines
+            self._guidelines_items: list[pg.GraphicsObject] = []
+            self._guideline_actions: list[QtWidgets.QAction] = []
+            self._action_group = QtWidgets.QActionGroup(self)
+
+            self._guideline_angle: float = 0.0
+            self._guideline_offset: list[float] = [0.0, 0.0]
+
+            for i, text in enumerate(["None", "C2", "C4", "C6"]):
+                qact = QtWidgets.QAction(text)
+                qact.setCheckable(True)
+                qact.toggled.connect(
+                    lambda b, idx=i: self._set_guidelines(idx) if b else None
+                )
+                qact.setActionGroup(self._action_group)
+                self._guideline_actions.append(qact)
+            self._guideline_actions[0].setChecked(True)
+
+            self._rotate_action = QtWidgets.QAction("Apply Rotation")
+
     @property
     def axis_dims(self) -> list[str | None]:
         dim_list: list[str | None] = [
@@ -1599,6 +1620,10 @@ class ItoolPlotItem(pg.PlotItem):
         return self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
+
+    @property
+    def is_guidelines_visible(self) -> bool:
+        return len(self._guidelines_items) != 0
 
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
@@ -1877,16 +1902,86 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.span_bounds(cursor, ax)
             )
 
+    @QtCore.Slot(int)
+    def set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+        """Show rotating crosshairs for alignment."""
+        if not self.is_image:
+            return
+        self._guideline_actions[n].setChecked(True)
+
+    @QtCore.Slot()
+    def remove_guidelines(self) -> None:
+        """Hide rotating crosshairs."""
+        self.set_guidelines(0)
+
+    @QtCore.Slot(int)
+    def _set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+        if not self.is_image:
+            return
+        if n == 0:
+            self._remove_guidelines()
+            return
+
+        old_pos: pg.Point | None = None
+        if len(self._guidelines_items) != n + 1 and self.is_guidelines_visible:
+            old_pos = self._guidelines_items[0].pos()
+            old_angle = float(
+                self._guidelines_items[0].angle - self._guidelines_items[0].offset
+            )
+            self._remove_guidelines()
+
+        for w in make_crosshairs(n):
+            self.addItem(w)
+            self._guidelines_items.append(w)
+
+        line = self._guidelines_items[0]
+
+        if old_pos is not None:
+            line.setPos(old_pos)
+            line.setAngle(old_angle)
+
+        def _print_angle():
+            line_pos = line.pos()
+            self._guideline_angle = line.angle_effective
+            self._guideline_offset = [line_pos.x(), line_pos.y()]
+            for i in range(2):
+                self._guideline_offset[i] = np.round(
+                    self._guideline_offset[i],
+                    self.array_slicer.get_significant(self.display_axis[i]),
+                )
+
+            self.setTitle(
+                f"{self._guideline_angle}° "
+                + str(tuple(self._guideline_offset)).replace("-", "−")
+            )
+
+        line.sigAngleChanged.connect(lambda: _print_angle())
+        line.sigPositionChanged.connect(lambda: _print_angle())
+        _print_angle()
+
+    @QtCore.Slot()
+    def _remove_guidelines(self) -> None:
+        if not self.is_image:
+            return
+        for item in list(self._guidelines_items):
+            self.removeItem(item)
+            self._guidelines_items.remove(item)
+        self._guideline_angle = 0.0
+        self._guideline_offset = [0.0, 0.0]
+        self.setTitle(None)
+
     def connect_signals(self) -> None:
         self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
+        self._slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
 
     def disconnect_signals(self) -> None:
         self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
+        self._slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)

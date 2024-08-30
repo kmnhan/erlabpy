@@ -1,16 +1,21 @@
 import time
 from collections.abc import Callable
 
+import erlab.analysis.transform
 import numpy as np
+import pyperclip
 import pytest
 import xarray as xr
+import xarray.testing
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 
-def accept_dialog(dialog_trigger: Callable, time_out: int = 5) -> QtWidgets.QDialog:
+def accept_dialog(
+    dialog_trigger: Callable, time_out: int = 5, pre_call: Callable | None = None
+) -> QtWidgets.QDialog:
     """Accept a dialog during testing.
 
     If there is no dialog, it waits until one is created for a maximum of 5 seconds (by
@@ -23,6 +28,9 @@ def accept_dialog(dialog_trigger: Callable, time_out: int = 5) -> QtWidgets.QDia
         Callable that triggers the dialog creation.
     time_out
         Maximum time (seconds) to wait for the dialog creation.
+    pre_call
+        Callable that takes the dialog as a single argument. If provided, it is executed
+        before calling ``.accept()`` on the dialog.
     """
     dialog = None
     start_time = time.time()
@@ -36,6 +44,8 @@ def accept_dialog(dialog_trigger: Callable, time_out: int = 5) -> QtWidgets.QDia
 
         # Avoid errors when dialog is not created
         if isinstance(dialog, QtWidgets.QDialog):
+            if pre_call is not None:
+                pre_call(dialog)
             if (
                 isinstance(dialog, QtWidgets.QMessageBox)
                 and dialog.defaultButton() is not None
@@ -389,5 +399,60 @@ def test_manager(qtbot):
     win.tool_options[2].check.setChecked(True)
     accept_dialog(win.close_selected)
     qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
+
+    win.close()
+
+
+def test_itool_rotate(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog):
+        dialog.angle_spin.setValue(60.0)
+        dialog.reshape_check.setChecked(True)
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+
+    # Check if the data is rotated
+    xarray.testing.assert_equal(
+        win.slicer_area._data,
+        erlab.analysis.transform.rotate(data, angle=60.0, reshape=True),
+    )
+
+    # Test guidelines
+    win.slicer_area.set_data(data)
+    win.slicer_area.main_image.set_guidelines(3)
+    assert win.slicer_area.main_image.is_guidelines_visible
+
+    win.slicer_area.main_image._guidelines_items[0].setAngle(90.0 - 30.0)
+    win.slicer_area.main_image._guidelines_items[-1].setPos((3.0, 3.1))
+
+    def _set_dialog_params(dialog):
+        assert dialog.angle_spin.value() == 30.0
+        assert dialog.center_spins[0].value() == 3.0
+        assert dialog.center_spins[1].value() == 3.1
+        dialog.copy_button.click()
+        dialog.reshape_check.setChecked(True)
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+
+    # Check if the data is rotated
+    xarray.testing.assert_equal(
+        win.slicer_area._data,
+        erlab.analysis.transform.rotate(
+            data, angle=30.0, center=(3.0, 3.1), reshape=True
+        ),
+    )
+
+    # Test copy button
+    assert pyperclip.paste().startswith("era.transform.rotate")
+
+    # Transpose should remove guidelines
+    qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
+    assert ~win.slicer_area.main_image.is_guidelines_visible
 
     win.close()
