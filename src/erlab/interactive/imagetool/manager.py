@@ -108,7 +108,7 @@ class _ManagerServer(QtCore.QThread):
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
         soc.setblocking(False)
-        soc.listen(1)
+        soc.listen()
         print("Server is listening...")
 
         while not self.stopped.is_set():
@@ -144,6 +144,8 @@ class _ManagerServer(QtCore.QThread):
                 print("Failed to unpickle data:", e)
 
             conn.close()
+
+        soc.close()
 
 
 class _QHLine(QtWidgets.QFrame):
@@ -188,6 +190,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             self._tool.slicer_area.unlink()
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
+            self._tool.sigTitleChanged.disconnect(self.update_title)
             self._tool.slicer_area.set_data(
                 xr.DataArray(np.zeros((2, 2)), name=self._tool.slicer_area.data.name)
             )
@@ -678,6 +681,9 @@ class ImageToolManager(ImageToolManagerGUI):
             for tool in list(self.tool_options.keys()):
                 self.remove_tool(tool)
 
+        # Clean up temporary directory
+        self._tmp_dir.cleanup()
+
         # Clean up shared memory
         self._shm.close()
         self._shm.unlink()
@@ -803,9 +809,7 @@ def show_in_manager(
 
     # Send the size of the data first
     client_socket.sendall(struct.pack(">L", len(kwargs)))
-
     client_socket.sendall(kwargs)
-
     client_socket.close()
 
 

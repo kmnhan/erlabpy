@@ -21,7 +21,7 @@ from erlab.analysis.image import (
 )
 from erlab.interactive.utils import (
     copy_to_clipboard,
-    gen_function_code,
+    generate_code,
     parse_data,
     xImageItem,
 )
@@ -49,6 +49,15 @@ class DerivativeTool(
         super().__init__()
         self.setupUi(self)
         self.setWindowTitle("")
+
+        if data.isnull().any():
+            self.show()
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Warning",
+                "Input DataArray contains NaN values. These will be filled with zeros.",
+            )
+            data = data.fillna(0.0)
 
         if data.ndim != 2:
             raise ValueError("Input DataArray must be 2D")
@@ -232,9 +241,14 @@ class DerivativeTool(
                     strict=True,
                 )
             }
+
             lines.append(
-                gen_function_code(
-                    copy=False, **{f"_processed = {data_name}.interp": [arg_dict]}
+                generate_code(
+                    xr.DataArray.interp,
+                    [],
+                    arg_dict,
+                    module=data_name,
+                    assign="_processed",
                 )
             )
             data_name = "_processed"
@@ -258,17 +272,16 @@ class DerivativeTool(
                 (
                     f"for _ in range({self.sn_spin.value()}):",
                     "\t"
-                    + gen_function_code(
-                        copy=False,
-                        **{
-                            "_processed = era.image.gaussian_filter": [
-                                f"|{data_name}|",
-                                arg_dict,
-                            ]
-                        },
+                    + generate_code(
+                        gaussian_filter,
+                        [f"|{data_name}|"],
+                        arg_dict,
+                        module="era.image",
+                        assign="_processed",
                     ),
                 )
             )
+
             data_name = "_processed"
 
         if self.tab_widget.currentIndex() == 0:
@@ -279,7 +292,7 @@ class DerivativeTool(
         else:
             match self.tab_widget.currentIndex():
                 case 1:
-                    fname = "era.image.scaled_laplace"
+                    func = scaled_laplace
                     arg_dict = {
                         "factor": float(
                             np.round(
@@ -289,7 +302,7 @@ class DerivativeTool(
                         )
                     }
                 case 2:
-                    fname = "era.image.curvature"
+                    func = curvature
                     arg_dict = {
                         "a0": float(
                             np.round(
@@ -304,12 +317,17 @@ class DerivativeTool(
                         ),
                     }
                 case 3:
-                    fname = "era.image.minimum_gradient"
+                    func = minimum_gradient
                     arg_dict = {}
 
             lines.append(
-                gen_function_code(
-                    copy=False, **{f"result = {fname}": [f"|{data_name}|", arg_dict]}
+                generate_code(
+                    func,
+                    [f"|{data_name}|"],
+                    arg_dict,
+                    module="era.image",
+                    assign="result",
+                    remove_defaults=False,
                 )
             )
 

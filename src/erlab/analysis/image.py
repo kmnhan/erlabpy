@@ -13,6 +13,17 @@ Notes
 
 """
 
+__all__ = [
+    "gaussian_filter",
+    "gaussian_laplace",
+    "laplace",
+    "ndsavgol",
+    "scaled_laplace",
+    "curvature",
+    "minimum_gradient",
+    "gradient_magnitude",
+]
+
 import itertools
 import math
 from collections.abc import Collection, Hashable, Mapping, Sequence
@@ -27,6 +38,7 @@ from numba import carray, cfunc, types
 
 from erlab.utils.array import (
     check_arg_2d_darr,
+    check_arg_has_no_nans,
     check_arg_uniform_dims,
     is_uniform_spaced,
 )
@@ -212,7 +224,7 @@ def gaussian_filter(
 def gaussian_laplace(
     darr: xr.DataArray,
     sigma: float | Collection[float] | Mapping[Hashable, float],
-    mode: str | Sequence[str] | Mapping[str, str] = "nearest",
+    mode: str | Sequence[str] | Mapping[Hashable, str] = "nearest",
     cval: float = 0.0,
     **kwargs,
 ) -> xr.DataArray:
@@ -267,7 +279,7 @@ def gaussian_laplace(
     )
 
     # Convert mode to tuple acceptable by scipy
-    if isinstance(mode, dict):
+    if isinstance(mode, Mapping):
         mode = tuple(mode[d] for d in sigma_dict)
 
     # Calculate sigma in pixels
@@ -609,13 +621,14 @@ def laplace(
     --------
     :func:`scipy.ndimage.laplace` : The underlying function used to apply the filter.
     """
-    if isinstance(mode, dict):
+    if isinstance(mode, Mapping):
         mode = tuple(mode[d] for d in darr.dims)
     return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
@@ -665,6 +678,7 @@ def minimum_gradient(
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def scaled_laplace(
     darr,
     factor: float = 1.0,
@@ -726,7 +740,7 @@ def scaled_laplace(
     elif factor < 0:
         weight /= abs(factor)
 
-    if isinstance(mode, dict):
+    if isinstance(mode, Mapping):
         mode = tuple(mode[d] for d in darr.dims)
 
     def d2_scaled(arr, axis, output, mode, cval):
@@ -742,6 +756,7 @@ def scaled_laplace(
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
+@check_arg_has_no_nans
 def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
     """2D curvature method for detecting dispersive features.
 

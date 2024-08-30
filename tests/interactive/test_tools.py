@@ -29,9 +29,6 @@ def test_goldtool(qtbot, gold):
     gold,
     angle_range=(-13.5, 13.5),
     eV_range=(-0.204, 0.276),
-    bin_size=(1, 1),
-    method="leastsq",
-    degree=4,
     fast=True,
 )"""
     )

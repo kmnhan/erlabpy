@@ -28,7 +28,7 @@ from erlab.interactive.colors import (
     pg_colormap_powernorm,
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard
+from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -241,10 +241,10 @@ class SlicerLinkProxy:
 
     @property
     def num_children(self) -> int:
-        return len(self._children)
+        return len(self.children)
 
     def unlink_all(self) -> None:
-        for s in self._children:
+        for s in self.children:
             s._linking_proxy = None
         self._children.clear()
 
@@ -288,7 +288,7 @@ class SlicerLinkProxy:
         """
         if color and not self.link_colors:
             return
-        for target in self._children.difference({source}):
+        for target in self.children.difference({source}):
             getattr(target, funcname)(
                 **self.convert_args(source, target, arguments, indices, steps)
             )
@@ -812,8 +812,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh(self, cursor: int, axes: tuple[int, ...] | None = None) -> None:
         self.sigIndexChanged.emit(cursor, axes)
 
+    @QtCore.Slot()
     def view_all(self) -> None:
-        for ax in self.axes:
+        for ax in reversed(self.axes):
+            # Updating linked axes before the main image to prevent fixed limits
             ax.vb.enableAutoRange()
             ax.vb.updateAutoRange()
 
@@ -1530,6 +1532,15 @@ class ItoolPlotItem(pg.PlotItem):
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
+        if image:
+            goldtool_action = self.vb.menu.addAction("Open in goldtool")
+            self._goldtool: None | QtWidgets.QWidget = None
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            dtool_action = self.vb.menu.addAction("Open in dtool")
+            self._dtool: None | QtWidgets.QWidget = None
+            dtool_action.triggered.connect(self.open_in_dtool)
+
         for i in (0, 1):
             self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
             self.getViewBoxMenu().ctrl[i].label.setVisible(False)
@@ -1563,6 +1574,27 @@ class ItoolPlotItem(pg.PlotItem):
             self._single_queue = collections.deque([0.0], maxlen=9)
             self._next_queue = collections.deque([0.0], maxlen=9)
 
+        if image:
+            # Rotatable alignment guidelines
+            self._guidelines_items: list[pg.GraphicsObject] = []
+            self._guideline_actions: list[QtWidgets.QAction] = []
+            self._action_group = QtWidgets.QActionGroup(self)
+
+            self._guideline_angle: float = 0.0
+            self._guideline_offset: list[float] = [0.0, 0.0]
+
+            for i, text in enumerate(["None", "C2", "C4", "C6"]):
+                qact = QtWidgets.QAction(text)
+                qact.setCheckable(True)
+                qact.toggled.connect(
+                    lambda b, idx=i: self._set_guidelines(idx) if b else None
+                )
+                qact.setActionGroup(self._action_group)
+                self._guideline_actions.append(qact)
+            self._guideline_actions[0].setChecked(True)
+
+            self._rotate_action = QtWidgets.QAction("Apply Rotation")
+
     @property
     def axis_dims(self) -> list[str | None]:
         dim_list: list[str | None] = [
@@ -1578,6 +1610,66 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def is_independent(self) -> bool:
         return self.vb.state["linkedViews"] == [None, None]
+
+    @property
+    def current_data(self) -> xr.DataArray:
+        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+
+    @property
+    def selection_code(self) -> str:
+        return self.array_slicer.qsel_code(
+            self.slicer_area.current_cursor, self.display_axis
+        )
+
+    @property
+    def is_guidelines_visible(self) -> bool:
+        return len(self._guidelines_items) != 0
+
+    @QtCore.Slot()
+    def close_associated_windows(self) -> None:
+        if self.is_image:
+            if self._goldtool is not None:
+                self._goldtool.close()
+            if self._dtool is not None:
+                self._dtool.close()
+
+    @QtCore.Slot()
+    def open_in_goldtool(self) -> None:
+        if self.is_image:
+            data = self.current_data
+
+            if "alpha" not in data.dims:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Data must have an 'alpha' dimension to be opened in GoldTool",
+                )
+                return
+
+            from erlab.interactive.fermiedge import GoldTool
+
+            if self._goldtool is not None:
+                self._goldtool.close()
+                self._goldtool = None
+
+            self._goldtool = GoldTool(
+                data, data_name="data" + self.selection_code, execute=False
+            )
+            self._goldtool.show()
+
+    @QtCore.Slot()
+    def open_in_dtool(self) -> None:
+        if self.is_image:
+            from erlab.interactive.derivative import DerivativeTool
+
+            if self._dtool is not None:
+                self._dtool.close()
+                self._dtool = None
+
+            self._dtool = DerivativeTool(
+                self.current_data, data_name="data" + self.selection_code
+            )
+            self._dtool.show()
 
     def refresh_manual_range(self) -> None:
         if self.is_independent:
@@ -1753,7 +1845,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
-            c.sigDragStarted.connect(self.slicer_area.sigWriteHistory.emit)
+            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
 
         if update:
             self.refresh_cursor(new_cursor)
@@ -1810,16 +1902,86 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.span_bounds(cursor, ax)
             )
 
+    @QtCore.Slot(int)
+    def set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+        """Show rotating crosshairs for alignment."""
+        if not self.is_image:
+            return
+        self._guideline_actions[n].setChecked(True)
+
+    @QtCore.Slot()
+    def remove_guidelines(self) -> None:
+        """Hide rotating crosshairs."""
+        self.set_guidelines(0)
+
+    @QtCore.Slot(int)
+    def _set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+        if not self.is_image:
+            return
+        if n == 0:
+            self._remove_guidelines()
+            return
+
+        old_pos: pg.Point | None = None
+        if len(self._guidelines_items) != n + 1 and self.is_guidelines_visible:
+            old_pos = self._guidelines_items[0].pos()
+            old_angle = float(
+                self._guidelines_items[0].angle - self._guidelines_items[0].offset
+            )
+            self._remove_guidelines()
+
+        for w in make_crosshairs(n):
+            self.addItem(w)
+            self._guidelines_items.append(w)
+
+        line = self._guidelines_items[0]
+
+        if old_pos is not None:
+            line.setPos(old_pos)
+            line.setAngle(old_angle)
+
+        def _print_angle():
+            line_pos = line.pos()
+            self._guideline_angle = line.angle_effective
+            self._guideline_offset = [line_pos.x(), line_pos.y()]
+            for i in range(2):
+                self._guideline_offset[i] = np.round(
+                    self._guideline_offset[i],
+                    self.array_slicer.get_significant(self.display_axis[i]),
+                )
+
+            self.setTitle(
+                f"{self._guideline_angle}° "
+                + str(tuple(self._guideline_offset)).replace("-", "−")
+            )
+
+        line.sigAngleChanged.connect(lambda: _print_angle())
+        line.sigPositionChanged.connect(lambda: _print_angle())
+        _print_angle()
+
+    @QtCore.Slot()
+    def _remove_guidelines(self) -> None:
+        if not self.is_image:
+            return
+        for item in list(self._guidelines_items):
+            self.removeItem(item)
+            self._guidelines_items.remove(item)
+        self._guideline_angle = 0.0
+        self._guideline_offset = [0.0, 0.0]
+        self.setTitle(None)
+
     def connect_signals(self) -> None:
         self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
+        self._slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
 
     def disconnect_signals(self) -> None:
         self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
         self._slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
+        self._slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
@@ -1902,18 +2064,16 @@ class ItoolPlotItem(pg.PlotItem):
 
         import erlab.io
 
-        erlab.io.save_as_hdf5(
-            self.slicer_data_items[self.slicer_area.current_cursor].sliced_data,
-            fileName,
-        )
+        erlab.io.save_as_hdf5(self.current_data, fileName)
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:
-        copy_to_clipboard(
-            self.array_slicer.qsel_code(
-                self.slicer_area.current_cursor, self.display_axis
+        if self.selection_code == "":
+            QtWidgets.QMessageBox.critical(
+                self, "Error", "Selection code is undefined for main image of 2D data."
             )
-        )
+            return
+        copy_to_clipboard(self.selection_code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:
@@ -1945,17 +2105,24 @@ class ItoolColorBarItem(BetterColorBarItem):
         )
         super().__init__(**kwargs)
 
+        copy_action = self.vb.menu.addAction("Copy color limits to clipboard")
+        copy_action.triggered.connect(self._copy_limits)
+
     @property
     def slicer_area(self) -> ImageSlicerArea:
         return self._slicer_area
 
     @property
     def images(self):
-        return [weakref.ref(x) for x in self._slicer_area._imageitems]
+        return [weakref.ref(x) for x in self.slicer_area._imageitems]
 
     @property
     def primary_image(self):
-        return weakref.ref(self._slicer_area.main_image.slicer_data_items[0])
+        return weakref.ref(self.slicer_area.main_image.slicer_data_items[0])
+
+    @QtCore.Slot()
+    def _copy_limits(self) -> str:
+        return copy_to_clipboard(str(self.slicer_area.levels))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)
@@ -1964,7 +2131,7 @@ class ItoolColorBarItem(BetterColorBarItem):
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
         self._span.sigRegionChangeStarted.connect(
-            self._slicer_area.sigWriteHistory.emit
+            lambda: self.slicer_area.sigWriteHistory.emit()
         )
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)

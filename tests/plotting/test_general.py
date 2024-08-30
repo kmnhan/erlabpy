@@ -142,13 +142,22 @@ def test_plot_slices():
 @pytest.mark.parametrize("ylim", [None, 0.5, (-0.3, 0.7)])
 @pytest.mark.parametrize("xlim", [None, 0.5, (-0.3, 0.7)])
 @pytest.mark.parametrize("colorbar", [False, True])
-def test_plot_array(colorbar, xlim, ylim, crop, kwargs):
-    data = xr.DataArray(
-        np.random.default_rng(0).random((11, 11)),
-        coords=[np.linspace(-1, 1, 11), np.linspace(-1, 1, 11)],
-        dims=["x", "y"],
-    )
-
+@pytest.mark.parametrize(
+    "data",
+    [
+        xr.DataArray(
+            np.random.default_rng(0).random((11, 11)),
+            coords=[np.linspace(-1, 1, 11), np.linspace(-1, 1, 11)],
+            dims=["x", "y"],
+        ),
+        xr.DataArray(
+            np.random.default_rng(0).random((11, 11)),
+            coords=[np.linspace(-1, 1, 11) ** 3, np.linspace(-1, 1, 11)],
+            dims=["x", "y"],
+        ),
+    ],
+)
+def test_plot_array(data, colorbar, xlim, ylim, crop, kwargs):
     _, ax = plt.subplots()
     plot_array(data, colorbar=colorbar, xlim=xlim, ylim=ylim, crop=crop, **kwargs)
     assert ax.get_xlabel() == "y"

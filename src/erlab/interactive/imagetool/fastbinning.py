@@ -321,7 +321,13 @@ NANMEAN_FUNCS: dict[int, dict[int | frozenset[int], Callable]] = {
         frozenset({0, 2, 3}): _nanmean_4_023,
         frozenset({1, 2, 3}): _nanmean_4_123,
     },
-}  #: Mapping from array dimensions to axis combinations to corresponding functions.
+}
+"""
+A dictionary that maps the number of dimensions of the input array to a dictionary of
+functions that calculate the mean along specific axes. The keys of the inner dictionary
+are integers or frozensets of integers that represent the axes along which the mean is
+to be calculated.
+"""
 
 
 def fast_nanmean(
@@ -382,8 +388,8 @@ def fast_nanmean_skipcheck(
     """Compute the mean for specific floating point arrays while ignoring NaNs.
 
     This is a version of `fast_nanmean` with near-zero overhead meant for internal use.
-    Strict assumptions on the input parameters allow skipping some checks. Failure to
-    meet these assumptions may lead to undefined behavior.
+    Strict assumptions on the input parameters allow skipping some checks. See the
+    parameter descriptions for allowed input values.
 
     Parameters
     ----------
@@ -398,6 +404,11 @@ def fast_nanmean_skipcheck(
     -------
     numpy.ndarray or float
         The calculated mean. The output array is always C-contiguous.
+
+    Note
+    ----
+    This function does not check for the validity of the input parameters. Invalid input
+    may lead to obscure errors or silently produce incorrect results.
 
     """
     if isinstance(axis, Collection):

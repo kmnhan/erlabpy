@@ -46,5 +46,7 @@ repos:
     rev: v3.28.0
     hooks:
       - id: commitizen
+        additional_dependencies: [ cz-changeup ]
       - id: commitizen-branch
+        additional_dependencies: [ cz-changeup ]
         stages: [push]

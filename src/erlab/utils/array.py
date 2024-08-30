@@ -1,6 +1,13 @@
 """Utility functions for working with numpy and xarray."""
 
-__all__ = ["is_dims_uniform", "is_monotonic", "is_uniform_spaced", "uniform_dims"]
+__all__ = [
+    "check_arg_has_no_nans",
+    "is_dims_uniform",
+    "is_monotonic",
+    "is_uniform_spaced",
+    "trim_na",
+    "uniform_dims",
+]
 
 import functools
 from collections.abc import Callable, Hashable, Iterable
@@ -137,3 +144,61 @@ def check_arg_uniform_dims(func: Callable | None = None):
     if func is not None:
         return _decorator(func)
     return _decorator
+
+
+def check_arg_has_no_nans(func: Callable | None = None):
+    """Decorate a function to check if the first argument has no NaNs."""
+
+    def _decorator(func):
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs):
+            if np.isnan(args[0]).any():
+                raise ValueError("Input must not contain any NaN values")
+            return func(*args, **kwargs)
+
+        return _wrapper
+
+    if func is not None:
+        return _decorator(func)
+    return _decorator
+
+
+def trim_na(darr: xr.DataArray, dims: Iterable[Hashable] | None = None) -> xr.DataArray:
+    """Drop all-NaN coordinates from the edges of a DataArray.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to trim.
+    dims
+        The dimensions along which to trim. If not provided, the data will be trimmed
+        along all dimensions.
+
+    Returns
+    -------
+    darr : xarray.DataArray
+        The trimmed DataArray.
+    """
+    if dims is None:
+        dims = darr.dims
+    for dim in dims:
+        darr = _trim_na_edges(darr, dim)
+    return darr
+
+
+def _trim_na_edges(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
+    return _trim_na_trailing_edge(_trim_na_leading_edge(darr, dim), dim)
+
+
+def _trim_na_leading_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
+    if darr[dim].size > 0 and np.isnan(darr.isel({dim: 0}).values).all():
+        darr = darr.isel({dim: slice(1, None)})
+        return _trim_na_leading_edge(darr, dim)
+    return darr
+
+
+def _trim_na_trailing_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
+    if darr[dim].size > 0 and np.isnan(darr.isel({dim: -1}).values).all():
+        darr = darr.isel({dim: slice(None, -1)})
+        return _trim_na_trailing_edge(darr, dim)
+    return darr

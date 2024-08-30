@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import functools
+import inspect
+import itertools
 import re
 import sys
 import threading
 import types
 import warnings
-from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -20,7 +22,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
@@ -31,9 +33,11 @@ __all__ = [
     "BetterSpinBox",
     "DictMenuBar",
     "ParameterGroup",
+    "RotatableLine",
     "copy_to_clipboard",
-    "gen_function_code",
-    "gen_single_function_code",
+    "format_kwargs",
+    "generate_code",
+    "make_crosshairs",
     "parse_data",
     "xImageItem",
 ]
@@ -80,7 +84,8 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     Parameters
     ----------
     content
-        The content to be copied.
+        The content to be copied. If a list of strings is passed, the strings are joined
+        by newlines.
 
     Returns
     -------
@@ -91,6 +96,24 @@ def copy_to_clipboard(content: str | list[str]) -> str:
         content = "\n".join(content)
     pyperclip.copy(content)
     return content
+
+
+def format_kwargs(d: dict[str, Any]) -> str:
+    """Format a dictionary of keyword arguments for a function call.
+
+    If the keys are valid Python identifiers, the output will be formatted as keyword
+    arguments. Otherwise, the output will be formatted as a dictionary.
+
+    Parameters
+    ----------
+    d
+        Dictionary of keyword arguments.
+
+    """
+    if all(s.isidentifier() for s in d):
+        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
+    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+    return "{" + out + "}"
 
 
 def _parse_single_arg(arg):
@@ -106,7 +129,118 @@ def _parse_single_arg(arg):
     return arg
 
 
-def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
+def generate_code(
+    func: Callable,
+    args: Collection[Any],
+    kwargs: Mapping[str, Any],
+    module: str | None = None,
+    name: str | None = None,
+    assign: str | None = None,
+    prefix: str | None = None,
+    remove_defaults: bool = True,
+    line_length: int = 88,
+    copy: bool = False,
+) -> str:
+    r"""Generate Python code for a function call.
+
+    The result can be copied to your clipboard in a form that can be pasted into an
+    interactive Python session or Jupyter notebook cell.
+
+    Parameters
+    ----------
+    func
+        Function to generate code for.
+    args
+        Positional arguments passed onto the function. Non-string arguments are
+        converted to strings. If given a string, quotes are added. If surrounded by
+        vertical bars (``|``), the string is not quoted.
+    kwargs
+        Keyword arguments passed onto the function.
+    module
+        Prefix to add to the function name. For example, ``"scipy.ndimage"``.
+    name
+        Name of the function. If `None`, `func.__name__` is used.
+    assign
+        If provided, the return value will be assigned to this variable.
+    prefix
+        Prefix to add to the generated string.
+    remove_defaults
+        If `True`, keyword arguments that have values identical to the defaults are
+        removed.
+    line_length
+        Maximum length of the line. If the line is longer than this, it will be split
+        into multiple lines.
+    copy
+        If `True`, the result is copied to the clipboard.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from erlab.interactive.utils import generate_code
+    >>> generate_code(
+    >>>     np.linalg.norm,
+    >>>     args=["|np.array([1, 2, 3])|"],
+    >>>     kwargs=dict(ord=2, keepdims=False),
+    >>>     module="np.linalg",
+    >>>     assign="value",
+    >>> )
+    'value = numpy.linalg.norm(numpy.array([1, 2, 3]), ord=2)'
+
+    """
+    if remove_defaults:
+        kwargs = _remove_default_kwargs(func, dict(kwargs))
+
+    module = "" if module is None else f"{module.strip(' .')}."
+
+    if name is None:
+        name = func.__name__
+    if assign is not None:
+        module = f"{assign} = {module}"
+    if prefix is not None:
+        module = f"{prefix}{module}"
+
+    code_str = _gen_single_function_code(
+        f"{module}{name}", args, kwargs, line_length=line_length
+    )
+
+    if copy:
+        return copy_to_clipboard(code_str)
+    return code_str
+
+
+def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Clean up keyword arguments for a function.
+
+    Given a function and a dictionary of keyword arguments, remove any keys that already
+    have the default value in the function signature.
+
+    Parameters
+    ----------
+    func
+        Function to clean up keyword arguments for.
+    kwargs
+        Dictionary of keyword arguments.
+
+    Returns
+    -------
+    dict
+        Cleaned up dictionary of keyword arguments.
+    """
+    params = inspect.signature(func).parameters
+
+    for k, v in dict(kwargs).items():
+        if params[k].default is not inspect.Parameter.empty and v == params[k].default:
+            kwargs.pop(k)
+    return kwargs
+
+
+def _gen_single_function_code(
+    funcname: str,
+    args: Collection[Any],
+    kwargs: Mapping[str, Any],
+    *,
+    line_length: int = 88,
+) -> str:
     """Generate the string for a Python function call.
 
     The first argument is the name of the function, and subsequent arguments are passed
@@ -118,10 +252,13 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     ----------
     funcname
         Name of the function.
-    *args
+    args
         Mandatory arguments passed onto the function.
-    **kwargs
+    kwargs
         Keyword arguments passed onto the function.
+    line_length
+        Maximum length of the line. If the line is longer than this, it will be split
+        into multiple lines.
 
     Returns
     -------
@@ -149,60 +286,13 @@ def gen_single_function_code(funcname: str, *args: tuple, **kwargs):
     # Add closing parenthesis
     code += ")"
 
-    if len(code.replace("\n", "")) <= 88:
+    if len(code.replace("\n", "")) <= line_length:
         # If code fits in one line, remove newlines
         code = " ".join([s.strip() for s in code.split("\n")])
         # Remove trailing comma and space
         code = code.replace(", )", ")").replace("( ", "(")
 
     return code
-
-
-def gen_function_code(copy: bool = True, **kwargs):
-    r"""Copy the Python code for function calls to the clipboard.
-
-    The result can be copied to your clipboard in a form that can be pasted into an
-    interactive Python session or Jupyter notebook cell.
-
-    Parameters
-    ----------
-    copy
-        If `True`, the code string is copied.
-    **kwargs
-        Dictionary where the keys are the string of the function call and the values are
-        a list of function arguments. The last item, if a dictionary, is interpreted as
-        keyword arguments.
-
-    """
-    code_list = []
-    for fname, fargs in kwargs.items():
-        if not isinstance(fargs[-1], dict):
-            fargs.append({})
-        code_list.append(gen_single_function_code(fname, *fargs[:-1], **fargs[-1]))
-
-    code_str = "\n".join(code_list)
-
-    if copy:
-        return copy_to_clipboard(code_str)
-    return code_str
-
-
-def format_kwargs(d: dict[str, Any]) -> str:
-    """Format a dictionary of keyword arguments for a function call.
-
-    If the keys are valid Python identifiers, the output will be formatted as keyword
-    arguments. Otherwise, the output will be formatted as a dictionary.
-
-    Parameters
-    ----------
-    d
-        Dictionary of keyword arguments.
-
-    """
-    if all(s.isidentifier() for s in d):
-        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
-    return "{" + out + "}"
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):
@@ -266,7 +356,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._is_discrete = discrete
         self._is_scientific = scientific
         self._decimal_significant = significant
-        self.setDecimals(decimals)
+        self._decimals = decimals
 
         self._value = value
         self._lastvalue: float | None = None
@@ -312,6 +402,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     @QtCore.Slot(int)
     def setDecimals(self, decimals: int) -> None:
         self._decimals = decimals
+        self._updateWidth()
 
     def decimals(self) -> int:
         return self._decimals
@@ -324,7 +415,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def widthFromText(self, text: str) -> int:
         return QtGui.QFontMetrics(self.font()).boundingRect(text).width()
 
-    def widthFromValue(self, value):
+    def widthFromValue(self, value) -> int:
         return self.widthFromText(self.textFromValue(value))
 
     def setMaximum(self, mx) -> None:
@@ -659,7 +750,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         layout.addWidget(self.check)
 
         for spin in (self.spin_value, self.spin_lb, self.spin_ub):
-            spin.valueChanged.connect(self.sigParamChanged.emit)
+            spin.valueChanged.connect(lambda: self.sigParamChanged.emit())
         self.spin_lb.valueChanged.connect(self._refresh_bounds)
         self.spin_ub.valueChanged.connect(self._refresh_bounds)
         self.check.stateChanged.connect(self.setFixed)
@@ -1670,6 +1761,144 @@ class DictMenuBar(QtWidgets.QMenuBar):
         if changed is not None:
             action.changed.connect(changed)
         return action
+
+
+class RotatableLine(pg.InfiniteLine):
+    """:class:`pyqtgraph.InfiniteLine` that rotates under drag.
+
+    The position can be changed by providing a :class:`pyqtgraph.TargetItem` which will
+    drag the line along with it.
+
+    Using the constructor function :func:`make_crosshairs` is recommended for creating
+    several lines at once.
+
+    Parameters
+    ----------
+    offset
+        Offset angle in degrees.
+    target
+        Target item to link the position of the line to.
+    **kwargs
+        Additional keyword arguments to pass to :class:`pyqtgraph.InfiniteLine`.
+
+    Signals
+    -------
+    sigAngleChanged(float)
+        Emitted when the angle of the line is changed.
+    """
+
+    sigAngleChanged = QtCore.Signal(float)  #: :meta private:
+    _sigAngleChangeStarted = QtCore.Signal(float)  #: :meta private:
+
+    def __init__(
+        self, offset: float = 0.0, target: pg.TargetItem | None = None, **kwargs
+    ) -> None:
+        self.offset: float = offset
+        kwargs.setdefault("movable", True)
+        super().__init__(**kwargs)
+
+        if target is not None:
+            self.set_target(target)
+
+    @property
+    def angle_effective(self) -> float:
+        """The angle of the line relative to the initial angle."""
+        return np.round(self.angle - self.offset - 90.0, 2)
+
+    def link(self, other: Self) -> None:
+        """Link with another :class:`RotatableLine`.
+
+        Providing another :class:`RotatableLine` will link the angles of both lines.
+        """
+
+        def _on_angle_changed_self(angle) -> None:
+            self.blockSignals(True)
+            self.setAngle(angle)
+            self.blockSignals(False)
+            self.sigAngleChanged.emit(angle)
+
+        def _on_angle_changed_other(angle) -> None:
+            other.blockSignals(True)
+            other.setAngle(angle)
+            other.blockSignals(False)
+            other.sigAngleChanged.emit(angle)
+
+        self._sigAngleChangeStarted.connect(_on_angle_changed_other)
+        other._sigAngleChangeStarted.connect(_on_angle_changed_self)
+
+    def setAngle(self, angle: float) -> None:
+        self.viewTransformChanged()
+        angle = angle % 180
+        super().setAngle(np.round(angle + self.offset, 2))
+        self._sigAngleChangeStarted.emit(angle)
+        self.sigAngleChanged.emit(angle)
+
+    def set_target(self, target: pg.TargetItem) -> None:
+        target.sigPositionChanged.connect(lambda: self._target_moved(target))
+        self.sigPositionChanged.connect(lambda: self._sync_target(target))
+
+    def _sync_target(self, target: pg.TargetItem) -> None:
+        target.blockSignals(True)
+        target.setPos(self.pos())
+        target.blockSignals(False)
+
+    def _target_moved(self, target: pg.TargetItem) -> None:
+        self.setPos(target.pos())
+
+    def mouseDragEvent(self, ev) -> None:
+        if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            if ev.isStart():
+                self.moving = True
+                self.cursorOffset = self.pos() - self.mapToParent(ev.buttonDownPos())
+                self.startPosition = self.pos()
+            ev.accept()
+
+            if not self.moving:
+                return
+
+            lastpos = self.mapToParent(ev.pos())
+            dx = lastpos.x() - self.startPosition.x()
+            dy = lastpos.y() - self.startPosition.y()
+            self.setAngle(np.rad2deg(np.arctan2(dy, dx)) - self.offset)
+
+            self.sigDragged.emit(self)
+            if ev.isFinish():
+                self.moving = False
+
+
+def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:
+    """Create a `pyqtgraph.TargetItem` and associated :class:`RotatableLine`s.
+
+    Parameters
+    ----------
+    n
+        Number of lines to create. Must be 1, 2, or 3. If 1, a single line is created.
+        If 2, two lines are created at 0 and 90 degrees. If 3, three lines are created
+        at 0, 120, and 240 degrees.
+
+    Returns
+    -------
+    list[pg.TargetItem | RotatableLine]
+        List of the created items. Add these to a
+        :class:`pyqtgraph.GraphicsLayoutWidget` or :class:`pyqtgraph.PlotItem`.
+    """
+    if n == 1:
+        angles: tuple[int, ...] = (0,)
+    elif n == 2:
+        angles = (0, 90)
+    else:
+        angles = (0, 120, 240)
+
+    target = pg.TargetItem()
+    lines = [RotatableLine(a, target, movable=True) for a in angles]
+
+    for ln in lines:
+        ln.set_target(target)
+
+    for l0, l1 in itertools.combinations(lines, 2):
+        l0.link(l1)
+
+    return [*lines, target]
 
 
 if __name__ == "__main__":

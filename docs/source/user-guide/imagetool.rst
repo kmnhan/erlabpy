@@ -28,7 +28,8 @@ Features include:
 
 ImageTool can be used to display *image-like* :class:`xarray.DataArray`\ s ranging from
 2 to 4 dimensions. If a coordinate of the input data happens to be non-uniform, it will
-automatically be converted to an index array so that the data can be displayed.
+automatically be converted to an index array so that the data can be displayed as an
+image.
 
 There are two main ways to invoke the ImageTool. The first way is to call the
 :func:`itool <erlab.interactive.imagetool.itool>` convenience function, which will
@@ -86,24 +87,25 @@ related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
 
 Using the ImageTool manager
 ---------------------------
-One drawback of using interactive tools with Jupyter notebooks is that the tool will be
-a blocking call. This means that you cannot run any other code while the tool is
-running. To get around this, you can use the :class:`ImageToolManager
+One drawback of using interactive tools inside Jupyter notebooks is that the tool
+execution is a blocking call. This means that you cannot run any other code while the
+tool is running. As a workaround, we provide :class:`ImageToolManager
 <erlab.interactive.imagetool.ImageToolManager>`.
 
 In the environment where ERLabPy installed, run ``itool-manager`` in a shell to start
-the manager application. Subsequent invocations with :func:`itool
+the manager application. Subsequent invocations of ImageTool from :func:`itool
 <erlab.interactive.imagetool.itool>` and :class:`qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor>` will be handled by the manager.
+<erlab.accessors.general.InteractiveDataArrayAccessor>` will open the tool in the
+manager application, leaving the notebook free to run other code.
 
 .. note::
 
   - The manager is designed to be global, so you can only have one manager running on a
     single machine that will handle all ImageTool instances opened from different
-    notebooks.
+    sessions.
 
-  - Opening in the manager has a slight delay compared to opening directly from the
-    notebook. The delay is bigger for larger data. You can still open directly while the
-    manager is running by providing the `use_manager=False` argument to :func:`itool
+  - Opening in the manager has a slight overhead compared to opening directly from the
+    notebook. The overhead is more noticeable for larger data. You can still open
+    directly while the manager is running by passing `use_manager=False` to :func:`itool
     <erlab.interactive.imagetool.itool>` or :class:`qshow
     <erlab.accessors.general.InteractiveDataArrayAccessor>`.

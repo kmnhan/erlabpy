@@ -26,6 +26,7 @@ If you are new to using ERLabPy, you may want to start with the `getting started
    plotting
    kconv
    curve-fitting
+   filtering
    imagetool
 
 Further reading

@@ -316,6 +316,65 @@ class TrackableLinearRegionItem(pg.LinearRegionItem):
             self.sigRegionChanged.emit(self)
 
 
+class _ColorBarLimitWidget(QtWidgets.QWidget):
+    def __init__(self, colorbar: BetterColorBarItem) -> None:
+        super().__init__()
+        self.setGeometry(QtCore.QRect(0, 640, 242, 182))
+        self.cb = colorbar
+
+        layout = QtWidgets.QFormLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setVerticalSpacing(0)
+        self.setLayout(layout)
+
+        self.max_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
+        self.min_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
+        self.rst_btn = QtWidgets.QPushButton("Reset")
+
+        self.max_spin.setObjectName("_vmax_spin")
+        self.min_spin.setObjectName("_vmin_spin")
+        self.rst_btn.setObjectName("_vlim_reset_btn")
+
+        layout.addRow("Max", self.max_spin)
+        layout.addRow("Min", self.min_spin)
+        layout.addRow(self.rst_btn)
+
+        self.cb._span.sigRegionChanged.connect(self.region_changed)
+        self.min_spin.sigValueChanged.connect(self.update_region)
+        self.max_spin.sigValueChanged.connect(self.update_region)
+        self.rst_btn.clicked.connect(self.reset)
+
+    def _set_spin_values(self, mn: float, mx: float) -> None:
+        self.max_spin.blockSignals(True)
+        self.min_spin.blockSignals(True)
+        self.max_spin.setValue(mx)
+        self.min_spin.setValue(mn)
+        self.max_spin.blockSignals(False)
+        self.min_spin.blockSignals(False)
+
+    @QtCore.Slot()
+    def region_changed(self):
+        mn, mx = self.cb._span.getRegion()
+        self._set_spin_values(mn, mx)
+
+    @QtCore.Slot()
+    def reset(self):
+        self._set_spin_values(-np.inf, np.inf)
+        self.update_region()
+
+    @QtCore.Slot()
+    def update_region(self):
+        # Trigger region change start and finish signals to simulate drag
+        self.cb._span.sigRegionChangeStarted.emit(self.cb._span)
+        self.cb.setSpanRegion((self.min_spin.value(), self.max_spin.value()))
+        self.cb._span.sigRegionChangeFinished.emit(self.cb._span)
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self.region_changed()
+
+
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
         self,
@@ -332,7 +391,7 @@ class BetterColorBarItem(pg.PlotItem):
 
         self.setDefaultPadding(0)
         # self.hideButtons()
-        self.setMenuEnabled(False)
+        self.setMenuEnabled(False, enableViewBoxMenu=True)
         self.vb.setMouseEnabled(x=False, y=True)
 
         self._colorbar = pg.ImageItem(
@@ -361,6 +420,15 @@ class BetterColorBarItem(pg.PlotItem):
         self.setAutoLevels(autoLevels)
         self._images: set[weakref.ref[BetterImageItem]] = set()
         self._primary_image: weakref.ref[BetterImageItem] | None = None
+
+        # Add colorbar limit editor to context menu
+        self.vb.menu.addSeparator()
+        self._clim_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit color limits")
+        clw = _ColorBarLimitWidget(self)
+        act = QtWidgets.QWidgetAction(self._clim_menu)
+        act.setDefaultWidget(clw)
+        self._clim_menu.addAction(act)
+
         if image is not None:
             self.setImageItem(image)
         if limits is not None:

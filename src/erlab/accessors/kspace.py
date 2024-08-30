@@ -680,6 +680,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         bounds: dict[str, tuple[float, float]] | None = None,
         resolution: dict[str, float] | None = None,
         *,
+        method: str = "linear",
         silent: bool = False,
         **coords,
     ) -> xr.DataArray:
@@ -702,6 +703,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             and the other is estimated as the inverse of the photoelectron inelastic
             mean free path given by the universal curve. The resolution is estimated as
             the smaller of the two values.
+        method
+            The interpolation method to use, passed to
+            :func:`erlab.analysis.interpolate.interpn`. Using methods other than
+            ``'linear'`` will result in slower performance.
         silent
             If `True`, suppresses printing, by default `False`.
         **coords
@@ -729,8 +734,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         .. code-block:: python
 
             data.kspace.offsets = {"delta": 0.1, "xi": 0.0, "beta": 0.3}
-            data.kspace.work_function = 4.3
-            data.kspace.inner_potential = 12.0
+            data.kspace.work_function = 4.3 data.kspace.inner_potential = 12.0
             converted_data = data.kspace.convert()
 
 
@@ -738,9 +742,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         .. code-block:: python
 
-            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)}
-            resolution = {"kx": 0.01, "ky": 0.01}
-            converted_data = data.kspace.convert(bounds, resolution)
+            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)} resolution = {"kx": 0.01,
+            "ky": 0.01} converted_data = data.kspace.convert(bounds, resolution)
 
         """
         if bounds is None:
@@ -825,7 +828,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         def _wrap_interpn(arr, *args):
             points, xi = args[: arr.ndim], args[arr.ndim :]
-            return interpn(points, arr, xi, bounds_error=False).squeeze()
+            return interpn(points, arr, xi, method=method, bounds_error=False).squeeze()
 
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])

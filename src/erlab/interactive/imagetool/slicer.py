@@ -369,6 +369,11 @@ class ArraySlicer(QtCore.QObject):
         """
         return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
 
+    def get_significant(self, axis: int) -> int:
+        """Return the number of significant digits for a given axis."""
+        step = self.incs[axis]
+        return int(np.clip(np.ceil(-np.log10(abs(step)) + 1), 0, None))
+
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
         new_ind = self.get_indices(like_cursor)
@@ -647,11 +652,16 @@ class ArraySlicer(QtCore.QObject):
             qsel_kw = self.qsel_args(cursor, disp)
         except ValueError:
             return self.isel_code(cursor, disp)
-
-        return f".qsel({format_kwargs(qsel_kw)})"
+        kwargs_str = format_kwargs(qsel_kw)
+        if kwargs_str:
+            return f".qsel({kwargs_str})"
+        return ""
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        return f".isel({format_kwargs(self.isel_args(cursor, disp, int_if_one=True))})"
+        kwargs_str = format_kwargs(self.isel_args(cursor, disp, int_if_one=True))
+        if kwargs_str:
+            return f".isel({kwargs_str})"
+        return ""
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
         isel_kw = self.isel_args(cursor, disp, int_if_one=False)

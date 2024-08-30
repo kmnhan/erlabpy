@@ -94,7 +94,8 @@ def get_bz_edge(
                 for line_new in lines_new
             ):
                 lines_new.append(line[i : i + 2])
-    for v in np.r_[*vertices]:
+
+    for v in np.concatenate(vertices):
         if not any(np.allclose(v, vn) for vn in vertices_new):
             vertices_new.append(v)
 
@@ -109,8 +110,8 @@ def get_bz_edge(
             displacement = np.dot(vals, basis)
             additional_lines.append(lines_arr + displacement)
             additional_verts.append(vertices_arr + displacement)
-    lines_arr = np.r_[lines_arr, *additional_lines]
-    vertices_arr = np.r_[vertices_arr, *additional_verts]
+    lines_arr = np.concatenate((lines_arr, *additional_lines))
+    vertices_arr = np.concatenate((vertices_arr, *additional_verts))
 
     return lines_arr, vertices_arr
 
