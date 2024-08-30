@@ -190,6 +190,7 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             self._tool.slicer_area.unlink()
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
+            self._tool.sigTitleChanged.disconnect(self.update_title)
             self._tool.slicer_area.set_data(
                 xr.DataArray(np.zeros((2, 2)), name=self._tool.slicer_area.data.name)
             )
