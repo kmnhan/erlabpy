@@ -1,7 +1,17 @@
-## Unreleased
+## v2.9.0 (2024-08-30)
 
 ### Feat
 
+- **interactive.imagetool**: add rotation ([fdeb8a9](https://github.com/kmnhan/erlabpy/commit/fdeb8a96be515b75d0536c48f2e3b042e9eccea5))
+
+  A rotation dialog has been added to the Edit menu. Rotation guidelines can be overlaid on the main image.
+- **interactive.utils**: add rotatable lines that can be rotated by dragging ([31b55e5](https://github.com/kmnhan/erlabpy/commit/31b55e5a937d3018f1b6e5ac85a3dacb46cb4839))
+- **analysis.transform**: add `rotate` function ([83a2ad8](https://github.com/kmnhan/erlabpy/commit/83a2ad8ea52ab27635e1acff6d9317fe13110c97))
+
+  Added a new function that can rotate DataArray values using spline interpolation. Previous simple implementations are marked as deprecated.
+- **utils.array**: add new function`trim_na` ([c628b5b](https://github.com/kmnhan/erlabpy/commit/c628b5b092ecc3a78bda2d66f5611e41e4d80402))
+
+  This function trims the edges of DataArrays where all values are NaN.
 - **accessors.kspace**: add method argument ([204073e](https://github.com/kmnhan/erlabpy/commit/204073e9b748bf8c86fd0cd5b6aa98acfa86d3aa))
 
   Momentum conversion through the `convert()` method of the kspace accessor now supports an additional keyword argument `method` that can be used to choose different interpolation methods supported by `scipy.interpolate.RegularGridInterpolator`. Note that methods other than `'linear'` will take much longer to execute.
@@ -27,6 +37,10 @@
 
 ### Fix
 
+- **interactive.imagetool**: properly disconnect signals ([dce236f](https://github.com/kmnhan/erlabpy/commit/dce236f1da1aae44bc3210aac1ff2eb710d71f41))
+- **interactive.imagetool**: fix autoscale when loading data ([2c12f59](https://github.com/kmnhan/erlabpy/commit/2c12f592e3d1d57de649aabae742eee230545387))
+- **interactive.imagetool**: scale spinbox decimals relative to coordinate step size ([9a801a5](https://github.com/kmnhan/erlabpy/commit/9a801a5391cd35e1fdeaf9377fd8b220420d4829))
+- **interactive.utils**: update `BetterSpinBox` width on changing decimals ([0a70884](https://github.com/kmnhan/erlabpy/commit/0a70884eb7742cea53962beb80ba42cad723fe4e))
 - **interactive**: fix compatibility issue with PySide6 ([da5f4af](https://github.com/kmnhan/erlabpy/commit/da5f4af139988e38f1c9b0534a5957644e01b9aa))
 - **interactive.imagetool**: do not copy code when unnecessary ([9131029](https://github.com/kmnhan/erlabpy/commit/91310295fb9ffab994b0b681c84a4646680583b0))
 - **accessors.general**: qshow now triggers hvplot properly for 1D data ([8a84813](https://github.com/kmnhan/erlabpy/commit/8a84813e561a52eaf5ef5fc7118b992e7537b1f6))
@@ -35,6 +49,14 @@
 
 ### Refactor
 
+- **interactive.utils**: improve code generation ([78c403f](https://github.com/kmnhan/erlabpy/commit/78c403fed2220a8033acc71ba8280f1446509bc1))
+- **analysis**: move `shift` to `transform` ([08baf05](https://github.com/kmnhan/erlabpy/commit/08baf0556650167bd495628e65e5f2e415380712))
+
+  The `shift` function has been moved from `utils` to `transform`. Calling from the `utils` module is now deprecated.
+- **analysis**: cleanup namespace ([e3e641d](https://github.com/kmnhan/erlabpy/commit/e3e641d4e176e042430b51f74d8ca79d34270e24))
+
+  Three functions that were directly accesible from the `erlab.analysis` namespace are now deprecated. Import them from their respective modules.
+- remove deprecated module `analysis.utilities` ([8b79ab5](https://github.com/kmnhan/erlabpy/commit/8b79ab5d978f14bb12123d283c74235d4e829094))
 - **analysis.image**: add check for NaN in input ([095554f](https://github.com/kmnhan/erlabpy/commit/095554fcde5b1e2a8540e3a2626b7b7da3e8f181))
 
   Derivative functions now check for NaNs in input data and raise a warning.
