@@ -812,8 +812,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh(self, cursor: int, axes: tuple[int, ...] | None = None) -> None:
         self.sigIndexChanged.emit(cursor, axes)
 
+    @QtCore.Slot()
     def view_all(self) -> None:
-        for ax in self.axes:
+        for ax in reversed(self.axes):
+            # Updating linked axes before the main image to prevent fixed limits
             ax.vb.enableAutoRange()
             ax.vb.updateAutoRange()
 
