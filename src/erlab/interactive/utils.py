@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import re
 import sys
 import threading
 import types
 import warnings
-from typing import TYPE_CHECKING, Any, Literal, cast, no_type_check
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -31,9 +32,11 @@ __all__ = [
     "BetterSpinBox",
     "DictMenuBar",
     "ParameterGroup",
+    "RotatableLine",
     "copy_to_clipboard",
     "gen_function_code",
     "gen_single_function_code",
+    "make_crosshairs",
     "parse_data",
     "xImageItem",
 ]
@@ -1672,6 +1675,144 @@ class DictMenuBar(QtWidgets.QMenuBar):
         if changed is not None:
             action.changed.connect(changed)
         return action
+
+
+class RotatableLine(pg.InfiniteLine):
+    """:class:`pyqtgraph.InfiniteLine` that rotates under drag.
+
+    The position can be changed by providing a :class:`pyqtgraph.TargetItem` which will
+    drag the line along with it.
+
+    Using the constructor function :func:`make_crosshairs` is recommended for creating
+    several lines at once.
+
+    Parameters
+    ----------
+    offset
+        Offset angle in degrees.
+    target
+        Target item to link the position of the line to.
+    **kwargs
+        Additional keyword arguments to pass to :class:`pyqtgraph.InfiniteLine`.
+
+    Signals
+    -------
+    sigAngleChanged(float)
+        Emitted when the angle of the line is changed.
+    """
+
+    sigAngleChanged = QtCore.Signal(float)  #: :meta private:
+    _sigAngleChangeStarted = QtCore.Signal(float)  #: :meta private:
+
+    def __init__(
+        self, offset: float = 0.0, target: pg.TargetItem | None = None, **kwargs
+    ) -> None:
+        self.offset: float = offset
+        kwargs.setdefault("movable", True)
+        super().__init__(**kwargs)
+
+        if target is not None:
+            self.set_target(target)
+
+    @property
+    def angle_effective(self) -> float:
+        """The angle of the line relative to the initial angle."""
+        return np.round(self.angle - self.offset - 90.0, 2)
+
+    def link(self, other: Self) -> None:
+        """Link with another :class:`RotatableLine`.
+
+        Providing another :class:`RotatableLine` will link the angles of both lines.
+        """
+
+        def _on_angle_changed_self(angle) -> None:
+            self.blockSignals(True)
+            self.setAngle(angle)
+            self.blockSignals(False)
+            self.sigAngleChanged.emit(angle)
+
+        def _on_angle_changed_other(angle) -> None:
+            other.blockSignals(True)
+            other.setAngle(angle)
+            other.blockSignals(False)
+            other.sigAngleChanged.emit(angle)
+
+        self._sigAngleChangeStarted.connect(_on_angle_changed_other)
+        other._sigAngleChangeStarted.connect(_on_angle_changed_self)
+
+    def setAngle(self, angle: float) -> None:
+        self.viewTransformChanged()
+        angle = angle % 180
+        super().setAngle(np.round(angle + self.offset, 2))
+        self._sigAngleChangeStarted.emit(angle)
+        self.sigAngleChanged.emit(angle)
+
+    def set_target(self, target: pg.TargetItem) -> None:
+        target.sigPositionChanged.connect(lambda: self._target_moved(target))
+        self.sigPositionChanged.connect(lambda: self._sync_target(target))
+
+    def _sync_target(self, target: pg.TargetItem) -> None:
+        target.blockSignals(True)
+        target.setPos(self.pos())
+        target.blockSignals(False)
+
+    def _target_moved(self, target: pg.TargetItem) -> None:
+        self.setPos(target.pos())
+
+    def mouseDragEvent(self, ev) -> None:
+        if self.movable and ev.button() == QtCore.Qt.MouseButton.LeftButton:
+            if ev.isStart():
+                self.moving = True
+                self.cursorOffset = self.pos() - self.mapToParent(ev.buttonDownPos())
+                self.startPosition = self.pos()
+            ev.accept()
+
+            if not self.moving:
+                return
+
+            lastpos = self.mapToParent(ev.pos())
+            dx = lastpos.x() - self.startPosition.x()
+            dy = lastpos.y() - self.startPosition.y()
+            self.setAngle(np.rad2deg(np.arctan2(dy, dx)) - self.offset)
+
+            self.sigDragged.emit(self)
+            if ev.isFinish():
+                self.moving = False
+
+
+def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:
+    """Create a `pyqtgraph.TargetItem` and associated :class:`RotatableLine`s.
+
+    Parameters
+    ----------
+    n
+        Number of lines to create. Must be 1, 2, or 3. If 1, a single line is created.
+        If 2, two lines are created at 0 and 90 degrees. If 3, three lines are created
+        at 0, 120, and 240 degrees.
+
+    Returns
+    -------
+    list[pg.TargetItem | RotatableLine]
+        List of the created items. Add these to a
+        :class:`pyqtgraph.GraphicsLayoutWidget` or :class:`pyqtgraph.PlotItem`.
+    """
+    if n == 1:
+        angles: tuple[int, ...] = (0,)
+    elif n == 2:
+        angles = (0, 90)
+    else:
+        angles = (0, 120, 240)
+
+    target = pg.TargetItem()
+    lines = [RotatableLine(a, target, movable=True) for a in angles]
+
+    for ln in lines:
+        ln.set_target(target)
+
+    for l0, l1 in itertools.combinations(lines, 2):
+        l0.link(l1)
+
+    return [*lines, target]
 
 
 if __name__ == "__main__":
