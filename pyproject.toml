@@ -62,6 +62,7 @@ docs = [
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
     "sphinxcontrib-bibtex",
+    "sphinxcontrib-googleanalytics",
     "sphinx-qt-documentation",
     "pybtex",
     "nbsphinx",

@@ -55,6 +55,9 @@ extensions = [
     "sphinx_qt_documentation",
 ]
 
+if os.getenv("READTHEDOCS"):
+    extensions.append("sphinxcontrib.googleanalytics")
+    googleanalytics_id = "G-DDZYWTBV4S"
 
 # templates_path = ["_templates"]
 # exclude_patterns = []
