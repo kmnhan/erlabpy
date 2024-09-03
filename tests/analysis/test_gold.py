@@ -1,8 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 from numpy.testing import assert_allclose
+
+from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 
 
 @pytest.mark.parametrize("parallel_kw", [None, {"n_jobs": 1, "return_as": "list"}])

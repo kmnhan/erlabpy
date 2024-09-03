@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import scipy.special
+
 from erlab.analysis.fit.functions.general import (
     _gen_kernel,
     do_convolve,

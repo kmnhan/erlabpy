@@ -1,5 +1,6 @@
-from erlab.constants import conv_eV_nm, conv_watt_photons
 from numpy.testing import assert_almost_equal
+
+from erlab.constants import conv_eV_nm, conv_watt_photons
 
 
 def test_conv_watt_photons():

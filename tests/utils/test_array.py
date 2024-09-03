@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import xarray.testing
+
 from erlab.utils.array import (
     check_arg_has_no_nans,
     is_dims_uniform,

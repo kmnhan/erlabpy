@@ -1,12 +1,13 @@
 import numpy as np
 import pyperclip
 import xarray as xr
+from numpy.testing import assert_allclose
+
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import dtool
 from erlab.interactive.fermiedge import goldtool
 from erlab.interactive.kspace import ktool
-from numpy.testing import assert_allclose
 
 
 def test_goldtool(qtbot, gold):

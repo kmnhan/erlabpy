@@ -6,10 +6,11 @@ import re
 import tempfile
 from typing import ClassVar
 
-import erlab.io
 import numpy as np
 import pandas as pd
 import pytest
+
+import erlab.io
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles
 

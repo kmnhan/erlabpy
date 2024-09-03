@@ -1,8 +1,9 @@
 import io
 
-import erlab.lattice
 import matplotlib.backends.backend_svg
 import matplotlib.pyplot as plt
+
+import erlab.lattice
 from erlab.plotting.atoms import CrystalProperty
 
 
