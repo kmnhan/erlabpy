@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
+
 from erlab.plotting.general import plot_array, plot_slices
 
 

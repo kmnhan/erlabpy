@@ -1,11 +1,12 @@
 import pytest
 import xarray
 import xarray.testing
+
 from erlab.analysis.kspace import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles
 
 
-@pytest.fixture()
+@pytest.fixture
 def cut():
     return generate_data_angles(
         (300, 1, 500),
@@ -14,56 +15,56 @@ def cut():
     ).T
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_1_kmap(anglemap):
     data = anglemap.copy(deep=True)
     data.kspace.configuration = 1
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_2_kmap(anglemap):
     data = anglemap.copy(deep=True)
     data.kspace.configuration = 2
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_3_kmap(anglemap):
     data = anglemap.copy(deep=True)
     data.kspace.configuration = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_4_kmap(anglemap):
     data = anglemap.copy(deep=True)
     data.kspace.configuration = 4
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_1_cut(cut):
     data = cut.copy(deep=True)
     data.kspace.configuration = 1
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_2_cut(cut):
     data = cut.copy(deep=True)
     data.kspace.configuration = 2
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_3_cut(cut):
     data = cut.copy(deep=True)
     data.kspace.configuration = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture()
+@pytest.fixture
 def config_4_cut(cut):
     data = cut.copy(deep=True)
     data.kspace.configuration = 4

@@ -1,7 +1,8 @@
-import erlab.analysis as era
 import numpy as np
 import pytest
 import xarray as xr
+
+import erlab.analysis as era
 
 
 def test_gaussian_filter():

@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+
 from erlab.plotting.annotations import copy_mathtext, mark_points, property_labels
 
 

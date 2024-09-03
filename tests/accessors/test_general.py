@@ -1,4 +1,3 @@
-import erlab.accessors  # noqa: F401
 import holoviews.element.chart
 import lmfit
 import matplotlib.image
@@ -7,6 +6,8 @@ import numpy as np
 import panel.layout.base
 import pytest
 import xarray as xr
+
+import erlab.accessors  # noqa: F401
 
 
 def test_da_qplot():

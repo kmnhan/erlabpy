@@ -1,15 +1,16 @@
-import erlab.accessors  # noqa: F401
 import lmfit
 import numpy as np
 import pytest
 import xarray as xr
+
+import erlab.accessors  # noqa: F401
 
 
 def power(t, a):
     return np.power(t, a)
 
 
-@pytest.fixture()
+@pytest.fixture
 def fit_expected_darr():
     return xr.DataArray(
         [[3, 3], [5, 4], [np.nan, np.nan]],

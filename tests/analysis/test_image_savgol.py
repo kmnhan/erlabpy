@@ -1,7 +1,8 @@
 import numpy as np
-from erlab.analysis.image import _ndsavgol_coeffs, ndsavgol
 from numpy.testing import assert_allclose, assert_almost_equal, assert_equal
 from scipy.signal import savgol_coeffs
+
+from erlab.analysis.image import _ndsavgol_coeffs, ndsavgol
 
 
 def compare_coeffs_to_scipy(window_length, order, deriv):

@@ -1,16 +1,17 @@
 import time
 from collections.abc import Callable
 
-import erlab.analysis.transform
 import numpy as np
 import pyperclip
 import pytest
 import xarray as xr
 import xarray.testing
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import ImageToolManager
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
+
+import erlab.analysis.transform
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool.manager import ImageToolManager
 
 
 def accept_dialog(

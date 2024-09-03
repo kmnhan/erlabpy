@@ -1,9 +1,10 @@
 import numpy as np
 import scipy.ndimage
+from numpy.testing import assert_approx_equal
+
 from erlab.analysis.fit.functions import lorentzian_wh
 from erlab.analysis.fit.minuit import Minuit
 from erlab.analysis.fit.models import MultiPeakModel
-from numpy.testing import assert_approx_equal
 
 
 def test_minuit_from_lmfit():

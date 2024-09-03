@@ -1,9 +1,10 @@
-import erlab.plotting.erplot as eplt
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
 from pyqtgraph.colormap import modulatedBarData
+
+import erlab.plotting.erplot as eplt
 
 
 def sample_plot(norms, kw0, kw1, cmap):
