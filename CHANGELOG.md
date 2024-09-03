@@ -1,3 +1,9 @@
+## v2.9.1 (2024-09-03)
+
+### Fix
+
+- ui file compatibility with Qt5 ([66c776d](https://github.com/kmnhan/erlabpy/commit/66c776d912e5cf3ba1be819bd46b972f22cbb560))
+
 ## v2.9.0 (2024-08-30)
 
 ### Feat
