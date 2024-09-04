@@ -52,6 +52,7 @@ dev = [
     "pytest-cov",
     "pytest-qt",
     "pytest-xdist",
+    "pytest-datadir",
     "pytest",
     "commitizen",
     "cz-changeup",
@@ -78,6 +79,9 @@ Documentation = "https://erlabpy.readthedocs.io"
 Repository = "https://github.com/kmnhan/erlabpy.git"
 Issues = "https://github.com/kmnhan/erlabpy/issues"
 Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
+
+[project.entry-points."xarray.backends"]
+my_engine = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
 version_provider = "pep621"
@@ -144,7 +148,7 @@ select = [
     "RUF",
 ]
 ignore = [
-    "PLW2901", # Outer variable  overwritten by inner target
+    "PLW2901", # Outer variable overwritten by inner target
     "ICN001",  # Import conventions
     "TRY003",  # Long exception messages
     "D100",    # Missing docstring in public module

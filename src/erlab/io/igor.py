@@ -1,6 +1,10 @@
+from __future__ import annotations
+
+__all__ = ["load_experiment", "load_igor_hdf5", "load_wave"]
+
 import contextlib
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import h5netcdf
 import igor2.binarywave
@@ -8,8 +12,64 @@ import igor2.packed
 import igor2.record
 import numpy as np
 import xarray as xr
+from xarray.backends import BackendEntrypoint
 
-__all__ = ["load_experiment", "load_igor_hdf5", "load_wave"]
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from io import BufferedIOBase
+
+    from xarray.backends.common import AbstractDataStore
+
+
+class IgorBackendEntrypoint(BackendEntrypoint):
+    """Backend for Igor Pro files.
+
+    It can open ".pxt", ".pxp", ".ibw" files using the `igor2` library.
+
+    For more information about the underlying library, visit:
+    https://github.com/AFM-analysis/igor2
+
+    """
+
+    description = "Open Igor Pro files (.pxt, .pxp and .ibw) in Xarray"
+
+    def open_dataset(  # type: ignore[override]  # allow LSP violation
+        self,
+        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
+        *,
+        drop_variables: str | Iterable[str] | None = None,
+        recursive: bool = False,
+    ) -> xr.Dataset:
+        if not isinstance(filename_or_obj, str | os.PathLike):
+            raise TypeError("filename_or_obj must be a string or a path-like object")
+        return _open_igor_ds(
+            filename_or_obj, drop_variables=drop_variables, recursive=recursive
+        )
+
+    def guess_can_open(
+        self,
+        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
+    ) -> bool:
+        if isinstance(filename_or_obj, str | os.PathLike):
+            _, ext = os.path.splitext(filename_or_obj)
+            return ext in {".pxt", ".pxp", ".ibw"}
+        return False
+
+
+def _open_igor_ds(
+    filename: str | os.PathLike[Any],
+    drop_variables: str | Iterable[str] | None = None,
+    recursive: bool = False,
+) -> xr.Dataset:
+    if os.path.splitext(filename)[-1] in {".pxp", ".pxt"}:
+        if isinstance(drop_variables, str):
+            drop_variables = [drop_variables]
+        return load_experiment(filename, ignore=drop_variables, recursive=recursive)
+
+    ds = load_wave(filename).to_dataset()
+    if drop_variables is not None:
+        ds = ds.drop_vars(drop_variables)
+    return ds
 
 
 def _load_experiment_raw(
@@ -17,7 +77,7 @@ def _load_experiment_raw(
     folder: str | None = None,
     *,
     prefix: str | None = None,
-    ignore: list[str] | None = None,
+    ignore: Iterable[str] | None = None,
     recursive: bool = False,
     **kwargs,
 ) -> dict[str, xr.DataArray]:
@@ -63,7 +123,7 @@ def load_experiment(
     folder: str | None = None,
     *,
     prefix: str | None = None,
-    ignore: list[str] | None = None,
+    ignore: Iterable[str] | None = None,
     recursive: bool = False,
     **kwargs,
 ) -> xr.Dataset:
