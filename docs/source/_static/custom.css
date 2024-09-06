@@ -7,3 +7,18 @@ dl[class]:not(.option-list):not(.field-list):not(.footnote):not(.glossary):not(.
 span.default_value {
   font-weight: normal;
 }
+
+
+/* Table cell colors in notebooks */
+.output_area tr {
+  background-color: var(--xr-background-color-row-even) !important;
+  color: var(--xr-font-color0) !important;
+}
+
+.output_area tr:nth-child(odd) {
+  background-color: var(--xr-background-color-row-odd) !important;
+}
+
+.output_area thead {
+  border-bottom: 1px solid var(--xr-font-color0) !important;
+}
