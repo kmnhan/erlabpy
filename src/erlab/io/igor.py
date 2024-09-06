@@ -70,10 +70,10 @@ def _open_igor_ds(
             drop_variables = [drop_variables]
         return load_experiment(filename, ignore=drop_variables, recursive=recursive)
 
-    if ext.casefold() in {".h5", ".hdf5"}:
-        ds = load_igor_hdf5(filename)
-    else:
+    if ext.casefold() == ".ibw":
         ds = load_wave(filename).to_dataset()
+    else:
+        ds = load_igor_hdf5(filename)
 
     if drop_variables is not None:
         ds = ds.drop_vars(drop_variables)
@@ -135,7 +135,9 @@ def load_experiment(
     recursive: bool = False,
     **kwargs,
 ) -> xr.Dataset:
-    """Load waves from an igor experiment (`.pxp`) file.
+    """Load waves from an Igor experiment file(`.pxp` and `.pxt`).
+
+    Use :func:`xarray.load_dataset` with ``backend="erlab-igor"`` for consistency.
 
     Parameters
     ----------
@@ -174,6 +176,8 @@ def load_experiment(
 def load_igor_hdf5(filename: str | os.PathLike) -> xr.Dataset:
     """Load a HDF5 file exported by Igor Pro into an `xarray.Dataset`.
 
+    Use :func:`xarray.load_dataset` with ``backend="erlab-igor"`` for consistency.
+
     Parameters
     ----------
     filename
@@ -204,6 +208,8 @@ def load_wave(
     data_dir: str | os.PathLike | None = None,
 ) -> xr.DataArray:
     """Load a wave from Igor binary format.
+
+    Use :func:`xarray.load_dataarray` with ``backend="erlab-igor"`` for consistency.
 
     Parameters
     ----------

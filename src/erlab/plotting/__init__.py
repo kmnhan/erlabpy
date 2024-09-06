@@ -30,7 +30,7 @@ import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 
-import erlab.io
+from erlab.io.igor import load_wave as _load_wave
 
 # Import colormaps if available
 if importlib.util.find_spec("cmasher"):
@@ -60,7 +60,7 @@ def load_igor_ct(fname: str, name: str) -> None:
     if fname.endswith(".txt"):
         values = np.genfromtxt(io.StringIO(file.decode()))
     elif fname.endswith(".ibw"):
-        values = erlab.io.load_wave(io.BytesIO(file)).values
+        values = _load_wave(io.BytesIO(file)).values
 
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list(name, values / 65535)
     matplotlib.colormaps.register(cmap)
