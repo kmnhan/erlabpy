@@ -1867,7 +1867,7 @@ class RotatableLine(pg.InfiniteLine):
 
 
 def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:
-    """Create a `pyqtgraph.TargetItem` and associated :class:`RotatableLine`s.
+    r"""Create a :class:`pyqtgraph.TargetItem` and associated `RotatableLine`\ s.
 
     Parameters
     ----------
@@ -1876,11 +1876,6 @@ def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLi
         If 2, two lines are created at 0 and 90 degrees. If 3, three lines are created
         at 0, 120, and 240 degrees.
 
-    Returns
-    -------
-    list[pg.TargetItem | RotatableLine]
-        List of the created items. Add these to a
-        :class:`pyqtgraph.GraphicsLayoutWidget` or :class:`pyqtgraph.PlotItem`.
     """
     if n == 1:
         angles: tuple[int, ...] = (0,)
