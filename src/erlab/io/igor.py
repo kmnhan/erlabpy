@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__all__ = ["load_experiment", "load_igor_hdf5", "load_wave"]
+__all__ = ["IgorBackendEntrypoint", "load_experiment", "load_igor_hdf5", "load_wave"]
 
 import contextlib
 import os
@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 class IgorBackendEntrypoint(BackendEntrypoint):
     """Backend for Igor Pro files.
 
-    It can open ".pxt", ".pxp", ".ibw" files using the `igor2` library.
+    It can open ".pxt", ".pxp", and ".ibw" files using the `igor2` library.
+
+    It also supports loading HDF5 files exported from Igor Pro.
 
     For more information about the underlying library, visit:
     https://github.com/AFM-analysis/igor2
@@ -32,6 +34,7 @@ class IgorBackendEntrypoint(BackendEntrypoint):
     """
 
     description = "Open Igor Pro files (.pxt, .pxp and .ibw) in Xarray"
+    url = "https://erlabpy.readthedocs.io/en/latest/generated/erlab.io.igor.html"
 
     def open_dataset(  # type: ignore[override]  # allow LSP violation
         self,
@@ -61,12 +64,17 @@ def _open_igor_ds(
     drop_variables: str | Iterable[str] | None = None,
     recursive: bool = False,
 ) -> xr.Dataset:
-    if os.path.splitext(filename)[-1] in {".pxp", ".pxt"}:
+    ext = os.path.splitext(filename)[-1]
+    if ext.casefold() in {".pxp", ".pxt"}:
         if isinstance(drop_variables, str):
             drop_variables = [drop_variables]
         return load_experiment(filename, ignore=drop_variables, recursive=recursive)
 
-    ds = load_wave(filename).to_dataset()
+    if ext.casefold() in {".h5", ".hdf5"}:
+        ds = load_igor_hdf5(filename)
+    else:
+        ds = load_wave(filename).to_dataset()
+
     if drop_variables is not None:
         ds = ds.drop_vars(drop_variables)
     return ds

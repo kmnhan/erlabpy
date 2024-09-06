@@ -64,10 +64,6 @@ Hints for most keyboard shortcuts are displayed in the menu bar. Here, some shor
 that are not found in the menu bar are listed. Mac users must replace :kbd:`Ctrl` with
 :kbd:`⌘` and :kbd:`Alt` with :kbd:`⌥`.
 
-The rule of thumb is that if you can do something that applies to a single cursor, you
-can do it to all cursors by holding :kbd:`Alt`. Also, keyboard shortcuts that are
-related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
-
 .. list-table::
     :header-rows: 1
 
@@ -84,6 +80,9 @@ related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
     * - :kbd:`Alt` while dragging a cursor line
       - Make all cursor lines move together
 
+The rule of thumb is that if you can do something that applies to a single cursor, you
+can do it to all cursors by holding :kbd:`Alt`. Also, keyboard shortcuts that are
+related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
 
 Using the ImageTool manager
 ---------------------------

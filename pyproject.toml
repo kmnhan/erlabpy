@@ -81,7 +81,7 @@ Issues = "https://github.com/kmnhan/erlabpy/issues"
 Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 
 [project.entry-points."xarray.backends"]
-my_engine = "erlab.io.igor:IgorBackendEntrypoint"
+erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
 version_provider = "pep621"
