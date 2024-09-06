@@ -292,7 +292,7 @@ def test_loader():
 
     # Test if the reprs are working
     assert repr(erlab.io.loaders).startswith("Registered data loaders")
-    assert erlab.io.loaders._repr_html_().startswith("<table><thead>")
+    assert erlab.io.loaders._repr_html_().startswith("<div><style>")
 
     erlab.io.set_loader("example")
     erlab.io.set_data_dir(tmp_dir.name)

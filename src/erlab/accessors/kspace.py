@@ -15,6 +15,7 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
+from erlab.utils.formatting import format_html_table
 
 
 def only_angles(method=None):
@@ -134,17 +135,7 @@ class OffsetView:
         return dict(self).__repr__()
 
     def _repr_html_(self) -> str:
-        out = ""
-        out += "<table><tbody>"
-        for k, v in self.items():
-            out += (
-                "<tr>"
-                f"<td style='text-align:left;'><b>{k}</b></td>"
-                f"<td style='text-align:left;'>{v}</td>"
-                "</tr>"
-            )
-        out += "</tbody></table>"
-        return out
+        return format_html_table([(k, str(v)) for k, v in self.items()], header_cols=1)
 
     def update(
         self,

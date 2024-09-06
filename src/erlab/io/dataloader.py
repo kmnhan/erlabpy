@@ -31,6 +31,7 @@ import pandas
 import xarray as xr
 
 from erlab.utils.array import is_monotonic, is_uniform_spaced
+from erlab.utils.formatting import format_html_table
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -1339,16 +1340,8 @@ class LoaderRegistry(RegistryBase):
         return out
 
     def _repr_html_(self) -> str:
-        out = ""
-        out += "<table><thead>"
-        out += (
-            "<tr>"
-            "<th style='text-align:left;'><b>Name</b></th>"
-            "<th style='text-align:left;'><b>Aliases</b></th>"
-            "<th style='text-align:left;'><b>Loader class</b></th>"
-            "</tr>"
-        )
-        out += "</thead><tbody>"
+        rows: list[tuple[str, str, str]] = [("Name", "Aliases", "Loader class")]
+
         for k, v in self.loaders.items():
             aliases = ", ".join(v.aliases) if v.aliases is not None else ""
 
@@ -1357,17 +1350,9 @@ class LoaderRegistry(RegistryBase):
                 v = type(v)
 
             cls_name = f"{v.__module__}.{v.__qualname__}"
+            rows.append((k, aliases, cls_name))
 
-            out += (
-                "<tr>"
-                f"<td style='text-align:left;'>{k}</td>"
-                f"<td style='text-align:left;'>{aliases}</td>"
-                f"<td style='text-align:left;'>{cls_name}</td>"
-                "</tr>"
-            )
-        out += "</tbody></table>"
-
-        return out
+        return format_html_table(rows, header_rows=1)
 
     load.__doc__ = LoaderBase.load.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__

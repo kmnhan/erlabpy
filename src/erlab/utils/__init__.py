@@ -11,5 +11,6 @@ Modules
 
    array
    parallel
+   formatting
 
 """
