@@ -74,7 +74,7 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 
 def _save_pickle(obj: Any, filename: str) -> None:
     with open(filename, "wb") as file:
-        pickle.dump(obj, file)
+        pickle.dump(obj, file, protocol=-1)
 
 
 def _load_pickle(filename: str) -> Any:
@@ -805,7 +805,7 @@ def show_in_manager(
     kwargs["__filename"] = files
 
     # Serialize kwargs dict into a byte stream
-    kwargs = pickle.dumps(kwargs)
+    kwargs = pickle.dumps(kwargs, protocol=-1)
 
     # Send the size of the data first
     client_socket.sendall(struct.pack(">L", len(kwargs)))
