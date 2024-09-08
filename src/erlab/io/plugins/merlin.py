@@ -13,7 +13,7 @@ import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
-from erlab.io.igor import load_experiment, load_wave
+from erlab.io.igor import load_wave
 
 
 class MERLINLoader(LoaderBase):
@@ -63,9 +63,8 @@ class MERLINLoader(LoaderBase):
         if os.path.splitext(file_path)[1] == ".ibw":
             return self.load_live(file_path)
 
-        data = load_experiment(file_path)
-        # One file always corresponds to single region, so assume only one data variable
-        data: xr.DataArray = data.data_vars[next(iter(data.data_vars.keys()))]
+        # One file always corresponds to single region
+        data: xr.DataArray = xr.load_dataarray(file_path)
 
         return self.process_keys(data)
 

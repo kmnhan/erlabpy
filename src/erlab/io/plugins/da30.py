@@ -41,7 +41,7 @@ class DA30Loader(LoaderBase):
     def file_dialog_methods(self):
         return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
 
-    def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+    def load_single(self, file_path: str | os.PathLike) -> xr.DataArray | xr.Dataset:
         ext = os.path.splitext(file_path)[-1]
 
         match ext:

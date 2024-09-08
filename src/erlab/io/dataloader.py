@@ -18,7 +18,6 @@ can be extended to include the necessary functionality.
 from __future__ import annotations
 
 import contextlib
-import datetime
 import importlib
 import itertools
 import os
@@ -30,8 +29,7 @@ import numpy as np
 import pandas
 import xarray as xr
 
-from erlab.utils.array import is_monotonic, is_uniform_spaced
-from erlab.utils.formatting import format_html_table
+from erlab.utils.formatting import format_html_table, format_value
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -202,141 +200,15 @@ class LoaderBase:
             LoaderRegistry.instance().register(cls)
 
     @classmethod
-    def formatter(cls, val: object):
+    def formatter(cls, val: object) -> str:
         """Format the given value based on its type.
 
-        This method is used when formatting the cells of the summary dataframe.
+        The default behavior formats the given value with :func:`format_value
+        <erlab.utils.formatting.format_value>`. Override this method to change the
+        printed format of each cell.
 
-        Parameters
-        ----------
-        val
-            The value to be formatted.
-
-        Returns
-        -------
-        str or object
-            The formatted value.
-
-        Note
-        ----
-        This function formats the given value based on its type. It supports formatting
-        for various types including numpy arrays, lists of strings, floating-point
-        numbers, integers, and datetime objects.
-
-        The function also tries to replace the Unicode hyphen-minus sign "-" (U+002D)
-        with the better-looking Unicode minus sign "−" (U+2212) in most cases.
-
-        - For numpy arrays:
-            - If the array has a size of 1, the value is recursively formatted using
-              `formatter(val.item())`.
-            - If the array can be squeezed to a 1-dimensional array, the following are
-              applied.
-
-                - If the array is evenly spaced, the start, end, step, and length values
-                  are formatted and returned as a string in the format "start→end (step,
-                  length)".
-                - If the array is monotonic increasing or decreasing but not evenly
-                  spaced, the start, end, and length values are formatted and returned
-                  as a string in the format "start→end (length)".
-                - If all elements are equal, the value is recursively formatted using
-                  `formatter(val[0])`.
-                - If the array is not monotonic, the minimum and maximum values are
-                  formatted and returned as a string in the format "min~max".
-
-            - For arrays with more dimensions, the array is returned as is.
-
-        - For lists:
-            The list is grouped by consecutive equal elements, and the count of each
-            element is formatted and returned as a string in the format
-            "[element]×count".
-
-        - For floating-point numbers:
-            - If the number is an integer, it is formatted as an integer using
-              `formatter(np.int64(val))`.
-            - Otherwise, it is formatted as a floating-point number with 4 decimal
-              places and returned as a string.
-
-        - For integers:
-            The integer is returned as a string.
-
-        - For datetime objects:
-            The datetime object is formatted as a string in the format "%Y-%m-%d
-            %H:%M:%S".
-
-        - For other types:
-            The value is returned as is.
-
-        Examples
-        --------
-        >>> formatter(np.array([0.1, 0.15, 0.2]))
-        '0.1→0.2 (0.05, 3)'
-
-        >>> formatter(np.array([1.0, 2.0, 2.1]))
-        '1→2.1 (3)'
-
-        >>> formatter(np.array([1.0, 2.1, 2.0]))
-        '1~2.1 (3)'
-
-        >>> formatter([1, 1, 2, 2, 2, 3, 3, 3, 3])
-        '[1]×2, [2]×3, [3]×4'
-
-        >>> formatter(3.14159)
-        '3.1416'
-
-        >>> formatter(42.0)
-        '42'
-
-        >>> formatter(42)
-        '42'
-
-        >>> formatter(datetime.datetime(2024, 1, 1, 12, 0, 0, 0))
-        '2024-01-01 12:00:00'
         """
-        if isinstance(val, np.ndarray):
-            if val.size == 1:
-                return cls.formatter(val.item())
-
-            if val.squeeze().ndim == 1:
-                val = val.squeeze()
-
-                if is_uniform_spaced(val):
-                    start, end, step = tuple(
-                        cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
-                    )
-                    return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
-
-                if is_monotonic(val):
-                    if val[0] == val[-1]:
-                        return cls.formatter(val[0])
-
-                    return (
-                        f"{cls.formatter(val[0])}→{cls.formatter(val[-1])} ({len(val)})"
-                    )
-
-                mn, mx = tuple(cls.formatter(v) for v in (np.min(val), np.max(val)))
-                return f"{mn}~{mx} ({len(val)})"
-
-            return val
-
-        if isinstance(val, list):
-            return ", ".join(
-                [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
-            )
-
-        if np.issubdtype(type(val), np.floating):
-            val = cast(np.floating, val)
-            if val.is_integer():
-                return cls.formatter(np.int64(val))
-            return np.format_float_positional(val, precision=4, trim="-").replace(
-                "-", "−"
-            )
-        if np.issubdtype(type(val), np.integer):
-            return str(val).replace("-", "−")
-
-        if isinstance(val, datetime.datetime):
-            return val.strftime("%Y-%m-%d %H:%M:%S")
-
-        return val
+        return format_value(val)
 
     @classmethod
     def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
@@ -993,10 +865,12 @@ class LoaderBase:
                 v = darr[k].values.mean()
                 darr = darr.drop_vars(k).assign_attrs({k: v})
 
-        darr = darr.assign_attrs(
-            {k: v for k, v in self.additional_attrs.items() if k not in darr.attrs}
-            | {"data_loader_name": str(self.name)}
-        )
+        new_attrs = {
+            k: v for k, v in self.additional_attrs.items() if k not in darr.attrs
+        }
+        new_attrs["data_loader_name"] = str(self.name)
+        darr = darr.assign_attrs(new_attrs)
+
         darr = darr.assign_coords(self.additional_coords)
 
         # Make coordinate order pretty

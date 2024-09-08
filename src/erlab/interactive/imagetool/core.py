@@ -1547,7 +1547,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
         self.slicer_area = slicer_area
-        self._display_axis = display_axis
+        self.display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
