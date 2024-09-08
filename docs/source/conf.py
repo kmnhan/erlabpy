@@ -478,18 +478,29 @@ html_theme_options: dict[str, object] = {
             "class": "",
         },
     ],
-    # "light_css_variables": {
-    #     "color-brand-primary": "#6d50bf",
-    #     "color-brand-content": "#6d50bf",
-    # },
-    # "dark_css_variables": {
-    #     "color-brand-primary": "#a180ff",
-    #     "color-brand-content": "#a180ff",
-    # },
+    "light_css_variables": {},
+    "dark_css_variables": {},
     "source_repository": "https://github.com/kmnhan/erlabpy/",
     "source_branch": f"v{version}",
     "source_directory": "docs/source/",
 }
+
+# Furo issue to track when this is no longer needed:
+#  https://github.com/pradyunsg/furo/discussions/790
+for k, (v0, v1) in {
+    "jp-content-font-color0": ("rgba(0, 0, 0, 1)", "rgba(255, 255, 255, 1)"),
+    "jp-content-font-color2": ("rgba(0, 0, 0, 0.54)", "rgba(255, 255, 255, 0.54)"),
+    "jp-content-font-color3": ("rgba(0, 0, 0, 0.38)", "rgba(255, 255, 255, 0.38)"),
+    "jp-border-color0": ("#e0e0e0", "#1F1F1F"),
+    "jp-border-color1": ("#e0e0e0", "#1F1F1F"),
+    "jp-border-color2": ("#e0e0e0", "#1F1F1F"),
+    "jp-layout-color0": ("#ffffff", "#111111"),
+    "jp-layout-color1": ("#ffffff", "#111111"),
+    "jp-layout-color2": ("#eeeeee", "#313131"),
+    "jp-layout-color3": ("#bdbdbd", "#515151"),
+}.items():
+    html_theme_options["light_css_variables"][k] = v0
+    html_theme_options["dark_css_variables"][k] = v1
 
 # -- LaTeX options -----------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options
