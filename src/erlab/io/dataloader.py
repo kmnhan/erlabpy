@@ -24,7 +24,6 @@ import os
 import warnings
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
-import joblib
 import numpy as np
 import pandas
 import xarray as xr
@@ -273,6 +272,10 @@ class LoaderBase:
             all files in the same scan. If `single` is set to `True`, only the data from
             the file given is returned. This argument is ignored when `identifier` is a
             number.
+        parallel
+            Whether to load multiple files in parallel. This is only used when `single`
+            is `False`. If not specified, the files are loaded in parallel only when
+            there are more than 15 files to load.
         **kwargs
             Additional keyword arguments are passed to `identify`.
 
@@ -283,6 +286,7 @@ class LoaderBase:
 
         """
         single = kwargs.pop("single", False)
+        parallel = kwargs.pop("parallel", None)
 
         if self.always_single:
             single = True
@@ -305,7 +309,8 @@ class LoaderBase:
             else:
                 # Multiple files resolved
                 data = self.combine_multiple(
-                    self.load_multiple_parallel(file_paths), coord_dict
+                    self.load_multiple_parallel(file_paths, parallel=parallel),
+                    coord_dict,
                 )
         else:
             if data_dir is not None:
@@ -962,7 +967,7 @@ class LoaderBase:
                 cls._raise_or_warn("Missing coordinate chi")
 
     def load_multiple_parallel(
-        self, file_paths: list[str], n_jobs: int | None = None
+        self, file_paths: list[str], parallel: bool | None = None
     ) -> list[xr.DataArray | xr.Dataset | list[xr.DataArray]]:
         """Load multiple files in parallel.
 
@@ -970,20 +975,24 @@ class LoaderBase:
         ----------
         file_paths
             A list of file paths to load.
-        n_jobs
-            The number of jobs to run in parallel. If `None`, the number of jobs is set
-            to 1 for less than 15 files and to -1 (all CPU cores) for 15 or more files.
+        parallel
+            If `True`, data loading will be performed in parallel using `dask.delayed`.
 
         Returns
         -------
         A list of the loaded data.
         """
-        if n_jobs is None:
-            n_jobs = 1 if len(file_paths) < 15 else -1
+        if parallel is None:
+            parallel = len(file_paths) > 15
 
-        return joblib.Parallel(n_jobs=n_jobs)(
-            joblib.delayed(self.load_single)(f) for f in file_paths
-        )
+        if parallel:
+            import joblib
+
+            return joblib.Parallel(n_jobs=-1)(
+                joblib.delayed(self.load_single)(f) for f in file_paths
+            )
+
+        return [self.load_single(f) for f in file_paths]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
