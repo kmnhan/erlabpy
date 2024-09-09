@@ -94,12 +94,16 @@ def _load_experiment_raw(
     if ignore is None:
         ignore = []
 
+    expt = None
     for bo in [">", "=", "<"]:
         try:
             _, expt = igor2.packed.load(filename, initial_byte_order=bo)
             break
         except ValueError:
             continue
+
+    if expt is None:
+        raise OSError("Failed to load the experiment file. Please report this issue.")
 
     waves: dict[str, xr.DataArray] = {}
     if isinstance(folder, str):
