@@ -7,6 +7,7 @@ __all__ = [
     "SI_PREFIX_NAMES",
     "copy_mathtext",
     "fancy_labels",
+    "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
     "label_subplots_nature",
@@ -23,6 +24,7 @@ __all__ = [
 
 import io
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import matplotlib
@@ -42,7 +44,7 @@ from erlab.accessors.utils import either_dict_or_kwargs
 from erlab.plotting.colors import axes_textcolor
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",
@@ -937,7 +939,7 @@ def scale_units(
     Parameters
     ----------
     ax
-        _description_
+        Axes or iterable of Axes to rescale.
     axis
         The axis you wish to rescale.
     si
@@ -953,7 +955,7 @@ def scale_units(
 
     """
     if np.iterable(ax):
-        for a in np.asarray(ax, dtype=object).flatten():
+        for a in np.asarray(ax, dtype=object).flat:
             scale_units(a, axis, si, prefix=prefix, power=power)
         return
 
@@ -970,6 +972,37 @@ def scale_units(
             setlabel(label.replace(f"({unit})", f"($\\times{{{10}}}^{{{si}}}$ {unit})"))
         else:
             setlabel(label.replace(f"({unit})", f"({get_si_str(si)}{unit})"))
+
+
+def integer_ticks(
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
+) -> None:
+    """Set the ticks on the x and y axes to only display integer values.
+
+    Parameters
+    ----------
+    ax
+        Axes or iterable of Axes.
+
+    """
+    if isinstance(ax, Iterable):
+        for a in np.asarray(ax, dtype=object).flat:
+            integer_ticks(a)
+        return
+    ax.set_xticks(
+        [
+            t
+            for t in ax.get_xticks()
+            if t.is_integer() and t >= ax.get_xlim()[0] and t <= ax.get_xlim()[1]
+        ]
+    )
+    ax.set_yticks(
+        [
+            t
+            for t in ax.get_yticks()
+            if t.is_integer() and t >= ax.get_ylim()[0] and t <= ax.get_ylim()[1]
+        ]
+    )
 
 
 def set_titles(axes, labels: Iterable[str] | str, order="C", **kwargs) -> None:

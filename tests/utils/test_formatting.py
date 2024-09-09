@@ -1,4 +1,5 @@
 import datetime
+import math
 
 import numpy as np
 
@@ -74,7 +75,7 @@ def test_format_value_list():
 
 
 def test_format_value_float():
-    val = 3.14159
+    val = math.pi
     expected = "3.1416"
     assert format_value(val) == expected
 
