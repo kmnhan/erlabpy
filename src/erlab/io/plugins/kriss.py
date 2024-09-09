@@ -24,7 +24,7 @@ class KRISSLoader(DA30Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Iterable]]:
+    ) -> tuple[list[str], dict[str, Iterable]] | None:
         for file in erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".zip")):
             if file.endswith(".zip"):
                 match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", file)
@@ -36,4 +36,4 @@ class KRISSLoader(DA30Loader):
             if match is not None:
                 return [file], {}
 
-        raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+        return None

@@ -59,7 +59,34 @@ class LoaderNotFoundError(Exception):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
 
 
-class LoaderBase:
+class _Loader(type):
+    def __new__(cls, name, bases, dct):
+        # Create class
+        new_class = super().__new__(cls, name, bases, dct)
+
+        # Wrap identify
+        if "identify" in dct:
+            original_identify = dct["identify"]
+
+            def wrapped_identify(self, num, data_dir, **kwargs):
+                result = original_identify(self, num, data_dir, **kwargs)
+                if result is None:
+                    dirname = data_dir if data_dir else "the working directory"
+                    msg = (
+                        f"{self.__class__.__name__}.identify found no files "
+                        f"for scan {num} in {dirname}"
+                    )
+                    if len(kwargs) > 0:
+                        msg += f" with additional arguments {kwargs}"
+                    raise FileNotFoundError(msg)
+                return result
+
+            new_class.identify = wrapped_identify
+
+        return new_class
+
+
+class LoaderBase(metaclass=_Loader):
     """Base class for all data loaders."""
 
     name: str
@@ -694,7 +721,7 @@ class LoaderBase:
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Iterable]]:
+    ) -> tuple[list[str], dict[str, Iterable]] | None:
         """Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -705,6 +732,8 @@ class LoaderBase:
 
         The keys of the coordinates must be transformed to new names prior to returning
         by using the mapping returned by the `name_map_reversed` property.
+
+        If no files are found for the given parameters, `None` should be returned.
 
         Parameters
         ----------
@@ -774,7 +803,9 @@ class LoaderBase:
             Summary of the data in the directory.
 
         """
-        raise NotImplementedError("This loader does not support folder summaries")
+        raise NotImplementedError(
+            f"loader '{self.name}' does not support folder summaries"
+        )
 
     def combine_attrs(
         self,

@@ -254,7 +254,7 @@ class SSRL52Loader(LoaderBase):
             if match is not None:
                 return [file], {}
 
-        raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+        return None
 
     # def post_process(
     #     self, data: xr.DataArray | xr.Dataset

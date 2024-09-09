@@ -100,7 +100,7 @@ class MAESTROMicroLoader(LoaderBase):
                 file = f
 
         if file is None:
-            raise ValueError(f"No file found in {data_dir} for {num}")
+            return None
 
         return [file], {}
 

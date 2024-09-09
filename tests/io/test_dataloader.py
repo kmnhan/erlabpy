@@ -157,8 +157,8 @@ def test_loader():
                     coord_dict[key] = coord_arr[: len(files), i + 1].astype(np.float64)
 
             if len(files) == 0:
-                # If no files found up to this point, raise an error
-                raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+                # If no files found up to this point, return None
+                return None
 
             # Files must be full paths
             files = [os.path.join(data_dir, f) for f in files]

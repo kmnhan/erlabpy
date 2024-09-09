@@ -108,7 +108,7 @@ class MERLINLoader(LoaderBase):
             files = glob.glob(f"*_{str(num).zfill(3)}.pxt", root_dir=data_dir)
 
         if len(files) == 0:
-            raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+            return None
 
         files = [os.path.join(data_dir, f) for f in files]
 
