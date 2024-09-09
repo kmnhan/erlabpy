@@ -67,21 +67,33 @@ class LoaderBase:
     """
     Name of the loader. Using a unique and descriptive name is recommended. For easy
     access, it is recommended to use a name that passes :func:`str.isidentifier`.
+
+    Note
+    ----
+    Changing the name of a loader is not recommended as it may break existing code. If a
+    different name is required, Add an alias instead.
     """
 
     aliases: Iterable[str] | None = None
-    """List of alternative names for the loader."""
+    """Alternative names for the loader."""
 
     name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
     """
     Dictionary that maps **new** coordinate or attribute names to **original**
     coordinate or attribute names. If there are multiple possible names for a single
     attribute, the value can be passed as an iterable.
+
+    Note
+    ----
+    Original **coordinate** names included in this mapping will be replaced by the new
+    names. However, original **attribute** names will be duplicated with the new names
+    so that both the original and new names are present in the data after loading. This
+    is to keep track of the original names for reference.
     """
 
     coordinate_attrs: tuple[str, ...] = ()
     """
-    Names of attributes (after renaming) that should be treated as coordinates.
+    Attribute names (after renaming) that should be treated as coordinates.
 
     Attributes mentioned here will be moved from attrs to coordinates. This means that
     it will be propagated when concatenating data from multiple files. If a listed
@@ -89,9 +101,8 @@ class LoaderBase:
 
     Note
     ----
-    Although the data loader tries to preserve the original attributes, the attributes
-    given here, both before and after renaming, will be removed from attrs for
-    consistency.
+    The attributes given here, both before and after renaming, are removed from the
+    attributes to avoid conflicting values.
     """
 
     average_attrs: tuple[str, ...] = ()
@@ -118,8 +129,8 @@ class LoaderBase:
 
     always_single: bool = True
     """
-    If `True`, this indicates that all individual scans always lead to a single data
-    file. No concatenation of data from multiple files will be performed.
+    Setting this to `True` disables implicit loading of multiple files for a single
+    scan. This is useful for setups where each scan is always stored in a single file.
     """
 
     skip_validate: bool = False
@@ -835,17 +846,17 @@ class LoaderBase:
 
         # For attributes, keep original attribute and add new with renamed keys
         new_attrs = {}
-        for k, v in dict(data.attrs).items():
-            if k in key_mapping:
-                new_key = key_mapping[k]
+        for old_key, value in dict(data.attrs).items():
+            if old_key in key_mapping:
+                new_key = key_mapping[old_key]
                 if (
                     new_key in self.coordinate_and_average_attrs
                     and new_key in data.coords
                 ):
                     # Renamed attribute is already a coordinate, remove
-                    del data.attrs[k]
+                    del data.attrs[old_key]
                 else:
-                    new_attrs[new_key] = v
+                    new_attrs[new_key] = value
         data = data.assign_attrs(new_attrs)
 
         # Move from attrs to coordinate if coordinate is not found

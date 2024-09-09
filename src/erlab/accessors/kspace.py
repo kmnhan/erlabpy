@@ -431,15 +431,15 @@ class MomentumAccessor(ERLabDataArrayAccessor):
           >>> data.kspace.offsets
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
 
-        - View single offset
-
-          >>> data.kspace.offsets["beta"]
-          0.0
-
         - Offsets to dictionary
 
           >>> dict(data.kspace.offsets)
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        - View single offset
+
+          >>> data.kspace.offsets["beta"]
+          0.0
 
         - Set single offset
 
