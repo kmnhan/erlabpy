@@ -521,9 +521,12 @@ class LoaderBase(metaclass=_Loader):
 
         import erlab.plotting.erplot as eplt
 
+        # Temporary variable to store loaded data
         self._temp_data: xr.DataArray | None = None
+        # !TODO: properly GC this variable
 
-        def _format_data_info(series) -> str:
+        def _format_data_info(series: pandas.Series) -> str:
+            # Format data info as HTML table
             table = ""
             table += (
                 "<div class='widget-inline-hbox widget-select' "
@@ -545,6 +548,7 @@ class LoaderBase(metaclass=_Loader):
             return table
 
         def _update_data(_, *, full: bool = False) -> None:
+            # Load data for selected row
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -576,6 +580,7 @@ class LoaderBase(metaclass=_Loader):
             if self._temp_data.ndim == 4:
                 # If the data is 4D, average over the last dimension, making it 3D
                 self._temp_data = self._temp_data.mean(str(self._temp_data.dims[-1]))
+                # !TODO: Add 2 sliders for 4D data
 
             if self._temp_data.ndim == 3:
                 dim_sel.unobserve(_update_sliders, "value")
@@ -658,32 +663,33 @@ class LoaderBase(metaclass=_Loader):
             if idx - 1 >= 0:
                 data_select.value = list(df.index)[idx - 1]
 
+        # Buttons for navigation and loading full data
         prev_button = Button(description="Prev", layout=Layout(width="50px"))
-        prev_button.on_click(_prev)
-
         next_button = Button(description="Next", layout=Layout(width="50px"))
-        next_button.on_click(_next)
-
         full_button = Button(description="Load full", layout=Layout(width="100px"))
+        prev_button.on_click(_prev)
+        next_button.on_click(_next)
         full_button.on_click(lambda _: _update_data(None, full=True))
+        if self.always_single:
+            buttons = [prev_button, next_button]
+        else:
+            buttons = [prev_button, next_button, full_button]
 
-        buttons = [prev_button, next_button]
-        if not self.always_single:
-            buttons.append(full_button)
-
+        # List of data files
         data_select = Select(options=list(df.index), value=next(iter(df.index)), rows=8)
         data_select.observe(_update_data, "value")
 
+        # HTML table for data info
         data_info = HTML()
 
+        # Dropdown and slider for selecting dimension and coord
         dim_sel = Dropdown()
         dim_sel.observe(_update_sliders, "value")
-
         coord_sel = FloatSlider(continuous_update=True, readout_format=".3f")
         coord_sel.observe(_update_plot, "value")
 
+        # Make UI
         ui = VBox([HBox(buttons), data_select, data_info, dim_sel, coord_sel])
-
         out = Output()
         out.block = False
 
