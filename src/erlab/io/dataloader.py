@@ -22,6 +22,7 @@ import importlib
 import itertools
 import os
 import warnings
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
 
 import numpy as np
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
     from collections.abc import (
         Callable,
         ItemsView,
-        Iterable,
         Iterator,
         KeysView,
         Mapping,
@@ -160,12 +160,16 @@ class LoaderBase(metaclass=_Loader):
     """
 
     skip_validate: bool = False
-    """If `True`, validation checks will be skipped."""
+    """
+    If `True`, validation checks will be skipped. If `False`, data will be checked with
+    :meth:`validate <erlab.io.dataloader.LoaderBase.validate>` every time it is loaded.
+    """
 
     strict_validation: bool = False
     """
-    If `True`, validation check will raise a `ValidationError` on the first failure
-    instead of warning. Useful for debugging data loaders.
+    If `True`, validation checks will raise a `ValidationError` on the first failure
+    instead of warning. Useful for debugging data loaders. This has no effect if
+    `skip_validate` is `True`.
     """
 
     @property
@@ -237,11 +241,11 @@ class LoaderBase(metaclass=_Loader):
             LoaderRegistry.instance().register(cls)
 
     @classmethod
-    def formatter(cls, val: object) -> str:
+    def value_to_string(cls, val: object) -> str:
         """Format the given value based on its type.
 
         The default behavior formats the given value with :func:`format_value
-        <erlab.utils.formatting.format_value>`. Override this method to change the
+        <erlab.utils.formatting.format_value>`. Override this classmethod to change the
         printed format of each cell.
 
         """
@@ -251,8 +255,10 @@ class LoaderBase(metaclass=_Loader):
     def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
         """Return a styled version of the given dataframe.
 
-        This method, along with `formatter`, determines the display formatting of the
-        summary dataframe. Override this method to change the display style.
+        This method, along with :meth:`value_to_string
+        <erlab.io.dataloader.LoaderBase.value_to_string>`, determines the display
+        formatting of the summary dataframe. Override this classmethod to change the
+        display style.
 
         Parameters
         ----------
@@ -265,7 +271,7 @@ class LoaderBase(metaclass=_Loader):
             The styler to be displayed.
 
         """
-        style = df.style.format(cls.formatter)
+        style = df.style.format(cls.value_to_string)
 
         hidden = [c for c in ("Time", "Path") if c in df.columns]
         if len(hidden) > 0:
@@ -275,8 +281,8 @@ class LoaderBase(metaclass=_Loader):
 
     def load(
         self,
-        identifier: str | int,
-        data_dir: str | None = None,
+        identifier: str | os.PathLike | int,
+        data_dir: str | os.PathLike | None = None,
         **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         """Load ARPES data.
@@ -284,13 +290,21 @@ class LoaderBase(metaclass=_Loader):
         Parameters
         ----------
         identifier
-            Value that identifies a scan uniquely. If a string or path-like object is
-            given, it is assumed to be the path to the data file. If an integer is
-            given, it is assumed to be a number that specifies the scan number, and is
-            used to automatically determine the path to the data file(s).
+            Value that identifies a scan uniquely.
+
+            - If a string or path-like object is given, it is assumed to be the path to
+              the data file relative to `data_dir`. If `data_dir` is not specified, it
+              is assumed to be the full path to the data file.
+
+            - If an integer is given, it is assumed to be a number that specifies the
+              scan number, and is used to automatically determine the path to the data
+              file(s). In this case, the `data_dir` argument must be specified.
         data_dir
-            Where to look for the data. If `None`, the default data directory will be
-            used.
+            Where to look for the data. Must be a path to a valid directory. This
+            argument is required when `identifier` is an integer.
+
+            When called as :func:`erlab.io.load`, this argument defaults to the value
+            set by :func:`erlab.io.set_data_dir` or :func:`erlab.io.loader_context`.
         single
             For some setups, data for a single scan is saved over multiple files. This
             argument is only used for such setups. When `identifier` is resolved to a
@@ -311,6 +325,44 @@ class LoaderBase(metaclass=_Loader):
         xarray.DataArray or xarray.Dataset or list of xarray.DataArray
             The loaded data.
 
+        Notes
+        -----
+        - The `data_dir` set by :func:`erlab.io.set_data_dir` or
+          :func:`erlab.io.loader_context` are only used when called as
+          :func:`erlab.io.load`. When called directly on a loader instance, the
+          `data_dir` argument must be specified.
+        - The `data_dir` set by :func:`erlab.io.set_data_dir` or
+          :func:`erlab.io.loader_context` is silently ignored when *all* of the
+          following are satisfied:
+
+          - `identifier` is an absolute path to an existing file.
+          - `data_dir` is not provided.
+          - The path created by joining `data_dir` and `identifier` does not point to an
+            existing file.
+
+          For instance, consider the following directory structure.
+
+          .. code-block:: none
+
+            cwd/
+            ├── data/
+            └── example.txt
+
+          The following code will load ``./example.txt`` instead of raising an error
+          that ``./data/example.txt`` is missing:
+
+          .. code-block:: python
+
+            import erlab.io
+
+            erlab.io.set_data_dir("data")
+            erlab.io.load("example.txt")
+
+          However, if ``./data/example.txt`` also exists, the same code will load that
+          one instead. This behavior may lead to unexpected results when the directory
+          structure is not organized. Keep this in mind and try to keep all data files
+          in the same level.
+
         """
         single = kwargs.pop("single", False)
         parallel = kwargs.pop("parallel", None)
@@ -323,7 +375,10 @@ class LoaderBase(metaclass=_Loader):
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
-            file_paths, coord_dict = self.identify(identifier, data_dir, **kwargs)
+            file_paths, coord_dict = cast(
+                tuple[list[str], dict[str, Iterable]],
+                self.identify(identifier, data_dir, **kwargs),
+            )  # Return type enforced by metaclass, cast to avoid mypy error
 
             if len(file_paths) == 0:
                 raise ValueError(
@@ -540,7 +595,7 @@ class LoaderBase(metaclass=_Loader):
                     continue
                 table += "<tr>"
                 table += f"<td style='text-align:left;'><b>{k}</b></td>"
-                table += f"<td style='text-align:left;'>{self.formatter(v)}</td>"
+                table += f"<td style='text-align:left;'>{self.value_to_string(v)}</td>"
                 table += "</tr>"
 
             table += "</tbody></table>"
@@ -1197,8 +1252,8 @@ class LoaderRegistry(RegistryBase):
     def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
         """Set the default data directory for the data loader.
 
-        All subsequent calls to `load` will use the `data_dir` set here unless
-        specified.
+        All subsequent calls to :func:`erlab.io.load` will use the `data_dir` set here
+        unless specified.
 
         Parameters
         ----------
@@ -1207,8 +1262,8 @@ class LoaderRegistry(RegistryBase):
 
         Note
         ----
-        This will only affect `load`. If the loader's ``load`` method is called
-        directly, it will not use the default data directory.
+        This will only affect :func:`erlab.io.load`. If the loader's ``load`` method is
+        called directly, it will not use the default data directory.
 
         """
         if data_dir is not None and not os.path.isdir(data_dir):
@@ -1217,18 +1272,23 @@ class LoaderRegistry(RegistryBase):
 
     def load(
         self,
-        identifier: str | os.PathLike | int | None,
+        identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
         **kwargs,
     ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
         loader, default_dir = self._get_current_defaults()
 
+        if (
+            default_dir is not None
+            and not isinstance(identifier, int)
+            and os.path.isfile(identifier)
+            and not os.path.isfile(os.path.join(default_dir, identifier))
+        ):
+            # If the identifier is a path to a file, ignore default_dir
+            default_dir = None
+
         if data_dir is None:
             data_dir = default_dir
-
-        if not isinstance(identifier, int) and os.path.isfile(identifier):
-            # If the identifier is a path to a file, ignore data_dir
-            data_dir = None
 
         return loader.load(identifier, data_dir=data_dir, **kwargs)
 
