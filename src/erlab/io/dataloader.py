@@ -71,7 +71,7 @@ class _Loader(type):
             def wrapped_identify(self, num, data_dir, **kwargs):
                 result = original_identify(self, num, data_dir, **kwargs)
                 if result is None:
-                    dirname = data_dir if data_dir else "the working directory"
+                    dirname = data_dir or "the working directory"
                     msg = (
                         f"{self.__class__.__name__}.identify found no files "
                         f"for scan {num} in {dirname}"
@@ -549,20 +549,22 @@ class LoaderBase(metaclass=_Loader):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
 
-                path = series["Path"]
+                _path = series["Path"]
+                _basename = os.path.basename(_path)
+                _dirname = os.path.dirname(_path)
 
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx, _ = self.infer_index(
-                        os.path.splitext(os.path.basename(path))[0]
-                    )
+                    idx, _ = self.infer_index(os.path.splitext(_basename)[0])
                     if idx is not None:
-                        n_scans = len(self.identify(idx, os.path.dirname(path))[0])
-                        if n_scans > 1 and not full:
-                            full_button.disabled = False
+                        ident = self.identify(idx, _dirname)
+                        if ident is not None:
+                            n_scans = len(ident[0])
+                            if n_scans > 1 and not full:
+                                full_button.disabled = False
 
-                out = self.load(path, single=not full)
+                out = self.load(_basename, _dirname, single=not full)
                 if isinstance(out, xr.DataArray):
                     self._temp_data = out
                 del out
@@ -1019,7 +1021,7 @@ class LoaderBase(metaclass=_Loader):
         if parallel:
             import joblib
 
-            return joblib.Parallel(n_jobs=-1)(
+            return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
                 joblib.delayed(self.load_single)(f) for f in file_paths
             )
 
