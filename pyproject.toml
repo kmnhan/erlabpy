@@ -230,31 +230,13 @@ warn_unused_ignores = true
 allow_redefinition = true
 check_untyped_defs = false
 exclude = [
-    "^docs/",
-    "^tests/",
-    "_deprecated/",
-    "interactive/curvefittingtool.py",
-    "io/plugins/",
-    "io/dataloader.py",
+    '^docs/',
+    '^tests/',
+    '^build/',
+    '_deprecated/',
+    '^src/erlab/interactive/curvefittingtool.py',
+    '^src/erlab/io/dataloader.py',
+    '^src/erlab/io/plugins/',
 ]
-
-[[tool.mypy.overrides]]
-module = [
-    "astropy.*",
-    "h5netcdf.*",
-    "hvplot.*",
-    "igor2.*",
-    "iminuit.*",
-    "ipywidgets.*",
-    "joblib.*",
-    "lmfit.*",
-    "mpl_toolkits.*",
-    "numba.*",
-    "pyperclip.*",
-    "pyqtgraph.*",
-    "qtawesome.*",
-    "scipy.*",
-    "uncertainties.*",
-    "varname.*",
-]
-ignore_missing_imports = true
+disable_error_code = ['import-untyped']
+pretty = true
