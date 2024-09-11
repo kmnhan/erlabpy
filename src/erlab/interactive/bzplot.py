@@ -88,7 +88,7 @@ class BZPlotter(QtWidgets.QMainWindow):
         if execute is None:
             execute = True
             try:
-                shell = get_ipython().__class__.__name__  # type: ignore
+                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
                 if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                     execute = False
             except NameError:
@@ -150,23 +150,20 @@ class LatticeWidget(QtWidgets.QTabWidget):
                 "notrack": True,
             },
             _1={
-                "widget": QtWidgets.QLabel(
-                    "𝑥", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑥"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
             _2={
-                "widget": QtWidgets.QLabel(
-                    "𝑦", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑦"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
             _3={
-                "widget": QtWidgets.QLabel(
-                    "𝑧", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑧"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
@@ -213,23 +210,20 @@ class LatticeWidget(QtWidgets.QTabWidget):
                 "notrack": True,
             },
             _1={
-                "widget": QtWidgets.QLabel(
-                    "𝑥", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑥"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
             _2={
-                "widget": QtWidgets.QLabel(
-                    "𝑦", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑦"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
             _3={
-                "widget": QtWidgets.QLabel(
-                    "𝑧", alignment=QtCore.Qt.AlignmentFlag.AlignHCenter
-                ),
+                "widget": QtWidgets.QLabel("𝑧"),
+                "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
                 "showlabel": False,
                 "notrack": True,
             },
@@ -346,15 +340,19 @@ class LatticeWidget(QtWidgets.QTabWidget):
 class BZPlotWidget(QtWidgets.QWidget):
     def __init__(self, bvec) -> None:
         super().__init__()
-        self.setLayout(QtWidgets.QVBoxLayout(self))
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
 
         self.set_bvec(bvec, update=False)
 
         self._canvas = FigureCanvas(Figure())
-        self.layout().addWidget(NavigationToolbar(self._canvas, self))
-        self.layout().addWidget(self._canvas)
+        layout.addWidget(NavigationToolbar(self._canvas, self))
+        layout.addWidget(self._canvas)
 
-        self.ax = self._canvas.figure.add_subplot(projection="3d")
+        self.ax = cast(
+            mpl_toolkits.mplot3d.axes3d.Axes3D,
+            self._canvas.figure.add_subplot(projection="3d"),
+        )
         self.ax.axis("off")
 
         self._lc = mpl_toolkits.mplot3d.art3d.Line3DCollection(
@@ -378,7 +376,7 @@ class BZPlotWidget(QtWidgets.QWidget):
             p = self.ax.plot(*[(0, bi) for bi in b], "-", c=f"C{i + 1}", clip_on=False)
             t = self.ax.text(
                 *(b + 0.15 * b / np.linalg.norm(b)),
-                f"$b_{i + 1}$",
+                s=f"$b_{i + 1}$",
                 c=f"C{i + 1}",
                 ha="center",
                 va="center_baseline",

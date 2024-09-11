@@ -1032,6 +1032,9 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         self.global_connect()
 
+    def layout(self) -> QtWidgets.QGridLayout:
+        return cast(QtWidgets.QGridLayout, super().layout())
+
     @staticmethod
     def getParameterWidget(
         qwtype: (
@@ -1091,6 +1094,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         policy = kwargs.pop("policy", None)
 
+        alignment = kwargs.pop("alignment", None)
+
         if qwtype == "fitparam":
             show_param_label = kwargs.pop("show_param_label", False)
             kwargs["show_label"] = show_param_label
@@ -1133,6 +1138,8 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.setFixedHeight(fixedHeight)
         if policy is not None:
             widget.setSizePolicy(*policy)
+        if alignment is not None:
+            widget.setAlignment(alignment)
 
         if value is not None:
             widget.setValue(value)
@@ -1279,7 +1286,7 @@ class ROIControls(ParameterGroup):
             },
             **kwargs,
         )
-        self.draw_button = self.widgets["drawbtn"]
+        self.draw_button = cast(QtWidgets.QPushButton, self.widgets["drawbtn"])
         self.roi_spin = [self.widgets[i] for i in ["x0", "y0", "x1", "y1"]]
         self.roi.sigRegionChanged.connect(self.update_pos)
 
@@ -1465,7 +1472,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         if execute is None:
             execute = True
             try:
-                shell = get_ipython().__class__.__name__  # type: ignore
+                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
                 if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                     execute = False
             except NameError:

@@ -337,7 +337,7 @@ class DerivativeTool(
 def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
     if data_name is None:
         try:
-            data_name = varname.argname("data", func=dtool, vars_only=False)  # type: ignore[assignment]
+            data_name = str(varname.argname("data", func=dtool, vars_only=False))
         except varname.VarnameRetrievingError:
             data_name = "data"
 

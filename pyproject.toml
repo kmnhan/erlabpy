@@ -233,10 +233,9 @@ exclude = [
     "^docs/",
     "^tests/",
     "_deprecated/",
-    "interactive/fermiedge.py",
-    "interactive/bzplot.py",
     "interactive/curvefittingtool.py",
     "io/plugins/",
+    "io/dataloader.py",
 ]
 
 [[tool.mypy.overrides]]
