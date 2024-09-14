@@ -1084,7 +1084,7 @@ class LoaderBase(metaclass=_Loader):
                 cls.validate(v)
             return
 
-        for c in ("alpha", "beta", "delta", "xi", "hv"):
+        for c in ("beta", "delta", "xi", "hv"):
             if c not in data.coords:
                 cls._raise_or_warn(f"Missing coordinate {c}")
 
