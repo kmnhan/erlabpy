@@ -212,10 +212,12 @@ def test_itool_tools(qtbot, gold):
     # Open goldtool from main image
     win.slicer_area.images[0].open_in_goldtool()
     assert isinstance(win.slicer_area.images[0]._goldtool, QtWidgets.QWidget)
+    win.slicer_area.images[0]._goldtool.close()
 
     # Open dtool from main image
     win.slicer_area.images[0].open_in_dtool()
     assert isinstance(win.slicer_area.images[0]._dtool, QtWidgets.QWidget)
+    win.slicer_area.images[0]._dtool.close()
 
     win.close()
 
