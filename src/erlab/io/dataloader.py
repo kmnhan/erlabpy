@@ -171,6 +171,20 @@ class LoaderBase(metaclass=_Loader):
     additional_coords: ClassVar[dict[str, str | int | float]] = {}
     """Additional non-dimension coordinates to be added to the data after loading."""
 
+    formatters: ClassVar[dict[str, Callable]] = {}
+    """Mapping from attribute names (after renaming) to custom formatters.
+
+    The formatters must take the attribute value and return a value that can be
+    converted to a string with :meth:`value_to_string
+    <erlab.io.dataloader.LoaderBase.value_to_string>`. The resulting formats are used
+    for human readable display of some attributes in the summary table and the
+    information accessor.
+
+    Note
+    ----
+    The formatters are only used for display purposes and do not affect the stored data.
+    """
+
     always_single: bool = True
     """
     Setting this to `True` disables implicit loading of multiple files for a single
@@ -438,6 +452,37 @@ class LoaderBase(metaclass=_Loader):
             self.validate(data)
 
         return data
+
+    def get_formatted_attr_or_coord(
+        self, data: xr.DataArray | xr.Dataset, attr_or_coord_name: str
+    ) -> Any:
+        """Return the formatted value of the given attribute or coordinate.
+
+        The value is formatted using the function specified in :attr:`formatters
+        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
+        string is returned.
+
+        Parameters
+        ----------
+        data
+            The data to extract the attribute or coordinate from.
+        attr_or_coord_name
+            The name of the attribute or coordinate to extract.
+
+        """
+        func = self.formatters.get(attr_or_coord_name, lambda x: x)
+
+        if attr_or_coord_name in data.attrs:
+            val = func(data.attrs[attr_or_coord_name])
+        elif attr_or_coord_name in data.coords:
+            val = data.coords[attr_or_coord_name].values
+            if val.size == 1:
+                val = func(val.item())
+            else:
+                val = np.array(list(map(func, val)), dtype=val.dtype)
+        else:
+            val = ""
+        return val
 
     def summarize(
         self,
@@ -778,7 +823,7 @@ class LoaderBase(metaclass=_Loader):
     def load_single(
         self, file_path: str | os.PathLike
     ) -> xr.DataArray | xr.Dataset | DataTree:
-        r"""Load a single file and return it in applicable format.
+        r"""Load a single file and return it as an xarray data structure.
 
         Any scan-specific postprocessing should be implemented in this method.
 
