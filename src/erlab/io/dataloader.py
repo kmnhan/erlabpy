@@ -18,6 +18,7 @@ can be extended to include the necessary functionality.
 from __future__ import annotations
 
 import contextlib
+import errno
 import importlib
 import itertools
 import os
@@ -405,6 +406,11 @@ class LoaderBase(metaclass=_Loader):
             if data_dir is not None:
                 # Generate full path to file
                 identifier = os.path.join(data_dir, identifier)
+
+                if not os.path.exists(identifier):
+                    raise FileNotFoundError(
+                        errno.ENOENT, os.strerror(errno.ENOENT), identifier
+                    )
 
             if not single:
                 # Get file name without extension and path
@@ -839,9 +845,10 @@ class LoaderBase(metaclass=_Loader):
 
         This method takes a file name with the path and extension stripped, and tries to
         infer the scan index from it. If the index can be inferred, it is returned along
-        with additional keyword arguments that should be passed to `load`. If the index
-        is not found, `None` should be returned for the index, and an empty dictionary
-        for additional keyword arguments.
+        with additional keyword arguments that should be passed to :meth:`load
+        <erlab.io.dataloader.LoaderBase.load>`. If the index is not found, `None` should
+        be returned for the index, and an empty dictionary for additional keyword
+        arguments.
 
         Parameters
         ----------
@@ -853,13 +860,15 @@ class LoaderBase(metaclass=_Loader):
         index
             The inferred index if found, otherwise None.
         additional_kwargs
-            Additional keyword arguments to be passed to `load` when the index is found.
-            This argument is useful when the index alone is not enough to load the data.
+            Additional keyword arguments to be passed to :meth:`load
+            <erlab.io.dataloader.LoaderBase.load>` when the index is found. This
+            argument is useful when the index alone is not enough to load the data.
 
         Note
         ----
-        This method is used to determine all files for a given scan. Hence, for loaders
-        with `always_single` set to `True`, this method does not have to be implemented.
+        For loaders with :attr:`always_single
+        <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
+        not used.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
