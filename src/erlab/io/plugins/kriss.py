@@ -2,7 +2,7 @@
 
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Sequence
 from typing import ClassVar
 
 import erlab.io.utils
@@ -24,7 +24,7 @@ class KRISSLoader(DA30Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Iterable]] | None:
+    ) -> tuple[list[str], dict[str, Sequence]] | None:
         for file in erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".zip")):
             if file.endswith(".zip"):
                 match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", file)

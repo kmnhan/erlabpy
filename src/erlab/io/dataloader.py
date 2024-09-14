@@ -814,9 +814,14 @@ class LoaderBase(metaclass=_Loader):
         the list should contain only one file path and coordinates must be an empty
         dictionary.
 
-        The keys of the coordinates must be transformed to new names prior to returning
-        by using the mapping returned by :attr:`name_map_reversed
-        <erlab.io.dataloader.LoaderBase.name_map_reversed>`.
+        The keys of the coordinates must match the coordinate name conventions used by
+        the data returned by :meth:`load_single
+        <erlab.io.dataloader.LoaderBase.load_single>`. For example, if
+        :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>` is implemented
+        so that it renames properties and coordinates using :meth:`process_keys
+        <erlab.io.dataloader.LoaderBase.process_keys>`, the dictionary must also be
+        transformed to new names prior to returning by using the mapping returned by
+        :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`.
 
         If no files are found for the given parameters, `None` should be returned.
 

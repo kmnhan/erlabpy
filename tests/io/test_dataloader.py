@@ -166,11 +166,7 @@ def test_loader():
             return files, coord_dict
 
         def load_single(self, file_path):
-            data = erlab.io.load_hdf5(file_path)
-
-            # To prevent conflicts when merging multiple scans, we rename the
-            # coordinates prior to concatenation
-            return self.process_keys(data)
+            return erlab.io.load_hdf5(file_path)
 
         def infer_index(self, name):
             # Get the scan number from file name

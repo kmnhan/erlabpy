@@ -210,9 +210,8 @@ class SSRL52Loader(LoaderBase):
             data = data["spectrum"]
 
         data = data.assign_attrs(attrs)
-        data = data.assign_coords(coord_attrs)
 
-        return self.process_keys(data)
+        return data.assign_coords(coord_attrs)
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -255,16 +254,6 @@ class SSRL52Loader(LoaderBase):
                 return [file], {}
 
         return None
-
-    # def post_process(
-    #     self, data: xr.DataArray | xr.Dataset
-    # ) -> xr.DataArray | xr.Dataset:
-    #     data = super().post_process(data)
-
-    #     if "eV" in data.coords:
-    #         data = data.assign_coords(eV=-data.eV.values)
-
-    #     return data
 
     def load_zap(self, identifier, data_dir):
         return self.load(identifier, data_dir, zap=True)

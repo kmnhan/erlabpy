@@ -54,7 +54,7 @@ class DA30Loader(LoaderBase):
             case _:
                 raise ValueError(f"Unsupported file extension {ext}")
 
-        return self.post_process_general(data)
+        return data
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
