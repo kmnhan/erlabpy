@@ -123,7 +123,7 @@ autosummary_generate = True
 autosummary_generate_overwrite = True
 
 autodoc_class_signature = "mixed"
-autodoc_member_order = "groupwise"
+autodoc_member_order = "bysource"
 autodoc_default_options = {
     "members": True,
     "undoc-members": True,
