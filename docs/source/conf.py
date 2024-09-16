@@ -157,11 +157,13 @@ napoleon_use_keyword = False
 napoleon_use_rtype = False
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
+    "ndarray": "numpy.ndarray",
+    "DataArray": "xarray.DataArray",
+    "Dataset": "xarray.Dataset",
     "np.float32": "float32",
     "numpy.float32": "float32",
     "np.float64": "float64",
     "numpy.float64": "float64",
-    "xr.DataArray": "xarray.DataArray",
     "array-like": "`array-like <numpy.typing.ArrayLike>`",
     "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",

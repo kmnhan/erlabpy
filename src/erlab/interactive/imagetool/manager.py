@@ -12,7 +12,13 @@ port number 45555. The port number can be changed by setting the environment var
 
 from __future__ import annotations
 
-__all__ = ["is_running", "main", "show_in_manager"]
+__all__ = [
+    "PORT",
+    "ImageToolManager",
+    "is_running",
+    "main",
+    "show_in_manager",
+]
 
 import contextlib
 import gc
@@ -47,14 +53,17 @@ if TYPE_CHECKING:
     from erlab.interactive.imagetool.core import ImageSlicerArea
 
 PORT: int = int(os.getenv("ITOOL_MANAGER_PORT", "45555"))
-"""Port number for the ImageToolManager server.
+"""Port number for the manager server.
 
-The default port number is 45555. This can be changed by setting the environment
-variable `ITOOL_MANAGER_PORT`.
+The default port number 45555 can be overridden by setting the environment variable
+``ITOOL_MANAGER_PORT``.
 """
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
-"""Name of the sharedmemory object that enforces single instance of ImageToolManager."""
+"""Name of the sharedmemory object that enforces single instance of ImageToolManager.
+
+If a shared memory object with this name exists, it means that an instance is running.
+"""
 
 
 _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
@@ -157,14 +166,14 @@ class _QHLine(QtWidgets.QFrame):
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
 
 
-class ImageToolOptionsWidget(QtWidgets.QWidget):
+class _ImageToolOptionsWidget(QtWidgets.QWidget):
     def __init__(
-        self, manager: ImageToolManagerGUI, index: int, tool: ImageTool
+        self, manager: _ImageToolManagerGUI, index: int, tool: ImageTool
     ) -> None:
         super().__init__()
         self._tool: ImageTool | None = None
 
-        self.manager: ImageToolManagerGUI = manager
+        self.manager: _ImageToolManagerGUI = manager
         self.index: int = index
         self._archived_fname: str | None = None
         self._recent_geometry: QtCore.QRect | None = None
@@ -369,14 +378,14 @@ class ImageToolOptionsWidget(QtWidgets.QWidget):
             self.archive()
 
 
-class ImageToolManagerGUI(QtWidgets.QMainWindow):
+class _ImageToolManagerGUI(QtWidgets.QMainWindow):
     sigLinkersChanged = QtCore.Signal()
     sigReloadLinkers = QtCore.Signal()
 
-    def __init__(self: ImageToolManagerGUI) -> None:
+    def __init__(self: _ImageToolManagerGUI) -> None:
         super().__init__()
         self.setWindowTitle("ImageTool Manager")
-        self.tool_options: dict[int, ImageToolOptionsWidget] = {}
+        self.tool_options: dict[int, _ImageToolOptionsWidget] = {}
         self.linkers: list[SlicerLinkProxy] = []
 
         self.titlebar = QtWidgets.QWidget()
@@ -505,7 +514,7 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
             Whether to focus on the window after adding, by default `False`.
         """
         index = int(self.next_idx)
-        opt = ImageToolOptionsWidget(self, index, tool)
+        opt = _ImageToolOptionsWidget(self, index, tool)
         self.tool_options[index] = opt
         opt.update_title()
 
@@ -612,14 +621,14 @@ class ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.sigReloadLinkers.emit()
 
 
-class ImageToolManager(ImageToolManagerGUI):
+class ImageToolManager(_ImageToolManagerGUI):
     """The ImageToolManager window.
 
-    This class provides a GUI application for managing multiple ImageTool windows.
+    This class implements a GUI application for managing multiple ImageTool windows.
 
     Users do not need to create an instance of this class directly. Instead, use the
-    command line script `itool-manager` or the function :func:`main` to start the
-    application.
+    command line script ``itool-manager`` or the function :func:`main
+    <erlab.interactive.imagetool.manager.main>` to start the application.
 
     """
 
