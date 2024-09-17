@@ -48,6 +48,7 @@ perf = ["numbagg>=0.8.1", "bottleneck>=1.3.8"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 dev = [
     "mypy",
+    "pooch",
     "pre-commit",
     "pytest-cov",
     "pytest-qt",
