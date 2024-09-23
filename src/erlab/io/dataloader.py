@@ -25,11 +25,12 @@ import os
 import pathlib
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
 
 import numpy as np
 import pandas
 import xarray as xr
+from xarray.core.datatree import DataTree
 
 from erlab.utils.formatting import format_html_table, format_value
 
@@ -43,15 +44,13 @@ if TYPE_CHECKING:
         Mapping,
     )
 
-    from xarray.core.datatree import DataTree
+
+class ValidationWarning(UserWarning):
+    """Issued when the loaded data fails validation checks."""
 
 
 class ValidationError(Exception):
     """Raised when the loaded data fails validation checks."""
-
-
-class ValidationWarning(UserWarning):
-    """Issued when the loaded data fails validation checks."""
 
 
 class LoaderNotFoundError(Exception):
@@ -100,7 +99,7 @@ class LoaderBase(metaclass=_Loader):
     name: str
     """
     Name of the loader. Using a unique and descriptive name is recommended. For easy
-    access, it is recommended to use a name that passes :func:`str.isidentifier`.
+    access, it is recommended to use a name that passes :meth:`str.isidentifier`.
 
     Note
     ----
@@ -116,6 +115,9 @@ class LoaderBase(metaclass=_Loader):
     Dictionary that maps **new** coordinate or attribute names to **original**
     coordinate or attribute names. If there are multiple possible names for a single
     attribute, the value can be passed as an iterable.
+
+    Non-dimension coordinates in the resulting data will try to follow the order of the
+    keys in this dictionary.
 
     Note
     ----
@@ -166,11 +168,24 @@ class LoaderBase(metaclass=_Loader):
     additional_attrs: ClassVar[dict[str, str | int | float]] = {}
     """Additional attributes to be added to the data after loading.
 
-    If an attribute with the same name is already present, it will be skipped.
+    Notes
+    -----
+    - The attributes are added after renaming with :meth:`process_keys
+      <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
+      provided.
+    - If an attribute with the same name is already present in the data, it is skipped.
     """
 
     additional_coords: ClassVar[dict[str, str | int | float]] = {}
-    """Additional non-dimension coordinates to be added to the data after loading."""
+    """Additional non-dimension coordinates to be added to the data after loading.
+
+    Notes
+    -----
+    - The coordinates are added after renaming with :meth:`process_keys
+      <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
+      provided.
+    - If a coordinate with the same name is already present in the data, it is skipped.
+    """
 
     formatters: ClassVar[dict[str, Callable]] = {}
     """Mapping from attribute names (after renaming) to custom formatters.
@@ -473,7 +488,7 @@ class LoaderBase(metaclass=_Loader):
         return data
 
     def get_formatted_attr_or_coord(
-        self, data: xr.DataArray | xr.Dataset, attr_or_coord_name: str
+        self, data: xr.DataArray, attr_or_coord_name: str
     ) -> Any:
         """Return the formatted value of the given attribute or coordinate.
 
@@ -483,9 +498,9 @@ class LoaderBase(metaclass=_Loader):
 
         Parameters
         ----------
-        data
+        data : DataArray
             The data to extract the attribute or coordinate from.
-        attr_or_coord_name
+        attr_or_coord_name : str
             The name of the attribute or coordinate to extract.
 
         """
@@ -902,11 +917,11 @@ class LoaderBase(metaclass=_Loader):
         -------
         files : list[str]
             A list of file paths.
-        coord_dict : dict[str, Iterable]
+        coord_dict : dict[str, Sequence]
             A dictionary mapping scan axes names to scan coordinates. For scans spread
-            over multiple files, the coordinates will be iterables corresponding to each
-            file in the `files` list. For single file scans, an empty dictionary is
-            returned.
+            over multiple files, the coordinates will be sequences, with each element
+            corresponding to each file in ``files``. For single file scans, an empty
+            dictionary must be returned.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -1046,7 +1061,6 @@ class LoaderBase(metaclass=_Loader):
             :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`
             is used.
 
-
         """
         if key_mapping is None:
             key_mapping = self.name_map_reversed
@@ -1079,6 +1093,25 @@ class LoaderBase(metaclass=_Loader):
         )
 
     def post_process(self, darr: xr.DataArray) -> xr.DataArray:
+        """Post-process the given `DataArray`.
+
+        This method takes a single `DataArray` and applies post-processing steps such as
+        renaming coordinates and attributes.
+
+        This method is called by :meth:`post_process_general
+        <erlab.io.dataloader.LoaderBase.post_process_general>`.
+
+        Parameters
+        ----------
+        darr
+            The `DataArray` to be post-processed.
+
+        Returns
+        -------
+        DataArray
+            The post-processed `DataArray`.
+
+        """
         darr = self.process_keys(darr)
 
         for k in self.average_attrs:
@@ -1092,67 +1125,105 @@ class LoaderBase(metaclass=_Loader):
         new_attrs["data_loader_name"] = str(self.name)
         darr = darr.assign_attrs(new_attrs)
 
-        darr = darr.assign_coords(self.additional_coords)
+        new_coords = {
+            k: v for k, v in self.additional_coords.items() if k not in darr.coords
+        }
+        darr = darr.assign_coords(new_coords)
 
         # Make coordinate order pretty
-        new_coords = {}
+        ordered_coords = {}
         coord_dict = dict(darr.coords)
         for d in darr.dims:
-            new_coords[d] = coord_dict.pop(d)
+            # Move dimension coords to the front
+            ordered_coords[d] = coord_dict.pop(d)
+
         for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
             if d in coord_dict:
-                new_coords[d] = coord_dict.pop(d)
-        new_coords = new_coords | coord_dict
+                ordered_coords[d] = coord_dict.pop(d)
+        ordered_coords = ordered_coords | coord_dict
 
         return xr.DataArray(
-            darr.values, coords=new_coords, dims=darr.dims, attrs=darr.attrs
+            darr.values, coords=ordered_coords, dims=darr.dims, attrs=darr.attrs
         )
+
+    @overload
+    def post_process_general(self, data: xr.DataArray) -> xr.DataArray: ...
+
+    @overload
+    def post_process_general(self, data: xr.Dataset) -> xr.Dataset: ...
+
+    @overload
+    def post_process_general(self, data: DataTree) -> DataTree: ...
 
     def post_process_general(
         self, data: xr.DataArray | xr.Dataset | DataTree
     ) -> xr.DataArray | xr.Dataset | DataTree:
+        """Post-process any data structure.
+
+        This method extends :meth:`post_process
+        <erlab.io.dataloader.LoaderBase.post_process>` to handle any data structure.
+
+        This method is called by :meth:`load <erlab.io.dataloader.LoaderBase.load>` as
+        the final step in the data loading process.
+
+        Parameters
+        ----------
+        data : DataArray or Dataset or DataTree
+            The data to be post-processed.
+
+            - If a `DataArray`, the data is post-processed using :meth:`post_process
+              <erlab.io.dataloader.LoaderBase.post_process>`.
+            - If a `Dataset`, a new `Dataset` containing each data variable
+              post-processed using :meth:`post_process
+              <erlab.io.dataloader.LoaderBase.post_process>` is returned. The attributes
+              of the original `Dataset` are preserved.
+            - If a `DataTree`, the post-processing is applied to each leaf node
+              `Dataset`.
+
+        Returns
+        -------
+        DataArray or Dataset or DataTree
+            The post-processed data with the same type as the input.
+        """
         if isinstance(data, xr.DataArray):
             return self.post_process(data)
-
-        if isinstance(data, list):
-            return [self.post_process(d) for d in data]
 
         if isinstance(data, xr.Dataset):
             return xr.Dataset(
                 {k: self.post_process(v) for k, v in data.data_vars.items()},
                 attrs=data.attrs,
             )
-        return None
+
+        if isinstance(data, DataTree):
+            return cast(DataTree, data.map_over_subtree(self.post_process_general))
+
+        raise TypeError("data must be a DataArray, Dataset, or DataTree")
 
     @classmethod
-    def validate(
-        cls, data: xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset]
-    ) -> None:
+    def validate(cls, data: xr.DataArray | xr.Dataset | DataTree) -> None:
         """Validate the input data to ensure it is in the correct format.
 
-        Checks for the presence of all required coordinates and attributes. If the data
-        does not pass validation, a `ValidationError` is raised or a warning is issued,
-        depending on the value of the `strict_validation` flag. Validation is skipped
-        for loaders with attribute `skip_validate` set to `True`.
+        Checks for the presence of all coordinates and attributes required for common
+        analysis procedures like momentum conversion. If the data does not pass
+        validation, a `ValidationError` is raised or a warning is issued, depending on
+        the :attr:`strict_validation <erlab.io.dataloader.LoaderBase.strict_validation>`
+        flag. Validation is skipped for loaders with :attr:`skip_validate
+        <erlab.io.dataloader.LoaderBase.skip_validate>` set to `True`.
 
         Parameters
         ----------
-        data
-            The data to be validated.
-
-        Raises
-        ------
-        ValidationError
+        data : DataArray or Dataset or DataTree
+            The data to be validated. If a `Dataset` or `DataTree` is passed, validation
+            is performed on each data variable recursively.
 
         """
-        if isinstance(data, list):
-            for d in data:
-                cls.validate(d)
-            return
-
         if isinstance(data, xr.Dataset):
             for v in data.data_vars.values():
                 cls.validate(v)
+            return
+
+        if isinstance(data, DataTree):
+            data.map_over_subtree(cls.validate)
             return
 
         for c in ("beta", "delta", "xi", "hv"):
@@ -1162,6 +1233,9 @@ class LoaderBase(metaclass=_Loader):
         for a in ("configuration", "temp_sample"):
             if a not in data.attrs:
                 cls._raise_or_warn(f"Missing attribute {a}")
+
+        if "configuration" not in data.attrs:
+            return
 
         if data.attrs["configuration"] not in (1, 2):
             if data.attrs["configuration"] not in (3, 4):
