@@ -38,6 +38,11 @@ Examples
 
   >>> dat = erlab.io.loaders["merlin"].load(...)
 
+- Set the default loader for the session:
+
+  >>> erlab.io.set_loader("merlin")
+
+Learn more about loaders in the :ref:`User Guide <user-guide/io:Loading ARPES data>`.
 
 """
 

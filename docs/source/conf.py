@@ -40,6 +40,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
+    "sphinx.ext.autosectionlabel",
     "sphinx_autodoc_typehints",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
@@ -68,6 +69,8 @@ default_role = "obj"
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
 highlight_language = "python3"
+
+autosectionlabel_prefix_document = True
 
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html

@@ -1,18 +1,13 @@
 r"""Base functionality for implementing data loaders.
 
-This module provides a base class `LoaderBase` for implementing data loaders. Data
-loaders are plugins used to load data from various file formats. Each data loader that
-subclasses `LoaderBase` is registered on import in `loaders`.
+This module provides a base class :class:`LoaderBase` for implementing data loaders.
+Data loaders are plugins used to load data from various file formats.
 
-Loaded ARPES data must contain several attributes and coordinates. See the
-implementation of `LoaderBase.validate` for details.
+Each data loader is a subclass of :class:`LoaderBase` that must implement several
+methods and attributes.
 
-A detailed guide on how to implement a data loader can be found in
-:doc:`../user-guide/io`.
-
-If additional post-processing is required, the :func:`LoaderBase.post_process` method
-can be extended to include the necessary functionality.
-
+A detailed guide on how to implement a data loader can be found in the :ref:`User Guide
+<user-guide/io:Implementing a data loader plugin>`.
 """
 
 from __future__ import annotations
@@ -294,7 +289,7 @@ class LoaderBase(metaclass=_Loader):
             raise NotImplementedError("name attribute must be defined in the subclass")
 
         if not cls.name.startswith("_"):
-            LoaderRegistry.instance().register(cls)
+            LoaderRegistry.instance()._register(cls)
 
     @classmethod
     def value_to_string(cls, val: object) -> str:
@@ -1015,7 +1010,7 @@ class LoaderBase(metaclass=_Loader):
     def combine_multiple(
         self,
         data_list: list[xr.DataArray | xr.Dataset | DataTree],
-        coord_dict: dict[str, Iterable],
+        coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | DataTree:
         if len(coord_dict) == 0:
             try:
@@ -1313,7 +1308,7 @@ class LoaderRegistry(RegistryBase):
     default_data_dir: pathlib.Path | None = None
     """Default directory to search for data files \n\n:meta hide-value:"""
 
-    def register(self, loader_class: type[LoaderBase]) -> None:
+    def _register(self, loader_class: type[LoaderBase]) -> None:
         # Add class to loader
         self.loaders[loader_class.name] = loader_class
 
