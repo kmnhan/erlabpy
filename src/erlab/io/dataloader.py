@@ -22,6 +22,7 @@ import errno
 import importlib
 import itertools
 import os
+import pathlib
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
@@ -214,19 +215,33 @@ class LoaderBase(metaclass=_Loader):
 
     @property
     def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
-        """Map from file dialog names to the called method and its arguments.
+        """Map from file dialog names to the loader method and its arguments.
 
-        This property can be overridden specify the file dialog methods to be called
-        from the load menu of the ImageTool GUI.
+        Subclasses can override this property to provide support for loading data from
+        the load menu of the ImageTool GUI.
 
         Returns
         -------
         loader_mapping
-            A dictionary mapping the file dialog names to the called method and its
-            arguments. The method should be a callable that takes a single positional
-            argument which is a path to a data file, for instance ``self.load``. The
-            arguments should be a dictionary containing keyword arguments to be passed
-            to the method. It can be left empty if no additional arguments are required.
+            A dictionary mapping the file dialog names to a tuple of length 2 containing
+            the data loading function and arguments.
+
+            The first item of the tuple should be a callable that takes the first
+            positional argument as a path to a file, usually ``self.load``.
+
+            The second item should be a dictionary containing keyword arguments to be
+            passed to the method.
+
+        Example
+        -------
+        For instance, the loader for ALS BL4 implements the following mapping which
+        enables loading ``.pxt`` and ``.ibw`` files within ImageTool using ``self.load``
+        with no keyword arguments::
+
+                @property
+                def file_dialog_methods(self):
+                    return {"ALS BL4.0.3 Raw Data (*.pxt, *.ibw)": (self.load, {})}
+
         """
         return {}
 
@@ -357,16 +372,18 @@ class LoaderBase(metaclass=_Loader):
           :func:`erlab.io.loader_context` is only used when called as
           :func:`erlab.io.load`. When called directly on a loader instance, the
           `data_dir` argument must be specified.
-        - The `data_dir` set by :func:`erlab.io.set_data_dir` or
+        - For convenience, the `data_dir` set by :func:`erlab.io.set_data_dir` or
           :func:`erlab.io.loader_context` is silently ignored when *all* of the
           following are satisfied:
 
           - `identifier` is an absolute path to an existing file.
-          - `data_dir` is not provided.
+          - `data_dir` is not explicitly provided.
           - The path created by joining `data_dir` and `identifier` does not point to an
             existing file.
 
-          For instance, consider the following directory structure.
+          This way, absolute file paths can be passed directly to the loader without
+          changing the default data directory. For instance, consider the following
+          directory structure.
 
           .. code-block:: none
 
@@ -385,9 +402,9 @@ class LoaderBase(metaclass=_Loader):
             erlab.io.load("example.txt")
 
           However, if ``./data/example.txt`` also exists, the same code will load that
-          one instead. This behavior may lead to unexpected results when the directory
-          structure is not organized. Keep this in mind and try to keep all data files
-          in the same level.
+          one instead while warning about the ambiguity. This behavior may lead to
+          unexpected results when the directory structure is not organized. Keep this in
+          mind and try to keep all data files in the same level.
 
         """
         single = kwargs.pop("single", False)
@@ -409,7 +426,9 @@ class LoaderBase(metaclass=_Loader):
 
             if len(file_paths) == 1:
                 # Single file resolved
-                data = self.load_single(file_paths[0])
+                data: xr.DataArray | xr.Dataset | DataTree = self.load_single(
+                    file_paths[0]
+                )
             else:
                 # Multiple files resolved
                 data = self.combine_multiple(
@@ -1215,7 +1234,7 @@ class LoaderRegistry(RegistryBase):
     current_loader: LoaderBase | None = None
     """Current loader \n\n:meta hide-value:"""
 
-    default_data_dir: str | os.PathLike | None = None
+    default_data_dir: pathlib.Path | None = None
     """Default directory to search for data files \n\n:meta hide-value:"""
 
     def register(self, loader_class: type[LoaderBase]) -> None:
@@ -1356,8 +1375,16 @@ class LoaderRegistry(RegistryBase):
         called directly, it will not use the default data directory.
 
         """
-        if data_dir is not None and not os.path.isdir(data_dir):
-            raise FileNotFoundError(f"Directory {data_dir} not found")
+        if data_dir is None:
+            self.default_data_dir = None
+            return
+
+        data_dir = pathlib.Path(data_dir).resolve()
+        if not data_dir.is_dir():
+            raise FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(data_dir)
+            )
+
         self.default_data_dir = data_dir
 
     def load(
@@ -1372,11 +1399,22 @@ class LoaderRegistry(RegistryBase):
             default_dir is not None
             and data_dir is None
             and not isinstance(identifier, int)
-            and os.path.isfile(identifier)
-            and not os.path.isfile(os.path.join(default_dir, identifier))
+            and os.path.exists(identifier)
         ):
-            # If the identifier is a path to a file, ignore default_dir
-            default_dir = None
+            abs_file = pathlib.Path(identifier).resolve()
+            default_file = (default_dir / identifier).resolve()
+
+            if default_file.exists() and abs_file != default_file:
+                warnings.warn(
+                    f"Found {identifier!s} in the default directory "
+                    f"{default_dir!s}, but conflicting file {abs_file!s} was found. "
+                    "The first file will be loaded. "
+                    "Consider specifying the directory explicitly.",
+                    stacklevel=2,
+                )
+            else:
+                # If the identifier is a path to a file, ignore default_dir
+                default_dir = None
 
         if data_dir is None:
             data_dir = default_dir
