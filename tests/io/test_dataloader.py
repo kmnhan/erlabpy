@@ -1,5 +1,6 @@
 import csv
 import datetime
+import errno
 import glob
 import os
 import re
@@ -281,7 +282,14 @@ def test_loader():
         erlab.io.load(1)
 
     with pytest.raises(
-        FileNotFoundError, match="Directory some_nonexistent_dir not found"
+        FileNotFoundError,
+        match=re.escape(
+            str(
+                FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), "some_nonexistent_dir"
+                )
+            )
+        ),
     ):
         erlab.io.loaders.set_data_dir("some_nonexistent_dir")
 

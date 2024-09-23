@@ -456,6 +456,6 @@ def test_itool_rotate(qtbot):
 
     # Transpose should remove guidelines
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
-    assert ~win.slicer_area.main_image.is_guidelines_visible
+    assert not win.slicer_area.main_image.is_guidelines_visible
 
     win.close()

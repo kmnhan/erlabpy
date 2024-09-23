@@ -559,7 +559,9 @@ class LoaderBase(metaclass=_Loader):
 
         """
         if not os.path.isdir(data_dir):
-            raise FileNotFoundError(f"Directory {data_dir} not found")
+            raise FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(data_dir)
+            )
 
         pkl_path = os.path.join(data_dir, ".summary.pkl")
         df = None
@@ -1379,13 +1381,7 @@ class LoaderRegistry(RegistryBase):
             self.default_data_dir = None
             return
 
-        data_dir = pathlib.Path(data_dir).resolve()
-        if not data_dir.is_dir():
-            raise FileNotFoundError(
-                errno.ENOENT, os.strerror(errno.ENOENT), str(data_dir)
-            )
-
-        self.default_data_dir = data_dir
+        self.default_data_dir = pathlib.Path(data_dir).resolve(strict=True)
 
     def load(
         self,
