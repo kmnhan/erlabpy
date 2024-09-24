@@ -1,16 +1,12 @@
 """Utility functions for creating accessors."""
 
-__all__ = ["ERLabDataArrayAccessor", "ERLabDatasetAccessor"]
-
 from collections.abc import Hashable, Mapping
-from typing import Any, TypeGuard, TypeVar, cast
+from typing import Any, TypeGuard, cast
 
 import xarray as xr
 
-T = TypeVar("T")
-
-# Used as the key corresponding to a DataArray's variable when converting
-# arbitrary DataArray objects to datasets, from xarray.core.dataarray
+# Used as the key corresponding to a DataArray's variable when converting arbitrary
+# DataArray objects to datasets, adapted from xarray.core.dataarray
 _THIS_ARRAY: str = "<this-array>"
 
 
@@ -29,15 +25,17 @@ class ERLabDatasetAccessor:
 
 
 def is_dict_like(value: Any) -> TypeGuard[Mapping[Any, Any]]:
+    """Check if the given value is dict-like."""
     # From xarray.namedarray.utils.is_dict_like
     return hasattr(value, "keys") and hasattr(value, "__getitem__")
 
 
-def either_dict_or_kwargs(
+def either_dict_or_kwargs[T](
     pos_kwargs: Mapping[Any, T] | None,
     kw_kwargs: Mapping[str, T],
     func_name: str,
 ) -> Mapping[Hashable, T]:
+    """Return the positional or keyword arguments as a dictionary."""
     # From xarray.namedarray.utils.either_dict_or_kwargs
     if pos_kwargs is None or pos_kwargs == {}:
         # Need an explicit cast to appease mypy due to invariance; see

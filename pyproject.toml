@@ -48,7 +48,7 @@ perf = ["numbagg>=0.8.1", "bottleneck>=1.3.8"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 io = ["astropy>=5.1.1"]
 dev = [
-    "mypy",
+    "mypy>=1.11.0",
     "pooch",
     "pre-commit",
     "pytest-cov",
@@ -58,7 +58,7 @@ dev = [
     "pytest",
     "commitizen",
     "cz-changeup",
-    "ruff",
+    "ruff>=0.6.3",
 ]
 docs = [
     "sphinx",
@@ -241,4 +241,5 @@ exclude = [
     '^src/erlab/io/plugins/',
 ]
 disable_error_code = ['import-untyped']
+enable_incomplete_feature = ["NewGenericSyntax"]
 pretty = true

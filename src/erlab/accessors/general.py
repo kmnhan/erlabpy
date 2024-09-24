@@ -97,22 +97,22 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         return itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
-        """:mod:`hvplot`-based interactive visualization.
+        """`hvplot <https://hvplot.holoviz.org/>`_-based interactive visualization.
 
         Parameters
         ----------
         *args
-            Positional arguments passed onto :meth:`DataArray.hvplot`.
+            Positional arguments passed onto ``DataArray.hvplot``.
         **kwargs
-            Keyword arguments passed onto :meth:`DataArray.hvplot`.
+            Keyword arguments passed onto ``DataArray.hvplot``.
 
         Raises
         ------
         ImportError
-            If :mod:`hvplot` is not installed.
+            If `hvplot <https://hvplot.holoviz.org/>`_ is not installed.
         """
         if not importlib.util.find_spec("hvplot"):
-            raise ImportError("hvplot is required for qshow.hvplot()")
+            raise ImportError("qshow.hvplot requires hvplot to be installed")
         import hvplot.xarray  # noqa: F401
 
         return self._obj.hvplot(*args, **kwargs)
