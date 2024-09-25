@@ -80,7 +80,7 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         raise ValueError("Data must have at least two dimensions.")
 
     def itool(self, *args, **kwargs):
-        """Shortcut for :func:`itool <erlab.interactive.imagetool.itool>`.
+        """Shortcut for :func:`erlab.interactive.imagetool.itool`.
 
         Parameters
         ----------
@@ -176,7 +176,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
         Returns
         -------
-        :class:`panel.Column`
+        :class:`panel.layout.Column`
             A panel containing the interactive visualization.
         """
         if not importlib.util.find_spec("hvplot"):
@@ -333,14 +333,13 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             One of `indexers` or `indexers_kwargs` must be provided.
         verbose
             If `True`, print information about the selected data and averaging process.
-            Default is `False`.
         **indexers_kwargs
             The keyword arguments form of `indexers`. One of `indexers` or
             `indexers_kwargs` must be provided.
 
         Returns
         -------
-        xarray.DataArray
+        DataArray
             The selected and averaged data.
 
         Raises
@@ -418,11 +417,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         """
         Average data within a specified radius of a specified point.
 
-        For instance, consider an ARPES map with dimensions ``kx``, ``ky``, and ``eV``.
-        Providing ``kx`` and ``ky`` points will average the data within a cylindrical
-        region centered at that point. The radius of the cylinder is specified by the
-        ``radius`` parameter. If different radii is given for ``kx`` and ``ky``, the
-        region will be an elliptic cylinder.
+        For instance, consider an ARPES map with dimensions ``'kx'``, ``'ky'``, and
+        ``'eV'``. Providing ``'kx'`` and ``'ky'`` points will average the data within a
+        cylindrical region centered at that point. The radius of the cylinder is
+        specified by ``radius``.
+
+        If different radii are given for ``kx`` and ``ky``, the region will be elliptic.
 
         Parameters
         ----------
@@ -439,7 +439,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
         Returns
         -------
-        xr.DataArray
+        DataArray
             The mean value of the data within the region.
 
         Note
