@@ -776,6 +776,7 @@ class LoaderBase(metaclass=_Loader):
             dim_sel.observe(_update_sliders, "value")
 
         def _update_plot(_) -> None:
+            out.clear_output(wait=True)
             if self._temp_data is None:
                 return
             if not coord_sel.disabled:
@@ -783,7 +784,6 @@ class LoaderBase(metaclass=_Loader):
             else:
                 plot_data = self._temp_data
 
-            out.clear_output(wait=True)
             with out:
                 plot_data.qplot(ax=plt.gca())
                 plt.title("")  # Remove automatically generated title
