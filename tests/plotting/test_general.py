@@ -31,9 +31,37 @@ def test_plot_slices():
     assert axes.shape == (1, 2)
     plt.close()
 
+    # Test slice along another dimension
+    fig, axes = plot_slices(maps, y=[0.2, 0.4], y_width=0.1, x=slice(0.1, 0.3))
+    line = axes[0, 0].get_children()[0]
+    assert axes.shape == (2, 2)
+    assert np.allclose(line.get_xdata(), np.array([0.1, 0.2]))
+    assert np.allclose(line.get_ydata(), np.array([0.03358558, 0.61538511]))
+    plt.close()
+
     # Test axes input
     fig, axes = plt.subplots(1, 2)
     plot_slices(data0, axes=axes, y=[0.2, 0.4], y_width=0.1)
+    line = axes[0].get_children()[0]
+    assert np.allclose(line.get_xdata(), x)
+    assert np.allclose(
+        line.get_ydata(),
+        np.array(
+            [
+                0.04097352,
+                0.03358558,
+                0.61538511,
+                0.31024188,
+                0.22715759,
+                0.79632427,
+                0.36511017,
+                0.46004514,
+                0.92742393,
+                0.23237292,
+                0.71921977,
+            ]
+        ),
+    )
     plt.close()
 
     # Test axes manual input

@@ -836,7 +836,8 @@ def plot_slices(
     qsel_kw: dict[str, slice | float | Iterable[float]] = {
         k: v for k, v in values.items() if k in dims
     }
-    sel_dims: list[str] = list(qsel_kw.keys())
+    sel_dims: list[str] = [k for k, v in qsel_kw.items() if not isinstance(v, slice)]
+
     slice_dim: str | None = None
     slice_levels: list[float] = [np.nan]
     slice_width: float | None = None
