@@ -73,7 +73,7 @@ docs = [
     "sphinx-design",
 ]
 
-[project.gui-scripts]
+[project.scripts]
 itool-manager = "erlab.interactive.imagetool.manager:main"
 
 [project.urls]
