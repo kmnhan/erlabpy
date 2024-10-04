@@ -49,19 +49,19 @@ misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 io = ["astropy>=5.1.1"]
 dev = [
     "mypy>=1.11.0",
-    "pooch",
-    "pre-commit",
-    "pytest-cov",
-    "pytest-qt",
-    "pytest-xdist",
-    "pytest-datadir",
-    "pytest",
-    "commitizen",
-    "cz-changeup",
+    "pooch>=1.8.0",
+    "pre-commit>=3.7.0",
+    "pytest-cov>=5.0.0",
+    "pytest-qt>=4.4.0",
+    "pytest-xdist>=3.6.0",
+    "pytest-datadir>=1.5.0",
+    "pytest>=8.3.0",
+    "commitizen>=3.29.0",
+    "cz-changeup>=0.2.0",
     "ruff>=0.6.3",
 ]
 docs = [
-    "sphinx",
+    "sphinx>=8.0.0",
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
     "sphinxcontrib-bibtex",
@@ -97,6 +97,10 @@ name = 'cz_changeup'
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"
 changeup_show_body = true
 changeup_body_indent = 2
+changeup_link_issues = true
+changeup_scope_prefix = "[**"
+changeup_scope_suffix = "**]"
+changeup_scope_separator = " "
 
 [tool.setuptools]
 package-dir = { "" = "src" }
