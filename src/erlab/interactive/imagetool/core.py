@@ -1439,7 +1439,8 @@ class ItoolDisplayObject:
 
     @property
     def sliced_data(self) -> xr.DataArray:
-        return self.array_slicer.xslice(self.cursor_index, self.display_axis)
+        with xr.set_options(keep_attrs=True):
+            return self.array_slicer.xslice(self.cursor_index, self.display_axis)
 
     def refresh_data(self) -> None:
         pass
