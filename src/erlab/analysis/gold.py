@@ -365,7 +365,11 @@ def _plot_gold_fit(
     plt.tick_params("x", labelbottom=False)
     ax2 = fig.add_subplot(gs[1, 1], sharex=ax1)
 
-    gold.qplot(ax=ax0, cmap="copper", gamma=0.5)
+    if gold.dims[0] == "eV":
+        gold.qplot(ax=ax0, cmap="copper", gamma=0.5)
+    else:
+        gold.T.qplot(ax=ax0, cmap="copper", gamma=0.5)
+
     rect = matplotlib.patches.Rectangle(
         (angle_range[0], eV_range[0]),
         np.diff(angle_range)[0],

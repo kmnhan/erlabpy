@@ -138,6 +138,13 @@ class GoldTool(AnalysisWindow):
         execute: bool = True,
         **kwargs,
     ) -> None:
+        if set(data.dims) != {"alpha", "eV"}:
+            raise ValueError(
+                "`data` must be a DataArray with dimensions `alpha` and `eV`"
+            )
+        if data.dims[0] != "eV":
+            data = data.copy().T
+
         super().__init__(
             data,
             link="x",
