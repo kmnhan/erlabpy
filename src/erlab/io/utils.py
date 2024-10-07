@@ -9,6 +9,7 @@ __all__ = [
 
 import importlib.util
 import os
+import pathlib
 import warnings
 from collections.abc import Sequence
 
@@ -44,8 +45,8 @@ def get_files(
     extensions: Sequence[str] | str | None = None,
     contains: str | None = None,
     notcontains: str | None = None,
-) -> list[str]:
-    """Return a list of files in a directory with the given extensions.
+) -> set[str]:
+    """Return file names in a directory with the given extension(s).
 
     Directories are ignored.
 
@@ -62,27 +63,28 @@ def get_files(
 
     Returns
     -------
-    files : list of str
-        List of files in the directory.
+    files : set of str
+        Set of file names in the directory.
 
     """
-    files = []
+    files: set[str] = set()
 
     if isinstance(extensions, str):
         extensions = [extensions]
 
-    for f in os.listdir(directory):
-        if os.path.isdir(os.path.join(directory, f)):
+    for f in pathlib.Path(directory).iterdir():
+        if (
+            f.is_dir()
+            or (
+                extensions is not None
+                and (f.suffix == "" or f.suffix not in extensions)
+            )
+            or (contains is not None and contains not in f.name)
+            or (notcontains is not None and notcontains in f.name)
+        ):
             continue
-        if extensions is not None:
-            ext = os.path.splitext(f)[1]
-            if ext == "" or ext not in extensions:
-                continue
-        if contains is not None and contains not in f:
-            continue
-        if notcontains is not None and notcontains in f:
-            continue
-        files.append(os.path.join(directory, f))
+
+        files.add(str(f))
 
     return files
 
@@ -220,13 +222,8 @@ def save_as_hdf5(
         if data.ndim == 4:
             scaling[0] = scaling.pop(-1)
         data.attrs["IGORWaveScaling"] = scaling
-    data.to_netcdf(
-        filename,
-        encoding={
-            var: {"compression": "gzip", "compression_opts": 9} for var in data.coords
-        },
-        **kwargs,
-    )
+
+    data.to_netcdf(filename, **kwargs)
 
 
 def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs) -> None:
