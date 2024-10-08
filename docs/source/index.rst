@@ -6,7 +6,7 @@ ERLabPy
 
    **Date**: |today|
 
-   **Download documentation**: `Zipped HTML <https://erlabpy.readthedocs.io/_/downloads/en/latest/htmlzip/>`_, `PDF <https://erlabpy.readthedocs.io/_/downloads/en/latest/pdf/>`_
+   **Download documentation**: `PDF <https://erlabpy.readthedocs.io/_/downloads/en/latest/pdf/>`_
 
    .. image:: https://img.shields.io/pypi/pyversions/erlab?style=flat-square&logo=python&logoColor=white
        :target: https://pypi.org/project/erlab/
