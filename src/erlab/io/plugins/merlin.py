@@ -4,6 +4,8 @@ import datetime
 import glob
 import os
 import re
+import warnings
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 import numpy as np
@@ -13,7 +15,11 @@ import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
-from erlab.io.igor import load_experiment, load_wave
+
+
+def _format_polarization(val) -> str:
+    val = round(float(val))
+    return {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(val, str(val))
 
 
 class MERLINLoader(LoaderBase):
@@ -50,43 +56,44 @@ class MERLINLoader(LoaderBase):
         "configuration": 1,
         "sample_workfunction": 4.44,
     }
+    formatters: ClassVar[dict[str, Callable]] = {
+        "polarization": _format_polarization,
+        "Lens Mode": lambda x: x.replace("Angular", "A"),
+        "Entrance Slit": round,
+        "Exit Slit": round,
+        "Slit Plate": round,
+    }
     always_single = False
 
     @property
     def file_dialog_methods(self):
-        return {
-            "ALS BL4.0.3 Raw Data (*.pxt)": (self.load, {}),
-            "ALS BL4.0.3 Live (*.ibw)": (self.load_live, {}),
-        }
+        return {"ALS BL4.0.3 Raw Data (*.pxt, *.ibw)": (self.load, {})}
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         if os.path.splitext(file_path)[1] == ".ibw":
-            return self.load_live(file_path)
+            return self._load_live(file_path)
 
-        data = load_experiment(file_path)
-        # One file always corresponds to single region, so assume only one data variable
-        data: xr.DataArray = data.data_vars[next(iter(data.data_vars.keys()))]
-
-        return self.process_keys(data)
+        # One file always corresponds to single region
+        return xr.open_dataarray(file_path, engine="erlab-igor")
 
     def identify(self, num: int, data_dir: str | os.PathLike):
         coord_dict: dict[str, npt.NDArray[np.float64]] = {}
 
-        # Look for scans
+        # Look for multi-file scans
         files = glob.glob(f"*_{str(num).zfill(3)}_S*.pxt", root_dir=data_dir)
-        files.sort()
-        # Assume files sorted by scan #
+        files.sort()  # this should sort files by scan number
 
         if len(files) == 0:
-            # Look for multiregion scan
+            # Look for multiregion scans
             files = glob.glob(f"*_{str(num).zfill(3)}_R*.pxt", root_dir=data_dir)
             files.sort()
+
         elif len(files) > 1:
             match_prefix = re.match(
                 r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0]
             )
             if match_prefix is None:
-                raise RuntimeError(f"Failed to match prefix in {files[0]}")
+                raise RuntimeError(f"Failed to determine prefix from {files[0]}")
             prefix: str = match_prefix.group(1)
 
             motor_file = os.path.join(
@@ -95,21 +102,21 @@ class MERLINLoader(LoaderBase):
 
             coord_arr = np.loadtxt(motor_file, skiprows=1)
             with open(motor_file, encoding="utf-8") as f:
-                header = f.readline().strip().split("\t")
+                header = f.readline().strip().split("\t")  # motor coordinate names
 
             if coord_arr.ndim == 1:
-                coord_arr = coord_arr.reshape(-1, 1)
+                coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
 
-            for i, hdr in enumerate(header):
-                key = self.name_map_reversed.get(hdr, hdr)
-                coord_dict[key] = coord_arr[: len(files), i].astype(np.float64)
+            for i, dim in enumerate(header):
+                # Trim coord to number of files
+                coord_dict[dim] = coord_arr[: len(files), i]
 
         if len(files) == 0:
             # Look for single file scan
             files = glob.glob(f"*_{str(num).zfill(3)}.pxt", root_dir=data_dir)
 
         if len(files) == 0:
-            raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+            return None
 
         files = [os.path.join(data_dir, f) for f in files]
 
@@ -136,14 +143,22 @@ class MERLINLoader(LoaderBase):
             data = data.assign_coords(eV=-data.eV.values)
 
         if "temp_sample" in data.coords:
-            # Add temperature to attributes
+            # Add temperature to attributes, for backwards compatibility
             temp = float(data.temp_sample.mean())
             data = data.assign_attrs(temp_sample=temp)
 
         return data
 
-    def load_live(self, filename, data_dir=None):
-        wave = load_wave(filename, data_dir)
+    def load_live(self, identifier, data_dir):
+        warnings.warn(
+            "load_live is deprecated, use load instead",
+            DeprecationWarning,
+            stacklevel=1,
+        )
+        return self.load(identifier, data_dir)
+
+    def _load_live(self, file_path: str | os.PathLike) -> xr.DataArray:
+        wave = xr.load_dataarray(file_path, engine="erlab-igor")
         wave = wave.rename(
             {
                 k: v
@@ -151,9 +166,7 @@ class MERLINLoader(LoaderBase):
                 if k in wave.dims
             }
         )
-        wave = wave.assign_coords(eV=-wave["eV"] + wave.attrs["BL Energy"])
-
-        return self.post_process(wave)
+        return wave.assign_coords(eV=-wave["eV"] + wave.attrs["BL Energy"])
 
     def generate_summary(
         self, data_dir: str | os.PathLike, exclude_live: bool = False
@@ -200,7 +213,7 @@ class MERLINLoader(LoaderBase):
 
         for name, path in files.items():
             if os.path.splitext(path)[1] == ".ibw":
-                data = self.load_live(path)
+                data = self.load(path)
                 data_type = "LP" if "beta" in data.dims else "LXY"
             else:
                 idx, _ = self.infer_index(os.path.splitext(os.path.basename(path))[0])
@@ -227,37 +240,12 @@ class MERLINLoader(LoaderBase):
                         "%d/%m/%Y %I:%M:%S %p",
                     ),
                     data_type,
+                    *(
+                        self.get_formatted_attr_or_coord(data, k)
+                        for k in summary_attrs.values()
+                    ),
                 ]
             )
-
-            for k, v in summary_attrs.items():
-                try:
-                    val = data.attrs[v]
-                except KeyError:
-                    try:
-                        val = data.coords[v].values
-                        if val.size == 1:
-                            val = val.item()
-                    except KeyError:
-                        val = ""
-
-                if k == "Lens Mode":
-                    val = val.replace("Angular", "A")
-
-                elif k in ("Entrance Slit", "Exit Slit"):
-                    val = round(val)
-
-                elif k == "Polarization":
-                    if np.iterable(val):
-                        val = np.asarray(val).astype(int)
-                    else:
-                        val = [round(val)]
-                    val = [{0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(v, v) for v in val]
-
-                    if len(val) == 1:
-                        val = val[0]
-
-                data_info[-1].append(val)
 
             del data
 

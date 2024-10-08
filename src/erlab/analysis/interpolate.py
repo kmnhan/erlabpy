@@ -383,6 +383,9 @@ def slice_along_path(
     See Also
     --------
     xarray.DataArray.interp
+        The method used to perform the interpolation.
+    :func:`erlab.analysis.interpolate.slice_along_vector`
+        Slice along a vector defined by a center point, direction vector, and lengths.
 
     """
     interp_kwargs = interp_kwargs or {}

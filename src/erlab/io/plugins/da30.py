@@ -1,21 +1,21 @@
-"""Loader for Scienta Omicron DA30L analyzer with SES.
+"""Loader for Scienta Omicron DA30 analyzer with SES.
 
 Provides a base class for implementing loaders that can load data acquired with Scienta
-Omicron's DA30L analyzer using ``SES.exe``. Must be subclassed to implement the actual
-loading.
+Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual loading.
 """
 
 import configparser
 import os
 import tempfile
 import zipfile
+from collections.abc import Iterable
 from typing import ClassVar
 
 import numpy as np
 import xarray as xr
+from xarray.core.datatree import DataTree
 
 from erlab.io.dataloader import LoaderBase
-from erlab.io.igor import load_experiment, load_wave
 
 
 class CasePreservingConfigParser(configparser.ConfigParser):
@@ -25,7 +25,7 @@ class CasePreservingConfigParser(configparser.ConfigParser):
 
 class DA30Loader(LoaderBase):
     name = "da30"
-    aliases = ("DA30",)
+    aliases: Iterable[str] = ["DA30"]
 
     name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
@@ -41,20 +41,31 @@ class DA30Loader(LoaderBase):
     def file_dialog_methods(self):
         return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
 
-    def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+    def load_single(
+        self, file_path: str | os.PathLike
+    ) -> xr.DataArray | xr.Dataset | DataTree:
         ext = os.path.splitext(file_path)[-1]
 
         match ext:
             case ".ibw":
-                data = load_wave(file_path)
+                data: xr.DataArray | xr.Dataset | DataTree = xr.load_dataarray(
+                    file_path, engine="erlab-igor"
+                )
+
             case ".pxt":
-                data = load_experiment(file_path)
+                data = xr.load_dataset(file_path, engine="erlab-igor")
+
+                if len(data.data_vars) == 1:
+                    # Get DataArray if single region
+                    data = data[next(iter(data.data_vars))]
+
             case ".zip":
                 data = load_zip(file_path)
+
             case _:
                 raise ValueError(f"Unsupported file extension {ext}")
 
-        return self.post_process_general(data)
+        return data
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -67,14 +78,14 @@ class DA30Loader(LoaderBase):
 
 def load_zip(
     filename: str | os.PathLike,
-) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
+) -> xr.DataArray | xr.Dataset | DataTree:
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
             fn[9:-4]
             for fn in z.namelist()
             if fn.startswith("Spectrum_") and fn.endswith(".bin")
         ]
-        out = []
+        out: list[xr.DataArray] = []
         for region in regions:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 z.extract(f"Spectrum_{region}.ini", tmp_dir)
@@ -103,20 +114,26 @@ def load_zip(
                     offset, offset + (n - 1) * delta, n
                 )
 
-            arr = xr.DataArray(
-                arr.reshape(shape), coords=coords, name=region_info["name"], attrs=attrs
+            out.append(
+                xr.DataArray(
+                    arr.reshape(shape),
+                    coords=coords,
+                    name=region_info["name"],
+                    attrs=attrs,
+                )
             )
-            out.append(arr)
 
     if len(out) == 1:
         return out[0]
 
     try:
         # Try to merge the data without conflicts
-        return xr.merge(out)
+        return xr.merge(out, join="exact")
     except:  # noqa: E722
-        # On failure, return a list
-        return out
+        # On failure, combine into DataTree
+        return DataTree.from_dict(
+            {str(da.name): da.to_dataset(promote_attrs=True) for da in out}
+        )
 
 
 def parse_ini(filename: str | os.PathLike) -> dict:

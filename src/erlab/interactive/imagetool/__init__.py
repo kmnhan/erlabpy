@@ -79,7 +79,7 @@ def itool(
 
     Parameters
     ----------
-    data
+    data : DataArray, Dataset, ndarray, list of DataArray or list of ndarray
         The data to be displayed. Data can be provided as:
 
         - A `xarray.DataArray` with 2 to 4 dimensions
@@ -90,7 +90,7 @@ def itool(
 
           The array will be converted to a DataArray and displayed in an ImageTool.
 
-        - A sequence of the above objects
+        - A list of the above objects
 
           Multiple ImageTool windows will be created and displayed.
 

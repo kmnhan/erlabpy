@@ -646,10 +646,10 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
         kwargs.setdefault("parallel", True)
         kwargs.setdefault("progress", True)
 
-        if isinstance(kwargs.get("params", None), Mapping):
+        if isinstance(kwargs.get("params"), Mapping):
             kwargs["params"] = _parse_params(kwargs["params"], dask=False)
 
-        if isinstance(kwargs.get("params", None), xr.DataArray):
+        if isinstance(kwargs.get("params"), xr.DataArray):
             kwargs["params"] = kwargs["params"].to_dataset(dim, promote_attrs=True)
 
         fitres = ds.modelfit(set(self._obj.dims) - {dim}, model, **kwargs)

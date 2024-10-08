@@ -1,6 +1,6 @@
 """Transformations."""
 
-__all__ = ["rotate", "shift"]
+__all__ = ["rotate", "shift", "rotateinplane", "rotatestackinplane"]
 
 import itertools
 import warnings
@@ -34,7 +34,7 @@ def rotate(
         The array to rotate.
     angle
         The rotation angle in degrees.
-    axes : tuple of 2 ints or strings, optional
+    axes : tuple of 2 ints or 2 strings, optional
         The two axes that define the plane of rotation. Default is the first two axes.
         If strings are provided, they must be valid dimension names in the input array.
     center : tuple of 2 floats or dict, optional
@@ -42,8 +42,8 @@ def rotate(
         along the dimensions specified in `axes`. If a dict, it must have keys that
         correspond to `axes`. Default is (0, 0).
     reshape
-        If `reshape` is true, the output shape is adapted so that the input array is
-        contained completely in the output. Default is True.
+        If `True`, the output shape is adapted so that the input array is contained
+        completely in the output. Default is `True`.
     order
         The order of the spline interpolation, default is 1. The order has to be in the
         range 0-5.
@@ -354,6 +354,12 @@ def shift(
 
 
 def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
+    """Rotate a 2D DataArray in the plane defined by the two dimensions.
+
+    .. deprecated:: 2.9.0
+
+        Use :func:`erlab.analysis.transform.rotate` instead.
+    """
     warnings.warn(
         "erlab.analysis.transform.rotateinplane is deprecated, "
         "use erlab.analysis.transform.rotate instead",
@@ -370,6 +376,13 @@ def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
 
 
 def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):
+    """Rotate a 3D DataArray in the plane defined by the two dimensions.
+
+    .. deprecated:: 2.9.0
+
+        Use :func:`erlab.analysis.transform.rotate` instead.
+
+    """
     warnings.warn(
         "erlab.analysis.transform.rotateinplane is deprecated, "
         "use erlab.analysis.transform.rotate instead",

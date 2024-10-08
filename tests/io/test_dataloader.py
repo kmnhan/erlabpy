@@ -1,5 +1,6 @@
 import csv
 import datetime
+import errno
 import glob
 import os
 import re
@@ -153,12 +154,11 @@ def test_loader():
                 coord_arr = np.loadtxt(axis_file, delimiter=",", skiprows=1)
 
                 for i, hdr in enumerate(header[1:]):
-                    key = self.name_map_reversed.get(hdr, hdr)
-                    coord_dict[key] = coord_arr[: len(files), i + 1].astype(np.float64)
+                    coord_dict[hdr] = coord_arr[: len(files), i + 1].astype(np.float64)
 
             if len(files) == 0:
-                # If no files found up to this point, raise an error
-                raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
+                # If no files found up to this point, return None
+                return None
 
             # Files must be full paths
             files = [os.path.join(data_dir, f) for f in files]
@@ -166,11 +166,7 @@ def test_loader():
             return files, coord_dict
 
         def load_single(self, file_path):
-            data = erlab.io.load_hdf5(file_path)
-
-            # To prevent conflicts when merging multiple scans, we rename the
-            # coordinates prior to concatenation
-            return self.process_keys(data)
+            return erlab.io.load_hdf5(file_path)
 
         def infer_index(self, name):
             # Get the scan number from file name
@@ -286,13 +282,20 @@ def test_loader():
         erlab.io.load(1)
 
     with pytest.raises(
-        FileNotFoundError, match="Directory some_nonexistent_dir not found"
+        FileNotFoundError,
+        match=re.escape(
+            str(
+                FileNotFoundError(
+                    errno.ENOENT, os.strerror(errno.ENOENT), "some_nonexistent_dir"
+                )
+            )
+        ),
     ):
         erlab.io.loaders.set_data_dir("some_nonexistent_dir")
 
     # Test if the reprs are working
     assert repr(erlab.io.loaders).startswith("Registered data loaders")
-    assert erlab.io.loaders._repr_html_().startswith("<table><thead>")
+    assert erlab.io.loaders._repr_html_().startswith("<div><style>")
 
     erlab.io.set_loader("example")
     erlab.io.set_data_dir(tmp_dir.name)

@@ -38,14 +38,17 @@ Examples
 
   >>> dat = erlab.io.loaders["merlin"].load(...)
 
+- Set the default loader for the session:
+
+  >>> erlab.io.set_loader("merlin")
+
+Learn more about loaders in the :ref:`User Guide <user-guide/io:Loading ARPES data>`.
 
 """
 
 __all__ = [
     "load",
-    "load_experiment",
     "load_hdf5",
-    "load_wave",
     "loader_context",
     "loaders",
     "open_hdf5",
@@ -59,7 +62,6 @@ __all__ = [
 import warnings
 
 from erlab.io.dataloader import LoaderRegistry
-from erlab.io.igor import load_experiment, load_wave
 from erlab.io.utils import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
 # Import plugins last
@@ -83,13 +85,25 @@ merlin = loaders["merlin"]
 ssrl52 = loaders["ssrl52"]
 
 
+def load_wave(*args, **kwargs):
+    from erlab.io.igor import load_wave as _load_wave
+
+    warnings.warn(
+        "Use `xarray.open_dataarray` instead", DeprecationWarning, stacklevel=2
+    )
+    return _load_wave(*args, **kwargs)
+
+
+def load_experiment(*args, **kwargs):
+    from erlab.io.igor import load_experiment as _load_experiment
+
+    warnings.warn("Use `xarray.open_dataset` instead", DeprecationWarning, stacklevel=2)
+    return _load_experiment(*args, **kwargs)
+
+
 def load_igor_ibw(*args, **kwargs):
-    warnings.warn("Use `erlab.io.load_wave` instead", DeprecationWarning, stacklevel=2)
     return load_wave(*args, **kwargs)
 
 
 def load_igor_pxp(*args, **kwargs):
-    warnings.warn(
-        "Use `erlab.io.load_experiment` instead", DeprecationWarning, stacklevel=2
-    )
     return load_experiment(*args, **kwargs)

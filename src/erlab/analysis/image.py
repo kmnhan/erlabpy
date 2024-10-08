@@ -14,14 +14,14 @@ Notes
 """
 
 __all__ = [
+    "curvature",
     "gaussian_filter",
     "gaussian_laplace",
+    "gradient_magnitude",
     "laplace",
+    "minimum_gradient",
     "ndsavgol",
     "scaled_laplace",
-    "curvature",
-    "minimum_gradient",
-    "gradient_magnitude",
 ]
 
 import itertools

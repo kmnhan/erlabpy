@@ -402,7 +402,7 @@ def ktool(
     """Interactive momentum conversion tool."""
     if data_name is None:
         try:
-            data_name = varname.argname("data", func=ktool, vars_only=False)  # type: ignore[assignment]
+            data_name = str(varname.argname("data", func=ktool, vars_only=False))
         except varname.VarnameRetrievingError:
             data_name = "data"
 

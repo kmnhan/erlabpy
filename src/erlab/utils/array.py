@@ -1,14 +1,5 @@
 """Utility functions for working with numpy and xarray."""
 
-__all__ = [
-    "check_arg_has_no_nans",
-    "is_dims_uniform",
-    "is_monotonic",
-    "is_uniform_spaced",
-    "trim_na",
-    "uniform_dims",
-]
-
 import functools
 from collections.abc import Callable, Hashable, Iterable
 
@@ -22,7 +13,7 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
 
     Parameters
     ----------
-    arr
+    arr : array-like
         The input array.
     **kwargs
         Additional keyword arguments passed to `numpy.isclose`.
@@ -51,7 +42,7 @@ def is_monotonic(arr: npt.NDArray) -> np.bool_:
 
     Parameters
     ----------
-    arr
+    arr : array-like
         The input array.
 
     Returns
@@ -77,7 +68,7 @@ def uniform_dims(darr: xr.DataArray, **kwargs) -> set[Hashable]:
 
     Returns
     -------
-    dims : set of Hashable
+    dims
         A set of dimensions that are uniformly spaced.
     """
     return {d for d in darr.dims if is_uniform_spaced(darr[d].values, **kwargs)}
@@ -95,7 +86,7 @@ def is_dims_uniform(
         The DataArray to check.
     dims
         The dimensions to check. If `None`, all dimensions of the DataArray will be
-        checked. Defaults to `None`.
+        checked.
     **kwargs
         Additional keyword arguments to be passed to `is_uniform_spaced`.
 
@@ -176,7 +167,7 @@ def trim_na(darr: xr.DataArray, dims: Iterable[Hashable] | None = None) -> xr.Da
 
     Returns
     -------
-    darr : xarray.DataArray
+    darr
         The trimmed DataArray.
     """
     if dims is None:

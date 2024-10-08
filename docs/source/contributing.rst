@@ -272,6 +272,79 @@ you are not happy with. If you don't think your request is ready to be merged, j
 so in your pull request message and use the "Draft PR" feature of GitHub. This is a good
 way of getting some preliminary code review.
 
+
+Writing tests for data loader plugins
+-------------------------------------
+
+When contributing a new data loader plugin, it is important to write tests to ensure
+that the plugin works as expected over time.
+
+Since ARPES data required for testing take up a lot of space, we have a separate
+repository for test data: `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_.
+
+Suppose you are contributing a new plugin, ``src/erlab/io/plugins/<plugin_name>.py``. To
+add tests, follow these steps:
+
+1. Fork `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ and clone it to your
+   local machine.
+
+2. Create a new directory in the root of the repository you cloned. The name of the
+   directory should be the name of the plugin you are writing tests for.
+
+3. Place the test data files into the directory you created in step 3. It's a good
+   practice to also include a processed version of the data that the plugin should
+   return, and use this as a reference in the tests.
+
+4. Set the environment variable `ERLAB_TEST_DATA_DIR` to the path of the cloned
+   `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ repository in your
+   development environment. This will allow the tests to access the test data.
+
+5. Now, we can work with the original `erlabpy <https://github.com/kmnhan/erlabpy>`_
+   repository to write and run tests for the plugin. Add your tests in
+   `tests/io/plugins/test_<plugin_name>.py`. You can use the `test_data_dir` fixture to
+   access the test data directory. See other modules in the folder for examples.
+
+6. Run the tests using `pytest <https://docs.pytest.org/>`_ and make sure they pass.
+
+7. Now, it's time to apply your changes. First, push your changes to `erlabpy-data
+   <https://github.com/kmnhan/erlabpy-data>`_ and create a pull request.
+
+8. Once your pull request to `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ is
+   merged, update the `DATA_COMMIT_HASH` and `DATA_KNOWN_HASH` attributes in
+   `tests/conftest.py`.
+
+   - `DATA_COMMIT_HASH` should be the commit hash of `erlabpy-data
+     <https://github.com/kmnhan/erlabpy-data>`_ that contains your test data. This will
+     ensure that the version of the test data used in the tests is consistent.
+
+     .. note::
+
+       Hitting the copy icon next to the commit hash on the `commit history
+       <https://github.com/kmnhan/erlabpy-data/commits/main/>`_ page will copy the full
+       hash to your clipboard.
+
+   - `DATA_KNOWN_HASH` is the file hash of the test data tarball. This will ensure that
+     the test data has not been modified or corrupted since the last time the tests were
+     run.
+
+     To calculate the hash, first download the tarball from the GitHub API::
+
+         https://api.github.com/repos/kmnhan/erlabpy-data/tarball/<commit_hash>
+
+     The new hash can be calculated by running the following command in the terminal:
+
+     .. code-block:: bash
+
+         openssl sha256 path/to/kmnhan-erlabpy-data-<commit_hash>.tar.gz
+
+     or using `pooch <https://github.com/fatiando/pooch>`_:
+
+     .. code-block:: python
+
+         import pooch
+
+         pooch.file_hash("path/to/kmnhan-erlabpy-data-<commit_hash>.tar.gz")
+
 .. _development.code-standards:
 
 Code standards
@@ -279,6 +352,10 @@ Code standards
 
 - Import sorting, formatting, and linting are enforced with `Ruff
   <https://github.com/astral-sh/ruff>`_.
+
+- Static type checking is performed with `mypy <https://mypy.readthedocs.io>`_. If you
+  are used to working with type annotations, please try to add them to any new code you
+  contribute.
 
 - If you wish to contribute, using `pre-commit <https://pre-commit.com>`_ is
   recommended. This will ensure that your code and commit message is properly formatted
@@ -296,11 +373,10 @@ Code standards
     e., `QtCore.Qt.CheckState.Checked` instead of `QtCore.Qt.Checked`.
 
   * Use the signal and slot syntax from PySide6 (``QtCore.Signal`` and ``QtCore.Slot``
-    instead of ``QtCore.pyqtSignal`` and ``QtCore.pyqtSlot``)
+    instead of ``QtCore.pyqtSignal`` and ``QtCore.pyqtSlot``).
 
   * When using Qt Designer, place ``.ui`` files in the same directory as the Python file
-    that   uses them. The files must be imported using the ``loadUiType`` function from
-    ``qtpy.uic``. For example: ::
+    that uses them. The files must be imported using the ``qtpy.uic.loadUiType``. ::
 
       from qtpy import uic
 
@@ -308,13 +384,6 @@ Code standards
           def __init__(self):
               super().__init__()
               self.setupUi(self)
-
-- Please try to add type annotations to your code. This will help with code completion
-  and static analysis.
-
-- We are in the process of adding type annotations to the codebase, and most of it
-  should pass `mypy <https://mypy.readthedocs.io/en/stable/>`_ except for the io and
-  interactive modules.
 
 Documentation
 =============
@@ -328,7 +397,7 @@ Sphinx docs to perform more complex changes to the documentation as well.
 Some other important things to know about the docs:
 
 - The documentation consists of two parts: the docstrings in the code itself and the
-  docs in this folder ``erlabpy/docs/source/``.
+  docs in ``erlabpy/docs/source/``.
 
   The docstrings are meant to provide a clear explanation of the usage of the individual
   functions, while the documentation in this folder consists of tutorial-like overviews
@@ -348,13 +417,13 @@ Some other important things to know about the docs:
 
 - Type annotations that follow :pep:`484` are recommended in the code, which are
   automatically included in the documentation. Hence, you may omit the type information
-  for well-annotated functions.
+  from the docstring for well-annotated functions.
 
 - We aim to follow the recommendations from the `Python documentation
   <https://devguide.python.org/documentation/start-documenting/index.html#sections>`_
   and the `Sphinx reStructuredText documentation
   <https://www.sphinx-doc.org/en/master/usage/restructuredtext/basics.html#sections>`_
-  for section markup characters,
+  for section markup characters:
 
   - ``*`` with overline, for chapters
 

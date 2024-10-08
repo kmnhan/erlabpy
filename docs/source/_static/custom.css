@@ -7,3 +7,32 @@ dl[class]:not(.option-list):not(.field-list):not(.footnote):not(.glossary):not(.
 span.default_value {
   font-weight: normal;
 }
+
+
+/* Fix for xarray dark mode */
+/* https://github.com/pradyunsg/furo/discussions/790#discussioncomment-9298183 */
+html,
+body {
+  --xr-font-color0: var(--jp-content-font-color0, rgba(0, 0, 0, 1));
+  --xr-font-color2: var(--jp-content-font-color2, rgba(0, 0, 0, 0.54));
+  --xr-font-color3: var(--jp-content-font-color3, rgba(0, 0, 0, 0.38));
+  --xr-border-color: var(--jp-border-color2, #e0e0e0);
+  --xr-disabled-color: var(--jp-layout-color3, #bdbdbd);
+  --xr-background-color: var(--jp-layout-color0, white);
+  --xr-background-color-row-even: var(--jp-layout-color1, white);
+  --xr-background-color-row-odd: var(--jp-layout-color2, #eeeeee);
+}
+
+/* Table cell colors in notebooks */
+.output_area tr {
+  background-color: var(--xr-background-color-row-even) !important;
+  color: var(--xr-font-color0) !important;
+}
+
+.output_area tr:nth-child(odd) {
+  background-color: var(--xr-background-color-row-odd) !important;
+}
+
+.output_area thead {
+  border-bottom: 1px solid var(--xr-font-color0) !important;
+}

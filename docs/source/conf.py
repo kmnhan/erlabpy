@@ -40,6 +40,7 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
+    "sphinx.ext.autosectionlabel",
     "sphinx_autodoc_typehints",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
@@ -68,6 +69,8 @@ default_role = "obj"
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
 highlight_language = "python3"
+
+autosectionlabel_prefix_document = True
 
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html
@@ -123,7 +126,7 @@ autosummary_generate = True
 autosummary_generate_overwrite = True
 
 autodoc_class_signature = "mixed"
-autodoc_member_order = "groupwise"
+autodoc_member_order = "bysource"
 autodoc_default_options = {
     "members": True,
     "undoc-members": True,
@@ -157,11 +160,13 @@ napoleon_use_keyword = False
 napoleon_use_rtype = False
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
+    "ndarray": "numpy.ndarray",
+    "DataArray": "xarray.DataArray",
+    "Dataset": "xarray.Dataset",
     "np.float32": "float32",
     "numpy.float32": "float32",
     "np.float64": "float64",
     "numpy.float64": "float64",
-    "xr.DataArray": "xarray.DataArray",
     "array-like": "`array-like <numpy.typing.ArrayLike>`",
     "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
@@ -179,23 +184,23 @@ nbsphinx_execute_arguments = [
 
 qt_documentation = "PyQt6"
 intersphinx_mapping = {
-    "PyQt5": ("https://doc.qt.io/qtforpython-6/", None),
-    "python": ("https://docs.python.org/3.10/", None),
-    "numpy": ("https://numpy.org/doc/stable/", None),
-    "numba": ("https://numba.readthedocs.io/en/stable/", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
-    "lmfit": ("https://lmfit.github.io/lmfit-py/", None),
-    "matplotlib": ("https://matplotlib.org/stable/", None),
-    "xarray": ("https://docs.xarray.dev/en/stable/", None),
-    "pandas": ("https://pandas.pydata.org/docs/", None),
-    "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest/", None),
-    "csaps": ("https://csaps.readthedocs.io/en/latest/", None),
-    "iminuit": ("https://scikit-hep.org/iminuit/", None),
-    "cmasher": ("https://cmasher.readthedocs.io/", None),
-    "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable/", None),
-    "joblib": ("https://joblib.readthedocs.io/en/latest/", None),
-    "panel": ("https://panel.holoviz.org/", None),
-    "hvplot": ("https://hvplot.holoviz.org/", None),
+    "PyQt5": ("https://doc.qt.io/qtforpython-6", None),
+    "python": ("https://docs.python.org/3.12", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+    "numba": ("https://numba.readthedocs.io/en/stable", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy", None),
+    "lmfit": ("https://lmfit.github.io/lmfit-py", None),
+    "matplotlib": ("https://matplotlib.org/stable", None),
+    "xarray": ("https://docs.xarray.dev/en/stable", None),
+    "pandas": ("https://pandas.pydata.org/docs", None),
+    "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest", None),
+    "csaps": ("https://csaps.readthedocs.io/en/latest", None),
+    "iminuit": ("https://scikit-hep.org/iminuit", None),
+    "cmasher": ("https://cmasher.readthedocs.io", None),
+    "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable", None),
+    "joblib": ("https://joblib.readthedocs.io/en/latest", None),
+    "panel": ("https://panel.holoviz.org", None),
+    "hvplot": ("https://hvplot.holoviz.org", None),
 }
 
 
@@ -478,18 +483,29 @@ html_theme_options: dict[str, object] = {
             "class": "",
         },
     ],
-    # "light_css_variables": {
-    #     "color-brand-primary": "#6d50bf",
-    #     "color-brand-content": "#6d50bf",
-    # },
-    # "dark_css_variables": {
-    #     "color-brand-primary": "#a180ff",
-    #     "color-brand-content": "#a180ff",
-    # },
+    "light_css_variables": {},
+    "dark_css_variables": {},
     "source_repository": "https://github.com/kmnhan/erlabpy/",
     "source_branch": f"v{version}",
     "source_directory": "docs/source/",
 }
+
+# Furo issue to track when this is no longer needed:
+#  https://github.com/pradyunsg/furo/discussions/790
+for k, (v0, v1) in {
+    "jp-content-font-color0": ("rgba(0, 0, 0, 1)", "rgba(255, 255, 255, 1)"),
+    "jp-content-font-color2": ("rgba(0, 0, 0, 0.54)", "rgba(255, 255, 255, 0.54)"),
+    "jp-content-font-color3": ("rgba(0, 0, 0, 0.38)", "rgba(255, 255, 255, 0.38)"),
+    "jp-border-color0": ("#e0e0e0", "#1F1F1F"),
+    "jp-border-color1": ("#e0e0e0", "#1F1F1F"),
+    "jp-border-color2": ("#e0e0e0", "#1F1F1F"),
+    "jp-layout-color0": ("#ffffff", "#111111"),
+    "jp-layout-color1": ("#ffffff", "#111111"),
+    "jp-layout-color2": ("#eeeeee", "#313131"),
+    "jp-layout-color3": ("#bdbdbd", "#515151"),
+}.items():
+    html_theme_options["light_css_variables"][k] = v0
+    html_theme_options["dark_css_variables"][k] = v1
 
 # -- LaTeX options -----------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#latex-options

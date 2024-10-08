@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-__all__ = ["ArraySlicer"]
-
 import copy
 import functools
 from typing import TYPE_CHECKING, TypedDict
@@ -21,12 +19,15 @@ if TYPE_CHECKING:
 
     import xarray as xr
 
-    class ArraySlicerState(TypedDict):
-        dims: tuple[Hashable, ...]
-        bins: list[list[int]]
-        indices: list[list[int]]
-        values: list[list[np.float32]]
-        snap_to_data: bool
+
+class ArraySlicerState(TypedDict):
+    """A dictionary containing the state of cursors in an :class:`ArraySlicer`."""
+
+    dims: tuple[Hashable, ...]
+    bins: list[list[int]]
+    indices: list[list[int]]
+    values: list[list[np.float32]]
+    snap_to_data: bool
 
 
 VALID_NDIM = (2, 3, 4)
@@ -119,9 +120,9 @@ def _index_of_value_nonuniform(
 class ArraySlicer(QtCore.QObject):
     """Internal class used to slice a :class:`xarray.DataArray` rapidly.
 
-    Computes binned line and image profiles from multiple cursors. Also handles the data
-    indices and the number of bins for each cursor. Automatic conversion of non-uniform
-    dimensions are also handled here.
+    Computes binned line and image profiles from multiple cursors. This class also
+    stores the data indices and the number of bins for each cursor. Automatic conversion
+    of non-uniform dimensions are also handled here.
 
     Parameters
     ----------
@@ -131,22 +132,31 @@ class ArraySlicer(QtCore.QObject):
     Signals
     -------
     sigIndexChanged(int, tuple)
+        Emitted when the cursor index is changed. The first argument is the cursor
+        index, and the second is a tuple containing the changed axes.
     sigBinChanged(int, tuple)
+        Emitted when the bin size is changed. The first argument is the cursor index,
+        and the second is a tuple containing the changed axes.
     sigCursorCountChanged(int)
+        Emitted when the number of cursors is changed. Emits the new number of cursors.
     sigShapeChanged()
+        Emitted when the underlying `xarray.DataArray` is transposed.
 
     Note
     ----
     The original intent of this class was a xarray accessor. This is why `ArraySlicer`
-    does not depend on a `ImageSlicerArea` but rather on the underlying
+    does not depend on a :class:`ImageSlicerArea
+    <erlab.interactive.imagetool.core.ImageSlicerArea>` but rather on the underlying
     `xarray.DataArray`. Originally, when loading a different array, a different instance
     of `ArraySlicer` had to be created. This was a terrible design choice since it
     messed up signals every time the instance was replaced. Hence, the behaviour was
     modified (23/06/19) so that the underlying `xarray.DataArray` of `ArraySlicer` could
-    be swapped. As a consequence, each instance of `ImageSlicerArea` now corresponds to
-    exactly one instance of `ArraySlicer`, regardless of the data. In the future,
-    `ArraySlicer` might be changed so that it relies on its one-to-one correspondence
-    with `ImageSlicerArea` for the signals.
+    be swapped. As a consequence, each instance of :class:`ImageSlicerArea
+    <erlab.interactive.imagetool.core.ImageSlicerArea>` now corresponds to exactly one
+    instance of `ArraySlicer`, regardless of the data. In the future, `ArraySlicer`
+    might be changed so that it relies on its one-to-one correspondence with
+    :class:`ImageSlicerArea <erlab.interactive.imagetool.core.ImageSlicerArea>` for the
+    signals.
 
     """
 
@@ -158,6 +168,34 @@ class ArraySlicer(QtCore.QObject):
     def __init__(self, xarray_obj: xr.DataArray) -> None:
         super().__init__()
         self.set_array(xarray_obj, validate=True, reset=True)
+
+    def set_array(
+        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
+    ) -> None:
+        if hasattr(self, "_obj"):
+            del self._obj
+
+        if validate:
+            self._obj: xr.DataArray = self.validate_array(xarray_obj)
+        else:
+            self._obj = xarray_obj
+        self._nonuniform_axes: list[int] = [
+            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
+        ]
+
+        self.clear_dim_cache(include_vals=True)
+        if validate:
+            self.clear_val_cache(include_vals=False)
+
+        if reset:
+            self._bins: list[list[int]] = [[1] * self._obj.ndim]
+            self._indices: list[list[int]] = [
+                [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
+            ]
+            self._values: list[list[np.float32]] = [
+                [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
+            ]
+            self.snap_to_data: bool = False
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.float32], ...]:
@@ -233,6 +271,37 @@ class ArraySlicer(QtCore.QObject):
         """Return the global minima and maxima of the data."""
         return self.nanmin, self.nanmax
 
+    @property
+    def n_cursors(self) -> int:
+        """The number of cursors."""
+        return len(self._bins)
+
+    @property
+    def state(self) -> ArraySlicerState:
+        return {
+            "dims": copy.deepcopy(self._obj.dims),
+            "bins": copy.deepcopy(self._bins),
+            "indices": copy.deepcopy(self._indices),
+            "values": copy.deepcopy(self._values),
+            "snap_to_data": bool(self.snap_to_data),
+        }
+
+    @state.setter
+    def state(self, state: ArraySlicerState) -> None:
+        if self._obj.dims != state["dims"]:
+            self._obj = self._obj.transpose(*state["dims"])
+
+        self.snap_to_data = state["snap_to_data"]
+        self.clear_cache()
+
+        for i, (bins, indices, values) in enumerate(
+            zip(state["bins"], state["indices"], state["values"], strict=True)
+        ):
+            self.center_cursor(i)
+            self.set_indices(i, indices, update=False)
+            self.set_values(i, values, update=True)
+            self.set_bins(i, bins, update=True)
+
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.
@@ -240,8 +309,10 @@ class ArraySlicer(QtCore.QObject):
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
         exists) as the first two (or three) dimensions. Then, checks the data for
         non-uniform coordinates, which are converted to indices. Finally, converts the
-        coordinates to C-contiguous float32. If input data values neither float32 nor
-        float64, a conversion to float64 is attempted.
+        coordinates to C-contiguous float32.
+
+        If input data values are neither float32 nor float64, a conversion to float64 is
+        attempted.
 
         Parameters
         ----------
@@ -286,10 +357,20 @@ class ArraySlicer(QtCore.QObject):
 
         return data
 
-    def reset_property_cache(self, propname: str) -> None:
+    def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
     def clear_dim_cache(self, include_vals: bool = False) -> None:
+        """Clear cached properties related to dimensions.
+
+        This method clears the cached coordinate values, increments, and limits.
+
+        Parameters
+        ----------
+        include_vals
+            Whether to clear the cache that contains the transposed data values.
+
+        """
         for prop in (
             "coords",
             "coords_uniform",
@@ -298,49 +379,33 @@ class ArraySlicer(QtCore.QObject):
             "lims",
             "lims_uniform",
         ):
-            self.reset_property_cache(prop)
+            self._reset_property_cache(prop)
 
         if include_vals:
-            self.reset_property_cache("data_vals_T")
+            self._reset_property_cache("data_vals_T")
 
     def clear_val_cache(self, include_vals: bool = False) -> None:
+        """Clear cached properties related to data values.
+
+        This method clears the cached properties that depend on the data values, such as
+        the global minima and maxima.
+
+        Parameters
+        ----------
+        include_vals
+            Whether to clear the cache that contains the transposed data values.
+
+        """
         for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
-            self.reset_property_cache(prop)
+            self._reset_property_cache(prop)
 
         if include_vals:
-            self.reset_property_cache("data_vals_T")
+            self._reset_property_cache("data_vals_T")
 
     def clear_cache(self) -> None:
+        """Clear all cached properties."""
         self.clear_dim_cache()
         self.clear_val_cache(include_vals=True)
-
-    def set_array(
-        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
-    ) -> None:
-        if hasattr(self, "_obj"):
-            del self._obj
-
-        if validate:
-            self._obj: xr.DataArray = self.validate_array(xarray_obj)
-        else:
-            self._obj = xarray_obj
-        self._nonuniform_axes: list[int] = [
-            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
-        ]
-
-        self.clear_dim_cache(include_vals=True)
-        if validate:
-            self.clear_val_cache(include_vals=False)
-
-        if reset:
-            self._bins: list[list[int]] = [[1] * self._obj.ndim]
-            self._indices: list[list[int]] = [
-                [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
-            ]
-            self._values: list[list[np.float32]] = [
-                [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
-            ]
-            self.snap_to_data: bool = False
 
     def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.float32]:
         """Fast equivalent of :code:`self._obj[dim].values`.
@@ -747,34 +812,3 @@ class ArraySlicer(QtCore.QObject):
         if any(self.get_binned(cursor)):
             return fast_nanmean_skipcheck(selected, axis=axis)
         return selected
-
-    @property
-    def n_cursors(self) -> int:
-        """The number of cursors."""
-        return len(self._bins)
-
-    @property
-    def state(self) -> ArraySlicerState:
-        return {
-            "dims": copy.deepcopy(self._obj.dims),
-            "bins": copy.deepcopy(self._bins),
-            "indices": copy.deepcopy(self._indices),
-            "values": copy.deepcopy(self._values),
-            "snap_to_data": bool(self.snap_to_data),
-        }
-
-    @state.setter
-    def state(self, state: ArraySlicerState) -> None:
-        if self._obj.dims != state["dims"]:
-            self._obj = self._obj.transpose(*state["dims"])
-
-        self.snap_to_data = state["snap_to_data"]
-        self.clear_cache()
-
-        for i, (bins, indices, values) in enumerate(
-            zip(state["bins"], state["indices"], state["values"], strict=True)
-        ):
-            self.center_cursor(i)
-            self.set_indices(i, indices, update=False)
-            self.set_values(i, values, update=True)
-            self.set_bins(i, bins, update=True)

@@ -17,6 +17,7 @@ __all__ = [
     "get_mappable",
     "gradient_fill",
     "image_is_light",
+    "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
     "label_subplots_nature",
@@ -39,11 +40,11 @@ __all__ = [
     "unify_clim",
 ]
 
-import numpy as np
 
 from erlab.plotting.annotations import (
     copy_mathtext,
     fancy_labels,
+    integer_ticks,
     label_subplot_properties,
     label_subplots,
     label_subplots_nature,
@@ -82,24 +83,3 @@ from erlab.plotting.general import (
     plot_array_2d,
     plot_slices,
 )
-
-
-def integer_ticks(axes) -> None:
-    if np.iterable(axes):
-        for ax in np.asarray(axes, dtype=object):
-            integer_ticks(ax)
-        return
-    axes.set_xticks(
-        [
-            t
-            for t in axes.get_xticks()
-            if t.is_integer() and t >= axes.get_xlim()[0] and t <= axes.get_xlim()[1]
-        ]
-    )
-    axes.set_yticks(
-        [
-            t
-            for t in axes.get_yticks()
-            if t.is_integer() and t >= axes.get_ylim()[0] and t <= axes.get_ylim()[1]
-        ]
-    )

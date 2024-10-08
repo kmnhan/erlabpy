@@ -15,13 +15,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
-from xarray.backends.api import open_datatree
+import xarray as xr
 
+# from xarray.backends.api import open_dataarray
 import erlab.io
 from erlab.io.dataloader import LoaderBase
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
+
+
+def open_datatree(file_path, **kwargs):
+    """:meta private:"""  # noqa: D400
+    # Temporary fix for https://github.com/pydata/xarray/issues/9427
+    from xarray.backends.api import open_groups
+    from xarray.core.datatree import DataTree
+
+    return DataTree.from_dict(open_groups(file_path, **kwargs))
 
 
 def get_cache_file(file_path):
@@ -61,7 +71,7 @@ def cache_as_float32(file_path):
     data = data[next(iter(data.data_vars))]
 
     # Save cache
-    erlab.io.save_as_hdf5(data, cache_file, igor_compat=False)
+    data.to_netcdf(cache_file, engine="h5netcdf")
 
     return data
 
@@ -100,11 +110,11 @@ class MAESTROMicroLoader(LoaderBase):
                 file = f
 
         if file is None:
-            raise ValueError(f"No file found in {data_dir} for {num}")
+            return None
 
         return [file], {}
 
-    def load_single(self, file_path):
+    def load_single(self, file_path) -> xr.DataArray:
         cache_file = get_cache_file(file_path)
         dt = open_datatree(file_path, engine="h5netcdf", phony_dims="sort")
 
@@ -159,7 +169,7 @@ class MAESTROMicroLoader(LoaderBase):
                     )  # name of j-th subdevice in i-th loop
                     nm = nm.replace("CRYO-", "").strip()
                     motors.append(nm)
-                    motor_shape.append(combined_attrs[f"N_{i}_{j}"])
+                    motor_shape.append(int(combined_attrs[f"N_{i}_{j}"]))
 
         else:
             scan_type = "unknown"
@@ -174,7 +184,7 @@ class MAESTROMicroLoader(LoaderBase):
 
         if cache_file.is_file():
             # Load cache
-            data = erlab.io.load_hdf5(cache_file)
+            data = xr.load_dataarray(cache_file, engine="h5netcdf")
         else:
             # Create cache
             data = cache_as_float32(file_path)

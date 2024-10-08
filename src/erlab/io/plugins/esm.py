@@ -1,4 +1,4 @@
-"""Plugin for data acquired at KRISS."""
+"""Data loader for beamline ID21 ESM at NSLS-II."""
 
 import os
 import re
@@ -9,26 +9,28 @@ import erlab.io.utils
 from erlab.io.plugins.da30 import DA30Loader
 
 
-class KRISSLoader(DA30Loader):
-    name = "kriss"
+class ESMLoader(DA30Loader):
+    name = "esm"
 
-    aliases = ("KRISS",)
+    aliases = ("bnl", "id21")
 
-    coordinate_attrs = ("beta", "chi", "xi", "hv", "x", "y", "z")
+    coordinate_attrs = ("beta", "hv")
 
-    additional_attrs: ClassVar[dict] = {"configuration": 4}
-
-    @property
-    def name_map(self):
-        return super().name_map | {"chi": "ThetaY", "xi": "ThetaX"}
+    additional_attrs: ClassVar[dict] = {"configuration": 3}
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
     ) -> tuple[list[str], dict[str, Sequence]] | None:
-        for file in erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".zip")):
+        for file in erlab.io.utils.get_files(
+            data_dir, extensions=(".ibw", ".pxt", ".zip")
+        ):
             if file.endswith(".zip"):
                 match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", file)
-            else:
+
+            elif file.endswith(".pxt"):
+                match = re.match(r"(.*?)" + str(num).zfill(4) + r".pxt", file)
+
+            elif file.endswith(".ibw"):
                 match = re.match(
                     r"(.*?)" + str(num).zfill(4) + str(num).zfill(3) + r".ibw", file
                 )

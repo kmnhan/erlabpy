@@ -1,18 +1,9 @@
-"""Widgets for controlling `ImageSlicerArea`."""
+"""Widgets for controlling :class:`erlab.interactive.imagetool.core.ImageSlicerArea`."""
 
 from __future__ import annotations
 
-__all__ = [
-    "ItoolBinningControls",
-    "ItoolColorControls",
-    "ItoolColormapControls",
-    "ItoolControlsBase",
-    "ItoolCrosshairControls",
-]
-
 import contextlib
-import types
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -23,8 +14,6 @@ from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
 from erlab.interactive.utils import BetterSpinBox
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     import xarray as xr
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
@@ -32,34 +21,34 @@ if TYPE_CHECKING:
 
 
 class IconButton(QtWidgets.QPushButton):
-    ICON_ALIASES: Mapping[str, str] = types.MappingProxyType(
-        {
-            "invert": "mdi6.invert-colors",
-            "invert_off": "mdi6.invert-colors-off",
-            "contrast": "mdi6.contrast-box",
-            "lock": "mdi6.lock",
-            "unlock": "mdi6.lock-open-variant",
-            "bright_auto": "mdi6.brightness-auto",
-            "bright_percent": "mdi6.brightness-percent",
-            "colorbar": "mdi6.gradient-vertical",
-            "transpose_0": "mdi6.arrow-top-left-bottom-right",
-            "transpose_1": "mdi6.arrow-up-down",
-            "transpose_2": "mdi6.arrow-left-right",
-            "transpose_3": "mdi6.axis-z-arrow",
-            "snap": "mdi6.grid",
-            "snap_off": "mdi6.grid-off",
-            "palette": "mdi6.palette-advanced",
-            "styles": "mdi6.palette-swatch",
-            "layout": "mdi6.page-layout-body",
-            "zero_center": "mdi6.format-vertical-align-center",
-            "table_eye": "mdi6.table-eye",
-            "plus": "mdi6.plus",
-            "minus": "mdi6.minus",
-            "reset": "mdi6.backup-restore",
-            # all_cursors="mdi6.checkbox-multiple-outline",
-            "all_cursors": "mdi6.select-multiple",
-        }
-    )
+    """Convenience class for creating a QPushButton with a qtawesome icon."""
+
+    ICON_ALIASES: ClassVar[dict[str, str]] = {
+        "invert": "mdi6.invert-colors",
+        "invert_off": "mdi6.invert-colors-off",
+        "contrast": "mdi6.contrast-box",
+        "lock": "mdi6.lock",
+        "unlock": "mdi6.lock-open-variant",
+        "bright_auto": "mdi6.brightness-auto",
+        "bright_percent": "mdi6.brightness-percent",
+        "colorbar": "mdi6.gradient-vertical",
+        "transpose_0": "mdi6.arrow-top-left-bottom-right",
+        "transpose_1": "mdi6.arrow-up-down",
+        "transpose_2": "mdi6.arrow-left-right",
+        "transpose_3": "mdi6.axis-z-arrow",
+        "snap": "mdi6.grid",
+        "snap_off": "mdi6.grid-off",
+        "palette": "mdi6.palette-advanced",
+        "styles": "mdi6.palette-swatch",
+        "layout": "mdi6.page-layout-body",
+        "zero_center": "mdi6.format-vertical-align-center",
+        "table_eye": "mdi6.table-eye",
+        "plus": "mdi6.plus",
+        "minus": "mdi6.minus",
+        "reset": "mdi6.backup-restore",
+        # all_cursors="mdi6.checkbox-multiple-outline",
+        "all_cursors": "mdi6.select-multiple",
+    }  #: Mapping from custom aliases to qtawesome icon names.
 
     def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
         self.icon_key_on = None
@@ -83,7 +72,7 @@ class IconButton(QtWidgets.QPushButton):
         super().setChecked(value)
         self.refresh_icons()
 
-    def get_icon(self, icon: str):
+    def get_icon(self, icon: str) -> QtGui.QIcon:
         try:
             return qta.icon(self.ICON_ALIASES[icon])
         except KeyError:

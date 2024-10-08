@@ -210,9 +210,8 @@ class SSRL52Loader(LoaderBase):
             data = data["spectrum"]
 
         data = data.assign_attrs(attrs)
-        data = data.assign_coords(coord_attrs)
 
-        return self.process_keys(data)
+        return data.assign_coords(coord_attrs)
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -254,17 +253,7 @@ class SSRL52Loader(LoaderBase):
             if match is not None:
                 return [file], {}
 
-        raise FileNotFoundError(f"No files found for scan {num} in {data_dir}")
-
-    # def post_process(
-    #     self, data: xr.DataArray | xr.Dataset
-    # ) -> xr.DataArray | xr.Dataset:
-    #     data = super().post_process(data)
-
-    #     if "eV" in data.coords:
-    #         data = data.assign_coords(eV=-data.eV.values)
-
-    #     return data
+        return None
 
     def load_zap(self, identifier, data_dir):
         return self.load(identifier, data_dir, zap=True)

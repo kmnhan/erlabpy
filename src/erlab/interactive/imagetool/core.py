@@ -1,8 +1,6 @@
-"""Provides core functionality of imagetool."""
+"""Provides core functionality of ImageTool."""
 
 from __future__ import annotations
-
-__all__ = ["ImageSlicerArea"]
 
 import collections
 import contextlib
@@ -37,22 +35,28 @@ if TYPE_CHECKING:
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
-    class ColorMapState(TypedDict):
-        cmap: str | pg.ColorMap
-        gamma: float
-        reverse: bool
-        high_contrast: bool
-        zero_centered: bool
-        levels_locked: bool
-        levels: NotRequired[tuple[float, float]]
 
-    class ImageSlicerState(TypedDict):
-        color: ColorMapState
-        slice: ArraySlicerState
-        current_cursor: int
-        manual_limits: dict[str, list[float]]
-        cursor_colors: list[str]
-        splitter_sizes: NotRequired[list[list[int]]]
+class ColorMapState(TypedDict):
+    """A dictionary containing the colormap state of an `ImageSlicerArea` instance."""
+
+    cmap: str | pg.ColorMap
+    gamma: float
+    reverse: bool
+    high_contrast: bool
+    zero_centered: bool
+    levels_locked: bool
+    levels: NotRequired[tuple[float, float]]
+
+
+class ImageSlicerState(TypedDict):
+    """A dictionary containing the state of an `ImageSlicerArea` instance."""
+
+    color: ColorMapState
+    slice: ArraySlicerState
+    current_cursor: int
+    manual_limits: dict[str, list[float]]
+    cursor_colors: list[str]
+    splitter_sizes: NotRequired[list[list[int]]]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -269,7 +273,7 @@ class SlicerLinkProxy:
         steps: bool,
         color: bool,
     ) -> None:
-        """Propagate changes across multiple `ImageSlicerArea`s.
+        r"""Propagate changes across multiple :class:`ImageSlicerArea`\ s.
 
         This method is invoked every time a method decorated with :func:`link_slicer` in
         a linked `ImageSlicerArea` is called.
@@ -344,7 +348,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ----------
     parent
         Parent widget.
-    data
+    data : DataArray or array-like
         Data to display. The data must have 2 to 4 dimensions.
     cmap
         Default colormap of the data.
@@ -358,7 +362,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         degrees. If an iterable of strings is given, only the coordinates that
         correspond to the given strings are converted.
     bench
-        Prints the fps on Ctrl + drag, for debug purposes
+        Prints the fps on Ctrl + drag for debugging purposes.
     state
         Initial state containing the settings and cursor position.
 
@@ -1314,7 +1318,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
 
 class ItoolCursorLine(pg.InfiniteLine):
-    sigDragStarted = QtCore.Signal(object)
+    """A subclass of :class:`pyqtgraph.InfiniteLine` used in ImageTool."""
+
+    _sigDragStarted = QtCore.Signal(object)  # :meta private:
 
     def __init__(self, *args, **kargs) -> None:
         super().__init__(*args, **kargs)
@@ -1349,7 +1355,7 @@ class ItoolCursorLine(pg.InfiniteLine):
                         ev.buttonDownPos()
                     )
                     self.startPosition = self.pos()
-                    self.sigDragStarted.emit(self)
+                    self._sigDragStarted.emit(self)
                 ev.accept()
 
                 if not self.moving:
@@ -1433,7 +1439,8 @@ class ItoolDisplayObject:
 
     @property
     def sliced_data(self) -> xr.DataArray:
-        return self.array_slicer.xslice(self.cursor_index, self.display_axis)
+        with xr.set_options(keep_attrs=True):
+            return self.array_slicer.xslice(self.cursor_index, self.display_axis)
 
     def refresh_data(self) -> None:
         pass
@@ -1509,7 +1516,13 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
 
 
 class ItoolPlotItem(pg.PlotItem):
-    sigDragged = QtCore.Signal(object, object)
+    """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
+
+    This class tracks axes and cursors for the image it displays.
+
+    """
+
+    _sigDragged = QtCore.Signal(object, object)  # :meta private:
 
     def __init__(
         self,
@@ -1547,7 +1560,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
         self.slicer_area = slicer_area
-        self._display_axis = display_axis
+        self.display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
@@ -1563,7 +1576,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.add_cursor(update=False)
 
         self.proxy = pg.SignalProxy(
-            self.sigDragged,
+            self._sigDragged,
             delay=1 / 60,
             rateLimit=60,
             slot=self.process_drag,
@@ -1723,7 +1736,7 @@ class ItoolPlotItem(pg.PlotItem):
             else:
                 self.slicer_area.sigWriteHistory.emit()
 
-            self.sigDragged.emit(ev, modifiers)
+            self._sigDragged.emit(ev, modifiers)
             # self.process_drag((ev, modifiers))
         else:
             ev.ignore()
@@ -1845,7 +1858,7 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
-            c.sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
+            c._sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
 
         if update:
             self.refresh_cursor(new_cursor)

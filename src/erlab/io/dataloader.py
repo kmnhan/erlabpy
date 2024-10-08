@@ -1,36 +1,33 @@
 r"""Base functionality for implementing data loaders.
 
-This module provides a base class `LoaderBase` for implementing data loaders. Data
-loaders are plugins used to load data from various file formats. Each data loader that
-subclasses `LoaderBase` is registered on import in `loaders`.
+This module provides a base class :class:`LoaderBase` for implementing data loaders.
+Data loaders are plugins used to load data from various file formats.
 
-Loaded ARPES data must contain several attributes and coordinates. See the
-implementation of `LoaderBase.validate` for details.
+Each data loader is a subclass of :class:`LoaderBase` that must implement several
+methods and attributes.
 
-A detailed guide on how to implement a data loader can be found in
-:doc:`../user-guide/io`.
-
-If additional post-processing is required, the :func:`LoaderBase.post_process` method
-can be extended to include the necessary functionality.
-
+A detailed guide on how to implement a data loader can be found in the :ref:`User Guide
+<user-guide/io:Implementing a data loader plugin>`.
 """
 
 from __future__ import annotations
 
 import contextlib
-import datetime
+import errno
 import importlib
 import itertools
 import os
+import pathlib
 import warnings
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
 
-import joblib
 import numpy as np
 import pandas
 import xarray as xr
+from xarray.core.datatree import DataTree
 
-from erlab.utils.array import is_monotonic, is_uniform_spaced
+from erlab.utils.formatting import format_html_table, format_value
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -40,18 +37,15 @@ if TYPE_CHECKING:
         Iterator,
         KeysView,
         Mapping,
-        Sequence,
     )
-
-    DataFromSingleFile = xr.DataArray | xr.Dataset | list[xr.DataArray]
-
-
-class ValidationError(Exception):
-    """Raised when the loaded data fails validation checks."""
 
 
 class ValidationWarning(UserWarning):
     """Issued when the loaded data fails validation checks."""
+
+
+class ValidationError(Exception):
+    """Raised when the loaded data fails validation checks."""
 
 
 class LoaderNotFoundError(Exception):
@@ -61,111 +55,208 @@ class LoaderNotFoundError(Exception):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
 
 
-class LoaderBase:
+class _Loader(type):
+    """Metaclass for data loaders.
+
+    This metaclass wraps the `identify` method to raise an informative
+    `FileNotFoundError` when subclasses of DataLoaderBase return None or an empty list.
+    """
+
+    def __new__(cls, name, bases, dct):
+        # Create class
+        new_class = super().__new__(cls, name, bases, dct)
+
+        # Wrap identify
+        if "identify" in dct:
+            original_identify = dct["identify"]
+
+            def wrapped_identify(self, num, data_dir, **kwargs):
+                result = original_identify(self, num, data_dir, **kwargs)
+                if result is None or (result is not None and len(result[0]) == 0):
+                    dirname = data_dir or "the working directory"
+                    msg = (
+                        f"{self.__class__.__name__}.identify found no files "
+                        f"for scan {num} in {dirname}"
+                    )
+                    if len(kwargs) > 0:
+                        msg += f" with additional arguments {kwargs}"
+                    raise FileNotFoundError(msg)
+                return result
+
+            new_class.identify = wrapped_identify
+
+        return new_class
+
+
+class LoaderBase(metaclass=_Loader):
     """Base class for all data loaders."""
 
     name: str
     """
     Name of the loader. Using a unique and descriptive name is recommended. For easy
-    access, it is recommended to use a name that passes :func:`str.isidentifier`.
+    access, it is recommended to use a name that passes :meth:`str.isidentifier`.
+
+    Notes
+    -----
+    - Changing the name of a loader is not recommended as it may break existing code. If
+      a different name is required, Add an alias instead.
+    - Loaders with the name prefixed with an underscore are not registered.
     """
 
     aliases: Iterable[str] | None = None
-    """List of alternative names for the loader."""
+    """Alternative names for the loader."""
 
     name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
     """
     Dictionary that maps **new** coordinate or attribute names to **original**
     coordinate or attribute names. If there are multiple possible names for a single
     attribute, the value can be passed as an iterable.
+
+    Note
+    ----
+    - Non-dimension coordinates in the resulting data will try to follow the order of
+      the keys in this dictionary.
+    - Original **coordinate** names included in this mapping will be replaced by the new
+      names. However, original **attribute** names will be duplicated with the new names
+      so that both the original and new names are present in the data after loading.
+      This is to keep track of the original names for reference.
     """
 
     coordinate_attrs: tuple[str, ...] = ()
     """
-    Names of attributes (after renaming) that should be treated as coordinates.
+    Attribute names (after renaming) that should be treated as coordinates.
 
-    Attributes mentioned here will be moved from attrs to coordinates. This means that
-    it will be propagated when concatenating data from multiple files. If a listed
-    attribute is not found, it will be silently skipped.
+    Put any attributes that should be propagated when concatenating data here.
 
-    Note
-    ----
-    Although the data loader tries to preserve the original attributes, the attributes
-    given here, both before and after renaming, will be removed from attrs for
-    consistency.
+    Notes
+    -----
+    - If a listed attribute is not found, it is silently skipped.
+    - The attributes given here, both before and after renaming, are removed from the
+      attributes to avoid conflicting values.
+    - If an existing coordinate with the same name is already present, the existing
+      coordinate takes precedence and the attribute is silently dropped.
+
+    See Also
+    --------
+    :meth:`process_keys <erlab.io.dataloader.LoaderBase.process_keys>`
     """
 
     average_attrs: tuple[str, ...] = ()
     """
     Names of attributes or coordinates (after renaming) that should be averaged over.
 
-    This is useful for attributes that may slightly vary between scans. If a listed
-    attribute is not found, it will be silently skipped.
+    This is useful for attributes that may slightly vary between scans.
 
-    Note
-    ----
-    The attributes are just converted to coordinates upon loading and are averaged in
-    the post-processing step.
+    Notes
+    -----
+    - If a listed attribute is not found, it is silently skipped.
+    - Attributes listed here are first treated as coordinates in :meth:`process_keys
+      <erlab.io.dataloader.LoaderBase.process_keys>`, and then averaged in
+      :meth:`post_process <erlab.io.dataloader.LoaderBase.post_process>`.
+
+    See Also
+    --------
+    :meth:`process_keys <erlab.io.dataloader.LoaderBase.process_keys>`,
+    :meth:`post_process <erlab.io.dataloader.LoaderBase.post_process>`
     """
 
     additional_attrs: ClassVar[dict[str, str | int | float]] = {}
     """Additional attributes to be added to the data after loading.
 
-    If an attribute with the same name is already present, it will be skipped.
+    Notes
+    -----
+    - The attributes are added after renaming with :meth:`process_keys
+      <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
+      provided.
+    - If an attribute with the same name is already present in the data, it is skipped.
     """
 
     additional_coords: ClassVar[dict[str, str | int | float]] = {}
-    """Additional non-dimension coordinates to be added to the data after loading."""
+    """Additional non-dimension coordinates to be added to the data after loading.
+
+    Notes
+    -----
+    - The coordinates are added after renaming with :meth:`process_keys
+      <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
+      provided.
+    - If a coordinate with the same name is already present in the data, it is skipped.
+    """
+
+    formatters: ClassVar[dict[str, Callable]] = {}
+    """Mapping from attribute names (after renaming) to custom formatters.
+
+    The formatters must take the attribute value and return a value that can be
+    converted to a string with :meth:`value_to_string
+    <erlab.io.dataloader.LoaderBase.value_to_string>`. The resulting formats are used
+    for human readable display of some attributes in the summary table and the
+    information accessor.
+
+    Note
+    ----
+    The formatters are only used for display purposes and do not affect the stored data.
+    """
 
     always_single: bool = True
     """
-    If `True`, this indicates that all individual scans always lead to a single data
-    file. No concatenation of data from multiple files will be performed.
+    Setting this to `True` disables implicit loading of multiple files for a single
+    scan. This is useful for setups where each scan is always stored in a single file.
     """
 
     skip_validate: bool = False
-    """If `True`, validation checks will be skipped."""
+    """
+    If `True`, validation checks will be skipped. If `False`, data will be checked with
+    :meth:`validate <erlab.io.dataloader.LoaderBase.validate>` every time it is loaded.
+    """
 
     strict_validation: bool = False
     """
-    If `True`, validation check will raise a `ValidationError` on the first failure
-    instead of warning. Useful for debugging data loaders.
+    If `True`, validation checks will raise a `ValidationError` on the first failure
+    instead of warning. Useful for debugging data loaders. This has no effect if
+    `skip_validate` is `True`.
     """
 
     @property
     def name_map_reversed(self) -> dict[str, str]:
-        """A reversed version of the name_map dictionary.
+        """Reverse of :attr:`name_map <erlab.io.dataloader.LoaderBase.name_map>`.
 
         This property is useful for mapping original names to new names.
-
         """
-        return self.reverse_mapping(self.name_map)
-
-    @property
-    def coordinate_and_average_attrs(self) -> tuple[str, ...]:
-        """Return a tuple of coordinate and average attributes."""
-        return self.coordinate_attrs + self.average_attrs
+        return self._reverse_mapping(self.name_map)
 
     @property
     def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
-        """Map from file dialog names to the called method and its arguments.
+        """Map from file dialog names to the loader method and its arguments.
 
-        This property can be overridden specify the file dialog methods to be called
-        from the load menu of the ImageTool GUI.
+        Subclasses can override this property to provide support for loading data from
+        the load menu of the ImageTool GUI.
 
         Returns
         -------
         loader_mapping
-            A dictionary mapping the file dialog names to the called method and its
-            arguments. The method should be a callable that takes a single positional
-            argument which is a path to a data file, for instance ``self.load``. The
-            arguments should be a dictionary containing keyword arguments to be passed
-            to the method. It can be left empty if no additional arguments are required.
+            A dictionary mapping the file dialog names to a tuple of length 2 containing
+            the data loading function and arguments.
+
+            The first item of the tuple should be a callable that takes the first
+            positional argument as a path to a file, usually ``self.load``.
+
+            The second item should be a dictionary containing keyword arguments to be
+            passed to the method.
+
+        Example
+        -------
+        For instance, the loader for ALS BL4 implements the following mapping which
+        enables loading ``.pxt`` and ``.ibw`` files within ImageTool using ``self.load``
+        with no keyword arguments::
+
+                @property
+                def file_dialog_methods(self):
+                    return {"ALS BL4.0.3 Raw Data (*.pxt, *.ibw)": (self.load, {})}
+
         """
         return {}
 
     @staticmethod
-    def reverse_mapping(mapping: Mapping[str, str | Iterable[str]]) -> dict[str, str]:
+    def _reverse_mapping(mapping: Mapping[str, str | Iterable[str]]) -> dict[str, str]:
         """Reverse the given mapping dictionary to form a one-to-one mapping.
 
         Parameters
@@ -198,151 +289,27 @@ class LoaderBase:
             raise NotImplementedError("name attribute must be defined in the subclass")
 
         if not cls.name.startswith("_"):
-            LoaderRegistry.instance().register(cls)
+            LoaderRegistry.instance()._register(cls)
 
     @classmethod
-    def formatter(cls, val: object):
+    def value_to_string(cls, val: object) -> str:
         """Format the given value based on its type.
 
-        This method is used when formatting the cells of the summary dataframe.
+        The default behavior formats the given value with :func:`format_value
+        <erlab.utils.formatting.format_value>`. Override this classmethod to change the
+        printed format of each cell.
 
-        Parameters
-        ----------
-        val
-            The value to be formatted.
-
-        Returns
-        -------
-        str or object
-            The formatted value.
-
-        Note
-        ----
-        This function formats the given value based on its type. It supports formatting
-        for various types including numpy arrays, lists of strings, floating-point
-        numbers, integers, and datetime objects.
-
-        The function also tries to replace the Unicode hyphen-minus sign "-" (U+002D)
-        with the better-looking Unicode minus sign "−" (U+2212) in most cases.
-
-        - For numpy arrays:
-            - If the array has a size of 1, the value is recursively formatted using
-              `formatter(val.item())`.
-            - If the array can be squeezed to a 1-dimensional array, the following are
-              applied.
-
-                - If the array is evenly spaced, the start, end, step, and length values
-                  are formatted and returned as a string in the format "start→end (step,
-                  length)".
-                - If the array is monotonic increasing or decreasing but not evenly
-                  spaced, the start, end, and length values are formatted and returned
-                  as a string in the format "start→end (length)".
-                - If all elements are equal, the value is recursively formatted using
-                  `formatter(val[0])`.
-                - If the array is not monotonic, the minimum and maximum values are
-                  formatted and returned as a string in the format "min~max".
-
-            - For arrays with more dimensions, the array is returned as is.
-
-        - For lists:
-            The list is grouped by consecutive equal elements, and the count of each
-            element is formatted and returned as a string in the format
-            "[element]×count".
-
-        - For floating-point numbers:
-            - If the number is an integer, it is formatted as an integer using
-              `formatter(np.int64(val))`.
-            - Otherwise, it is formatted as a floating-point number with 4 decimal
-              places and returned as a string.
-
-        - For integers:
-            The integer is returned as a string.
-
-        - For datetime objects:
-            The datetime object is formatted as a string in the format "%Y-%m-%d
-            %H:%M:%S".
-
-        - For other types:
-            The value is returned as is.
-
-        Examples
-        --------
-        >>> formatter(np.array([0.1, 0.15, 0.2]))
-        '0.1→0.2 (0.05, 3)'
-
-        >>> formatter(np.array([1.0, 2.0, 2.1]))
-        '1→2.1 (3)'
-
-        >>> formatter(np.array([1.0, 2.1, 2.0]))
-        '1~2.1 (3)'
-
-        >>> formatter([1, 1, 2, 2, 2, 3, 3, 3, 3])
-        '[1]×2, [2]×3, [3]×4'
-
-        >>> formatter(3.14159)
-        '3.1416'
-
-        >>> formatter(42.0)
-        '42'
-
-        >>> formatter(42)
-        '42'
-
-        >>> formatter(datetime.datetime(2024, 1, 1, 12, 0, 0, 0))
-        '2024-01-01 12:00:00'
         """
-        if isinstance(val, np.ndarray):
-            if val.size == 1:
-                return cls.formatter(val.item())
-
-            if val.squeeze().ndim == 1:
-                val = val.squeeze()
-
-                if is_uniform_spaced(val):
-                    start, end, step = tuple(
-                        cls.formatter(v) for v in (val[0], val[-1], val[1] - val[0])
-                    )
-                    return f"{start}→{end} ({step}, {len(val)})".replace("-", "−")
-
-                if is_monotonic(val):
-                    if val[0] == val[-1]:
-                        return cls.formatter(val[0])
-
-                    return (
-                        f"{cls.formatter(val[0])}→{cls.formatter(val[-1])} ({len(val)})"
-                    )
-
-                mn, mx = tuple(cls.formatter(v) for v in (np.min(val), np.max(val)))
-                return f"{mn}~{mx} ({len(val)})"
-
-            return val
-
-        if isinstance(val, list):
-            return ", ".join(
-                [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
-            )
-
-        if np.issubdtype(type(val), np.floating):
-            val = cast(np.floating, val)
-            if val.is_integer():
-                return cls.formatter(np.int64(val))
-            return np.format_float_positional(val, precision=4, trim="-").replace(
-                "-", "−"
-            )
-        if np.issubdtype(type(val), np.integer):
-            return str(val).replace("-", "−")
-
-        if isinstance(val, datetime.datetime):
-            return val.strftime("%Y-%m-%d %H:%M:%S")
-
-        return val
+        return format_value(val)
 
     @classmethod
     def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
         """Return a styled version of the given dataframe.
 
-        This method, along with `formatter`, determines the display formatting of the
-        summary dataframe. Override this method to change the display style.
+        This method, along with :meth:`value_to_string
+        <erlab.io.dataloader.LoaderBase.value_to_string>`, determines the display
+        formatting of the summary dataframe. Override this classmethod to change the
+        display style.
 
         Parameters
         ----------
@@ -355,7 +322,7 @@ class LoaderBase:
             The styler to be displayed.
 
         """
-        style = df.style.format(cls.formatter)
+        style = df.style.format(cls.value_to_string)
 
         hidden = [c for c in ("Time", "Path") if c in df.columns]
         if len(hidden) > 0:
@@ -365,40 +332,93 @@ class LoaderBase:
 
     def load(
         self,
-        identifier: str | int,
-        data_dir: str | None = None,
+        identifier: str | os.PathLike | int,
+        data_dir: str | os.PathLike | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
+    ) -> xr.DataArray | xr.Dataset | DataTree:
         """Load ARPES data.
 
         Parameters
         ----------
         identifier
-            Value that identifies a scan uniquely. If a string or path-like object is
-            given, it is assumed to be the path to the data file. If an integer is
-            given, it is assumed to be a number that specifies the scan number, and is
-            used to automatically determine the path to the data file(s).
+            Value that identifies a scan uniquely.
+
+            - If a string or path-like object is given, it is assumed to be the path to
+              the data file relative to `data_dir`. If `data_dir` is not specified, it
+              is assumed to be the full path to the data file.
+
+            - If an integer is given, it is assumed to be a number that specifies the
+              scan number, and is used to automatically determine the path to the data
+              file(s). In this case, the `data_dir` argument must be specified.
         data_dir
-            Where to look for the data. If `None`, the default data directory will be
-            used.
+            Where to look for the data. Must be a path to a valid directory. This
+            argument is required when `identifier` is an integer.
+
+            When called as :func:`erlab.io.load`, this argument defaults to the value
+            set by :func:`erlab.io.set_data_dir` or :func:`erlab.io.loader_context`.
         single
-            For some setups, data for a single scan is saved over multiple files. This
-            argument is only used for such setups. When `identifier` is resolved to a
-            single file within a multiple file scan, the default behavior when `single`
-            is `False` is to return a single concatenated array that contains data from
-            all files in the same scan. If `single` is set to `True`, only the data from
-            the file given is returned. This argument is ignored when `identifier` is a
-            number.
+            This argument is only used when :attr:`always_single
+            <erlab.io.dataloader.LoaderBase.always_single>` is `False`, and `identifier`
+            is given as a string or path-like object.
+
+            If `identifier` points to a file that is included in a multiple file scan,
+            the default behavior when `single` is `False` is to return a single
+            concatenated array that contains data from all files in the same scan. If
+            `True`, only the data from the file given is returned.
+        parallel
+            Whether to load multiple files in parallel. If not specified, files are
+            loaded in parallel only when there are more than 15 files to load.
         **kwargs
             Additional keyword arguments are passed to `identify`.
 
         Returns
         -------
-        xarray.DataArray or xarray.Dataset or list of xarray.DataArray
+        `xarray.DataArray` or `xarray.Dataset` or `DataTree`
             The loaded data.
+
+        Notes
+        -----
+        - The `data_dir` set by :func:`erlab.io.set_data_dir` or
+          :func:`erlab.io.loader_context` is only used when called as
+          :func:`erlab.io.load`. When called directly on a loader instance, the
+          `data_dir` argument must be specified.
+        - For convenience, the `data_dir` set by :func:`erlab.io.set_data_dir` or
+          :func:`erlab.io.loader_context` is silently ignored when *all* of the
+          following are satisfied:
+
+          - `identifier` is an absolute path to an existing file.
+          - `data_dir` is not explicitly provided.
+          - The path created by joining `data_dir` and `identifier` does not point to an
+            existing file.
+
+          This way, absolute file paths can be passed directly to the loader without
+          changing the default data directory. For instance, consider the following
+          directory structure.
+
+          .. code-block:: none
+
+            cwd/
+            ├── data/
+            └── example.txt
+
+          The following code will load ``./example.txt`` instead of raising an error
+          that ``./data/example.txt`` is missing:
+
+          .. code-block:: python
+
+            import erlab.io
+
+            erlab.io.set_data_dir("data")
+            erlab.io.load("example.txt")
+
+          However, if ``./data/example.txt`` also exists, the same code will load that
+          one instead while warning about the ambiguity. This behavior may lead to
+          unexpected results when the directory structure is not organized. Keep this in
+          mind and try to keep all data files in the same level.
 
         """
         single = kwargs.pop("single", False)
+        parallel = kwargs.pop("parallel", None)
 
         if self.always_single:
             single = True
@@ -408,25 +428,32 @@ class LoaderBase:
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
-            file_paths, coord_dict = self.identify(identifier, data_dir, **kwargs)
+            file_paths, coord_dict = cast(
+                tuple[list[str], dict[str, Sequence]],
+                self.identify(identifier, data_dir, **kwargs),
+            )  # Return type enforced by metaclass, cast to avoid mypy error
+            # file_paths: list of file paths with at least one element
 
-            if len(file_paths) == 0:
-                raise ValueError(
-                    f"Failed to resolve identifier {identifier} "
-                    f"for data directory {data_dir}"
-                )
             if len(file_paths) == 1:
                 # Single file resolved
-                data = self.load_single(file_paths[0])
+                data: xr.DataArray | xr.Dataset | DataTree = self.load_single(
+                    file_paths[0]
+                )
             else:
                 # Multiple files resolved
                 data = self.combine_multiple(
-                    self.load_multiple_parallel(file_paths), coord_dict
+                    self.load_multiple_parallel(file_paths, parallel=parallel),
+                    coord_dict,
                 )
         else:
             if data_dir is not None:
                 # Generate full path to file
                 identifier = os.path.join(data_dir, identifier)
+
+                if not os.path.exists(identifier):
+                    raise FileNotFoundError(
+                        errno.ENOENT, os.strerror(errno.ENOENT), identifier
+                    )
 
             if not single:
                 # Get file name without extension and path
@@ -454,6 +481,37 @@ class LoaderBase:
             self.validate(data)
 
         return data
+
+    def get_formatted_attr_or_coord(
+        self, data: xr.DataArray, attr_or_coord_name: str
+    ) -> Any:
+        """Return the formatted value of the given attribute or coordinate.
+
+        The value is formatted using the function specified in :attr:`formatters
+        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
+        string is returned.
+
+        Parameters
+        ----------
+        data : DataArray
+            The data to extract the attribute or coordinate from.
+        attr_or_coord_name : str
+            The name of the attribute or coordinate to extract.
+
+        """
+        func = self.formatters.get(attr_or_coord_name, lambda x: x)
+
+        if attr_or_coord_name in data.attrs:
+            val = func(data.attrs[attr_or_coord_name])
+        elif attr_or_coord_name in data.coords:
+            val = data.coords[attr_or_coord_name].values
+            if val.size == 1:
+                val = func(val.item())
+            else:
+                val = np.array(list(map(func, val)), dtype=val.dtype)
+        else:
+            val = ""
+        return val
 
     def summarize(
         self,
@@ -490,7 +548,8 @@ class LoaderBase:
             `False`, the dataframe will be returned without formatting. If `True` but
             the IPython shell is not detected, the dataframe styler will be returned.
         **kwargs
-            Additional keyword arguments to be passed to `generate_summary`.
+            Additional keyword arguments to be passed to :meth:`generate_summary
+            <erlab.io.dataloader.LoaderBase.generate_summary>`.
 
         Returns
         -------
@@ -510,7 +569,9 @@ class LoaderBase:
 
         """
         if not os.path.isdir(data_dir):
-            raise FileNotFoundError(f"Directory {data_dir} not found")
+            raise FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(data_dir)
+            )
 
         pkl_path = os.path.join(data_dir, ".summary.pkl")
         df = None
@@ -567,15 +628,17 @@ class LoaderBase:
         Parameters
         ----------
         df
-            A summary dataframe as returned by `generate_summary`. If None, a dataframe
-            will be generated using `summarize`. Defaults to None.
+            A summary dataframe as returned by :meth:`generate_summary
+            <erlab.io.dataloader.LoaderBase.generate_summary>`. If `None`, a dataframe
+            will be generated using :meth:`summarize
+            <erlab.io.dataloader.LoaderBase.summarize>`. Defaults to `None`.
         **kwargs
-            Additional keyword arguments to be passed to `summarize` if `df` is None.
+            Additional keyword arguments to be passed to :meth:`summarize
+            <erlab.io.dataloader.LoaderBase.summarize>` if `df` is None.
 
         Note
         ----
-        This method requires `ipywidgets` to be installed. If not found, an
-        `ImportError` will be raised.
+        This method requires `ipywidgets` to be installed.
 
         """
         if not importlib.util.find_spec("ipywidgets"):
@@ -605,9 +668,12 @@ class LoaderBase:
 
         import erlab.plotting.erplot as eplt
 
+        # Temporary variable to store loaded data
         self._temp_data: xr.DataArray | None = None
+        # !TODO: properly GC this variable
 
-        def _format_data_info(series) -> str:
+        def _format_data_info(series: pandas.Series) -> str:
+            # Format data info as HTML table
             table = ""
             table += (
                 "<div class='widget-inline-hbox widget-select' "
@@ -621,7 +687,7 @@ class LoaderBase:
                     continue
                 table += "<tr>"
                 table += f"<td style='text-align:left;'><b>{k}</b></td>"
-                table += f"<td style='text-align:left;'>{self.formatter(v)}</td>"
+                table += f"<td style='text-align:left;'>{self.value_to_string(v)}</td>"
                 table += "</tr>"
 
             table += "</tbody></table>"
@@ -629,24 +695,27 @@ class LoaderBase:
             return table
 
         def _update_data(_, *, full: bool = False) -> None:
+            # Load data for selected row
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
 
-                path = series["Path"]
+                _path = series["Path"]
+                _basename = os.path.basename(_path)
+                _dirname = os.path.dirname(_path)
 
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx, _ = self.infer_index(
-                        os.path.splitext(os.path.basename(path))[0]
-                    )
+                    idx, _ = self.infer_index(os.path.splitext(_basename)[0])
                     if idx is not None:
-                        n_scans = len(self.identify(idx, os.path.dirname(path))[0])
-                        if n_scans > 1 and not full:
-                            full_button.disabled = False
+                        ident = self.identify(idx, _dirname)
+                        if ident is not None:
+                            n_scans = len(ident[0])
+                            if n_scans > 1 and not full:
+                                full_button.disabled = False
 
-                out = self.load(path, single=not full)
+                out = self.load(_basename, _dirname, single=not full)
                 if isinstance(out, xr.DataArray):
                     self._temp_data = out
                 del out
@@ -658,6 +727,7 @@ class LoaderBase:
             if self._temp_data.ndim == 4:
                 # If the data is 4D, average over the last dimension, making it 3D
                 self._temp_data = self._temp_data.mean(str(self._temp_data.dims[-1]))
+                # !TODO: Add 2 sliders for 4D data
 
             if self._temp_data.ndim == 3:
                 dim_sel.unobserve(_update_sliders, "value")
@@ -706,6 +776,7 @@ class LoaderBase:
             dim_sel.observe(_update_sliders, "value")
 
         def _update_plot(_) -> None:
+            out.clear_output(wait=True)
             if self._temp_data is None:
                 return
             if not coord_sel.disabled:
@@ -713,7 +784,6 @@ class LoaderBase:
             else:
                 plot_data = self._temp_data
 
-            out.clear_output(wait=True)
             with out:
                 plot_data.qplot(ax=plt.gca())
                 plt.title("")  # Remove automatically generated title
@@ -740,32 +810,33 @@ class LoaderBase:
             if idx - 1 >= 0:
                 data_select.value = list(df.index)[idx - 1]
 
+        # Buttons for navigation and loading full data
         prev_button = Button(description="Prev", layout=Layout(width="50px"))
-        prev_button.on_click(_prev)
-
         next_button = Button(description="Next", layout=Layout(width="50px"))
-        next_button.on_click(_next)
-
         full_button = Button(description="Load full", layout=Layout(width="100px"))
+        prev_button.on_click(_prev)
+        next_button.on_click(_next)
         full_button.on_click(lambda _: _update_data(None, full=True))
+        if self.always_single:
+            buttons = [prev_button, next_button]
+        else:
+            buttons = [prev_button, next_button, full_button]
 
-        buttons = [prev_button, next_button]
-        if not self.always_single:
-            buttons.append(full_button)
-
+        # List of data files
         data_select = Select(options=list(df.index), value=next(iter(df.index)), rows=8)
         data_select.observe(_update_data, "value")
 
+        # HTML table for data info
         data_info = HTML()
 
+        # Dropdown and slider for selecting dimension and coord
         dim_sel = Dropdown()
         dim_sel.observe(_update_sliders, "value")
-
         coord_sel = FloatSlider(continuous_update=True, readout_format=".3f")
         coord_sel.observe(_update_plot, "value")
 
+        # Make UI
         ui = VBox([HBox(buttons), data_select, data_info, dim_sel, coord_sel])
-
         out = Output()
         out.block = False
 
@@ -782,13 +853,18 @@ class LoaderBase:
 
     def load_single(
         self, file_path: str | os.PathLike
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-        r"""Load a single file and return it in applicable format.
+    ) -> xr.DataArray | xr.Dataset | DataTree:
+        r"""Load a single file and return it as an xarray data structure.
 
-        Any scan-specific postprocessing should be implemented in this method. When the
-        single file contains many regions, the method should return a single dataset
-        whenever the data can be merged with `xarray.merge` without conflicts.
-        Otherwise, a list of `xarray.DataArray`\ s should be returned.
+        Any scan-specific postprocessing should be implemented in this method.
+
+        This method must be implemented to return the *smallest possible data structure*
+        that represents the data in a single file. For instance, if a single file
+        contains a single scan region, the method should return a single
+        `xarray.DataArray`. If it contains multiple regions, the method should return a
+        `xarray.Dataset` or `DataTree` depending on whether the regions can be merged
+        with without conflicts (i.e., all mutual coordinates of the regions are the
+        same).
 
         Parameters
         ----------
@@ -797,15 +873,27 @@ class LoaderBase:
 
         Returns
         -------
-        xarray.DataArray or xarray.Dataset or list of xarray.DataArray
+        DataArray or Dataset or DataTree
             The loaded data.
 
+        Notes
+        -----
+        - For loaders with :attr:`always_single
+          <erlab.io.dataloader.LoaderBase.always_single>` set to `False`, the return
+          type of this method must be consistent across all associated files, i.e., for
+          all files that can be returned together from :meth:`identify
+          <erlab.io.dataloader.LoaderBase.identify>` so that they can be combined with
+          :meth:`combine_multiple <erlab.io.dataloader.LoaderBase.combine_multiple>`.
+          This should not be a problem since in most cases, the data structure of
+          associated files acquired during the same scan will be identical.
+        - For `DataTree` objects, returned trees must be named with a unique identifier
+          to avoid conflicts when combining.
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Iterable]]:
+    ) -> tuple[list[str], dict[str, Sequence]] | None:
         """Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -814,8 +902,16 @@ class LoaderBase:
         the list should contain only one file path and coordinates must be an empty
         dictionary.
 
-        The keys of the coordinates must be transformed to new names prior to returning
-        by using the mapping returned by the `name_map_reversed` property.
+        The keys of the coordinates must match the coordinate name conventions used by
+        the data returned by :meth:`load_single
+        <erlab.io.dataloader.LoaderBase.load_single>`. For example, if
+        :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>` is implemented
+        so that it renames properties and coordinates using :meth:`process_keys
+        <erlab.io.dataloader.LoaderBase.process_keys>`, the dictionary must also be
+        transformed to new names prior to returning by using the mapping returned by
+        :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`.
+
+        If no files are found for the given parameters, `None` should be returned.
 
         Parameters
         ----------
@@ -828,11 +924,11 @@ class LoaderBase:
         -------
         files : list[str]
             A list of file paths.
-        coord_dict : dict[str, Iterable]
+        coord_dict : dict[str, Sequence]
             A dictionary mapping scan axes names to scan coordinates. For scans spread
-            over multiple files, the coordinates will be iterables corresponding to each
-            file in the `files` list. For single file scans, an empty dictionary is
-            returned.
+            over multiple files, the coordinates will be sequences, with each element
+            corresponding to each file in ``files``. For single file scans, an empty
+            dictionary must be returned.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -842,9 +938,10 @@ class LoaderBase:
 
         This method takes a file name with the path and extension stripped, and tries to
         infer the scan index from it. If the index can be inferred, it is returned along
-        with additional keyword arguments that should be passed to `load`. If the index
-        is not found, `None` should be returned for the index, and an empty dictionary
-        for additional keyword arguments.
+        with additional keyword arguments that should be passed to :meth:`load
+        <erlab.io.dataloader.LoaderBase.load>`. If the index is not found, `None` should
+        be returned for the index, and an empty dictionary for additional keyword
+        arguments.
 
         Parameters
         ----------
@@ -856,13 +953,15 @@ class LoaderBase:
         index
             The inferred index if found, otherwise None.
         additional_kwargs
-            Additional keyword arguments to be passed to `load` when the index is found.
-            This argument is useful when the index alone is not enough to load the data.
+            Additional keyword arguments to be passed to :meth:`load
+            <erlab.io.dataloader.LoaderBase.load>` when the index is found. This
+            argument is useful when the index alone is not enough to load the data.
 
         Note
         ----
-        This method is used to determine all files for a given scan. Hence, for loaders
-        with `always_single` set to `True`, this method does not have to be implemented.
+        For loaders with :attr:`always_single
+        <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
+        not used.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -885,7 +984,9 @@ class LoaderBase:
             Summary of the data in the directory.
 
         """
-        raise NotImplementedError("This loader does not support folder summaries")
+        raise NotImplementedError(
+            f"loader '{self.name}' does not support folder summaries"
+        )
 
     def combine_attrs(
         self,
@@ -920,11 +1021,9 @@ class LoaderBase:
 
     def combine_multiple(
         self,
-        data_list: list[xr.DataArray | xr.Dataset | list[xr.DataArray]],
-        coord_dict: dict[str, Iterable],
-    ) -> (
-        xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset | list[xr.DataArray]]
-    ):
+        data_list: list[xr.DataArray | xr.Dataset | DataTree],
+        coord_dict: dict[str, Sequence],
+    ) -> xr.DataArray | xr.Dataset | DataTree:
         if len(coord_dict) == 0:
             try:
                 # Try to merge the data without conflicts
@@ -954,6 +1053,22 @@ class LoaderBase:
     def process_keys(
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
     ) -> xr.DataArray:
+        """Rename coordinates and attributes based on the given mapping.
+
+        This method is used to rename coordinates and attributes. This method is called
+        by :meth:`post_process <erlab.io.dataloader.LoaderBase.post_process>`. Extend or
+        override this method to customize the renaming behavior.
+
+        Parameters
+        ----------
+        data
+            The data to be processed.
+        key_mapping
+            A dictionary mapping **original** names to **new** names. If not provided,
+            :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`
+            is used.
+
+        """
         if key_mapping is None:
             key_mapping = self.name_map_reversed
 
@@ -962,29 +1077,48 @@ class LoaderBase:
 
         # For attributes, keep original attribute and add new with renamed keys
         new_attrs = {}
-        for k, v in dict(data.attrs).items():
-            if k in key_mapping:
-                new_key = key_mapping[k]
+        for old_key, value in dict(data.attrs).items():
+            if old_key in key_mapping:
+                new_key = key_mapping[old_key]
                 if (
-                    new_key in self.coordinate_and_average_attrs
+                    new_key in (set(self.coordinate_attrs) | set(self.average_attrs))
                     and new_key in data.coords
                 ):
                     # Renamed attribute is already a coordinate, remove
-                    del data.attrs[k]
+                    del data.attrs[old_key]
                 else:
-                    new_attrs[new_key] = v
+                    new_attrs[new_key] = value
         data = data.assign_attrs(new_attrs)
 
         # Move from attrs to coordinate if coordinate is not found
         return data.assign_coords(
             {
                 a: data.attrs.pop(a)
-                for a in self.coordinate_and_average_attrs
+                for a in (set(self.coordinate_attrs) | set(self.average_attrs))
                 if a in data.attrs and a not in data.coords
             }
         )
 
     def post_process(self, darr: xr.DataArray) -> xr.DataArray:
+        """Post-process the given `DataArray`.
+
+        This method takes a single `DataArray` and applies post-processing steps such as
+        renaming coordinates and attributes.
+
+        This method is called by :meth:`post_process_general
+        <erlab.io.dataloader.LoaderBase.post_process_general>`.
+
+        Parameters
+        ----------
+        darr
+            The `DataArray` to be post-processed.
+
+        Returns
+        -------
+        DataArray
+            The post-processed `DataArray`.
+
+        """
         darr = self.process_keys(darr)
 
         for k in self.average_attrs:
@@ -992,80 +1126,127 @@ class LoaderBase:
                 v = darr[k].values.mean()
                 darr = darr.drop_vars(k).assign_attrs({k: v})
 
-        darr = darr.assign_attrs(
-            {k: v for k, v in self.additional_attrs.items() if k not in darr.attrs}
-            | {"data_loader_name": str(self.name)}
-        )
-        darr = darr.assign_coords(self.additional_coords)
+        new_attrs = {
+            k: v for k, v in self.additional_attrs.items() if k not in darr.attrs
+        }
+        new_attrs["data_loader_name"] = str(self.name)
+        darr = darr.assign_attrs(new_attrs)
 
-        # Make coordinate order pretty
-        new_coords = {}
+        new_coords = {
+            k: v for k, v in self.additional_coords.items() if k not in darr.coords
+        }
+        return darr.assign_coords(new_coords)
+
+    def _reorder_coords(self, darr: xr.DataArray):
+        """Sort the coordinates of the given DataArray."""
+        ordered_coords = {}
         coord_dict = dict(darr.coords)
         for d in darr.dims:
-            new_coords[d] = coord_dict.pop(d)
+            # Move dimension coords to the front
+            ordered_coords[d] = coord_dict.pop(d)
+
         for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
             if d in coord_dict:
-                new_coords[d] = coord_dict.pop(d)
-        new_coords = new_coords | coord_dict
+                ordered_coords[d] = coord_dict.pop(d)
+        ordered_coords = ordered_coords | coord_dict
 
         return xr.DataArray(
-            darr.values, coords=new_coords, dims=darr.dims, attrs=darr.attrs
+            darr.values, coords=ordered_coords, dims=darr.dims, attrs=darr.attrs
         )
 
+    @overload
+    def post_process_general(self, data: xr.DataArray) -> xr.DataArray: ...
+
+    @overload
+    def post_process_general(self, data: xr.Dataset) -> xr.Dataset: ...
+
+    @overload
+    def post_process_general(self, data: DataTree) -> DataTree: ...
+
     def post_process_general(
-        self, data: xr.DataArray | xr.Dataset | list[xr.DataArray]
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
-        if isinstance(data, xr.DataArray):
-            return self.post_process(data)
+        self, data: xr.DataArray | xr.Dataset | DataTree
+    ) -> xr.DataArray | xr.Dataset | DataTree:
+        """Post-process any data structure.
 
-        if isinstance(data, list):
-            return [self.post_process(d) for d in data]
+        This method extends :meth:`post_process
+        <erlab.io.dataloader.LoaderBase.post_process>` to handle any data structure.
 
-        if isinstance(data, xr.Dataset):
-            return xr.Dataset(
-                {k: self.post_process(v) for k, v in data.data_vars.items()},
-                attrs=data.attrs,
-            )
-        return None
-
-    @classmethod
-    def validate(
-        cls, data: xr.DataArray | xr.Dataset | list[xr.DataArray | xr.Dataset]
-    ) -> None:
-        """Validate the input data to ensure it is in the correct format.
-
-        Checks for the presence of all required coordinates and attributes. If the data
-        does not pass validation, a `ValidationError` is raised or a warning is issued,
-        depending on the value of the `strict_validation` flag. Validation is skipped
-        for loaders with attribute `skip_validate` set to `True`.
+        This method is called by :meth:`load <erlab.io.dataloader.LoaderBase.load>` as
+        the final step in the data loading process.
 
         Parameters
         ----------
-        data
-            The data to be validated.
+        data : DataArray or Dataset or DataTree
+            The data to be post-processed.
 
-        Raises
-        ------
-        ValidationError
+            - If a `DataArray`, the data is post-processed using :meth:`post_process
+              <erlab.io.dataloader.LoaderBase.post_process>`.
+            - If a `Dataset`, a new `Dataset` containing each data variable
+              post-processed using :meth:`post_process
+              <erlab.io.dataloader.LoaderBase.post_process>` is returned. The attributes
+              of the original `Dataset` are preserved.
+            - If a `DataTree`, the post-processing is applied to each leaf node
+              `Dataset`.
+
+        Returns
+        -------
+        DataArray or Dataset or DataTree
+            The post-processed data with the same type as the input.
+        """
+        if isinstance(data, xr.DataArray):
+            return self._reorder_coords(self.post_process(data))
+
+        if isinstance(data, xr.Dataset):
+            return xr.Dataset(
+                {
+                    k: self._reorder_coords(self.post_process(v))
+                    for k, v in data.data_vars.items()
+                },
+                attrs=data.attrs,
+            )
+
+        if isinstance(data, DataTree):
+            return cast(DataTree, data.map_over_subtree(self.post_process_general))
+
+        raise TypeError("data must be a DataArray, Dataset, or DataTree")
+
+    @classmethod
+    def validate(cls, data: xr.DataArray | xr.Dataset | DataTree) -> None:
+        """Validate the input data to ensure it is in the correct format.
+
+        Checks for the presence of all coordinates and attributes required for common
+        analysis procedures like momentum conversion. If the data does not pass
+        validation, a `ValidationError` is raised or a warning is issued, depending on
+        the :attr:`strict_validation <erlab.io.dataloader.LoaderBase.strict_validation>`
+        flag. Validation is skipped for loaders with :attr:`skip_validate
+        <erlab.io.dataloader.LoaderBase.skip_validate>` set to `True`.
+
+        Parameters
+        ----------
+        data : DataArray or Dataset or DataTree
+            The data to be validated. If a `Dataset` or `DataTree` is passed, validation
+            is performed on each data variable recursively.
 
         """
-        if isinstance(data, list):
-            for d in data:
-                cls.validate(d)
-            return
-
         if isinstance(data, xr.Dataset):
             for v in data.data_vars.values():
                 cls.validate(v)
             return
 
-        for c in ("alpha", "beta", "delta", "xi", "hv"):
+        if isinstance(data, DataTree):
+            data.map_over_subtree(cls.validate)
+            return
+
+        for c in ("beta", "delta", "xi", "hv"):
             if c not in data.coords:
                 cls._raise_or_warn(f"Missing coordinate {c}")
 
         for a in ("configuration", "temp_sample"):
             if a not in data.attrs:
                 cls._raise_or_warn(f"Missing attribute {a}")
+
+        if "configuration" not in data.attrs:
+            return
 
         if data.attrs["configuration"] not in (1, 2):
             if data.attrs["configuration"] not in (3, 4):
@@ -1076,28 +1257,32 @@ class LoaderBase:
                 cls._raise_or_warn("Missing coordinate chi")
 
     def load_multiple_parallel(
-        self, file_paths: list[str], n_jobs: int | None = None
-    ) -> list[xr.DataArray | xr.Dataset | list[xr.DataArray]]:
+        self, file_paths: list[str], parallel: bool | None = None
+    ) -> list[xr.DataArray | xr.Dataset | DataTree]:
         """Load multiple files in parallel.
 
         Parameters
         ----------
         file_paths
             A list of file paths to load.
-        n_jobs
-            The number of jobs to run in parallel. If `None`, the number of jobs is set
-            to 1 for less than 15 files and to -1 (all CPU cores) for 15 or more files.
+        parallel
+            If `True`, data loading will be performed in parallel using `dask.delayed`.
 
         Returns
         -------
         A list of the loaded data.
         """
-        if n_jobs is None:
-            n_jobs = 1 if len(file_paths) < 15 else -1
+        if parallel is None:
+            parallel = len(file_paths) > 15
 
-        return joblib.Parallel(n_jobs=n_jobs)(
-            joblib.delayed(self.load_single)(f) for f in file_paths
-        )
+        if parallel:
+            import joblib
+
+            return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
+                joblib.delayed(self.load_single)(f) for f in file_paths
+            )
+
+        return [self.load_single(f) for f in file_paths]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
@@ -1136,10 +1321,10 @@ class LoaderRegistry(RegistryBase):
     current_loader: LoaderBase | None = None
     """Current loader \n\n:meta hide-value:"""
 
-    default_data_dir: str | os.PathLike | None = None
+    default_data_dir: pathlib.Path | None = None
     """Default directory to search for data files \n\n:meta hide-value:"""
 
-    def register(self, loader_class: type[LoaderBase]) -> None:
+    def _register(self, loader_class: type[LoaderBase]) -> None:
         # Add class to loader
         self.loaders[loader_class.name] = loader_class
 
@@ -1263,8 +1448,8 @@ class LoaderRegistry(RegistryBase):
     def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
         """Set the default data directory for the data loader.
 
-        All subsequent calls to `load` will use the `data_dir` set here unless
-        specified.
+        All subsequent calls to :func:`erlab.io.load` will use the `data_dir` set here
+        unless specified.
 
         Parameters
         ----------
@@ -1273,28 +1458,47 @@ class LoaderRegistry(RegistryBase):
 
         Note
         ----
-        This will only affect `load`. If the loader's ``load`` method is called
-        directly, it will not use the default data directory.
+        This will only affect :func:`erlab.io.load`. If the loader's ``load`` method is
+        called directly, it will not use the default data directory.
 
         """
-        if data_dir is not None and not os.path.isdir(data_dir):
-            raise FileNotFoundError(f"Directory {data_dir} not found")
-        self.default_data_dir = data_dir
+        if data_dir is None:
+            self.default_data_dir = None
+            return
+
+        self.default_data_dir = pathlib.Path(data_dir).resolve(strict=True)
 
     def load(
         self,
-        identifier: str | os.PathLike | int | None,
+        identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
+    ) -> xr.DataArray | xr.Dataset | DataTree:
         loader, default_dir = self._get_current_defaults()
+
+        if (
+            default_dir is not None
+            and data_dir is None
+            and not isinstance(identifier, int)
+            and os.path.exists(identifier)
+        ):
+            abs_file = pathlib.Path(identifier).resolve()
+            default_file = (default_dir / identifier).resolve()
+
+            if default_file.exists() and abs_file != default_file:
+                warnings.warn(
+                    f"Found {identifier!s} in the default directory "
+                    f"{default_dir!s}, but conflicting file {abs_file!s} was found. "
+                    "The first file will be loaded. "
+                    "Consider specifying the directory explicitly.",
+                    stacklevel=2,
+                )
+            else:
+                # If the identifier is a path to a file, ignore default_dir
+                default_dir = None
 
         if data_dir is None:
             data_dir = default_dir
-
-        if not isinstance(identifier, int) and os.path.isfile(identifier):
-            # If the identifier is a path to a file, ignore data_dir
-            data_dir = None
 
         return loader.load(identifier, data_dir=data_dir, **kwargs)
 
@@ -1306,7 +1510,7 @@ class LoaderRegistry(RegistryBase):
         cache: bool = True,
         display: bool = True,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | list[xr.DataArray]:
+    ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         loader, default_dir = self._get_current_defaults()
 
         if data_dir is None:
@@ -1339,16 +1543,8 @@ class LoaderRegistry(RegistryBase):
         return out
 
     def _repr_html_(self) -> str:
-        out = ""
-        out += "<table><thead>"
-        out += (
-            "<tr>"
-            "<th style='text-align:left;'><b>Name</b></th>"
-            "<th style='text-align:left;'><b>Aliases</b></th>"
-            "<th style='text-align:left;'><b>Loader class</b></th>"
-            "</tr>"
-        )
-        out += "</thead><tbody>"
+        rows: list[tuple[str, str, str]] = [("Name", "Aliases", "Loader class")]
+
         for k, v in self.loaders.items():
             aliases = ", ".join(v.aliases) if v.aliases is not None else ""
 
@@ -1357,17 +1553,9 @@ class LoaderRegistry(RegistryBase):
                 v = type(v)
 
             cls_name = f"{v.__module__}.{v.__qualname__}"
+            rows.append((k, aliases, cls_name))
 
-            out += (
-                "<tr>"
-                f"<td style='text-align:left;'>{k}</td>"
-                f"<td style='text-align:left;'>{aliases}</td>"
-                f"<td style='text-align:left;'>{cls_name}</td>"
-                "</tr>"
-            )
-        out += "</tbody></table>"
-
-        return out
+        return format_html_table(rows, header_rows=1)
 
     load.__doc__ = LoaderBase.load.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__

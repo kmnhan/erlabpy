@@ -6,7 +6,7 @@ import functools
 import time
 import warnings
 from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
-from typing import Literal, cast
+from typing import Literal, Self, cast
 
 import numpy as np
 import xarray as xr
@@ -15,6 +15,7 @@ from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
+from erlab.utils.formatting import format_html_table
 
 
 def only_angles(method=None):
@@ -134,26 +135,16 @@ class OffsetView:
         return dict(self).__repr__()
 
     def _repr_html_(self) -> str:
-        out = ""
-        out += "<table><tbody>"
-        for k, v in self.items():
-            out += (
-                "<tr>"
-                f"<td style='text-align:left;'><b>{k}</b></td>"
-                f"<td style='text-align:left;'>{v}</td>"
-                "</tr>"
-            )
-        out += "</tbody></table>"
-        return out
+        return format_html_table([(k, str(v)) for k, v in self.items()], header_cols=1)
 
     def update(
         self,
-        other: dict[str, float] | Iterable[tuple[str, float]] | None = None,
+        other: Mapping[str, float] | Iterable[tuple[str, float]] | None = None,
         **kwargs,
-    ) -> "OffsetView":
+    ) -> Self:
         """Update the offset view with the provided key-value pairs."""
         if other is not None:
-            for k, v in other.items() if isinstance(other, dict) else other:
+            for k, v in other.items() if isinstance(other, Mapping) else other:
                 self[str(k)] = v
         for k, v in kwargs.items():
             self[k] = v
@@ -163,7 +154,7 @@ class OffsetView:
         """Return a view of the offset view as a list of (key, value) pairs."""
         return dict(self).items()
 
-    def reset(self) -> "OffsetView":
+    def reset(self) -> Self:
         """Reset all angle offsets to zero."""
         for k in self._obj.kspace.valid_offset_keys:
             self[k] = 0.0
@@ -440,15 +431,15 @@ class MomentumAccessor(ERLabDataArrayAccessor):
           >>> data.kspace.offsets
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
 
-        - View single offset
-
-          >>> data.kspace.offsets["beta"]
-          0.0
-
         - Offsets to dictionary
 
           >>> dict(data.kspace.offsets)
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        - View single offset
+
+          >>> data.kspace.offsets["beta"]
+          0.0
 
         - Set single offset
 
@@ -478,7 +469,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._offsetview
 
     @offsets.setter
-    def offsets(self, offset_dict: dict[str, float]) -> None:
+    def offsets(self, offset_dict: Mapping[str, float]) -> None:
         if not hasattr(self, "_offsetview"):
             self._offsetview = OffsetView(self._obj)
 

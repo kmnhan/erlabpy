@@ -8,16 +8,16 @@ ERLabPy
 
    **Download documentation**: `Zipped HTML <https://erlabpy.readthedocs.io/_/downloads/en/latest/htmlzip/>`_, `PDF <https://erlabpy.readthedocs.io/_/downloads/en/latest/pdf/>`_
 
-   .. image:: https://img.shields.io/pypi/pyversions/erlab?style=for-the-badge&logo=python&logoColor=white
+   .. image:: https://img.shields.io/pypi/pyversions/erlab?style=flat-square&logo=python&logoColor=white
        :target: https://pypi.org/project/erlab/
        :alt: Supported Python Versions
-   .. image:: https://img.shields.io/pypi/v/erlab?style=for-the-badge&logo=pypi&logoColor=white
+   .. image:: https://img.shields.io/pypi/v/erlab?style=flat-square&logo=pypi&logoColor=white
        :target: https://pypi.org/project/erlab/
        :alt: PyPi
-   .. image:: https://img.shields.io/conda/vn/conda-forge/erlab?style=for-the-badge&logo=condaforge&logoColor=white
+   .. image:: https://img.shields.io/conda/vn/conda-forge/erlab?style=flat-square&logo=condaforge&logoColor=white
        :target: https://anaconda.org/conda-forge/erlab
        :alt: Conda Version
-   .. image:: https://img.shields.io/github/last-commit/kmnhan/erlabpy?style=for-the-badge&logo=github&color=lightseagreen
+   .. image:: https://img.shields.io/github/last-commit/kmnhan/erlabpy?style=flat-square&logo=github&color=lightseagreen
        :target: https://github.com/kmnhan/erlabpy.git
        :alt: Last Commit
 

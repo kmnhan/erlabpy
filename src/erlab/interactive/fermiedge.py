@@ -2,7 +2,7 @@ __all__ = ["goldtool"]
 
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import joblib
 import numpy as np
@@ -25,6 +25,8 @@ from erlab.interactive.utils import (
 from erlab.utils.parallel import joblib_progress_qt
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import lmfit
     import scipy.interpolate
 
@@ -70,6 +72,8 @@ class EdgeFitter(QtCore.QThread):
             return_as="list",
             pre_dispatch="n_jobs",
         )
+        self.edge_center: xr.DataArray | None = None
+        self.edge_stderr: xr.DataArray | None = None
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
@@ -134,6 +138,13 @@ class GoldTool(AnalysisWindow):
         execute: bool = True,
         **kwargs,
     ) -> None:
+        if set(data.dims) != {"alpha", "eV"}:
+            raise ValueError(
+                "`data` must be a DataArray with dimensions `alpha` and `eV`"
+            )
+        if data.dims[0] != "eV":
+            data = data.copy().T
+
         super().__init__(
             data,
             link="x",
@@ -147,7 +158,9 @@ class GoldTool(AnalysisWindow):
         if data_name is None:
             try:
                 self._argnames["data"] = varname.argname(
-                    "data", func=self.__init__, vars_only=False
+                    "data",
+                    func=self.__init__,  # type: ignore[misc]
+                    vars_only=False,
                 )
             except varname.VarnameRetrievingError:
                 self._argnames["data"] = "gold"
@@ -157,7 +170,9 @@ class GoldTool(AnalysisWindow):
         if data_corr is not None:
             try:
                 self._argnames["data_corr"] = varname.argname(
-                    "data_corr", func=self.__init__, vars_only=False
+                    "data_corr",
+                    func=self.__init__,  # type: ignore[misc]
+                    vars_only=False,
                 )
             except varname.VarnameRetrievingError:
                 self._argnames["data_corr"] = "data_corr"
@@ -177,7 +192,7 @@ class GoldTool(AnalysisWindow):
         except KeyError:
             temp = 30.0
 
-        self.params_roi = ROIControls(self.add_roi(0))
+        self.params_roi = ROIControls(self.aw.add_roi(0))
         self.params_edge = ParameterGroup(
             {
                 "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
@@ -202,7 +217,9 @@ class GoldTool(AnalysisWindow):
             }
         )
 
-        self.params_edge.widgets["Fast"].stateChanged.connect(self._toggle_fast)
+        cast(
+            QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
+        ).stateChanged.connect(self._toggle_fast)
 
         self.params_poly = ParameterGroup(
             {
@@ -258,13 +275,13 @@ class GoldTool(AnalysisWindow):
                 },
             }
         )
+        _auto_check = cast(QtWidgets.QCheckBox, self.params_spl.widgets["Auto"])
         self.params_spl.widgets["lambda"].setDisabled(
-            self.params_spl.widgets["Auto"].checkState() == QtCore.Qt.CheckState.Checked
+            _auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
-        self.params_spl.widgets["Auto"].toggled.connect(
+        _auto_check.toggled.connect(
             lambda _: self.params_spl.widgets["lambda"].setDisabled(
-                self.params_spl.widgets["Auto"].checkState()
-                == QtCore.Qt.CheckState.Checked
+                _auto_check.checkState() == QtCore.Qt.CheckState.Checked
             )
         )
 
@@ -313,17 +330,16 @@ class GoldTool(AnalysisWindow):
         self.step_times: list[float]
 
         # Setup progress bar
-        self.progress: QtWidgets.QProgressDialog = QtWidgets.QProgressDialog(
-            labelText="Fitting...",
-            minimum=0,
-            parent=self,
-            minimumDuration=0,
-            windowModality=QtCore.Qt.WindowModal,
-        )
+        self.progress: QtWidgets.QProgressDialog = QtWidgets.QProgressDialog(self)
         self.pbar: QtWidgets.QProgressBar = QtWidgets.QProgressBar()
-        self.progress.setBar(self.pbar)
-        self.progress.setFixedSize(self.progress.size())
+
+        self.progress.setLabelText("Fitting...")
         self.progress.setCancelButtonText("Abort!")
+        self.progress.setRange(0, 100)
+        self.progress.setMinimumDuration(0)
+        self.progress.setBar(self.pbar)
+        self.progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.progress.setFixedSize(self.progress.size())
         self.progress.canceled.disconnect(self.progress.cancel)  # don't auto close
         self.progress.canceled.connect(self.abort_fit)
         self.progress.setAutoReset(False)
@@ -351,8 +367,12 @@ class GoldTool(AnalysisWindow):
         self.__post_init__(execute=execute)
 
     def _toggle_fast(self) -> None:
-        self.params_edge.widgets["T (K)"].setDisabled(self.params_edge.values["Fast"])
-        self.params_edge.widgets["Fix T"].setDisabled(self.params_edge.values["Fast"])
+        self.params_edge.widgets["T (K)"].setDisabled(
+            bool(self.params_edge.values["Fast"])
+        )
+        self.params_edge.widgets["Fix T"].setDisabled(
+            bool(self.params_edge.values["Fast"])
+        )
 
     def iterated(self, n: int) -> None:
         self.step_times.append(time.perf_counter() - self.start_time)
@@ -396,8 +416,8 @@ class GoldTool(AnalysisWindow):
     def post_fit(self) -> None:
         self.progress.reset()
         self.edge_center, self.edge_stderr = (
-            self.fitter.edge_center,
-            self.fitter.edge_stderr,
+            cast(xr.DataArray, self.fitter.edge_center),
+            cast(xr.DataArray, self.fitter.edge_stderr),
         )
 
         xval = self.edge_center.alpha.values
@@ -484,7 +504,7 @@ class GoldTool(AnalysisWindow):
                 p1 = self.params_spl.values
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
 
-        arg_dict = {
+        arg_dict: dict[str, Any] = {
             "angle_range": (x0, x1),
             "eV_range": (y0, y1),
             "bin_size": (p0["Bin x"], p0["Bin y"]),
@@ -494,7 +514,7 @@ class GoldTool(AnalysisWindow):
 
         match mode:
             case "poly":
-                func = erlab.analysis.gold.poly
+                func: Callable = erlab.analysis.gold.poly
                 arg_dict["degree"] = p1["Degree"]
             case "spl":
                 func = erlab.analysis.gold.spline
@@ -556,7 +576,7 @@ def goldtool(
     """
     if data_name is None:
         try:
-            data_name = varname.argname("data", func=goldtool, vars_only=False)
+            data_name = str(varname.argname("data", func=goldtool, vars_only=False))
         except varname.VarnameRetrievingError:
             data_name = "data"
     return GoldTool(data, data_corr, data_name=data_name, **kwargs)
