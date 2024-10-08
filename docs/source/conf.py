@@ -229,8 +229,7 @@ def top_level(children, data):
 class APSStyle(pybtex.style.formatting.unsrt.Style):
     """APS style for BibTeX formatting.
 
-    Adapted from the conf.py file of the `mitiq
-    library<https://github.com/unitaryfund/mitiq>`_.
+    Adapted from the conf.py file of `mitiq <https://github.com/unitaryfund/mitiq>`_.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -447,8 +446,6 @@ pybtex.plugin.register_plugin("pybtex.style.formatting", "apsstyle", APSStyle)
 
 bibtex_bibfiles = ["refs.bib"]
 bibtex_default_style = "apsstyle"
-bibtex_footbibliography_header = ".. rubric:: References"
-
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
