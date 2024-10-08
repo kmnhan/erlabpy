@@ -1,4 +1,4 @@
-## Unreleased
+## v2.10.0 (2024-10-08)
 
 ### Features
 
@@ -15,6 +15,10 @@
 
 ### Bug Fixes
 
+- **io.dataloader:** properly reorder coordinates ([3ebfb0f](https://github.com/kmnhan/erlabpy/commit/3ebfb0fdbc21e690e51c185da92ed9c88921d3b1))
+
+  Coordinate order was broken for loaders which assign coordinates in inherited `post_process`. This is now fixed, and returned data will be consistently ordered with respect to the mapping, with the dimension coordinates coming first.
+- **erlab.io.plugins.maestro:** temporary fix for xarray issue ([c2d04a3](https://github.com/kmnhan/erlabpy/commit/c2d04a31ee98cbbcc403dafce6cf8dd6e37a09e5))
 - **io.plugins.da30:** properly handle output types ([6297aba](https://github.com/kmnhan/erlabpy/commit/6297aba2474ce4a28e865f48320d37e47c4ba1f7))
 
   The DA30 loader now tries to return a dataset from `.zip` files only when there are no coordinate conflicts. In the case of conflicts, the loader will return a `DataTree`.
