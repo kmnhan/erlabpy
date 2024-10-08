@@ -19,7 +19,7 @@ from erlab.io.dataloader import LoaderBase
 
 def _format_polarization(val) -> str:
     val = round(float(val))
-    return {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(val, val)
+    return {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(val, str(val))
 
 
 class MERLINLoader(LoaderBase):
@@ -79,21 +79,21 @@ class MERLINLoader(LoaderBase):
     def identify(self, num: int, data_dir: str | os.PathLike):
         coord_dict: dict[str, npt.NDArray[np.float64]] = {}
 
-        # Look for scans
+        # Look for multi-file scans
         files = glob.glob(f"*_{str(num).zfill(3)}_S*.pxt", root_dir=data_dir)
-        files.sort()
-        # Assume files sorted by scan #
+        files.sort()  # this should sort files by scan number
 
         if len(files) == 0:
-            # Look for multiregion scan
+            # Look for multiregion scans
             files = glob.glob(f"*_{str(num).zfill(3)}_R*.pxt", root_dir=data_dir)
             files.sort()
+
         elif len(files) > 1:
             match_prefix = re.match(
                 r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0]
             )
             if match_prefix is None:
-                raise RuntimeError(f"Failed to match prefix in {files[0]}")
+                raise RuntimeError(f"Failed to determine prefix from {files[0]}")
             prefix: str = match_prefix.group(1)
 
             motor_file = os.path.join(
@@ -102,14 +102,14 @@ class MERLINLoader(LoaderBase):
 
             coord_arr = np.loadtxt(motor_file, skiprows=1)
             with open(motor_file, encoding="utf-8") as f:
-                header = f.readline().strip().split("\t")
+                header = f.readline().strip().split("\t")  # motor coordinate names
 
             if coord_arr.ndim == 1:
-                coord_arr = coord_arr.reshape(-1, 1)
+                coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
 
-            for i, hdr in enumerate(header):
-                # Trim to number of files
-                coord_dict[hdr] = coord_arr[: len(files), i].astype(np.float64)
+            for i, dim in enumerate(header):
+                # Trim coord to number of files
+                coord_dict[dim] = coord_arr[: len(files), i]
 
         if len(files) == 0:
             # Look for single file scan
@@ -143,7 +143,7 @@ class MERLINLoader(LoaderBase):
             data = data.assign_coords(eV=-data.eV.values)
 
         if "temp_sample" in data.coords:
-            # Add temperature to attributes
+            # Add temperature to attributes, for backwards compatibility
             temp = float(data.temp_sample.mean())
             data = data.assign_attrs(temp_sample=temp)
 
