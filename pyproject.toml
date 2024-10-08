@@ -57,7 +57,7 @@ dev = [
     "pytest-datadir>=1.5.0",
     "pytest>=8.3.0",
     "commitizen>=3.29.0",
-    "cz-changeup>=0.2.0",
+    "cz-changeup>=0.3.0",
     "ruff>=0.6.3",
 ]
 docs = [
@@ -92,15 +92,23 @@ tag_format = "v$version"
 changelog_start_rev = "v1.2.1"
 changelog_merge_prerelease = true
 name = 'cz_changeup'
+change_type_order = [
+    "BREAKING CHANGE",
+    "Features",
+    "Bug Fixes",
+    "Code Refactor",
+    "Performance",
+]
+change_type_map = { "feat" = "Features", "fix" = "Bug Fixes", "refactor" = "Code Refactor", "perf" = "Performance" }
 
 # cz-changeup configuration
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"
 changeup_show_body = true
 changeup_body_indent = 2
 changeup_link_issues = true
-changeup_scope_prefix = "[**"
-changeup_scope_suffix = "**]"
-changeup_scope_separator = " "
+changeup_scope_prefix = "**"
+changeup_scope_suffix = ""
+changeup_scope_separator = ":** "
 
 [tool.setuptools]
 package-dir = { "" = "src" }
