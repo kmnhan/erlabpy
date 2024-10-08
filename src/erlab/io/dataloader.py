@@ -96,10 +96,11 @@ class LoaderBase(metaclass=_Loader):
     Name of the loader. Using a unique and descriptive name is recommended. For easy
     access, it is recommended to use a name that passes :meth:`str.isidentifier`.
 
-    Note
-    ----
-    Changing the name of a loader is not recommended as it may break existing code. If a
-    different name is required, Add an alias instead.
+    Notes
+    -----
+    - Changing the name of a loader is not recommended as it may break existing code. If
+      a different name is required, Add an alias instead.
+    - Loaders with the name prefixed with an underscore are not registered.
     """
 
     aliases: Iterable[str] | None = None
@@ -111,15 +112,14 @@ class LoaderBase(metaclass=_Loader):
     coordinate or attribute names. If there are multiple possible names for a single
     attribute, the value can be passed as an iterable.
 
-    Non-dimension coordinates in the resulting data will try to follow the order of the
-    keys in this dictionary.
-
     Note
     ----
-    Original **coordinate** names included in this mapping will be replaced by the new
-    names. However, original **attribute** names will be duplicated with the new names
-    so that both the original and new names are present in the data after loading. This
-    is to keep track of the original names for reference.
+    - Non-dimension coordinates in the resulting data will try to follow the order of
+      the keys in this dictionary.
+    - Original **coordinate** names included in this mapping will be replaced by the new
+      names. However, original **attribute** names will be duplicated with the new names
+      so that both the original and new names are present in the data after loading.
+      This is to keep track of the original names for reference.
     """
 
     coordinate_attrs: tuple[str, ...] = ()
@@ -858,13 +858,13 @@ class LoaderBase(metaclass=_Loader):
 
         Any scan-specific postprocessing should be implemented in this method.
 
-        This method must be implemented to return the smallest possible data structure
+        This method must be implemented to return the *smallest possible data structure*
         that represents the data in a single file. For instance, if a single file
         contains a single scan region, the method should return a single
         `xarray.DataArray`. If it contains multiple regions, the method should return a
-        `xarray.Dataset` containing the regions whenever the data can be merged with
-        `xarray.merge` without conflicts. When it is not possible, a `DataTree` should
-        be returned.
+        `xarray.Dataset` or `DataTree` depending on whether the regions can be merged
+        with without conflicts (i.e., all mutual coordinates of the regions are the
+        same).
 
         Parameters
         ----------
@@ -873,9 +873,21 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        `xarray.DataArray` or `xarray.Dataset` or `DataTree`
+        DataArray or Dataset or DataTree
             The loaded data.
 
+        Notes
+        -----
+        - For loaders with :attr:`always_single
+          <erlab.io.dataloader.LoaderBase.always_single>` set to `False`, the return
+          type of this method must be consistent across all associated files, i.e., for
+          all files that can be returned together from :meth:`identify
+          <erlab.io.dataloader.LoaderBase.identify>` so that they can be combined with
+          :meth:`combine_multiple <erlab.io.dataloader.LoaderBase.combine_multiple>`.
+          This should not be a problem since in most cases, the data structure of
+          associated files acquired during the same scan will be identical.
+        - For `DataTree` objects, returned trees must be named with a unique identifier
+          to avoid conflicts when combining.
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
