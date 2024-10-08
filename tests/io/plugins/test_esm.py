@@ -18,7 +18,7 @@ def expected_dir(data_dir):
 
 @pytest.mark.parametrize("identifier", [25, "Sample0025025.ibw", "Sample0025.pxt"])
 def test_load(expected_dir, identifier):
-    xr.testing.assert_allclose(
+    xr.testing.assert_identical(
         erlab.io.load(identifier),
         xr.load_dataarray(expected_dir / "Sample0025.nc"),
     )
