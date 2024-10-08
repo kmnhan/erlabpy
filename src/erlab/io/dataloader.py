@@ -1135,9 +1135,10 @@ class LoaderBase(metaclass=_Loader):
         new_coords = {
             k: v for k, v in self.additional_coords.items() if k not in darr.coords
         }
-        darr = darr.assign_coords(new_coords)
+        return darr.assign_coords(new_coords)
 
-        # Make coordinate order pretty
+    def _reorder_coords(self, darr: xr.DataArray):
+        """Sort the coordinates of the given DataArray."""
         ordered_coords = {}
         coord_dict = dict(darr.coords)
         for d in darr.dims:
@@ -1193,11 +1194,14 @@ class LoaderBase(metaclass=_Loader):
             The post-processed data with the same type as the input.
         """
         if isinstance(data, xr.DataArray):
-            return self.post_process(data)
+            return self._reorder_coords(self.post_process(data))
 
         if isinstance(data, xr.Dataset):
             return xr.Dataset(
-                {k: self.post_process(v) for k, v in data.data_vars.items()},
+                {
+                    k: self._reorder_coords(self.post_process(v))
+                    for k, v in data.data_vars.items()
+                },
                 attrs=data.attrs,
             )
 
