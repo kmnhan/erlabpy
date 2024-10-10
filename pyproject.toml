@@ -119,7 +119,6 @@ package-dir = { "" = "src" }
 [tool.ruff]
 line-length = 88
 indent-width = 4
-extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = [
@@ -191,6 +190,7 @@ allowed-confusables = [
     "ν",
     "α",
 ]
+exclude = ["*.ipynb"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
