@@ -1,3 +1,23 @@
+## v2.11.0 (2024-10-13)
+
+### Features
+
+- **io.dataloader:** add new argument that can control combining ([bdec5ff](https://github.com/kmnhan/erlabpy/commit/bdec5ff24e02e82597cef10d225997599efaa257))
+
+  Adds a new parameter `combine` to `io.load`. If `False`, returns a list of post-processed files without attempting to concatenate or merge the data into a single object. If `True`, retains the current default behavior.
+
+### Bug Fixes
+
+- **imagetool:** allow coords of any dtype coercible to float64 ([4342ebc](https://github.com/kmnhan/erlabpy/commit/4342ebc1bc4be01fcc9c7883ecfbaef0f5857e5d))
+- **io.dataloader:** properly handle combining multi-axis scans ([2cd22c7](https://github.com/kmnhan/erlabpy/commit/2cd22c7998cd22d399e59a86131e4c5712127b23))
+
+### Code Refactor
+
+- **io.plugins:** update type hints ([54d0c5d](https://github.com/kmnhan/erlabpy/commit/54d0c5d7e55cc7e6af6b4d83feeb9d6c863e52f6))
+- remove unused imports ([f1e35de](https://github.com/kmnhan/erlabpy/commit/f1e35ded993f1fb2be04c549aa241809c7d68a4d))
+- **interactive:** add informative error message for missing pyqt ([1347a02](https://github.com/kmnhan/erlabpy/commit/1347a0231698f8104be71116823f797caeccc9a6))
+- **io.plugins:** add warning when plugin load fails ([ed5b184](https://github.com/kmnhan/erlabpy/commit/ed5b184538cde60c1fa2ba2421ff30c27acb1eed))
+
 ## v2.10.0 (2024-10-08)
 
 ### Features
