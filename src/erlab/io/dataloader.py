@@ -350,8 +350,19 @@ class LoaderBase(metaclass=_Loader):
         self,
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
+        *,
+        single: bool = False,
+        combine: bool = True,
+        parallel: bool | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> (
+        xr.DataArray
+        | xr.Dataset
+        | DataTree
+        | list[xr.DataArray]
+        | list[xr.Dataset]
+        | list[DataTree]
+    ):
         """Load ARPES data.
 
         Parameters
@@ -378,9 +389,18 @@ class LoaderBase(metaclass=_Loader):
             is given as a string or path-like object.
 
             If `identifier` points to a file that is included in a multiple file scan,
-            the default behavior when `single` is `False` is to return a single
-            concatenated array that contains data from all files in the same scan. If
-            `True`, only the data from the file given is returned.
+            the default behavior when `single` is `False` is to return data from all
+            files in the same scan. How the data is combined is determined by the
+            `combine` argument. If `True`, only the data from the file given is
+            returned.
+        combine
+            Whether to attempt to combine multiple files into a single data object. If
+            `False`, a list of data is returned. If `True`, the loader tries to combined
+            the data into a single data object and return it. Depending on the type of
+            each data object, the returned object can be a `xarray.DataArray`,
+            `xarray.Dataset`, or a `DataTree`.
+
+            This argument is only used when `single` is `False`.
         parallel
             Whether to load multiple files in parallel. If not specified, files are
             loaded in parallel only when there are more than 15 files to load.
@@ -433,9 +453,6 @@ class LoaderBase(metaclass=_Loader):
           mind and try to keep all data files in the same level.
 
         """
-        single = kwargs.pop("single", False)
-        parallel = kwargs.pop("parallel", None)
-
         if self.always_single:
             single = True
 
@@ -457,10 +474,16 @@ class LoaderBase(metaclass=_Loader):
                 )
             else:
                 # Multiple files resolved
-                data = self.combine_multiple(
-                    self.load_multiple_parallel(file_paths, parallel=parallel),
-                    coord_dict,
-                )
+                if combine:
+                    data = self.combine_multiple(
+                        self.load_multiple_parallel(file_paths, parallel=parallel),
+                        coord_dict,
+                    )
+                else:
+                    return self.load_multiple_parallel(
+                        file_paths, parallel=parallel, post_process=True
+                    )
+
         else:
             if data_dir is not None:
                 # Generate full path to file
@@ -1272,7 +1295,9 @@ class LoaderBase(metaclass=_Loader):
         if isinstance(data, DataTree):
             return cast(DataTree, data.map_over_subtree(self.post_process_general))
 
-        raise TypeError("data must be a DataArray, Dataset, or DataTree")
+        raise TypeError(
+            "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
+        )
 
     @classmethod
     def validate(cls, data: xr.DataArray | xr.Dataset | DataTree) -> None:
@@ -1321,8 +1346,11 @@ class LoaderBase(metaclass=_Loader):
                 cls._raise_or_warn("Missing coordinate chi")
 
     def load_multiple_parallel(
-        self, file_paths: list[str], parallel: bool | None = None
-    ) -> list[xr.DataArray | xr.Dataset | DataTree]:
+        self,
+        file_paths: list[str],
+        parallel: bool | None = None,
+        post_process: bool = False,
+    ) -> list[xr.DataArray] | list[xr.Dataset] | list[DataTree]:
         """Load multiple files in parallel.
 
         Parameters
@@ -1331,6 +1359,8 @@ class LoaderBase(metaclass=_Loader):
             A list of file paths to load.
         parallel
             If `True`, data loading will be performed in parallel using `dask.delayed`.
+        post_process
+            Whether to post-process each data object after loading.
 
         Returns
         -------
@@ -1339,14 +1369,22 @@ class LoaderBase(metaclass=_Loader):
         if parallel is None:
             parallel = len(file_paths) > 15
 
+        if post_process:
+
+            def _load_func(filename):
+                return self.load(filename, single=True)
+
+        else:
+            _load_func = self.load_single
+
         if parallel:
             import joblib
 
             return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
-                joblib.delayed(self.load_single)(f) for f in file_paths
+                joblib.delayed(_load_func)(f) for f in file_paths
             )
 
-        return [self.load_single(f) for f in file_paths]
+        return [_load_func(f) for f in file_paths]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
@@ -1537,7 +1575,14 @@ class LoaderRegistry(RegistryBase):
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> (
+        xr.DataArray
+        | xr.Dataset
+        | DataTree
+        | list[xr.DataArray]
+        | list[xr.Dataset]
+        | list[DataTree]
+    ):
         loader, default_dir = self._get_current_defaults()
 
         if (
@@ -1599,7 +1644,7 @@ class LoaderRegistry(RegistryBase):
         out += "\n\n"
         out += "Aliases\n-------\n" + "\n".join(
             [
-                f"{k}: {v.aliases}"
+                f"{k}: {tuple(v.aliases)}"
                 for k, v in self.loaders.items()
                 if v.aliases is not None
             ]
