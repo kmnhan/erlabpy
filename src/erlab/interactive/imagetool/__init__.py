@@ -686,7 +686,11 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _open_file(
-        self, *, name_filter: str | None = None, directory: str | None = None
+        self,
+        *,
+        name_filter: str | None = None,
+        directory: str | None = None,
+        native: bool = True,
     ) -> None:
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
@@ -704,6 +708,8 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilters(valid_loaders.keys())
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if name_filter is None:
             name_filter = self._recent_name_filter
@@ -716,8 +722,6 @@ class ItoolMenuBar(DictMenuBar):
 
         if directory is not None:
             dialog.setDirectory(directory)
-
-        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]

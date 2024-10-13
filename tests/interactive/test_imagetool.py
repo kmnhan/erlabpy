@@ -1,3 +1,4 @@
+import tempfile
 import time
 from collections.abc import Callable
 
@@ -115,6 +116,37 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
+
+
+def test_itool_load(qtbot):
+    # Create a temporary directory
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data.to_netcdf(filename, engine="h5netcdf")
+
+    win = itool(np.zeros((2, 2)), execute=False)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("data.h5")
+
+    accept_dialog(lambda: win.mnb._open_file(native=False), pre_call=_go_to_file)
+
+    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+
+    win.close()
+
+    tmp_dir.cleanup()
 
 
 def test_itool(qtbot):
