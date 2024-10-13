@@ -334,10 +334,10 @@ class SlicerLinkProxy:
             return round(
                 index * source.array_slicer.incs[axis] / target.array_slicer.incs[axis]
             )
-        value: np.float32 = source.array_slicer.value_of_index(
-            axis, index, uniform=False
+        value = source.array_slicer.value_of_index(axis, index, uniform=False)
+        new_index: int = target.array_slicer.index_of_value(
+            axis, float(value), uniform=False
         )
-        new_index: int = target.array_slicer.index_of_value(axis, value, uniform=False)
         return new_index
 
 

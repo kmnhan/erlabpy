@@ -97,7 +97,7 @@ def itool(
 
           Every DataArray in the Dataset will be displayed across multiple ImageTool
           windows. Data variables that have less than 2 dimensions or more than 4
-          dimensions are ignored.
+          dimensions are ignored. Dimensions with length 1 are automatically squeezed.
     link
         Whether to enable linking between multiple ImageTool windows when `data` is a
         sequence or a `xarray.Dataset`, by default `False`.
