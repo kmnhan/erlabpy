@@ -743,12 +743,14 @@ class ItoolMenuBar(DictMenuBar):
             else:
                 self.slicer_area.view_all()
 
-    def _export_file(self) -> None:
+    def _export_file(self, native: bool = True) -> None:
         if self.slicer_area._data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         # To avoid importing erlab.io, we define the following functions here
         def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:

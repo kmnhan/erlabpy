@@ -119,7 +119,6 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
 
 
 def test_itool_load(qtbot):
-    # Create a temporary directory
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
 
@@ -146,6 +145,34 @@ def test_itool_load(qtbot):
 
     win.close()
 
+    tmp_dir.cleanup()
+
+
+def test_itool_save(qtbot):
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = itool(data, execute=False)
+
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("data.h5")
+
+    accept_dialog(lambda: win.mnb._export_file(native=False), pre_call=_go_to_file)
+
+    win.close()
+
+    xr.testing.assert_equal(data, xr.load_dataarray(filename))
     tmp_dir.cleanup()
 
 
