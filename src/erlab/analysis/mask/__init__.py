@@ -142,10 +142,10 @@ def polygon_mask_points(
     ValueError
         If the lengths of x and y are not equal.
 
-    Notes
-    -----
-    This function uses the `erlab.analysis.mask.polygon.bounded_side_bool` to determine
-    whether a point is inside or outside the polygon.
+    Note
+    ----
+    This function uses :func:`erlab.analysis.mask.polygon.bounded_side_bool` to
+    determine whether a point is inside or outside the polygon.
     """
     if len(x) != len(y):
         raise ValueError

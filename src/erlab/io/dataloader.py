@@ -20,7 +20,16 @@ import os
 import pathlib
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Self,
+    TypeGuard,
+    TypeVar,
+    cast,
+    overload,
+)
 
 import numpy as np
 import pandas
@@ -38,6 +47,13 @@ if TYPE_CHECKING:
         KeysView,
         Mapping,
     )
+
+
+_T = TypeVar("_T")
+
+
+def _is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
+    return all(isinstance(x, element_type) for x in val) and isinstance(val, Sequence)
 
 
 class ValidationWarning(UserWarning):
@@ -334,8 +350,19 @@ class LoaderBase(metaclass=_Loader):
         self,
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
+        *,
+        single: bool = False,
+        combine: bool = True,
+        parallel: bool | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> (
+        xr.DataArray
+        | xr.Dataset
+        | DataTree
+        | list[xr.DataArray]
+        | list[xr.Dataset]
+        | list[DataTree]
+    ):
         """Load ARPES data.
 
         Parameters
@@ -362,9 +389,18 @@ class LoaderBase(metaclass=_Loader):
             is given as a string or path-like object.
 
             If `identifier` points to a file that is included in a multiple file scan,
-            the default behavior when `single` is `False` is to return a single
-            concatenated array that contains data from all files in the same scan. If
-            `True`, only the data from the file given is returned.
+            the default behavior when `single` is `False` is to return data from all
+            files in the same scan. How the data is combined is determined by the
+            `combine` argument. If `True`, only the data from the file given is
+            returned.
+        combine
+            Whether to attempt to combine multiple files into a single data object. If
+            `False`, a list of data is returned. If `True`, the loader tries to combined
+            the data into a single data object and return it. Depending on the type of
+            each data object, the returned object can be a `xarray.DataArray`,
+            `xarray.Dataset`, or a `DataTree`.
+
+            This argument is only used when `single` is `False`.
         parallel
             Whether to load multiple files in parallel. If not specified, files are
             loaded in parallel only when there are more than 15 files to load.
@@ -417,9 +453,6 @@ class LoaderBase(metaclass=_Loader):
           mind and try to keep all data files in the same level.
 
         """
-        single = kwargs.pop("single", False)
-        parallel = kwargs.pop("parallel", None)
-
         if self.always_single:
             single = True
 
@@ -441,10 +474,16 @@ class LoaderBase(metaclass=_Loader):
                 )
             else:
                 # Multiple files resolved
-                data = self.combine_multiple(
-                    self.load_multiple_parallel(file_paths, parallel=parallel),
-                    coord_dict,
-                )
+                if combine:
+                    data = self.combine_multiple(
+                        self.load_multiple_parallel(file_paths, parallel=parallel),
+                        coord_dict,
+                    )
+                else:
+                    return self.load_multiple_parallel(
+                        file_paths, parallel=parallel, post_process=True
+                    )
+
         else:
             if data_dir is not None:
                 # Generate full path to file
@@ -1019,36 +1058,84 @@ class LoaderBase(metaclass=_Loader):
         """
         return dict(variable_attrs[0])
 
+    @overload
     def combine_multiple(
         self,
-        data_list: list[xr.DataArray | xr.Dataset | DataTree],
+        data_list: list[xr.DataArray],
+        coord_dict: dict[str, Sequence],
+    ) -> xr.DataArray: ...
+
+    @overload
+    def combine_multiple(
+        self,
+        data_list: list[xr.Dataset],
+        coord_dict: dict[str, Sequence],
+    ) -> xr.Dataset: ...
+
+    @overload
+    def combine_multiple(
+        self,
+        data_list: list[DataTree],
+        coord_dict: dict[str, Sequence],
+    ) -> DataTree: ...
+
+    def combine_multiple(
+        self,
+        data_list: list[xr.DataArray] | list[xr.Dataset] | list[DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | DataTree:
-        if len(coord_dict) == 0:
-            try:
-                # Try to merge the data without conflicts
-                return xr.merge(data_list, combine_attrs=self.combine_attrs)
-            except:  # noqa: E722
-                # On failure, return a list
-                return data_list
-        else:
-            for i in range(len(data_list)):
-                if isinstance(data_list[i], list):
-                    data_list[i] = self.combine_multiple(data_list[i], coord_dict={})
+        if _is_sequence_of(data_list, DataTree):
+            raise NotImplementedError(
+                "Combining DataTrees into a single tree "
+                "will be supported in a future release"
+            )
 
-                if not isinstance(data_list[i], list):
-                    data_list[i] = data_list[i].assign_coords(
-                        {k: v[i] for k, v in coord_dict.items()}
+        if len(coord_dict) == 0:
+            # No coordinates to combine given
+            # Multiregion scans over multiple files may be provided like this
+
+            if _is_sequence_of(data_list, DataTree):
+                pass
+            else:
+                try:
+                    return xr.combine_by_coords(
+                        cast(Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list),
+                        combine_attrs=self.combine_attrs,
+                        join="exact",
                     )
-            try:
-                return xr.concat(
-                    data_list,
-                    dim=next(iter(coord_dict.keys())),
-                    coords="different",
-                    combine_attrs=self.combine_attrs,
-                )
-            except:  # noqa: E722
-                return data_list
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to combine data. Try passing "
+                        "`combine=False` to `erlab.io.load`"
+                    ) from e
+
+        if _is_sequence_of(data_list, xr.DataArray) or _is_sequence_of(
+            data_list, xr.Dataset
+        ):
+            combined = xr.combine_by_coords(
+                [
+                    data.assign_coords(
+                        {k: v[i] for k, v in coord_dict.items()}
+                    ).expand_dims(tuple(coord_dict.keys()))
+                    for i, data in enumerate(data_list)
+                ],
+                combine_attrs=self.combine_attrs,
+            )
+            if (
+                isinstance(combined, xr.Dataset)
+                and len(combined.data_vars) == 1
+                and combined.attrs == {}
+            ):
+                # Named DataArrays combined into a Dataset, extract the DataArray
+                var_name = next(iter(combined.data_vars))
+                combined = combined[var_name]
+
+                if combined.name is None:
+                    combined = combined.rename(var_name)
+
+            return combined
+
+        raise TypeError("input type must be homogeneous")
 
     def process_keys(
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
@@ -1208,7 +1295,9 @@ class LoaderBase(metaclass=_Loader):
         if isinstance(data, DataTree):
             return cast(DataTree, data.map_over_subtree(self.post_process_general))
 
-        raise TypeError("data must be a DataArray, Dataset, or DataTree")
+        raise TypeError(
+            "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
+        )
 
     @classmethod
     def validate(cls, data: xr.DataArray | xr.Dataset | DataTree) -> None:
@@ -1257,8 +1346,11 @@ class LoaderBase(metaclass=_Loader):
                 cls._raise_or_warn("Missing coordinate chi")
 
     def load_multiple_parallel(
-        self, file_paths: list[str], parallel: bool | None = None
-    ) -> list[xr.DataArray | xr.Dataset | DataTree]:
+        self,
+        file_paths: list[str],
+        parallel: bool | None = None,
+        post_process: bool = False,
+    ) -> list[xr.DataArray] | list[xr.Dataset] | list[DataTree]:
         """Load multiple files in parallel.
 
         Parameters
@@ -1267,6 +1359,8 @@ class LoaderBase(metaclass=_Loader):
             A list of file paths to load.
         parallel
             If `True`, data loading will be performed in parallel using `dask.delayed`.
+        post_process
+            Whether to post-process each data object after loading.
 
         Returns
         -------
@@ -1275,14 +1369,22 @@ class LoaderBase(metaclass=_Loader):
         if parallel is None:
             parallel = len(file_paths) > 15
 
+        if post_process:
+
+            def _load_func(filename):
+                return self.load(filename, single=True)
+
+        else:
+            _load_func = self.load_single
+
         if parallel:
             import joblib
 
             return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
-                joblib.delayed(self.load_single)(f) for f in file_paths
+                joblib.delayed(_load_func)(f) for f in file_paths
             )
 
-        return [self.load_single(f) for f in file_paths]
+        return [_load_func(f) for f in file_paths]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
@@ -1473,7 +1575,14 @@ class LoaderRegistry(RegistryBase):
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
         **kwargs,
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> (
+        xr.DataArray
+        | xr.Dataset
+        | DataTree
+        | list[xr.DataArray]
+        | list[xr.Dataset]
+        | list[DataTree]
+    ):
         loader, default_dir = self._get_current_defaults()
 
         if (
@@ -1535,7 +1644,7 @@ class LoaderRegistry(RegistryBase):
         out += "\n\n"
         out += "Aliases\n-------\n" + "\n".join(
             [
-                f"{k}: {v.aliases}"
+                f"{k}: {tuple(v.aliases)}"
                 for k, v in self.loaders.items()
                 if v.aliases is not None
             ]

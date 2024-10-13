@@ -6,7 +6,7 @@ import os
 import re
 import warnings
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -208,13 +208,40 @@ class MERLINLoader(LoaderBase):
         cols = ["File Name", "Path", "Time", "Type", *summary_attrs.keys()]
 
         data_info = []
-
         processed_indices: list[int] = []
+
+        def _add_darr(dname: str, file: str, darr: xr.DataArray, live: bool = False):
+            if live:
+                data_type = "LP" if "beta" in darr.dims else "LXY"
+            else:
+                data_type = "core"
+                if "alpha" in darr.dims:
+                    data_type = "cut"
+                if "beta" in darr.dims:
+                    data_type = "map"
+                if "hv" in darr.dims:
+                    data_type = "hvdep"
+            data_info.append(
+                [
+                    dname,
+                    file,
+                    datetime.datetime.strptime(
+                        f"{darr.attrs['Date']} {darr.attrs['Time']}",
+                        "%d/%m/%Y %I:%M:%S %p",
+                    ),
+                    data_type,
+                    *(
+                        self.get_formatted_attr_or_coord(darr, k)
+                        for k in summary_attrs.values()
+                    ),
+                ]
+            )
 
         for name, path in files.items():
             if os.path.splitext(path)[1] == ".ibw":
-                data = self.load(path)
-                data_type = "LP" if "beta" in data.dims else "LXY"
+                _add_darr(
+                    name, path, darr=cast(xr.DataArray, self.load(path)), live=True
+                )
             else:
                 idx, _ = self.infer_index(os.path.splitext(os.path.basename(path))[0])
                 if idx in processed_indices:
@@ -222,32 +249,15 @@ class MERLINLoader(LoaderBase):
 
                 if idx is not None:
                     processed_indices.append(idx)
-                data = self.load(path)
-                data_type = "core"
-                if "alpha" in data.dims:
-                    data_type = "cut"
-                if "beta" in data.dims:
-                    data_type = "map"
-                if "hv" in data.dims:
-                    data_type = "hvdep"
 
-            data_info.append(
-                [
-                    name,
-                    path,
-                    datetime.datetime.strptime(
-                        f"{data.attrs['Date']} {data.attrs['Time']}",
-                        "%d/%m/%Y %I:%M:%S %p",
-                    ),
-                    data_type,
-                    *(
-                        self.get_formatted_attr_or_coord(data, k)
-                        for k in summary_attrs.values()
-                    ),
-                ]
-            )
+                data = cast(xr.DataArray | xr.Dataset, self.load(path))
 
-            del data
+                if isinstance(data, xr.Dataset):
+                    for k, darr in data.data_vars.items():
+                        _add_darr(f"{name}_{k}", path, darr)
+                else:
+                    _add_darr(name, path, data)
+                del data
 
         return (
             pd.DataFrame(data_info, columns=cols)

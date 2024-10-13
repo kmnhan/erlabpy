@@ -31,7 +31,6 @@ import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
-import erlab.io
 from erlab.interactive.imagetool.controls import (
     ItoolBinningControls,
     ItoolColormapControls,
@@ -98,7 +97,7 @@ def itool(
 
           Every DataArray in the Dataset will be displayed across multiple ImageTool
           windows. Data variables that have less than 2 dimensions or more than 4
-          dimensions are ignored.
+          dimensions are ignored. Dimensions with length 1 are automatically squeezed.
     link
         Whether to enable linking between multiple ImageTool windows when `data` is a
         sequence or a `xarray.Dataset`, by default `False`.
@@ -687,19 +686,30 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _open_file(
-        self, *, name_filter: str | None = None, directory: str | None = None
+        self,
+        *,
+        name_filter: str | None = None,
+        directory: str | None = None,
+        native: bool = True,
     ) -> None:
         valid_loaders: dict[str, tuple[Callable, dict]] = {
-            "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
+            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
-        for k in erlab.io.loaders:
-            valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
+        try:
+            import erlab.io
+        except ImportError:
+            pass
+        else:
+            for k in erlab.io.loaders:
+                valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilters(valid_loaders.keys())
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if name_filter is None:
             name_filter = self._recent_name_filter
@@ -712,8 +722,6 @@ class ItoolMenuBar(DictMenuBar):
 
         if directory is not None:
             dialog.setDirectory(directory)
-
-        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
@@ -735,17 +743,38 @@ class ItoolMenuBar(DictMenuBar):
             else:
                 self.slicer_area.view_all()
 
-    def _export_file(self) -> None:
+    def _export_file(self, native: bool = True) -> None:
         if self.slicer_area._data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        # To avoid importing erlab.io, we define the following functions here
+        def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:
+            scaling = [[1, 0]]
+            for i in range(darr.ndim):
+                coord: npt.NDArray = np.asarray(darr[darr.dims[i]].values)
+                delta = coord[1] - coord[0]
+                scaling.append([delta, coord[0]])
+            if darr.ndim == 4:
+                scaling[0] = scaling.pop(-1)
+            darr.attrs["IGORWaveScaling"] = scaling
+            return darr
+
+        def _to_netcdf(darr: xr.DataArray, file: str, **kwargs) -> None:
+            darr.to_netcdf(file, **kwargs)
+
+        def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
+            _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
 
         valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
-            "xarray HDF5 Files (*.h5)": (erlab.io.save_as_hdf5, {}),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (erlab.io.save_as_netcdf, {}),
+            "xarray HDF5 Files (*.h5)": (_to_hdf5, {"engine": "h5netcdf"}),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
         }
+
         dialog.setNameFilters(valid_savers.keys())
         dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)

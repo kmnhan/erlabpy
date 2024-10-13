@@ -1,3 +1,4 @@
 pyqt6>=6.2.2
 ipykernel
--e '.[viz,perf,misc,docs]'
+sphinxcontrib-googleanalytics
+-e '.[viz,io,perf,misc,docs]'

@@ -1,3 +1,4 @@
+import tempfile
 import time
 from collections.abc import Callable
 
@@ -92,6 +93,87 @@ def move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
         target_win, QtCore.Qt.Key.Key_Up, QtCore.Qt.KeyboardModifier.ShiftModifier
     )
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
+
+
+@pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
+@pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
+def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(val_dtype),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5, dtype=coord_dtype),
+            "y": np.arange(5, dtype=coord_dtype),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+    win.close()
+
+
+def test_itool_load(qtbot):
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data.to_netcdf(filename, engine="h5netcdf")
+
+    win = itool(np.zeros((2, 2)), execute=False)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("data.h5")
+
+    accept_dialog(lambda: win.mnb._open_file(native=False), pre_call=_go_to_file)
+
+    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+
+    win.close()
+
+    tmp_dir.cleanup()
+
+
+def test_itool_save(qtbot):
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = itool(data, execute=False)
+
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+        win.raise_()
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("data.h5")
+
+    accept_dialog(lambda: win.mnb._export_file(native=False), pre_call=_go_to_file)
+
+    win.close()
+
+    xr.testing.assert_equal(data, xr.load_dataarray(filename))
+    tmp_dir.cleanup()
 
 
 def test_itool(qtbot):
@@ -268,9 +350,10 @@ def test_itool_ds(qtbot):
 
 
 def test_value_update(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
+    win = itool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
+    )
+
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)

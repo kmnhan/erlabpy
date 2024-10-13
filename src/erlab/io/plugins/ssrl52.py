@@ -4,7 +4,7 @@ import datetime
 import os
 import re
 import warnings
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import h5netcdf
 import numpy as np
@@ -90,7 +90,7 @@ class SSRL52Loader(LoaderBase):
 
                     # Apply dim labels
                     dim_mapping = {
-                        f"phony_dim_{i}": ax["label"] for i, ax in enumerate(axes)
+                        f"phony_dim_{i}": str(ax["label"]) for i, ax in enumerate(axes)
                     }
                     data = ds.rename_dims(dim_mapping).load()
 
@@ -205,13 +205,13 @@ class SSRL52Loader(LoaderBase):
 
         if "time" in data.variables:
             # Normalize by dwell time
-            data = data["spectrum"] / data["time"]
+            darr = data["spectrum"] / data["time"]
         else:
-            data = data["spectrum"]
+            darr = data["spectrum"]
 
-        data = data.assign_attrs(attrs)
+        darr = darr.assign_attrs(attrs)
 
-        return data.assign_coords(coord_attrs)
+        return darr.assign_coords(coord_attrs)
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -298,7 +298,7 @@ class SSRL52Loader(LoaderBase):
         data_info = []
 
         for name, path in files.items():
-            data = self.load(path)
+            data = cast(xr.DataArray, self.load(path))
 
             data_info.append(
                 [
