@@ -23,17 +23,22 @@ Modules
 """
 
 import importlib
-import os
+import pathlib
 import traceback
+import warnings
 
-for fname in os.listdir(os.path.dirname(os.path.abspath(__file__))):
+for path in pathlib.Path(__file__).resolve().parent.iterdir():
     if (
-        not fname.startswith(".")
-        and not fname.startswith("__")
-        and fname.endswith(".py")
+        path.is_file()
+        and path.suffix == ".py"
+        and not path.name.startswith((".", "__"))
     ):
+        module_name = __name__ + "." + path.stem
         try:
-            importlib.import_module(__name__ + "." + os.path.splitext(fname)[0])
-        except Exception as e:
-            print(e)
-            traceback.print_exc()
+            importlib.import_module(module_name)
+        except Exception:
+            warnings.warn(
+                f"Failed to load module {module_name} due to the following error:\n"
+                f"{traceback.format_exc()}",
+                stacklevel=1,
+            )
