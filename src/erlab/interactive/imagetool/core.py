@@ -2075,9 +2075,7 @@ class ItoolPlotItem(pg.PlotItem):
         fileName = str(fileName)
         pg.PlotItem.lastFileDir = os.path.dirname(fileName)
 
-        import erlab.io
-
-        erlab.io.save_as_hdf5(self.current_data, fileName)
+        self.current_data.to_netcdf(fileName, engine="h5netcdf")
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:

@@ -31,7 +31,6 @@ import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
-import erlab.io
 from erlab.interactive.imagetool.controls import (
     ItoolBinningControls,
     ItoolColormapControls,
@@ -690,11 +689,16 @@ class ItoolMenuBar(DictMenuBar):
         self, *, name_filter: str | None = None, directory: str | None = None
     ) -> None:
         valid_loaders: dict[str, tuple[Callable, dict]] = {
-            "xarray HDF5 Files (*.h5)": (erlab.io.load_hdf5, {}),
+            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         }
-        for k in erlab.io.loaders:
-            valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
+        try:
+            import erlab.io
+        except ImportError:
+            pass
+        else:
+            for k in erlab.io.loaders:
+                valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
@@ -742,10 +746,29 @@ class ItoolMenuBar(DictMenuBar):
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
 
+        # To avoid importing erlab.io, we define the following functions here
+        def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:
+            scaling = [[1, 0]]
+            for i in range(darr.ndim):
+                coord: npt.NDArray = np.asarray(darr[darr.dims[i]].values)
+                delta = coord[1] - coord[0]
+                scaling.append([delta, coord[0]])
+            if darr.ndim == 4:
+                scaling[0] = scaling.pop(-1)
+            darr.attrs["IGORWaveScaling"] = scaling
+            return darr
+
+        def _to_netcdf(darr: xr.DataArray, file: str, **kwargs) -> None:
+            darr.to_netcdf(file, **kwargs)
+
+        def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
+            _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
+
         valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
-            "xarray HDF5 Files (*.h5)": (erlab.io.save_as_hdf5, {}),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (erlab.io.save_as_netcdf, {}),
+            "xarray HDF5 Files (*.h5)": (_to_hdf5, {"engine": "h5netcdf"}),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
         }
+
         dialog.setNameFilters(valid_savers.keys())
         dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)

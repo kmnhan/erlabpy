@@ -15,8 +15,6 @@ import numpy.typing as npt
 import xarray
 
 import erlab.constants
-import erlab.io
-import erlab.lattice
 
 
 class AxesConfiguration(enum.IntEnum):
