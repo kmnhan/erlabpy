@@ -132,6 +132,8 @@ jobs:
         id: build
         if: env.REVISION != env.PREVIOUS_REVISION
         run: |
+          python -m venv venv
+          source venv/bin/activate
           python -m pip install --upgrade build
           python -m build
 
