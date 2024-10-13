@@ -20,7 +20,16 @@ import os
 import pathlib
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Self,
+    TypeGuard,
+    TypeVar,
+    cast,
+    overload,
+)
 
 import numpy as np
 import pandas
@@ -38,6 +47,13 @@ if TYPE_CHECKING:
         KeysView,
         Mapping,
     )
+
+
+_T = TypeVar("_T")
+
+
+def _is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
+    return all(isinstance(x, element_type) for x in val) and isinstance(val, Sequence)
 
 
 class ValidationWarning(UserWarning):
@@ -1019,36 +1035,84 @@ class LoaderBase(metaclass=_Loader):
         """
         return dict(variable_attrs[0])
 
+    @overload
     def combine_multiple(
         self,
-        data_list: list[xr.DataArray | xr.Dataset | DataTree],
+        data_list: list[xr.DataArray],
+        coord_dict: dict[str, Sequence],
+    ) -> xr.DataArray: ...
+
+    @overload
+    def combine_multiple(
+        self,
+        data_list: list[xr.Dataset],
+        coord_dict: dict[str, Sequence],
+    ) -> xr.Dataset: ...
+
+    @overload
+    def combine_multiple(
+        self,
+        data_list: list[DataTree],
+        coord_dict: dict[str, Sequence],
+    ) -> DataTree: ...
+
+    def combine_multiple(
+        self,
+        data_list: list[xr.DataArray] | list[xr.Dataset] | list[DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | DataTree:
-        if len(coord_dict) == 0:
-            try:
-                # Try to merge the data without conflicts
-                return xr.merge(data_list, combine_attrs=self.combine_attrs)
-            except:  # noqa: E722
-                # On failure, return a list
-                return data_list
-        else:
-            for i in range(len(data_list)):
-                if isinstance(data_list[i], list):
-                    data_list[i] = self.combine_multiple(data_list[i], coord_dict={})
+        if _is_sequence_of(data_list, DataTree):
+            raise NotImplementedError(
+                "Combining DataTrees into a single tree "
+                "will be supported in a future release"
+            )
 
-                if not isinstance(data_list[i], list):
-                    data_list[i] = data_list[i].assign_coords(
-                        {k: v[i] for k, v in coord_dict.items()}
+        if len(coord_dict) == 0:
+            # No coordinates to combine given
+            # Multiregion scans over multiple files may be provided like this
+
+            if _is_sequence_of(data_list, DataTree):
+                pass
+            else:
+                try:
+                    return xr.combine_by_coords(
+                        cast(Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list),
+                        combine_attrs=self.combine_attrs,
+                        join="exact",
                     )
-            try:
-                return xr.concat(
-                    data_list,
-                    dim=next(iter(coord_dict.keys())),
-                    coords="different",
-                    combine_attrs=self.combine_attrs,
-                )
-            except:  # noqa: E722
-                return data_list
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to combine data. Try passing "
+                        "`combine=False` to `erlab.io.load`"
+                    ) from e
+
+        if _is_sequence_of(data_list, xr.DataArray) or _is_sequence_of(
+            data_list, xr.Dataset
+        ):
+            combined = xr.combine_by_coords(
+                [
+                    data.assign_coords(
+                        {k: v[i] for k, v in coord_dict.items()}
+                    ).expand_dims(tuple(coord_dict.keys()))
+                    for i, data in enumerate(data_list)
+                ],
+                combine_attrs=self.combine_attrs,
+            )
+            if (
+                isinstance(combined, xr.Dataset)
+                and len(combined.data_vars) == 1
+                and combined.attrs == {}
+            ):
+                # Named DataArrays combined into a Dataset, extract the DataArray
+                var_name = next(iter(combined.data_vars))
+                combined = combined[var_name]
+
+                if combined.name is None:
+                    combined = combined.rename(var_name)
+
+            return combined
+
+        raise TypeError("input type must be homogeneous")
 
     def process_keys(
         self, data: xr.DataArray, key_mapping: dict[str, str] | None = None
