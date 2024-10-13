@@ -27,7 +27,6 @@ import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
 import tqdm.auto
-import uncertainties
 import xarray as xr
 
 from erlab.analysis.fit.models import (
@@ -776,11 +775,16 @@ def resolution(
             fit_kws={"c": "r", "lw": 1.5},
         )
 
-    center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
-    res_uf = uncertainties.ufloat(
-        fit.params["resolution"], fit.params["resolution"].stderr
-    )
-    print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
+    if hasattr(fit, "uvars"):
+        center_uf = fit.uvars["center"]
+        res_uf = fit.uvars["resolution"]
+        print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
+    else:
+        print(
+            f"center = {fit.params['center'].value} eV\n"
+            f"resolution = {fit.params['resolution'].value} eV"
+        )
+
     return fit
 
 
@@ -826,9 +830,14 @@ def resolution_roi(
             fit_kws={"c": "r", "lw": 1.5},
         )
 
-    center_uf = uncertainties.ufloat(fit.params["center"], fit.params["center"].stderr)
-    res_uf = uncertainties.ufloat(
-        fit.params["resolution"], fit.params["resolution"].stderr
-    )
-    print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
+    if hasattr(fit, "uvars"):
+        center_uf = fit.uvars["center"]
+        res_uf = fit.uvars["resolution"]
+        print(f"center = {center_uf:S} eV\nresolution = {res_uf:.4S} eV")
+    else:
+        print(
+            f"center = {fit.params['center'].value} eV\n"
+            f"resolution = {fit.params['resolution'].value} eV"
+        )
+
     return fit

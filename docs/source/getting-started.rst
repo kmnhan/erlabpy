@@ -14,18 +14,28 @@ multi-dimensional arrays. Check out the `xarray tutorial <https://tutorial.xarra
 and the `xarray user guide <https://docs.xarray.dev/en/stable/index.html>`_ to get
 familiar with xarray.
 
+
+.. _installing:
+
 Installing
 ==========
 
-The recommended way to install ERLabPy is via conda. If you do not have conda installed,
-follow the :ref:`installation instructions <Installing conda>`. Once you have a working
-conda environment, you can install ERLabPy with the conda command line tool: ::
+ERLabPy depends on a number of scientific python libraries. The recommended way to
+install ERLabPy is via conda. If you do not have conda installed, follow the :ref:`conda
+installation instructions <Installing conda>`. Once you have a working conda
+environment, you can install ERLabPy with the conda command line tool: ::
 
   conda install -c conda-forge erlab
 
+Or with the recommended dependencies: ::
+
+  conda install -c conda-forge erlab pyside6 hvplot ipywidgets
+
+If you require other :ref:`optional dependencies`, add them to the line above.
+
 .. hint::
 
-  If you are using macOS, you might experience degraded performance with the
+  If you are using conda on macOS, you might experience degraded performance with the
   default BLAS and LAPACK libraries. For Apple Silicon macs, use `Accelerate
   <https://developer.apple.com/accelerate/>`_: ::
 
@@ -37,7 +47,7 @@ conda environment, you can install ERLabPy with the conda command line tool: ::
 
     conda install "libblas=*=*mkl"
 
-  To prevent conda from switching back to the default libraries, see the
+  To prevent conda from switching back to the default libraries upon updating, see the
   `conda-forge documentation
   <https://conda-forge.org/docs/maintainer/knowledge_base/#switching-blas-implementation>`_.
 
@@ -48,9 +58,13 @@ If you don’t use conda, you can install ERLabPy with pip: ::
 Optional dependency groups can be installed with the following commands: ::
 
   python -m pip install erlab[viz]       # Install optional dependencies for visualization
+  python -m pip install erlab[io]        # Install optional dependencies for file I/O
   python -m pip install erlab[perf]      # Install optional dependencies for performance
   python -m pip install erlab[misc]      # Install miscellaneous optional dependencies
-  python -m pip install erlab[complete]  # Install all optional dependencies
+  python -m pip install erlab[complete]  # Install all optional dependencies except development dependencies
+
+See the :ref:`optional dependencies` section for all available groups and their
+contents.
 
 If you wish to install ERLabPy from source, see the :doc:`contributing`.
 
@@ -89,11 +103,10 @@ Of course, you may not need all of these modules for every script.
 Dependencies
 ============
 
-ERLabPy is installed with many different python libraries.
-
-The following table lists some of the most important packages that ERLabPy depends on
-that are used in various fields of the scientific python ecosystem. Links to their
-documentation are listed below as a reference.
+ERLabPy requires a number of scientific python libraries to function. The following
+table lists some of the most important packages that ERLabPy depends on that are used in
+various fields of the scientific python ecosystem. Links to their documentation are
+listed below as a reference.
 
 .. list-table::
     :header-rows: 1
@@ -104,14 +117,16 @@ documentation are listed below as a reference.
       - Used in
     * - `numpy <https://numpy.org/doc/stable/>`_
       - Computation and array manipulation, linear algebra
-    * - `xarray <https://docs.xarray.dev/>`_
-      - Data storage and manipulation
-    * - `matplotlib <https://matplotlib.org>`_
-      - Plotting
     * - `scipy <https://docs.scipy.org/doc/scipy/index.html>`_
       - Linear algebra, signal processing, and image processing
+    * - `xarray <https://docs.xarray.dev/>`_
+      - Data storage and manipulation
+    * - `numba <https://numba.pydata.org/>`_
+      - Just-in-time compilation for vast speedups
+    * - `matplotlib <https://matplotlib.org>`_
+      - Plotting
     * - `lmfit <https://lmfit.github.io/lmfit-py/>`_
-      - Optimization problems including curve fitting
+      - Solving optimization problems and curve fitting
 
 For interactive plotting, a Qt library such as PyQt6 or PySide6 is required. To ensure
 compatibility and keep the namespace clean, ERLabPy imports Qt bindings from `qtpy
@@ -125,31 +140,7 @@ See the :doc:`user-guide/index` to start using ERLabPy!
 Optional dependencies
 ---------------------
 
-The following packages are optional dependencies that are not installed by default. They
-are only used in specific functions, or is not used at all but is listed just for
-convenience.
-
-.. list-table::
-    :header-rows: 1
-    :stub-columns: 1
-    :widths: auto
-
-    * - Package
-      - Description
-    * - `csaps <https://github.com/espdev/csaps>`_
-      - Multidimensional smoothing splines
-    * - `ipywidgets <https://github.com/jupyter-widgets/ipywidgets>`_
-      - Interactive widgets
-    * - `hvplot <https://github.com/holoviz/hvplot>`_ and `bokeh
-        <https://github.com/bokeh/bokeh>`_
-      - Interactive plotting
-    * - `cmasher <https://cmasher.readthedocs.io>`_,
-        `cmocean <https://matplotlib.org/cmocean/>`_, and
-        `colorcet <https://colorcet.holoviz.org>`_
-      - More colormaps!
-    * - `numbagg <https://github.com/numbagg/numbagg>`_ and `bottleneck
-        <https://github.com/pydata/bottleneck>`_
-      - Fast multidimensional aggregation, accelerates xarray
+See :ref:`installing` for instructions on how to install optional dependencies with pip.
 
 For a full list of dependencies and optional dependencies, take a look at the
 ``[project]`` and ``[project.optional-dependencies]`` section in `pyproject.toml
@@ -158,8 +149,7 @@ For a full list of dependencies and optional dependencies, take a look at the
 .. literalinclude:: ../../pyproject.toml
    :language: toml
    :start-at: dependencies = [
-   :end-before: [project.urls]
-
+   :end-before: [project.scripts]
 
 Notes on compatibility
 ----------------------
@@ -172,4 +162,4 @@ Notes on compatibility
   <https://ipython.readthedocs.io/en/stable/config/extensions/autoreload.html>`_, try
   excluding the following modules: ::
 
-    %aimport -erlab.io.dataloader -erlab.accessors
+    %aimport -erlab.io -erlab.accessors
