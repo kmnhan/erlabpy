@@ -323,9 +323,10 @@ def test_itool_ds(qtbot):
 
 
 def test_value_update(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
+    win = itool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
+    )
+
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
