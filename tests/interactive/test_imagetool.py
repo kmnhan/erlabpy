@@ -112,10 +112,10 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
+    del win
 
 
 def test_itool_load(qtbot):
@@ -130,7 +130,6 @@ def test_itool_load(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
@@ -159,7 +158,6 @@ def test_itool_save(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
@@ -184,7 +182,6 @@ def test_itool(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
@@ -278,6 +275,8 @@ def test_itool(qtbot):
 
     win.close()
 
+    del win
+
 
 def test_itool_tools(qtbot, gold):
     win = itool(gold, execute=False)
@@ -286,7 +285,6 @@ def test_itool_tools(qtbot, gold):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     # Test code generation
     assert win.slicer_area.images[0].selection_code == ""
@@ -302,6 +300,7 @@ def test_itool_tools(qtbot, gold):
     win.slicer_area.images[0]._dtool.close()
 
     win.close()
+    del win
 
 
 def test_itool_ds(qtbot):
@@ -345,8 +344,11 @@ def test_itool_ds(qtbot):
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
 
     wins[0].slicer_area.unlink()
+    wins[1].slicer_area.unlink()
     wins[0].close()
     wins[1].close()
+
+    del wins
 
 
 def test_value_update(qtbot):
@@ -384,7 +386,6 @@ def test_sync(qtbot):
     with qtbot.waitExposed(manager):
         manager.show()
         manager.activateWindow()
-        manager.raise_()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     itool([data, data], link=True, link_colors=True, use_manager=True)
@@ -431,7 +432,6 @@ def test_manager(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     data.qshow()
