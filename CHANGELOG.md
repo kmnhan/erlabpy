@@ -1,3 +1,9 @@
+## v2.11.2 (2024-10-14)
+
+### Bug Fixes
+
+- **io.dataloader:** fix `coordinate_attrs` not being propagated ([278675b](https://github.com/kmnhan/erlabpy/commit/278675b54d2e12471ce8629fbd6d249aa7184c0e))
+
 ## v2.11.1 (2024-10-14)
 
 ### Code Refactor
