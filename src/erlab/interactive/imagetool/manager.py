@@ -749,6 +749,7 @@ def main() -> None:
     """
     qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
+    qapp.setWindowIcon(QtGui.QIcon(os.path.join(os.path.dirname(__file__), "icon.png")))
 
     while is_running():
         dialog = _InitDialog()
