@@ -1,3 +1,9 @@
+## v2.11.1 (2024-10-14)
+
+### Code Refactor
+
+- add app icon for imagetool manager ([e1cbcd2](https://github.com/kmnhan/erlabpy/commit/e1cbcd29b045cb2d586baa3c6272fd60cfd05979))
+
 ## v2.11.0 (2024-10-13)
 
 ### Features
