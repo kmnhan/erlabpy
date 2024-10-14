@@ -65,7 +65,7 @@ def test_loader():
 
     for i, beta in enumerate(beta_coords):
         erlab.io.save_as_hdf5(
-            make_data(beta=beta, temp=20.0, hv=50.0),
+            make_data(beta=beta, temp=20.0 + i, hv=50.0),
             filename=f"{tmp_dir.name}/data_001_S{str(i + 1).zfill(3)}.h5",
             igor_compat=False,
         )
@@ -122,6 +122,7 @@ def test_loader():
             "z",
             "polarization",
             "photon_flux",
+            "temp_sample",
         )
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
@@ -299,7 +300,11 @@ def test_loader():
 
     erlab.io.set_loader("example")
     erlab.io.set_data_dir(tmp_dir.name)
-    erlab.io.load(1)
+
+    # Test if coordinate_attrs are correctly assigned
+    mfdata = erlab.io.load(1)
+    assert np.allclose(mfdata["temp_sample"].values, 20.0 + np.arange(len(beta_coords)))
+
     erlab.io.load(2)
 
     df = erlab.io.summarize(display=False)

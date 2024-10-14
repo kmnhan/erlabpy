@@ -1112,11 +1112,15 @@ class LoaderBase(metaclass=_Loader):
         if _is_sequence_of(data_list, xr.DataArray) or _is_sequence_of(
             data_list, xr.Dataset
         ):
+            # Rename with process_keys after assigning coords and expanding dims
+            # This is necessary to ensure that coordinate_attrs are preserved
             combined = xr.combine_by_coords(
                 [
-                    data.assign_coords(
-                        {k: v[i] for k, v in coord_dict.items()}
-                    ).expand_dims(tuple(coord_dict.keys()))
+                    self.process_keys(
+                        data.assign_coords(
+                            {k: v[i] for k, v in coord_dict.items()}
+                        ).expand_dims(tuple(coord_dict.keys()))
+                    )
                     for i, data in enumerate(data_list)
                 ],
                 combine_attrs=self.combine_attrs,
