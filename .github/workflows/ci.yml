@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISPLAY: ':99.0'
-      PYTHONDONTWRITEBYTECODE : 1
     strategy:
       fail-fast: false
       matrix:
