@@ -171,6 +171,7 @@ napoleon_type_aliases = {
     "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
     "RGBAColorType": "`RGBAColorType <matplotlib.typing.RGBAColorType>`",
+    "path-like": "`path-like <os.PathLike>`",
 }
 napoleon_custom_sections = [("Signals", "params_style")]
 
