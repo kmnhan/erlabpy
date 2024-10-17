@@ -10,7 +10,7 @@ Some of the projection code was adapted from kwant.
 import contextlib
 import functools
 import itertools
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from typing import Literal, cast
 
 import matplotlib.collections
@@ -42,7 +42,7 @@ unit_sphere: npt.NDArray[np.float64] = sunflower_sphere(100)
 
 
 def projected_length(
-    ax: mpl_toolkits.mplot3d.Axes3D, length: np.float64 | Sequence[np.float64]
+    ax: mpl_toolkits.mplot3d.Axes3D, length: float | npt.NDArray[np.float64]
 ):
     if np.iterable(length):
         return np.asarray([projected_length(ax, d) for d in np.asarray(length).flat])
@@ -218,7 +218,9 @@ class Bond3DCollection(mpl_toolkits.mplot3d.art3d.Line3DCollection):
 
     def set_linewidth(self, lw) -> None:
         super().set_linewidth(lw)
-        self.linewidths_orig = np.asarray(lw) if np.iterable(lw) else lw
+        self.linewidths_orig: npt.NDArray[np.float64] | float = (
+            np.asarray(lw, dtype=np.float64) if np.iterable(lw) else float(lw)
+        )
 
     def draw(self, renderer) -> None:
         if self._scale_linewidths:  # and np.isfinite(self.axes._focal_length):
