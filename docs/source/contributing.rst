@@ -286,8 +286,7 @@ Suppose you are contributing a new plugin, ``src/erlab/io/plugins/<plugin_name>.
 add tests, follow these steps:
 
 1. Fork `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ and clone it to your
-   local machine. Install `git-lfs <https://git-lfs.github.com/>`_ if you haven't
-   already.
+   local machine.
 
 2. Create a new directory in the root of the repository you cloned. The name of the
    directory should be the name of the plugin you are writing tests for.
