@@ -11,7 +11,7 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 
 
@@ -356,10 +356,21 @@ def test_value_update(qtbot):
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
+
+    win.close()
+
+
+def test_value_update_errors():
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -375,8 +386,6 @@ def test_value_update(qtbot):
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
-
-    win.close()
 
 
 def test_sync(qtbot):
