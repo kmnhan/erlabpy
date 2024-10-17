@@ -11,7 +11,7 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
-from erlab.interactive.imagetool import ImageTool, itool
+from erlab.interactive.imagetool import ImageTool, _parse_input, itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 
 
@@ -304,21 +304,22 @@ def test_itool_tools(qtbot, gold):
     del win
 
 
-def test_itool_ds(qtbot):
+def test_parse_input():
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
         ValueError, match="No valid data for ImageTool found in the Dataset"
     ):
-        itool(
+        _parse_input(
             xr.Dataset(
                 {
                     "data1d": xr.DataArray(np.arange(5), dims=["x"]),
                     "data0d": 1,
                 }
-            ),
-            execute=False,
+            )
         )
 
+
+def test_itool_ds(qtbot):
     data = xr.Dataset(
         {
             "data1d": xr.DataArray(np.arange(5), dims=["x"]),
