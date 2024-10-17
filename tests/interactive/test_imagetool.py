@@ -176,7 +176,9 @@ def test_itool_save(qtbot):
 
 
 def test_itool(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], cmap="terrain_r"
+    )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
@@ -344,6 +346,7 @@ def test_itool_ds(qtbot):
 
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
+    assert wins[0].slicer_area.linked_slicers == {wins[1].slicer_area}
 
     wins[0].slicer_area.unlink()
     wins[1].slicer_area.unlink()
@@ -351,6 +354,29 @@ def test_itool_ds(qtbot):
     wins[1].close()
 
     del wins
+
+
+def test_itool_multidimensional(qtbot):
+    win = itool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
+    )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(125).reshape((5, 5, 5)), dims=["x", "y", "z"])
+    )
+    move_and_compare_values(qtbot, win, [62.0, 37.0, 32.0, 57.0])
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(625).reshape((5, 5, 5, 5)), dims=["x", "y", "z", "t"])
+    )
+    move_and_compare_values(qtbot, win, [312.0, 187.0, 162.0, 287.0])
+
+    win.close()
 
 
 def test_value_update(qtbot):

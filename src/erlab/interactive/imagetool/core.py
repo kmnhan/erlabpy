@@ -123,9 +123,6 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     def getPlotItem(self) -> ItoolPlotItem:
         return self.plotItem
 
-    def getPlotItemViewBox(self) -> pg.ViewBox:
-        return self.getPlotItem().vb
-
 
 def suppress_history(method: Callable | None = None):
     """Ignore history changes made within the decorated method."""
@@ -604,10 +601,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def colormap(self) -> str | pg.ColorMap:
         return self.colormap_properties["cmap"]
-
-    @colormap.setter
-    def colormap(self, cmap: str | pg.ColorMap) -> None:
-        self.set_colormap(cmap)
 
     @property
     def levels_locked(self) -> bool:
