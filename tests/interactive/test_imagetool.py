@@ -11,7 +11,7 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import ImageTool, _parse_input, itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 
 
@@ -112,6 +112,7 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
+    time.sleep(0.5)
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
@@ -175,7 +176,9 @@ def test_itool_save(qtbot):
 
 
 def test_itool(qtbot):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], cmap="terrain_r"
+    )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
@@ -303,21 +306,22 @@ def test_itool_tools(qtbot, gold):
     del win
 
 
-def test_itool_ds(qtbot):
+def test_parse_input():
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
         ValueError, match="No valid data for ImageTool found in the Dataset"
     ):
-        itool(
+        _parse_input(
             xr.Dataset(
                 {
                     "data1d": xr.DataArray(np.arange(5), dims=["x"]),
                     "data0d": 1,
                 }
-            ),
-            execute=False,
+            )
         )
 
+
+def test_itool_ds(qtbot):
     data = xr.Dataset(
         {
             "data1d": xr.DataArray(np.arange(5), dims=["x"]),
@@ -342,6 +346,7 @@ def test_itool_ds(qtbot):
 
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
+    assert wins[0].slicer_area.linked_slicers == {wins[1].slicer_area}
 
     wins[0].slicer_area.unlink()
     wins[1].slicer_area.unlink()
@@ -351,14 +356,48 @@ def test_itool_ds(qtbot):
     del wins
 
 
+def test_itool_multidimensional(qtbot):
+    win = itool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
+    )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(125).reshape((5, 5, 5)), dims=["x", "y", "z"])
+    )
+    move_and_compare_values(qtbot, win, [62.0, 37.0, 32.0, 57.0])
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(625).reshape((5, 5, 5, 5)), dims=["x", "y", "z", "t"])
+    )
+    move_and_compare_values(qtbot, win, [312.0, 187.0, 162.0, 287.0])
+
+    win.close()
+
+
 def test_value_update(qtbot):
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
+
+    win.close()
+
+
+def test_value_update_errors():
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -374,8 +413,6 @@ def test_value_update(qtbot):
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
-
-    win.close()
 
 
 def test_sync(qtbot):

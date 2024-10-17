@@ -932,7 +932,7 @@ class LoaderBase(metaclass=_Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Sequence]] | None:
+    ) -> tuple[list[str | os.PathLike], dict[str, Sequence]] | None:
         """Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -961,7 +961,7 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        files : list[str]
+        files : list of str or path-like
             A list of file paths.
         coord_dict : dict[str, Sequence]
             A dictionary mapping scan axes names to scan coordinates. For scans spread

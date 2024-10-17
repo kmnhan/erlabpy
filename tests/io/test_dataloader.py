@@ -184,15 +184,10 @@ def test_loader():
             # Get all valid data files in directory
             files = {}
             for path in erlab.io.utils.get_files(data_dir, extensions=[".h5"]):
-                # Base name
-                data_name = os.path.splitext(os.path.basename(path))[0]
-
                 # If multiple scans, strip the _S### part
-                name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
-                if name_match is not None:
-                    data_name = name_match.group(1)
-
-                files[data_name] = path
+                name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", path.stem)
+                data_name = path.stem if name_match is None else name_match.group(1)
+                files[data_name] = str(path)
 
             # Map dataframe column names to data attributes
             attrs_mapping = {

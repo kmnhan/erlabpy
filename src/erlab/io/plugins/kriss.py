@@ -2,7 +2,6 @@
 
 import os
 import re
-from collections.abc import Sequence
 from typing import ClassVar
 
 import erlab.io.utils
@@ -22,15 +21,14 @@ class KRISSLoader(DA30Loader):
     def name_map(self):
         return super().name_map | {"chi": "ThetaY", "xi": "ThetaX"}
 
-    def identify(
-        self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str], dict[str, Sequence]] | None:
+    def identify(self, num: int, data_dir: str | os.PathLike):
         for file in erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".zip")):
-            if file.endswith(".zip"):
-                match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", file)
+            if file.suffix == ".zip":
+                match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", str(file))
             else:
                 match = re.match(
-                    r"(.*?)" + str(num).zfill(4) + str(num).zfill(3) + r".ibw", file
+                    r"(.*?)" + str(num).zfill(4) + str(num).zfill(3) + r".ibw",
+                    str(file),
                 )
 
             if match is not None:
