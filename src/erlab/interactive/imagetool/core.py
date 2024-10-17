@@ -709,8 +709,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._write_history = original
 
     def on_close(self) -> None:
-        self.array_slicer.clear_cache()
-        self.data.close()
+        if hasattr(self, "array_slicer"):
+            self.array_slicer.clear_cache()
+        if hasattr(self, "data"):
+            self.data.close()
         if hasattr(self, "_data") and self._data is not None:
             self._data.close()
             del self._data
