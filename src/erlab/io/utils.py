@@ -41,7 +41,7 @@ def showfitsinfo(path: str | os.PathLike) -> None:
 
 
 def get_files(
-    directory,
+    directory: str | os.PathLike,
     extensions: Sequence[str] | str | None = None,
     contains: str | None = None,
     notcontains: str | None = None,

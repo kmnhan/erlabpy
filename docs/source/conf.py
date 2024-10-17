@@ -172,6 +172,10 @@ napoleon_type_aliases = {
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
     "RGBAColorType": "`RGBAColorType <matplotlib.typing.RGBAColorType>`",
     "path-like": "`path-like <os.PathLike>`",
+    "NXfield": "`NXfield <nexusformat.nexus.tree.NXfield>`",
+    "NXgroup": "`NXgroup <nexusformat.nexus.tree.NXgroup>`",
+    "NXlink": "`NXlink <nexusformat.nexus.tree.NXlink>`",
+    "NXdata": "`NXdata <nexusformat.nexus.tree.NXdata>`",
 }
 napoleon_custom_sections = [("Signals", "params_style")]
 
@@ -202,6 +206,7 @@ intersphinx_mapping = {
     "joblib": ("https://joblib.readthedocs.io/en/latest", None),
     "panel": ("https://panel.holoviz.org", None),
     "hvplot": ("https://hvplot.holoviz.org", None),
+    "nexusformat": ("https://nexpy.github.io/nexpy", None),
 }
 
 

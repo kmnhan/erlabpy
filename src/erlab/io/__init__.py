@@ -15,6 +15,7 @@ Modules
    dataloader
    utils
    igor
+   nexusutils
    exampledata
    characterization
 
