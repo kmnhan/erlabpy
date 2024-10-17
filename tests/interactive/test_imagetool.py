@@ -112,6 +112,7 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
+    time.sleep(0.5)
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
