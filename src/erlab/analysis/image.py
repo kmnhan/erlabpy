@@ -99,28 +99,29 @@ def gaussian_filter(
 
     Parameters
     ----------
-    darr
+    darr : DataArray
         The input DataArray.
-    sigma
+    sigma : float or Sequence of floats or dict
         The standard deviation(s) of the Gaussian filter in data dimensions. If a float,
         the same value is used for all dimensions, each scaled by the data step. If a
         dict, the value can be specified for each dimension using dimension names as
         keys. The filter is only applied to the dimensions specified in the dict. If a
         sequence, the values are used in the same order as the dimensions of the
         DataArray.
-    order
+    order : int or Sequence of ints or dict
         The order of the filter along each dimension. If an int, the same order is used
         for all dimensions. See Notes below for other options. Defaults to 0.
-    mode
+    mode : str or Sequence of str or dict
         The boundary mode used for the filter. If a str, the same mode is used for all
         dimensions. See Notes below for other options. Defaults to 'nearest'.
     cval
         Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
     truncate
         The truncation value used for the Gaussian filter. Defaults to 4.0.
-    radius
-        The radius of the Gaussian filter in data units. See Notes below. Defaults to
-        None.
+    radius : float or Sequence of floats or dict, optional
+        The radius of the Gaussian filter in data units. See Notes below. If specified,
+        the size of the kernel along each axis will be ``2*radius + 1``, and `truncate`
+        is ignored.
 
     Returns
     -------
@@ -367,22 +368,22 @@ def ndsavgol(
 
     Parameters
     ----------
-    arr
+    arr : array-like
         The input N-dimensional array to be filtered. The array will be cast to float64
         before filtering.
-    window_shape
+    window_shape : int or tuple of ints
         The shape of the window used for filtering. If an integer, the same size will be
         used across all axes.
-    polyorder
+    polyorder : int
         The order of the polynomial used to fit the samples. `polyorder` must be less
         than the minimum of `window_shape`.
-    deriv
+    deriv : int or tuple of ints
         The order of the derivative to compute given as a single integer or a tuple of
         integers. If an integer, the derivative of that order is computed along all
         axes. If a tuple of integers, the derivative of each order is computed along the
         corresponding dimension. The default is 0, which means to filter the data
         without differentiating.
-    delta
+    delta : float or tuple of floats
         The spacing of the samples to which the filter will be applied. If a float, the
         same value is used for all axes. If a tuple, the values are used in the same
         order as in `deriv`. The default is 1.0.
@@ -390,7 +391,7 @@ def ndsavgol(
         Must be 'mirror', 'constant', 'nearest', or 'wrap'. This determines the type of
         extension to use for the padded signal to which the filter is applied.  When
         `mode` is 'constant', the padding value is given by `cval`.
-    cval
+    cval : float
         Value to fill past the edges of the input if `mode` is 'constant'. Default is
         0.0.
     method
@@ -524,8 +525,8 @@ def ndsavgol(
 
 def gradient_magnitude(
     arr: npt.NDArray[np.float64],
-    dx: np.float64,
-    dy: np.float64,
+    dx: float,
+    dy: float,
     mode: str = "nearest",
     cval: float = 0.0,
 ) -> npt.NDArray[np.float64]:
