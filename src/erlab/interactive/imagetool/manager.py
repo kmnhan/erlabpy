@@ -19,7 +19,6 @@ __all__ = [
     "main",
     "show_in_manager",
 ]
-
 import contextlib
 import gc
 import os
@@ -30,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
@@ -149,8 +149,11 @@ class _ManagerServer(QtCore.QThread):
                 EOFError,
                 ImportError,
                 IndexError,
-            ) as e:
-                print("Failed to unpickle data:", e)
+            ):
+                print(
+                    f"Failed to unpickle data due to the following error:\n"
+                    f"{traceback.format_exc()}"
+                )
 
             conn.close()
 
@@ -738,6 +741,7 @@ def is_running() -> bool:
     except FileExistsError:
         return True
     else:
+        shm.close()
         shm.unlink()
         return False
 
