@@ -354,6 +354,7 @@ class LoaderBase(metaclass=_Loader):
         single: bool = False,
         combine: bool = True,
         parallel: bool | None = None,
+        load_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -404,6 +405,9 @@ class LoaderBase(metaclass=_Loader):
         parallel
             Whether to load multiple files in parallel. If not specified, files are
             loaded in parallel only when there are more than 15 files to load.
+        load_kwargs
+            Additional keyword arguments to be passed to :meth:`load_single
+            <erlab.io.dataloader.LoaderBase.load_single>`.
         **kwargs
             Additional keyword arguments are passed to `identify`.
 
@@ -455,6 +459,8 @@ class LoaderBase(metaclass=_Loader):
         """
         if self.always_single:
             single = True
+        if load_kwargs is None:
+            load_kwargs = {}
 
         if isinstance(identifier, int):
             if data_dir is None:
@@ -470,18 +476,20 @@ class LoaderBase(metaclass=_Loader):
             if len(file_paths) == 1:
                 # Single file resolved
                 data: xr.DataArray | xr.Dataset | DataTree = self.load_single(
-                    file_paths[0]
+                    file_paths[0], **load_kwargs
                 )
             else:
                 # Multiple files resolved
                 if combine:
                     data = self.combine_multiple(
-                        self.load_multiple_parallel(file_paths, parallel=parallel),
+                        self.load_multiple_parallel(
+                            file_paths, parallel=parallel, **load_kwargs
+                        ),
                         coord_dict,
                     )
                 else:
                     return self.load_multiple_parallel(
-                        file_paths, parallel=parallel, post_process=True
+                        file_paths, parallel=parallel, post_process=True, **load_kwargs
                     )
 
         else:
@@ -507,12 +515,18 @@ class LoaderBase(metaclass=_Loader):
 
                     new_kwargs = kwargs | additional_kwargs
                     return self.load(
-                        new_identifier, new_dir, single=single, **new_kwargs
+                        new_identifier,
+                        new_dir,
+                        single=single,
+                        combine=combine,
+                        parallel=parallel,
+                        **new_kwargs,
                     )
+
                 # On failure, assume single file
                 single = True
 
-            data = self.load_single(identifier)
+            data = self.load_single(identifier, **load_kwargs)
 
         data = self.post_process_general(data)
 
@@ -1354,6 +1368,7 @@ class LoaderBase(metaclass=_Loader):
         file_paths: list[str],
         parallel: bool | None = None,
         post_process: bool = False,
+        **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[DataTree]:
         """Load multiple files in parallel.
 
@@ -1365,6 +1380,9 @@ class LoaderBase(metaclass=_Loader):
             If `True`, data loading will be performed in parallel using `dask.delayed`.
         post_process
             Whether to post-process each data object after loading.
+        **kwargs
+            Additional keyword arguments to be passed to :meth:`load_single
+            <erlab.io.dataloader.LoaderBase.load_single>`.
 
         Returns
         -------
@@ -1376,10 +1394,12 @@ class LoaderBase(metaclass=_Loader):
         if post_process:
 
             def _load_func(filename):
-                return self.load(filename, single=True)
+                return self.load(filename, single=True, load_kwargs=kwargs)
 
         else:
-            _load_func = self.load_single
+
+            def _load_func(filename):
+                return self.load_single(filename, **kwargs)
 
         if parallel:
             import joblib
