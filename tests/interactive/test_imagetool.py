@@ -176,10 +176,8 @@ def test_itool_save(qtbot):
 
 
 def test_itool(qtbot):
-    data = xr.DataArray(
-        np.arange(25).reshape((5, 5)), dims=["x", "y"], cmap="terrain_r"
-    )
-    win = itool(data, execute=False)
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 
     with qtbot.waitExposed(win):
