@@ -1,4 +1,4 @@
-"""Utilites related to representing data in a human-readable format."""
+"""Utilities related to representing data in a human-readable format."""
 
 __all__ = ["format_html_table", "format_value"]
 import datetime

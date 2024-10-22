@@ -77,7 +77,7 @@ def _parse_group(
     exclude
         List of full paths to exclude from the output.
     parse
-        Wheter to parse the values of NXfields to native Python types.
+        Whether to parse the values of NXfields to native Python types.
 
     Note
     ----
@@ -311,13 +311,13 @@ def nexus_group_to_dict(
     exclude
         List of paths to exclude from the output.
     relative
-        Wheter to use the relative or absolute paths of the items. If `True`, the keys
+        Whether to use the relative or absolute paths of the items. If `True`, the keys
         are the paths of the items relative to the path of the group. If `False`, the
         keys are the absolute paths of the items relative to the root of the NeXus file.
     replace_slash
-        Wheter to replace the slashes in the paths with dots.
+        Whether to replace the slashes in the paths with dots.
     parse
-        Wheter to coerce the values of NXfields to native Python types.
+        Whether to coerce the values of NXfields to native Python types.
 
     """
     if exclude is None:

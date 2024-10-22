@@ -652,7 +652,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def _get_coord_for_conversion(self, name: Hashable) -> xr.DataArray:
-        """Get the coordinte array for given dimension name.
+        """Get the coordinate array for given dimension name.
 
         This just ensures that the energy coordinates are given as binding energy.
         """

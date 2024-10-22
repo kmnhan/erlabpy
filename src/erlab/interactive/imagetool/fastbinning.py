@@ -341,7 +341,7 @@ def fast_nanmean(
         A numpy array of floats.
     axis
         Axis or iterable of axis along which the means are computed. If `None`, the mean
-        of the flattend array is computed.
+        of the flattened array is computed.
 
     Returns
     -------
@@ -354,7 +354,7 @@ def fast_nanmean(
       ``len(axis) < N``.
 
     - For calculating the average of a flattened array (``axis = None`` or ``len(axis)
-      == N``), the `numba` implemenation of `numpy.nanmean` is used.
+      == N``), the `numba` implementation of `numpy.nanmean` is used.
 
     - For bigger ``N``, ``numbagg.nanmean`` is used if `numbagg
       <https://github.com/numbagg/numbagg>`_ is installed. Otherwise, the calculation

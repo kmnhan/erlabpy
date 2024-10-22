@@ -57,10 +57,10 @@ def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArra
 
 def _parse_params(
     d: dict[str, Any] | lmfit.Parameters, dask: bool
-) -> xr.DataArray | _ParametersWraper:
+) -> xr.DataArray | _ParametersWrapper:
     if isinstance(d, lmfit.Parameters):
         # Input to apply_ufunc cannot be a Mapping, so wrap in a class
-        return _ParametersWraper(d)
+        return _ParametersWrapper(d)
 
     # Iterate over all values
     for v in _nested_dict_vals(d):
@@ -69,7 +69,7 @@ def _parse_params(
             # convert to str
             return _parse_multiple_params(copy.deepcopy(d), dask)
 
-    return _ParametersWraper(lmfit.create_params(**d))
+    return _ParametersWrapper(lmfit.create_params(**d))
 
 
 def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
@@ -110,7 +110,7 @@ def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
     return da.reduce(_reduce_to_param, ("__dict_keys", "__param_names"))
 
 
-class _ParametersWraper:
+class _ParametersWrapper:
     def __init__(self, params: lmfit.Parameters) -> None:
         self.params = params
 
@@ -129,7 +129,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         | dict[str, float | dict[str, Any]]
         | xr.DataArray
         | xr.Dataset
-        | _ParametersWraper
+        | _ParametersWrapper
         | None = None,
         guess: bool = False,
         errors: Literal["raise", "ignore"] = "raise",
@@ -337,7 +337,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
             initial_params = lmfit.create_params() if guess else model.make_params()
 
-            if isinstance(init_params_, _ParametersWraper):
+            if isinstance(init_params_, _ParametersWrapper):
                 initial_params.update(init_params_.params)
 
             elif isinstance(init_params_, str):

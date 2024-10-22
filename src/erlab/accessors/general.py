@@ -246,7 +246,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
         if "modelfit_results" not in self._obj.data_vars:
             warnings.warn(
-                "`model_results` not included in Dataset. "
+                "`modelfit_results` not included in Dataset. "
                 "Components will not be plotted",
                 stacklevel=2,
             )
