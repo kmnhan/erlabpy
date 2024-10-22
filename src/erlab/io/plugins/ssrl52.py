@@ -248,10 +248,10 @@ class SSRL52Loader(LoaderBase):
                 data_dir, extensions=(".h5",), notcontains="zap"
             )
 
-        for file in target_files:
-            match = re.match(r"(.*?)_" + str(num).zfill(4) + r".h5", file)
+        for path in target_files:
+            match = re.match(r"(.*?)_" + str(num).zfill(4) + r".h5", path.name)
             if match is not None:
-                return [file], {}
+                return [path], {}
 
         return None
 
@@ -270,9 +270,8 @@ class SSRL52Loader(LoaderBase):
         else:
             target_files = erlab.io.utils.get_files(data_dir, extensions=(".h5",))
 
-        for pth in target_files:
-            base_name = os.path.splitext(os.path.basename(pth))[0]
-            files[base_name] = pth
+        for path in target_files:
+            files[path.stem] = str(path)
 
         summary_attrs: dict[str, str] = {
             "Type": "Description",

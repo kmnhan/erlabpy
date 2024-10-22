@@ -67,7 +67,7 @@ class MERLINLoader(LoaderBase):
 
     @property
     def file_dialog_methods(self):
-        return {"ALS BL4.0.3 Raw Data (*.pxt, *.ibw)": (self.load, {})}
+        return {"ALS BL4.0.3 Raw Data (*.pxt *.ibw)": (self.load, {})}
 
     def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
         if os.path.splitext(file_path)[1] == ".ibw":
@@ -173,19 +173,18 @@ class MERLINLoader(LoaderBase):
     ) -> pd.DataFrame:
         files: dict[str, str] = {}
 
-        for path in erlab.io.utils.get_files(data_dir, extensions=(".pxt",)):
-            data_name = os.path.splitext(os.path.basename(path))[0]
+        for pth in erlab.io.utils.get_files(data_dir, extensions=(".pxt",)):
+            data_name = pth.stem
             name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
             if name_match is not None:
                 data_name = name_match.group(1)
-            files[data_name] = path
+            files[data_name] = str(pth)
 
         if not exclude_live:
             for file in os.listdir(data_dir):
                 if file.endswith(".ibw"):
                     data_name = os.path.splitext(file)[0]
-                    path = os.path.join(data_dir, file)
-                    files[data_name] = path
+                    files[data_name] = os.path.join(data_dir, file)
 
         summary_attrs: dict[str, str] = {
             "Lens Mode": "Lens Mode",

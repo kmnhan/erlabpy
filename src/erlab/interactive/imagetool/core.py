@@ -31,8 +31,6 @@ from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_cros
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
-    from pyqtgraph.graphicsItems.ViewBox import ViewBoxMenu
-
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
 
@@ -122,9 +120,6 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
 
     def getPlotItem(self) -> ItoolPlotItem:
         return self.plotItem
-
-    def getPlotItemViewBox(self) -> pg.ViewBox:
-        return self.getPlotItem().vb
 
 
 def suppress_history(method: Callable | None = None):
@@ -605,10 +600,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def colormap(self) -> str | pg.ColorMap:
         return self.colormap_properties["cmap"]
 
-    @colormap.setter
-    def colormap(self, cmap: str | pg.ColorMap) -> None:
-        self.set_colormap(cmap)
-
     @property
     def levels_locked(self) -> bool:
         return self.colormap_properties["levels_locked"]
@@ -709,8 +700,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._write_history = original
 
     def on_close(self) -> None:
-        self.array_slicer.clear_cache()
-        self.data.close()
+        if hasattr(self, "array_slicer"):
+            self.array_slicer.clear_cache()
+        if hasattr(self, "data"):
+            self.data.close()
         if hasattr(self, "_data") and self._data is not None:
             self._data.close()
             del self._data
@@ -974,6 +967,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if update:
             self.array_slicer.clear_val_cache(include_vals=True)
             self.refresh_all(only_plots=True)
+
+            # This will update colorbar limits if visible
+            self.lock_levels(self.levels_locked)
+
+    def apply_func(self, func: Callable[[xr.DataArray], xr.DataArray] | None) -> None:
+        """Apply a function to the data.
+
+        The function must accept the data as the first argument and return a new
+        DataArray. The returned DataArray must have the same dimensions and coordinates
+        as the original data.
+
+        This action is not recorded in the history, and the data is not affected. Only
+        one function can be applied at a time.
+
+        Parameters
+        ----------
+        func
+            The function to apply to the data. if None, the data is restored.
+
+        """
+        # self._data is original data passed to `set_data`
+        # self.data is the current data transformed by ArraySlicer
+        if self._data is None:
+            return
+
+        if func is None:
+            self.update_values(self._data)
+        else:
+            self.update_values(func(self._data))
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -1539,11 +1561,22 @@ class ItoolPlotItem(pg.PlotItem):
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
 
+        self.vb.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
+
+        for i in (0, 1):
+            # Hide unnecessary menu items
+            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
+            self.vb.menu.ctrl[i].label.setVisible(False)
+
+        self.vb.menu.addSeparator()
+
         save_action = self.vb.menu.addAction("Save data as HDF5")
         save_action.triggered.connect(self.save_current_data)
 
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
+
+        self.vb.menu.addSeparator()
 
         if image:
             goldtool_action = self.vb.menu.addAction("Open in goldtool")
@@ -1554,10 +1587,7 @@ class ItoolPlotItem(pg.PlotItem):
             self._dtool: None | QtWidgets.QWidget = None
             dtool_action.triggered.connect(self.open_in_dtool)
 
-        for i in (0, 1):
-            self.getViewBoxMenu().ctrl[i].linkCombo.setVisible(False)
-            self.getViewBoxMenu().ctrl[i].label.setVisible(False)
-        self.getViewBox().setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
+            self.vb.menu.addSeparator()
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
@@ -1717,9 +1747,6 @@ class ItoolPlotItem(pg.PlotItem):
 
     def getViewBox(self) -> pg.ViewBox:
         return self.vb
-
-    def getViewBoxMenu(self) -> ViewBoxMenu:
-        return self.getViewBox().menu
 
     def mouseDragEvent(
         self, ev: mouseEvents.MouseDragEvent | mouseEvents.MouseClickEvent
@@ -1958,9 +1985,11 @@ class ItoolPlotItem(pg.PlotItem):
             self._guideline_angle = line.angle_effective
             self._guideline_offset = [line_pos.x(), line_pos.y()]
             for i in range(2):
-                self._guideline_offset[i] = np.round(
-                    self._guideline_offset[i],
-                    self.array_slicer.get_significant(self.display_axis[i]),
+                self._guideline_offset[i] = float(
+                    np.round(
+                        self._guideline_offset[i],
+                        self.array_slicer.get_significant(self.display_axis[i]),
+                    )
                 )
 
             self.setTitle(
@@ -2176,4 +2205,4 @@ class ItoolColorBar(pg.PlotWidget):
         self.cb._span.blockSignals(not visible)
 
         if visible:
-            self.cb._span.setRegion(self.cb.limits)
+            self.cb.setSpanRegion(self.cb.limits)

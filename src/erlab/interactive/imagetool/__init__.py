@@ -40,7 +40,7 @@ from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
 from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, generate_code
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Hashable
 
     from erlab.interactive.imagetool.core import ImageSlicerState
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -518,6 +518,11 @@ class ItoolMenuBar(DictMenuBar):
                         "toggled": self._set_colormap_options,
                         "sep_after": True,
                     },
+                    "Normalize": {"triggered": self._normalize},
+                    "Reset": {
+                        "triggered": self._reset_filters,
+                        "sep_after": True,
+                    },
                 },
             },
             "editMenu": {
@@ -671,6 +676,15 @@ class ItoolMenuBar(DictMenuBar):
         dialog = RotationDialog(self.slicer_area)
         dialog.exec()
 
+    @QtCore.Slot()
+    def _normalize(self) -> None:
+        dialog = NormalizeDialog(self.slicer_area)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def _reset_filters(self) -> None:
+        self.slicer_area.apply_func(lambda x: x)
+
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
             reverse=self.colorAct[0].isChecked(),
@@ -784,10 +798,8 @@ class ItoolMenuBar(DictMenuBar):
             fn(self.slicer_area._data, files[0], **kargs)
 
 
-class _DataEditDialog(QtWidgets.QDialog):
+class _DataManipulationDialog(QtWidgets.QDialog):
     title: str | None = None
-    prefix: str = ""
-    suffix: str = ""
     show_copy_button: bool = False
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
@@ -801,10 +813,6 @@ class _DataEditDialog(QtWidgets.QDialog):
         self.setLayout(self._layout)
 
         self.setup_widgets()
-
-        self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
-        self.new_window_check.setChecked(True)
-        self.layout_.addRow(self.new_window_check)
 
         self.buttonBox = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -831,19 +839,6 @@ class _DataEditDialog(QtWidgets.QDialog):
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
-    @QtCore.Slot()
-    def accept(self) -> None:
-        if self.slicer_area.data.name is not None:
-            new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
-        else:
-            new_name = None
-
-        if self.new_window_check.isChecked():
-            itool(self.process_data().rename(new_name))
-        else:
-            self.slicer_area.set_data(self.process_data().rename(new_name))
-        super().accept()
-
     def setup_widgets(self) -> None:
         # Overridden by subclasses
         pass
@@ -857,7 +852,74 @@ class _DataEditDialog(QtWidgets.QDialog):
         return ""
 
 
-class RotationDialog(_DataEditDialog):
+class _DataTransformDialog(_DataManipulationDialog):
+    """
+    Parent class for implementing data changes that affect both shape and values.
+
+    These changes are destructive and cannot be undone.
+    """
+
+    prefix: str = ""
+    suffix: str = ""
+
+    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+        super().__init__(slicer_area)
+        self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
+        self.new_window_check.setChecked(True)
+        self.layout_.insertRow(-1, self.new_window_check)
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self.slicer_area.data.name is not None:
+            new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
+        else:
+            new_name = None
+
+        if self.new_window_check.isChecked():
+            itool(self.process_data().rename(new_name))
+        else:
+            self.slicer_area.set_data(self.process_data().rename(new_name))
+        super().accept()
+
+
+class _DataFilterDialog(_DataManipulationDialog):
+    """Parent class for implementing data changes that affect only the values."""
+
+    enable_preview: bool = True
+
+    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+        super().__init__(slicer_area)
+        self._previewed: bool = False
+
+        if self.enable_preview:
+            self.preview_button = QtWidgets.QPushButton("Preview")
+            self.preview_button.clicked.connect(self._preview)
+            self.buttonBox.addButton(
+                self.preview_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            )
+
+    @QtCore.Slot()
+    def _preview(self):
+        self._previewed = True
+        self.slicer_area.apply_func(self.func)
+
+    @QtCore.Slot()
+    def reject(self) -> None:
+        if self._previewed:
+            self.slicer_area.apply_func(None)
+        super().reject()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        self.slicer_area.apply_func(self.func)
+        super().accept()
+
+    def func(self, data: xr.DataArray) -> xr.DataArray:
+        # Implement this method in subclasses
+        raise NotImplementedError
+
+
+class RotationDialog(_DataTransformDialog):
     suffix = " Rotated"
     show_copy_button = True
 
@@ -933,3 +995,65 @@ class RotationDialog(_DataEditDialog):
         return generate_code(
             rotate, [f"|{placeholder}|"], self._rotate_params, module="era.transform"
         )
+
+
+class NormalizeDialog(_DataFilterDialog):
+    title = "Normalize"
+    show_copy_button = False
+
+    def setup_widgets(self) -> None:
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QVBoxLayout()
+        dim_group.setLayout(dim_layout)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+
+        for d in self.slicer_area.data.dims:
+            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
+            dim_layout.addWidget(self.dim_checks[d])
+
+        option_group = QtWidgets.QGroupBox("Options")
+        option_layout = QtWidgets.QVBoxLayout()
+        option_group.setLayout(option_layout)
+
+        self.opts: list[QtWidgets.QRadioButton] = []
+        self.opts.append(QtWidgets.QRadioButton("Data/Area"))
+        self.opts.append(QtWidgets.QRadioButton("(Data−m)/(M−m)"))
+        self.opts.append(QtWidgets.QRadioButton("Data−m"))
+        self.opts.append(QtWidgets.QRadioButton("(Data−m)/Area"))
+
+        self.opts[0].setChecked(True)
+        for opt in self.opts:
+            option_layout.addWidget(opt)
+
+        self.layout_.addRow(dim_group)
+        self.layout_.addRow(option_group)
+
+    def func(self, data: xr.DataArray) -> xr.DataArray:
+        norm_dims = tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+        if len(norm_dims) == 0:
+            return data
+
+        calc_area: bool = self.opts[0].isChecked() or self.opts[3].isChecked()
+        calc_minimum: bool = not self.opts[0].isChecked()
+        calc_maximum: bool = self.opts[1].isChecked()
+
+        if calc_area:
+            area = data.mean(norm_dims)
+
+        if calc_minimum:
+            minimum = data.min(norm_dims)
+
+        if calc_maximum:
+            maximum = data.max(norm_dims)
+
+        if self.opts[0].isChecked():
+            return data / area
+
+        if self.opts[1].isChecked():
+            return (data - minimum) / (maximum - minimum)
+
+        if self.opts[2].isChecked():
+            return data - minimum
+
+        return (data - minimum) / area

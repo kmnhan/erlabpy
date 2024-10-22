@@ -29,9 +29,12 @@ class PlotAccessor(ERLabDataArrayAccessor):
     def __call__(self, *args, **kwargs):
         """Plot the data.
 
-        If a 2D data array is provided, it is plotted using :func:`plot_array
-        <erlab.plotting.general.plot_array>`. Otherwise, it is equivalent to calling
-        :meth:`xarray.DataArray.plot`.
+        Plots two-dimensional data using :func:`plot_array
+        <erlab.plotting.general.plot_array>`. For non-two-dimensional data, the method
+        falls back to :meth:`xarray.DataArray.plot`.
+
+        Also sets fancy labels using :func:`fancy_labels
+        <erlab.plotting.annotations.fancy_labels>`.
 
         Parameters
         ----------
@@ -98,6 +101,8 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
 
     def hvplot(self, *args, **kwargs):
         """`hvplot <https://hvplot.holoviz.org/>`_-based interactive visualization.
+
+        This method is a convenience wrapper that handles importing ``hvplot``.
 
         Parameters
         ----------
@@ -313,13 +318,13 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Parameters
         ----------
         indexers
-            Dictionary specifying the dimensions and their values or slices.
-            Position along a dimension can be specified in three ways:
+            Dictionary specifying the dimensions and their values or slices. Position
+            along a dimension can be specified in three ways:
 
             - As a scalar value: `alpha=-1.2`
 
               If no width is specified, the data is selected along the nearest value. It
-              is equivalent to `xarray.DataArray.sel` with `method='nearest'`.
+              is equivalent to :meth:`xarray.DataArray.sel` with `method='nearest'`.
 
             - As a value and width: `alpha=5, alpha_width=0.5`
 
@@ -342,10 +347,23 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         DataArray
             The selected and averaged data.
 
-        Raises
-        ------
-        ValueError
-            If a specified dimension is not present in the data.
+
+        Note
+        ----
+        Unlike :meth:`xarray.DataArray.sel`, this method treats all dimensions without
+        coordinates as equivalent to having coordinates assigned from 0 to ``n-1``,
+        where ``n`` is the size of the dimension. For example:
+
+        .. code-block:: python
+
+            da = xr.DataArray(np.random.rand(10), dims=("x",))
+
+            da.sel(x=slice(2, 3))  # This works
+
+            da.sel(x=slice(2.0, 3.0))  # This raises a TypeError
+
+            da.qsel(x=slice(2.0, 3.0))  # This works
+
         """
         indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
 
@@ -359,9 +377,16 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     raise ValueError(
                         f"Slice not allowed for width of dimension `{dim}`"
                     )
+
                 bin_widths[dim] = float(width)
                 if dim not in self._obj.dims:
-                    raise ValueError(f"Dimension `{dim}` not found in data.")
+                    raise ValueError(f"Dimension `{dim}` not found in data")
+            else:
+                target_dim = str(dim).removesuffix("_width")
+                if target_dim not in indexers:
+                    raise ValueError(
+                        f"`{target_dim}_width` was specified without `{target_dim}`"
+                    )
 
         scalars: dict[Hashable, float] = {}
         slices: dict[Hashable, slice] = {}
@@ -381,35 +406,53 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         f"Slice not allowed for value of dimension `{dim}` "
                         "with width specified"
                     )
-                slices[dim] = slice(value - width / 2, value + width / 2)
+                slices[dim] = slice(value - width / 2.0, value + width / 2.0)
                 avg_dims.append(dim)
 
-        if len(scalars) >= 1:
-            for k, v in scalars.items():
-                if v < self._obj[k].min() or v > self._obj[k].max():
-                    warnings.warn(
-                        f"Selected value {v} for `{k}` is outside coordinate bounds",
-                        stacklevel=2,
-                    )
-            out = self._obj.sel(
-                {str(k): v for k, v in scalars.items()}, method="nearest"
+        unindexed_dims: list[Hashable] = [
+            k for k in slices | scalars if k not in self._obj.indexes
+        ]
+
+        if len(unindexed_dims) >= 1:
+            out = self._obj.assign_coords(
+                {k: np.arange(self._obj.sizes[k]) for k in unindexed_dims}
             )
         else:
             out = self._obj
 
+        if len(scalars) >= 1:
+            for k, v in scalars.items():
+                if v < out[k].min() or v > out[k].max():
+                    warnings.warn(
+                        f"Selected value {v} for `{k}` is outside coordinate bounds",
+                        stacklevel=2,
+                    )
+            out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
+
         if len(slices) >= 1:
             out = out.sel(slices)
 
-            lost_coords = {k: out[k].mean() for k in avg_dims}
+            lost_coords = {
+                k: out[k].mean() for k in avg_dims if k not in unindexed_dims
+            }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
 
         if verbose:
-            print(
-                f"Selected data with {scalars} and {slices}, averaging over {avg_dims}"
-            )
+            out_str = "Selected data with "
+            if len(scalars) >= 1:
+                out_str = out_str + f"{scalars}"
+            if len(slices) >= 1:
+                if len(scalars) >= 1:
+                    out_str = out_str + " and "
+                out_str = out_str + f"{slices}"
 
-        return out
+            if len(avg_dims) >= 1:
+                out_str = out_str + f", averaging over {avg_dims}"
+
+            print(out_str)
+
+        return out.drop_vars(unindexed_dims, errors="ignore")
 
     def around(
         self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw

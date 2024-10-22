@@ -11,12 +11,15 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import ImageTool, _parse_input, itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 
 
 def accept_dialog(
-    dialog_trigger: Callable, time_out: int = 5, pre_call: Callable | None = None
+    dialog_trigger: Callable,
+    time_out: int = 5,
+    pre_call: Callable | None = None,
+    accept_call: Callable | None = None,
 ) -> QtWidgets.QDialog:
     """Accept a dialog during testing.
 
@@ -33,6 +36,8 @@ def accept_dialog(
     pre_call
         Callable that takes the dialog as a single argument. If provided, it is executed
         before calling ``.accept()`` on the dialog.
+    accept_call
+        If provided, it is called instead of ``.accept()`` on the dialog.
     """
     dialog = None
     start_time = time.time()
@@ -48,7 +53,10 @@ def accept_dialog(
         if isinstance(dialog, QtWidgets.QDialog):
             if pre_call is not None:
                 pre_call(dialog)
-            if (
+
+            if accept_call is not None:
+                accept_call(dialog)
+            elif (
                 isinstance(dialog, QtWidgets.QMessageBox)
                 and dialog.defaultButton() is not None
             ):
@@ -112,6 +120,7 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
+    time.sleep(0.5)
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
@@ -176,7 +185,7 @@ def test_itool_save(qtbot):
 
 def test_itool(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    win = itool(data, execute=False)
+    win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 
     with qtbot.waitExposed(win):
@@ -303,21 +312,22 @@ def test_itool_tools(qtbot, gold):
     del win
 
 
-def test_itool_ds(qtbot):
+def test_parse_input():
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
         ValueError, match="No valid data for ImageTool found in the Dataset"
     ):
-        itool(
+        _parse_input(
             xr.Dataset(
                 {
                     "data1d": xr.DataArray(np.arange(5), dims=["x"]),
                     "data0d": 1,
                 }
-            ),
-            execute=False,
+            )
         )
 
+
+def test_itool_ds(qtbot):
     data = xr.Dataset(
         {
             "data1d": xr.DataArray(np.arange(5), dims=["x"]),
@@ -342,6 +352,7 @@ def test_itool_ds(qtbot):
 
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
+    assert wins[0].slicer_area.linked_slicers == {wins[1].slicer_area}
 
     wins[0].slicer_area.unlink()
     wins[1].slicer_area.unlink()
@@ -351,14 +362,48 @@ def test_itool_ds(qtbot):
     del wins
 
 
+def test_itool_multidimensional(qtbot):
+    win = itool(
+        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
+    )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(125).reshape((5, 5, 5)), dims=["x", "y", "z"])
+    )
+    move_and_compare_values(qtbot, win, [62.0, 37.0, 32.0, 57.0])
+
+    win.slicer_area.set_data(
+        xr.DataArray(np.arange(625).reshape((5, 5, 5, 5)), dims=["x", "y", "z", "t"])
+    )
+    move_and_compare_values(qtbot, win, [312.0, 187.0, 162.0, 287.0])
+
+    win.close()
+
+
 def test_value_update(qtbot):
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
+
+    win.close()
+
+
+def test_value_update_errors():
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -374,8 +419,6 @@ def test_value_update(qtbot):
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
-
-    win.close()
 
 
 def test_sync(qtbot):
@@ -540,5 +583,61 @@ def test_itool_rotate(qtbot):
     # Transpose should remove guidelines
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
     assert not win.slicer_area.main_image.is_guidelines_visible
+
+    win.close()
+
+
+def normalize(data, norm_dims, option):
+    area = data.mean(norm_dims)
+    minimum = data.min(norm_dims)
+    maximum = data.max(norm_dims)
+
+    match option:
+        case 0:
+            return data / area
+        case 1:
+            return (data - minimum) / (maximum - minimum)
+        case 2:
+            return data - minimum
+        case _:
+            return (data - minimum) / area
+
+
+@pytest.mark.parametrize("option", [0, 1, 2, 3])
+def test_itool_normalize(qtbot, option):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog):
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.opts[option].setChecked(True)
+
+        # Preview
+        dialog.preview_button.click()
+
+    accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
+
+    # Check if the data is normalized
+    xarray.testing.assert_identical(
+        win.slicer_area.data, normalize(data, ("x",), option)
+    )
+
+    # Reset normalization
+    win.slicer_area.apply_func(None)
+    xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    # Check if canceling the dialog does not change the data
+    accept_dialog(
+        win.mnb._normalize,
+        pre_call=_set_dialog_params,
+        accept_call=lambda d: d.reject(),
+    )
+    xarray.testing.assert_identical(win.slicer_area.data, data)
 
     win.close()

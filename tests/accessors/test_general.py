@@ -56,3 +56,86 @@ def test_ds_qshow_fit(plot_components: bool):
     assert isinstance(
         result_ds.qshow(plot_components=plot_components), panel.layout.base.Column
     )
+
+
+@pytest.mark.parametrize(
+    ("indexers", "expected_shape"),
+    [
+        ({"x": 2.0}, (5,)),
+        ({"x": slice(1.0, 3.0)}, (3, 5)),
+        ({"x": 2.0, "x_width": 1.0}, (5,)),
+        ({"x": slice(1.0, 3.0), "y": 2.0}, (3,)),
+    ],
+)
+def test_qsel_shape(indexers, expected_shape):
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    result = dat.qsel(indexers)
+    assert result.shape == expected_shape
+
+
+def test_qsel_verbose(capfd):
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    dat.qsel({"x": 2.0, "x_width": 1.0}, verbose=True)
+    captured = capfd.readouterr()
+    assert (
+        "Selected data with {'x': slice(1.5, 2.5, None)}, averaging over ['x']"
+        in captured.out
+    )
+
+
+def test_qsel_invalid_dimension():
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    with pytest.raises(ValueError, match="Dimension `z` not found in data"):
+        dat.qsel({"z": 2.0})
+
+
+def test_qsel_slice_with_width():
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    with pytest.raises(
+        ValueError,
+        match="Slice not allowed for value of dimension `x` with width specified",
+    ):
+        dat.qsel({"x": slice(1.0, 3.0), "x_width": 1.0})
+
+
+def test_qsel_value_outside_bounds():
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    with pytest.warns(
+        UserWarning, match="Selected value 10.0 for `x` is outside coordinate bounds"
+    ):
+        dat.qsel({"x": 10.0})
+
+
+def test_qsel_drop_unindexed_dims():
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    result = dat.qsel({"x": 2.0})
+
+    xr.testing.assert_equal(result, dat.isel(x=2))
+
+
+def test_qsel_around():
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    result = dat.qsel.around(radius=2.0, x=2.0, y=2.0, average=False)
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray(
+            np.array(
+                [
+                    [np.nan, np.nan, 2.0, np.nan, np.nan],
+                    [np.nan, 6.0, 7.0, 8.0, np.nan],
+                    [10.0, 11.0, 12.0, 13.0, 14.0],
+                    [np.nan, 16.0, 17.0, 18.0, np.nan],
+                    [np.nan, np.nan, 22.0, np.nan, np.nan],
+                ]
+            ),
+            dims=("x", "y"),
+        ),
+    )
+
+    xr.testing.assert_identical(
+        dat.qsel.around(radius=2.0, x=2.0, y=2.0, average=True), xr.DataArray(12.0)
+    )

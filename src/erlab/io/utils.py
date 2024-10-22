@@ -41,11 +41,11 @@ def showfitsinfo(path: str | os.PathLike) -> None:
 
 
 def get_files(
-    directory,
+    directory: str | os.PathLike,
     extensions: Sequence[str] | str | None = None,
     contains: str | None = None,
     notcontains: str | None = None,
-) -> set[str]:
+) -> set[pathlib.Path]:
     """Return file names in a directory with the given extension(s).
 
     Directories are ignored.
@@ -63,11 +63,11 @@ def get_files(
 
     Returns
     -------
-    files : set of str
-        Set of file names in the directory.
+    files : set of pathlib.Path
+        Set of file objects in the directory.
 
     """
-    files: set[str] = set()
+    files: set[pathlib.Path] = set()
 
     if isinstance(extensions, str):
         extensions = [extensions]
@@ -84,7 +84,7 @@ def get_files(
         ):
             continue
 
-        files.add(str(f))
+        files.add(f)
 
     return files
 
