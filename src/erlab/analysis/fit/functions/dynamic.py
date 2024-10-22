@@ -154,12 +154,16 @@ class MultiPeakFunction(DynamicFunction):
         `offset`, each corresponding to the Fermi level, temperature in K, and constant
         background.
     background
-        The type of background to include in the model. The options are: ``'constant'``,
-        ``'linear'``, ``'polynomial'``, or ``'none'``. If ``'constant'``, adds a
-        ``const_bkg`` parameter. If ``'linear'``, adds a ``lin_bkg`` parameter and a
-        ``const_bkg`` parameter. If ``'polynomial'``, adds  ``c0``, ``c1``, ...
-        corresponding to the polynomial coefficients. The polynomial degree can be
-        specified with `degree`. If ``'none'``, no background is added.
+        The type of background to include in the model. Possible values are:
+
+        ============  ============================================================
+        Value         Additional parameters
+        ============  ============================================================
+        'none'        None
+        'constant'    ``const_bkg``
+        'linear'      ``lin_bkg``, ``const_bkg``
+        'polynomial'  ``c0``, ``c1``, ... depending on `degree`
+        ============  ============================================================
     degree
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
