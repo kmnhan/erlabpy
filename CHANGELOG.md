@@ -1,3 +1,26 @@
+## v2.12.0 (2024-10-22)
+
+### Features
+
+- **interactive.imagetool:** add normalization option to View menu ([53e2cf2](https://github.com/kmnhan/erlabpy/commit/53e2cf2b6e49de70a6857b782acc8ec0815a93b5))
+- **io.dataloader:** allow passing additional arguments to `load_single` ([1652c20](https://github.com/kmnhan/erlabpy/commit/1652c20de102f7bb5fa4a26360652341f3249c2e))
+- **io.plugins:** add support for two new beamlines, closes [#61](https://github.com/kmnhan/erlabpy/issues/61) ([368263e](https://github.com/kmnhan/erlabpy/commit/368263ef282ef3ec39cc6c8bbe23f26ddcf18b8f))
+
+  Added plugins with preliminary support for Diamond I05 and ALBA BL20 LOREA.
+- **io:** add `nexusutils` module for working with NeXus files ([2532941](https://github.com/kmnhan/erlabpy/commit/25329416d837cd318bab51fe7ff747e5f83cbc19))
+
+  This commit adds a new submodule `io.nexusutils` that contains utilities for converting NeXus data to xarray data structures.
+
+### Bug Fixes
+
+- **erlab.io.plugins.merlin:** resolve typo in file dialog methods ([39caa99](https://github.com/kmnhan/erlabpy/commit/39caa998cc6857cd197dc1a0a7efc961ad3afe46))
+- **erlab.accessors.general:** make `qsel` accessor work along dimensions with no coordinates ([7f0d259](https://github.com/kmnhan/erlabpy/commit/7f0d259f75626316d28497a3e25e1009d7c05851))
+- **interactive.imagetool:** avoid errors on termination ([9fd044b](https://github.com/kmnhan/erlabpy/commit/9fd044bae170e025f5e27eb392fc600c19ec30b8))
+
+### Code Refactor
+
+- **io:** return path-like objects instead of strings in `get_files` ([2eb9166](https://github.com/kmnhan/erlabpy/commit/2eb9166e4183222e9cb282fc0bf4984d76bf3124))
+
 ## v2.11.2 (2024-10-14)
 
 ### Bug Fixes
