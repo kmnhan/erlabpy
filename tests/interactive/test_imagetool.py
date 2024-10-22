@@ -16,7 +16,10 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 
 
 def accept_dialog(
-    dialog_trigger: Callable, time_out: int = 5, pre_call: Callable | None = None
+    dialog_trigger: Callable,
+    time_out: int = 5,
+    pre_call: Callable | None = None,
+    accept_call: Callable | None = None,
 ) -> QtWidgets.QDialog:
     """Accept a dialog during testing.
 
@@ -33,6 +36,8 @@ def accept_dialog(
     pre_call
         Callable that takes the dialog as a single argument. If provided, it is executed
         before calling ``.accept()`` on the dialog.
+    accept_call
+        If provided, it is called instead of ``.accept()`` on the dialog.
     """
     dialog = None
     start_time = time.time()
@@ -48,7 +53,10 @@ def accept_dialog(
         if isinstance(dialog, QtWidgets.QDialog):
             if pre_call is not None:
                 pre_call(dialog)
-            if (
+
+            if accept_call is not None:
+                accept_call(dialog)
+            elif (
                 isinstance(dialog, QtWidgets.QMessageBox)
                 and dialog.defaultButton() is not None
             ):
@@ -575,5 +583,61 @@ def test_itool_rotate(qtbot):
     # Transpose should remove guidelines
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
     assert not win.slicer_area.main_image.is_guidelines_visible
+
+    win.close()
+
+
+def normalize(data, norm_dims, option):
+    area = data.mean(norm_dims)
+    minimum = data.min(norm_dims)
+    maximum = data.max(norm_dims)
+
+    match option:
+        case 0:
+            return data / area
+        case 1:
+            return (data - minimum) / (maximum - minimum)
+        case 2:
+            return data - minimum
+        case _:
+            return (data - minimum) / area
+
+
+@pytest.mark.parametrize("option", [0, 1, 2, 3])
+def test_itool_normalize(qtbot, option):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog):
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.opts[option].setChecked(True)
+
+        # Preview
+        dialog.preview_button.click()
+
+    accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
+
+    # Check if the data is normalized
+    xarray.testing.assert_identical(
+        win.slicer_area.data, normalize(data, ("x",), option)
+    )
+
+    # Reset normalization
+    win.slicer_area.apply_func(None)
+    xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    # Check if canceling the dialog does not change the data
+    accept_dialog(
+        win.mnb._normalize,
+        pre_call=_set_dialog_params,
+        accept_call=lambda d: d.reject(),
+    )
+    xarray.testing.assert_identical(win.slicer_area.data, data)
 
     win.close()

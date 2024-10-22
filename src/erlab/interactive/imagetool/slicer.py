@@ -324,7 +324,7 @@ class ArraySlicer(QtCore.QObject):
             The converted data.
 
         """
-        data = data.squeeze()
+        data = data.copy().squeeze()
 
         if data.ndim < 2:
             raise ValueError("Data must have at least two dimensions.")
