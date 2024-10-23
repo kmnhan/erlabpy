@@ -293,14 +293,21 @@ def test_loader():
     assert repr(erlab.io.loaders).startswith("Registered data loaders")
     assert erlab.io.loaders._repr_html_().startswith("<div><style>")
 
+    # Set loader
     erlab.io.set_loader("example")
     erlab.io.set_data_dir(tmp_dir.name)
+    erlab.io.load(2)
+
+    erlab.io.set_loader(None)
+
+    # Set with attribute
+    erlab.io.loaders.current_loader = "example"
+    erlab.io.loaders.current_data_dir = tmp_dir.name
+    erlab.io.load(2)
 
     # Test if coordinate_attrs are correctly assigned
     mfdata = erlab.io.load(1)
     assert np.allclose(mfdata["temp_sample"].values, 20.0 + np.arange(len(beta_coords)))
-
-    erlab.io.load(2)
 
     df = erlab.io.summarize(display=False)
     assert len(df.index) == 2

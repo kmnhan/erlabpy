@@ -221,7 +221,7 @@ class LoaderBase(metaclass=_Loader):
     skip_validate: bool = False
     """
     If `True`, validation checks will be skipped. If `False`, data will be checked with
-    :meth:`validate <erlab.io.dataloader.LoaderBase.validate>` every time it is loaded.
+    :meth:`validate <erlab.io.dataloader.LoaderBase.validate>`.
     """
 
     strict_validation: bool = False
@@ -1444,11 +1444,41 @@ class LoaderRegistry(RegistryBase):
     alias_mapping: ClassVar[dict[str, str]] = {}
     """Mapping of aliases to loader names \n\n:meta hide-value:"""
 
-    current_loader: LoaderBase | None = None
-    """Current loader \n\n:meta hide-value:"""
+    _current_loader: LoaderBase | None = None
+    _current_data_dir: pathlib.Path | None = None
 
-    default_data_dir: pathlib.Path | None = None
-    """Default directory to search for data files \n\n:meta hide-value:"""
+    @property
+    def current_loader(self) -> LoaderBase | None:
+        """Current loader."""
+        return self._current_loader
+
+    @current_loader.setter
+    def current_loader(self, loader: str | LoaderBase | None) -> None:
+        self.set_loader(loader)
+
+    @property
+    def current_data_dir(self) -> os.PathLike | None:
+        """Directory to search for data files."""
+        return self._current_data_dir
+
+    @current_data_dir.setter
+    def current_data_dir(self, data_dir: str | os.PathLike | None) -> None:
+        self.set_data_dir(data_dir)
+
+    @property
+    def default_data_dir(self) -> os.PathLike | None:
+        """Deprecated alias for current_data_dir.
+
+        .. deprecated:: 3.0.0
+
+            Use :attr:`current_data_dir` instead.
+        """
+        warnings.warn(
+            "`default_data_dir` is deprecated, use `current_data_dir` instead",
+            DeprecationWarning,
+            stacklevel=1,
+        )
+        return self.current_data_dir
 
     def _register(self, loader_class: type[LoaderBase]) -> None:
         # Add class to loader
@@ -1515,9 +1545,9 @@ class LoaderRegistry(RegistryBase):
 
         """
         if isinstance(loader, str):
-            self.current_loader = self.get(loader)
+            self._current_loader = self.get(loader)
         else:
-            self.current_loader = loader
+            self._current_loader = loader
 
     @contextlib.contextmanager
     def loader_context(
@@ -1559,7 +1589,7 @@ class LoaderRegistry(RegistryBase):
             self.set_loader(loader)
 
         if data_dir is not None:
-            old_data_dir = self.default_data_dir
+            old_data_dir = self.current_data_dir
             self.set_data_dir(data_dir)
 
         try:
@@ -1589,10 +1619,10 @@ class LoaderRegistry(RegistryBase):
 
         """
         if data_dir is None:
-            self.default_data_dir = None
+            self._current_data_dir = None
             return
 
-        self.default_data_dir = pathlib.Path(data_dir).resolve(strict=True)
+        self._current_data_dir = pathlib.Path(data_dir).resolve(strict=True)
 
     def load(
         self,
@@ -1658,7 +1688,7 @@ class LoaderRegistry(RegistryBase):
             raise ValueError(
                 "No loader has been set. Set a loader with `erlab.io.set_loader` first"
             )
-        return self.current_loader, self.default_data_dir
+        return self.current_loader, self.current_data_dir
 
     def __repr__(self) -> str:
         out = "Registered data loaders\n=======================\n\n"
