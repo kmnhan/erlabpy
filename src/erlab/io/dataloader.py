@@ -1417,14 +1417,14 @@ class LoaderBase(metaclass=_Loader):
         warnings.warn(msg, ValidationWarning, stacklevel=2)
 
 
-class RegistryBase:
+class _RegistryBase:
     """Base class for the loader registry.
 
     This class implements the singleton pattern, ensuring that only one instance of the
     registry is created and used throughout the application.
     """
 
-    __instance: RegistryBase | None = None
+    __instance: _RegistryBase | None = None
 
     def __new__(cls):
         if not isinstance(cls.__instance, cls):
@@ -1437,7 +1437,7 @@ class RegistryBase:
         return cls()
 
 
-class LoaderRegistry(RegistryBase):
+class LoaderRegistry(_RegistryBase):
     loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
     """Registered loaders \n\n:meta hide-value:"""
 
