@@ -176,8 +176,12 @@ class LoaderBase(metaclass=_Loader):
     :meth:`post_process <erlab.io.dataloader.LoaderBase.post_process>`
     """
 
-    additional_attrs: ClassVar[dict[str, str | int | float]] = {}
+    additional_attrs: ClassVar[
+        dict[str, str | float | Callable[[xr.DataArray], str | float]]
+    ] = {}
     """Additional attributes to be added to the data after loading.
+
+    If a callable is provided, it will be called with the data as the only argument.
 
     Notes
     -----
@@ -1231,6 +1235,14 @@ class LoaderBase(metaclass=_Loader):
                 v = darr[k].values.mean()
                 darr = darr.drop_vars(k).assign_attrs({k: v})
 
+        new_attrs: dict[str, str | float] = {}
+        for k, v in self.additional_attrs.items():
+            if k not in darr.attrs:
+                if callable(v):
+                    new_attrs[k] = v(darr)
+                else:
+                    new_attrs[k] = v
+
         new_attrs = {
             k: v for k, v in self.additional_attrs.items() if k not in darr.attrs
         }
@@ -1497,6 +1509,7 @@ class LoaderRegistry(_RegistryBase):
         return self.loaders.items()
 
     def get(self, key: str) -> LoaderBase:
+        """Get a loader instance by name or alias."""
         loader_name = self.alias_mapping.get(key)
         if loader_name is None:
             raise LoaderNotFoundError(key)
@@ -1528,7 +1541,7 @@ class LoaderRegistry(_RegistryBase):
     def set_loader(self, loader: str | LoaderBase | None) -> None:
         """Set the current data loader.
 
-        All subsequent calls to `load` will use the loader set here.
+        All subsequent calls to `load` will use the provided loader.
 
         Parameters
         ----------
@@ -1604,7 +1617,7 @@ class LoaderRegistry(_RegistryBase):
     def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
         """Set the default data directory for the data loader.
 
-        All subsequent calls to :func:`erlab.io.load` will use the `data_dir` set here
+        All subsequent calls to :func:`erlab.io.load` will use the provided `data_dir`
         unless specified.
 
         Parameters
