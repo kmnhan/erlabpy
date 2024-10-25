@@ -785,7 +785,10 @@ class ItoolMenuBar(DictMenuBar):
             _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
 
         valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
-            "xarray HDF5 Files (*.h5)": (_to_hdf5, {"engine": "h5netcdf"}),
+            "xarray HDF5 Files (*.h5)": (
+                _to_hdf5,
+                {"engine": "h5netcdf", "invalid_netcdf": True},
+            ),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
         }
 

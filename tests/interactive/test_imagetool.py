@@ -179,7 +179,7 @@ def test_itool_save(qtbot):
 
     win.close()
 
-    xr.testing.assert_equal(data, xr.load_dataarray(filename))
+    xr.testing.assert_equal(data, xr.load_dataarray(filename, engine="h5netcdf"))
     tmp_dir.cleanup()
 
 
