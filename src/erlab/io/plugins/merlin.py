@@ -6,11 +6,10 @@ import os
 import re
 import warnings
 from collections.abc import Callable
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 import numpy as np
 import numpy.typing as npt
-import pandas as pd
 import xarray as xr
 
 import erlab.io.utils
@@ -20,6 +19,27 @@ from erlab.io.dataloader import LoaderBase
 def _format_polarization(val) -> str:
     val = round(float(val))
     return {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(val, str(val))
+
+
+def _parse_time(darr: xr.DataArray) -> datetime.datetime:
+    return datetime.datetime.strptime(
+        f"{darr.attrs['Date']} {darr.attrs['Time']}",
+        "%d/%m/%Y %I:%M:%S %p",
+    )
+
+
+def _determine_kind(data: xr.DataArray) -> str:
+    if "scan_type" in data.attrs and data.attrs["scan_type"] == "live":
+        return "LP" if "beta" in data.dims else "LXY"
+
+    data_type = "xps"
+    if "alpha" in data.dims:
+        data_type = "cut"
+    if "beta" in data.dims:
+        data_type = "map"
+    if "hv" in data.dims:
+        data_type = "hvdep"
+    return data_type
 
 
 class MERLINLoader(LoaderBase):
@@ -52,10 +72,8 @@ class MERLINLoader(LoaderBase):
         "mesh_current",
         "temp_sample",
     )
-    additional_attrs: ClassVar[dict] = {
-        "configuration": 1,
-        "sample_workfunction": 4.44,
-    }
+    additional_attrs: ClassVar[dict] = {"configuration": 1}
+
     formatters: ClassVar[dict[str, Callable]] = {
         "polarization": _format_polarization,
         "Lens Mode": lambda x: x.replace("Angular", "A"),
@@ -63,13 +81,38 @@ class MERLINLoader(LoaderBase):
         "Exit Slit": round,
         "Slit Plate": round,
     }
+
+    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+        "Time": _parse_time,
+        "Type": _determine_kind,
+        "Lens Mode": "Lens Mode",
+        "Scan Type": "Acquisition Mode",
+        "T(K)": "temp_sample",
+        "Pass E": "Pass Energy",
+        "Analyzer Slit": "Slit Plate",
+        "Polarization": "polarization",
+        "hv": "hv",
+        "Entrance Slit": "Entrance Slit",
+        "Exit Slit": "Exit Slit",
+        "polar": "beta",
+        "tilt": "xi",
+        "azi": "delta",
+        "x": "x",
+        "y": "y",
+        "z": "z",
+    }
+
+    summary_sort = "Time"
+
     always_single = False
 
     @property
     def file_dialog_methods(self):
         return {"ALS BL4.0.3 Raw Data (*.pxt *.ibw)": (self.load, {})}
 
-    def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+    def load_single(
+        self, file_path: str | os.PathLike, without_values: bool = False
+    ) -> xr.DataArray:
         if os.path.splitext(file_path)[1] == ".ibw":
             return self._load_live(file_path)
 
@@ -166,100 +209,8 @@ class MERLINLoader(LoaderBase):
                 if k in wave.dims
             }
         )
+        wave = wave.assign_attrs(scan_type="live")
         return wave.assign_coords(eV=-wave["eV"] + wave.attrs["BL Energy"])
 
-    def generate_summary(
-        self, data_dir: str | os.PathLike, exclude_live: bool = False
-    ) -> pd.DataFrame:
-        files: dict[str, str] = {}
-
-        for pth in erlab.io.utils.get_files(data_dir, extensions=(".pxt",)):
-            data_name = pth.stem
-            name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", data_name)
-            if name_match is not None:
-                data_name = name_match.group(1)
-            files[data_name] = str(pth)
-
-        if not exclude_live:
-            for file in os.listdir(data_dir):
-                if file.endswith(".ibw"):
-                    data_name = os.path.splitext(file)[0]
-                    files[data_name] = os.path.join(data_dir, file)
-
-        summary_attrs: dict[str, str] = {
-            "Lens Mode": "Lens Mode",
-            "Scan Type": "Acquisition Mode",
-            "T(K)": "temp_sample",
-            "Pass E": "Pass Energy",
-            "Analyzer Slit": "Slit Plate",
-            "Polarization": "polarization",
-            "hv": "hv",
-            "Entrance Slit": "Entrance Slit",
-            "Exit Slit": "Exit Slit",
-            "x": "x",
-            "y": "y",
-            "z": "z",
-            "polar": "beta",
-            "tilt": "xi",
-            "azi": "delta",
-        }
-
-        cols = ["File Name", "Path", "Time", "Type", *summary_attrs.keys()]
-
-        data_info = []
-        processed_indices: list[int] = []
-
-        def _add_darr(dname: str, file: str, darr: xr.DataArray, live: bool = False):
-            if live:
-                data_type = "LP" if "beta" in darr.dims else "LXY"
-            else:
-                data_type = "core"
-                if "alpha" in darr.dims:
-                    data_type = "cut"
-                if "beta" in darr.dims:
-                    data_type = "map"
-                if "hv" in darr.dims:
-                    data_type = "hvdep"
-            data_info.append(
-                [
-                    dname,
-                    file,
-                    datetime.datetime.strptime(
-                        f"{darr.attrs['Date']} {darr.attrs['Time']}",
-                        "%d/%m/%Y %I:%M:%S %p",
-                    ),
-                    data_type,
-                    *(
-                        self.get_formatted_attr_or_coord(darr, k)
-                        for k in summary_attrs.values()
-                    ),
-                ]
-            )
-
-        for name, path in files.items():
-            if os.path.splitext(path)[1] == ".ibw":
-                _add_darr(
-                    name, path, darr=cast(xr.DataArray, self.load(path)), live=True
-                )
-            else:
-                idx, _ = self.infer_index(os.path.splitext(os.path.basename(path))[0])
-                if idx in processed_indices:
-                    continue
-
-                if idx is not None:
-                    processed_indices.append(idx)
-
-                data = cast(xr.DataArray | xr.Dataset, self.load(path))
-
-                if isinstance(data, xr.Dataset):
-                    for k, darr in data.data_vars.items():
-                        _add_darr(f"{name}_{k}", path, darr)
-                else:
-                    _add_darr(name, path, data)
-                del data
-
-        return (
-            pd.DataFrame(data_info, columns=cols)
-            .sort_values("Time")
-            .set_index("File Name")
-        )
+    def files_for_summary(self, data_dir: str | os.PathLike):
+        return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))

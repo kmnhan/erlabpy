@@ -45,6 +45,7 @@ def get_files(
     extensions: Sequence[str] | str | None = None,
     contains: str | None = None,
     notcontains: str | None = None,
+    exclude: str | Sequence[str] | None = None,
 ) -> set[pathlib.Path]:
     """Return file names in a directory with the given extension(s).
 
@@ -60,6 +61,8 @@ def get_files(
         String to filter for in the file names.
     notcontains
         String to filter out of the file names.
+    exclude
+        Glob patterns to exclude from the search.
 
     Returns
     -------
@@ -72,7 +75,18 @@ def get_files(
     if isinstance(extensions, str):
         extensions = [extensions]
 
-    for f in pathlib.Path(directory).iterdir():
+    dir_path = pathlib.Path(directory)
+
+    excluded: list[pathlib.Path] = []
+
+    if exclude is not None:
+        if isinstance(exclude, str):
+            exclude = [exclude]
+
+        for pattern in exclude:
+            excluded = excluded + list(dir_path.glob(pattern))
+
+    for f in dir_path.iterdir():
         if (
             f.is_dir()
             or (
@@ -84,7 +98,8 @@ def get_files(
         ):
             continue
 
-        files.add(f)
+        if f not in excluded:
+            files.add(f)
 
     return files
 

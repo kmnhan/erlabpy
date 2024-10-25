@@ -362,7 +362,9 @@ def nxfield_to_xarray(field: NXfield, no_dims: bool = False) -> xr.DataArray:
 
 
 def nxgroup_to_xarray(
-    group: NXgroup, data: str | Callable[[NXgroup], NXfield]
+    group: NXgroup,
+    data: str | Callable[[NXgroup], NXfield],
+    without_values: bool = False,
 ) -> xr.DataArray:
     """Convert a NeXus group to an xarray DataArray.
 
@@ -379,6 +381,9 @@ def nxgroup_to_xarray(
         - If a callable, it must be a function that takes ``group`` as an argument and
           returns the `NXfield <nexusformat.nexus.tree.NXfield>` containing the data
           values.
+    without_values
+        If `True`, the returned DataArray values will be filled with zeros. Use this to
+        check the coords or attrs quickly without loading in the full data.
 
     Returns
     -------
@@ -422,6 +427,9 @@ def nxgroup_to_xarray(
 
     dims = tuple(_make_relative(d) for d in dims)
     coords = {_make_relative(k): _make_coord_relative(v) for k, v in coords.items()}
+
+    if without_values:
+        values = np.zeros(values.shape, values.dtype)
     return xr.DataArray(values, dims=dims, coords=coords, attrs=attrs)
 
 

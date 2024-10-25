@@ -15,6 +15,7 @@ import numpy as np
 import xarray as xr
 from xarray.core.datatree import DataTree
 
+import erlab.io
 from erlab.io.dataloader import LoaderBase
 
 
@@ -42,7 +43,7 @@ class DA30Loader(LoaderBase):
         return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
 
     def load_single(
-        self, file_path: str | os.PathLike
+        self, file_path: str | os.PathLike, without_values: bool = False
     ) -> xr.DataArray | xr.Dataset | DataTree:
         ext = os.path.splitext(file_path)[-1]
 
@@ -60,7 +61,7 @@ class DA30Loader(LoaderBase):
                     data = data[next(iter(data.data_vars))]
 
             case ".zip":
-                data = load_zip(file_path)
+                data = load_zip(file_path, without_values)
 
             case _:
                 raise ValueError(f"Unsupported file extension {ext}")
@@ -75,9 +76,12 @@ class DA30Loader(LoaderBase):
 
         return data
 
+    def files_for_summary(self, data_dir: str | os.PathLike):
+        return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))
+
 
 def load_zip(
-    filename: str | os.PathLike,
+    filename: str | os.PathLike, without_values: bool = False
 ) -> xr.DataArray | xr.Dataset | DataTree:
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
@@ -99,9 +103,11 @@ def load_zip(
                 for d in parse_ini(os.path.join(tmp_dir, f"{region}.ini")).values():
                     attrs.update(d)
 
-                arr = np.fromfile(
-                    os.path.join(tmp_dir, f"Spectrum_{region}.bin"), dtype=np.float32
-                )
+                if not without_values:
+                    arr = np.fromfile(
+                        os.path.join(tmp_dir, f"Spectrum_{region}.bin"),
+                        dtype=np.float32,
+                    )
 
             shape = []
             coords = {}
@@ -113,6 +119,9 @@ def load_zip(
                 coords[region_info[f"{d}label"]] = np.linspace(
                     offset, offset + (n - 1) * delta, n
                 )
+
+            if without_values:
+                arr = np.zeros(shape, dtype=np.float32)
 
             out.append(
                 xr.DataArray(

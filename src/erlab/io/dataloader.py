@@ -203,7 +203,7 @@ class LoaderBase(metaclass=_Loader):
     """
 
     formatters: ClassVar[dict[str, Callable]] = {}
-    """Mapping from attribute names (after renaming) to custom formatters.
+    """Mapping from attr or coord names (after renaming) to custom formatters.
 
     The formatters must take the attribute value and return a value that can be
     converted to a string with :meth:`value_to_string
@@ -211,9 +211,35 @@ class LoaderBase(metaclass=_Loader):
     for human readable display of some attributes in the summary table and the
     information accessor.
 
+    The values returned by the formatters will be further formatted by
+    :meth:`value_to_string <erlab.io.dataloader.LoaderBase.value_to_string>` before
+    being displayed.
+
+    If the key is a coordinate, the function will automatically be vectorized over every
+    value.
+
     Note
     ----
     The formatters are only used for display purposes and do not affect the stored data.
+
+    See Also
+    --------
+    :meth:`get_formatted_attr_or_coord`
+        The method that uses this mapping to provide human-readable values.
+    """
+
+    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {}
+    """Mapping from summary column names to attr or coord names (after renaming).
+
+    If the value is a callable, it will be called with the data as the only argument.
+
+    """
+
+    summary_sort: str | None = None
+    """Default column to sort the summary table by.
+
+    If `None`, the summary table is sorted in the order of the files returned by
+    :meth:`files_for_summary <erlab.io.dataloader.LoaderBase.files_for_summary>`.
     """
 
     always_single: bool = True
@@ -344,7 +370,7 @@ class LoaderBase(metaclass=_Loader):
         """
         style = df.style.format(cls.value_to_string)
 
-        hidden = [c for c in ("Time", "Path") if c in df.columns]
+        hidden = [c for c in ("Path",) if c in df.columns]
         if len(hidden) > 0:
             style = style.hide(hidden, axis="columns")
 
@@ -540,7 +566,9 @@ class LoaderBase(metaclass=_Loader):
         return data
 
     def get_formatted_attr_or_coord(
-        self, data: xr.DataArray, attr_or_coord_name: str
+        self,
+        data: xr.DataArray,
+        attr_or_coord_name: str | Callable[[xr.DataArray], Any],
     ) -> Any:
         """Return the formatted value of the given attribute or coordinate.
 
@@ -556,6 +584,9 @@ class LoaderBase(metaclass=_Loader):
             The name of the attribute or coordinate to extract.
 
         """
+        if callable(attr_or_coord_name):
+            return attr_or_coord_name(data)
+
         func = self.formatters.get(attr_or_coord_name, lambda x: x)
 
         if attr_or_coord_name in data.attrs:
@@ -573,11 +604,10 @@ class LoaderBase(metaclass=_Loader):
     def summarize(
         self,
         data_dir: str | os.PathLike,
-        usecache: bool = True,
+        exclude: str | Sequence[str] | None = None,
         *,
         cache: bool = True,
         display: bool = True,
-        **kwargs,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         """Summarize the data in the given directory.
 
@@ -593,20 +623,15 @@ class LoaderBase(metaclass=_Loader):
         ----------
         data_dir
             Directory to summarize.
-        usecache
-            Whether to use the cached summary if available. If `False`, the summary will
-            be regenerated. The cache will be updated if `cache` is `True`.
+        exclude
+            A string or sequence of strings specifying glob patterns for files to be
+            excluded from the summary. If provided, caching will be disabled.
         cache
-            Whether to cache the summary in a pickle file in the directory. If `False`,
-            no cache will be created or updated. Note that existing cache files will not
-            be deleted, and will be used if `usecache` is `True`.
+            Whether to use caching for the summary.
         display
             Whether to display the formatted dataframe using the IPython shell. If
             `False`, the dataframe will be returned without formatting. If `True` but
             the IPython shell is not detected, the dataframe styler will be returned.
-        **kwargs
-            Additional keyword arguments to be passed to :meth:`generate_summary
-            <erlab.io.dataloader.LoaderBase.generate_summary>`.
 
         Returns
         -------
@@ -625,22 +650,30 @@ class LoaderBase(metaclass=_Loader):
               for the summary DataFrame will be returned.
 
         """
-        if not os.path.isdir(data_dir):
+        data_dir = pathlib.Path(data_dir)
+
+        if not data_dir.is_dir():
             raise FileNotFoundError(
                 errno.ENOENT, os.strerror(errno.ENOENT), str(data_dir)
             )
 
-        pkl_path = os.path.join(data_dir, ".summary.pkl")
+        pkl_path = data_dir / ".summary.pkl"
         df = None
-        if usecache:
-            try:
-                df = pandas.read_pickle(pkl_path)
-                df = df.head(len(df))
-            except FileNotFoundError:
-                pass
+
+        if exclude is not None:
+            cache = False
+
+        if pkl_path.is_file() and cache:
+            df = pandas.read_pickle(pkl_path)
+
+        if df is not None:
+            contents = {str(f.relative_to(data_dir)) for f in data_dir.glob("[!.]*")}
+            if contents != df.attrs.get("__contents", set()):
+                # Cache is outdated
+                df = None
 
         if df is None:
-            df = self.generate_summary(data_dir, **kwargs)
+            df = self.generate_summary(data_dir, exclude)
             if cache:
                 try:
                     df.to_pickle(pkl_path)
@@ -676,39 +709,134 @@ class LoaderBase(metaclass=_Loader):
 
         return styled
 
-    def isummarize(self, df: pandas.DataFrame | None = None, **kwargs) -> None:
-        """Display an interactive summary.
+    def generate_summary(
+        self, data_dir: str | os.PathLike, exclude: str | Sequence[str] | None = None
+    ) -> pandas.DataFrame:
+        """Generate a dataframe summarizing the data in the given directory.
 
-        This method provides an interactive summary of the data using ipywidgets and
-        matplotlib.
+        Takes a path to a directory and summarizes the data in the directory to a pandas
+        DataFrame, much like a log file. This is useful for quickly inspecting the
+        contents of a directory.
 
         Parameters
         ----------
-        df
-            A summary dataframe as returned by :meth:`generate_summary
-            <erlab.io.dataloader.LoaderBase.generate_summary>`. If `None`, a dataframe
-            will be generated using :meth:`summarize
-            <erlab.io.dataloader.LoaderBase.summarize>`. Defaults to `None`.
-        **kwargs
-            Additional keyword arguments to be passed to :meth:`summarize
-            <erlab.io.dataloader.LoaderBase.summarize>` if `df` is None.
+        data_dir
+            Path to a directory.
+        exclude
+            A string or sequence of strings specifying glob patterns for files to be
+            excluded from the summary.
 
-        Note
-        ----
-        This method requires `ipywidgets` to be installed.
+        Returns
+        -------
+        pandas.DataFrame
+            Summary of the data in the directory.
 
         """
+        data_dir = pathlib.Path(data_dir)
+
+        excluded: list[pathlib.Path] = []
+
+        if exclude is not None:
+            if isinstance(exclude, str):
+                exclude = [exclude]
+
+            for pattern in exclude:
+                excluded = excluded + list(data_dir.glob(pattern))
+
+        target_files: list[pathlib.Path] = [
+            pathlib.Path(f)
+            for f in self.files_for_summary(data_dir)
+            if pathlib.Path(f) not in excluded
+        ]
+
+        if not self.always_single:
+            signatures: list[int | None] = [
+                self.infer_index(f.stem)[0] for f in target_files
+            ]
+
+            # Removing duplicates that exist in same multi-file scan
+            seen = set()  # set to track seen elements
+            target_files_new = []
+            for f, sig in zip(target_files, signatures, strict=True):
+                if sig is not None and sig in seen:
+                    # sig[0] == None for files that cannot be inferred, keep them
+                    continue
+                seen.add(sig)
+                target_files_new.append(f)
+            target_files = target_files_new
+
+        columns = ["File Name", "Path", *self.summary_attrs.keys()]
+        content = []
+
+        def _add_content(
+            data: xr.DataArray | xr.Dataset | DataTree,
+            file_path: pathlib.Path,
+            suffix: str | None = None,
+        ) -> None:
+            if suffix is None:
+                suffix = ""
+
+            if isinstance(data, xr.DataArray):
+                name = file_path.stem
+                if suffix != "":
+                    name = f"{name} ({suffix})"
+                content.append(
+                    [
+                        file_path.stem,
+                        str(file_path),
+                        *(
+                            self.get_formatted_attr_or_coord(data, k)
+                            for k in self.summary_attrs.values()
+                        ),
+                    ]
+                )
+
+            elif isinstance(data, xr.Dataset):
+                if len(data.data_vars) == 1:
+                    _add_content(next(iter(data.data_vars.values())), file_path, suffix)
+                else:
+                    for k, darr in data.data_vars.items():
+                        _add_content(darr, file_path, suffix=suffix + k)
+
+            elif isinstance(data, DataTree):
+                for leaf in data.leaves:
+                    _add_content(leaf.dataset, file_path, suffix=leaf.path)
+
+        for f in target_files:
+            _add_content(
+                cast(
+                    xr.DataArray | xr.Dataset | DataTree,
+                    self.load(f, load_kwargs={"without_values": True}),
+                ),
+                f,
+            )
+
+        sort_by = self.summary_sort if self.summary_sort is not None else "File Name"
+
+        df = (
+            pandas.DataFrame(content, columns=columns)
+            .sort_values(sort_by)
+            .set_index("File Name")
+        )
+
+        # Cache directory contents for determining whether cache is up-to-date
+        contents = {str(f.relative_to(data_dir)) for f in data_dir.glob("[!.]*")}
+        df.attrs["__contents"] = contents
+
+        return df
+
+    def _isummarize(self, summary: pandas.DataFrame | None = None, **kwargs):
         if not importlib.util.find_spec("ipywidgets"):
             raise ImportError(
                 "ipywidgets and IPython is required for interactive summaries"
             )
-        if df is None:
+
+        if summary is None:
             kwargs["display"] = False
             df = cast(pandas.DataFrame, self.summarize(**kwargs))
+        else:
+            df = summary
 
-        self._isummarize(df)
-
-    def _isummarize(self, df: pandas.DataFrame):
         import matplotlib.pyplot as plt
         from ipywidgets import (
             HTML,
@@ -909,7 +1037,9 @@ class LoaderBase(metaclass=_Loader):
         )
 
     def load_single(
-        self, file_path: str | os.PathLike
+        self,
+        file_path: str | os.PathLike,
+        without_values: bool = False,
     ) -> xr.DataArray | xr.Dataset | DataTree:
         r"""Load a single file and return it as an xarray data structure.
 
@@ -927,6 +1057,11 @@ class LoaderBase(metaclass=_Loader):
         ----------
         file_path
             Full path to the file to be loaded.
+        without_values
+            Used when creating a summary table. With this option set to `True`, only the
+            coordinates and attributes of the output data are accessed so that the
+            values can be replaced with placeholder numbers, speeding up the summary
+            generation for lazy loading enabled file formats like HDF5 or NeXus.
 
         Returns
         -------
@@ -1023,22 +1158,21 @@ class LoaderBase(metaclass=_Loader):
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
-    def generate_summary(self, data_dir: str | os.PathLike) -> pandas.DataFrame:
-        """Generate a dataframe summarizing the data in the given directory.
+    def files_for_summary(self, data_dir: str | os.PathLike) -> list[str | os.PathLike]:
+        """Return a list of files that can be loaded by the loader.
 
-        Takes a path to a directory and summarizes the data in the directory to a pandas
-        DataFrame, much like a log file. This is useful for quickly inspecting the
-        contents of a directory.
+        This method is used to select files that can be loaded by the loader when
+        generating a summary.
 
         Parameters
         ----------
         data_dir
-            Path to a directory.
+            The directory containing the data.
 
         Returns
         -------
-        pandas.DataFrame
-            Summary of the data in the directory.
+        list of str or path-like
+            A list of files that can be loaded by the loader.
 
         """
         raise NotImplementedError(
@@ -1681,11 +1815,10 @@ class LoaderRegistry(_RegistryBase):
     def summarize(
         self,
         data_dir: str | os.PathLike | None = None,
-        usecache: bool = True,
+        exclude: str | Sequence[str] | None = None,
         *,
         cache: bool = True,
         display: bool = True,
-        **kwargs,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         loader, default_dir = self._get_current_defaults()
 
@@ -1693,7 +1826,7 @@ class LoaderRegistry(_RegistryBase):
             data_dir = default_dir
 
         return loader.summarize(
-            data_dir, usecache, cache=cache, display=display, **kwargs
+            data_dir=data_dir, exclude=exclude, cache=cache, display=display
         )
 
     def _get_current_defaults(self):

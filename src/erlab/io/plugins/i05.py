@@ -40,8 +40,10 @@ class I05Loader(LoaderBase):
     def file_dialog_methods(self):
         return {"Diamond I05 Raw Data (*.nxs)": (self.load, {})}
 
-    def load_single(self, file_path) -> xr.DataArray:
-        out = nxgroup_to_xarray(get_entry(file_path), "analyser/data").squeeze()
+    def load_single(self, file_path, without_values=False) -> xr.DataArray:
+        out = nxgroup_to_xarray(
+            get_entry(file_path), "analyser/data", without_values
+        ).squeeze()
 
         if (
             "instrument.centre_energy.centre_energy" in out.dims

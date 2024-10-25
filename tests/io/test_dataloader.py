@@ -8,8 +8,8 @@ import tempfile
 from typing import ClassVar
 
 import numpy as np
-import pandas as pd
 import pytest
+import xarray as xr
 
 import erlab.io
 from erlab.io.dataloader import LoaderBase
@@ -21,11 +21,11 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
         shape=(250, 1, 300),
         angrange={"alpha": (-15, 15), "beta": (beta, beta)},
         hv=hv,
-        configuration=1,  # Configuration, see
+        configuration=1,
         temp=temp,
         bandshift=bandshift,
-        count=1000,
         assign_attributes=False,
+        seed=1,
     ).T
 
     # Rename coordinates. The loader must rename them back to the original names.
@@ -39,6 +39,7 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
             "delta": "Azimuth",
         }
     )
+    dt = datetime.datetime.now()
 
     # Assign some attributes that real data would have
     return data.assign_attrs(
@@ -47,13 +48,40 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
             "SpectrumType": "Fixed",  # Acquisition mode of the analyzer
             "PassEnergy": 10,  # Pass energy of the analyzer
             "UndPol": 0,  # Undulator polarization
-            "DateTime": datetime.datetime.now().isoformat(),  # Acquisition time
+            "Date": dt.strftime("%d/%m/%Y"),  # Date of the measurement
+            "Time": dt.strftime("%H:%M:%S %p"),  # Time of the measurement
             "TB": temp,
             "X": 0.0,
             "Y": 0.0,
             "Z": 0.0,
         }
     )
+
+
+def _format_polarization(val) -> str:
+    val = round(float(val))
+    return {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(val, str(val))
+
+
+def _parse_time(darr: xr.DataArray) -> datetime.datetime:
+    return datetime.datetime.strptime(
+        f"{darr.attrs['Date']} {darr.attrs['Time']}",
+        "%d/%m/%Y %I:%M:%S %p",
+    )
+
+
+def _determine_kind(darr: xr.DataArray) -> str:
+    if "scan_type" in darr.attrs and darr.attrs["scan_type"] == "live":
+        return "LP" if "beta" in darr.dims else "LXY"
+
+    data_type = "xps"
+    if "alpha" in darr.dims:
+        data_type = "cut"
+    if "beta" in darr.dims:
+        data_type = "map"
+    if "hv" in darr.dims:
+        data_type = "hvdep"
+    return data_type
 
 
 def test_loader():
@@ -63,32 +91,25 @@ def test_loader():
     # Generate a map
     beta_coords = np.linspace(2, 7, 10)
 
+    # Generate and save cuts with different beta values
     for i, beta in enumerate(beta_coords):
-        erlab.io.save_as_hdf5(
-            make_data(beta=beta, temp=20.0 + i, hv=50.0),
-            filename=f"{tmp_dir.name}/data_001_S{str(i + 1).zfill(3)}.h5",
-            igor_compat=False,
-        )
+        data = make_data(beta=beta, temp=20.0 + i, hv=50.0)
+        filename = f"{tmp_dir.name}/data_001_S{str(i + 1).zfill(3)}.h5"
+        data.to_netcdf(filename, engine="h5netcdf")
 
     # Write scan coordinates to a csv file
-    with open(
-        f"{tmp_dir.name}/data_001_axis.csv", "w", newline="", encoding="utf-8"
-    ) as file:
+    with open(f"{tmp_dir.name}/data_001_axis.csv", "w", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(["Index", "Polar"])
 
         for i, beta in enumerate(beta_coords):
             writer.writerow([i + 1, beta])
 
-    # Generate a cut
-    erlab.io.save_as_hdf5(
-        make_data(beta=5.0, temp=20.0, hv=50.0),
-        filename=f"{tmp_dir.name}/data_002.h5",
-        igor_compat=False,
-    )
-
-    # List the generated files
-    sorted(os.listdir(tmp_dir.name))
+    # Generate some cuts with different band shifts
+    for i in range(4):
+        data = make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=-i * 0.05)
+        filename = f"{tmp_dir.name}/data_{str(i + 2).zfill(3)}.h5"
+        data.to_netcdf(filename, engine="h5netcdf")
 
     class ExampleLoader(LoaderBase):
         name = "example"
@@ -102,6 +123,7 @@ def test_loader():
                 "Polar",
                 "Polar Compens",
             ],  # Can have multiple names assigned to the same name
+            # If both are present in the data, a ValueError will be raised
             "delta": "Azimuth",
             "xi": "Tilt",
             "x": "X",
@@ -131,6 +153,30 @@ def test_loader():
             "configuration": 1,  # Experimental geometry required for kspace conversion
             "sample_workfunction": 4.3,
         }  # Any additional metadata you want to add to the data
+
+        formatters: ClassVar[dict] = {
+            "polarization": _format_polarization,
+            "LensMode": lambda x: x.replace("Angular", "A"),
+        }
+
+        summary_attrs: ClassVar[dict] = {
+            "Time": _parse_time,
+            "Type": _determine_kind,
+            "Lens Mode": "LensMode",
+            "Scan Type": "SpectrumType",
+            "T(K)": "temp_sample",
+            "Pass E": "PassEnergy",
+            "Polarization": "polarization",
+            "hv": "hv",
+            "x": "x",
+            "y": "y",
+            "z": "z",
+            "polar": "beta",
+            "tilt": "xi",
+            "azi": "delta",
+        }
+
+        summary_sort = "Time"
 
         skip_validate = False
 
@@ -166,8 +212,19 @@ def test_loader():
 
             return files, coord_dict
 
-        def load_single(self, file_path):
-            return erlab.io.load_hdf5(file_path)
+        def load_single(self, file_path, without_values=False):
+            darr = xr.open_dataarray(file_path, engine="h5netcdf")
+
+            if without_values:
+                # Do not load the data into memory
+                return xr.DataArray(
+                    np.zeros(darr.shape, darr.dtype),
+                    coords=darr.coords,
+                    dims=darr.dims,
+                    attrs=darr.attrs,
+                )
+
+            return darr
 
         def infer_index(self, name):
             # Get the scan number from file name
@@ -180,99 +237,8 @@ def test_loader():
                 return int(scan_num), {}
             return None, None
 
-        def generate_summary(self, data_dir):
-            # Get all valid data files in directory
-            files = {}
-            for path in erlab.io.utils.get_files(data_dir, extensions=[".h5"]):
-                # If multiple scans, strip the _S### part
-                name_match = re.match(r"(.*?_\d{3})_(?:_S\d{3})?", path.stem)
-                data_name = path.stem if name_match is None else name_match.group(1)
-                files[data_name] = str(path)
-
-            # Map dataframe column names to data attributes
-            attrs_mapping = {
-                "Lens Mode": "LensMode",
-                "Scan Type": "SpectrumType",
-                "T(K)": "temp_sample",
-                "Pass E": "PassEnergy",
-                "Polarization": "polarization",
-                "hv": "hv",
-                "x": "x",
-                "y": "y",
-                "z": "z",
-                "polar": "beta",
-                "tilt": "xi",
-                "azi": "delta",
-            }
-            column_names = ["File Name", "Path", "Time", "Type", *attrs_mapping.keys()]
-
-            data_info = []
-
-            processed_indices = set()
-            for name, path in files.items():
-                # Skip already processed multi-file scans
-                index, _ = self.infer_index(name)
-                if index in processed_indices:
-                    continue
-
-                if index is not None:
-                    processed_indices.add(index)
-
-                # Load data
-                data = self.load(path)
-
-                # Determine type of scan
-                data_type = "core"
-                if "alpha" in data.dims:
-                    data_type = "cut"
-                if "beta" in data.dims:
-                    data_type = "map"
-                if "hv" in data.dims:
-                    data_type = "hvdep"
-
-                data_info.append(
-                    [
-                        name,
-                        path,
-                        datetime.datetime.fromisoformat(data.attrs["DateTime"]),
-                        data_type,
-                    ]
-                )
-
-                for k, v in attrs_mapping.items():
-                    # Try to get the attribute from the data, then from the coordinates
-                    try:
-                        val = data.attrs[v]
-                    except KeyError:
-                        try:
-                            val = data.coords[v].values
-                            if val.size == 1:
-                                val = val.item()
-                        except KeyError:
-                            val = ""
-
-                    # Convert polarization values to human readable form
-                    if k == "Polarization":
-                        if np.iterable(val):
-                            val = np.asarray(val).astype(int)
-                        else:
-                            val = [round(val)]
-                        val = [
-                            {0: "LH", 2: "LV", -1: "RC", 1: "LC"}.get(v, v) for v in val
-                        ]
-                        if len(val) == 1:
-                            val = val[0]
-
-                    data_info[-1].append(val)
-
-                del data
-
-            # Sort by time and set index
-            return (
-                pd.DataFrame(data_info, columns=column_names)
-                .sort_values("Time")
-                .set_index("File Name")
-            )
+        def files_for_summary(self, data_dir):
+            return erlab.io.utils.get_files(data_dir, extensions=[".h5"])
 
     with erlab.io.loader_context("example", tmp_dir.name):
         erlab.io.load(1)
@@ -310,13 +276,13 @@ def test_loader():
     assert np.allclose(mfdata["temp_sample"].values, 20.0 + np.arange(len(beta_coords)))
 
     df = erlab.io.summarize(display=False)
-    assert len(df.index) == 2
+    assert len(df.index) == 5
 
     # Test if pretty printing works
     erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
 
     # Interactive summary
-    erlab.io.loaders.current_loader.isummarize(df)
+    erlab.io.loaders.current_loader._isummarize(df)
 
     # Cleanup the temporary directory
     tmp_dir.cleanup()
