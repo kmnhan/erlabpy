@@ -37,7 +37,7 @@ dependencies = [
     "scipy>=1.13.0",
     "tqdm>=4.66.2",
     "varname>=0.13.0",
-    "xarray>=2024.07.0",
+    "xarray>=2024.10.0",
 ]
 
 [project.optional-dependencies]

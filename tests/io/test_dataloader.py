@@ -48,8 +48,8 @@ def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
             "SpectrumType": "Fixed",  # Acquisition mode of the analyzer
             "PassEnergy": 10,  # Pass energy of the analyzer
             "UndPol": 0,  # Undulator polarization
-            "Date": dt.strftime("%d/%m/%Y"),  # Date of the measurement
-            "Time": dt.strftime("%H:%M:%S %p"),  # Time of the measurement
+            "Date": dt.strftime(r"%d/%m/%Y"),  # Date of the measurement
+            "Time": dt.strftime("%I:%M:%S %p"),  # Time of the measurement
             "TB": temp,
             "X": 0.0,
             "Y": 0.0,
@@ -66,7 +66,7 @@ def _format_polarization(val) -> str:
 def _parse_time(darr: xr.DataArray) -> datetime.datetime:
     return datetime.datetime.strptime(
         f"{darr.attrs['Date']} {darr.attrs['Time']}",
-        "%d/%m/%Y %I:%M:%S %p",
+        r"%d/%m/%Y %I:%M:%S %p",
     )
 
 

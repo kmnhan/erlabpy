@@ -34,7 +34,6 @@ from typing import (
 import numpy as np
 import pandas
 import xarray as xr
-from xarray.core.datatree import DataTree
 
 from erlab.utils.formatting import format_html_table, format_value
 
@@ -389,10 +388,10 @@ class LoaderBase(metaclass=_Loader):
     ) -> (
         xr.DataArray
         | xr.Dataset
-        | DataTree
+        | xr.DataTree
         | list[xr.DataArray]
         | list[xr.Dataset]
-        | list[DataTree]
+        | list[xr.DataTree]
     ):
         """Load ARPES data.
 
@@ -429,7 +428,7 @@ class LoaderBase(metaclass=_Loader):
             `False`, a list of data is returned. If `True`, the loader tries to combined
             the data into a single data object and return it. Depending on the type of
             each data object, the returned object can be a `xarray.DataArray`,
-            `xarray.Dataset`, or a `DataTree`.
+            `xarray.Dataset`, or a `xarray.DataTree`.
 
             This argument is only used when `single` is `False`.
         parallel
@@ -443,7 +442,7 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        `xarray.DataArray` or `xarray.Dataset` or `DataTree`
+        `xarray.DataArray` or `xarray.Dataset` or `xarray.DataTree`
             The loaded data.
 
         Notes
@@ -505,7 +504,7 @@ class LoaderBase(metaclass=_Loader):
 
             if len(file_paths) == 1:
                 # Single file resolved
-                data: xr.DataArray | xr.Dataset | DataTree = self.load_single(
+                data: xr.DataArray | xr.Dataset | xr.DataTree = self.load_single(
                     file_paths[0], **load_kwargs
                 )
             else:
@@ -769,7 +768,7 @@ class LoaderBase(metaclass=_Loader):
         content = []
 
         def _add_content(
-            data: xr.DataArray | xr.Dataset | DataTree,
+            data: xr.DataArray | xr.Dataset | xr.DataTree,
             file_path: pathlib.Path,
             suffix: str | None = None,
         ) -> None:
@@ -798,14 +797,14 @@ class LoaderBase(metaclass=_Loader):
                     for k, darr in data.data_vars.items():
                         _add_content(darr, file_path, suffix=suffix + k)
 
-            elif isinstance(data, DataTree):
+            elif isinstance(data, xr.DataTree):
                 for leaf in data.leaves:
                     _add_content(leaf.dataset, file_path, suffix=leaf.path)
 
         for f in target_files:
             _add_content(
                 cast(
-                    xr.DataArray | xr.Dataset | DataTree,
+                    xr.DataArray | xr.Dataset | xr.DataTree,
                     self.load(f, load_kwargs={"without_values": True}),
                 ),
                 f,
@@ -1040,7 +1039,7 @@ class LoaderBase(metaclass=_Loader):
         self,
         file_path: str | os.PathLike,
         without_values: bool = False,
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         r"""Load a single file and return it as an xarray data structure.
 
         Any scan-specific postprocessing should be implemented in this method.
@@ -1049,9 +1048,9 @@ class LoaderBase(metaclass=_Loader):
         that represents the data in a single file. For instance, if a single file
         contains a single scan region, the method should return a single
         `xarray.DataArray`. If it contains multiple regions, the method should return a
-        `xarray.Dataset` or `DataTree` depending on whether the regions can be merged
-        with without conflicts (i.e., all mutual coordinates of the regions are the
-        same).
+        `xarray.Dataset` or `xarray.DataTree` depending on whether the regions can be
+        merged with without conflicts (i.e., all mutual coordinates of the regions are
+        the same).
 
         Parameters
         ----------
@@ -1078,8 +1077,8 @@ class LoaderBase(metaclass=_Loader):
           :meth:`combine_multiple <erlab.io.dataloader.LoaderBase.combine_multiple>`.
           This should not be a problem since in most cases, the data structure of
           associated files acquired during the same scan will be identical.
-        - For `DataTree` objects, returned trees must be named with a unique identifier
-          to avoid conflicts when combining.
+        - For `xarray.DataTree` objects, returned trees must be named with a unique
+          identifier to avoid conflicts when combining.
         """
         raise NotImplementedError("method must be implemented in the subclass")
 
@@ -1227,16 +1226,16 @@ class LoaderBase(metaclass=_Loader):
     @overload
     def combine_multiple(
         self,
-        data_list: list[DataTree],
+        data_list: list[xr.DataTree],
         coord_dict: dict[str, Sequence],
-    ) -> DataTree: ...
+    ) -> xr.DataTree: ...
 
     def combine_multiple(
         self,
-        data_list: list[xr.DataArray] | list[xr.Dataset] | list[DataTree],
+        data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
         coord_dict: dict[str, Sequence],
-    ) -> xr.DataArray | xr.Dataset | DataTree:
-        if _is_sequence_of(data_list, DataTree):
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
+        if _is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
                 "Combining DataTrees into a single tree "
                 "will be supported in a future release"
@@ -1246,7 +1245,7 @@ class LoaderBase(metaclass=_Loader):
             # No coordinates to combine given
             # Multiregion scans over multiple files may be provided like this
 
-            if _is_sequence_of(data_list, DataTree):
+            if _is_sequence_of(data_list, xr.DataTree):
                 pass
             else:
                 try:
@@ -1412,11 +1411,11 @@ class LoaderBase(metaclass=_Loader):
     def post_process_general(self, data: xr.Dataset) -> xr.Dataset: ...
 
     @overload
-    def post_process_general(self, data: DataTree) -> DataTree: ...
+    def post_process_general(self, data: xr.DataTree) -> xr.DataTree: ...
 
     def post_process_general(
-        self, data: xr.DataArray | xr.Dataset | DataTree
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+        self, data: xr.DataArray | xr.Dataset | xr.DataTree
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         """Post-process any data structure.
 
         This method extends :meth:`post_process
@@ -1436,7 +1435,7 @@ class LoaderBase(metaclass=_Loader):
               post-processed using :meth:`post_process
               <erlab.io.dataloader.LoaderBase.post_process>` is returned. The attributes
               of the original `Dataset` are preserved.
-            - If a `DataTree`, the post-processing is applied to each leaf node
+            - If a `xarray.DataTree`, the post-processing is applied to each leaf node
               `Dataset`.
 
         Returns
@@ -1456,15 +1455,15 @@ class LoaderBase(metaclass=_Loader):
                 attrs=data.attrs,
             )
 
-        if isinstance(data, DataTree):
-            return cast(DataTree, data.map_over_subtree(self.post_process_general))
+        if isinstance(data, xr.DataTree):
+            return cast(xr.DataTree, data.map_over_datasets(self.post_process_general))
 
         raise TypeError(
             "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
         )
 
     @classmethod
-    def validate(cls, data: xr.DataArray | xr.Dataset | DataTree) -> None:
+    def validate(cls, data: xr.DataArray | xr.Dataset | xr.DataTree) -> None:
         """Validate the input data to ensure it is in the correct format.
 
         Checks for the presence of all coordinates and attributes required for common
@@ -1477,8 +1476,8 @@ class LoaderBase(metaclass=_Loader):
         Parameters
         ----------
         data : DataArray or Dataset or DataTree
-            The data to be validated. If a `Dataset` or `DataTree` is passed, validation
-            is performed on each data variable recursively.
+            The data to be validated. If a `xarray.Dataset` or `xarray.DataTree` is
+            passed, validation is performed on each data variable recursively.
 
         """
         if isinstance(data, xr.Dataset):
@@ -1486,8 +1485,8 @@ class LoaderBase(metaclass=_Loader):
                 cls.validate(v)
             return
 
-        if isinstance(data, DataTree):
-            data.map_over_subtree(cls.validate)
+        if isinstance(data, xr.DataTree):
+            data.map_over_datasets(cls.validate)
             return
 
         for c in ("beta", "delta", "xi", "hv"):
@@ -1515,7 +1514,7 @@ class LoaderBase(metaclass=_Loader):
         parallel: bool | None = None,
         post_process: bool = False,
         **kwargs,
-    ) -> list[xr.DataArray] | list[xr.Dataset] | list[DataTree]:
+    ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
         """Load multiple files in parallel.
 
         Parameters
@@ -1779,10 +1778,10 @@ class LoaderRegistry(_RegistryBase):
     ) -> (
         xr.DataArray
         | xr.Dataset
-        | DataTree
+        | xr.DataTree
         | list[xr.DataArray]
         | list[xr.Dataset]
-        | list[DataTree]
+        | list[xr.DataTree]
     ):
         loader, default_dir = self._get_current_defaults()
 

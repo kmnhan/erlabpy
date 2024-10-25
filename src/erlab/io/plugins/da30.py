@@ -13,7 +13,6 @@ from typing import ClassVar
 
 import numpy as np
 import xarray as xr
-from xarray.core.datatree import DataTree
 
 import erlab.io
 from erlab.io.dataloader import LoaderBase
@@ -44,12 +43,12 @@ class DA30Loader(LoaderBase):
 
     def load_single(
         self, file_path: str | os.PathLike, without_values: bool = False
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         ext = os.path.splitext(file_path)[-1]
 
         match ext:
             case ".ibw":
-                data: xr.DataArray | xr.Dataset | DataTree = xr.load_dataarray(
+                data: xr.DataArray | xr.Dataset | xr.DataTree = xr.load_dataarray(
                     file_path, engine="erlab-igor"
                 )
 
@@ -82,7 +81,7 @@ class DA30Loader(LoaderBase):
 
 def load_zip(
     filename: str | os.PathLike, without_values: bool = False
-) -> xr.DataArray | xr.Dataset | DataTree:
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
             fn[9:-4]
@@ -140,7 +139,7 @@ def load_zip(
         return xr.merge(out, join="exact")
     except:  # noqa: E722
         # On failure, combine into DataTree
-        return DataTree.from_dict(
+        return xr.DataTree.from_dict(
             {str(da.name): da.to_dataset(promote_attrs=True) for da in out}
         )
 

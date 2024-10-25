@@ -17,21 +17,11 @@ from typing import TYPE_CHECKING, ClassVar
 import numpy as np
 import xarray as xr
 
-# from xarray.backends.api import open_dataarray
 import erlab.io
 from erlab.io.dataloader import LoaderBase
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
-
-
-def open_datatree(file_path, **kwargs):
-    """:meta private:"""  # noqa: D400
-    # Temporary fix for https://github.com/pydata/xarray/issues/9427
-    from xarray.backends.api import open_groups
-    from xarray.core.datatree import DataTree
-
-    return DataTree.from_dict(open_groups(file_path, **kwargs))
 
 
 def get_cache_file(file_path: str | os.PathLike) -> Path:
@@ -42,7 +32,7 @@ def get_cache_file(file_path: str | os.PathLike) -> Path:
 
 
 def cache_as_float32(
-    file_path: str | os.PathLike, without_values: bool
+    file_path: str | os.PathLike, data: xr.Dataset, without_values: bool
 ) -> xr.DataArray:
     """Cache and return the 2D part of the data as a float32 DataArray.
 
@@ -64,9 +54,6 @@ def cache_as_float32(
     if writable and not cache_file.parent.is_dir() and not without_values:
         cache_file.parent.mkdir(parents=True)
 
-    dt = open_datatree(file_path, engine="h5netcdf", phony_dims="sort")
-
-    data = dt["2D_Data"]  #
     if len(data.data_vars) > 1:
         warnings.warn(
             "More than one data variable is present in the data."
@@ -136,15 +123,15 @@ class MAESTROMicroLoader(LoaderBase):
         return [file], {}
 
     def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
-        dt = open_datatree(file_path, engine="h5netcdf", phony_dims="sort")
+        groups = xr.open_groups(file_path, engine="h5netcdf", phony_dims="sort")
 
-        if "PreScan" in dt["Comments"]:
-            pre_scan: str = dt["Comments"]["PreScan"].item()[0].decode()
+        if "PreScan" in groups["/Comments"]:
+            pre_scan: str = groups["/Comments"]["PreScan"].item()[0].decode()
         else:
             pre_scan = ""
 
-        if "PostScan" in dt["Comments"]:
-            post_scan: str = dt["Comments"]["PostScan"].item()[0].decode()
+        if "PostScan" in groups["/Comments"]:
+            post_scan: str = groups["/Comments"]["PostScan"].item()[0].decode()
         else:
             post_scan = ""
 
@@ -163,7 +150,7 @@ class MAESTROMicroLoader(LoaderBase):
                 return v
 
         nested_attrs: dict[Hashable, dict[str, tuple[str, str | int | float]]] = {}
-        for key, val in dt["Headers"].data_vars.items():
+        for key, val in groups["/Headers"].data_vars.items():
             # v given as (longname, name, value, comment)
             # we want to extract the name, comment and value
             nested_attrs[key] = {
@@ -208,14 +195,12 @@ class MAESTROMicroLoader(LoaderBase):
             motors = ["XY"]
 
         # Get coords
-        coords = (
-            dt["0D_Data"].load().rename({"phony_dim_0": "phony_dim_3"}).to_dataset()
-        )
+        coords = groups["/0D_Data"].rename({"phony_dim_0": "phony_dim_3"})
         if len(motors) == 1:
             coords = coords.swap_dims({"phony_dim_3": motors[0]})
 
         # Create or load cache
-        data = cache_as_float32(file_path, without_values)
+        data = cache_as_float32(file_path, groups["/2D_Data"], without_values)
 
         coord_dict = {
             name: np.linspace(offset, offset + (size - 1) * delta, size)
