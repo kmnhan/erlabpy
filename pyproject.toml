@@ -56,7 +56,7 @@ dev = [
     "pytest-datadir>=1.5.0",
     "pytest>=8.3.0",
     "commitizen>=3.29.0",
-    "cz-changeup>=0.3.0",
+    "cz-changeup>=1.0.1",
     "ruff>=0.6.3",
 ]
 docs = [
@@ -84,6 +84,8 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
+change_type_map = { "BREAKING CHANGE" = "Breaking Changes", "feat" = "Features", "fix" = "Bug Fixes", "refactor" = "Code Refactor", "perf" = "Performance" }
+
 version_provider = "pep621"
 update_changelog_on_bump = true
 tag_format = "v$version"
@@ -91,14 +93,12 @@ changelog_start_rev = "v1.2.1"
 changelog_merge_prerelease = true
 name = 'cz_changeup'
 change_type_order = [
-    "BREAKING CHANGE",
+    "Breaking Changes",
     "Features",
     "Bug Fixes",
     "Code Refactor",
     "Performance",
 ]
-change_type_map = { "feat" = "Features", "fix" = "Bug Fixes", "refactor" = "Code Refactor", "perf" = "Performance" }
-
 # cz-changeup configuration
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"
 changeup_show_body = true
