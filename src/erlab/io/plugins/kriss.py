@@ -27,7 +27,7 @@ class KRISSLoader(DA30Loader):
                 match = re.match(r"(.*?)" + str(num).zfill(4) + r".zip", str(file))
             else:
                 match = re.match(
-                    r"(.*?)" + str(num).zfill(4) + str(num).zfill(3) + r".ibw",
+                    r"(.*?)" + str(num).zfill(4) + ".*_" + str(num).zfill(3) + r".ibw",
                     str(file),
                 )
 
