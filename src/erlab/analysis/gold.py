@@ -556,9 +556,10 @@ def quick_fit(
     bkg_slope: bool = True,
     **kwargs,
 ) -> xr.Dataset:
-    """Perform a quick Fermi edge fit on the given data.
+    """Perform a quick Fermi edge fit on an EDC.
 
-    The data is averaged over all dimensions except the energy prior to fitting.
+    If data with 2 or more dimensions is provided, the data is averaged over all
+    dimensions except the energy prior to fitting.
 
     Parameters
     ----------
@@ -632,9 +633,7 @@ def quick_fit(
 
 
 def quick_resolution(
-    darr: xr.DataArray,
-    ax: matplotlib.axes.Axes | None = None,
-    **kwargs,
+    darr: xr.DataArray, ax: matplotlib.axes.Axes | None = None, **kwargs
 ) -> xr.Dataset:
     """Fit a Fermi edge to the given data and plot the results.
 
@@ -661,23 +660,47 @@ def quick_resolution(
     if ax is None:
         ax = plt.gca()
 
-    darr = darr.mean([d for d in darr.dims if d != "eV"])
     result = quick_fit(darr, **kwargs)
+    data = darr.mean([d for d in darr.dims if d != "eV"])
+
     ax.plot(
-        darr.eV, darr, ".", mec="0.6", alpha=1, mfc="none", ms=5, mew=0.3, label="Data"
+        data.eV, data, ".", mec="0.6", alpha=1, mfc="none", ms=5, mew=0.3, label="Data"
     )
 
     result.modelfit_best_fit.qplot(ax=ax, c="r", label="Fit")
 
     ax.set_ylabel("Intensity (arb. units)")
-    if (darr.eV[0] * darr.eV[-1]) < 0:
+    if (data.eV[0] * data.eV[-1]) < 0:
         ax.set_xlabel("$E - E_F$ (eV)")
     else:
         ax.set_xlabel(r"$E_{kin}$ (eV)")
 
     coeffs = result.modelfit_coefficients
-    center = result.modelfit_results.item().uvars["center"]
-    resolution = result.modelfit_results.item().uvars["resolution"]
+    modelresult: lmfit.model.ModelResult = result.modelfit_results.item()
+
+    if hasattr(modelresult, "uvars"):
+        center = modelresult.uvars["center"]
+        resolution = modelresult.uvars["resolution"]
+        center_bounds = ((center - resolution).n, (center + resolution).n)
+
+        center_repr = (
+            f"$E_F = {center * 1e3:L}$ meV"
+            if center < 0.1
+            else f"$E_F = {center:L}$ eV"
+        )
+        resolution_repr = f"$\\Delta E = {resolution * 1e3:L}$ meV"
+
+    else:
+        center = coeffs.sel(param="center")
+        resolution = coeffs.sel(param="resolution")
+        center_bounds = (center - resolution, center + resolution)
+
+        center_repr = (
+            f"$E_F = {center * 1e3:.3f}$ meV"
+            if center < 0.1
+            else f"$E_F = {center:.6f}$ eV"
+        )
+        resolution_repr = f"$\\Delta E = {resolution * 1e3:.3f}$ meV"
 
     fig = ax.figure
     if fig is not None:
@@ -685,13 +708,7 @@ def quick_resolution(
             0,
             0,
             "\n".join(
-                [
-                    f"$T ={coeffs.sel(param='temp'):.3f}$ K",
-                    f"$E_F = {center * 1e3:L}$ meV"
-                    if center < 0.1
-                    else f"$E_F = {center:L}$ eV",
-                    f"$\\Delta E = {resolution * 1e3:L}$ meV",
-                ]
+                [f"$T ={coeffs.sel(param='temp'):.3f}$ K", center_repr, resolution_repr]
             ),
             ha="left",
             va="baseline",
@@ -700,16 +717,10 @@ def quick_resolution(
                 6 / 72, 6 / 72, fig.dpi_scale_trans
             ),
         )
-    ax.set_xlim(darr.eV[[0, -1]])
+    ax.set_xlim(data.eV[[0, -1]])
     ax.set_title("")
     ax.axvline(coeffs.sel(param="center"), ls="--", c="k", lw=0.4, alpha=0.5)
-    ax.axvspan(
-        (center - resolution).n,
-        (center + resolution).n,
-        color="r",
-        alpha=0.2,
-        label="FWHM",
-    )
+    ax.axvspan(*center_bounds, color="r", alpha=0.2, label="FWHM")
     return result
 
 

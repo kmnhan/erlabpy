@@ -299,7 +299,7 @@ def load_wave(
     }
 
     attrs = {}
-    for ln in d.get("note", "").decode().splitlines():
+    for ln in d.get("note", b"").decode().splitlines():
         if "=" in ln:
             k, v = ln.split("=", 1)
             try:
