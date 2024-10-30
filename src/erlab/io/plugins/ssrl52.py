@@ -3,7 +3,6 @@
 import datetime
 import os
 import re
-import warnings
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -13,6 +12,7 @@ import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
+from erlab.utils.misc import emit_user_level_warning
 
 
 def _format_polarization(val) -> str:
@@ -155,12 +155,11 @@ class SSRL52Loader(LoaderBase):
                                 # For now, just ignore them and use beamline attributes
                                 continue
                             if ax["label"] != "Kinetic Energy":
-                                warnings.warn(
+                                emit_user_level_warning(
                                     "Undefined offset for non-energy axis. This was "
                                     "not taken into account while writing the loader "
                                     "code. Please report this issue. Resulting data "
                                     "may be incorrect",
-                                    stacklevel=1,
                                 )
                                 continue
                             is_hvdep = True
@@ -180,12 +179,11 @@ class SSRL52Loader(LoaderBase):
                                 delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
                                 # may be ~1e-8 difference between values
                                 if not np.allclose(delta, delta[0], atol=1e-7):
-                                    warnings.warn(
+                                    emit_user_level_warning(
                                         "Non-uniform delta for hv-dependent scan. This "
                                         "was not taken into account while writing the "
                                         "loader code. Please report this issue. "
                                         "Resulting data may be incorrect",
-                                        stacklevel=1,
                                     )
                                 delta = delta[0]
                             else:
@@ -226,11 +224,10 @@ class SSRL52Loader(LoaderBase):
                             same_length_indices.remove(idx)
                     if len(same_length_indices) != 1:
                         # Multiple dimensions with the same length, ambiguous
-                        warnings.warn(
+                        emit_user_level_warning(
                             f"Ambiguous length for {k}. This was not taken into "
                             "account while writing the loader code. Please report this "
                             "issue. Resulting data may be incorrect",
-                            stacklevel=1,
                         )
                     idx = same_length_indices[-1]
                     coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])

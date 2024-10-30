@@ -4,7 +4,6 @@ __all__ = ["FastInterpolator", "interpn", "slice_along_path", "slice_along_vecto
 
 import itertools
 import math
-import warnings
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import cast
 
@@ -16,6 +15,7 @@ import xarray as xr
 import xarray.core.missing
 
 from erlab.accessors.utils import either_dict_or_kwargs
+from erlab.utils.misc import emit_user_level_warning
 
 
 class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
@@ -113,19 +113,17 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
             xi_shapes = [x.shape for x in xi]
             if not all(s == xi_shapes[0] for s in xi_shapes):
-                warnings.warn(
+                emit_user_level_warning(
                     "Not all coordinate arrays have the same shape, "
                     "falling back to scipy.",
                     RuntimeWarning,
-                    stacklevel=1,
                 )
             elif len(xi) != self.values.ndim:
-                warnings.warn(
+                emit_user_level_warning(
                     f"Number of input dimensions ({len(xi)}) does not match "
                     "the input data dimensions, "
                     "falling back to scipy.",
                     RuntimeWarning,
-                    stacklevel=1,
                 )
             else:
                 return _get_interp_func(self.values.ndim)(
@@ -136,11 +134,10 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
 
         if (len(self.uneven_dims) != 0) and is_linear:
-            warnings.warn(
+            emit_user_level_warning(
                 f"Dimension(s) {self.uneven_dims} are not uniform, "
                 "falling back to scipy.",
                 RuntimeWarning,
-                stacklevel=1,
             )
         return super().__call__(xi, method)
 

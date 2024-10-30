@@ -10,7 +10,6 @@
 
 import os
 import re
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -19,6 +18,7 @@ import xarray as xr
 
 import erlab.io
 from erlab.io.dataloader import LoaderBase
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
@@ -55,10 +55,9 @@ def cache_as_float32(
         cache_file.parent.mkdir(parents=True)
 
     if len(data.data_vars) > 1:
-        warnings.warn(
+        emit_user_level_warning(
             "More than one data variable is present in the data."
             "Only the first one will be used",
-            stacklevel=2,
         )
 
     # Get the first data variable

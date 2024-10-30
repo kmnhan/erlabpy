@@ -10,12 +10,13 @@ __all__ = [
 import importlib.util
 import os
 import pathlib
-import warnings
 from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
+
+from erlab.utils.misc import emit_user_level_warning
 
 
 def showfitsinfo(path: str | os.PathLike) -> None:
@@ -126,17 +127,15 @@ def fix_attr_format(da: xr.DataArray):
         if not isValid:
             try:
                 da = da.assign_attrs({key: str(da.attrs[key])})
-                warnings.warn(
+                emit_user_level_warning(
                     f"The attribute {key} with invalid type {dt}"
                     " will be converted to string",
-                    stacklevel=1,
                 )
             except TypeError:
                 # this is VERY unprobable...
                 da = da.assign_attrs({key: ""})
-                warnings.warn(
+                emit_user_level_warning(
                     f"The attribute {key} with invalid type {dt} will be removed",
-                    stacklevel=1,
                 )
     return da
 

@@ -36,6 +36,7 @@ import pandas
 import xarray as xr
 
 from erlab.utils.formatting import format_html_table, format_value
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -1554,7 +1555,7 @@ class LoaderBase(metaclass=_Loader):
     def _raise_or_warn(cls, msg: str) -> None:
         if cls.strict_validation:
             raise ValidationError(msg)
-        warnings.warn(msg, ValidationWarning, stacklevel=2)
+        emit_user_level_warning(msg, ValidationWarning)
 
 
 class _RegistryBase:
@@ -1790,12 +1791,11 @@ class LoaderRegistry(_RegistryBase):
             default_file = (default_dir / identifier).resolve()
 
             if default_file.exists() and abs_file != default_file:
-                warnings.warn(
+                emit_user_level_warning(
                     f"Found {identifier!s} in the default directory "
                     f"{default_dir!s}, but conflicting file {abs_file!s} was found. "
                     "The first file will be loaded. "
                     "Consider specifying the directory explicitly.",
-                    stacklevel=2,
                 )
             else:
                 # If the identifier is a path to a file, ignore default_dir

@@ -4,7 +4,6 @@ __all__ = ["MomentumAccessor", "OffsetView"]
 
 import functools
 import time
-import warnings
 from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
 from typing import Literal, Self, cast
 
@@ -16,6 +15,7 @@ from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
 from erlab.utils.formatting import format_html_table
+from erlab.utils.misc import emit_user_level_warning
 
 
 def only_angles(method=None):
@@ -212,9 +212,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
-        warnings.warn(
+        emit_user_level_warning(
             "Inner potential not found in data attributes, assuming 10 eV",
-            stacklevel=1,
         )
         return 10.0
 
@@ -243,9 +242,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
-        warnings.warn(
-            "Work function not found in data attributes, assuming 4.5 eV",
-            stacklevel=1,
+        emit_user_level_warning(
+            "Work function not found in data attributes, assuming 4.5 eV"
         )
         return 4.5
 
@@ -266,7 +264,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         try:
             return float(self._obj.attrs["angle_resolution"])
         except KeyError:
-            # warnings.warn(
+            # emit_user_level_warning(
             #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
             # )
             return 0.1

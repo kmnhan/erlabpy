@@ -8,7 +8,6 @@ __all__ = [
 ]
 
 import importlib
-import warnings
 from collections.abc import Hashable, Mapping
 
 import matplotlib.pyplot as plt
@@ -20,6 +19,7 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
     either_dict_or_kwargs,
 )
+from erlab.utils.misc import emit_user_level_warning
 
 
 @xr.register_dataarray_accessor("qplot")
@@ -245,10 +245,9 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         part_params = hvplot.bind(get_slice_params, *sliders).interactive()
 
         if "modelfit_results" not in self._obj.data_vars:
-            warnings.warn(
+            emit_user_level_warning(
                 "`modelfit_results` not included in Dataset. "
-                "Components will not be plotted",
-                stacklevel=2,
+                "Components will not be plotted"
             )
             plot_components = False
 
@@ -423,9 +422,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if len(scalars) >= 1:
             for k, v in scalars.items():
                 if v < out[k].min() or v > out[k].max():
-                    warnings.warn(
-                        f"Selected value {v} for `{k}` is outside coordinate bounds",
-                        stacklevel=2,
+                    emit_user_level_warning(
+                        f"Selected value {v} for `{k}` is outside coordinate bounds"
                     )
             out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
 

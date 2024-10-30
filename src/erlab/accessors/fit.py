@@ -11,7 +11,6 @@ __all__ = [
 import contextlib
 import copy
 import itertools
-import warnings
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from typing import Any, Literal, cast
 
@@ -26,6 +25,7 @@ from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
 )
+from erlab.utils.misc import emit_user_level_warning
 from erlab.utils.parallel import joblib_progress
 
 
@@ -404,10 +404,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                             initial_params
                         )
                     except NotImplementedError:
-                        warnings.warn(
+                        emit_user_level_warning(
                             f"`guess` is not implemented for {model}, "
-                            "using supplied initial parameters",
-                            stacklevel=1,
+                            "using supplied initial parameters"
                         )
                         initial_params = model.make_params().update(initial_params)
             try:
@@ -530,10 +529,9 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
         if parallel:
             if is_dask:
-                warnings.warn(
+                emit_user_level_warning(
                     "The input Dataset is chunked. Parallel fitting will not offer any "
-                    "performance benefits.",
-                    stacklevel=1,
+                    "performance benefits."
                 )
 
             parallel_kw.setdefault("n_jobs", -1)
