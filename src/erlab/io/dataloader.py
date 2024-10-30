@@ -673,13 +673,8 @@ class LoaderBase(metaclass=_Loader):
 
         if df is None:
             df = self.generate_summary(data_dir, exclude)
-            if cache:
-                try:
-                    df.to_pickle(pkl_path)
-                except OSError:
-                    warnings.warn(
-                        f"Failed to cache summary to {pkl_path}", stacklevel=1
-                    )
+            if cache and os.access(data_dir, os.W_OK):
+                df.to_pickle(pkl_path)
 
         if not display:
             return df
