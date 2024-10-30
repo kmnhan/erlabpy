@@ -24,8 +24,12 @@ Modules
 
 import importlib
 import pathlib
-import traceback
 import warnings
+
+
+class PluginImportWarning(UserWarning):
+    """Issued when a plugin fails to load."""
+
 
 for path in pathlib.Path(__file__).resolve().parent.iterdir():
     if (
@@ -38,7 +42,8 @@ for path in pathlib.Path(__file__).resolve().parent.iterdir():
             importlib.import_module(module_name)
         except Exception:
             warnings.warn(
-                f"Failed to load module {module_name} due to the following error:\n"
-                f"{traceback.format_exc()}",
+                f"Failed to load '{module_name}'. "
+                f"Import the module to trace the error.",
+                PluginImportWarning,
                 stacklevel=1,
             )
