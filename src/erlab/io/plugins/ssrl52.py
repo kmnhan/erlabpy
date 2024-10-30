@@ -20,6 +20,12 @@ def _format_polarization(val) -> str:
     return {0.0: "LH", 0.5: "LV", 0.25: "RC", -0.25: "LC"}.get(val, str(val))
 
 
+def _parse_value(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 class SSRL52Loader(LoaderBase):
     name = "ssrl"
     aliases = ("ssrl52", "bl5-2")
@@ -197,6 +203,8 @@ class SSRL52Loader(LoaderBase):
                             coord = coord[: len(data[ax["label"]])]
 
                         data = data.assign_coords({ax["label"]: coord})
+
+            attrs = {k: _parse_value(v) for k, v in attrs.items()}
 
             coord_names = list(data.coords.keys())
             coord_sizes = [len(data[coord]) for coord in coord_names]
