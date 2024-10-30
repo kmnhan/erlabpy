@@ -151,19 +151,19 @@ def get_primary_coords(group: NXgroup) -> list[NXfield]:
 
     Returns
     -------
-    list of NXfield
+    fields_primary : list of NXfield
 
     """
-    out: list[NXfield] = []
-    _get_primary_coords(group, out)
-    return sorted(out, key=lambda field: int(field.axis))
+    fields_primary: list[NXfield] = []
+    _get_primary_coords(group, fields_primary)
+    return sorted(fields_primary, key=lambda field: int(field.axis))
 
 
 def get_non_primary_coords(group: NXgroup) -> list[NXfield]:
     """Get all non-primary coordinates in a group.
 
     Retrieves all fields with the attribute `axis` in the group and its subgroups
-    recursively. The output list in the order of traversal.
+    recursively. The output list is sorted by the order of traversal.
 
     Parameters
     ----------
@@ -172,12 +172,12 @@ def get_non_primary_coords(group: NXgroup) -> list[NXfield]:
 
     Returns
     -------
-    list of NXfield
+    fields_non_primary : list of NXfield
 
     """
-    out: list[NXfield] = []
-    _get_non_primary_coords(group, out)
-    return out
+    fields_non_primary: list[NXfield] = []
+    _get_non_primary_coords(group, fields_non_primary)
+    return fields_non_primary
 
 
 def get_primary_coord_dict(
@@ -344,6 +344,10 @@ def nxfield_to_xarray(field: NXfield, no_dims: bool = False) -> xr.DataArray:
     field
         The NeXus field to be converted.
 
+    Returns
+    -------
+    DataArray
+
     """
     attrs = _remove_axis_attrs(field.attrs)
 
@@ -387,7 +391,7 @@ def nxgroup_to_xarray(
 
     Returns
     -------
-    xarray.DataArray
+    DataArray
         The DataArray containing the data. Dimension and coordinate names are the
         relative paths of the corresponding NXfields, with the slashes replaced by dots.
 
@@ -443,6 +447,11 @@ def get_entry(filename: str | os.PathLike, entry: str | None = None) -> NXentry:
     entry
         The path of the entry to get. If `None`, the first entry in the file is
         returned.
+
+    Returns
+    -------
+    entry : NXentry
+        The NXentry object obtained from the file.
 
     """
     root = nxload(filename)

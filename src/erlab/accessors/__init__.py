@@ -3,22 +3,8 @@ Some `xarray accessors
 <https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_ for convenient
 data analysis and visualization.
 
-.. currentmodule:: erlab.accessors
-
-Modules
-=======
-
-.. autosummary::
-   :toctree: generated
-
-   utils
-   general
-   kspace
-   fit
-
-ERLabPy provides a collection of `xarray accessors
-<https://docs.xarray.dev/en/stable/internals/extending-xarray.html>`_ for convenient
-data analysis and visualization. The following table lists the available accessors.
+ERLabPy provides a collection of accessors for convenient data analysis and
+visualization. The following table lists all accessors provided by ERLabPy:
 
 .. list-table::
    :header-rows: 1
@@ -36,5 +22,18 @@ data analysis and visualization. The following table lists the available accesso
      - Curve fitting
    * - :class:`da.kspace <erlab.accessors.kspace.MomentumAccessor>`
      - Momentum conversion
+
+.. currentmodule:: erlab.accessors
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+
+   utils
+   general
+   kspace
+   fit
 
 """  # noqa: D205

@@ -161,8 +161,9 @@ napoleon_use_rtype = False
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
     "ndarray": "numpy.ndarray",
-    "DataArray": "xarray.DataArray",
-    "Dataset": "xarray.Dataset",
+    "DataArray": "`DataArray <xarray.DataArray>`",
+    "Dataset": "`Dataset <xarray.Dataset>`",
+    "DataTree": "`DataTree <xarray.DataTree>`",
     "np.float32": "float32",
     "numpy.float32": "float32",
     "np.float64": "float64",
