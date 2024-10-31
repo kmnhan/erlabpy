@@ -24,7 +24,7 @@ def _parse_value(value):
         return _parse_value(value.nxdata)
     if isinstance(value, np.ndarray) and value.size == 1:
         return _parse_value(np.atleast_1d(value)[0])
-    if isinstance(value, np.number):
+    if isinstance(value, np.generic):
         # Convert to native Python type
         return value.item()
     return value

@@ -144,6 +144,7 @@ def test_loader():
             "z",
             "polarization",
             "photon_flux",
+            "temp_sample",
         )
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
@@ -224,6 +225,16 @@ def test_loader():
                 )
 
             return darr
+
+        def post_process(self, data: xr.DataArray) -> xr.DataArray:
+            data = super().post_process(data)
+
+            if "temp_sample" in data.coords:
+                # Add temperature to attributes, for backwards compatibility
+                temp = float(data.temp_sample.mean())
+                data = data.assign_attrs(temp_sample=temp)
+
+            return data
 
         def infer_index(self, name):
             # Get the scan number from file name
