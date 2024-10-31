@@ -38,10 +38,8 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     * `method` is ``"linear"``.
     * Coordinates along all dimensions are evenly spaced.
-    * Values are 1D, 2D or 3D.
+    * Points are 1D, 2D or 3D.
     * Extrapolation is disabled, i.e., `fill_value` is not `None`.
-    * The dimension of coordinates `xi` matches the number of dimensions of the values.
-      Also, each coordinate array in `xi` must have the same shape.
 
     See Also
     --------
@@ -103,35 +101,36 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
         )
 
     def __call__(self, xi, method: str | None = None):
+        ndim: int = len(self.grid)
         is_linear: bool = method == "linear" or self.method == "linear"
-        nd_supported: bool = self.values.ndim in (1, 2, 3)
+        nd_supported: bool = ndim in (1, 2, 3)
         no_extrap: bool = self.fill_value is not None
 
         if (len(self.uneven_dims) == 0) and is_linear and nd_supported and no_extrap:
             if isinstance(xi, np.ndarray):
-                xi = tuple(xi.take(i, axis=-1) for i in range(xi.shape[-1]))
+                if xi.ndim == 1:
+                    xi_tuple = (xi,)
+                else:
+                    xi_tuple = tuple(xi.take(i, axis=-1) for i in range(xi.shape[-1]))
+            else:
+                xi_tuple = tuple(xi)
 
-            xi_shapes = [x.shape for x in xi]
+            xi_shapes = [x.shape for x in xi_tuple]
             if not all(s == xi_shapes[0] for s in xi_shapes):
                 emit_user_level_warning(
                     "Not all coordinate arrays have the same shape, "
                     "falling back to scipy.",
                     RuntimeWarning,
                 )
-            elif len(xi) != self.values.ndim:
-                emit_user_level_warning(
-                    f"Number of input dimensions ({len(xi)}) does not match "
-                    "the input data dimensions, "
-                    "falling back to scipy.",
-                    RuntimeWarning,
-                )
-            else:
-                return _get_interp_func(self.values.ndim)(
+
+            elif ndim == len(xi_tuple):
+                interp_func = _get_interp_func(ndim)
+                return interp_func(
                     *self.grid,
                     self.values,
-                    *(c.ravel() for c in xi),
+                    *xi_tuple,
                     fill_value=self.fill_value,
-                ).reshape(xi[0].shape + self.values.shape[self.values.ndim :])
+                )
 
         if (len(self.uneven_dims) != 0) and is_linear:
             emit_user_level_warning(
@@ -211,7 +210,7 @@ def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
 @numba.njit(nogil=True, inline="always")
 def _calc_interp1(values, v0):
     i0 = math.floor(v0)
-    n0 = values.size
+    n0 = values.shape[0]
     j0 = min(i0 + 1, n0 - 1)
     return _do_interp1(v0 - i0, values[i0], values[j0])
 
@@ -219,7 +218,7 @@ def _calc_interp1(values, v0):
 @numba.njit(nogil=True, inline="always")
 def _calc_interp2(values, v0, v1):
     i0, i1 = math.floor(v0), math.floor(v1)
-    n0, n1 = values.shape
+    n0, n1 = values.shape[:2]
     j0, j1 = min(i0 + 1, n0 - 1), min(i1 + 1, n1 - 1)
     return _do_interp2(
         v0 - i0,
@@ -234,7 +233,7 @@ def _calc_interp2(values, v0, v1):
 @numba.njit(nogil=True, inline="always")
 def _calc_interp3(values, v0, v1, v2):
     i0, i1, i2 = math.floor(v0), math.floor(v1), math.floor(v2)
-    n0, n1, n2 = values.shape
+    n0, n1, n2 = values.shape[:3]
     j0, j1, j2 = min(i0 + 1, n0 - 1), min(i1 + 1, n1 - 1), min(i2 + 1, n2 - 1)
     return _do_interp3(
         v0 - i0,
@@ -260,50 +259,63 @@ def _val2ind(val, coord):
 
 @numba.njit(nogil=True, parallel=True)
 def _interp1(x, values, xc, fill_value=np.nan):
-    n = len(xc)
+    out_shape = xc.shape + values.shape[1:]
+    xc_flat = xc.ravel()
+    n = len(xc_flat)
 
-    arr_new = np.empty(n, values.dtype)
+    arr_new = np.empty((n,) + values.shape[1:], values.dtype)
 
     for m in numba.prange(n):
-        v0 = _val2ind(xc[m], x)
+        v0 = _val2ind(xc_flat[m], x)
 
         if np.isnan(v0):
             arr_new[m] = fill_value
         else:
             arr_new[m] = _calc_interp1(values, v0)
-    return arr_new
+
+    return arr_new.reshape(out_shape)
 
 
 @numba.njit(nogil=True, parallel=True)
 def _interp2(x, y, values, xc, yc, fill_value=np.nan):
-    n = len(xc)
+    out_shape = xc.shape + values.shape[2:]
+    xc_flat, yc_flat = xc.ravel(), yc.ravel()
+    n = len(xc_flat)
 
-    arr_new = np.empty(n, values.dtype)
+    arr_new = np.empty((n,) + values.shape[2:], values.dtype)
 
     for m in numba.prange(n):
-        v0, v1 = _val2ind(xc[m], x), _val2ind(yc[m], y)
+        v0, v1 = _val2ind(xc_flat[m], x), _val2ind(yc_flat[m], y)
 
         if np.isnan(v0) or np.isnan(v1):
             arr_new[m] = fill_value
         else:
             arr_new[m] = _calc_interp2(values, v0, v1)
-    return arr_new
+
+    return arr_new.reshape(out_shape)
 
 
 @numba.njit(nogil=True, parallel=True)
 def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
-    n = len(xc)
+    out_shape = xc.shape + values.shape[3:]
+    xc_flat, yc_flat, zc_flat = xc.ravel(), yc.ravel(), zc.ravel()
+    n = len(xc_flat)
 
-    arr_new = np.empty(n, values.dtype)
+    arr_new = np.empty((n,) + values.shape[3:], values.dtype)
 
     for m in numba.prange(n):
-        v0, v1, v2 = _val2ind(xc[m], x), _val2ind(yc[m], y), _val2ind(zc[m], z)
+        v0, v1, v2 = (
+            _val2ind(xc_flat[m], x),
+            _val2ind(yc_flat[m], y),
+            _val2ind(zc_flat[m], z),
+        )
 
         if np.isnan(v0) or np.isnan(v1) or np.isnan(v2):
             arr_new[m] = fill_value
         else:
             arr_new[m] = _calc_interp3(values, v0, v1, v2)
-    return arr_new
+
+    return arr_new.reshape(out_shape)
 
 
 def _get_interp_func(ndim: int) -> Callable:
@@ -448,6 +460,8 @@ def slice_along_path(
         xr.DataArray(p, dims=dim_name, coords={dim_name: path_coord})
         for p in points_arr
     ]
+    interp_kwargs.setdefault("method", "linearfast")
+
     return darr.interp(
         dict(zip(vertices.keys(), interp_coords, strict=False)), **interp_kwargs
     )

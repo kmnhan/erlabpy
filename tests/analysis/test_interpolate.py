@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import scipy.interpolate
 import xarray as xr
 
@@ -17,12 +18,25 @@ def value_func_3d(x, y, z):
     return 2 * x + 3 * y - z
 
 
-def test_interpn_1d():
-    x = np.linspace(0, 4, 5)
+def value_func_4d(x, y, z, w):
+    return 2 * x + 3 * y - z + w
+
+
+x = np.linspace(0, 4, 5)
+y = np.linspace(0, 5, 6)
+z = np.linspace(0, 6, 7)
+w = np.linspace(0, 7, 8)
+
+values_1d = value_func_1d(*np.meshgrid(x, indexing="ij"))
+values_2d = value_func_2d(*np.meshgrid(x, y, indexing="ij"))
+values_3d = value_func_3d(*np.meshgrid(x, y, z, indexing="ij"))
+values_4d = value_func_4d(*np.meshgrid(x, y, z, w, indexing="ij"))
+
+
+@pytest.mark.parametrize("values", [values_1d, values_2d, values_3d, values_4d])
+@pytest.mark.parametrize("point", [np.array([2.21, 2.67]), np.array([[2.21], [2.67]])])
+def test_interpn_1d(values, point):
     points = (x,)
-    values = value_func_1d(*np.meshgrid(*points, indexing="ij"))
-    point = np.array([[2.21], [2.67]])
-
     assert np.allclose(
         interpn(points, values, point),
         scipy.interpolate.interpn(
@@ -31,13 +45,12 @@ def test_interpn_1d():
     )
 
 
-def test_interpn_2d():
-    x = np.linspace(0, 4, 5)
-    y = np.linspace(0, 5, 6)
+@pytest.mark.parametrize("values", [values_2d, values_3d, values_4d])
+@pytest.mark.parametrize(
+    "point", [np.array([2.21, 3.12]), np.array([[2.21, 3.12], [2.67, 3.54]])]
+)
+def test_interpn_2d(values, point):
     points = (x, y)
-    values = value_func_2d(*np.meshgrid(*points, indexing="ij"))
-    point = np.array([[2.21, 3.12], [2.67, 3.54]])
-
     assert np.allclose(
         interpn(points, values, point),
         scipy.interpolate.interpn(
@@ -46,14 +59,10 @@ def test_interpn_2d():
     )
 
 
-def test_interpn_3d():
-    x = np.linspace(0, 4, 5)
-    y = np.linspace(0, 5, 6)
-    z = np.linspace(0, 6, 7)
+@pytest.mark.parametrize("values", [values_3d, values_4d])
+@pytest.mark.parametrize("point", [np.array([[2.21, 3.12, 1.15], [2.67, 3.54, 1.03]])])
+def test_interpn_3d(values, point):
     points = (x, y, z)
-    values = value_func_3d(*np.meshgrid(*points, indexing="ij"))
-    point = np.array([[2.21, 3.12, 1.15], [2.67, 3.54, 1.03]])
-
     assert np.allclose(
         interpn(points, values, point),
         scipy.interpolate.interpn(
