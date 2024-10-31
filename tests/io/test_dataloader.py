@@ -144,7 +144,6 @@ def test_loader():
             "z",
             "polarization",
             "photon_flux",
-            "temp_sample",
         )
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
