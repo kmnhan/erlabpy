@@ -383,7 +383,7 @@ class LoaderBase(metaclass=_Loader):
         *,
         single: bool = False,
         combine: bool = True,
-        parallel: bool | None = None,
+        parallel: bool = False,
         load_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> (
@@ -433,8 +433,9 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel. If not specified, files are
-            loaded in parallel only when there are more than 15 files to load.
+            Whether to load multiple files in parallel using the `joblib` library.
+
+            This argument is only used when `single` is `False`.
         load_kwargs
             Additional keyword arguments to be passed to :meth:`load_single
             <erlab.io.dataloader.LoaderBase.load_single>`.
@@ -1507,7 +1508,7 @@ class LoaderBase(metaclass=_Loader):
     def load_multiple_parallel(
         self,
         file_paths: list[str],
-        parallel: bool | None = None,
+        parallel: bool = False,
         post_process: bool = False,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
@@ -1529,9 +1530,6 @@ class LoaderBase(metaclass=_Loader):
         -------
         A list of the loaded data.
         """
-        if parallel is None:
-            parallel = len(file_paths) > 15
-
         if post_process:
 
             def _load_func(filename):
