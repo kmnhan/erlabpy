@@ -665,7 +665,10 @@ class LoaderBase(metaclass=_Loader):
             cache = False
 
         if pkl_path.is_file() and cache:
-            df = pandas.read_pickle(pkl_path)
+            try:
+                df = pandas.read_pickle(pkl_path)
+            except Exception:
+                df = None
 
         if df is not None:
             contents = {str(f.relative_to(data_dir)) for f in data_dir.glob("[!.]*")}
