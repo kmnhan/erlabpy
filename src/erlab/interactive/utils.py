@@ -1872,6 +1872,11 @@ class RotatableLine(pg.InfiniteLine):
             if ev.isFinish():
                 self.moving = False
 
+    def _computeBoundingRect(self):
+        """RotatableLine debugging."""
+        _ = self.getViewBox().size()
+        super()._computeBoundingRect()
+
 
 def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:
     r"""Create a :class:`pyqtgraph.TargetItem` and associated `RotatableLine`\ s.
