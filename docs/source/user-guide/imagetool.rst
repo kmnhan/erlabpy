@@ -54,6 +54,12 @@ Tips
   quickly pasted to a Python script or Jupyter notebook to reproduce the data in the
   clicked region.
 
+- Right-clicking on the colorbar allows you to manually set the color range or to
+  copy the color range to the clipboard.
+
+- Data manipulation such as rotation and normalization are also possible. Try exploring
+  the edit and view menus.
+
 - ImageTool is also very extensible. At our home lab, we use a modified version of
   ImageTool to plot data as it is being collected in real-time!
 
