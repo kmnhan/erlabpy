@@ -76,7 +76,9 @@ class DA30Loader(LoaderBase):
         return data
 
     def files_for_summary(self, data_dir: str | os.PathLike):
-        return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))
+        return sorted(
+            erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw", ".zip"))
+        )
 
 
 def load_zip(
@@ -93,7 +95,6 @@ def load_zip(
             with tempfile.TemporaryDirectory() as tmp_dir:
                 z.extract(f"Spectrum_{region}.ini", tmp_dir)
                 z.extract(f"{region}.ini", tmp_dir)
-                z.extract(f"Spectrum_{region}.bin", tmp_dir)
 
                 region_info = parse_ini(
                     os.path.join(tmp_dir, f"Spectrum_{region}.ini")
@@ -103,6 +104,7 @@ def load_zip(
                     attrs.update(d)
 
                 if not without_values:
+                    z.extract(f"Spectrum_{region}.bin", tmp_dir)
                     arr = np.fromfile(
                         os.path.join(tmp_dir, f"Spectrum_{region}.bin"),
                         dtype=np.float32,
@@ -119,16 +121,13 @@ def load_zip(
                     offset, offset + (n - 1) * delta, n
                 )
 
-            if without_values:
+            if not without_values:
+                arr = arr.reshape(shape)
+            else:
                 arr = np.zeros(shape, dtype=np.float32)
 
             out.append(
-                xr.DataArray(
-                    arr.reshape(shape),
-                    coords=coords,
-                    name=region_info["name"],
-                    attrs=attrs,
-                )
+                xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
             )
 
     if len(out) == 1:
@@ -144,11 +143,24 @@ def load_zip(
         )
 
 
+def _parse_value(value):
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return value
+
+
 def parse_ini(filename: str | os.PathLike) -> dict:
     parser = CasePreservingConfigParser(strict=False)
     out = {}
     with open(filename, encoding="utf-8") as f:
         parser.read_file(f)
         for section in parser.sections():
-            out[section] = dict(parser.items(section))
+            out[section] = {k: _parse_value(v) for k, v in parser.items(section)}
     return out
