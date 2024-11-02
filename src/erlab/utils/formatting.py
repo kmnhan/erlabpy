@@ -96,8 +96,11 @@ def format_value(
               `format_value(val[0])`.
             - If the array is not monotonic, the minimum and maximum values are
               formatted and returned as a string in the format "min~max".
+            - If the array has two elements, the two elements are formatted and
+              returned.
 
-        - For arrays with more dimensions, the array is returned as is.
+        - For arrays with more dimensions, the minimum and maximum values are formatted
+          and returned as a string in the format "min~max".
 
     - For lists:
         The list is grouped by consecutive equal elements, and the count of each element
@@ -150,8 +153,11 @@ def format_value(
             if val.size == 1:
                 return _format(val.item())
 
-            if val.squeeze().ndim == 1:
-                val = val.squeeze()
+            val = val.squeeze()
+
+            if val.ndim == 1:
+                if len(val) == 2:
+                    return f"[{_format(val[0])}, {_format(val[1])}]"
 
                 if is_uniform_spaced(val):
                     start, end, step = tuple(
@@ -168,10 +174,8 @@ def format_value(
 
                     return f"{_format(val[0])}→{_format(val[-1])} ({len(val)})"
 
-                mn, mx = tuple(_format(v) for v in (np.min(val), np.max(val)))
-                return f"{mn}~{mx} ({len(val)})"
-
-            return str(val)
+            mn, mx = tuple(_format(v) for v in (np.nanmin(val), np.nanmax(val)))
+            return f"{mn}~{mx} ({len(val)})"
 
         if isinstance(val, list):
             return ", ".join(
@@ -191,6 +195,10 @@ def format_value(
             if use_unicode_minus:
                 return str(val).replace("-", "−")
             return str(val)
+
+        if isinstance(val, np.generic):
+            # Convert to native Python type
+            return _format(val.item())
 
         if isinstance(val, datetime.datetime):
             return val.strftime("%Y-%m-%d %H:%M:%S")
