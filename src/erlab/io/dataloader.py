@@ -610,6 +610,7 @@ class LoaderBase(metaclass=_Loader):
         *,
         cache: bool = True,
         display: bool = True,
+        rc: dict[str, Any] | None = None,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         """Summarize the data in the given directory.
 
@@ -634,6 +635,10 @@ class LoaderBase(metaclass=_Loader):
             Whether to display the formatted dataframe using the IPython shell. If
             `False`, the dataframe will be returned without formatting. If `True` but
             the IPython shell is not detected, the dataframe styler will be returned.
+        rc
+            Optional dictionary of matplotlib rcParams to override the default for the
+            plot in the interactive summary. Figure size and the colormap can be changed
+            using this argument.
 
         Returns
         -------
@@ -700,7 +705,7 @@ class LoaderBase(metaclass=_Loader):
                     display(styled)  # type: ignore[misc]
 
                 if importlib.util.find_spec("ipywidgets"):
-                    return self._isummarize(df)
+                    return self._isummarize(df, rc=rc)
 
                 return None
 
@@ -825,7 +830,14 @@ class LoaderBase(metaclass=_Loader):
 
         return df
 
-    def _isummarize(self, summary: pandas.DataFrame | None = None, **kwargs):
+    def _isummarize(
+        self,
+        summary: pandas.DataFrame | None = None,
+        rc: dict[str, Any] | None = None,
+        **kwargs,
+    ):
+        rc_dict: dict[str, Any] = {} if rc is None else rc
+
         if not importlib.util.find_spec("ipywidgets"):
             raise ImportError(
                 "ipywidgets and IPython is required for interactive summaries"
@@ -862,7 +874,7 @@ class LoaderBase(metaclass=_Loader):
             table = ""
             table += (
                 "<div class='widget-inline-hbox widget-select' "
-                "style='height:220px;overflow-y:auto;'>"
+                "style='height:300px;overflow-y:auto;'>"
             )
             table += "<table class='widget-select'>"
             table += "<tbody>"
@@ -977,12 +989,14 @@ class LoaderBase(metaclass=_Loader):
             else:
                 plot_data = self._temp_data
 
+            old_rc = {k: v for k, v in plt.rcParams.items() if k in rc_dict}
             with out:
+                plt.rcParams.update(rc_dict)
                 plot_data.qplot(ax=plt.gca())
                 plt.title("")  # Remove automatically generated title
 
-                # Add line at Fermi level if the data is 2D and has an energy dimension
-                # that includes zero
+                # Add line at Fermi level if the data is 2D and has an energy
+                # dimension that includes zero
                 if (plot_data.ndim == 2 and "eV" in plot_data.dims) and (
                     plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0
                 ):
@@ -990,6 +1004,7 @@ class LoaderBase(metaclass=_Loader):
                         orientation="h" if plot_data.dims[0] == "eV" else "v"
                     )
                 show_inline_matplotlib_plots()
+            plt.rcParams.update(old_rc)
 
         def _next(_) -> None:
             # Select next row
@@ -1782,6 +1797,11 @@ class LoaderRegistry(_RegistryBase):
         self,
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
+        *,
+        single: bool = False,
+        combine: bool = True,
+        parallel: bool = False,
+        load_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -1816,7 +1836,15 @@ class LoaderRegistry(_RegistryBase):
         if data_dir is None:
             data_dir = default_dir
 
-        return loader.load(identifier, data_dir=data_dir, **kwargs)
+        return loader.load(
+            identifier,
+            data_dir=data_dir,
+            single=single,
+            combine=combine,
+            parallel=parallel,
+            load_kwargs=load_kwargs,
+            **kwargs,
+        )
 
     def summarize(
         self,
@@ -1825,6 +1853,7 @@ class LoaderRegistry(_RegistryBase):
         *,
         cache: bool = True,
         display: bool = True,
+        rc: dict[str, Any] | None = None,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         loader, default_dir = self._get_current_defaults()
 
@@ -1832,7 +1861,7 @@ class LoaderRegistry(_RegistryBase):
             data_dir = default_dir
 
         return loader.summarize(
-            data_dir=data_dir, exclude=exclude, cache=cache, display=display
+            data_dir=data_dir, exclude=exclude, cache=cache, display=display, rc=rc
         )
 
     def _get_current_defaults(self):
