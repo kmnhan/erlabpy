@@ -1875,7 +1875,7 @@ class RotatableLine(pg.InfiniteLine):
     def _computeBoundingRect(self):
         """RotatableLine debugging."""
         _ = self.getViewBox().size()
-        super()._computeBoundingRect()
+        return super()._computeBoundingRect()
 
 
 def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:

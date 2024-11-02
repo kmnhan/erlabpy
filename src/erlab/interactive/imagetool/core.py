@@ -1419,7 +1419,7 @@ class ItoolCursorLine(pg.InfiniteLine):
     def _computeBoundingRect(self):
         """CursorLine debugging."""
         _ = self.getViewBox().size()
-        super()._computeBoundingRect()
+        return super()._computeBoundingRect()
 
 
 class ItoolCursorSpan(pg.LinearRegionItem):

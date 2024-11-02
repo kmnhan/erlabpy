@@ -51,8 +51,7 @@ jobs:
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'
         run: |
-          sudo apt-get install -y gdb
-          gdb -return-child-result -batch -ex r -ex bt --args python -u -m pytest -vv --full-trace --cov erlab --junitxml=junit.xml
+          python -u -m pytest -vv --full-trace --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'

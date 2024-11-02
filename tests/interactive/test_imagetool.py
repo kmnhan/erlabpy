@@ -402,8 +402,13 @@ def test_value_update(qtbot):
     win.close()
 
 
-def test_value_update_errors():
+def test_value_update_errors(qtbot):
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -419,6 +424,8 @@ def test_value_update_errors():
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
+
+    win.close()
 
 
 def test_sync(qtbot):
