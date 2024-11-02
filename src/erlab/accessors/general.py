@@ -390,6 +390,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         scalars: dict[Hashable, float] = {}
         slices: dict[Hashable, slice] = {}
         avg_dims: list[Hashable] = []
+        lost_dims: list[Hashable] = []
 
         for dim, width in bin_widths.items():
             value = indexers[dim]
@@ -407,6 +408,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     )
                 slices[dim] = slice(value - width / 2.0, value + width / 2.0)
                 avg_dims.append(dim)
+                for k, v in self._obj.coords.items():
+                    if dim in v.dims:
+                        lost_dims.append(k)
 
         unindexed_dims: list[Hashable] = [
             k for k in slices | scalars if k not in self._obj.indexes
@@ -431,7 +435,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel(slices)
 
             lost_coords = {
-                k: out[k].mean() for k in avg_dims if k not in unindexed_dims
+                k: out[k].mean() for k in lost_dims if k not in unindexed_dims
             }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)

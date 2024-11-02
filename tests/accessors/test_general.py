@@ -98,6 +98,22 @@ def test_qsel_slice_with_width():
         dat.qsel({"x": slice(1.0, 3.0), "x_width": 1.0})
 
 
+def test_qsel_associated_dim():
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5), "z": ("x", np.arange(5))},
+    )
+    xr.testing.assert_identical(
+        dat.qsel(x=2, x_width=3),
+        xr.DataArray(
+            np.array([10.0, 11.0, 12.0, 13.0, 14.0]),
+            dims=("y",),
+            coords={"y": np.arange(5), "x": 2.0, "z": 2.0},
+        ),
+    )
+
+
 def test_qsel_value_outside_bounds():
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
