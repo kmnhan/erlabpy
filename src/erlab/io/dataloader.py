@@ -551,6 +551,7 @@ class LoaderBase(metaclass=_Loader):
                         single=single,
                         combine=combine,
                         parallel=parallel,
+                        load_kwargs=load_kwargs,
                         **new_kwargs,
                     )
 
@@ -914,12 +915,20 @@ class LoaderBase(metaclass=_Loader):
                 # !TODO: Add 2 sliders for 4D data
 
             if self._temp_data.ndim == 3:
+                old_dim = str(dim_sel.value)
+
                 dim_sel.unobserve(_update_sliders, "value")
                 coord_sel.unobserve(_update_plot, "value")
 
                 dim_sel.options = self._temp_data.dims
-                # Set the default dimension to the one with the smallest size
-                dim_sel.value = self._temp_data.dims[np.argmin(self._temp_data.shape)]
+                # Set the default dimension to the one with the smallest size if
+                # previous dimension is not present
+                if old_dim in dim_sel.options:
+                    dim_sel.value = old_dim
+                else:
+                    dim_sel.value = self._temp_data.dims[
+                        np.argmin(self._temp_data.shape)
+                    ]
 
                 coord_sel.observe(_update_plot, "value")
                 dim_sel.observe(_update_sliders, "value")
@@ -1007,7 +1016,9 @@ class LoaderBase(metaclass=_Loader):
             buttons = [prev_button, next_button, full_button]
 
         # List of data files
-        data_select = Select(options=list(df.index), value=next(iter(df.index)), rows=8)
+        data_select = Select(
+            options=list(df.index), value=next(iter(df.index)), rows=10
+        )
         data_select.observe(_update_data, "value")
 
         # HTML table for data info
