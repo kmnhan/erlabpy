@@ -277,7 +277,7 @@ Writing tests for data loader plugins
 -------------------------------------
 
 When contributing a new data loader plugin, it is important to write tests to ensure
-that the plugin works as expected over time.
+that the plugin always returns the expected data for newer package versions.
 
 Since ARPES data required for testing take up a lot of space, we have a separate
 repository for test data: `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_.
@@ -293,7 +293,8 @@ add tests, follow these steps:
 
 3. Place the test data files into the directory you created in step 3. It's a good
    practice to also include a processed version of the data that the plugin should
-   return, and use this as a reference in the tests.
+   return, and use this as a reference in the tests. See preexisting directories and
+   tests for examples.
 
 4. Set the environment variable `ERLAB_TEST_DATA_DIR` to the path of the cloned
    `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ repository in your
@@ -327,23 +328,10 @@ add tests, follow these steps:
      the test data has not been modified or corrupted since the last time the tests were
      run.
 
-     To calculate the hash, first download the tarball from the GitHub API::
-
-         https://api.github.com/repos/kmnhan/erlabpy-data/tarball/<commit_hash>
-
-     The new hash can be calculated by running the following command in the terminal:
-
-     .. code-block:: bash
-
-         openssl sha256 path/to/kmnhan-erlabpy-data-<commit_hash>.tar.gz
-
-     or using `pooch <https://github.com/fatiando/pooch>`_:
-
-     .. code-block:: python
-
-         import pooch
-
-         pooch.file_hash("path/to/kmnhan-erlabpy-data-<commit_hash>.tar.gz")
+     The hash is calculated by `this workflow
+     <https://github.com/kmnhan/erlabpy-data/actions/workflows/checksum.yml>`_ for each
+     push to main. It can be copied from the workflow summary corresponding to the
+     commit you wish to refer to.
 
 .. _development.code-standards:
 
