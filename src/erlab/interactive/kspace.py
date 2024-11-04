@@ -6,13 +6,12 @@ __all__ = ["ktool"]
 
 import os
 import sys
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import varname
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
@@ -25,6 +24,9 @@ from erlab.interactive.colors import (
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utils import copy_to_clipboard, generate_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -615,8 +617,3 @@ def ktool(
         qapp.exec()
 
     return win
-
-
-if __name__ == "__main__":
-    dat = cast(xr.DataArray, erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5"))
-    win = ktool(dat)
