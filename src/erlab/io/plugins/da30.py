@@ -6,6 +6,7 @@ Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual load
 
 import configparser
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -66,6 +67,28 @@ class DA30Loader(LoaderBase):
                 raise ValueError(f"Unsupported file extension {ext}")
 
         return data
+
+    def identify(self, num: int, data_dir: str | os.PathLike):
+        for file in erlab.io.utils.get_files(
+            data_dir, extensions=(".ibw", ".pxt", ".zip")
+        ):
+            match file.suffix:
+                case ".zip":
+                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
+
+                case ".pxt":
+                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
+
+                case ".ibw":
+                    m = re.match(
+                        r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3),
+                        file.stem,
+                    )
+
+            if m is not None:
+                return [file], {}
+
+        return None
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
