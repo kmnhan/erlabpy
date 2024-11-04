@@ -83,17 +83,17 @@ class MERLINLoader(LoaderBase):
     }
 
     summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
-        "Time": _parse_time,
-        "Type": _determine_kind,
-        "Lens Mode": "Lens Mode",
-        "Scan Type": "Acquisition Mode",
-        "T(K)": "sample_temp",
-        "Pass E": "Pass Energy",
-        "Analyzer Slit": "Slit Plate",
-        "Polarization": "polarization",
+        "time": _parse_time,
+        "type": _determine_kind,
+        "lens mode": "Lens Mode",
+        "mode": "Acquisition Mode",
+        "temperature": "sample_temp",
+        "pass energy": "Pass Energy",
+        "analyzer slit": "Slit Plate",
+        "pol": "polarization",
         "hv": "hv",
-        "Entrance Slit": "Entrance Slit",
-        "Exit Slit": "Exit Slit",
+        "entrance slit": "Entrance Slit",
+        "exit slit": "Exit Slit",
         "polar": "beta",
         "tilt": "xi",
         "azi": "delta",
@@ -102,7 +102,7 @@ class MERLINLoader(LoaderBase):
         "z": "z",
     }
 
-    summary_sort = "Time"
+    summary_sort = "time"
 
     always_single = False
 
@@ -184,11 +184,6 @@ class MERLINLoader(LoaderBase):
 
         if "eV" in data.coords:
             data = data.assign_coords(eV=-data.eV.values)
-
-        if "sample_temp" in data.coords:
-            # Add temperature to attributes, for backwards compatibility
-            temp = float(data.sample_temp.mean())
-            data = data.assign_attrs(sample_temp=temp)
 
         return data
 

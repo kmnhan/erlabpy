@@ -221,8 +221,13 @@ def edge(
         model_cls: lmfit.Model = StepEdgeModel
     else:
         if temp is None:
-            temp = gold.attrs["sample_temp"]
-        params = lmfit.create_params(temp={"value": temp, "vary": vary_temp})
+            temp = gold.qinfo.get_value("sample_temp")
+            if temp is None:
+                raise ValueError(
+                    "Temperature not found in data attributes, please provide manually"
+                )
+
+        params = lmfit.create_params(temp={"value": float(temp), "vary": vary_temp})
         model_cls = FermiEdgeModel
 
     model = model_cls()
@@ -602,11 +607,8 @@ def quick_fit(
         data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
 
     if temp is None:
-        if "sample_temp" in data.coords:
-            temp = float(data.coords["sample_temp"])
-        elif "sample_temp" in data.attrs:
-            temp = float(data.attrs["sample_temp"])
-        else:
+        temp = data.qinfo.get_value("sample_temp")
+        if temp is None:
             raise ValueError(
                 "Temperature not found in data attributes, please provide manually"
             )

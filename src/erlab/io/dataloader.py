@@ -1544,13 +1544,13 @@ class LoaderBase(metaclass=_Loader):
 
         for c in ("beta", "delta", "xi", "hv"):
             if c not in data.coords:
-                cls._raise_or_warn(f"Missing coordinate {c}")
+                cls._raise_or_warn(f"Missing coordinate '{c}'")
 
-        for a in ("configuration", "sample_temp"):
-            if a not in data.attrs:
-                cls._raise_or_warn(f"Missing attribute {a}")
+        if data.qinfo.get_value("sample_temp") is None:
+            cls._raise_or_warn("Missing attribute 'sample_temp'")
 
         if "configuration" not in data.attrs:
+            cls._raise_or_warn("Missing attribute 'configuration'")
             return
 
         if data.attrs["configuration"] not in (1, 2):
@@ -1559,7 +1559,7 @@ class LoaderBase(metaclass=_Loader):
                     f"Invalid configuration {data.attrs['configuration']}"
                 )
             elif "chi" not in data.coords:
-                cls._raise_or_warn("Missing coordinate chi")
+                cls._raise_or_warn("Missing coordinate 'chi'")
 
     def load_multiple_parallel(
         self,

@@ -59,26 +59,24 @@ class SSRL52Loader(LoaderBase):
     }
 
     summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
-        "Time": "CreationTimeStamp",
-        "Type": "Description",
-        "Lens Mode": "LensModeName",
-        "Region": "RegionName",
-        "T(K)": "sample_temp",
-        "Pass E": "PassEnergy",
-        "Polarization": "polarization",
+        "time": "CreationTimeStamp",
+        "type": "Description",
+        "lens mode": "LensModeName",
+        "region": "RegionName",
+        "temperature": "sample_temp",
+        "pass energy": "PassEnergy",
+        "pol": "polarization",
         "hv": "hv",
-        # "Entrance Slit": "Entrance Slit",
-        # "Exit Slit": "Exit Slit",
         "polar": "chi",
         "tilt": "xi",
         "azi": "delta",
-        "DA": "beta",
+        "deflector": "beta",
         "x": "x",
         "y": "y",
         "z": "z",
     }
 
-    summary_sort = "Time"
+    summary_sort = "time"
 
     always_single: bool = True
     skip_validate: bool = True
@@ -265,11 +263,6 @@ class SSRL52Loader(LoaderBase):
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
-
-        if "sample_temp" in data.coords:
-            # Add temperature to attributes
-            temp = float(data.sample_temp.mean())
-            data = data.assign_attrs(sample_temp=temp)
 
         # Convert to binding energy
         if (

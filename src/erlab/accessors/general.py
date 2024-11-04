@@ -7,8 +7,10 @@ __all__ = [
     "SelectionAccessor",
 ]
 
+import functools
 import importlib
 from collections.abc import Hashable, Mapping
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,6 +21,7 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
     either_dict_or_kwargs,
 )
+from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
 
@@ -504,3 +507,59 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if average:
             return masked.mean(sel_kw.keys())
         return masked
+
+
+@xr.register_dataarray_accessor("qinfo")
+class InfoDataArrayAccessor(ERLabDataArrayAccessor):
+    """`xarray.Dataset.qinfo` accessor for displaying information about the data."""
+
+    def get_value(self, attr_or_coord_name: str) -> Any:
+        """Get the value of the specified attribute or coordinate.
+
+        If the attribute or coordinate is not found, `None` is returned.
+
+        Parameters
+        ----------
+        attr_or_coord_name
+            The name of the attribute or coordinate.
+
+        """
+        if attr_or_coord_name in self._obj.attrs:
+            return self._obj.attrs[attr_or_coord_name]
+        if attr_or_coord_name in self._obj.coords:
+            return self._obj.coords[attr_or_coord_name]
+        return None
+
+    @functools.cached_property
+    def _summary_table(self) -> list[tuple[str, str, str]]:
+        import erlab.io
+
+        if "data_loader_name" in self._obj.attrs:
+            loader = erlab.io.loaders[self._obj.attrs["data_loader_name"]]
+        else:
+            raise ValueError("Data loader information not found in data attributes")
+
+        out: list[tuple[str, str, str]] = []
+
+        for key, true_key in loader.summary_attrs.items():
+            val = loader.get_formatted_attr_or_coord(self._obj, true_key)
+            if callable(true_key):
+                true_key = ""
+            out.append((key, loader.value_to_string(val), true_key))
+
+        return out
+
+    def _repr_html_(self) -> str:
+        return format_html_table(
+            [("Name", "Value", "Key"), *self._summary_table],
+            header_cols=1,
+            header_rows=1,
+        )
+
+    def __repr__(self) -> str:
+        return "\n".join(
+            [
+                f"{key}: {val}" if not true_key else f"{key} ({true_key}): {val}"
+                for key, val, true_key in self._summary_table
+            ]
+        )

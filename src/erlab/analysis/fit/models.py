@@ -10,7 +10,6 @@ __all__ = [
     "StepEdgeModel",
 ]
 
-import contextlib
 from typing import Literal
 
 import lmfit
@@ -178,10 +177,11 @@ class FermiEdgeModel(lmfit.Model):
             np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
         ]
 
-        temp = 30.0
+        temp = None
         if isinstance(data, xr.DataArray):
-            with contextlib.suppress(KeyError):
-                temp = float(data.attrs["sample_temp"])
+            temp = data.qinfo.get_value("sample_temp")
+        if temp is None:
+            temp = 30.0
 
         pars[f"{self.prefix}center"].set(
             value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()
@@ -190,7 +190,7 @@ class FermiEdgeModel(lmfit.Model):
         pars[f"{self.prefix}back1"].set(value=back1)
         pars[f"{self.prefix}dos0"].set(value=dos0)
         pars[f"{self.prefix}dos1"].set(value=dos1)
-        pars[f"{self.prefix}temp"].set(value=temp)
+        pars[f"{self.prefix}temp"].set(value=float(temp))
         pars[f"{self.prefix}resolution"].set(value=0.02)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
@@ -418,7 +418,9 @@ class FermiEdge2dModel(lmfit.Model):
         pars[f"{self.prefix}lin_bkg"].set(value=dos1)
 
         if isinstance(data, xr.DataArray):
-            pars[f"{self.prefix}temp"].set(value=data.attrs["sample_temp"])
+            temp = data.qinfo.get_value("sample_temp")
+            if temp is not None:
+                pars[f"{self.prefix}temp"].set(value=float(temp))
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
