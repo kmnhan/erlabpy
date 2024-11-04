@@ -683,6 +683,7 @@ class ArraySlicer(QtCore.QObject):
 
         for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
             inc = self.incs[self._obj.dims.index(dim)]
+            # Estimate minimum number of decimal places required to represent selection
             order = int(-np.floor(np.log10(inc)) + 1)
 
             if binned[self._obj.dims.index(dim)]:

@@ -722,6 +722,11 @@ class ItoolMenuBar(DictMenuBar):
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
+            "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
+            "Igor Packed Experiment Templates (*.pxt)": (
+                xr.load_dataarray,
+                {"engine": "erlab-igor"},
+            ),
         }
         try:
             import erlab.io
