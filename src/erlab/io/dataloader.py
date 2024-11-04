@@ -188,8 +188,13 @@ class LoaderBase(metaclass=_Loader):
     - The attributes are added after renaming with :meth:`process_keys
       <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
       provided.
-    - If an attribute with the same name is already present in the data, it is skipped.
+    - If an attribute with the same name is already present in the data, it is skipped
+      unless the key is listed in :attr:`overridden_attrs
+      <erlab.io.dataloader.LoaderBase.overridden_attrs>`.
     """
+
+    overridden_attrs: tuple[str, ...] = ()
+    """Keys in :attr:`additional_attrs` that should override existing attributes."""
 
     additional_coords: ClassVar[dict[str, str | int | float]] = {}
     """Additional non-dimension coordinates to be added to the data after loading.
@@ -199,48 +204,13 @@ class LoaderBase(metaclass=_Loader):
     - The coordinates are added after renaming with :meth:`process_keys
       <erlab.io.dataloader.LoaderBase.process_keys>`, so keys will appear in the data as
       provided.
-    - If a coordinate with the same name is already present in the data, it is skipped.
+    - If a coordinate with the same name is already present in the data, it is skipped
+      unless the key is listed in :attr:`overridden_coords
+      <erlab.io.dataloader.LoaderBase.overridden_coords>`.
     """
 
-    formatters: ClassVar[dict[str, Callable]] = {}
-    """Mapping from attr or coord names (after renaming) to custom formatters.
-
-    The formatters must take the attribute value and return a value that can be
-    converted to a string with :meth:`value_to_string
-    <erlab.io.dataloader.LoaderBase.value_to_string>`. The resulting formats are used
-    for human readable display of some attributes in the summary table and the
-    information accessor.
-
-    The values returned by the formatters will be further formatted by
-    :meth:`value_to_string <erlab.io.dataloader.LoaderBase.value_to_string>` before
-    being displayed.
-
-    If the key is a coordinate, the function will automatically be vectorized over every
-    value.
-
-    Note
-    ----
-    The formatters are only used for display purposes and do not affect the stored data.
-
-    See Also
-    --------
-    :meth:`get_formatted_attr_or_coord`
-        The method that uses this mapping to provide human-readable values.
-    """
-
-    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {}
-    """Mapping from summary column names to attr or coord names (after renaming).
-
-    If the value is a callable, it will be called with the data as the only argument.
-
-    """
-
-    summary_sort: str | None = None
-    """Default column to sort the summary table by.
-
-    If `None`, the summary table is sorted in the order of the files returned by
-    :meth:`files_for_summary <erlab.io.dataloader.LoaderBase.files_for_summary>`.
-    """
+    overridden_coords: tuple[str, ...] = ()
+    """Keys in :attr:`additional_coords` that should override existing coordinates."""
 
     always_single: bool = True
     """
@@ -260,6 +230,56 @@ class LoaderBase(metaclass=_Loader):
     instead of warning. Useful for debugging data loaders. This has no effect if
     `skip_validate` is `True`.
     """
+
+    formatters: ClassVar[dict[str, Callable]] = {}
+    """Optional mapping from attr or coord names (after renaming) to custom formatters.
+
+    The formatters are callables that takes the attribute value and returns a value that
+    can be converted to a string via :meth:`value_to_string
+    <erlab.io.dataloader.LoaderBase.value_to_string>`. The resulting string
+    representations are used for human readable display in the summary table and the
+    information accessor.
+
+    The values returned by the formatters will be further formatted by
+    :meth:`value_to_string <erlab.io.dataloader.LoaderBase.value_to_string>` before
+    being displayed.
+
+    If the key is a coordinate, the function will automatically be vectorized over every
+    value.
+
+    Note
+    ----
+    The formatters are only used for display purposes and do not affect the stored data.
+
+    See Also
+    --------
+    :meth:`get_formatted_attr_or_coord`
+        The method that uses this mapping to provide human-readable values.
+    """
+
+    summary_sort: str | None = None
+    """Optional default column to sort the summary table by.
+
+    If `None`, the summary table is sorted in the order of the files returned by
+    :meth:`files_for_summary <erlab.io.dataloader.LoaderBase.files_for_summary>`.
+    """
+
+    @property
+    def summary_attrs(self) -> dict[str, str | Callable[[xr.DataArray], Any]]:
+        """Mapping from summary column names to attr or coord names (after renaming).
+
+        If the value is a callable, it will be called with the data as the only
+        argument. This can be used to extract values from the data that are not stored
+        as attributes or spread across multiple attributes.
+
+        If not overridden, returns a basic mapping based on :attr:`name_map`.
+
+        It is highly recommended to override this property to provide a more detailed
+        and informative summary. See existing loaders for examples.
+
+        """
+        excluded = {"eV", "alpha", "sample_workfunction"}
+        return {k: k for k in self.name_map if k not in excluded}
 
     @property
     def name_map_reversed(self) -> dict[str, str]:
@@ -343,7 +363,9 @@ class LoaderBase(metaclass=_Loader):
 
         The default behavior formats the given value with :func:`format_value
         <erlab.utils.formatting.format_value>`. Override this classmethod to change the
-        printed format of each cell.
+        printed format of summaries and information accessors. This method is applied
+        after the formatters in :attr:`formatters
+        <erlab.io.dataloader.LoaderBase.formatters>`.
 
         """
         return format_value(val)
@@ -582,8 +604,9 @@ class LoaderBase(metaclass=_Loader):
         ----------
         data : DataArray
             The data to extract the attribute or coordinate from.
-        attr_or_coord_name : str
-            The name of the attribute or coordinate to extract.
+        attr_or_coord_name : str or callable
+            The name of the attribute or coordinate to extract. If a callable is passed,
+            it is called with the data as the only argument.
 
         """
         if callable(attr_or_coord_name):
@@ -642,7 +665,7 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        df : pandas.DataFrame or pandas.io.formats.style.Styler or None
+        pandas.DataFrame or pandas.io.formats.style.Styler or None
             Summary of the data in the directory.
 
             - If `display` is `False`, the summary DataFrame is returned.
@@ -790,8 +813,8 @@ class LoaderBase(metaclass=_Loader):
                         file_path.stem,
                         str(file_path),
                         *(
-                            self.get_formatted_attr_or_coord(data, k)
-                            for k in self.summary_attrs.values()
+                            self.get_formatted_attr_or_coord(data, v)
+                            for v in self.summary_attrs.values()
                         ),
                     ]
                 )
@@ -1403,13 +1426,17 @@ class LoaderBase(metaclass=_Loader):
                     new_attrs[k] = v
 
         new_attrs = {
-            k: v for k, v in self.additional_attrs.items() if k not in darr.attrs
+            k: v
+            for k, v in self.additional_attrs.items()
+            if k not in darr.attrs or k in self.overridden_attrs
         }
         new_attrs["data_loader_name"] = str(self.name)
         darr = darr.assign_attrs(new_attrs)
 
         new_coords = {
-            k: v for k, v in self.additional_coords.items() if k not in darr.coords
+            k: v
+            for k, v in self.additional_coords.items()
+            if k not in darr.coords or k in self.overridden_coords
         }
         return darr.assign_coords(new_coords)
 
@@ -1606,11 +1633,11 @@ class _RegistryBase:
 
 
 class LoaderRegistry(_RegistryBase):
-    loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
-    """Registered loaders \n\n:meta hide-value:"""
+    _loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
+    """Mapping of registered loaders."""
 
-    alias_mapping: ClassVar[dict[str, str]] = {}
-    """Mapping of aliases to loader names \n\n:meta hide-value:"""
+    _alias_mapping: ClassVar[dict[str, str]] = {}
+    """Mapping of aliases to loader names."""
 
     _current_loader: LoaderBase | None = None
     _current_data_dir: pathlib.Path | None = None
@@ -1650,27 +1677,27 @@ class LoaderRegistry(_RegistryBase):
 
     def _register(self, loader_class: type[LoaderBase]) -> None:
         # Add class to loader
-        self.loaders[loader_class.name] = loader_class
+        self._loaders[loader_class.name] = loader_class
 
         # Add aliases to mapping
-        self.alias_mapping[loader_class.name] = loader_class.name
+        self._alias_mapping[loader_class.name] = loader_class.name
         if loader_class.aliases is not None:
             for alias in loader_class.aliases:
-                self.alias_mapping[alias] = loader_class.name
+                self._alias_mapping[alias] = loader_class.name
 
     def keys(self) -> KeysView[str]:
-        return self.loaders.keys()
+        return self._loaders.keys()
 
     def items(self) -> ItemsView[str, LoaderBase | type[LoaderBase]]:
-        return self.loaders.items()
+        return self._loaders.items()
 
     def get(self, key: str) -> LoaderBase:
         """Get a loader instance by name or alias."""
-        loader_name = self.alias_mapping.get(key)
+        loader_name = self._alias_mapping.get(key)
         if loader_name is None:
             raise LoaderNotFoundError(key)
 
-        loader = self.loaders.get(loader_name)
+        loader = self._loaders.get(loader_name)
 
         if loader is None:
             raise LoaderNotFoundError(key)
@@ -1678,12 +1705,12 @@ class LoaderRegistry(_RegistryBase):
         if not isinstance(loader, LoaderBase):
             # If not an instance, create one
             loader = loader()
-            self.loaders[loader_name] = loader
+            self._loaders[loader_name] = loader
 
         return loader
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.loaders)
+        return iter(self._loaders)
 
     def __getitem__(self, key: str) -> LoaderBase:
         return self.get(key)
@@ -1779,7 +1806,7 @@ class LoaderRegistry(_RegistryBase):
         Parameters
         ----------
         data_dir
-            The path to a directory.
+            The default data directory to use.
 
         Note
         ----
@@ -1874,13 +1901,13 @@ class LoaderRegistry(_RegistryBase):
     def __repr__(self) -> str:
         out = "Registered data loaders\n=======================\n\n"
         out += "Loaders\n-------\n" + "\n".join(
-            [f"{k}: {v}" for k, v in self.loaders.items()]
+            [f"{k}: {v}" for k, v in self._loaders.items()]
         )
         out += "\n\n"
         out += "Aliases\n-------\n" + "\n".join(
             [
                 f"{k}: {tuple(v.aliases)}"
-                for k, v in self.loaders.items()
+                for k, v in self._loaders.items()
                 if v.aliases is not None
             ]
         )
@@ -1889,7 +1916,7 @@ class LoaderRegistry(_RegistryBase):
     def _repr_html_(self) -> str:
         rows: list[tuple[str, str, str]] = [("Name", "Aliases", "Loader class")]
 
-        for k, v in self.loaders.items():
+        for k, v in self._loaders.items():
             aliases = ", ".join(v.aliases) if v.aliases is not None else ""
 
             # May be either a class or an instance
