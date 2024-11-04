@@ -16,6 +16,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
+import erlab.lattice
 from erlab.interactive.colors import (
     BetterColorBarItem,  # noqa: F401
     ColorMapComboBox,  # noqa: F401
@@ -125,7 +126,12 @@ class _MovableCircleROI(pg.CircleROI):
 class KspaceToolGUI(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
 ):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        avec: npt.NDArray | None = None,
+        cmap: str | None = None,
+        gamma: float = 0.5,
+    ) -> None:
         # Initialize UI
         super().__init__()
         self.setupUi(self)
@@ -142,8 +148,15 @@ class KspaceToolGUI(
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
+        if cmap is None:
+            cmap = "ColdWarm"
+
+        if cmap.endswith("_r"):
+            cmap = cmap[:-2]
+            self.invert_check.setChecked(True)
+
         # Set up colormap controls
-        self.cmap_combo.setDefaultCmap("ColdWarm")
+        self.cmap_combo.setDefaultCmap(cmap)
         self.cmap_combo.textActivated.connect(self.update_cmap)
         self.gamma_widget.setValue(0.5)
         self.gamma_widget.valueChanged.connect(self.update_cmap)
@@ -172,9 +185,22 @@ class KspaceToolGUI(
         self._roi_list: list[_MovableCircleROI] = []
         self.add_circle_btn.clicked.connect(self._add_circle)
 
+        if avec is not None:
+            self._populate_bz(avec)
+
+    def _populate_bz(self, avec) -> None:
+        a, b, c, _, _, gamma = erlab.lattice.avec2abc(avec)
+        self.a_spin.setValue(a)
+        self.b_spin.setValue(b)
+        self.c_spin.setValue(c)
+        self.ab_spin.setValue(a)
+        self.ang_spin.setValue(gamma)
+
     @QtCore.Slot()
     def _add_circle(self) -> None:
-        roi = _MovableCircleROI([-0.3, -0.3], radius=0.3, removable=True)
+        roi = _MovableCircleROI(
+            [-0.3, -0.3], radius=0.3, removable=True, pen=pg.mkPen("m", width=2)
+        )
         self.plotitems[1].addItem(roi)
         self._roi_list.append(roi)
 
@@ -235,8 +261,16 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
-    def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        data: xr.DataArray,
+        avec: npt.NDArray | None = None,
+        cmap: str | None = None,
+        gamma: float = 0.5,
+        *,
+        data_name: str | None = None,
+    ) -> None:
+        super().__init__(avec=avec, cmap=cmap, gamma=gamma)
 
         self._argnames = {}
 
@@ -338,6 +372,8 @@ class KspaceTool(KspaceToolGUI):
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
+        if avec is not None:
+            self.bz_group.setChecked(True)
 
     def calculate_resolution(self) -> None:
         for k, spin in self._resolution_spins.items():
@@ -522,9 +558,31 @@ class KspaceTool(KspaceToolGUI):
 
 
 def ktool(
-    data: xr.DataArray, *, data_name: str | None = None, execute: bool | None = None
+    data: xr.DataArray,
+    avec: npt.NDArray | None = None,
+    cmap: str | None = None,
+    gamma: float = 0.5,
+    *,
+    data_name: str | None = None,
+    execute: bool | None = None,
 ) -> KspaceTool:
-    """Interactive momentum conversion tool."""
+    """Interactive momentum conversion tool.
+
+    Parameters
+    ----------
+    data
+        Data to convert.
+    avec : array-like, optional
+        Real-space lattice vectors as a 2x2 or 3x3 numpy array. If provided, the
+        Brillouin zone boundary overlay will be calculated based on these vectors.
+    cmap : str, optional
+        Name of the default colormap to use.
+    gamma
+        Default gamma value for the colormap.
+    data_name
+        Name to use in code generation. If not provided, the name will be inferred.
+
+    """
     if data_name is None:
         try:
             data_name = str(varname.argname("data", func=ktool, vars_only=False))
@@ -537,7 +595,7 @@ def ktool(
 
     cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
 
-    win = KspaceTool(data, data_name=data_name)
+    win = KspaceTool(data, avec=avec, cmap=cmap, gamma=gamma, data_name=data_name)
     win.show()
     win.raise_()
     win.activateWindow()

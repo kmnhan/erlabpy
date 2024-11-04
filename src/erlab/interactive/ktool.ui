@@ -505,6 +505,9 @@
         </item>
         <item>
          <widget class="QPushButton" name="add_circle_btn">
+          <property name="toolTip">
+           <string>Create a circle ROI. The position and radius can be edited by right-clicking on the created ROI.</string>
+          </property>
           <property name="text">
            <string>Add Circle ROI</string>
           </property>
