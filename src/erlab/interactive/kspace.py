@@ -44,6 +44,9 @@ class KspaceToolGUI(
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
+        roi = pg.CircleROI([-0.3, -0.3], radius=0.3)
+        self.plotitems[1].addItem(roi)
+
         # Set up colormap controls
         self.cmap_combo.setDefaultCmap("terrain")
         self.cmap_combo.textActivated.connect(self.update_cmap)
@@ -208,6 +211,15 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
+        # Temporary customization for beta scaling
+        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
+        # self._beta_scale_spin.setValue(1.0)
+        # self._beta_scale_spin.setDecimals(2)
+        # self._beta_scale_spin.setSingleStep(0.01)
+        # self._beta_scale_spin.setRange(0.01, 10)
+        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
+        # self._beta_scale_spin.valueChanged.connect(self.update)
+
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
@@ -328,6 +340,10 @@ class KspaceTool(KspaceToolGUI):
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
         data_ang = self._angle_data()
+        # if "beta" in data_ang.dims:
+        #     data_ang = data_ang.assign_coords(
+        #         beta=data_ang.beta * self._beta_scale_spin.value()
+        #     )
         data_ang.kspace.offsets = self.offset_dict
 
         if self.data.kspace.has_hv:

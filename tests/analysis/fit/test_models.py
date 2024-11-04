@@ -53,7 +53,7 @@ def test_fermi_edge_2d_model():
         dims=["eV", "alpha"],
         coords={"eV": eV, "alpha": alpha},
     )
-    data.attrs["temp_sample"] = 300.0
+    data.attrs["sample_temp"] = 300.0
 
     # Create an instance of FermiEdge2dModel
     model = models.FermiEdge2dModel(degree=2)

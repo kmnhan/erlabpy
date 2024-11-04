@@ -188,7 +188,7 @@ class GoldTool(AnalysisWindow):
         self.hists[2].setVisible(False)
 
         try:
-            temp = float(self.data.attrs["temp_sample"])
+            temp = float(self.data.attrs["sample_temp"])
         except KeyError:
             temp = 30.0
 

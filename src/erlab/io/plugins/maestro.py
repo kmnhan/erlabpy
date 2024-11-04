@@ -88,13 +88,13 @@ class MAESTROMicroLoader(LoaderBase):
         "delta": "Motors_Logical.Phi",  # azimuth
         "beta": ("Slit Defl", "Motors_Logical.Slit Defl"),
         "hv": ("MONOEV", "Beamline.Beamline Energy"),
-        "temp_sample": "Cryostat_D",
+        "sample_temp": "Cryostat_D",
     }
     coordinate_attrs = (
         "beta",
         "delta",
         "hv",
-        "temp_sample",
+        "sample_temp",
         "chi",
         "xi",
         "x",

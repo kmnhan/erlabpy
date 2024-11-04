@@ -131,7 +131,7 @@ def test_loader():
             "z": "Z",
             "hv": "PhotonEnergy",
             "polarization": "UndPol",
-            "temp_sample": "TB",
+            "sample_temp": "TB",
         }
 
         coordinate_attrs = (
@@ -144,7 +144,7 @@ def test_loader():
             "z",
             "polarization",
             "photon_flux",
-            "temp_sample",
+            "sample_temp",
         )
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
@@ -164,7 +164,7 @@ def test_loader():
             "Type": _determine_kind,
             "Lens Mode": "LensMode",
             "Scan Type": "SpectrumType",
-            "T(K)": "temp_sample",
+            "T(K)": "sample_temp",
             "Pass E": "PassEnergy",
             "Polarization": "polarization",
             "hv": "hv",
@@ -229,10 +229,10 @@ def test_loader():
         def post_process(self, data: xr.DataArray) -> xr.DataArray:
             data = super().post_process(data)
 
-            if "temp_sample" in data.coords:
+            if "sample_temp" in data.coords:
                 # Add temperature to attributes, for backwards compatibility
-                temp = float(data.temp_sample.mean())
-                data = data.assign_attrs(temp_sample=temp)
+                temp = float(data.sample_temp.mean())
+                data = data.assign_attrs(sample_temp=temp)
 
             return data
 
@@ -283,7 +283,7 @@ def test_loader():
 
     # Test if coordinate_attrs are correctly assigned
     mfdata = erlab.io.load(1)
-    assert np.allclose(mfdata["temp_sample"].values, 20.0 + np.arange(len(beta_coords)))
+    assert np.allclose(mfdata["sample_temp"].values, 20.0 + np.arange(len(beta_coords)))
 
     df = erlab.io.summarize(display=False)
     assert len(df.index) == 5

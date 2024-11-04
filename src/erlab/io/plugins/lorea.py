@@ -33,7 +33,7 @@ class LOREALoader(LoaderBase):
         "y": "instrument.manipulator.say",
         "z": "instrument.manipulator.saz",
         "hv": "instrument.monochromator.energy",
-        "temp_sample": "sample.temperature",
+        "sample_temp": "sample.temperature",
     }
 
     coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")

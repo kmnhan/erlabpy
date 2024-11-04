@@ -41,7 +41,7 @@ class SSRL52Loader(LoaderBase):
         "y": "Y",
         "z": "Z",
         "hv": ["energy", "photon_energy"],
-        "temp_sample": ["TB", "sample_stage_temperature"],
+        "sample_temp": ["TB", "sample_stage_temperature"],
         "sample_workfunction": "WorkFunction",
     }
 
@@ -63,7 +63,7 @@ class SSRL52Loader(LoaderBase):
         "Type": "Description",
         "Lens Mode": "LensModeName",
         "Region": "RegionName",
-        "T(K)": "temp_sample",
+        "T(K)": "sample_temp",
         "Pass E": "PassEnergy",
         "Polarization": "polarization",
         "hv": "hv",
@@ -266,10 +266,10 @@ class SSRL52Loader(LoaderBase):
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
 
-        if "temp_sample" in data.coords:
+        if "sample_temp" in data.coords:
             # Add temperature to attributes
-            temp = float(data.temp_sample.mean())
-            data = data.assign_attrs(temp_sample=temp)
+            temp = float(data.sample_temp.mean())
+            data = data.assign_attrs(sample_temp=temp)
 
         # Convert to binding energy
         if (

@@ -57,7 +57,7 @@ class MERLINLoader(LoaderBase):
         "z": "Sample Z",
         "hv": "BL Energy",
         "polarization": "EPU POL",
-        "temp_sample": "Temperature Sensor B",
+        "sample_temp": "Temperature Sensor B",
         "mesh_current": "Mesh Current",
     }
     coordinate_attrs = (
@@ -70,7 +70,7 @@ class MERLINLoader(LoaderBase):
         "z",
         "polarization",
         "mesh_current",
-        "temp_sample",
+        "sample_temp",
     )
     additional_attrs: ClassVar[dict] = {"configuration": 1}
 
@@ -87,7 +87,7 @@ class MERLINLoader(LoaderBase):
         "Type": _determine_kind,
         "Lens Mode": "Lens Mode",
         "Scan Type": "Acquisition Mode",
-        "T(K)": "temp_sample",
+        "T(K)": "sample_temp",
         "Pass E": "Pass Energy",
         "Analyzer Slit": "Slit Plate",
         "Polarization": "polarization",
@@ -185,10 +185,10 @@ class MERLINLoader(LoaderBase):
         if "eV" in data.coords:
             data = data.assign_coords(eV=-data.eV.values)
 
-        if "temp_sample" in data.coords:
+        if "sample_temp" in data.coords:
             # Add temperature to attributes, for backwards compatibility
-            temp = float(data.temp_sample.mean())
-            data = data.assign_attrs(temp_sample=temp)
+            temp = float(data.sample_temp.mean())
+            data = data.assign_attrs(sample_temp=temp)
 
         return data
 

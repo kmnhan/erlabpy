@@ -221,7 +221,7 @@ def edge(
         model_cls: lmfit.Model = StepEdgeModel
     else:
         if temp is None:
-            temp = gold.attrs["temp_sample"]
+            temp = gold.attrs["sample_temp"]
         params = lmfit.create_params(temp={"value": temp, "vary": vary_temp})
         model_cls = FermiEdgeModel
 
@@ -602,8 +602,10 @@ def quick_fit(
         data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
 
     if temp is None:
-        if "temp_sample" in data.attrs:
-            temp = float(data.attrs["temp_sample"])
+        if "sample_temp" in data.coords:
+            temp = float(data.coords["sample_temp"])
+        elif "sample_temp" in data.attrs:
+            temp = float(data.attrs["sample_temp"])
         else:
             raise ValueError(
                 "Temperature not found in data attributes, please provide manually"
@@ -702,6 +704,9 @@ def quick_resolution(
         )
         resolution_repr = f"$\\Delta E = {resolution * 1e3:.3f}$ meV"
 
+    if kwargs.get("fix_center", False):
+        center_repr = ""
+
     fig = ax.figure
     if fig is not None:
         ax.text(
@@ -757,7 +762,7 @@ def resolution(
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
 
     params = lmfit.create_params(
-        temp={"value": gold_roi.attrs["temp_sample"], "vary": False},
+        temp={"value": gold_roi.attrs["sample_temp"], "vary": False},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
     model = FermiEdgeModel()
@@ -810,7 +815,7 @@ def resolution_roi(
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
     params = lmfit.create_params(
-        temp={"value": gold_roi.attrs["temp_sample"], "vary": not fix_temperature},
+        temp={"value": gold_roi.attrs["sample_temp"], "vary": not fix_temperature},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
     model = FermiEdgeModel()

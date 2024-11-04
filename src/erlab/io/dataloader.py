@@ -1519,7 +1519,7 @@ class LoaderBase(metaclass=_Loader):
             if c not in data.coords:
                 cls._raise_or_warn(f"Missing coordinate {c}")
 
-        for a in ("configuration", "temp_sample"):
+        for a in ("configuration", "sample_temp"):
             if a not in data.attrs:
                 cls._raise_or_warn(f"Missing attribute {a}")
 

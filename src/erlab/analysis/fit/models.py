@@ -181,7 +181,7 @@ class FermiEdgeModel(lmfit.Model):
         temp = 30.0
         if isinstance(data, xr.DataArray):
             with contextlib.suppress(KeyError):
-                temp = float(data.attrs["temp_sample"])
+                temp = float(data.attrs["sample_temp"])
 
         pars[f"{self.prefix}center"].set(
             value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()
@@ -418,7 +418,7 @@ class FermiEdge2dModel(lmfit.Model):
         pars[f"{self.prefix}lin_bkg"].set(value=dos1)
 
         if isinstance(data, xr.DataArray):
-            pars[f"{self.prefix}temp"].set(value=data.attrs["temp_sample"])
+            pars[f"{self.prefix}temp"].set(value=data.attrs["sample_temp"])
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 

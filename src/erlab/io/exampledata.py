@@ -294,7 +294,7 @@ def generate_data_angles(
     if assign_attributes:
         out = out.assign_attrs(
             configuration=int(configuration),
-            temp_sample=temp,
+            sample_temp=temp,
             sample_workfunction=4.5,
         )
 
@@ -392,4 +392,4 @@ def generate_gold_edge(
             rng.poisson(data).astype(float), sigma=ccd_sigma
         )
 
-    return data.assign_attrs(temp_sample=temp)
+    return data.assign_attrs(sample_temp=temp)

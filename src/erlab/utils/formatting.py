@@ -50,7 +50,7 @@ def format_html_table(
 
 
 def format_value(
-    val: object, precision: int = 4, use_unicode_minus: bool = True
+    val: object, precision: int = 4, use_unicode_minus: bool = False
 ) -> str:
     """Format the given value based on its type.
 
