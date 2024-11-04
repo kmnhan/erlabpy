@@ -16,7 +16,6 @@ def test_goldtool(qtbot, gold):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
@@ -45,7 +44,6 @@ def test_dtool(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     win.tab_widget.setCurrentIndex(0)
     win.interp_group.setChecked(False)
@@ -77,7 +75,6 @@ def test_ktool(qtbot, anglemap):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     win._offset_spins["delta"].setValue(30.0)
     win._offset_spins["xi"].setValue(20.0)
@@ -88,6 +85,7 @@ def test_ktool(qtbot, anglemap):
         == """anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
 anglemap_kconv = anglemap.kspace.convert()"""
     )
+    win.add_circle_btn.click()
 
 
 def test_curvefittingtool(qtbot):

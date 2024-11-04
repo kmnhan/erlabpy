@@ -1,5 +1,7 @@
 """Interactive momentum conversion tool."""
 
+from __future__ import annotations
+
 __all__ = ["ktool"]
 
 import os
@@ -11,7 +13,7 @@ import numpy.typing as npt
 import pyqtgraph as pg
 import varname
 import xarray as xr
-from qtpy import QtGui, QtWidgets, uic
+from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
 from erlab.interactive.colors import (
@@ -22,6 +24,102 @@ from erlab.interactive.colors import (
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utils import copy_to_clipboard, generate_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
+
+
+class _CircleROIControlWidget(QtWidgets.QWidget):
+    def __init__(self, roi: _MovableCircleROI) -> None:
+        super().__init__()
+        self.setGeometry(QtCore.QRect(0, 640, 242, 182))
+        self._roi = roi
+
+        layout = QtWidgets.QFormLayout(self)
+        self.setLayout(layout)
+
+        self.x_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.y_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.r_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.x_spin.sigValueChanged.connect(self.update_roi)
+        self.y_spin.sigValueChanged.connect(self.update_roi)
+        self.r_spin.sigValueChanged.connect(self.update_roi)
+
+        layout.addRow("X", self.x_spin)
+        layout.addRow("Y", self.y_spin)
+        layout.addRow("Radius", self.r_spin)
+
+        self._roi.sigRegionChanged.connect(self.update_spins)
+
+    @QtCore.Slot()
+    def update_roi(self) -> None:
+        self._roi.blockSignals(True)
+        self._roi.set_position(
+            (self.x_spin.value(), self.y_spin.value()), self.r_spin.value()
+        )
+        self._roi.blockSignals(False)
+
+    @QtCore.Slot()
+    def update_spins(self) -> None:
+        x, y, r = self._roi.get_position()
+        self.x_spin.blockSignals(True)
+        self.y_spin.blockSignals(True)
+        self.r_spin.blockSignals(True)
+        self.x_spin.setValue(x)
+        self.y_spin.setValue(y)
+        self.r_spin.setValue(r)
+        self.x_spin.blockSignals(False)
+        self.y_spin.blockSignals(False)
+        self.r_spin.blockSignals(False)
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self.update_spins()
+
+
+class _MovableCircleROI(pg.CircleROI):
+    """Circle ROI with a menu to control position and radius."""
+
+    def __init__(self, pos, size=None, radius=None, **args):
+        args.setdefault("removable", True)
+        super().__init__(pos, size, radius, **args)
+
+    def getMenu(self):
+        if self.menu is None:
+            self.menu = QtWidgets.QMenu()
+            self.menu.setTitle("ROI")
+            if self.removable:
+                remAct = QtGui.QAction("Remove Circle", self.menu)
+                remAct.triggered.connect(self.removeClicked)
+                self.menu.addAction(remAct)
+                self.menu.remAct = remAct
+            self._pos_menu = self.menu.addMenu("Edit Circle")
+            ctrlAct = QtWidgets.QWidgetAction(self._pos_menu)
+            ctrlAct.setDefaultWidget(_CircleROIControlWidget(self))
+            self._pos_menu.addAction(ctrlAct)
+
+        return self.menu
+
+    def radius(self) -> float:
+        """Radius of the circle."""
+        return float(self.size()[0] / 2)
+
+    def center(self) -> tuple[float, float]:
+        """Center of the circle."""
+        x, y = self.pos()
+        r = self.radius()
+        return x + r, y + r
+
+    def get_position(self) -> tuple[float, float, float]:
+        """Return the center and radius of the circle."""
+        return (*self.center(), self.radius())
+
+    def set_position(self, center, radius: float | None = None) -> None:
+        """Set the center and radius of the circle."""
+        if radius is None:
+            radius = self.radius()
+        else:
+            diameter = 2 * radius
+            self.setSize((diameter, diameter), update=False)
+        self.setPos(center[0] - radius, center[1] - radius)
 
 
 class KspaceToolGUI(
@@ -44,16 +142,12 @@ class KspaceToolGUI(
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
-        roi = pg.CircleROI([-0.3, -0.3], radius=0.3)
-        self.plotitems[1].addItem(roi)
-
         # Set up colormap controls
-        self.cmap_combo.setDefaultCmap("terrain")
+        self.cmap_combo.setDefaultCmap("ColdWarm")
         self.cmap_combo.textActivated.connect(self.update_cmap)
         self.gamma_widget.setValue(0.5)
         self.gamma_widget.valueChanged.connect(self.update_cmap)
         self.invert_check.stateChanged.connect(self.update_cmap)
-        self.invert_check.setChecked(True)
         self.contrast_check.stateChanged.connect(self.update_cmap)
         self.update_cmap()
 
@@ -74,6 +168,21 @@ class KspaceToolGUI(
         self.angle_plot_check.stateChanged.connect(
             lambda: self.plotitems[0].setVisible(self.angle_plot_check.isChecked())
         )
+
+        self._roi_list: list[_MovableCircleROI] = []
+        self.add_circle_btn.clicked.connect(self._add_circle)
+
+    @QtCore.Slot()
+    def _add_circle(self) -> None:
+        roi = _MovableCircleROI([-0.3, -0.3], radius=0.3, removable=True)
+        self.plotitems[1].addItem(roi)
+        self._roi_list.append(roi)
+
+        def _remove_roi():
+            self.plotitems[1].removeItem(roi)
+            self._roi_list.remove(roi)
+
+        roi.sigRemoveRequested.connect(_remove_roi)
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
