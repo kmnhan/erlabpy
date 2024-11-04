@@ -323,25 +323,28 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
         self.cb = colorbar
 
         layout = QtWidgets.QFormLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setVerticalSpacing(0)
         self.setLayout(layout)
 
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.max_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
         self.min_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
+        self.zero_btn = QtWidgets.QPushButton("Center Zero")
         self.rst_btn = QtWidgets.QPushButton("Reset")
 
         self.max_spin.setObjectName("_vmax_spin")
         self.min_spin.setObjectName("_vmin_spin")
+        self.zero_btn.setObjectName("_vlim_zero_btn")
         self.rst_btn.setObjectName("_vlim_reset_btn")
 
         layout.addRow("Max", self.max_spin)
         layout.addRow("Min", self.min_spin)
+        layout.addRow(self.zero_btn)
         layout.addRow(self.rst_btn)
 
         self.cb._span.sigRegionChanged.connect(self.region_changed)
         self.min_spin.sigValueChanged.connect(self.update_region)
         self.max_spin.sigValueChanged.connect(self.update_region)
+        self.zero_btn.clicked.connect(self.center_zero)
         self.rst_btn.clicked.connect(self.reset)
 
     def _set_spin_values(self, mn: float, mx: float) -> None:
@@ -356,6 +359,20 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
     def region_changed(self):
         mn, mx = self.cb._span.getRegion()
         self._set_spin_values(mn, mx)
+
+    @QtCore.Slot()
+    def center_zero(self):
+        old_min, old_max = self.cb._span.getRegion()
+        self.reset()
+
+        mn, mx = self.cb._span.getRegion()
+        if mn < 0 < mx:
+            half_len = min(abs(mn), abs(mx))
+            self._set_spin_values(-half_len, half_len)
+        else:
+            self._set_spin_values(old_min, old_max)
+
+        self.update_region()
 
     @QtCore.Slot()
     def reset(self):
