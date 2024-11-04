@@ -62,6 +62,15 @@ def _parse_input(
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
 
+def _convert_to_native(obj: list[Any]) -> list[Any]:
+    """Convert a nested list of numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
+
+
 def itool(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
@@ -693,10 +702,14 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     def _copy_cursor_val(self) -> None:
-        copy_to_clipboard(str(self.slicer_area.array_slicer._values))
+        copy_to_clipboard(
+            str(_convert_to_native(self.slicer_area.array_slicer._values))
+        )
 
     def _copy_cursor_idx(self) -> None:
-        copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
+        copy_to_clipboard(
+            str(_convert_to_native(self.slicer_area.array_slicer._indices))
+        )
 
     @QtCore.Slot()
     def _open_file(

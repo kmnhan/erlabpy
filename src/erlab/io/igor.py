@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from xarray.backends.common import AbstractDataStore
 
+# https://github.com/AFM-analysis/igor2/issues/20
 logging.getLogger("igor2.struct").setLevel(logging.ERROR)
 
 
@@ -315,10 +316,3 @@ def load_wave(
     return xr.DataArray(
         d["wData"], dims=coords.keys(), coords=coords, attrs=attrs
     ).rename(wave_header["bname"].decode())
-
-
-load_pxp = load_experiment
-"""Alias for :func:`load_experiment`."""
-
-load_ibw = load_wave
-"""Alias for :func:`load_wave`."""
