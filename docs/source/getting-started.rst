@@ -158,8 +158,3 @@ Notes on compatibility
 - There are some `known compatibility issues
   <https://github.com/kmnhan/erlabpy/issues/17>`_ with PyQt5 and PySide2, so it is
   recommended to use the newer PyQt6 or PySide6 if possible.
-- If you meet any unexpected behaviour while using IPython's `autoreload extension
-  <https://ipython.readthedocs.io/en/stable/config/extensions/autoreload.html>`_, try
-  excluding the following modules: ::
-
-    %aimport -erlab.io -erlab.accessors

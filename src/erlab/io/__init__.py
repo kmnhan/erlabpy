@@ -43,7 +43,7 @@ Examples
 
   >>> erlab.io.set_loader("merlin")
 
-Learn more about loaders in the :ref:`User Guide <user-guide/io:Loading ARPES data>`.
+Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
 
 """
 

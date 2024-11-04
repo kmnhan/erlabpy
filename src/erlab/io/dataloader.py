@@ -7,7 +7,7 @@ Each data loader is a subclass of :class:`LoaderBase` that must implement severa
 methods and attributes.
 
 A detailed guide on how to implement a data loader can be found in the :ref:`User Guide
-<user-guide/io:Implementing a data loader plugin>`.
+<implementing-plugins>`.
 """
 
 from __future__ import annotations

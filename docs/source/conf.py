@@ -40,7 +40,6 @@ extensions = [
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
-    "sphinx.ext.autosectionlabel",
     "sphinx_autodoc_typehints",
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
@@ -54,6 +53,7 @@ extensions = [
     "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
+    "myst_parser",
 ]
 
 if os.getenv("READTHEDOCS"):

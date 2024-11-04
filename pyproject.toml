@@ -66,6 +66,7 @@ docs = [
     "sphinx-qt-documentation",
     "pybtex",
     "nbsphinx",
+    "myst-parser",
     "furo>=2024.07.18",
     "sphinx-design",
 ]

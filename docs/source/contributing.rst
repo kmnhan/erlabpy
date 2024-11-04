@@ -232,7 +232,8 @@ The editing workflow
 --------------------
 
 1. Make some changes. Make sure to follow the :ref:`code standards
-   <development.code-standards>` and the `documentation standards <#documentation>`_.
+   <development.code-standards>` and the :ref:`documentation standards
+   <development.docs>`.
 
 2. See which files have changed with ``git status``. You'll see a listing like this one: ::
 
@@ -372,6 +373,8 @@ Code standards
           def __init__(self):
               super().__init__()
               self.setupUi(self)
+
+.. _development.docs:
 
 Documentation
 =============

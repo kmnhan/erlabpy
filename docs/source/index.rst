@@ -89,4 +89,4 @@ research!
    reference
    contributing
    bibliography
-   Changelog <https://github.com/kmnhan/erlabpy/releases>
+   changelog
