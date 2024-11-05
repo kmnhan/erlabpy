@@ -2,6 +2,12 @@
 
 ### Breaking Changes
 
+- Deprecated module `erlab.io.utilities` is removed. Use `erlab.io.utils` instead. ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
+- Deprecated module `erlab.interactive.utilities` is removed. Use `erlab.interactive.utils` instead. ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
+- Deprecated module `erlab.characterization` is removed. Use `erlab.io.characterization` instead. ([8d770bf](https://github.com/kmnhan/erlabpy/commit/8d770bfe298253c020aeda6d61a9eab625facf6c))
+- Deprecated module `erlab.analysis.utils` is removed. Use `erlab.analysis.transform.shift` and `erlab.analysis.gold.correct_with_edge`. ([0b2ca44](https://github.com/kmnhan/erlabpy/commit/0b2ca44844cc5802d32d9ed949e831b534525183))
+- Deprecated alias `slice_along_path` in `erlab.analysis` is removed. Call from `erlab.analysis.interpolate` instead. ([305832b](https://github.com/kmnhan/erlabpy/commit/305832b7bb18aa3d1fda21f4cd0c0992b174d639))
+- Deprecated aliases `correct_with_edge` and `quick_resolution` in `erlab.analysis` are removed. Call from `erlab.analysis.gold` instead. ([075eaf8](https://github.com/kmnhan/erlabpy/commit/075eaf8cd222044aa5cc0c3459698ab33568958c))
 - Removed deprecated aliases `load_igor_ibw` and `load_igor_pxp`. Use `xarray.open_dataarray` and `xarray.open_dataset` instead. ([7f07ad2](https://github.com/kmnhan/erlabpy/commit/7f07ad2c46f80d48c255d408f3f200ae01930060))
 - The default attribute name for the sample temperature is changed to `sample_temp` from `temp_sample`. This will unfortunately break a lot of code that relies on the key `temp_sample`, but will be easy to refactor with find and replace. ([32e1cd5](https://github.com/kmnhan/erlabpy/commit/32e1cd5fb45bce12cfa83c520e8c61af96a8cb39))
 - All dataloaders must now add a new keyword argument to `load_single`, but implementing it is not mandatory.
@@ -48,6 +54,12 @@
 
 ### Code Refactor
 
+- **io:** remove deprecated module ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
+- **interactive:** remove deprecated module ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
+- remove deprecated module `erlab.characterization` ([8d770bf](https://github.com/kmnhan/erlabpy/commit/8d770bfe298253c020aeda6d61a9eab625facf6c))
+- **analysis:** remove deprecated module ([0b2ca44](https://github.com/kmnhan/erlabpy/commit/0b2ca44844cc5802d32d9ed949e831b534525183))
+- **analysis:** remove deprecated alias ([305832b](https://github.com/kmnhan/erlabpy/commit/305832b7bb18aa3d1fda21f4cd0c0992b174d639))
+- **analysis:** remove deprecated aliases ([075eaf8](https://github.com/kmnhan/erlabpy/commit/075eaf8cd222044aa5cc0c3459698ab33568958c))
 - **interactive.imagetool.manager:** add prefix to temporary directories for better identification ([e56163b](https://github.com/kmnhan/erlabpy/commit/e56163ba7fe7d92f3a01ec78098c2d0194ea0302))
 - **io.plugins:** implement DA30 file identification patterns in superclass ([f6dfc44](https://github.com/kmnhan/erlabpy/commit/f6dfc4412b56fc1d83efceb4a65070eb9ef1c2b1))
 - **io:** remove deprecated aliases ([7f07ad2](https://github.com/kmnhan/erlabpy/commit/7f07ad2c46f80d48c255d408f3f200ae01930060))
