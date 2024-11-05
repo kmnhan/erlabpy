@@ -114,10 +114,7 @@ def linkcode_resolve(domain, info) -> str | None:
 
     fn = os.path.relpath(fn, start=os.path.dirname(erlab.__file__))
 
-    return (
-        f"https://github.com/kmnhan/erlabpy/blob/"
-        f"v{version}/src/erlab/{fn}{linespec}"
-    )
+    return f"https://github.com/kmnhan/erlabpy/blob/v{version}/src/erlab/{fn}{linespec}"
 
 
 # -- Autosummary and autodoc settings ----------------------------------------
