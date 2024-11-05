@@ -16,6 +16,19 @@
 
 ### Features
 
+- **io.igor:** enable loading experiment files to DataTree ([1835be0](https://github.com/kmnhan/erlabpy/commit/1835be0d08ed899b2edbb06fb442cd9addb40929))
+
+  Added methods to the backend to allow using `xarray.open_datatree` and `xarray.open_groups` with Igor packed experiment files. Closes [#29](https://github.com/kmnhan/erlabpy/issues/29)
+- add `qinfo` accessor ([eb3a742](https://github.com/kmnhan/erlabpy/commit/eb3a74297211aae8f13e6974563e6da819bfbedb))
+
+  Adds a `qinfo` accessor that prints a table summarizing the data in a human readable format. Closes [#27](https://github.com/kmnhan/erlabpy/issues/27)
+- **interactive.kspace:** pass lattice parameters and colormap info to `ktool` ([6830af3](https://github.com/kmnhan/erlabpy/commit/6830af343326e0367a6dfb016728a6cf1325cf64))
+
+  Added the ability to pass lattice vectors and colormaps to `ktool`.
+- **interactive.kspace:** add circle ROI to ktool ([304e1a5](https://github.com/kmnhan/erlabpy/commit/304e1a53f189ebed9a890680c3499a756c586498))
+
+  Added a button to the visualization tab which creates a circle ROI. The position and radius can be edited by right-clicking on the roi.
+- **interactive.colors:** add zero center button to right-click colorbar ([c037de1](https://github.com/kmnhan/erlabpy/commit/c037de1f4387c0daf7cc7aa252124f01269bc633))
 - **interactive.imagetool:** add `.ibw` and `.pxt` files to load menu ([73c3afe](https://github.com/kmnhan/erlabpy/commit/73c3afef306109be858d23dbf8511617c5d203dd))
 - **io.dataloader:** allow passing rcParams to interactive summary plot ([a348366](https://github.com/kmnhan/erlabpy/commit/a34836673315fdc9acc0ed52d8e56edc90c18456))
 - **io.dataloader:** implement automatic summary generation ([0f5dab4](https://github.com/kmnhan/erlabpy/commit/0f5dab46e3d3a75fc77908b4072f08aa89059acd))
@@ -35,6 +48,8 @@
 
 ### Code Refactor
 
+- **interactive.imagetool.manager:** add prefix to temporary directories for better identification ([e56163b](https://github.com/kmnhan/erlabpy/commit/e56163ba7fe7d92f3a01ec78098c2d0194ea0302))
+- **io.plugins:** implement DA30 file identification patterns in superclass ([f6dfc44](https://github.com/kmnhan/erlabpy/commit/f6dfc4412b56fc1d83efceb4a65070eb9ef1c2b1))
 - **io:** remove deprecated aliases ([7f07ad2](https://github.com/kmnhan/erlabpy/commit/7f07ad2c46f80d48c255d408f3f200ae01930060))
 - change temperature attribute name ([32e1cd5](https://github.com/kmnhan/erlabpy/commit/32e1cd5fb45bce12cfa83c520e8c61af96a8cb39))
 

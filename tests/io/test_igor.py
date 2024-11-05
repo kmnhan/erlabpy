@@ -23,7 +23,7 @@ def test_backend_dataset(datadir):
 
 
 def test_backend_datatree(datadir):
-    dt = xr.load_datatree(datadir / "exp0.pxt")
+    dt = xr.open_datatree(datadir / "exp0.pxt")
     assert dt.groups == ("/", "/wave0", "/testfolder", "/testfolder/wave1")
 
     xr.testing.assert_equal(dt["wave0/wave0"], WAVE0)
