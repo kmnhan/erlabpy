@@ -4,7 +4,6 @@ from typing import cast
 
 import lmfit
 import pyqtgraph as pg
-import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 from erlab.analysis.fit.models import MultiPeakModel
@@ -682,31 +681,3 @@ class mdctool(QtWidgets.QMainWindow):
                 pass
         if execute:
             self.qapp.exec()
-
-
-if __name__ == "__main__":
-    data = xr.open_dataarray(
-        "~/Library/CloudStorage/Dropbox-KAIST_12/Kimoon Han/ERLab/Projects/TiSe2 Chiral"
-        "/Experiment/220922 ALS BL4/TS2_testedc_2209ALS.nc"
-    )
-    edctool(
-        data,
-        3,
-        parameters={
-            "p0_center": -0.11933563574455268,
-            "p0_width": 0.1678003093053242,
-            "p0_height": 2041.8150354041834,
-            "p1_center": -0.22027597972817484,
-            "p1_width": 0.31653868423339476,
-            "p1_height": 2750.4023331130743,
-            "p2_center": -0.017453580016272105,
-            "p2_width": 0.0031789748073378895,
-            "p2_height": 7749.551605384519,
-            "lin_bkg": 86.67942474925626,
-            "const_bkg": 68.66930909421156,
-            "efermi": -0.0,
-            "temp": 30,
-            "offset": 0.7379771332091531,
-            "resolution": 0.04826209466467372,
-        },
-    )

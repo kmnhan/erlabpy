@@ -20,6 +20,8 @@ from erlab.io.dataloader import LoaderBase
 
 
 class CasePreservingConfigParser(configparser.ConfigParser):
+    """ConfigParser that preserves the case of the keys."""
+
     def optionxform(self, optionstr):
         return str(optionstr)
 
@@ -107,6 +109,13 @@ class DA30Loader(LoaderBase):
 def load_zip(
     filename: str | os.PathLike, without_values: bool = False
 ) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    """Load data from a ``.zip`` file from a Scienta Omicron DA30 analyzer.
+
+    If the file contains a single region, a DataArray is returned. If the file contains
+    multiple regions that can be merged without conflicts, a Dataset is returned. If the
+    regions cannot be merged without conflicts, a DataTree containing all regions is
+    returned.
+    """
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
             fn[9:-4]
@@ -180,6 +189,7 @@ def _parse_value(value):
 
 
 def parse_ini(filename: str | os.PathLike) -> dict:
+    """Parse an ``.ini`` file into a dictionary."""
     parser = CasePreservingConfigParser(strict=False)
     out = {}
     with open(filename, encoding="utf-8") as f:

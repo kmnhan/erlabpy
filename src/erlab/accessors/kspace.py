@@ -260,6 +260,18 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         This property is used in `best_kp_resolution` upon estimating momentum step
         sizes through `estimate_resolution`.
+
+        Note
+        ----
+        This property provides a setter method that takes a float value and sets the
+        data attribute accordingly.
+
+        Example
+        -------
+        >>> data.kspace.angle_resolution = 0.05
+        >>> data.kspace.angle_resolution
+        0.05
+
         """
         try:
             return float(self._obj.attrs["angle_resolution"])
@@ -275,7 +287,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def slit_axis(self) -> Literal["kx", "ky"]:
-        """Return the momentum axis parallel to the slit.
+        """Return the momentum axis parallel to the analyzer slit.
 
         Returns
         -------
@@ -290,7 +302,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def other_axis(self) -> Literal["kx", "ky"]:
-        """Return the momentum axis perpendicular to the slit.
+        """Return the momentum axis perpendicular to the analyzer slit.
 
         Returns
         -------
@@ -524,7 +536,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Returns
         -------
-        bounds : dict[str, tuple[float, float]]
+        bounds : dict of str to tuple of float
             A dictionary containing the estimated bounds for each parameter. The keys of
             the dictionary are 'kx', 'ky', and 'kz' (for :math:`hν`-dependent data). The
             values are tuples representing the minimum and maximum values.
@@ -636,7 +648,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def convert_coords(self) -> xr.DataArray:
-        """Convert the coordinates to momentum space.
+        """Convert coordinates to momentum space.
 
         Assigns new exact momentum coordinates to the data. This is useful when you want
         to work with momentum coordinates but don't want to interpolate the data.
