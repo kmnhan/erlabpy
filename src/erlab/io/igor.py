@@ -62,6 +62,35 @@ class IgorBackendEntrypoint(BackendEntrypoint):
             return ext in {".pxt", ".pxp", ".ibw"}
         return False
 
+    def open_datatree(
+        self,
+        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
+        *,
+        recursive: bool = True,
+        **kwargs,
+    ) -> xr.DataTree:
+        if not isinstance(filename_or_obj, str | os.PathLike):
+            raise TypeError("filename_or_obj must be a string or a path-like object")
+        return xr.DataTree.from_dict(
+            self.open_groups_as_dict(filename_or_obj, recursive=recursive)
+        )
+
+    def open_groups_as_dict(
+        self,
+        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
+        *,
+        recursive: bool = True,
+        **kwargs,
+    ) -> dict[str, xr.Dataset]:
+        if not isinstance(filename_or_obj, str | os.PathLike):
+            raise TypeError("filename_or_obj must be a string or a path-like object")
+        return {
+            k: v.to_dataset()
+            for k, v in _load_experiment_raw(
+                filename_or_obj, recursive=recursive
+            ).items()
+        }
+
 
 def _open_igor_ds(
     filename: str | os.PathLike[Any],
@@ -93,11 +122,6 @@ def _load_experiment_raw(
     recursive: bool = False,
     **kwargs,
 ) -> dict[str, xr.DataArray]:
-    if folder is None:
-        split_path: list[Any] = []
-    if ignore is None:
-        ignore = []
-
     expt = None
     for bo in [">", "=", "<"]:
         try:
@@ -109,29 +133,40 @@ def _load_experiment_raw(
     if expt is None:
         raise OSError("Failed to load the experiment file. Please report this issue.")
 
-    waves: dict[str, xr.DataArray] = {}
-    if isinstance(folder, str):
-        split_path = folder.split("/")
-    split_path = [n.encode() for n in split_path]
+    if folder is None:
+        split_path: list[bytes] = []
+    else:
+        folder = folder.strip().strip("/")
+        split_path = [n.encode() for n in folder.split("/")]
+
+    if ignore is None:
+        ignore = set()
 
     expt = expt["root"]
     for dirname in split_path:
         expt = expt[dirname]
 
-    def unpack_folders(expt) -> None:
-        for name, record in expt.items():
-            if isinstance(record, igor2.record.WaveRecord):
-                if prefix is not None and not name.decode().startswith(prefix):
-                    continue
-                if name.decode() in ignore:
-                    continue
-                waves[name.decode()] = load_wave(record, **kwargs)
-            elif isinstance(record, dict):
-                if recursive:
-                    unpack_folders(record)
+    def _unpack_folders(contents: dict, parent: str = "") -> dict[str, xr.DataArray]:
+        # drop: set = set()
+        waves: dict[str, xr.DataArray] = {}
 
-    unpack_folders(expt)
-    return waves
+        for name, record in contents.items():
+            decoded_name = name.decode() if isinstance(name, bytes) else name
+            new_name = f"{parent}/{decoded_name}" if parent else decoded_name
+
+            if isinstance(record, igor2.record.WaveRecord):
+                if prefix is not None and not decoded_name.startswith(prefix):
+                    continue
+                if decoded_name in ignore:
+                    continue
+                waves[new_name] = load_wave(record, **kwargs)
+
+            elif isinstance(record, dict) and recursive:
+                waves.update(_unpack_folders(record, new_name))
+
+        return waves
+
+    return _unpack_folders(expt)
 
 
 def load_experiment(
