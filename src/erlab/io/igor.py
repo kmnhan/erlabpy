@@ -2,7 +2,6 @@ from __future__ import annotations
 
 __all__ = ["IgorBackendEntrypoint", "load_experiment", "load_igor_hdf5", "load_wave"]
 
-import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -319,34 +318,35 @@ def load_wave(
             # data_units = d["data_units"].decode()
             axis_units = [d["dimension_units"].decode()]
 
-    def get_dim_name(index):
-        dim = dim_labels[index]
-        unit = axis_units[index]
+    coords = {}
+    for i, (a, b, c) in enumerate(zip(sfA, sfB, shape, strict=True)):
+        if c == 0:
+            continue
+
+        dim, unit = dim_labels[i], axis_units[i]
+
         if dim == "":
             if unit == "":
-                return DEFAULT_DIMS[index]
-            return unit
-        if unit == "":
-            return dim
-        return f"{dim} ({unit})"
+                dim = DEFAULT_DIMS[i]
+            else:
+                # If dim is empty, but the unit is not, use the unit as the dim name
+                dim, unit = unit, ""
 
-    dims = [get_dim_name(i) for i in range(_MAXDIM)]
-    coords = {
-        dims[i]: np.linspace(b, b + a * (c - 1), c)
-        for i, (a, b, c) in enumerate(zip(sfA, sfB, shape, strict=True))
-        if c != 0
-    }
+        coords[dim] = np.linspace(b, b + a * (c - 1), c)
+        if unit != "":
+            coords[dim] = xr.DataArray(coords[dim], dims=(dim,), attrs={"units": unit})
 
-    attrs = {}
+    attrs: dict[str, int | float | str] = {}
     for ln in d.get("note", b"").decode().splitlines():
         if "=" in ln:
-            k, v = ln.split("=", 1)
+            key, value = ln.split("=", maxsplit=1)
             try:
-                v = int(v)
+                attrs[key] = int(value)
             except ValueError:
-                with contextlib.suppress(ValueError):
-                    v = float(v)
-            attrs[k] = v
+                try:
+                    attrs[key] = float(value)
+                except ValueError:
+                    attrs[key] = value
 
     return xr.DataArray(
         d["wData"], dims=coords.keys(), coords=coords, attrs=attrs
