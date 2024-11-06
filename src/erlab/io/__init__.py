@@ -43,7 +43,7 @@ Examples
 
   >>> erlab.io.set_loader("merlin")
 
-Learn more about loaders in the :ref:`User Guide <user-guide/io:Loading ARPES data>`.
+Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
 
 """
 
@@ -82,9 +82,6 @@ set_data_dir = loaders.set_data_dir
 set_loader = loaders.set_loader
 summarize = loaders.summarize
 
-merlin = loaders["merlin"]
-ssrl52 = loaders["ssrl52"]
-
 
 def load_wave(*args, **kwargs):
     from erlab.io.igor import load_wave as _load_wave
@@ -100,11 +97,3 @@ def load_experiment(*args, **kwargs):
 
     warnings.warn("Use `xarray.open_dataset` instead", DeprecationWarning, stacklevel=2)
     return _load_experiment(*args, **kwargs)
-
-
-def load_igor_ibw(*args, **kwargs):
-    return load_wave(*args, **kwargs)
-
-
-def load_igor_pxp(*args, **kwargs):
-    return load_experiment(*args, **kwargs)

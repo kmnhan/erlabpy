@@ -4,7 +4,6 @@ __all__ = ["MomentumAccessor", "OffsetView"]
 
 import functools
 import time
-import warnings
 from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
 from typing import Literal, Self, cast
 
@@ -16,6 +15,7 @@ from erlab.analysis.interpolate import interpn
 from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
 from erlab.constants import rel_kconv, rel_kzconv
 from erlab.utils.formatting import format_html_table
+from erlab.utils.misc import emit_user_level_warning
 
 
 def only_angles(method=None):
@@ -212,9 +212,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
-        warnings.warn(
+        emit_user_level_warning(
             "Inner potential not found in data attributes, assuming 10 eV",
-            stacklevel=1,
         )
         return 10.0
 
@@ -243,9 +242,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
-        warnings.warn(
-            "Work function not found in data attributes, assuming 4.5 eV",
-            stacklevel=1,
+        emit_user_level_warning(
+            "Work function not found in data attributes, assuming 4.5 eV"
         )
         return 4.5
 
@@ -262,11 +260,23 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         This property is used in `best_kp_resolution` upon estimating momentum step
         sizes through `estimate_resolution`.
+
+        Note
+        ----
+        This property provides a setter method that takes a float value and sets the
+        data attribute accordingly.
+
+        Example
+        -------
+        >>> data.kspace.angle_resolution = 0.05
+        >>> data.kspace.angle_resolution
+        0.05
+
         """
         try:
             return float(self._obj.attrs["angle_resolution"])
         except KeyError:
-            # warnings.warn(
+            # emit_user_level_warning(
             #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
             # )
             return 0.1
@@ -277,7 +287,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def slit_axis(self) -> Literal["kx", "ky"]:
-        """Return the momentum axis parallel to the slit.
+        """Return the momentum axis parallel to the analyzer slit.
 
         Returns
         -------
@@ -292,7 +302,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def other_axis(self) -> Literal["kx", "ky"]:
-        """Return the momentum axis perpendicular to the slit.
+        """Return the momentum axis perpendicular to the analyzer slit.
 
         Returns
         -------
@@ -526,7 +536,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Returns
         -------
-        bounds : dict[str, tuple[float, float]]
+        bounds : dict of str to tuple of float
             A dictionary containing the estimated bounds for each parameter. The keys of
             the dictionary are 'kx', 'ky', and 'kz' (for :math:`hν`-dependent data). The
             values are tuples representing the minimum and maximum values.
@@ -638,7 +648,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def convert_coords(self) -> xr.DataArray:
-        """Convert the coordinates to momentum space.
+        """Convert coordinates to momentum space.
 
         Assigns new exact momentum coordinates to the data. This is useful when you want
         to work with momentum coordinates but don't want to interpolate the data.
@@ -652,7 +662,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @only_angles
     def _get_coord_for_conversion(self, name: Hashable) -> xr.DataArray:
-        """Get the coordinte array for given dimension name.
+        """Get the coordinate array for given dimension name.
 
         This just ensures that the energy coordinates are given as binding energy.
         """

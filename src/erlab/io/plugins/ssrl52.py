@@ -3,16 +3,27 @@
 import datetime
 import os
 import re
-import warnings
-from typing import ClassVar, cast
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 import h5netcdf
 import numpy as np
-import pandas as pd
 import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
+from erlab.utils.misc import emit_user_level_warning
+
+
+def _format_polarization(val) -> str:
+    val = float(np.round(val, 3))
+    return {0.0: "LH", 0.5: "LV", 0.25: "RC", -0.25: "LC"}.get(val, str(val))
+
+
+def _parse_value(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 class SSRL52Loader(LoaderBase):
@@ -30,7 +41,7 @@ class SSRL52Loader(LoaderBase):
         "y": "Y",
         "z": "Z",
         "hv": ["energy", "photon_energy"],
-        "temp_sample": ["TB", "sample_stage_temperature"],
+        "sample_temp": ["TB", "sample_stage_temperature"],
         "sample_workfunction": "WorkFunction",
     }
 
@@ -41,6 +52,32 @@ class SSRL52Loader(LoaderBase):
         "sample_workfunction": 4.5,
     }
 
+    formatters: ClassVar[dict[str, Callable]] = {
+        "CreationTimeStamp": datetime.datetime.fromtimestamp,
+        "PassEnergy": round,
+        "polarization": _format_polarization,
+    }
+
+    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+        "time": "CreationTimeStamp",
+        "type": "Description",
+        "lens mode": "LensModeName",
+        "region": "RegionName",
+        "temperature": "sample_temp",
+        "pass energy": "PassEnergy",
+        "pol": "polarization",
+        "hv": "hv",
+        "polar": "chi",
+        "tilt": "xi",
+        "azi": "delta",
+        "deflector": "beta",
+        "x": "x",
+        "y": "y",
+        "z": "z",
+    }
+
+    summary_sort = "time"
+
     always_single: bool = True
     skip_validate: bool = True
 
@@ -48,7 +85,9 @@ class SSRL52Loader(LoaderBase):
     def file_dialog_methods(self):
         return {"SSRL BL5-2 Raw Data (*.h5)": (self.load, {})}
 
-    def load_single(self, file_path: str | os.PathLike) -> xr.DataArray:
+    def load_single(
+        self, file_path: str | os.PathLike, without_values: bool = False
+    ) -> xr.DataArray:
         is_hvdep: bool = False
 
         dim_mapping: dict[str, str] = {}
@@ -92,7 +131,7 @@ class SSRL52Loader(LoaderBase):
                     dim_mapping = {
                         f"phony_dim_{i}": str(ax["label"]) for i, ax in enumerate(axes)
                     }
-                    data = ds.rename_dims(dim_mapping).load()
+                    data = ds.rename_dims(dim_mapping)
 
                     # Apply coordinates
                     for i, ax in enumerate(axes):
@@ -114,12 +153,11 @@ class SSRL52Loader(LoaderBase):
                                 # For now, just ignore them and use beamline attributes
                                 continue
                             if ax["label"] != "Kinetic Energy":
-                                warnings.warn(
+                                emit_user_level_warning(
                                     "Undefined offset for non-energy axis. This was "
                                     "not taken into account while writing the loader "
                                     "code. Please report this issue. Resulting data "
                                     "may be incorrect",
-                                    stacklevel=1,
                                 )
                                 continue
                             is_hvdep = True
@@ -139,12 +177,11 @@ class SSRL52Loader(LoaderBase):
                                 delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
                                 # may be ~1e-8 difference between values
                                 if not np.allclose(delta, delta[0], atol=1e-7):
-                                    warnings.warn(
+                                    emit_user_level_warning(
                                         "Non-uniform delta for hv-dependent scan. This "
                                         "was not taken into account while writing the "
                                         "loader code. Please report this issue. "
                                         "Resulting data may be incorrect",
-                                        stacklevel=1,
                                     )
                                 delta = delta[0]
                             else:
@@ -162,6 +199,8 @@ class SSRL52Loader(LoaderBase):
                             coord = coord[: len(data[ax["label"]])]
 
                         data = data.assign_coords({ax["label"]: coord})
+
+            attrs = {k: _parse_value(v) for k, v in attrs.items()}
 
             coord_names = list(data.coords.keys())
             coord_sizes = [len(data[coord]) for coord in coord_names]
@@ -183,43 +222,47 @@ class SSRL52Loader(LoaderBase):
                             same_length_indices.remove(idx)
                     if len(same_length_indices) != 1:
                         # Multiple dimensions with the same length, ambiguous
-                        warnings.warn(
+                        emit_user_level_warning(
                             f"Ambiguous length for {k}. This was not taken into "
                             "account while writing the loader code. Please report this "
                             "issue. Resulting data may be incorrect",
-                            stacklevel=1,
                         )
                     idx = same_length_indices[-1]
                     coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
 
-        if is_hvdep:
-            data = data.assign_coords(
-                {
-                    "Binding Energy": data["Binding Energy"]
-                    - data["energy"].values[0]
-                    + attrs.get("WorkFunction", 4.465)
-                }
-            )
+            if is_hvdep:
+                data = data.assign_coords(
+                    {
+                        "Binding Energy": data["Binding Energy"]
+                        - data["energy"].values[0]
+                        + attrs.get("WorkFunction", 4.465)
+                    }
+                )
 
-            # data = data.rename(energy="hv")
+                # data = data.rename(energy="hv")
 
-        if "time" in data.variables:
-            # Normalize by dwell time
-            darr = data["spectrum"] / data["time"]
-        else:
             darr = data["spectrum"]
 
-        darr = darr.assign_attrs(attrs)
+            if not without_values:
+                darr = darr.load()  # Load into memory before closing file
+                if "time" in data.variables:
+                    # Normalize by dwell time
+                    darr = darr / data["time"]
+
+            else:
+                darr = xr.DataArray(
+                    np.zeros(darr.shape, darr.dtype),
+                    coords=darr.coords,
+                    dims=darr.dims,
+                    attrs=darr.attrs,
+                )
+
+            darr = darr.assign_attrs(attrs)
 
         return darr.assign_coords(coord_attrs)
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
-
-        if "temp_sample" in data.coords:
-            # Add temperature to attributes
-            temp = float(data.temp_sample.mean())
-            data = data.assign_attrs(temp_sample=temp)
 
         # Convert to binding energy
         if (
@@ -258,88 +301,5 @@ class SSRL52Loader(LoaderBase):
     def load_zap(self, identifier, data_dir):
         return self.load(identifier, data_dir, zap=True)
 
-    def generate_summary(
-        self, data_dir: str | os.PathLike, exclude_zap: bool = False
-    ) -> pd.DataFrame:
-        files: dict[str, str] = {}
-
-        if exclude_zap:
-            target_files = erlab.io.utils.get_files(
-                data_dir, extensions=(".h5",), notcontains="zap"
-            )
-        else:
-            target_files = erlab.io.utils.get_files(data_dir, extensions=(".h5",))
-
-        for path in target_files:
-            files[path.stem] = str(path)
-
-        summary_attrs: dict[str, str] = {
-            "Type": "Description",
-            "Lens Mode": "LensModeName",
-            "Region": "RegionName",
-            "T(K)": "temp_sample",
-            "Pass E": "PassEnergy",
-            "Polarization": "polarization",
-            "hv": "hv",
-            # "Entrance Slit": "Entrance Slit",
-            # "Exit Slit": "Exit Slit",
-            "x": "x",
-            "y": "y",
-            "z": "z",
-            "polar": "chi",
-            "tilt": "xi",
-            "azi": "delta",
-            "DA": "beta",
-        }
-
-        cols = ["File Name", "Path", "Time", *summary_attrs.keys()]
-
-        data_info = []
-
-        for name, path in files.items():
-            data = cast(xr.DataArray, self.load(path))
-
-            data_info.append(
-                [
-                    name,
-                    path,
-                    datetime.datetime.fromtimestamp(data.attrs["CreationTimeStamp"]),
-                ]
-            )
-
-            for k, v in summary_attrs.items():
-                try:
-                    val = data.attrs[v]
-                except KeyError:
-                    try:
-                        val = data.coords[v].values
-                        if val.size == 1:
-                            val = val.item()
-                    except KeyError:
-                        val = ""
-
-                if k == "Pass E":
-                    val = round(val)
-
-                elif k == "Polarization":
-                    if np.iterable(val):
-                        val = np.round(np.asarray(val), 3).astype(float)
-                    else:
-                        val = [float(np.round(val, 3))]
-                    val = [
-                        {0.0: "LH", 0.5: "LV", 0.25: "RC", -0.25: "LC"}.get(v, v)
-                        for v in val
-                    ]
-
-                    if len(val) == 1:
-                        val = val[0]
-
-                data_info[-1].append(val)
-
-            del data
-
-        return (
-            pd.DataFrame(data_info, columns=cols)
-            .sort_values("Time")
-            .set_index("File Name")
-        )
+    def files_for_summary(self, data_dir):
+        return sorted(erlab.io.utils.get_files(data_dir, extensions=(".h5",)))

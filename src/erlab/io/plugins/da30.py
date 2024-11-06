@@ -6,6 +6,7 @@ Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual load
 
 import configparser
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -13,12 +14,14 @@ from typing import ClassVar
 
 import numpy as np
 import xarray as xr
-from xarray.core.datatree import DataTree
 
+import erlab.io
 from erlab.io.dataloader import LoaderBase
 
 
 class CasePreservingConfigParser(configparser.ConfigParser):
+    """ConfigParser that preserves the case of the keys."""
+
     def optionxform(self, optionstr):
         return str(optionstr)
 
@@ -42,13 +45,13 @@ class DA30Loader(LoaderBase):
         return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
 
     def load_single(
-        self, file_path: str | os.PathLike
-    ) -> xr.DataArray | xr.Dataset | DataTree:
+        self, file_path: str | os.PathLike, without_values: bool = False
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         ext = os.path.splitext(file_path)[-1]
 
         match ext:
             case ".ibw":
-                data: xr.DataArray | xr.Dataset | DataTree = xr.load_dataarray(
+                data: xr.DataArray | xr.Dataset | xr.DataTree = xr.load_dataarray(
                     file_path, engine="erlab-igor"
                 )
 
@@ -60,12 +63,34 @@ class DA30Loader(LoaderBase):
                     data = data[next(iter(data.data_vars))]
 
             case ".zip":
-                data = load_zip(file_path)
+                data = load_zip(file_path, without_values)
 
             case _:
                 raise ValueError(f"Unsupported file extension {ext}")
 
         return data
+
+    def identify(self, num: int, data_dir: str | os.PathLike):
+        for file in erlab.io.utils.get_files(
+            data_dir, extensions=(".ibw", ".pxt", ".zip")
+        ):
+            match file.suffix:
+                case ".zip":
+                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
+
+                case ".pxt":
+                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
+
+                case ".ibw":
+                    m = re.match(
+                        r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3),
+                        file.stem,
+                    )
+
+            if m is not None:
+                return [file], {}
+
+        return None
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
@@ -75,10 +100,22 @@ class DA30Loader(LoaderBase):
 
         return data
 
+    def files_for_summary(self, data_dir: str | os.PathLike):
+        return sorted(
+            erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw", ".zip"))
+        )
+
 
 def load_zip(
-    filename: str | os.PathLike,
-) -> xr.DataArray | xr.Dataset | DataTree:
+    filename: str | os.PathLike, without_values: bool = False
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    """Load data from a ``.zip`` file from a Scienta Omicron DA30 analyzer.
+
+    If the file contains a single region, a DataArray is returned. If the file contains
+    multiple regions that can be merged without conflicts, a Dataset is returned. If the
+    regions cannot be merged without conflicts, a DataTree containing all regions is
+    returned.
+    """
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
             fn[9:-4]
@@ -90,7 +127,6 @@ def load_zip(
             with tempfile.TemporaryDirectory() as tmp_dir:
                 z.extract(f"Spectrum_{region}.ini", tmp_dir)
                 z.extract(f"{region}.ini", tmp_dir)
-                z.extract(f"Spectrum_{region}.bin", tmp_dir)
 
                 region_info = parse_ini(
                     os.path.join(tmp_dir, f"Spectrum_{region}.ini")
@@ -99,9 +135,12 @@ def load_zip(
                 for d in parse_ini(os.path.join(tmp_dir, f"{region}.ini")).values():
                     attrs.update(d)
 
-                arr = np.fromfile(
-                    os.path.join(tmp_dir, f"Spectrum_{region}.bin"), dtype=np.float32
-                )
+                if not without_values:
+                    z.extract(f"Spectrum_{region}.bin", tmp_dir)
+                    arr = np.fromfile(
+                        os.path.join(tmp_dir, f"Spectrum_{region}.bin"),
+                        dtype=np.float32,
+                    )
 
             shape = []
             coords = {}
@@ -114,13 +153,13 @@ def load_zip(
                     offset, offset + (n - 1) * delta, n
                 )
 
+            if not without_values:
+                arr = arr.reshape(shape)
+            else:
+                arr = np.zeros(shape, dtype=np.float32)
+
             out.append(
-                xr.DataArray(
-                    arr.reshape(shape),
-                    coords=coords,
-                    name=region_info["name"],
-                    attrs=attrs,
-                )
+                xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
             )
 
     if len(out) == 1:
@@ -131,16 +170,30 @@ def load_zip(
         return xr.merge(out, join="exact")
     except:  # noqa: E722
         # On failure, combine into DataTree
-        return DataTree.from_dict(
+        return xr.DataTree.from_dict(
             {str(da.name): da.to_dataset(promote_attrs=True) for da in out}
         )
 
 
+def _parse_value(value):
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return value
+
+
 def parse_ini(filename: str | os.PathLike) -> dict:
+    """Parse an ``.ini`` file into a dictionary."""
     parser = CasePreservingConfigParser(strict=False)
     out = {}
     with open(filename, encoding="utf-8") as f:
         parser.read_file(f)
         for section in parser.sections():
-            out[section] = dict(parser.items(section))
+            out[section] = {k: _parse_value(v) for k, v in parser.items(section)}
     return out

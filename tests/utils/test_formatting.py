@@ -50,6 +50,12 @@ def test_format_html_table_no_thead():
     assert format_html_table(rows, header_rows=1, use_thead=False) == expected
 
 
+def test_format_value_numpy_array_len2():
+    val = np.array([0.12, 0.25])
+    expected = "[0.12, 0.25]"
+    assert format_value(val) == expected
+
+
 def test_format_value_numpy_array_evenly_spaced():
     val = np.array([0.1, 0.15, 0.2])
     expected = "0.1→0.2 (0.05, 3)"

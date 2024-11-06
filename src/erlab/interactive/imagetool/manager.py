@@ -426,7 +426,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.options_layout.addStretch()
 
         # Temporary directory for storing archived data
-        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
 
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
@@ -807,7 +807,7 @@ def show_in_manager(
     darr_list: list[xarray.DataArray] = _parse_input(data)
 
     # Save the data to a temporary file
-    tmp_dir = tempfile.mkdtemp()
+    tmp_dir = tempfile.mkdtemp(prefix="erlab_manager_")
 
     files: list[str] = []
 

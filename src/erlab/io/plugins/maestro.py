@@ -10,68 +10,66 @@
 
 import os
 import re
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import xarray as xr
 
-# from xarray.backends.api import open_dataarray
 import erlab.io
 from erlab.io.dataloader import LoaderBase
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
 
 
-def open_datatree(file_path, **kwargs):
-    """:meta private:"""  # noqa: D400
-    # Temporary fix for https://github.com/pydata/xarray/issues/9427
-    from xarray.backends.api import open_groups
-    from xarray.core.datatree import DataTree
-
-    return DataTree.from_dict(open_groups(file_path, **kwargs))
-
-
-def get_cache_file(file_path):
+def get_cache_file(file_path: str | os.PathLike) -> Path:
     file_path = Path(file_path)
     data_dir = file_path.parent
     cache_dir = data_dir.with_name(f".{data_dir.name}_cache")
     return cache_dir.joinpath(file_path.stem + "_2D_Data" + file_path.suffix)
 
 
-def cache_as_float32(file_path):
+def cache_as_float32(
+    file_path: str | os.PathLike, data: xr.Dataset, without_values: bool
+) -> xr.DataArray:
     """Cache and return the 2D part of the data as a float32 DataArray.
 
+    If the cache file exists, it is loaded and returned.
+
     Loading MAESTRO `.h5` files is slow because the data is stored in double precision.
-    This function caches the 2D Data part in float32 to speed up subsequent loading. As
-    a consequence, the loader will fail in read-only file systems.
+    This function caches the 2D Data part in float32 to speed up subsequent loading.
+
+    Caching is disabled in read-only file systems.
 
     """
-    dt = open_datatree(file_path, engine="h5netcdf", phony_dims="sort")
-
     cache_file = get_cache_file(file_path)
-    if cache_file.is_file():
-        return None
 
-    if not cache_file.parent.is_dir():
+    if cache_file.is_file():
+        return xr.open_dataarray(cache_file, engine="h5netcdf")
+
+    writable: bool = os.access(cache_file.parent.parent, os.W_OK)
+
+    if writable and not cache_file.parent.is_dir() and not without_values:
         cache_file.parent.mkdir(parents=True)
 
-    data = dt["2D_Data"].load().to_dataset().astype(np.float32)
-
     if len(data.data_vars) > 1:
-        warnings.warn(
+        emit_user_level_warning(
             "More than one data variable is present in the data."
             "Only the first one will be used",
-            stacklevel=2,
         )
 
     # Get the first data variable
     data = data[next(iter(data.data_vars))]
 
-    # Save cache
-    data.to_netcdf(cache_file, engine="h5netcdf")
+    if without_values:
+        data = xr.DataArray(np.zeros(data.shape), dims=data.dims, attrs=data.attrs)
+
+    elif writable:
+        # Save cache
+        data = data.astype(np.float32)
+        data.to_netcdf(cache_file, engine="h5netcdf")
 
     return data
 
@@ -82,18 +80,27 @@ class MAESTROMicroLoader(LoaderBase):
     aliases = ("ALS_BL7", "als_bl7", "BL702", "bl702")
 
     name_map: ClassVar[dict] = {
-        "x": "LMOTOR0",
-        "y": "LMOTOR1",
-        "z": "LMOTOR2",
-        "chi": "LMOTOR3",  # Theta, polar
-        "xi": "LMOTOR4",  # Beta, tilt
-        "delta": "LMOTOR5",  # Phi, azimuth
-        "beta": ("Slit Defl", "LMOTOR9"),
-        "hv": ("MONOEV", "BL_E"),
-        "temp_sample": "Cryostat_A",
-        "polarization": "EPU Polarization",
+        "x": "Motors_Logical.X",
+        "y": "Motors_Logical.Y",
+        "z": "Motors_Logical.Z",
+        "chi": "Motors_Logical.Theta",  # polar
+        "xi": "Motors_Logical.Beta",  # tilt
+        "delta": "Motors_Logical.Phi",  # azimuth
+        "beta": ("Slit Defl", "Motors_Logical.Slit Defl"),
+        "hv": ("MONOEV", "Beamline.Beamline Energy"),
+        "sample_temp": "Cryostat_D",
     }
-    coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
+    coordinate_attrs = (
+        "beta",
+        "delta",
+        "hv",
+        "sample_temp",
+        "chi",
+        "xi",
+        "x",
+        "y",
+        "z",
+    )
     additional_attrs: ClassVar[dict] = {}
 
     skip_validate: bool = True
@@ -114,14 +121,18 @@ class MAESTROMicroLoader(LoaderBase):
 
         return [file], {}
 
-    def load_single(self, file_path) -> xr.DataArray:
-        cache_file = get_cache_file(file_path)
-        dt = open_datatree(file_path, engine="h5netcdf", phony_dims="sort")
+    def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
+        groups = xr.open_groups(file_path, engine="h5netcdf", phony_dims="sort")
 
-        if "PreScan" in dt["Comments"]:
-            comment: str = dt["Comments"]["PreScan"].item()[0].decode()
+        if "PreScan" in groups["/Comments"]:
+            pre_scan: str = groups["/Comments"]["PreScan"].item()[0].decode()
         else:
-            comment = ""
+            pre_scan = ""
+
+        if "PostScan" in groups["/Comments"]:
+            post_scan: str = groups["/Comments"]["PostScan"].item()[0].decode()
+        else:
+            post_scan = ""
 
         def _parse_attr(v) -> str | int | float:
             """Strip quotes and convert numerical strings to int or float."""
@@ -138,8 +149,7 @@ class MAESTROMicroLoader(LoaderBase):
                 return v
 
         nested_attrs: dict[Hashable, dict[str, tuple[str, str | int | float]]] = {}
-        combined_attrs: dict[str, str | int | float] = {}
-        for key, val in dt["Headers"].data_vars.items():
+        for key, val in groups["/Headers"].data_vars.items():
             # v given as (longname, name, value, comment)
             # we want to extract the name, comment and value
             nested_attrs[key] = {
@@ -147,47 +157,49 @@ class MAESTROMicroLoader(LoaderBase):
                 for v in val.values
             }
 
-            combined_attrs = {
-                **combined_attrs,
-                **{k: v[1] for k, v in nested_attrs[key].items()},
-            }
+        human_readable_attrs: dict[str, str | int | float] = {}
+        # Final attributes are stored here
+        # Keys are in the form "group_name.commment"
 
-        if "LWLVNM" in combined_attrs:
-            scan_type: str = str(combined_attrs["LWLVNM"])
+        for group_name, contents_dict in nested_attrs.items():
+            for k, v in contents_dict.items():
+                new_key = f"{group_name}.{k}" if v[0] == "" else f"{group_name}.{v[0]}"
+                human_readable_attrs[new_key] = v[1]
 
-            lwlvlpn = int(combined_attrs["LWLVLPN"])  # number of low level loops
+        scan_attrs: dict[str, str | int | float] = {
+            k: v[1] for k, v in nested_attrs.get("Low_Level_Scan", {}).items()
+        }
+
+        if "LWLVNM" in scan_attrs:
+            scan_type: str = str(scan_attrs["LWLVNM"])
+
+            lwlvlpn = int(scan_attrs["LWLVLPN"])  # number of low level loops
             motors: list[str] = []
             motor_shape: list[int] = []
             for i in range(lwlvlpn):
                 nmsbdv = int(
-                    combined_attrs[f"NMSBDV{i}"]
+                    scan_attrs[f"NMSBDV{i}"]
                 )  # number of subdevices in i-th loop
 
                 for j in range(nmsbdv):
                     nm = str(
-                        combined_attrs[f"NM_{i}_{j}"]
+                        scan_attrs[f"NM_{i}_{j}"]
                     )  # name of j-th subdevice in i-th loop
                     nm = nm.replace("CRYO-", "").strip()
                     motors.append(nm)
-                    motor_shape.append(int(combined_attrs[f"N_{i}_{j}"]))
+                    motor_shape.append(int(scan_attrs[f"N_{i}_{j}"]))
 
         else:
             scan_type = "unknown"
             motors = ["XY"]
 
         # Get coords
-        coords = (
-            dt["0D_Data"].load().rename({"phony_dim_0": "phony_dim_3"}).to_dataset()
-        )
+        coords = groups["/0D_Data"].rename({"phony_dim_0": "phony_dim_3"})
         if len(motors) == 1:
             coords = coords.swap_dims({"phony_dim_3": motors[0]})
 
-        if cache_file.is_file():
-            # Load cache
-            data = xr.load_dataarray(cache_file, engine="h5netcdf")
-        else:
-            # Create cache
-            data = cache_as_float32(file_path)
+        # Create or load cache
+        data = cache_as_float32(file_path, groups["/2D_Data"], without_values)
 
         coord_dict = {
             name: np.linspace(offset, offset + (size - 1) * delta, size)
@@ -214,13 +226,13 @@ class MAESTROMicroLoader(LoaderBase):
                 .unstack("phony_dim_3")
             )
 
-        # The configuration is hardcoded to 3, which is for vertical analyzer slit and
-        # deflector map. For horizontal slit configuration or beta maps, coordinates and
-        # the attribute must be changed accordingly.
+        # The configuration is hardcoded to 3, which is for vertical analyzer slit with
+        # deflector map. For horizontal slit configuration and/or tilt/polar maps,
+        # coordinates and the attribute must be changed accordingly.
         data.attrs = {
             "scan_type": scan_type,
-            "comment": comment,
+            "pre_scan": pre_scan,
+            "post_scan": post_scan,
             "configuration": 3,
-            "nested_attrs": nested_attrs,
         }
-        return data.assign_attrs(combined_attrs).squeeze()
+        return data.assign_attrs(human_readable_attrs).squeeze()

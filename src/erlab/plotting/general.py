@@ -17,7 +17,6 @@ __all__ = [
 
 import contextlib
 import copy
-import warnings
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
@@ -41,6 +40,7 @@ from erlab.plotting.colors import (
     nice_colorbar,
 )
 from erlab.utils.array import is_dims_uniform
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Sequence
@@ -154,11 +154,10 @@ def array_extent(
     for dim, coord in zip(darr.dims, data_coords, strict=True):
         dif = np.diff(coord)
         if not np.allclose(dif, dif[0], rtol=rtol, atol=atol):
-            warnings.warn(
+            emit_user_level_warning(
                 f"Coordinates for {dim} are not evenly spaced, and the plot may not be "
                 "accurate. Use `DataArray.plot`, `xarray.plot.pcolormesh` or "
                 "`matplotlib.pyplot.pcolormesh` for non-evenly spaced data.",
-                stacklevel=2,
             )
 
     data_incs = tuple(coord[1] - coord[0] for coord in data_coords)

@@ -1,19 +1,21 @@
 """Interactive momentum conversion tool."""
 
+from __future__ import annotations
+
 __all__ = ["ktool"]
 
 import os
 import sys
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import varname
-import xarray as xr
-from qtpy import QtGui, QtWidgets, uic
+from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab.analysis
+import erlab.lattice
 from erlab.interactive.colors import (
     BetterColorBarItem,  # noqa: F401
     ColorMapComboBox,  # noqa: F401
@@ -23,11 +25,115 @@ from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utils import copy_to_clipboard, generate_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
 
+if TYPE_CHECKING:
+    import xarray as xr
+
+
+class _CircleROIControlWidget(QtWidgets.QWidget):
+    def __init__(self, roi: _MovableCircleROI) -> None:
+        super().__init__()
+        self.setGeometry(QtCore.QRect(0, 640, 242, 182))
+        self._roi = roi
+
+        layout = QtWidgets.QFormLayout(self)
+        self.setLayout(layout)
+
+        self.x_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.y_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.r_spin = pg.SpinBox(dec=True, compactHeight=False)
+        self.x_spin.sigValueChanged.connect(self.update_roi)
+        self.y_spin.sigValueChanged.connect(self.update_roi)
+        self.r_spin.sigValueChanged.connect(self.update_roi)
+
+        layout.addRow("X", self.x_spin)
+        layout.addRow("Y", self.y_spin)
+        layout.addRow("Radius", self.r_spin)
+
+        self._roi.sigRegionChanged.connect(self.update_spins)
+
+    @QtCore.Slot()
+    def update_roi(self) -> None:
+        self._roi.blockSignals(True)
+        self._roi.set_position(
+            (self.x_spin.value(), self.y_spin.value()), self.r_spin.value()
+        )
+        self._roi.blockSignals(False)
+
+    @QtCore.Slot()
+    def update_spins(self) -> None:
+        x, y, r = self._roi.get_position()
+        self.x_spin.blockSignals(True)
+        self.y_spin.blockSignals(True)
+        self.r_spin.blockSignals(True)
+        self.x_spin.setValue(x)
+        self.y_spin.setValue(y)
+        self.r_spin.setValue(r)
+        self.x_spin.blockSignals(False)
+        self.y_spin.blockSignals(False)
+        self.r_spin.blockSignals(False)
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self.update_spins()
+
+
+class _MovableCircleROI(pg.CircleROI):
+    """Circle ROI with a menu to control position and radius."""
+
+    def __init__(self, pos, size=None, radius=None, **args):
+        args.setdefault("removable", True)
+        super().__init__(pos, size, radius, **args)
+
+    def getMenu(self):
+        if self.menu is None:
+            self.menu = QtWidgets.QMenu()
+            self.menu.setTitle("ROI")
+            if self.removable:
+                remAct = QtGui.QAction("Remove Circle", self.menu)
+                remAct.triggered.connect(self.removeClicked)
+                self.menu.addAction(remAct)
+                self.menu.remAct = remAct
+            self._pos_menu = self.menu.addMenu("Edit Circle")
+            ctrlAct = QtWidgets.QWidgetAction(self._pos_menu)
+            ctrlAct.setDefaultWidget(_CircleROIControlWidget(self))
+            self._pos_menu.addAction(ctrlAct)
+
+        return self.menu
+
+    def radius(self) -> float:
+        """Radius of the circle."""
+        return float(self.size()[0] / 2)
+
+    def center(self) -> tuple[float, float]:
+        """Center of the circle."""
+        x, y = self.pos()
+        r = self.radius()
+        return x + r, y + r
+
+    def get_position(self) -> tuple[float, float, float]:
+        """Return the center and radius of the circle."""
+        return (*self.center(), self.radius())
+
+    def set_position(self, center, radius: float | None = None) -> None:
+        """Set the center and radius of the circle."""
+        if radius is None:
+            radius = self.radius()
+        else:
+            diameter = 2 * radius
+            self.setSize((diameter, diameter), update=False)
+        self.setPos(center[0] - radius, center[1] - radius)
+
 
 class KspaceToolGUI(
     *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
 ):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        avec: npt.NDArray | None = None,
+        cmap: str | None = None,
+        gamma: float = 0.5,
+    ) -> None:
         # Initialize UI
         super().__init__()
         self.setupUi(self)
@@ -44,13 +150,19 @@ class KspaceToolGUI(
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
+        if cmap is None:
+            cmap = "ColdWarm"
+
+        if cmap.endswith("_r"):
+            cmap = cmap[:-2]
+            self.invert_check.setChecked(True)
+
         # Set up colormap controls
-        self.cmap_combo.setDefaultCmap("terrain")
+        self.cmap_combo.setDefaultCmap(cmap)
         self.cmap_combo.textActivated.connect(self.update_cmap)
         self.gamma_widget.setValue(0.5)
         self.gamma_widget.valueChanged.connect(self.update_cmap)
         self.invert_check.stateChanged.connect(self.update_cmap)
-        self.invert_check.setChecked(True)
         self.contrast_check.stateChanged.connect(self.update_cmap)
         self.update_cmap()
 
@@ -71,6 +183,34 @@ class KspaceToolGUI(
         self.angle_plot_check.stateChanged.connect(
             lambda: self.plotitems[0].setVisible(self.angle_plot_check.isChecked())
         )
+
+        self._roi_list: list[_MovableCircleROI] = []
+        self.add_circle_btn.clicked.connect(self._add_circle)
+
+        if avec is not None:
+            self._populate_bz(avec)
+
+    def _populate_bz(self, avec) -> None:
+        a, b, c, _, _, gamma = erlab.lattice.avec2abc(avec)
+        self.a_spin.setValue(a)
+        self.b_spin.setValue(b)
+        self.c_spin.setValue(c)
+        self.ab_spin.setValue(a)
+        self.ang_spin.setValue(gamma)
+
+    @QtCore.Slot()
+    def _add_circle(self) -> None:
+        roi = _MovableCircleROI(
+            [-0.3, -0.3], radius=0.3, removable=True, pen=pg.mkPen("m", width=2)
+        )
+        self.plotitems[1].addItem(roi)
+        self._roi_list.append(roi)
+
+        def _remove_roi():
+            self.plotitems[1].removeItem(roi)
+            self._roi_list.remove(roi)
+
+        roi.sigRemoveRequested.connect(_remove_roi)
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
@@ -123,8 +263,16 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
-    def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        data: xr.DataArray,
+        avec: npt.NDArray | None = None,
+        cmap: str | None = None,
+        gamma: float = 0.5,
+        *,
+        data_name: str | None = None,
+    ) -> None:
+        super().__init__(avec=avec, cmap=cmap, gamma=gamma)
 
         self._argnames = {}
 
@@ -208,6 +356,15 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
+        # Temporary customization for beta scaling
+        # self._beta_scale_spin = QtWidgets.QDoubleSpinBox()
+        # self._beta_scale_spin.setValue(1.0)
+        # self._beta_scale_spin.setDecimals(2)
+        # self._beta_scale_spin.setSingleStep(0.01)
+        # self._beta_scale_spin.setRange(0.01, 10)
+        # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
+        # self._beta_scale_spin.valueChanged.connect(self.update)
+
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
@@ -217,6 +374,8 @@ class KspaceTool(KspaceToolGUI):
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
+        if avec is not None:
+            self.bz_group.setChecked(True)
 
     def calculate_resolution(self) -> None:
         for k, spin in self._resolution_spins.items():
@@ -328,6 +487,10 @@ class KspaceTool(KspaceToolGUI):
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
         data_ang = self._angle_data()
+        # if "beta" in data_ang.dims:
+        #     data_ang = data_ang.assign_coords(
+        #         beta=data_ang.beta * self._beta_scale_spin.value()
+        #     )
         data_ang.kspace.offsets = self.offset_dict
 
         if self.data.kspace.has_hv:
@@ -397,9 +560,31 @@ class KspaceTool(KspaceToolGUI):
 
 
 def ktool(
-    data: xr.DataArray, *, data_name: str | None = None, execute: bool | None = None
+    data: xr.DataArray,
+    avec: npt.NDArray | None = None,
+    cmap: str | None = None,
+    gamma: float = 0.5,
+    *,
+    data_name: str | None = None,
+    execute: bool | None = None,
 ) -> KspaceTool:
-    """Interactive momentum conversion tool."""
+    """Interactive momentum conversion tool.
+
+    Parameters
+    ----------
+    data
+        Data to convert.
+    avec : array-like, optional
+        Real-space lattice vectors as a 2x2 or 3x3 numpy array. If provided, the
+        Brillouin zone boundary overlay will be calculated based on these vectors.
+    cmap : str, optional
+        Name of the default colormap to use.
+    gamma
+        Default gamma value for the colormap.
+    data_name
+        Name to use in code generation. If not provided, the name will be inferred.
+
+    """
     if data_name is None:
         try:
             data_name = str(varname.argname("data", func=ktool, vars_only=False))
@@ -412,7 +597,7 @@ def ktool(
 
     cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
 
-    win = KspaceTool(data, data_name=data_name)
+    win = KspaceTool(data, avec=avec, cmap=cmap, gamma=gamma, data_name=data_name)
     win.show()
     win.raise_()
     win.activateWindow()
@@ -432,8 +617,3 @@ def ktool(
         qapp.exec()
 
     return win
-
-
-if __name__ == "__main__":
-    dat = cast(xr.DataArray, erlab.io.load_hdf5("/Users/khan/2210_ALS_f0008.h5"))
-    win = ktool(dat)

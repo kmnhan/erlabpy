@@ -37,7 +37,7 @@ dependencies = [
     "scipy>=1.13.0",
     "tqdm>=4.66.2",
     "varname>=0.13.0",
-    "xarray>=2024.07.0",
+    "xarray>=2024.10.0",
 ]
 
 [project.optional-dependencies]
@@ -52,11 +52,10 @@ dev = [
     "pre-commit>=3.7.0",
     "pytest-cov>=5.0.0",
     "pytest-qt>=4.4.0",
-    "pytest-xdist>=3.6.0",
     "pytest-datadir>=1.5.0",
     "pytest>=8.3.0",
     "commitizen>=3.29.0",
-    "cz-changeup>=0.3.0",
+    "cz-changeup>=1.0.1",
     "ruff>=0.6.3",
 ]
 docs = [
@@ -67,6 +66,7 @@ docs = [
     "sphinx-qt-documentation",
     "pybtex",
     "nbsphinx",
+    "myst-parser",
     "furo>=2024.07.18",
     "sphinx-design",
 ]
@@ -84,6 +84,8 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
+change_type_map = { "BREAKING CHANGE" = "Breaking Changes", "feat" = "Features", "fix" = "Bug Fixes", "refactor" = "Code Refactor", "perf" = "Performance" }
+
 version_provider = "pep621"
 update_changelog_on_bump = true
 tag_format = "v$version"
@@ -91,14 +93,12 @@ changelog_start_rev = "v1.2.1"
 changelog_merge_prerelease = true
 name = 'cz_changeup'
 change_type_order = [
-    "BREAKING CHANGE",
+    "Breaking Changes",
     "Features",
     "Bug Fixes",
     "Code Refactor",
     "Performance",
 ]
-change_type_map = { "feat" = "Features", "fix" = "Bug Fixes", "refactor" = "Code Refactor", "perf" = "Performance" }
-
 # cz-changeup configuration
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"
 changeup_show_body = true

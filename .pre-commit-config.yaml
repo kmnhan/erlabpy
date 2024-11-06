@@ -33,7 +33,7 @@ repos:
   # Lint and format with ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.6.9
+    rev: v0.7.2
     hooks:
       # Run the linter.
       - id: ruff
@@ -43,7 +43,7 @@ repos:
 
   # Commitizen
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v3.29.1
+    rev: v3.30.0
     hooks:
       - id: commitizen
         additional_dependencies: [ cz-changeup ]

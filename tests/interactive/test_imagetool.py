@@ -179,7 +179,7 @@ def test_itool_save(qtbot):
 
     win.close()
 
-    xr.testing.assert_equal(data, xr.load_dataarray(filename))
+    xr.testing.assert_equal(data, xr.load_dataarray(filename, engine="h5netcdf"))
     tmp_dir.cleanup()
 
 
@@ -228,6 +228,8 @@ def test_itool(qtbot):
     clw.max_spin.setValue(2.0)
     assert clw.max_spin.value() == 2.0
     clw.rst_btn.click()
+    assert win.slicer_area.levels == (0.0, 24.0)
+    clw.zero_btn.click()
     assert win.slicer_area.levels == (0.0, 24.0)
     win.slicer_area.levels = (1.0, 23.0)
     win.slicer_area.lock_levels(False)
@@ -402,8 +404,13 @@ def test_value_update(qtbot):
     win.close()
 
 
-def test_value_update_errors():
+def test_value_update_errors(qtbot):
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -419,6 +426,8 @@ def test_value_update_errors():
         )
     with pytest.raises(ValueError, match="^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
+
+    win.close()
 
 
 def test_sync(qtbot):

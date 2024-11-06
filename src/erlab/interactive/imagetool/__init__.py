@@ -62,6 +62,15 @@ def _parse_input(
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
 
+def _convert_to_native(obj: list[Any]) -> list[Any]:
+    """Convert a nested list of numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
+
+
 def itool(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
@@ -693,10 +702,14 @@ class ItoolMenuBar(DictMenuBar):
         )
 
     def _copy_cursor_val(self) -> None:
-        copy_to_clipboard(str(self.slicer_area.array_slicer._values))
+        copy_to_clipboard(
+            str(_convert_to_native(self.slicer_area.array_slicer._values))
+        )
 
     def _copy_cursor_idx(self) -> None:
-        copy_to_clipboard(str(self.slicer_area.array_slicer._indices))
+        copy_to_clipboard(
+            str(_convert_to_native(self.slicer_area.array_slicer._indices))
+        )
 
     @QtCore.Slot()
     def _open_file(
@@ -709,6 +722,11 @@ class ItoolMenuBar(DictMenuBar):
         valid_loaders: dict[str, tuple[Callable, dict]] = {
             "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
+            "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
+            "Igor Packed Experiment Templates (*.pxt)": (
+                xr.load_dataarray,
+                {"engine": "erlab-igor"},
+            ),
         }
         try:
             import erlab.io
@@ -785,7 +803,10 @@ class ItoolMenuBar(DictMenuBar):
             _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
 
         valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
-            "xarray HDF5 Files (*.h5)": (_to_hdf5, {"engine": "h5netcdf"}),
+            "xarray HDF5 Files (*.h5)": (
+                _to_hdf5,
+                {"engine": "h5netcdf", "invalid_netcdf": True},
+            ),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
         }
 

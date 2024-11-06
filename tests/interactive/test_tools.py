@@ -3,6 +3,7 @@ import pyperclip
 import xarray as xr
 from numpy.testing import assert_allclose
 
+import erlab.lattice
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import dtool
@@ -16,7 +17,6 @@ def test_goldtool(qtbot, gold):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
@@ -45,7 +45,6 @@ def test_dtool(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     win.tab_widget.setCurrentIndex(0)
     win.interp_group.setChecked(False)
@@ -72,12 +71,17 @@ result = _processed.differentiate('y').differentiate('y')"""
 
 
 def test_ktool(qtbot, anglemap):
-    win = ktool(anglemap, execute=False)
+    win = ktool(
+        anglemap,
+        avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
+        cmap="terrain_r",
+        execute=False,
+    )
+
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
-        win.raise_()
 
     win._offset_spins["delta"].setValue(30.0)
     win._offset_spins["xi"].setValue(20.0)
@@ -88,6 +92,17 @@ def test_ktool(qtbot, anglemap):
         == """anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
 anglemap_kconv = anglemap.kspace.convert()"""
     )
+    win.add_circle_btn.click()
+    roi = win._roi_list[0]
+    roi.getMenu()
+    roi.set_position((0.1, 0.1), 0.2)
+    assert roi.get_position() == (0.1, 0.1, 0.2)
+
+    roi_control_widget = roi._pos_menu.actions()[0].defaultWidget()
+    roi_control_widget.x_spin.setValue(0.0)
+    roi_control_widget.y_spin.setValue(0.2)
+    roi_control_widget.r_spin.setValue(0.3)
+    assert roi.get_position() == (0.0, 0.2, 0.3)
 
 
 def test_curvefittingtool(qtbot):

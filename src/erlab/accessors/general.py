@@ -7,9 +7,10 @@ __all__ = [
     "SelectionAccessor",
 ]
 
+import functools
 import importlib
-import warnings
 from collections.abc import Hashable, Mapping
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +21,8 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
     either_dict_or_kwargs,
 )
+from erlab.utils.formatting import format_html_table
+from erlab.utils.misc import emit_user_level_warning
 
 
 @xr.register_dataarray_accessor("qplot")
@@ -245,10 +248,9 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         part_params = hvplot.bind(get_slice_params, *sliders).interactive()
 
         if "modelfit_results" not in self._obj.data_vars:
-            warnings.warn(
-                "`model_results` not included in Dataset. "
-                "Components will not be plotted",
-                stacklevel=2,
+            emit_user_level_warning(
+                "`modelfit_results` not included in Dataset. "
+                "Components will not be plotted"
             )
             plot_components = False
 
@@ -391,6 +393,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         scalars: dict[Hashable, float] = {}
         slices: dict[Hashable, slice] = {}
         avg_dims: list[Hashable] = []
+        lost_dims: list[Hashable] = []
 
         for dim, width in bin_widths.items():
             value = indexers[dim]
@@ -408,6 +411,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     )
                 slices[dim] = slice(value - width / 2.0, value + width / 2.0)
                 avg_dims.append(dim)
+                for k, v in self._obj.coords.items():
+                    if dim in v.dims:
+                        lost_dims.append(k)
 
         unindexed_dims: list[Hashable] = [
             k for k in slices | scalars if k not in self._obj.indexes
@@ -423,9 +429,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if len(scalars) >= 1:
             for k, v in scalars.items():
                 if v < out[k].min() or v > out[k].max():
-                    warnings.warn(
-                        f"Selected value {v} for `{k}` is outside coordinate bounds",
-                        stacklevel=2,
+                    emit_user_level_warning(
+                        f"Selected value {v} for `{k}` is outside coordinate bounds"
                     )
             out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
 
@@ -433,7 +438,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel(slices)
 
             lost_coords = {
-                k: out[k].mean() for k in avg_dims if k not in unindexed_dims
+                k: out[k].mean() for k in lost_dims if k not in unindexed_dims
             }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
@@ -502,3 +507,59 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if average:
             return masked.mean(sel_kw.keys())
         return masked
+
+
+@xr.register_dataarray_accessor("qinfo")
+class InfoDataArrayAccessor(ERLabDataArrayAccessor):
+    """`xarray.Dataset.qinfo` accessor for displaying information about the data."""
+
+    def get_value(self, attr_or_coord_name: str) -> Any:
+        """Get the value of the specified attribute or coordinate.
+
+        If the attribute or coordinate is not found, `None` is returned.
+
+        Parameters
+        ----------
+        attr_or_coord_name
+            The name of the attribute or coordinate.
+
+        """
+        if attr_or_coord_name in self._obj.attrs:
+            return self._obj.attrs[attr_or_coord_name]
+        if attr_or_coord_name in self._obj.coords:
+            return self._obj.coords[attr_or_coord_name]
+        return None
+
+    @functools.cached_property
+    def _summary_table(self) -> list[tuple[str, str, str]]:
+        import erlab.io
+
+        if "data_loader_name" in self._obj.attrs:
+            loader = erlab.io.loaders[self._obj.attrs["data_loader_name"]]
+        else:
+            raise ValueError("Data loader information not found in data attributes")
+
+        out: list[tuple[str, str, str]] = []
+
+        for key, true_key in loader.summary_attrs.items():
+            val = loader.get_formatted_attr_or_coord(self._obj, true_key)
+            if callable(true_key):
+                true_key = ""
+            out.append((key, loader.value_to_string(val), true_key))
+
+        return out
+
+    def _repr_html_(self) -> str:
+        return format_html_table(
+            [("Name", "Value", "Key"), *self._summary_table],
+            header_cols=1,
+            header_rows=1,
+        )
+
+    def __repr__(self) -> str:
+        return "\n".join(
+            [
+                f"{key}: {val}" if not true_key else f"{key} ({true_key}): {val}"
+                for key, val, true_key in self._summary_table
+            ]
+        )

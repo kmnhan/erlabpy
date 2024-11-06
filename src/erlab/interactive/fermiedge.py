@@ -187,10 +187,10 @@ class GoldTool(AnalysisWindow):
         self.axes[2].setVisible(False)
         self.hists[2].setVisible(False)
 
-        try:
-            temp = float(self.data.attrs["temp_sample"])
-        except KeyError:
+        temp = self.data.qinfo.get_value("sample_temp")
+        if temp is None:
             temp = 30.0
+        temp = float(temp)
 
         self.params_roi = ROIControls(self.aw.add_roi(0))
         self.params_edge = ParameterGroup(

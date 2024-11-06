@@ -816,7 +816,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         The data to explore. Must have three coordinate axes.
 
     snap :  bool, default: True
-        Wheter to snap the cursor to data pixels.
+        Whether to snap the cursor to data pixels.
 
     gamma : float, default: 0.5
         Colormap default gamma.

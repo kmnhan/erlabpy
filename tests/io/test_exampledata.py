@@ -72,7 +72,7 @@ def test_generate_data_angles():
     np.testing.assert_allclose(data.delta.values, 0.0)
     np.testing.assert_allclose(data.hv.values, 50.0)
 
-    assert data.attrs["temp_sample"] == 20.0
+    assert data.attrs["sample_temp"] == 20.0
     assert data.attrs["configuration"] == 1
 
 

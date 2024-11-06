@@ -1,3 +1,98 @@
+## Unreleased
+
+### Breaking Changes
+
+- Deprecated module `erlab.io.utilities` is removed. Use `erlab.io.utils` instead. ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
+- Deprecated module `erlab.interactive.utilities` is removed. Use `erlab.interactive.utils` instead. ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
+- Deprecated module `erlab.characterization` is removed. Use `erlab.io.characterization` instead. ([8d770bf](https://github.com/kmnhan/erlabpy/commit/8d770bfe298253c020aeda6d61a9eab625facf6c))
+- Deprecated module `erlab.analysis.utils` is removed. Use `erlab.analysis.transform.shift` and `erlab.analysis.gold.correct_with_edge`. ([0b2ca44](https://github.com/kmnhan/erlabpy/commit/0b2ca44844cc5802d32d9ed949e831b534525183))
+- Deprecated alias `slice_along_path` in `erlab.analysis` is removed. Call from `erlab.analysis.interpolate` instead. ([305832b](https://github.com/kmnhan/erlabpy/commit/305832b7bb18aa3d1fda21f4cd0c0992b174d639))
+- Deprecated aliases `correct_with_edge` and `quick_resolution` in `erlab.analysis` are removed. Call from `erlab.analysis.gold` instead. ([075eaf8](https://github.com/kmnhan/erlabpy/commit/075eaf8cd222044aa5cc0c3459698ab33568958c))
+- Removed deprecated aliases `load_igor_ibw` and `load_igor_pxp`. Use `xarray.open_dataarray` and `xarray.open_dataset` instead. ([7f07ad2](https://github.com/kmnhan/erlabpy/commit/7f07ad2c46f80d48c255d408f3f200ae01930060))
+- The default attribute name for the sample temperature is changed to `sample_temp` from `temp_sample`. This will unfortunately break a lot of code that relies on the key `temp_sample`, but will be easy to refactor with find and replace. ([32e1cd5](https://github.com/kmnhan/erlabpy/commit/32e1cd5fb45bce12cfa83c520e8c61af96a8cb39))
+- All dataloaders must now add a new keyword argument to `load_single`, but implementing it is not mandatory.
+
+  Also, dataloaders that implements summary generation by overriding `generate_summary` must now switch to the new method.
+
+  See the summary generation section in the updated user guide.
+
+  Furthermore, the `isummarize` method is no longer public; code that uses this method should use `summarize` instead.
+
+  The `usecache` argument to the `summarize` method is no longer available, and the cache will be updated whenever it is outdated. ([0f5dab4](https://github.com/kmnhan/erlabpy/commit/0f5dab46e3d3a75fc77908b4072f08aa89059acd))
+
+### Features
+
+- **io.igor:** enable loading experiment files to DataTree ([1835be0](https://github.com/kmnhan/erlabpy/commit/1835be0d08ed899b2edbb06fb442cd9addb40929))
+
+  Added methods to the backend to allow using `xarray.open_datatree` and `xarray.open_groups` with Igor packed experiment files. Closes [#29](https://github.com/kmnhan/erlabpy/issues/29)
+- add `qinfo` accessor ([eb3a742](https://github.com/kmnhan/erlabpy/commit/eb3a74297211aae8f13e6974563e6da819bfbedb))
+
+  Adds a `qinfo` accessor that prints a table summarizing the data in a human readable format. Closes [#27](https://github.com/kmnhan/erlabpy/issues/27)
+- **interactive.kspace:** pass lattice parameters and colormap info to `ktool` ([6830af3](https://github.com/kmnhan/erlabpy/commit/6830af343326e0367a6dfb016728a6cf1325cf64))
+
+  Added the ability to pass lattice vectors and colormaps to `ktool`.
+- **interactive.kspace:** add circle ROI to ktool ([304e1a5](https://github.com/kmnhan/erlabpy/commit/304e1a53f189ebed9a890680c3499a756c586498))
+
+  Added a button to the visualization tab which creates a circle ROI. The position and radius can be edited by right-clicking on the roi.
+- **interactive.colors:** add zero center button to right-click colorbar ([c037de1](https://github.com/kmnhan/erlabpy/commit/c037de1f4387c0daf7cc7aa252124f01269bc633))
+- **interactive.imagetool:** add `.ibw` and `.pxt` files to load menu ([73c3afe](https://github.com/kmnhan/erlabpy/commit/73c3afef306109be858d23dbf8511617c5d203dd))
+- **io.dataloader:** allow passing rcParams to interactive summary plot ([a348366](https://github.com/kmnhan/erlabpy/commit/a34836673315fdc9acc0ed52d8e56edc90c18456))
+- **io.dataloader:** implement automatic summary generation ([0f5dab4](https://github.com/kmnhan/erlabpy/commit/0f5dab46e3d3a75fc77908b4072f08aa89059acd))
+
+  It is now much easier to implement a summary generation mechanism. This commit also adds a new keyword argument to `load_single` that can greatly speed up summary generation.
+- **io.dataloader:** support callable objects in `additional_attrs` ([e209499](https://github.com/kmnhan/erlabpy/commit/e209499c8044f0085fda74b7dc491517a695099c))
+
+### Bug Fixes
+
+- **interactive.imagetool:** fix copy cursor value for numpy 2 ([dc19c82](https://github.com/kmnhan/erlabpy/commit/dc19c827c4082989e47b0f8e2d7adda45ad62aaa))
+- **io.dataloader:** retain selected dimension in interactive summary ([9d54f8b](https://github.com/kmnhan/erlabpy/commit/9d54f8b3402767cf15e6cf5ab00ee5a1b766d172))
+- **accessors.general:** keep associated coords in `qsel` when averaging ([03a7b4a](https://github.com/kmnhan/erlabpy/commit/03a7b4a30b4c6a635f904fcab377298b06b86f66))
+- **io.dataloader:** ignore old summary files ([bda95fc](https://github.com/kmnhan/erlabpy/commit/bda95fc1f0aaec73c179fd47258f6fde8056aaf9))
+- **io.plugins.kriss:** fix KRISS ibw file match pattern ([7ced571](https://github.com/kmnhan/erlabpy/commit/7ced57152edb802bd14f831c77494a6f805f5097))
+- **analysis.gold:** retain attributes in `quick_resolution` ([504acdc](https://github.com/kmnhan/erlabpy/commit/504acdc1d7d9b8dcd4613ca97551d78c366f0337))
+- do not require qt libs on initial import ([118ead6](https://github.com/kmnhan/erlabpy/commit/118ead603b89867e56b29932f59bd02b476ab43b))
+
+### Code Refactor
+
+- **io:** remove deprecated module ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
+- **interactive:** remove deprecated module ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
+- remove deprecated module `erlab.characterization` ([8d770bf](https://github.com/kmnhan/erlabpy/commit/8d770bfe298253c020aeda6d61a9eab625facf6c))
+- **analysis:** remove deprecated module ([0b2ca44](https://github.com/kmnhan/erlabpy/commit/0b2ca44844cc5802d32d9ed949e831b534525183))
+- **analysis:** remove deprecated alias ([305832b](https://github.com/kmnhan/erlabpy/commit/305832b7bb18aa3d1fda21f4cd0c0992b174d639))
+- **analysis:** remove deprecated aliases ([075eaf8](https://github.com/kmnhan/erlabpy/commit/075eaf8cd222044aa5cc0c3459698ab33568958c))
+- **interactive.imagetool.manager:** add prefix to temporary directories for better identification ([e56163b](https://github.com/kmnhan/erlabpy/commit/e56163ba7fe7d92f3a01ec78098c2d0194ea0302))
+- **io.plugins:** implement DA30 file identification patterns in superclass ([f6dfc44](https://github.com/kmnhan/erlabpy/commit/f6dfc4412b56fc1d83efceb4a65070eb9ef1c2b1))
+- **io:** remove deprecated aliases ([7f07ad2](https://github.com/kmnhan/erlabpy/commit/7f07ad2c46f80d48c255d408f3f200ae01930060))
+- change temperature attribute name ([32e1cd5](https://github.com/kmnhan/erlabpy/commit/32e1cd5fb45bce12cfa83c520e8c61af96a8cb39))
+
+  Changes `temp_sample` to `sample_temp` for all data loaders and analysis code.
+- **utils.formatting:** change formatting for numpy arrays ([95d9f0b](https://github.com/kmnhan/erlabpy/commit/95d9f0b602551141232eb5a2fa10c421d11d2233))
+
+  For arrays with 2 or more dimensions upon squeezing, only the minimum and maximum values are shown. Also, arrays with only two entries are displayed as a list.
+- **io.dataloader:** disable parallel loading by default ([fed2428](https://github.com/kmnhan/erlabpy/commit/fed2428229e3ef70fc95a35670fc75ace44024bd))
+
+  Parallel loading is now disabled by default since the overhead is larger than the performance gain in most cases.
+- change some warnings to emit from user level ([e81f2b1](https://github.com/kmnhan/erlabpy/commit/e81f2b121d2931b327d30b146db1e77e7a3b3ec2))
+- **io.dataloader:** cache summary only if directory is writable ([85bcb80](https://github.com/kmnhan/erlabpy/commit/85bcb80bdf27ea12edb9314247a978f71c8be6dc))
+- **io.plugins:** improve warning message when a plugin fails to load ([9ee0b90](https://github.com/kmnhan/erlabpy/commit/9ee0b901b1b904dabb38d29f4c166dca07c9a7e9))
+- **io:** update datatree to use public api ([6c27e07](https://github.com/kmnhan/erlabpy/commit/6c27e074c5aceb16eb9808cca38b8ba73748f07e))
+
+  Also bumps the minimum supported xarray version to 2024.10.0.
+- **io.dataloader:** make `RegistryBase` private ([df7079e](https://github.com/kmnhan/erlabpy/commit/df7079e4fc96b195d34436bcc93684e10ddecdad))
+- **io.dataloader:** rename loader registry attribute `default_data_dir` to `current_data_dir` ([d87eba7](https://github.com/kmnhan/erlabpy/commit/d87eba7db6cea051f76b61ea7b0834e439460810))
+
+  The attribute `default_data_dir` has been renamed to `current_data_dir` so that it is consistent with `current_loader`. Accessing the old name is now deprecated.
+
+  Also, the `current_loader` and `current_data_dir` can now be assigned directly with a syntax like `erlab.io.loaders.current_loader = "merlin"`.
+
+### Performance
+
+- **io.plugins.da30:** faster summary generation for DA30 zip files ([22b77bf](https://github.com/kmnhan/erlabpy/commit/22b77bf0ee787fe1236fb85262702b79265e3b8d))
+- **io.igor:** suppress `igor2` logging ([5cd3a8c](https://github.com/kmnhan/erlabpy/commit/5cd3a8c273b143d1a83f3286678638fede1ddd01))
+- **analysis.interpolate:** extend acceleration ([84daa88](https://github.com/kmnhan/erlabpy/commit/84daa8866ec4223555568f441b6010bb4936a413))
+
+  The fast linear interpolator now allows more general interpolation points like interpolating 3D data on a 2D grid. This means that passing `method='linearfast'` to `DataArray.interp` is faster in many cases.
+
 ## v2.12.0 (2024-10-22)
 
 ### Features
@@ -668,14 +763,10 @@
 
 ## v2.0.0 (2024-04-08)
 
-### BREAKING CHANGE
+### Breaking Changes
 
 - `PolyFunc` is now `PolynomialFunction`, and `FermiEdge2dFunc` is now `FermiEdge2dFunction`. The corresponding model names are unchanged. ([20d784c](https://github.com/kmnhan/erlabpy/commit/20d784c1d8fdcd786ab73b3ae03d3e331dc04df5))
-
-  BREAKING CHANGE: `PolyFunc` is now `PolynomialFunction`, and `FermiEdge2dFunc` is now `FermiEdge2dFunction`. The corresponding model names are unchanged.
 - This change disables the use of guess_fit. All fitting must be performed in the syntax recommended by lmfit. Addition of a accessor or a convenience function for coordinate-aware fitting is planned in the next release. ([59163d5](https://github.com/kmnhan/erlabpy/commit/59163d5f0e000d65aa53690a51b6db82df1ce5f1))
-
-  BREAKING CHANGE: This change disables the use of guess_fit. All fitting must be performed in the syntax recommended by lmfit. Addition of a accessor or a convenience function for coordinate-aware fitting is planned in the next release.
 
 ### Features
 
@@ -689,8 +780,6 @@
 - add derivative module with minimum gradient implementation ([e0eabde](https://github.com/kmnhan/erlabpy/commit/e0eabde60e6860c3827959b45be6d4f491918363))
 - **fit:** directly base models on lmfit.Model ([59163d5](https://github.com/kmnhan/erlabpy/commit/59163d5f0e000d65aa53690a51b6db82df1ce5f1))
 
-  BREAKING CHANGE: This change disables the use of guess_fit. All fitting must be performed in the syntax recommended by lmfit. Addition of a accessor or a convenience function for coordinate-aware fitting is planned in the next release.
-
 ### Bug Fixes
 
 - **dynamic:** properly broadcast xarray input ([2f6672f](https://github.com/kmnhan/erlabpy/commit/2f6672f3b003792ecd98b4fbc99fb11fcc0efb8b))
@@ -703,8 +792,6 @@
 ### Code Refactor
 
 - **fit:** unify dynamic function names ([20d784c](https://github.com/kmnhan/erlabpy/commit/20d784c1d8fdcd786ab73b3ae03d3e331dc04df5))
-
-  BREAKING CHANGE: `PolyFunc` is now `PolynomialFunction`, and `FermiEdge2dFunc` is now `FermiEdge2dFunction`. The corresponding model names are unchanged.
 - update dtool to use new functions ([a6e46bb](https://github.com/kmnhan/erlabpy/commit/a6e46bb8b19512e438291afbbd5e0e9a4eb4fe87))
 - **analysis.image:** add documentation and reorder functions ([340665d](https://github.com/kmnhan/erlabpy/commit/340665dc507a99acc7d56c46a2a2326fbb56b1e3))
 - rename module to image and add citation ([b74a654](https://github.com/kmnhan/erlabpy/commit/b74a654e07d9f4522cee2db0b897f1ffcdb86e94))

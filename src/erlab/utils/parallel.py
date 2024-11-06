@@ -8,7 +8,6 @@ import sys
 import joblib
 import joblib._parallel_backends
 import tqdm.auto
-from qtpy import QtCore
 
 
 @contextlib.contextmanager
@@ -35,7 +34,7 @@ def joblib_progress(file=None, **kwargs):
 
 
 @contextlib.contextmanager
-def joblib_progress_qt(signal: QtCore.Signal):
+def joblib_progress_qt(signal):
     """Context manager for interactive windows.
 
     The number of completed tasks are emitted by the given signal.
