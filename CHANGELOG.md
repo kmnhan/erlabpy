@@ -1,4 +1,4 @@
-## Unreleased
+## v3.0.0 (2024-11-06)
 
 ### Breaking Changes
 
@@ -54,6 +54,9 @@
 
 ### Code Refactor
 
+- **io.igor:** change wave dimension name handling ([3e0586a](https://github.com/kmnhan/erlabpy/commit/3e0586ae34893698317136bfccc5fd839b91332e))
+
+  Waves with both dim and unit labels  provided were given a dim label formatted like `dim(unit)`. This update changes this so that the dim label is just `dim`, and the unit is inserted to coordinate attrs.
 - **io:** remove deprecated module ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
 - **interactive:** remove deprecated module ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
 - remove deprecated module `erlab.characterization` ([8d770bf](https://github.com/kmnhan/erlabpy/commit/8d770bfe298253c020aeda6d61a9eab625facf6c))
