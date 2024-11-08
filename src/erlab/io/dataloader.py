@@ -660,8 +660,8 @@ class LoaderBase(metaclass=_Loader):
             the IPython shell is not detected, the dataframe styler will be returned.
         rc
             Optional dictionary of matplotlib rcParams to override the default for the
-            plot in the interactive summary. Figure size and the colormap can be changed
-            using this argument.
+            plot in the interactive summary. Plot options such as the figure size and
+            colormap can be changed using this argument.
 
         Returns
         -------
@@ -888,6 +888,14 @@ class LoaderBase(metaclass=_Loader):
 
         import erlab.plotting.erplot as eplt
 
+        try:
+            from erlab.interactive.imagetool.manager import is_running, show_in_manager
+
+        except ImportError:
+            manager_running: bool = False
+        else:
+            manager_running = is_running()
+
         # Temporary variable to store loaded data
         self._temp_data: xr.DataArray | None = None
         # !TODO: properly GC this variable
@@ -914,35 +922,42 @@ class LoaderBase(metaclass=_Loader):
             table += "</div>"
             return table
 
-        def _update_data(_, *, full: bool = False) -> None:
+        def _update_data(
+            _, *, full: bool = False, ret: bool = False
+        ) -> None | xr.DataArray | xr.Dataset:
             # Load data for selected row
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
 
-                _path = series["Path"]
-                _basename = os.path.basename(_path)
-                _dirname = os.path.dirname(_path)
+                _path = pathlib.Path(series["Path"])
 
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx, _ = self.infer_index(os.path.splitext(_basename)[0])
+                    idx, _ = self.infer_index(_path.stem)
                     if idx is not None:
-                        ident = self.identify(idx, _dirname)
+                        ident = self.identify(idx, _path.parents[0])
                         if ident is not None:
                             n_scans = len(ident[0])
                             if n_scans > 1 and not full:
                                 full_button.disabled = False
 
-                out = self.load(_basename, _dirname, single=not full)
+                out = self.load(_path, single=not full)
+                if ret:
+                    if isinstance(out, xr.DataArray):
+                        return out.rename(_path.stem)
+                    if isinstance(out, xr.Dataset):
+                        return out
+                    raise ValueError("Unsupported data type for itool")
+
                 if isinstance(out, xr.DataArray):
                     self._temp_data = out
                 del out
 
                 data_info.value = _format_data_info(series)
             if self._temp_data is None:
-                return
+                return None
 
             if self._temp_data.ndim == 4:
                 # If the data is 4D, average over the last dimension, making it 3D
@@ -983,6 +998,7 @@ class LoaderBase(metaclass=_Loader):
                 coord_sel.layout.visibility = "hidden"
 
             _update_plot(None)
+            return None
 
         def _update_sliders(_) -> None:
             if out.block:
@@ -1045,6 +1061,7 @@ class LoaderBase(metaclass=_Loader):
         prev_button = Button(description="Prev", layout=Layout(width="50px"))
         next_button = Button(description="Next", layout=Layout(width="50px"))
         full_button = Button(description="Load full", layout=Layout(width="100px"))
+        itool_button = Button(description="itool", layout=Layout(width="50px"))
         prev_button.on_click(_prev)
         next_button.on_click(_next)
         full_button.on_click(lambda _: _update_data(None, full=True))
@@ -1052,6 +1069,17 @@ class LoaderBase(metaclass=_Loader):
             buttons = [prev_button, next_button]
         else:
             buttons = [prev_button, next_button, full_button]
+
+        if manager_running:
+            itool_button.on_click(
+                lambda _: show_in_manager(
+                    cast(
+                        xr.DataArray | xr.Dataset,
+                        _update_data(None, full=True, ret=True),
+                    )
+                )
+            )
+            buttons = [*buttons, itool_button]
 
         # List of data files
         data_select = Select(
