@@ -215,6 +215,14 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             for d in coord_dims
         ]
 
+        if plot_components:
+            # Plot correctly across different models
+            all_comps: list[str] = []
+            for res in self._obj.modelfit_results.values.flat:
+                for comp in res.eval_components():
+                    if comp not in all_comps:
+                        all_comps.append(comp)
+
         def get_slice(*s):
             return self._obj.sel(dict(zip(coord_dims, s, strict=False)))
 
@@ -229,16 +237,25 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
         def get_comps(*s):
             partial_res = get_slice(*s)
+            main_coord = self._obj[other_dims[0]]
+            components = partial_res.modelfit_results.item().eval_components()
+
+            component_arrays = []
+            for dim in all_comps:
+                comp_arr = components.get(dim, None)
+                if comp_arr is None:
+                    comp_arr = np.empty_like(main_coord)
+                    comp_arr.fill(np.nan)
+
+                component_arrays.append(
+                    xr.DataArray(comp_arr, dims=other_dims, coords=[main_coord]).rename(
+                        dim
+                    )
+                )
+
             return xr.merge(
                 [
-                    xr.DataArray(
-                        v, dims=other_dims, coords=[self._obj[other_dims[0]]]
-                    ).rename(k)
-                    for k, v in partial_res.modelfit_results.item()
-                    .eval_components()
-                    .items()
-                ]
-                + [
+                    *component_arrays,
                     partial_res.modelfit_data,
                     partial_res.modelfit_best_fit,
                 ]
@@ -265,11 +282,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             data = part_comps.modelfit_data.hvplot.scatter(**plot_kwargs)
             fit = part_comps.modelfit_best_fit.hvplot(c="k", ylabel="", **plot_kwargs)
             components = part_comps.hvplot(
-                y=list(
-                    self._obj.modelfit_results.values.flatten()[0]
-                    .eval_components()
-                    .keys()
-                ),
+                y=all_comps,
                 legend="top_right",
                 group_label="Component",
                 **plot_kwargs,
