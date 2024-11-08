@@ -312,6 +312,12 @@ class MultiPeakFunction(DynamicFunction):
             case "none":
                 return 0.0 * x
 
+    def eval_fd(self, x, **params):
+        return (
+            fermi_dirac(x, center=params["efermi"], temp=params["temp"])
+            + params["offset"]
+        )
+
     def pre_call(self, x, **params):
         x = np.asarray(x).copy()
         y = np.zeros_like(x)

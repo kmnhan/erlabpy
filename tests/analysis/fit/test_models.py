@@ -76,7 +76,7 @@ def test_multi_peak_model():
     y = np.zeros_like(x)
 
     # Create a MultiPeakModel instance
-    model = models.MultiPeakModel(npeaks=2)
+    model = models.MultiPeakModel(npeaks=2, fd=True)
 
     # Set initial parameter values
     params = model.make_params()
@@ -86,6 +86,9 @@ def test_multi_peak_model():
     params["p1_center"].set(value=2.0)
     params["p1_height"].set(value=0.5)
     params["p1_width"].set(value=0.3)
+    params["efermi"].set(value=0.0)
+    params["temp"].set(value=30.0)
+    params["offset"].set(value=0.1)
 
     # Generate test data based on the model
     y += model.eval(params=params, x=x)
@@ -103,6 +106,9 @@ def test_multi_peak_model():
     assert np.isclose(result.params["p1_center"].value, 2.0)
     assert np.isclose(result.params["p1_height"].value, 0.5)
     assert np.isclose(result.params["p1_width"].value, 0.3)
+    assert np.isclose(result.params["efermi"].value, 0.0)
+    assert np.isclose(result.params["temp"].value, 30.0)
+    assert np.isclose(result.params["offset"].value, 0.1)
 
     # Assert that the fitted curve matches the test data
     assert np.allclose(result.best_fit, y)
@@ -117,6 +123,9 @@ def test_multi_peak_model():
     )
     assert np.allclose(
         components["2Peak_bkg"], model.func.eval_bkg(x, **result.params.valuesdict())
+    )
+    assert np.allclose(
+        components["2Peak_fd"], model.func.eval_fd(x, **result.params.valuesdict())
     )
 
     # Make sure guesses work for different backgrounds
