@@ -194,11 +194,8 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         import panel
         import panel.widgets
 
-        from erlab.accessors.fit import ParallelFitDataArrayAccessor
-
-        for var in set(ParallelFitDataArrayAccessor._VAR_KEYS) - {"modelfit_results"}:
-            if var not in self._obj.data_vars:
-                raise ValueError("Dataset is not a fit result")
+        if not self._is_fitresult:
+            raise ValueError("Dataset is not a fit result")
 
         coord_dims = [
             d
@@ -315,6 +312,49 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
                 ),
             ),
         )
+
+    def params(self):
+        if not self._is_fitresult:
+            raise ValueError("Dataset is not a fit result")
+
+        if not importlib.util.find_spec("hvplot"):
+            raise ImportError("hvplot is required for interactive fit visualization")
+
+        import hvplot.xarray
+        import panel
+        import panel.widgets
+
+        def _select_param(d):
+            part = self._obj.sel(param=d)
+            return xr.merge([part.modelfit_coefficients, part.modelfit_stderr])
+
+        coord_dims = [
+            d
+            for d in self._obj.modelfit_stats.dims
+            if d in self._obj.modelfit_data.dims
+        ]
+        if len(coord_dims) != 1:
+            raise ValueError(
+                "Parameters can only be plotted for fits along one dimension"
+            )
+
+        param_sel = panel.widgets.Select(
+            name="Parameter", options=list(self._obj.param.values)
+        )
+        sliced = hvplot.bind(_select_param, param_sel).interactive()
+
+        plot_kw = {"responsive": True, "min_height": 400, "title": ""}
+        sc = sliced.hvplot.scatter(
+            x=coord_dims[0], y="modelfit_coefficients", **plot_kw
+        )
+        err = sliced.hvplot.errorbars(
+            x=coord_dims[0],
+            y="modelfit_coefficients",
+            yerr1="modelfit_stderr",
+            **plot_kw,
+        )
+
+        return sc * err
 
 
 @xr.register_dataarray_accessor("qsel")

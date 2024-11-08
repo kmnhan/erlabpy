@@ -57,6 +57,8 @@ def test_ds_qshow_fit(plot_components: bool):
         result_ds.qshow(plot_components=plot_components), panel.layout.base.Column
     )
 
+    result_ds.qshow.params()
+
 
 @pytest.mark.parametrize(
     ("indexers", "expected_shape"),
