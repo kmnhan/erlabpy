@@ -24,6 +24,7 @@ import gc
 import os
 import pickle
 import sys
+import weakref
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
@@ -449,6 +450,17 @@ class ItoolMenuBar(DictMenuBar):
         self._recent_directory: str | None = None
 
     @property
+    def slicer_area(self) -> ImageSlicerArea:
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea) -> None:
+        self._slicer_area = weakref.ref(value)
+
+    @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
@@ -855,6 +867,17 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     @property
     def layout_(self) -> QtWidgets.QFormLayout:
         return self._layout
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea) -> None:
+        self._slicer_area = weakref.ref(value)
 
     @property
     def array_slicer(self) -> ArraySlicer:

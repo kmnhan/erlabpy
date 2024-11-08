@@ -31,6 +31,7 @@ import threading
 import time
 import traceback
 import uuid
+import weakref
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
@@ -176,7 +177,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         super().__init__()
         self._tool: ImageTool | None = None
 
-        self.manager: _ImageToolManagerGUI = manager
+        self._manager = weakref.ref(manager)
         self.index: int = index
         self._archived_fname: str | None = None
         self._recent_geometry: QtCore.QRect | None = None
@@ -186,6 +187,13 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         self.manager.sigLinkersChanged.connect(self.update_link_icon)
         self._setup_gui()
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+
+    @property
+    def manager(self) -> _ImageToolManagerGUI:
+        _manager = self._manager()
+        if _manager:
+            return _manager
+        raise LookupError("Parent was destroyed")
 
     @property
     def tool(self) -> ImageTool | None:
@@ -561,7 +569,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
             if all(p == proxies[0] for p in proxies):
                 self.link_button.setEnabled(False)
 
-    def remove_tool(self, index: int) -> None:
+    def remove_tool(self, index: int, collect: bool = True) -> None:
         opt = self.tool_options.pop(index)
         if not opt.archived:
             cast(ImageTool, opt.tool).removeEventFilter(opt)
@@ -570,7 +578,8 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         opt.close_tool()
         opt.close()
         del opt
-        gc.collect()
+        if collect:
+            gc.collect()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -596,7 +605,8 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         )
         if ret == QtWidgets.QMessageBox.StandardButton.Yes:
             for name in checked_names:
-                self.remove_tool(name)
+                self.remove_tool(name, collect=False)
+            gc.collect()
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -691,7 +701,7 @@ class ImageToolManager(_ImageToolManagerGUI):
                 return
 
             for tool in list(self.tool_options.keys()):
-                self.remove_tool(tool)
+                self.remove_tool(tool, collect=False)
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()

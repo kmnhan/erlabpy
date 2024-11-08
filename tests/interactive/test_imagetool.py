@@ -1,5 +1,6 @@
 import tempfile
 import time
+import weakref
 from collections.abc import Callable
 
 import numpy as np
@@ -354,7 +355,7 @@ def test_itool_ds(qtbot):
 
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
-    assert wins[0].slicer_area.linked_slicers == {wins[1].slicer_area}
+    assert wins[0].slicer_area.linked_slicers == weakref.WeakSet([wins[1].slicer_area])
 
     wins[0].slicer_area.unlink()
     wins[1].slicer_area.unlink()

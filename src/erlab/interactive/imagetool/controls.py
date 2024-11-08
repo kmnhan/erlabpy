@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import weakref
 from typing import TYPE_CHECKING, ClassVar, cast
 
 import numpy as np
@@ -117,9 +118,9 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def __init__(
         self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._slicer_area = slicer_area
         self.sub_controls: list[ItoolControlsBase] = []
+        super().__init__(*args, **kwargs)
+        self._parent_control = weakref.ref(slicer_area)
         self.initialize_layout()
         self.initialize_widgets()
         self.connect_signals()
@@ -175,16 +176,24 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     @property
     def is_nested(self) -> bool:
-        return isinstance(self._slicer_area, ItoolControlsBase)
+        return isinstance(self.parent_control, ItoolControlsBase)
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        if isinstance(self._slicer_area, ItoolControlsBase):
-            return self._slicer_area.slicer_area
-        return self._slicer_area
+        parent_control = self.parent_control
+        if isinstance(parent_control, ItoolControlsBase):
+            return parent_control.slicer_area
+        return parent_control
 
-    @slicer_area.setter
-    def slicer_area(self, value: ImageSlicerArea) -> None:
+    @property
+    def parent_control(self) -> ImageSlicerArea | ItoolControlsBase:
+        ref = self._parent_control()
+        if ref is not None:
+            return ref
+        raise LookupError("Parent was destroyed")
+
+    @parent_control.setter
+    def parent_control(self, value: ImageSlicerArea | ItoolControlsBase) -> None:
         """Set the `ImageSlicerArea` instance for the control widget.
 
         Initially, the goal was to be able to control multiple `ImageSlicerArea`s with a
@@ -201,14 +210,12 @@ class ItoolControlsBase(QtWidgets.QWidget):
         # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
         with contextlib.suppress(RuntimeError):
             self.disconnect_signals()
-        self._slicer_area = value
+        self._parent_control = weakref.ref(value)
         clear_layout(self.layout())
         self.sub_controls = []
         self.initialize_widgets()
         self.update_content()
         self.connect_signals()
-
-        print("called!")
 
 
 # class ItoolAAAAAControls(ItoolControlsBase):

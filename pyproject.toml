@@ -232,6 +232,7 @@ exclude_also = [
     "except varname.VarnameRetrievingError:",
     "if TYPE_CHECKING:",
     "def _wrapped_for_coverage",
+    "raise LookupError",
 ]
 
 [tool.mypy]

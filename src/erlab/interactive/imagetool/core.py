@@ -230,12 +230,13 @@ class SlicerLinkProxy:
 
     def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True) -> None:
         self.link_colors = link_colors
-        self._children: set[ImageSlicerArea] = set()
+
+        self._children: weakref.WeakSet[ImageSlicerArea] = weakref.WeakSet()
         for s in slicers:
             self.add(s)
 
     @property
-    def children(self) -> set[ImageSlicerArea]:
+    def children(self) -> weakref.WeakSet[ImageSlicerArea]:
         return self._children
 
     @property
@@ -245,18 +246,18 @@ class SlicerLinkProxy:
     def unlink_all(self) -> None:
         for s in self.children:
             s._linking_proxy = None
-        self._children.clear()
+        self.children.clear()
 
     def add(self, slicer_area: ImageSlicerArea) -> None:
         if slicer_area.is_linked:
             if slicer_area._linking_proxy == self:
                 return
             raise ValueError("Already linked to another proxy.")
-        self._children.add(slicer_area)
+        self.children.add(slicer_area)
         slicer_area._linking_proxy = self
 
     def remove(self, slicer_area: ImageSlicerArea) -> None:
-        self._children.remove(slicer_area)
+        self.children.remove(slicer_area)
         slicer_area._linking_proxy = None
 
     def sync(
@@ -589,12 +590,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self._linking_proxy is not None
 
     @property
-    def linked_slicers(self) -> set[ImageSlicerArea]:
-        return (
-            cast(SlicerLinkProxy, self._linking_proxy).children - {self}
-            if self.is_linked
-            else set()
-        )
+    def linked_slicers(self) -> weakref.WeakSet[ImageSlicerArea]:
+        if self._linking_proxy is not None:
+            return self._linking_proxy.children - {self}
+
+        return weakref.WeakSet()
 
     @property
     def colormap(self) -> str | pg.ColorMap:
@@ -2018,17 +2018,17 @@ class ItoolPlotItem(pg.PlotItem):
         self.setTitle(None)
 
     def connect_signals(self) -> None:
-        self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
-        self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
-        self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
-        self._slicer_area.sigShapeChanged.connect(self.remove_guidelines)
+        self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.connect(self.update_manual_range)
+        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
 
     def disconnect_signals(self) -> None:
-        self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
-        self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self._slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
-        self._slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
+        self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
+        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
@@ -2130,11 +2130,14 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        return self._slicer_area
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea) -> None:
-        self._slicer_area = value
+        self._slicer_area = weakref.ref(value)
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -2143,7 +2146,7 @@ class ItoolPlotItem(pg.PlotItem):
 
 class ItoolColorBarItem(BetterColorBarItem):
     def __init__(self, slicer_area: ImageSlicerArea, **kwargs) -> None:
-        self._slicer_area = slicer_area
+        self.slicer_area = slicer_area
         kwargs.setdefault(
             "axisItems",
             {a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")},
@@ -2155,7 +2158,14 @@ class ItoolColorBarItem(BetterColorBarItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        return self._slicer_area
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea) -> None:
+        self._slicer_area = weakref.ref(value)
 
     @property
     def images(self):
