@@ -899,10 +899,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
-        if hasattr(self, "_array_slicer"):
-            self._array_slicer.set_array(self._data, reset=True)
-        else:
-            self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+        try:
+            if hasattr(self, "_array_slicer"):
+                self._array_slicer.set_array(self._data, reset=True)
+            else:
+                self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+            self.set_data(xr.DataArray(np.zeros((2, 2))))
+            return
 
         while self.n_cursors != n_cursors_old:
             self.array_slicer.add_cursor(update=False)

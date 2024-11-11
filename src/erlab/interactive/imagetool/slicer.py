@@ -326,6 +326,9 @@ class ArraySlicer(QtCore.QObject):
         """
         data = data.copy().squeeze()
 
+        if data.size == 0:
+            raise ValueError("Data must not be empty.")
+
         if data.ndim < 2:
             raise ValueError("Data must have at least two dimensions.")
 
@@ -682,11 +685,12 @@ class ArraySlicer(QtCore.QObject):
         binned = self.get_binned(cursor)
 
         for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
-            inc = self.incs[self._obj.dims.index(dim)]
+            axis_idx = self._obj.dims.index(dim)
+            inc = self.incs[axis_idx]
             # Estimate minimum number of decimal places required to represent selection
-            order = int(-np.floor(np.log10(inc)) + 1)
+            order = self.get_significant(axis_idx)
 
-            if binned[self._obj.dims.index(dim)]:
+            if binned[axis_idx]:
                 coord = self._obj[dim][selector].values
 
                 out[dim] = float(np.round(coord.mean(), order))

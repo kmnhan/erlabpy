@@ -669,9 +669,17 @@ class ImageToolManager(_ImageToolManagerGUI):
         """
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
-        indices: list[int] = [
-            self.add_tool(ImageTool(d, **kwargs), activate=True) for d in data
-        ]
+        indices: list[int] = []
+
+        for d in data:
+            try:
+                indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An error occurred while creating the ImageTool window:\n{e}",
+                )
 
         if link:
             self.link_tools(*indices, link_colors=link_colors)
