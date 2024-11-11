@@ -1583,13 +1583,16 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        self._associated_tools: list[QtWidgets.QWidget] = []
+
         if image:
+            itool_action = self.vb.menu.addAction("Open in new window")
+            itool_action.triggered.connect(self.open_in_new_window)
+
             goldtool_action = self.vb.menu.addAction("Open in goldtool")
-            self._goldtool: None | QtWidgets.QWidget = None
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
             dtool_action = self.vb.menu.addAction("Open in dtool")
-            self._dtool: None | QtWidgets.QWidget = None
             dtool_action.triggered.connect(self.open_in_dtool)
 
             self.vb.menu.addSeparator()
@@ -1676,10 +1679,18 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
         if self.is_image:
-            if self._goldtool is not None:
-                self._goldtool.close()
-            if self._dtool is not None:
-                self._dtool.close()
+            for tool in list(self._associated_tools):
+                tool.close()
+                self._associated_tools.remove(tool)
+
+    @QtCore.Slot()
+    def open_in_new_window(self) -> None:
+        if self.is_image:
+            from erlab.interactive.imagetool import itool
+
+            tool = cast(QtWidgets.QWidget, itool(self.current_data, execute=False))
+            self._associated_tools.append(tool)
+            tool.show()
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
@@ -1696,28 +1707,22 @@ class ItoolPlotItem(pg.PlotItem):
 
             from erlab.interactive.fermiedge import GoldTool
 
-            if self._goldtool is not None:
-                self._goldtool.close()
-                self._goldtool = None
-
-            self._goldtool = GoldTool(
+            goldtool = GoldTool(
                 data, data_name="data" + self.selection_code, execute=False
             )
-            self._goldtool.show()
+            self._associated_tools.append(goldtool)
+            goldtool.show()
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:
             from erlab.interactive.derivative import DerivativeTool
 
-            if self._dtool is not None:
-                self._dtool.close()
-                self._dtool = None
-
-            self._dtool = DerivativeTool(
+            tool = DerivativeTool(
                 self.current_data, data_name="data" + self.selection_code
             )
-            self._dtool.show()
+            self._associated_tools.append(tool)
+            tool.show()
 
     def refresh_manual_range(self) -> None:
         if self.is_independent:
