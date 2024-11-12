@@ -713,7 +713,7 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
-        self.slicer_area.apply_func(lambda x: x)
+        self.slicer_area.apply_func(None)
 
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(

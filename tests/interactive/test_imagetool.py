@@ -15,6 +15,11 @@ import erlab.analysis.transform
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
+from erlab.interactive.imagetool.dialogs import (
+    CropDialog,
+    NormalizeDialog,
+    RotationDialog,
+)
 from erlab.interactive.imagetool.manager import ImageToolManager, _RenameDialog
 
 
@@ -195,13 +200,21 @@ def test_itool(qtbot):
         win.show()
         win.activateWindow()
 
+    # Copy cursor values
+    win.mnb._copy_cursor_val()
+    assert pyperclip.paste() == "[[2, 2]]"
+    win.mnb._copy_cursor_idx()
+    assert pyperclip.paste() == "[[2, 2]]"
+
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     # Snap
     qtbot.keyClick(win, QtCore.Qt.Key.Key_S)
+    assert win.array_slicer.snap_to_data
 
     # Transpose
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
+    assert win.slicer_area.data.dims == ("y", "x")
     move_and_compare_values(qtbot, win, [12.0, 11.0, 6.0, 7.0])
 
     # Set bin
@@ -576,7 +589,7 @@ def test_itool_rotate(qtbot):
     qtbot.addWidget(win)
 
     # Test dialog
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: RotationDialog) -> None:
         dialog.angle_spin.setValue(60.0)
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
@@ -597,7 +610,7 @@ def test_itool_rotate(qtbot):
     win.slicer_area.main_image._guidelines_items[0].setAngle(90.0 - 30.0)
     win.slicer_area.main_image._guidelines_items[-1].setPos((3.0, 3.1))
 
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: RotationDialog) -> None:
         assert dialog.angle_spin.value() == 30.0
         assert dialog.center_spins[0].value() == 3.0
         assert dialog.center_spins[1].value() == 3.1
@@ -645,8 +658,11 @@ def test_itool_crop(qtbot):
     win.slicer_area.set_value(axis=0, value=4.0, cursor=2)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=2)
 
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: CropDialog) -> None:
+        # activate combo to increase ExclusiveComboGroup coverage
+        dialog.cursor_combos[0].activated.emit(0)
         dialog.cursor_combos[0].setCurrentIndex(0)
+        dialog.cursor_combos[0].activated.emit(2)
         dialog.cursor_combos[1].setCurrentIndex(2)
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
@@ -663,8 +679,10 @@ def test_itool_crop(qtbot):
     win.slicer_area.set_value(axis=0, value=4.0, cursor=1)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
 
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: CropDialog) -> None:
+        dialog.cursor_combos[0].activated.emit(1)
         dialog.cursor_combos[0].setCurrentIndex(1)
+        dialog.cursor_combos[0].activated.emit(2)
         dialog.cursor_combos[1].setCurrentIndex(2)
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(False)
@@ -707,7 +725,7 @@ def test_itool_normalize(qtbot, option):
     qtbot.addWidget(win)
 
     # Test dialog
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: NormalizeDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.opts[option].setChecked(True)
 
@@ -722,7 +740,7 @@ def test_itool_normalize(qtbot, option):
     )
 
     # Reset normalization
-    win.slicer_area.apply_func(None)
+    win.mnb._reset_filters()
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
     # Check if canceling the dialog does not change the data

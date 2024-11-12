@@ -256,15 +256,6 @@ class ArraySlicer(QtCore.QObject):
     def absnanmax(self) -> float:
         return max(abs(self.nanmin), abs(self.nanmax))
 
-    @functools.cached_property
-    def absnanmin(self) -> float:
-        mn, mx = self.nanmin, self.nanmax
-        if mn * mx <= np.float32(0.0):
-            return 0.0
-        if mn < np.float32(0.0):
-            return -mx
-        return mn
-
     @property
     def limits(self) -> tuple[float, float]:
         """Return the global minima and maxima of the data."""
@@ -402,7 +393,7 @@ class ArraySlicer(QtCore.QObject):
             Whether to clear the cache that contains the transposed data values.
 
         """
-        for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
+        for prop in ("nanmax", "nanmin", "absnanmax"):
             self._reset_property_cache(prop)
 
         if include_vals:
