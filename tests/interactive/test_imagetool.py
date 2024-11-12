@@ -1,5 +1,6 @@
 import tempfile
 import time
+import weakref
 from collections.abc import Callable
 
 import numpy as np
@@ -11,8 +12,15 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
-from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.dialogs import (
+    CropDialog,
+    NormalizeDialog,
+    RotationDialog,
+)
+from erlab.interactive.imagetool.manager import ImageToolManager, _RenameDialog
 
 
 def accept_dialog(
@@ -192,13 +200,21 @@ def test_itool(qtbot):
         win.show()
         win.activateWindow()
 
+    # Copy cursor values
+    win.mnb._copy_cursor_val()
+    assert pyperclip.paste() == "[[2, 2]]"
+    win.mnb._copy_cursor_idx()
+    assert pyperclip.paste() == "[[2, 2]]"
+
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     # Snap
     qtbot.keyClick(win, QtCore.Qt.Key.Key_S)
+    assert win.array_slicer.snap_to_data
 
     # Transpose
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
+    assert win.slicer_area.data.dims == ("y", "x")
     move_and_compare_values(qtbot, win, [12.0, 11.0, 6.0, 7.0])
 
     # Set bin
@@ -297,18 +313,27 @@ def test_itool_tools(qtbot, gold):
         win.show()
         win.activateWindow()
 
+    main_image = win.slicer_area.images[0]
     # Test code generation
-    assert win.slicer_area.images[0].selection_code == ""
+    assert main_image.selection_code == ""
 
     # Open goldtool from main image
-    win.slicer_area.images[0].open_in_goldtool()
-    assert isinstance(win.slicer_area.images[0]._goldtool, QtWidgets.QWidget)
-    win.slicer_area.images[0]._goldtool.close()
+    main_image.open_in_goldtool()
+    assert isinstance(main_image._associated_tools[0], GoldTool)
+
+    # Close associated windows
+    main_image.close_associated_windows()
+    assert len(main_image._associated_tools) == 0
 
     # Open dtool from main image
-    win.slicer_area.images[0].open_in_dtool()
-    assert isinstance(win.slicer_area.images[0]._dtool, QtWidgets.QWidget)
-    win.slicer_area.images[0]._dtool.close()
+    main_image.open_in_dtool()
+    assert isinstance(main_image._associated_tools[0], DerivativeTool)
+
+    # Open main image in new window
+    main_image.open_in_new_window()
+    assert isinstance(main_image._associated_tools[1], ImageTool)
+
+    main_image.close_associated_windows()
 
     win.close()
     del win
@@ -354,7 +379,7 @@ def test_itool_ds(qtbot):
 
     # Check if properly linked
     assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
-    assert wins[0].slicer_area.linked_slicers == {wins[1].slicer_area}
+    assert wins[0].slicer_area.linked_slicers == weakref.WeakSet([wins[1].slicer_area])
 
     wins[0].slicer_area.unlink()
     wins[1].slicer_area.unlink()
@@ -383,6 +408,11 @@ def test_itool_multidimensional(qtbot):
         xr.DataArray(np.arange(625).reshape((5, 5, 5, 5)), dims=["x", "y", "z", "t"])
     )
     move_and_compare_values(qtbot, win, [312.0, 187.0, 162.0, 287.0])
+    # Test aspect ratio lock
+    for img in win.slicer_area.images:
+        img.toggle_aspect_equal()
+    for img in win.slicer_area.images:
+        img.toggle_aspect_equal()
 
     win.close()
 
@@ -532,6 +562,18 @@ def test_manager(qtbot):
     win.remove_tool(0)
     qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
 
+    # Batch renaming
+    win.tool_options[1].check.setChecked(True)
+    win.tool_options[2].check.setChecked(True)
+
+    def _handle_renaming(dialog: _RenameDialog):
+        dialog._rename_widgets[0].line_new.setText("new_name_1")
+        dialog._rename_widgets[1].line_new.setText("new_name_2")
+
+    accept_dialog(win.rename_selected, pre_call=_handle_renaming)
+    assert win.tool_options[1].name == "new_name_1"
+    assert win.tool_options[2].name == "new_name_2"
+
     # Remove all checked
     win.tool_options[1].check.setChecked(True)
     win.tool_options[2].check.setChecked(True)
@@ -547,7 +589,7 @@ def test_itool_rotate(qtbot):
     qtbot.addWidget(win)
 
     # Test dialog
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: RotationDialog) -> None:
         dialog.angle_spin.setValue(60.0)
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
@@ -568,7 +610,7 @@ def test_itool_rotate(qtbot):
     win.slicer_area.main_image._guidelines_items[0].setAngle(90.0 - 30.0)
     win.slicer_area.main_image._guidelines_items[-1].setPos((3.0, 3.1))
 
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: RotationDialog) -> None:
         assert dialog.angle_spin.value() == 30.0
         assert dialog.center_spins[0].value() == 3.0
         assert dialog.center_spins[1].value() == 3.1
@@ -592,6 +634,66 @@ def test_itool_rotate(qtbot):
     # Transpose should remove guidelines
     qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
     assert not win.slicer_area.main_image.is_guidelines_visible
+
+    win.close()
+
+
+def test_itool_crop(qtbot):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+
+    # 2D crop
+    win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=1, value=0.0, cursor=0)
+    win.slicer_area.set_value(axis=0, value=3.0, cursor=1)
+    win.slicer_area.set_value(axis=1, value=2.0, cursor=1)
+    win.slicer_area.set_value(axis=0, value=4.0, cursor=2)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=2)
+
+    def _set_dialog_params(dialog: CropDialog) -> None:
+        # activate combo to increase ExclusiveComboGroup coverage
+        dialog.cursor_combos[0].activated.emit(0)
+        dialog.cursor_combos[0].setCurrentIndex(0)
+        dialog.cursor_combos[0].activated.emit(2)
+        dialog.cursor_combos[1].setCurrentIndex(2)
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
+    )
+    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+
+    # 1D crop
+    win.slicer_area.set_value(axis=0, value=4.0, cursor=1)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
+
+    def _set_dialog_params(dialog: CropDialog) -> None:
+        dialog.cursor_combos[0].activated.emit(1)
+        dialog.cursor_combos[0].setCurrentIndex(1)
+        dialog.cursor_combos[0].activated.emit(2)
+        dialog.cursor_combos[1].setCurrentIndex(2)
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(False)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
+    )
+    assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
 
     win.close()
 
@@ -623,7 +725,7 @@ def test_itool_normalize(qtbot, option):
     qtbot.addWidget(win)
 
     # Test dialog
-    def _set_dialog_params(dialog):
+    def _set_dialog_params(dialog: NormalizeDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.opts[option].setChecked(True)
 
@@ -638,7 +740,7 @@ def test_itool_normalize(qtbot, option):
     )
 
     # Reset normalization
-    win.slicer_area.apply_func(None)
+    win.mnb._reset_filters()
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
     # Check if canceling the dialog does not change the data

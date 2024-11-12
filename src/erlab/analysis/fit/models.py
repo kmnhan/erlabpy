@@ -332,7 +332,7 @@ class MultiPeakModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
-    def eval_components(self, params=None, **kwargs):
+    def eval_components(self, params=None, **kwargs) -> dict[str, np.ndarray]:
         key = self._prefix
         if len(key) < 1:
             key = self._name
@@ -352,6 +352,9 @@ class MultiPeakModel(lmfit.Model):
             out[f"{key}_p{i}"] = self.func.eval_peak(i, **fargs)
 
         out[f"{key}_bkg"] = self.func.eval_bkg(**fargs)
+
+        if self.func.fd:
+            out[f"{key}_fd"] = self.func.eval_fd(**fargs)
 
         return out
 

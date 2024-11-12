@@ -43,11 +43,10 @@ def test_ds_qshow_fit(plot_components: bool):
     yerr = np.full_like(y, 0.05)
     y = rng.normal(y, yerr)
 
-    # Construct DataArray
+    # Construct DataArray to fit
     darr = xr.DataArray(
         y, dims=["beta", "alpha"], coords={"beta": beta, "alpha": alpha}
     )
-
     result_ds = darr.modelfit(
         coords="alpha",
         model=lmfit.models.GaussianModel() + lmfit.models.LinearModel(),
@@ -56,6 +55,29 @@ def test_ds_qshow_fit(plot_components: bool):
     assert isinstance(
         result_ds.qshow(plot_components=plot_components), panel.layout.base.Column
     )
+
+    result_ds.qshow.params()
+
+    # Test with a Dataset
+    ds = darr.rename("testvar").to_dataset()
+    result_ds = ds.modelfit(
+        coords="alpha",
+        model=lmfit.models.GaussianModel() + lmfit.models.LinearModel(),
+        params={"center": xr.DataArray([-2, 0, 2], coords=[ds.beta]), "slope": -0.1},
+    )
+    assert "testvar_modelfit_results" in result_ds
+    assert "testvar_modelfit_stats" in result_ds
+    assert "testvar_modelfit_data" in result_ds
+
+    result_ds.qshow(plot_components=plot_components)
+    result_ds.qshow.params()
+
+    with pytest.raises(
+        ValueError,
+        match="Fit results for data variable `some_nonexistent_var` "
+        "were not found in the Dataset.",
+    ):
+        result_ds.qshow.params("some_nonexistent_var")
 
 
 @pytest.mark.parametrize(

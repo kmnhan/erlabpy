@@ -12,6 +12,7 @@ import pytest
 import xarray as xr
 
 import erlab.io
+from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles
 
@@ -84,7 +85,7 @@ def _determine_kind(darr: xr.DataArray) -> str:
     return data_type
 
 
-def test_loader():
+def test_loader(qtbot):
     # Create a temporary directory
     tmp_dir = tempfile.TemporaryDirectory()
 
@@ -293,6 +294,13 @@ def test_loader():
 
     # Interactive summary
     erlab.io.loaders.current_loader._isummarize(df)
+
+    # Interactive summary with imagetool manager
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+
+    erlab.io.loaders.current_loader._isummarize(df)
+    manager.close()
 
     # Cleanup the temporary directory
     tmp_dir.cleanup()

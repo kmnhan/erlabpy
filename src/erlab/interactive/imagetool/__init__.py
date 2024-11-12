@@ -13,6 +13,7 @@ Modules
    slicer
    fastbinning
    controls
+   dialogs
 
 """
 
@@ -20,10 +21,10 @@ from __future__ import annotations
 
 __all__ = ["BaseImageTool", "ImageTool", "itool"]
 
-import gc
 import os
 import pickle
 import sys
+import weakref
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
@@ -37,10 +38,15 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, generate_code
+from erlab.interactive.imagetool.dialogs import (
+    CropDialog,
+    NormalizeDialog,
+    RotationDialog,
+)
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Hashable
+    from collections.abc import Callable, Collection
 
     from erlab.interactive.imagetool.core import ImageSlicerState
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -196,9 +202,6 @@ def itool(
     if execute:
         if isinstance(qapp, QtWidgets.QApplication):
             qapp.exec()
-
-        del itool_list
-        gc.collect()
 
         return None
 
@@ -424,7 +427,7 @@ class ImageTool(BaseImageTool):
                 title = ""
             elif name is None:
                 title = f"{path}"
-            elif path is None:
+            elif path is None or name == path:
                 title = f"{name}"
             else:
                 title = f"{name} ({path})"
@@ -447,6 +450,17 @@ class ItoolMenuBar(DictMenuBar):
 
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea) -> None:
+        self._slicer_area = weakref.ref(value)
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -564,6 +578,7 @@ class ItoolMenuBar(DictMenuBar):
                         },
                         "sep_after": True,
                     },
+                    "Crop": {"triggered": self._crop},
                 },
             },
             "helpMenu": {
@@ -680,19 +695,25 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
         self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
+    def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
+        dialog = dialog_cls(self.slicer_area)
+        dialog.exec()
+
     @QtCore.Slot()
     def _rotate(self) -> None:
-        dialog = RotationDialog(self.slicer_area)
-        dialog.exec()
+        self.execute_dialog(RotationDialog)
+
+    @QtCore.Slot()
+    def _crop(self) -> None:
+        self.execute_dialog(CropDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:
-        dialog = NormalizeDialog(self.slicer_area)
-        dialog.exec()
+        self.execute_dialog(NormalizeDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
-        self.slicer_area.apply_func(lambda x: x)
+        self.slicer_area.apply_func(None)
 
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
@@ -817,264 +838,3 @@ class ItoolMenuBar(DictMenuBar):
             files = dialog.selectedFiles()
             fn, kargs = valid_savers[dialog.selectedNameFilter()]
             fn(self.slicer_area._data, files[0], **kargs)
-
-
-class _DataManipulationDialog(QtWidgets.QDialog):
-    title: str | None = None
-    show_copy_button: bool = False
-
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__()
-        if self.title is not None:
-            self.setWindowTitle(self.title)
-
-        self.slicer_area = slicer_area
-
-        self._layout = QtWidgets.QFormLayout()
-        self.setLayout(self._layout)
-
-        self.setup_widgets()
-
-        self.buttonBox = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        if self.show_copy_button:
-            self.copy_button = QtWidgets.QPushButton("Copy Code")
-            self.copy_button.clicked.connect(
-                lambda: copy_to_clipboard(self.make_code())
-            )
-            self.buttonBox.addButton(
-                self.copy_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
-            )
-
-        self.buttonBox.accepted.connect(self.accept)
-        self.buttonBox.rejected.connect(self.reject)
-        self.layout_.addRow(self.buttonBox)
-
-    @property
-    def layout_(self) -> QtWidgets.QFormLayout:
-        return self._layout
-
-    @property
-    def array_slicer(self) -> ArraySlicer:
-        return self.slicer_area.array_slicer
-
-    def setup_widgets(self) -> None:
-        # Overridden by subclasses
-        pass
-
-    def process_data(self) -> xr.DataArray:
-        # Overridden by subclasses
-        return self.slicer_area.data
-
-    def make_code(self) -> str:
-        # Overridden by subclasses
-        return ""
-
-
-class _DataTransformDialog(_DataManipulationDialog):
-    """
-    Parent class for implementing data changes that affect both shape and values.
-
-    These changes are destructive and cannot be undone.
-    """
-
-    prefix: str = ""
-    suffix: str = ""
-
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__(slicer_area)
-        self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
-        self.new_window_check.setChecked(True)
-        self.layout_.insertRow(-1, self.new_window_check)
-
-    @QtCore.Slot()
-    def accept(self) -> None:
-        if self.slicer_area.data.name is not None:
-            new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
-        else:
-            new_name = None
-
-        if self.new_window_check.isChecked():
-            itool(self.process_data().rename(new_name))
-        else:
-            self.slicer_area.set_data(self.process_data().rename(new_name))
-        super().accept()
-
-
-class _DataFilterDialog(_DataManipulationDialog):
-    """Parent class for implementing data changes that affect only the values."""
-
-    enable_preview: bool = True
-
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__(slicer_area)
-        self._previewed: bool = False
-
-        if self.enable_preview:
-            self.preview_button = QtWidgets.QPushButton("Preview")
-            self.preview_button.clicked.connect(self._preview)
-            self.buttonBox.addButton(
-                self.preview_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
-            )
-
-    @QtCore.Slot()
-    def _preview(self):
-        self._previewed = True
-        self.slicer_area.apply_func(self.func)
-
-    @QtCore.Slot()
-    def reject(self) -> None:
-        if self._previewed:
-            self.slicer_area.apply_func(None)
-        super().reject()
-
-    @QtCore.Slot()
-    def accept(self) -> None:
-        self.slicer_area.apply_func(self.func)
-        super().accept()
-
-    def func(self, data: xr.DataArray) -> xr.DataArray:
-        # Implement this method in subclasses
-        raise NotImplementedError
-
-
-class RotationDialog(_DataTransformDialog):
-    suffix = " Rotated"
-    show_copy_button = True
-
-    @property
-    def _rotate_params(self) -> dict[str, Any]:
-        return {
-            "angle": self.angle_spin.value(),
-            "axes": cast(tuple[str, str], tuple(self.slicer_area.main_image.axis_dims)),
-            "center": cast(
-                tuple[float, float], tuple(spin.value() for spin in self.center_spins)
-            ),
-            "reshape": self.reshape_check.isChecked(),
-            "order": self.order_spin.value(),
-        }
-
-    def setup_widgets(self) -> None:
-        main_image = self.slicer_area.main_image
-        self.angle_spin = QtWidgets.QDoubleSpinBox()
-        self.angle_spin.setRange(-360, 360)
-        self.angle_spin.setSingleStep(1)
-        self.angle_spin.setValue(0)
-        self.angle_spin.setDecimals(2)
-        self.angle_spin.setSuffix("°")
-        self.layout_.addRow("Angle", self.angle_spin)
-
-        self.center_spins = (QtWidgets.QDoubleSpinBox(), QtWidgets.QDoubleSpinBox())
-        for i in range(2):
-            axis: int = main_image.display_axis[i]
-            dim: str = str(main_image.axis_dims[i])
-
-            self.center_spins[i].setRange(*map(float, self.array_slicer.lims[i]))
-            self.center_spins[i].setSingleStep(float(self.array_slicer.incs[i]))
-            self.center_spins[i].setValue(0.0)
-            self.center_spins[i].setDecimals(self.array_slicer.get_significant(i))
-
-            self.layout_.addRow(f"Center {dim}", self.center_spins[i])
-            self.array_slicer.get_significant(axis)
-
-        self.order_spin: QtWidgets.QSpinBox = QtWidgets.QSpinBox()
-        self.order_spin.setRange(0, 5)
-        self.order_spin.setValue(1)
-        self.layout_.addRow("Spline Order", self.order_spin)
-
-        self.reshape_check = QtWidgets.QCheckBox("Reshape")
-        self.reshape_check.setChecked(True)
-        self.layout_.addRow(self.reshape_check)
-
-        if main_image.is_guidelines_visible:
-            # Fill values from guideline
-            self.angle_spin.setValue(-main_image._guideline_angle)
-            for spin, val in zip(
-                self.center_spins, main_image._guideline_offset, strict=True
-            ):
-                spin.setValue(val)
-
-    def process_data(self) -> xr.DataArray:
-        from erlab.analysis.transform import rotate
-
-        return rotate(self.slicer_area.data, **self._rotate_params)
-
-    def make_code(self) -> str:
-        from erlab.analysis.transform import rotate
-
-        placeholder = " "
-        params = dict(self._rotate_params)
-
-        for k, v in params.items():
-            if isinstance(v, tuple):
-                params[k] = f"({', '.join(map(str, v))})"
-            else:
-                params[k] = str(v)
-
-        return generate_code(
-            rotate, [f"|{placeholder}|"], self._rotate_params, module="era.transform"
-        )
-
-
-class NormalizeDialog(_DataFilterDialog):
-    title = "Normalize"
-    show_copy_button = False
-
-    def setup_widgets(self) -> None:
-        dim_group = QtWidgets.QGroupBox("Dimensions")
-        dim_layout = QtWidgets.QVBoxLayout()
-        dim_group.setLayout(dim_layout)
-
-        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
-
-        for d in self.slicer_area.data.dims:
-            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
-            dim_layout.addWidget(self.dim_checks[d])
-
-        option_group = QtWidgets.QGroupBox("Options")
-        option_layout = QtWidgets.QVBoxLayout()
-        option_group.setLayout(option_layout)
-
-        self.opts: list[QtWidgets.QRadioButton] = []
-        self.opts.append(QtWidgets.QRadioButton("Data/Area"))
-        self.opts.append(QtWidgets.QRadioButton("(Data−m)/(M−m)"))
-        self.opts.append(QtWidgets.QRadioButton("Data−m"))
-        self.opts.append(QtWidgets.QRadioButton("(Data−m)/Area"))
-
-        self.opts[0].setChecked(True)
-        for opt in self.opts:
-            option_layout.addWidget(opt)
-
-        self.layout_.addRow(dim_group)
-        self.layout_.addRow(option_group)
-
-    def func(self, data: xr.DataArray) -> xr.DataArray:
-        norm_dims = tuple(k for k, v in self.dim_checks.items() if v.isChecked())
-        if len(norm_dims) == 0:
-            return data
-
-        calc_area: bool = self.opts[0].isChecked() or self.opts[3].isChecked()
-        calc_minimum: bool = not self.opts[0].isChecked()
-        calc_maximum: bool = self.opts[1].isChecked()
-
-        if calc_area:
-            area = data.mean(norm_dims)
-
-        if calc_minimum:
-            minimum = data.min(norm_dims)
-
-        if calc_maximum:
-            maximum = data.max(norm_dims)
-
-        if self.opts[0].isChecked():
-            return data / area
-
-        if self.opts[1].isChecked():
-            return (data - minimum) / (maximum - minimum)
-
-        if self.opts[2].isChecked():
-            return data - minimum
-
-        return (data - minimum) / area

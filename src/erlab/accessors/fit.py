@@ -19,12 +19,9 @@ import lmfit
 import numpy as np
 import tqdm.auto
 import xarray as xr
+from xarray.core.dataarray import _THIS_ARRAY
 
-from erlab.accessors.utils import (
-    _THIS_ARRAY,
-    ERLabDataArrayAccessor,
-    ERLabDatasetAccessor,
-)
+from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 from erlab.utils.misc import emit_user_level_warning
 from erlab.utils.parallel import joblib_progress
 
@@ -152,7 +149,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             multi-dimensional functions, supply `coords` as a sequence in the same order
             as arguments in `func`. To fit along existing dimensions of the calling
             object, `coords` can also be specified as a str or sequence of strs.
-        model : `lmfit.Model <lmfit.model.Model>`
+        model : lmfit.Model
             A model object to fit to the data. The model must be an *instance* of
             :class:`lmfit.Model <lmfit.model.Model>`.
         reduce_dims : str, Iterable of Hashable or None, optional
@@ -162,23 +159,30 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             time dimension.
         skipna : bool, default: True
             Whether to skip missing values when fitting. Default is True.
-        params : lmfit.Parameters, dict-like, or xarray.DataArray, optional
-            Optional input parameters to the fit. If a `lmfit.Parameters
-            <lmfit.parameter.Parameters>` object, it will be used for all fits. If a
-            dict-like object, it must look like the keyword arguments to
-            :func:`lmfit.create_params <lmfit.parameter.create_params>`. Additionally,
-            each value of the dictionary may also be a DataArray, which will be
-            broadcasted appropriately. If a DataArray, each entry must be a
-            dictionary-like object, a `lmfit.Parameters <lmfit.parameter.Parameters>`
-            object, or a JSON string created with :meth:`lmfit.Parameters.dumps
-            <lmfit.parameter.Parameters.dumps>`. If given a Dataset, the name of the
-            data variables in the Dataset must match the name of the data variables in
-            the calling object, and each data variable will be used as the parameters
-            for the corresponding data variable. If none or only some parameters are
-            passed, the rest will be assigned initial values and bounds with
-            :meth:`lmfit.Model.make_params <lmfit.model.Model.make_params>`, or guessed
-            with :meth:`lmfit.Model.guess <lmfit.model.Model.guess>` if `guess` is
-            `True`.
+        params : lmfit.Parameters, dict-like, DataArray or Dataset, optional
+            Optional input parameters to the fit.
+
+            - If a `lmfit.Parameters <lmfit.parameter.Parameters>` object, it will be
+              used for all fits.
+
+            - If a dict-like object, it must be structured like keyword arguments to
+              :func:`lmfit.create_params <lmfit.parameter.create_params>`.
+
+              Additionally, each value of the dictionary may also be a DataArray, which
+              will be broadcasted appropriately.
+
+            - If a DataArray, each entry must be a dict-like object, a `lmfit.Parameters
+              <lmfit.parameter.Parameters>` object, or a JSON string created with
+              :meth:`lmfit.Parameters.dumps <lmfit.parameter.Parameters.dumps>`.
+
+            - If a Dataset, the name of the data variables in the Dataset must match the
+              name of the data variables in the calling object, and each data variable
+              will be used as the parameters for the corresponding data variable.
+
+            If none or only some parameters are passed, the rest will be assigned
+            initial values and bounds with :meth:`lmfit.Model.make_params
+            <lmfit.model.Model.make_params>`, or guessed with :meth:`lmfit.Model.guess
+            <lmfit.model.Model.guess>` if `guess` is `True`.
         guess : bool, default: `False`
             Whether to guess the initial parameters with :meth:`lmfit.Model.guess
             <lmfit.model.Model.guess>`. For composite models, the parameters will be
@@ -192,6 +196,13 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             Whether to parallelize the fits over the data variables. If not provided,
             parallelization is only applied for non-dask Datasets with more than 200
             data variables.
+
+            .. note::
+
+                This argument is utilized when fitting Datasets with multiple data
+                variables simultaneously. If you wish to parallelize fitting for a
+                DataArray across a single dimension, use :meth:`parallel_fit
+                <erlab.accessors.fit.ParallelFitDataArrayAccessor.__call__>` instead.
         parallel_kw : dict, optional
             Additional keyword arguments to pass to the parallelization backend
             :class:`joblib.Parallel` if `parallel` is `True`.
@@ -618,7 +629,9 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
         Parameters
         ----------
         dim : str
-            The name of the dimension along which to fit the model.
+            The name of the dimension along which to fit the model. Note that this is
+            the dimension along which the model will be parallelized over, not the
+            independent dimension(s) of the model.
         model : lmfit.Model
             The model to fit.
         **kwargs : dict

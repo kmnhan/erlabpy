@@ -230,12 +230,13 @@ class SlicerLinkProxy:
 
     def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True) -> None:
         self.link_colors = link_colors
-        self._children: set[ImageSlicerArea] = set()
+
+        self._children: weakref.WeakSet[ImageSlicerArea] = weakref.WeakSet()
         for s in slicers:
             self.add(s)
 
     @property
-    def children(self) -> set[ImageSlicerArea]:
+    def children(self) -> weakref.WeakSet[ImageSlicerArea]:
         return self._children
 
     @property
@@ -245,18 +246,18 @@ class SlicerLinkProxy:
     def unlink_all(self) -> None:
         for s in self.children:
             s._linking_proxy = None
-        self._children.clear()
+        self.children.clear()
 
     def add(self, slicer_area: ImageSlicerArea) -> None:
         if slicer_area.is_linked:
             if slicer_area._linking_proxy == self:
                 return
             raise ValueError("Already linked to another proxy.")
-        self._children.add(slicer_area)
+        self.children.add(slicer_area)
         slicer_area._linking_proxy = self
 
     def remove(self, slicer_area: ImageSlicerArea) -> None:
-        self._children.remove(slicer_area)
+        self.children.remove(slicer_area)
         slicer_area._linking_proxy = None
 
     def sync(
@@ -589,12 +590,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return self._linking_proxy is not None
 
     @property
-    def linked_slicers(self) -> set[ImageSlicerArea]:
-        return (
-            cast(SlicerLinkProxy, self._linking_proxy).children - {self}
-            if self.is_linked
-            else set()
-        )
+    def linked_slicers(self) -> weakref.WeakSet[ImageSlicerArea]:
+        if self._linking_proxy is not None:
+            return self._linking_proxy.children - {self}
+
+        return weakref.WeakSet()
 
     @property
     def colormap(self) -> str | pg.ColorMap:
@@ -899,10 +899,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
-        if hasattr(self, "_array_slicer"):
-            self._array_slicer.set_array(self._data, reset=True)
-        else:
-            self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+        try:
+            if hasattr(self, "_array_slicer"):
+                self._array_slicer.set_array(self._data, reset=True)
+            else:
+                self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+            self.set_data(xr.DataArray(np.zeros((2, 2))))
+            return
 
         while self.n_cursors != n_cursors_old:
             self.array_slicer.add_cursor(update=False)
@@ -1233,9 +1238,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         horiz_pad, vert_pad
             Reserved space for the x and y axes.
         font_size
-            Font size in points.
+            Font size of axis ticks in points.
         r
-            4 numbers that determine the layout aspect ratios. See notes.
+            4 numbers that determine the aspect ratio of the layout. See notes.
 
         Notes
         -----
@@ -1321,6 +1326,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.set_dimensions(
             width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
         )
+
+    def _cursor_name(self, i: int) -> str:
+        return f" Cursor {int(i)}"
+
+    def _cursor_icon(self, i: int) -> QtGui.QIcon:
+        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_RGBA64)
+        img.fill(QtCore.Qt.GlobalColor.transparent)
+
+        painter = QtGui.QPainter(img)
+        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(pg.mkColor(self.cursor_colors[i]))
+        painter.drawEllipse(img.rect())
+        painter.end()
+        return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
 
     @record_history
     def toggle_snap(self, value: bool | None = None) -> None:
@@ -1583,14 +1602,33 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        self._associated_tools: list[QtWidgets.QWidget] = []
+
         if image:
+            itool_action = self.vb.menu.addAction("Open in new window")
+            itool_action.triggered.connect(self.open_in_new_window)
+
             goldtool_action = self.vb.menu.addAction("Open in goldtool")
-            self._goldtool: None | QtWidgets.QWidget = None
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
             dtool_action = self.vb.menu.addAction("Open in dtool")
-            self._dtool: None | QtWidgets.QWidget = None
             dtool_action.triggered.connect(self.open_in_dtool)
+
+            self.vb.menu.addSeparator()
+
+            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
+            equal_aspect_action.setCheckable(True)
+            equal_aspect_action.setChecked(False)
+            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
+
+            def _update_aspect_lock_state() -> None:
+                locked: bool = self.getViewBox().state["aspectLocked"] is not False
+                if equal_aspect_action.isChecked() != locked:
+                    equal_aspect_action.blockSignals(True)
+                    equal_aspect_action.setChecked(locked)
+                    equal_aspect_action.blockSignals(False)
+
+            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
             self.vb.menu.addSeparator()
 
@@ -1676,10 +1714,18 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
         if self.is_image:
-            if self._goldtool is not None:
-                self._goldtool.close()
-            if self._dtool is not None:
-                self._dtool.close()
+            for tool in list(self._associated_tools):
+                tool.close()
+                self._associated_tools.remove(tool)
+
+    @QtCore.Slot()
+    def open_in_new_window(self) -> None:
+        if self.is_image:
+            from erlab.interactive.imagetool import itool
+
+            tool = cast(QtWidgets.QWidget, itool(self.current_data, execute=False))
+            self._associated_tools.append(tool)
+            tool.show()
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
@@ -1696,28 +1742,22 @@ class ItoolPlotItem(pg.PlotItem):
 
             from erlab.interactive.fermiedge import GoldTool
 
-            if self._goldtool is not None:
-                self._goldtool.close()
-                self._goldtool = None
-
-            self._goldtool = GoldTool(
+            goldtool = GoldTool(
                 data, data_name="data" + self.selection_code, execute=False
             )
-            self._goldtool.show()
+            self._associated_tools.append(goldtool)
+            goldtool.show()
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:
             from erlab.interactive.derivative import DerivativeTool
 
-            if self._dtool is not None:
-                self._dtool.close()
-                self._dtool = None
-
-            self._dtool = DerivativeTool(
+            tool = DerivativeTool(
                 self.current_data, data_name="data" + self.selection_code
             )
-            self._dtool.show()
+            self._associated_tools.append(tool)
+            tool.show()
 
     def refresh_manual_range(self) -> None:
         if self.is_independent:
@@ -1747,10 +1787,20 @@ class ItoolPlotItem(pg.PlotItem):
         if len(kwargs) != 0:
             self.setRange(**kwargs)
 
+    @QtCore.Slot()
+    def toggle_aspect_equal(self) -> None:
+        vb = self.getViewBox()
+
+        if vb.state["aspectLocked"] is False:
+            vb.setAspectLocked(True, ratio=1.0)
+        else:
+            vb.setAspectLocked(False)
+
     def getMenu(self) -> QtWidgets.QMenu:
         return self.ctrlMenu
 
     def getViewBox(self) -> pg.ViewBox:
+        # override for type hinting
         return self.vb
 
     def mouseDragEvent(
@@ -2018,17 +2068,17 @@ class ItoolPlotItem(pg.PlotItem):
         self.setTitle(None)
 
     def connect_signals(self) -> None:
-        self._slicer_area.sigIndexChanged.connect(self.refresh_items_data)
-        self._slicer_area.sigBinChanged.connect(self.refresh_items_data)
-        self._slicer_area.sigShapeChanged.connect(self.update_manual_range)
-        self._slicer_area.sigShapeChanged.connect(self.remove_guidelines)
+        self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.connect(self.update_manual_range)
+        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.vb.sigRangeChanged.connect(self.refresh_manual_range)
 
     def disconnect_signals(self) -> None:
-        self._slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
-        self._slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self._slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
-        self._slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
+        self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
+        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
@@ -2130,11 +2180,14 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        return self._slicer_area
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
     def slicer_area(self, value: ImageSlicerArea) -> None:
-        self._slicer_area = value
+        self._slicer_area = weakref.ref(value)
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -2143,7 +2196,7 @@ class ItoolPlotItem(pg.PlotItem):
 
 class ItoolColorBarItem(BetterColorBarItem):
     def __init__(self, slicer_area: ImageSlicerArea, **kwargs) -> None:
-        self._slicer_area = slicer_area
+        self.slicer_area = slicer_area
         kwargs.setdefault(
             "axisItems",
             {a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")},
@@ -2155,7 +2208,14 @@ class ItoolColorBarItem(BetterColorBarItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        return self._slicer_area
+        _slicer_area = self._slicer_area()
+        if _slicer_area:
+            return _slicer_area
+        raise LookupError("Parent was destroyed")
+
+    @slicer_area.setter
+    def slicer_area(self, value: ImageSlicerArea) -> None:
+        self._slicer_area = weakref.ref(value)
 
     @property
     def images(self):

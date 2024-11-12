@@ -256,15 +256,6 @@ class ArraySlicer(QtCore.QObject):
     def absnanmax(self) -> float:
         return max(abs(self.nanmin), abs(self.nanmax))
 
-    @functools.cached_property
-    def absnanmin(self) -> float:
-        mn, mx = self.nanmin, self.nanmax
-        if mn * mx <= np.float32(0.0):
-            return 0.0
-        if mn < np.float32(0.0):
-            return -mx
-        return mn
-
     @property
     def limits(self) -> tuple[float, float]:
         """Return the global minima and maxima of the data."""
@@ -325,6 +316,9 @@ class ArraySlicer(QtCore.QObject):
 
         """
         data = data.copy().squeeze()
+
+        if data.size == 0:
+            raise ValueError("Data must not be empty.")
 
         if data.ndim < 2:
             raise ValueError("Data must have at least two dimensions.")
@@ -399,7 +393,7 @@ class ArraySlicer(QtCore.QObject):
             Whether to clear the cache that contains the transposed data values.
 
         """
-        for prop in ("nanmax", "nanmin", "absnanmax", "absnanmin"):
+        for prop in ("nanmax", "nanmin", "absnanmax"):
             self._reset_property_cache(prop)
 
         if include_vals:
@@ -682,11 +676,12 @@ class ArraySlicer(QtCore.QObject):
         binned = self.get_binned(cursor)
 
         for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
-            inc = self.incs[self._obj.dims.index(dim)]
+            axis_idx = self._obj.dims.index(dim)
+            inc = self.incs[axis_idx]
             # Estimate minimum number of decimal places required to represent selection
-            order = int(-np.floor(np.log10(inc)) + 1)
+            order = self.get_significant(axis_idx)
 
-            if binned[self._obj.dims.index(dim)]:
+            if binned[axis_idx]:
                 coord = self._obj[dim][selector].values
 
                 out[dim] = float(np.round(coord.mean(), order))

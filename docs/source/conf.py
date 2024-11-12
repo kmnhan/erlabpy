@@ -174,6 +174,8 @@ napoleon_type_aliases = {
     "NXgroup": "`NXgroup <nexusformat.nexus.tree.NXgroup>`",
     "NXlink": "`NXlink <nexusformat.nexus.tree.NXlink>`",
     "NXdata": "`NXdata <nexusformat.nexus.tree.NXdata>`",
+    "lmfit.Parameters": "`lmfit.Parameters <lmfit.parameter.Parameters>`",
+    "lmfit.Model": "`lmfit.Model <lmfit.model.Model>`",
 }
 napoleon_custom_sections = [("Signals", "params_style")]
 

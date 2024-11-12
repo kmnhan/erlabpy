@@ -90,6 +90,8 @@ The rule of thumb is that if you can do something that applies to a single curso
 can do it to all cursors by holding :kbd:`Alt`. Also, keyboard shortcuts that are
 related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
 
+.. _imagetool-manager-guide:
+
 Using the ImageTool manager
 ---------------------------
 One drawback of using interactive tools inside Jupyter notebooks is that the tool

@@ -10,6 +10,7 @@ import sys
 import threading
 import types
 import warnings
+import weakref
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
@@ -32,6 +33,7 @@ __all__ = [
     "BetterAxisItem",
     "BetterSpinBox",
     "DictMenuBar",
+    "ExclusiveComboGroup",
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
@@ -229,6 +231,8 @@ def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, 
     params = inspect.signature(func).parameters
 
     for k, v in dict(kwargs).items():
+        if k not in params:
+            continue
         if params[k].default is not inspect.Parameter.empty and v == params[k].default:
             kwargs.pop(k)
     return kwargs
@@ -1768,6 +1772,45 @@ class DictMenuBar(QtWidgets.QMenuBar):
         if changed is not None:
             action.changed.connect(changed)
         return action
+
+
+class ExclusiveComboGroup(QtCore.QObject):
+    """A group of mutually exclusive comboboxes.
+
+    Adapted from `this StackOverflow answer <https://stackoverflow.com/a/66093311>`_.
+
+    This group stores only weak references to the comboboxes, so it is necessary to keep
+    a reference to the comboboxes elsewhere in the code.
+    """
+
+    def __init__(self, parent=None, exclude_first: bool = False) -> None:
+        super().__init__(parent)
+        self._combos: list[weakref.ref[QtWidgets.QComboBox]] = []
+        self._role = QtCore.Qt.ItemDataRole.UserRole + 500
+        self._exclude_first = exclude_first
+
+    def addCombo(self, combo: QtWidgets.QComboBox) -> None:
+        combo.activated.connect(lambda: self._handle_activated(combo))
+        self._combos.append(weakref.ref(combo))
+
+    def _handle_activated(self, target: QtWidgets.QComboBox) -> None:
+        index = target.currentIndex()
+        groupid = id(target)
+        for cb in self._combos:
+            combo = cb()
+            if combo is None or combo is target:
+                continue
+            previous = combo.findData(groupid, self._role)
+
+            view: QtWidgets.QAbstractItemView | None = combo.view()
+
+            if isinstance(view, QtWidgets.QListView):
+                if previous >= 0:
+                    view.setRowHidden(previous, False)
+                    combo.setItemData(previous, None, self._role)
+                if (index > 0) or (index == 0 and not self._exclude_first):
+                    combo.setItemData(index, groupid, self._role)
+                    view.setRowHidden(index, True)
 
 
 class RotatableLine(pg.InfiniteLine):

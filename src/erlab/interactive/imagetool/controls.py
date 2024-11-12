@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import weakref
 from typing import TYPE_CHECKING, ClassVar, cast
 
 import numpy as np
-import pyqtgraph as pg
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -117,9 +117,9 @@ class ItoolControlsBase(QtWidgets.QWidget):
     def __init__(
         self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
     ) -> None:
-        super().__init__(*args, **kwargs)
-        self._slicer_area = slicer_area
         self.sub_controls: list[ItoolControlsBase] = []
+        super().__init__(*args, **kwargs)
+        self._parent_control = weakref.ref(slicer_area)
         self.initialize_layout()
         self.initialize_widgets()
         self.connect_signals()
@@ -175,16 +175,24 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     @property
     def is_nested(self) -> bool:
-        return isinstance(self._slicer_area, ItoolControlsBase)
+        return isinstance(self.parent_control, ItoolControlsBase)
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        if isinstance(self._slicer_area, ItoolControlsBase):
-            return self._slicer_area.slicer_area
-        return self._slicer_area
+        parent_control = self.parent_control
+        if isinstance(parent_control, ItoolControlsBase):
+            return parent_control.slicer_area
+        return parent_control
 
-    @slicer_area.setter
-    def slicer_area(self, value: ImageSlicerArea) -> None:
+    @property
+    def parent_control(self) -> ImageSlicerArea | ItoolControlsBase:
+        ref = self._parent_control()
+        if ref is not None:
+            return ref
+        raise LookupError("Parent was destroyed")
+
+    @parent_control.setter
+    def parent_control(self, value: ImageSlicerArea | ItoolControlsBase) -> None:
         """Set the `ImageSlicerArea` instance for the control widget.
 
         Initially, the goal was to be able to control multiple `ImageSlicerArea`s with a
@@ -201,14 +209,12 @@ class ItoolControlsBase(QtWidgets.QWidget):
         # ignore until https://bugreports.qt.io/browse/PYSIDE-229 is fixed
         with contextlib.suppress(RuntimeError):
             self.disconnect_signals()
-        self._slicer_area = value
+        self._parent_control = weakref.ref(value)
         clear_layout(self.layout())
         self.sub_controls = []
         self.initialize_widgets()
         self.update_content()
         self.connect_signals()
-
-        print("called!")
 
 
 # class ItoolAAAAAControls(ItoolControlsBase):
@@ -277,7 +283,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         self.cb_cursors.setIconSize(QtCore.QSize(10, 10))
         for i in range(self.n_cursors):
-            self.cb_cursors.addItem(self._cursor_icon(i), self._cursor_name(i))
+            self.cb_cursors.addItem(
+                self.slicer_area._cursor_icon(i), self.slicer_area._cursor_name(i)
+            )
         if self.n_cursors == 1:
             # can't remove more cursors
             self.cb_cursors.setDisabled(True)
@@ -476,23 +484,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         # self.btn_snap.refresh_icons()
         self.btn_snap.blockSignals(False)
 
-    def _cursor_name(self, i: int) -> str:
-        # for cursor combobox content
-        return f" Cursor {int(i)}"
-
-    def _cursor_icon(self, i: int) -> QtGui.QIcon:
-        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_RGBA64)
-        img.fill(QtCore.Qt.GlobalColor.transparent)
-
-        painter = QtGui.QPainter(img)
-        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
-
-        clr = self.slicer_area.cursor_colors[i]
-        painter.setBrush(pg.mkColor(clr))
-        painter.drawEllipse(img.rect())
-        painter.end()
-        return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
-
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
         if count == self.cb_cursors.count():
@@ -506,8 +497,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.cb_cursors.setDisabled(False)
         # self.slicer_area.add_cursor()
         self.cb_cursors.addItem(
-            self._cursor_icon(self.current_cursor),
-            self._cursor_name(self.current_cursor),
+            self.slicer_area._cursor_icon(self.current_cursor),
+            self.slicer_area._cursor_name(self.current_cursor),
         )
         self.cb_cursors.setCurrentIndex(self.current_cursor)
         self.btn_rem.setDisabled(False)
@@ -516,9 +507,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
         # self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
         for i in range(self.cb_cursors.count()):
-            self.cb_cursors.setItemText(i, self._cursor_name(i))
-            self.cb_cursors.setItemIcon(i, self._cursor_icon(i))
-        self.cb_cursors.setCurrentText(self._cursor_name(self.current_cursor))
+            self.cb_cursors.setItemText(i, self.slicer_area._cursor_name(i))
+            self.cb_cursors.setItemIcon(i, self.slicer_area._cursor_icon(i))
+        self.cb_cursors.setCurrentText(
+            self.slicer_area._cursor_name(self.current_cursor)
+        )
         if i == 0:
             self.cb_cursors.setDisabled(True)
             self.btn_rem.setDisabled(True)

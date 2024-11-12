@@ -31,6 +31,7 @@ import threading
 import time
 import traceback
 import uuid
+import weakref
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
@@ -169,6 +170,61 @@ class _QHLine(QtWidgets.QFrame):
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
 
 
+class _RenameWidget(QtWidgets.QWidget):
+    def __init__(self, original_name: str) -> None:
+        super().__init__()
+        layout = QtWidgets.QHBoxLayout()
+        self.setLayout(layout)
+
+        self.line_original = QtWidgets.QLineEdit(original_name)
+        self.line_original.setReadOnly(True)
+
+        self.line_new = QtWidgets.QLineEdit()
+        self.line_new.setPlaceholderText("New name")
+
+        layout.addWidget(self.line_original)
+        layout.addWidget(QtWidgets.QLabel("→"))
+        layout.addWidget(self.line_new)
+
+
+class _RenameDialog(QtWidgets.QDialog):
+    def __init__(
+        self, manager: _ImageToolManagerGUI, original_names: list[str]
+    ) -> None:
+        super().__init__(manager)
+        self._manager = weakref.ref(manager)
+
+        self._layout = QtWidgets.QVBoxLayout()
+        self.setLayout(self._layout)
+
+        self._rename_widgets: list[_RenameWidget] = []
+
+        for name in original_names:
+            rename_widget = _RenameWidget(name)
+            self._layout.addWidget(rename_widget)
+            self._rename_widgets.append(rename_widget)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        self._layout.addWidget(button_box)
+
+    def new_names(self) -> list[str]:
+        return [w.line_new.text() for w in self._rename_widgets]
+
+    def accept(self) -> None:
+        manager = self._manager()
+        if manager is not None:
+            for index, new_name in zip(
+                manager.selected_tool_indices, self.new_names(), strict=True
+            ):
+                manager.rename_tool(index, new_name)
+        super().accept()
+
+
 class _ImageToolOptionsWidget(QtWidgets.QWidget):
     def __init__(
         self, manager: _ImageToolManagerGUI, index: int, tool: ImageTool
@@ -176,7 +232,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         super().__init__()
         self._tool: ImageTool | None = None
 
-        self.manager: _ImageToolManagerGUI = manager
+        self._manager = weakref.ref(manager)
         self.index: int = index
         self._archived_fname: str | None = None
         self._recent_geometry: QtCore.QRect | None = None
@@ -186,6 +242,13 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         self.manager.sigLinkersChanged.connect(self.update_link_icon)
         self._setup_gui()
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+
+    @property
+    def manager(self) -> _ImageToolManagerGUI:
+        _manager = self._manager()
+        if _manager:
+            return _manager
+        raise LookupError("Parent was destroyed")
 
     @property
     def tool(self) -> ImageTool | None:
@@ -226,6 +289,18 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
     def archived(self) -> bool:
         return self._tool is None
 
+    @property
+    def name(self) -> str:
+        return self.check.text().removeprefix(f"{self.index}").removeprefix(": ")
+
+    @name.setter
+    def name(self, title: str) -> None:
+        new_title = f"{self.index}"
+        if title != "":
+            new_title += f": {title}"
+        cast(ImageTool, self.tool).setWindowTitle(new_title)
+        self.check.setText(new_title)
+
     def eventFilter(self, obj, event):
         if obj == self.tool and (
             event.type() == QtCore.QEvent.Type.Show
@@ -262,7 +337,11 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             on="mdi6.archive-outline", off="mdi6.archive-off-outline"
         )
         self.archive_btn.toggled.connect(self.toggle_archive)
-        self.archive_btn.setToolTip("Archive/Unarchive")
+        self.archive_btn.setToolTip(
+            "Archive/Unarchive"
+            "\n"
+            "Archived windows use minimal resources, but cannot be interacted with."
+        )
 
         for btn in (
             self.link_icon,
@@ -287,12 +366,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         if not self.archived:
             if title is None:
                 title = cast(ImageTool, self.tool).windowTitle()
-
-            new_title = f"{self.index}"
-            if title != "":
-                new_title += f": {title}"
-            cast(ImageTool, self.tool).setWindowTitle(new_title)
-            self.check.setText(new_title)
+            self.name = title
 
     @QtCore.Slot()
     def update_link_icon(self) -> None:
@@ -404,6 +478,10 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.close_button.clicked.connect(self.close_selected)
         self.close_button.setToolTip("Close selected windows")
 
+        self.rename_button = IconButton("mdi6.rename")
+        self.rename_button.clicked.connect(self.rename_selected)
+        self.rename_button.setToolTip("Rename selected windows")
+
         self.link_button = IconButton("mdi6.link-variant")
         self.link_button.clicked.connect(self.link_selected)
         self.link_button.setToolTip("Link selected windows")
@@ -414,6 +492,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
 
         self.titlebar_layout.addWidget(self.add_button)
         self.titlebar_layout.addWidget(self.close_button)
+        self.titlebar_layout.addWidget(self.rename_button)
         self.titlebar_layout.addWidget(self.link_button)
         self.titlebar_layout.addWidget(self.unlink_button)
 
@@ -538,6 +617,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         """Update the state of the buttons based on the current selection."""
         selection = self.selected_tool_indices
         self.close_button.setEnabled(len(selection) != 0)
+        self.rename_button.setEnabled(len(selection) != 0)
 
         match len(selection):
             case 0:
@@ -561,7 +641,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
             if all(p == proxies[0] for p in proxies):
                 self.link_button.setEnabled(False)
 
-    def remove_tool(self, index: int) -> None:
+    def remove_tool(self, index: int, collect: bool = True) -> None:
         opt = self.tool_options.pop(index)
         if not opt.archived:
             cast(ImageTool, opt.tool).removeEventFilter(opt)
@@ -570,7 +650,8 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         opt.close_tool()
         opt.close()
         del opt
-        gc.collect()
+        if collect:
+            gc.collect()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -596,7 +677,15 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         )
         if ret == QtWidgets.QMessageBox.StandardButton.Yes:
             for name in checked_names:
-                self.remove_tool(name)
+                self.remove_tool(name, collect=False)
+            gc.collect()
+
+    @QtCore.Slot()
+    def rename_selected(self) -> None:
+        dialog = _RenameDialog(
+            self, [self.tool_options[i].name for i in self.selected_tool_indices]
+        )
+        dialog.exec()
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -615,6 +704,9 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.sigReloadLinkers.emit()
         if deselect:
             self.deselect_all()
+
+    def rename_tool(self, index: int, new_name: str) -> None:
+        self.tool_options[index].name = new_name
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
         linker = SlicerLinkProxy(
@@ -659,9 +751,17 @@ class ImageToolManager(_ImageToolManagerGUI):
         """
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
-        indices: list[int] = [
-            self.add_tool(ImageTool(d, **kwargs), activate=True) for d in data
-        ]
+        indices: list[int] = []
+
+        for d in data:
+            try:
+                indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An error occurred while creating the ImageTool window:\n{e}",
+                )
 
         if link:
             self.link_tools(*indices, link_colors=link_colors)
@@ -691,7 +791,7 @@ class ImageToolManager(_ImageToolManagerGUI):
                 return
 
             for tool in list(self.tool_options.keys()):
-                self.remove_tool(tool)
+                self.remove_tool(tool, collect=False)
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()

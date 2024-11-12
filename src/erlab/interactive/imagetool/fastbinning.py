@@ -16,14 +16,14 @@ import numba.typed
 import numpy as np
 import numpy.typing as npt
 
+_general_nanmean_func: Callable = np.nanmean
+
 if importlib.util.find_spec("numbagg"):
     import numbagg
 
-    _general_nanmean_func: Callable = numbagg.nanmean
-else:
-    _general_nanmean_func = np.nanmean
+    _general_nanmean_func = numbagg.nanmean
 
-# _SIG_N_M: List of signatures that reduces from N to M dimensions.
+# _SIG_M_N is the list of signatures that reduces from M to N dimensions.
 
 _SIG_2_1 = [
     numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 2, "C")),
@@ -371,7 +371,7 @@ def fast_nanmean(
         return _nanmean_all(a)
     if a.ndim > 4:
         return np.ascontiguousarray(
-            _general_nanmean_func(a.astype(np.float64), axis), dtype=a.dtype
+            _general_nanmean_func(a.astype(np.float64), axis=axis), dtype=a.dtype
         )
     if isinstance(axis, Collection):
         if len(axis) == a.ndim:

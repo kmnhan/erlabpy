@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     # If you change anything here, also update environment.yml and docs/requirements.txt
     "h5netcdf>=1.2.0",
-    "igor2>=0.5.6",
+    "igor2>=0.5.9",
     "joblib>=1.3.2",
     "lmfit>=1.3.2",
     "matplotlib>=3.8.0",
@@ -47,7 +47,7 @@ io = ["astropy>=5.1.1", "nexusformat>=1.0.6"]
 perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 dev = [
-    "mypy>=1.11.0",
+    "mypy>=1.13.0",
     "pooch>=1.8.0",
     "pre-commit>=3.7.0",
     "pytest-cov>=5.0.0",
@@ -232,6 +232,7 @@ exclude_also = [
     "except varname.VarnameRetrievingError:",
     "if TYPE_CHECKING:",
     "def _wrapped_for_coverage",
+    "raise LookupError",
 ]
 
 [tool.mypy]
