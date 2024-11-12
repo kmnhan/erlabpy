@@ -124,8 +124,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "chore: update changelog"
-          git push
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: update changelog"
+            git push
+          else
+            echo "nothing to commit, working tree clean"
+          fi
 
   release:
     name: Release
