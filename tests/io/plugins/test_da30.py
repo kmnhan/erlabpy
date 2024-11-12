@@ -20,8 +20,11 @@ def expected_dir(data_dir):
     ("args", "expected"),
     [
         ("f0001f_001.ibw", "f0001f_001.h5"),
+        (1, "f0001f_001.h5"),
         ("f0002.zip", "f0002.h5"),
+        (2, "f0002.h5"),
         ("f0003.pxt", "f0003.h5"),
+        (3, "f0003.h5"),
     ],
 )
 def test_load(expected_dir, args, expected):
