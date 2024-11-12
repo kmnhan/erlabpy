@@ -19,12 +19,9 @@ import lmfit
 import numpy as np
 import tqdm.auto
 import xarray as xr
+from xarray.core.dataarray import _THIS_ARRAY
 
-from erlab.accessors.utils import (
-    _THIS_ARRAY,
-    ERLabDataArrayAccessor,
-    ERLabDatasetAccessor,
-)
+from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 from erlab.utils.misc import emit_user_level_warning
 from erlab.utils.parallel import joblib_progress
 

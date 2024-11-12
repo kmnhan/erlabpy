@@ -5,10 +5,6 @@ from typing import Any, TypeGuard, TypeVar, cast
 
 import xarray as xr
 
-# Used as the key corresponding to a DataArray's variable when converting arbitrary
-# DataArray objects to datasets, adapted from xarray.core.dataarray
-_THIS_ARRAY: str = "<this-array>"
-
 
 class ERLabDataArrayAccessor:
     """Base class for DataArray accessors."""
