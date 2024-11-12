@@ -97,6 +97,7 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
 PRETTY_NAMES: dict[str, tuple[str, str]] = {
     "temperature": ("Temperature", "Temperature"),
     "T": (r"\ensuremath{T}", r"$T$"),
+    "sample_temp": (r"\ensuremath{T}", r"$T$"),
     "t": (r"\ensuremath{t}", r"$t$"),
     "beta": (r"\ensuremath{\beta}", r"$\beta$"),
     "theta": (r"\ensuremath{\theta}", r"$\theta$"),
@@ -123,6 +124,7 @@ The first element is for LaTeX, and the second is for plain text.
 PRETTY_UNITS: dict[str, tuple[str, str]] = {
     "temperature": (r"K", r"K"),
     "T": (r"K", r"K"),
+    "sample_temp": (r"K", r"K"),
     "t": (r"s", r"s"),
     "theta": (r"deg", r"deg"),
     "beta": (r"deg", r"deg"),

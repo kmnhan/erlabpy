@@ -33,7 +33,7 @@ class IgorBackendEntrypoint(BackendEntrypoint):
     """
 
     description = "Open Igor Pro files (.pxt, .pxp and .ibw) in Xarray"
-    url = "https://erlabpy.readthedocs.io/en/latest/generated/erlab.io.igor.html"
+    url = "https://erlabpy.readthedocs.io/en/stable/generated/erlab.io.igor.html"
 
     def open_dataset(  # type: ignore[override]  # allow LSP violation
         self,

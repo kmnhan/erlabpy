@@ -6,8 +6,6 @@ ERLabPy
 
    **Date**: |today|
 
-   **Download documentation**: `PDF <https://erlabpy.readthedocs.io/_/downloads/en/latest/pdf/>`_
-
    .. image:: https://img.shields.io/pypi/pyversions/erlab?style=flat-square&logo=python&logoColor=white
        :target: https://pypi.org/project/erlab/
        :alt: Supported Python Versions
