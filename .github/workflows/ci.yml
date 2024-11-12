@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       do_release:
-        description: 'True to create a new release'
+        description: 'Create a new release'
         required: true
         type: boolean
   schedule:
@@ -104,6 +104,9 @@ jobs:
     if: github.event_name == 'push' && github.repository == 'kmnhan/erlabpy'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -146,7 +149,6 @@ jobs:
           fetch-depth: 0
 
       - name: Run commitizen
-        if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
         id: cz
         uses: commitizen-tools/commitizen-action@master
         with:
