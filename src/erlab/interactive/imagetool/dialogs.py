@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-__all__ = ["RotationDialog", "CropDialog", "NormalizeDialog"]
-
 import weakref
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,8 +23,20 @@ if TYPE_CHECKING:
 
 
 class _DataManipulationDialog(QtWidgets.QDialog):
+    """Parent class for a dialog that manipulates data.
+
+    In practice, use child classes `DataTransformDialog` and `DataFilterDialog`.
+    """
+
     title: str | None = None
-    show_copy_button: bool = False
+    """The title of the dialog window."""
+
+    enable_copy: bool = False
+    """Whether to show a button to copy the code to the clipboard.
+
+    If True, the button will be shown in the dialog box. The `make_code` method must be
+    overridden to provide the code to be copied.
+    """
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__()
@@ -44,7 +54,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
-        if self.show_copy_button:
+        if self.enable_copy:
             self.copy_button = QtWidgets.QPushButton("Copy Code")
             self.copy_button.clicked.connect(
                 lambda: copy_to_clipboard(self.make_code())
@@ -80,20 +90,34 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         # Overridden by subclasses
         pass
 
-    def process_data(self) -> xr.DataArray:
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
         # Overridden by subclasses
-        return self.slicer_area.data
+        return data
 
     def make_code(self) -> str:
         # Overridden by subclasses
         return ""
 
 
-class _DataTransformDialog(_DataManipulationDialog):
-    """
-    Parent class for implementing data changes that affect both shape and values.
+class DataTransformDialog(_DataManipulationDialog):
+    """Parent class for implementing data changes that affect both shape and values.
 
-    These changes are destructive and cannot be undone.
+    These changes are destructive and cannot be undone. The user can choose to open the
+    transformed data in a new window or replace the current data.
+
+    - Override method `setup_widgets` to add widgets to the dialog.
+
+    - Override method `process_data` to implement the data transformation.
+
+    - Override method `make_code` to generate code that can be copied to the clipboard.
+
+    - Override attribute `title` to set the title of the dialog window.
+
+    - Override attribute `enable_copy` to show or hide the copy button.
+
+    - Override attributes `prefix` and `suffix` to set the prefix and suffix of the new
+      data name.
+
     """
 
     prefix: str = ""
@@ -116,9 +140,14 @@ class _DataTransformDialog(_DataManipulationDialog):
             if self.new_window_check.isChecked():
                 from erlab.interactive.imagetool import itool
 
-                itool(self.process_data().rename(new_name), execute=False)
+                itool(
+                    self.process_data(self.slicer_area.data).rename(new_name),
+                    execute=False,
+                )
             else:
-                self.slicer_area.set_data(self.process_data().rename(new_name))
+                self.slicer_area.set_data(
+                    self.process_data(self.slicer_area.data).rename(new_name)
+                )
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
             return
@@ -126,10 +155,30 @@ class _DataTransformDialog(_DataManipulationDialog):
         super().accept()
 
 
-class _DataFilterDialog(_DataManipulationDialog):
-    """Parent class for implementing data changes that affect only the values."""
+class DataFilterDialog(_DataManipulationDialog):
+    """Parent class for implementing data changes that only affects the appearance.
+
+    These changes are not destructive and can be undone from the menu bar. Only one kind
+    of filter can be applied at a time, and applying a new kind of filter will replace
+    the previous one.
+
+    - Override method `setup_widgets` to add widgets to the dialog.
+
+    - Override method `process_data` to implement the filter. The output must be a new
+      DataArray with the same shape as the input.
+
+    - Override method `make_code` to generate code that can be copied to the clipboard.
+
+    - Override attribute `title` to set the title of the dialog window.
+
+    - Override attribute `enable_copy` to show or hide the copy button.
+
+    - Override attributes `enable_preview` to show or hide the preview button.
+
+    """
 
     enable_preview: bool = True
+    """Whether to show a preview button."""
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
@@ -145,7 +194,7 @@ class _DataFilterDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def _preview(self):
         self._previewed = True
-        self.slicer_area.apply_func(self.func)
+        self.slicer_area.apply_func(self.process_data)
 
     @QtCore.Slot()
     def reject(self) -> None:
@@ -156,20 +205,16 @@ class _DataFilterDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         try:
-            self.slicer_area.apply_func(self.func)
+            self.slicer_area.apply_func(self.process_data)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
             return
         super().accept()
 
-    def func(self, data: xr.DataArray) -> xr.DataArray:
-        # Implement this method in subclasses
-        raise NotImplementedError
 
-
-class RotationDialog(_DataTransformDialog):
+class RotationDialog(DataTransformDialog):
     suffix = " Rotated"
-    show_copy_button = True
+    enable_copy = True
 
     @property
     def _rotate_params(self) -> dict[str, Any]:
@@ -222,10 +267,10 @@ class RotationDialog(_DataTransformDialog):
             ):
                 spin.setValue(val)
 
-    def process_data(self) -> xr.DataArray:
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
         from erlab.analysis.transform import rotate
 
-        return rotate(self.slicer_area.data, **self._rotate_params)
+        return rotate(data, **self._rotate_params)
 
     def make_code(self) -> str:
         from erlab.analysis.transform import rotate
@@ -244,9 +289,9 @@ class RotationDialog(_DataTransformDialog):
         )
 
 
-class CropDialog(_DataTransformDialog):
+class CropDialog(DataTransformDialog):
     suffix = " Cropped"
-    show_copy_button = True
+    enable_copy = True
 
     @property
     def _enabled_dims(self) -> list[Hashable]:
@@ -340,8 +385,8 @@ class CropDialog(_DataTransformDialog):
 
         self.layout_.addRow(dim_group)
 
-    def process_data(self) -> xr.DataArray:
-        return self.slicer_area.data.sel(self._slice_kwargs)
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return data.sel(self._slice_kwargs)
 
     def make_code(self) -> str:
         kwargs: dict[Hashable, slice] = self._slice_kwargs
@@ -355,9 +400,9 @@ class CropDialog(_DataTransformDialog):
         return out.replace(", None)", ")")
 
 
-class NormalizeDialog(_DataFilterDialog):
+class NormalizeDialog(DataFilterDialog):
     title = "Normalize"
-    show_copy_button = False
+    enable_copy = False
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
@@ -387,7 +432,7 @@ class NormalizeDialog(_DataFilterDialog):
         self.layout_.addRow(dim_group)
         self.layout_.addRow(option_group)
 
-    def func(self, data: xr.DataArray) -> xr.DataArray:
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
         norm_dims = tuple(k for k, v in self.dim_checks.items() if v.isChecked())
         if len(norm_dims) == 0:
             return data

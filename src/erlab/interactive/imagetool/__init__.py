@@ -427,7 +427,7 @@ class ImageTool(BaseImageTool):
                 title = ""
             elif name is None:
                 title = f"{path}"
-            elif path is None:
+            elif path is None or name == path:
                 title = f"{name}"
             else:
                 title = f"{name} ({path})"
@@ -695,20 +695,21 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
         self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
+    def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
+        dialog = dialog_cls(self.slicer_area)
+        dialog.exec()
+
     @QtCore.Slot()
     def _rotate(self) -> None:
-        dialog = RotationDialog(self.slicer_area)
-        dialog.exec()
+        self.execute_dialog(RotationDialog)
 
     @QtCore.Slot()
     def _crop(self) -> None:
-        dialog = CropDialog(self.slicer_area)
-        dialog.exec()
+        self.execute_dialog(CropDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:
-        dialog = NormalizeDialog(self.slicer_area)
-        dialog.exec()
+        self.execute_dialog(NormalizeDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
