@@ -25,6 +25,12 @@ from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
 
+def _check_hvplot():
+    """Check if hvplot is installed and raise an ImportError if not."""
+    if not importlib.util.find_spec("hvplot"):
+        raise ImportError("hvplot is required to visualize this data interactively")
+
+
 @xr.register_dataarray_accessor("qplot")
 class PlotAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qplot` accessor for plotting data."""
@@ -81,9 +87,9 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         """
         if self._obj.ndim >= 2 and self._obj.ndim <= 4:
             return self.itool(*args, **kwargs)
-        if importlib.util.find_spec("hvplot"):
-            return self.hvplot(*args, **kwargs)
-        raise ValueError("Data must have at least two dimensions.")
+
+        _check_hvplot()
+        return self.hvplot(*args, **kwargs)
 
     def itool(self, *args, **kwargs):
         """Shortcut for :func:`erlab.interactive.imagetool.itool`.
@@ -119,8 +125,7 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
         ImportError
             If `hvplot <https://hvplot.holoviz.org/>`_ is not installed.
         """
-        if not importlib.util.find_spec("hvplot"):
-            raise ImportError("qshow.hvplot requires hvplot to be installed")
+        _check_hvplot()
         import hvplot.xarray  # noqa: F401
 
         return self._obj.hvplot(*args, **kwargs)
@@ -183,8 +188,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         return itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
-        if not importlib.util.find_spec("hvplot"):
-            raise ImportError("hvplot is required for qshow.hvplot()")
+        _check_hvplot()
         import hvplot.xarray  # noqa: F401
 
         return self._obj.hvplot(*args, **kwargs)
@@ -246,8 +250,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         :class:`panel.layout.Column`
             A panel containing the interactive visualization.
         """
-        if not importlib.util.find_spec("hvplot"):
-            raise ImportError("hvplot is required for interactive fit visualization")
+        _check_hvplot()
 
         import hvplot.xarray
         import panel
@@ -383,11 +386,19 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         )
 
     def params(self, data_var: str | None = None):
+        """Plot the coefficients and standard errors for each fitting parameter.
+
+        Parameters
+        ----------
+        data_var
+            The name of the data variable to visualize. Required only if the Dataset
+            contains fits across multiple data variables.
+
+        """
         if not self._is_fitresult:
             raise ValueError("Dataset is not a fit result")
 
-        if not importlib.util.find_spec("hvplot"):
-            raise ImportError("hvplot is required for interactive fit visualization")
+        _check_hvplot()
 
         prefix = self._determine_prefix(data_var)
 
