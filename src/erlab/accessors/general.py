@@ -149,12 +149,33 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
     @property
     def _is_fitresult(self) -> bool:
+        """Check if the Dataset is a fit result."""
         from erlab.accessors.fit import ParallelFitDataArrayAccessor
 
-        for var in set(ParallelFitDataArrayAccessor._VAR_KEYS) - {"modelfit_results"}:
-            if var not in self._obj.data_vars:
-                return False
-        return True
+        all_keys = set(ParallelFitDataArrayAccessor._VAR_KEYS) - {"modelfit_results"}
+        for k in self._obj.data_vars:
+            for var in list(all_keys):
+                if str(k).endswith(var):
+                    all_keys.remove(var)
+                    break
+            if len(all_keys) == 0:
+                return True
+        return False
+
+    @property
+    def _fitresult_data_vars(self) -> list[str]:
+        """Name of original data variables in a fit result Dataset.
+
+        If the Dataset is not a fit result or is a fit to a DataArray, an empty list is
+        returned.
+        """
+        if "modelfit_data" in self._obj.data_vars:
+            return []
+        return [
+            str(k).removesuffix("modelfit_data").rstrip("_")
+            for k in self._obj.data_vars
+            if str(k).endswith("modelfit_data")
+        ]
 
     def itool(self, *args, **kwargs):
         from erlab.interactive.imagetool import itool
@@ -173,7 +194,42 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         "DataArray", "Dataset"
     )
 
-    def fit(self, plot_components: bool = False):
+    def _determine_prefix(self, data_var: str | None) -> str:
+        """Determine the prefix for fit results.
+
+        Parameters
+        ----------
+        data_var
+            The name of the data variable to visualize. Required only if the fit result
+            dataset is a result of fitting to a Dataset with multiple data variables.
+
+        Returns
+        -------
+        prefix : str
+            The prefix for the fit results. If the fit result is from a fit to a
+            DataArray, an empty string is returned. Otherwise, the targeted data
+            variable followed by an underscore is returned.
+        """
+        all_data_vars: list[str] = self._fitresult_data_vars
+
+        if data_var is not None and data_var not in all_data_vars:
+            raise ValueError(
+                f"Fit results for data variable `{data_var}` "
+                "were not found in the Dataset."
+            )
+
+        if len(all_data_vars) == 1:
+            data_var = all_data_vars[0]
+
+        if "modelfit_results" not in self._obj.data_vars and data_var is None:
+            raise ValueError(
+                "Dataset contains fits from multiple data variables. "
+                "Provide the `data_var` argument to select the variable to visualize."
+            )
+
+        return "" if data_var is None else f"{data_var}_"
+
+    def fit(self, plot_components: bool = False, data_var: str | None = None):
         """Interactive visualization of fit results.
 
         Parameters
@@ -181,6 +237,9 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         plot_components
             If `True`, plot the components of the fit. Default is `False`. Requires the
             Dataset to have a `modelfit_results` variable.
+        data_var
+            The name of the data variable to visualize. Required only if the Dataset
+            contains fits across multiple data variables.
 
         Returns
         -------
@@ -197,12 +256,16 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         if not self._is_fitresult:
             raise ValueError("Dataset is not a fit result")
 
+        prefix = self._determine_prefix(data_var)
+
         coord_dims = [
             d
-            for d in self._obj.modelfit_stats.dims
-            if d in self._obj.modelfit_data.dims
+            for d in self._obj[f"{prefix}modelfit_stats"].dims
+            if d in self._obj[f"{prefix}modelfit_data"].dims
         ]
-        other_dims = [d for d in self._obj.modelfit_data.dims if d not in coord_dims]
+        other_dims = [
+            d for d in self._obj[f"{prefix}modelfit_data"].dims if d not in coord_dims
+        ]
 
         if len(other_dims) != 1:
             raise ValueError("Only 1D fits are supported")
@@ -215,7 +278,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         if plot_components:
             # Plot correctly across different models
             all_comps: list[str] = []
-            for res in self._obj.modelfit_results.values.flat:
+            for res in self._obj[f"{prefix}modelfit_results"].values.flat:
                 for comp in res.eval_components():
                     if comp not in all_comps:
                         all_comps.append(comp)
@@ -227,15 +290,17 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             res_part = get_slice(*s).rename(param="Parameter")
             return xr.merge(
                 [
-                    res_part.modelfit_coefficients.rename("Value"),
-                    res_part.modelfit_stderr.rename("Stderr"),
+                    res_part[f"{prefix}modelfit_coefficients"].rename("Value"),
+                    res_part[f"{prefix}modelfit_stderr"].rename("Stderr"),
                 ]
             )
 
         def get_comps(*s):
             partial_res = get_slice(*s)
             main_coord = self._obj[other_dims[0]]
-            components = partial_res.modelfit_results.item().eval_components()
+            components = (
+                partial_res[f"{prefix}modelfit_results"].item().eval_components()
+            )
 
             component_arrays = []
             for dim in all_comps:
@@ -253,15 +318,15 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             return xr.merge(
                 [
                     *component_arrays,
-                    partial_res.modelfit_data,
-                    partial_res.modelfit_best_fit,
+                    partial_res[f"{prefix}modelfit_data"],
+                    partial_res[f"{prefix}modelfit_best_fit"],
                 ]
             )
 
         part = hvplot.bind(get_slice, *sliders).interactive()
         part_params = hvplot.bind(get_slice_params, *sliders).interactive()
 
-        if "modelfit_results" not in self._obj.data_vars:
+        if f"{prefix}modelfit_results" not in self._obj.data_vars:
             emit_user_level_warning(
                 "`modelfit_results` not included in Dataset. "
                 "Components will not be plotted"
@@ -272,12 +337,14 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             "responsive": True,
             "min_width": 400,
             "min_height": 500,
-            "title": "",
+            "title": "" if data_var is None else data_var,
         }
         if plot_components:
             part_comps = hvplot.bind(get_comps, *sliders).interactive()
-            data = part_comps.modelfit_data.hvplot.scatter(**plot_kwargs)
-            fit = part_comps.modelfit_best_fit.hvplot(c="k", ylabel="", **plot_kwargs)
+            data = part_comps[f"{prefix}modelfit_data"].hvplot.scatter(**plot_kwargs)
+            fit = part_comps[f"{prefix}modelfit_best_fit"].hvplot(
+                c="k", ylabel="", **plot_kwargs
+            )
             components = part_comps.hvplot(
                 y=all_comps,
                 legend="top_right",
@@ -286,8 +353,10 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             )
             plots = components * data * fit
         else:
-            data = part.modelfit_data.hvplot.scatter(**plot_kwargs)
-            fit = part.modelfit_best_fit.hvplot(c="k", ylabel="", **plot_kwargs)
+            data = part[f"{prefix}modelfit_data"].hvplot.scatter(**plot_kwargs)
+            fit = part[f"{prefix}modelfit_best_fit"].hvplot(
+                c="k", ylabel="", **plot_kwargs
+            )
             plots = data * fit
 
         return panel.Column(
@@ -304,8 +373,8 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
                 ),
                 (
                     "Fit statistics",
-                    part.modelfit_stats.hvplot.table(
-                        columns=["fit_stat", "modelfit_stats"],
+                    part[f"{prefix}modelfit_stats"].hvplot.table(
+                        columns=["fit_stat", f"{prefix}modelfit_stats"],
                         title="",
                         responsive=True,
                     ),
@@ -313,12 +382,14 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
             ),
         )
 
-    def params(self):
+    def params(self, data_var: str | None = None):
         if not self._is_fitresult:
             raise ValueError("Dataset is not a fit result")
 
         if not importlib.util.find_spec("hvplot"):
             raise ImportError("hvplot is required for interactive fit visualization")
+
+        prefix = self._determine_prefix(data_var)
 
         import hvplot.xarray
         import panel
@@ -326,12 +397,17 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
         def _select_param(d):
             part = self._obj.sel(param=d)
-            return xr.merge([part.modelfit_coefficients, part.modelfit_stderr])
+            return xr.merge(
+                [
+                    part[f"{prefix}modelfit_coefficients"],
+                    part[f"{prefix}modelfit_stderr"],
+                ]
+            )
 
         coord_dims = [
             d
-            for d in self._obj.modelfit_stats.dims
-            if d in self._obj.modelfit_data.dims
+            for d in self._obj[f"{prefix}modelfit_stats"].dims
+            if d in self._obj[f"{prefix}modelfit_data"].dims
         ]
         if len(coord_dims) != 1:
             raise ValueError(
@@ -345,12 +421,12 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
         plot_kw = {"responsive": True, "min_height": 400, "title": ""}
         sc = sliced.hvplot.scatter(
-            x=coord_dims[0], y="modelfit_coefficients", **plot_kw
+            x=coord_dims[0], y=f"{prefix}modelfit_coefficients", **plot_kw
         )
         err = sliced.hvplot.errorbars(
             x=coord_dims[0],
-            y="modelfit_coefficients",
-            yerr1="modelfit_stderr",
+            y=f"{prefix}modelfit_coefficients",
+            yerr1=f"{prefix}modelfit_stderr",
             **plot_kw,
         )
 
