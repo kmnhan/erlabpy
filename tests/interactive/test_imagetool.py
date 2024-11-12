@@ -395,6 +395,11 @@ def test_itool_multidimensional(qtbot):
         xr.DataArray(np.arange(625).reshape((5, 5, 5, 5)), dims=["x", "y", "z", "t"])
     )
     move_and_compare_values(qtbot, win, [312.0, 187.0, 162.0, 287.0])
+    # Test aspect ratio lock
+    for img in win.slicer_area.images:
+        img.toggle_aspect_equal()
+    for img in win.slicer_area.images:
+        img.toggle_aspect_equal()
 
     win.close()
 

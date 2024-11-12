@@ -1238,9 +1238,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         horiz_pad, vert_pad
             Reserved space for the x and y axes.
         font_size
-            Font size in points.
+            Font size of axis ticks in points.
         r
-            4 numbers that determine the layout aspect ratios. See notes.
+            4 numbers that determine the aspect ratio of the layout. See notes.
 
         Notes
         -----
@@ -1336,7 +1336,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         painter = QtGui.QPainter(img)
         painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
-
         painter.setBrush(pg.mkColor(self.cursor_colors[i]))
         painter.drawEllipse(img.rect())
         painter.end()
@@ -1617,6 +1616,22 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.vb.menu.addSeparator()
 
+            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
+            equal_aspect_action.setCheckable(True)
+            equal_aspect_action.setChecked(False)
+            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
+
+            def _update_aspect_lock_state() -> None:
+                locked: bool = self.getViewBox().state["aspectLocked"] is not False
+                if equal_aspect_action.isChecked() != locked:
+                    equal_aspect_action.blockSignals(True)
+                    equal_aspect_action.setChecked(locked)
+                    equal_aspect_action.blockSignals(False)
+
+            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
+
+            self.vb.menu.addSeparator()
+
         self.slicer_area = slicer_area
         self.display_axis = display_axis
 
@@ -1772,10 +1787,20 @@ class ItoolPlotItem(pg.PlotItem):
         if len(kwargs) != 0:
             self.setRange(**kwargs)
 
+    @QtCore.Slot()
+    def toggle_aspect_equal(self) -> None:
+        vb = self.getViewBox()
+
+        if vb.state["aspectLocked"] is False:
+            vb.setAspectLocked(True, ratio=1.0)
+        else:
+            vb.setAspectLocked(False)
+
     def getMenu(self) -> QtWidgets.QMenu:
         return self.ctrlMenu
 
     def getViewBox(self) -> pg.ViewBox:
+        # override for type hinting
         return self.vb
 
     def mouseDragEvent(
