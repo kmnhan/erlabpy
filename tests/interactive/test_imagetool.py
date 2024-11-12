@@ -12,8 +12,10 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab.analysis.transform
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
-from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager import ImageToolManager, _RenameDialog
 
 
 def accept_dialog(
@@ -298,18 +300,27 @@ def test_itool_tools(qtbot, gold):
         win.show()
         win.activateWindow()
 
+    main_image = win.slicer_area.images[0]
     # Test code generation
-    assert win.slicer_area.images[0].selection_code == ""
+    assert main_image.selection_code == ""
 
     # Open goldtool from main image
-    win.slicer_area.images[0].open_in_goldtool()
-    assert isinstance(win.slicer_area.images[0]._goldtool, QtWidgets.QWidget)
-    win.slicer_area.images[0]._goldtool.close()
+    main_image.open_in_goldtool()
+    assert isinstance(main_image._associated_tools[0], GoldTool)
+
+    # Close associated windows
+    main_image.close_associated_windows()
+    assert len(main_image._associated_tools) == 0
 
     # Open dtool from main image
-    win.slicer_area.images[0].open_in_dtool()
-    assert isinstance(win.slicer_area.images[0]._dtool, QtWidgets.QWidget)
-    win.slicer_area.images[0]._dtool.close()
+    main_image.open_in_dtool()
+    assert isinstance(main_image._associated_tools[0], DerivativeTool)
+
+    # Open main image in new window
+    main_image.open_in_new_window()
+    assert isinstance(main_image._associated_tools[1], ImageTool)
+
+    main_image.close_associated_windows()
 
     win.close()
     del win
@@ -532,6 +543,18 @@ def test_manager(qtbot):
     win.tool_options[0].archive()
     win.remove_tool(0)
     qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
+
+    # Batch renaming
+    win.tool_options[1].check.setChecked(True)
+    win.tool_options[2].check.setChecked(True)
+
+    def _handle_renaming(dialog: _RenameDialog):
+        dialog._rename_widgets[0].line_new.setText("new_name_1")
+        dialog._rename_widgets[1].line_new.setText("new_name_2")
+
+    accept_dialog(win.rename_selected, pre_call=_handle_renaming)
+    assert win.tool_options[1].name == "new_name_1"
+    assert win.tool_options[2].name == "new_name_2"
 
     # Remove all checked
     win.tool_options[1].check.setChecked(True)
