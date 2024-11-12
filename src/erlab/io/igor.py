@@ -2,7 +2,6 @@ from __future__ import annotations
 
 __all__ = ["IgorBackendEntrypoint", "load_experiment", "load_igor_hdf5", "load_wave"]
 
-import logging
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -19,9 +18,6 @@ if TYPE_CHECKING:
     from io import BufferedIOBase
 
     from xarray.backends.common import AbstractDataStore
-
-# https://github.com/AFM-analysis/igor2/issues/20
-logging.getLogger("igor2.struct").setLevel(logging.ERROR)
 
 
 class IgorBackendEntrypoint(BackendEntrypoint):
