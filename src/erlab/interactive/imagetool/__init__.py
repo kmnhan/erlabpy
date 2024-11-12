@@ -997,10 +997,9 @@ class RotationDialog(_DataTransformDialog):
             self.center_spins[i].setRange(*map(float, self.array_slicer.lims[i]))
             self.center_spins[i].setSingleStep(float(self.array_slicer.incs[i]))
             self.center_spins[i].setValue(0.0)
-            self.center_spins[i].setDecimals(self.array_slicer.get_significant(i))
+            self.center_spins[i].setDecimals(self.array_slicer.get_significant(axis))
 
             self.layout_.addRow(f"Center {dim}", self.center_spins[i])
-            self.array_slicer.get_significant(axis)
 
         self.order_spin: QtWidgets.QSpinBox = QtWidgets.QSpinBox()
         self.order_spin.setRange(0, 5)
