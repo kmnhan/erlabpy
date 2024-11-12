@@ -20,7 +20,6 @@ from __future__ import annotations
 
 __all__ = ["BaseImageTool", "ImageTool", "itool"]
 
-import gc
 import os
 import pickle
 import sys
@@ -202,9 +201,6 @@ def itool(
     if execute:
         if isinstance(qapp, QtWidgets.QApplication):
             qapp.exec()
-
-        del itool_list
-        gc.collect()
 
         return None
 
