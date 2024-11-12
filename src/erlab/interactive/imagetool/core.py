@@ -1327,6 +1327,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
             width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
         )
 
+    def _cursor_name(self, i: int) -> str:
+        return f" Cursor {int(i)}"
+
+    def _cursor_icon(self, i: int) -> QtGui.QIcon:
+        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_RGBA64)
+        img.fill(QtCore.Qt.GlobalColor.transparent)
+
+        painter = QtGui.QPainter(img)
+        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+        painter.setBrush(pg.mkColor(self.cursor_colors[i]))
+        painter.drawEllipse(img.rect())
+        painter.end()
+        return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
+
     @record_history
     def toggle_snap(self, value: bool | None = None) -> None:
         if value is None:

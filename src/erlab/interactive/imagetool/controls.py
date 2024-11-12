@@ -7,7 +7,6 @@ import weakref
 from typing import TYPE_CHECKING, ClassVar, cast
 
 import numpy as np
-import pyqtgraph as pg
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -284,7 +283,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         self.cb_cursors.setIconSize(QtCore.QSize(10, 10))
         for i in range(self.n_cursors):
-            self.cb_cursors.addItem(self._cursor_icon(i), self._cursor_name(i))
+            self.cb_cursors.addItem(
+                self.slicer_area._cursor_icon(i), self.slicer_area._cursor_name(i)
+            )
         if self.n_cursors == 1:
             # can't remove more cursors
             self.cb_cursors.setDisabled(True)
@@ -483,23 +484,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         # self.btn_snap.refresh_icons()
         self.btn_snap.blockSignals(False)
 
-    def _cursor_name(self, i: int) -> str:
-        # for cursor combobox content
-        return f" Cursor {int(i)}"
-
-    def _cursor_icon(self, i: int) -> QtGui.QIcon:
-        img = QtGui.QImage(32, 32, QtGui.QImage.Format.Format_RGBA64)
-        img.fill(QtCore.Qt.GlobalColor.transparent)
-
-        painter = QtGui.QPainter(img)
-        painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
-
-        clr = self.slicer_area.cursor_colors[i]
-        painter.setBrush(pg.mkColor(clr))
-        painter.drawEllipse(img.rect())
-        painter.end()
-        return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
-
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
         if count == self.cb_cursors.count():
@@ -513,8 +497,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.cb_cursors.setDisabled(False)
         # self.slicer_area.add_cursor()
         self.cb_cursors.addItem(
-            self._cursor_icon(self.current_cursor),
-            self._cursor_name(self.current_cursor),
+            self.slicer_area._cursor_icon(self.current_cursor),
+            self.slicer_area._cursor_name(self.current_cursor),
         )
         self.cb_cursors.setCurrentIndex(self.current_cursor)
         self.btn_rem.setDisabled(False)
@@ -523,9 +507,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
         # self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         self.cb_cursors.removeItem(self.cb_cursors.currentIndex())
         for i in range(self.cb_cursors.count()):
-            self.cb_cursors.setItemText(i, self._cursor_name(i))
-            self.cb_cursors.setItemIcon(i, self._cursor_icon(i))
-        self.cb_cursors.setCurrentText(self._cursor_name(self.current_cursor))
+            self.cb_cursors.setItemText(i, self.slicer_area._cursor_name(i))
+            self.cb_cursors.setItemIcon(i, self.slicer_area._cursor_icon(i))
+        self.cb_cursors.setCurrentText(
+            self.slicer_area._cursor_name(self.current_cursor)
+        )
         if i == 0:
             self.cb_cursors.setDisabled(True)
             self.btn_rem.setDisabled(True)

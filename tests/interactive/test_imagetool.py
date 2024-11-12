@@ -620,6 +620,61 @@ def test_itool_rotate(qtbot):
     win.close()
 
 
+def test_itool_crop(qtbot):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+
+    # 2D crop
+    win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=1, value=0.0, cursor=0)
+    win.slicer_area.set_value(axis=0, value=3.0, cursor=1)
+    win.slicer_area.set_value(axis=1, value=2.0, cursor=1)
+    win.slicer_area.set_value(axis=0, value=4.0, cursor=2)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=2)
+
+    def _set_dialog_params(dialog):
+        dialog.cursor_combos[0].setCurrentIndex(0)
+        dialog.cursor_combos[1].setCurrentIndex(2)
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
+    )
+    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+
+    # 1D crop
+    win.slicer_area.set_value(axis=0, value=4.0, cursor=1)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
+
+    def _set_dialog_params(dialog):
+        dialog.cursor_combos[0].setCurrentIndex(1)
+        dialog.cursor_combos[1].setCurrentIndex(2)
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(False)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
+    )
+    assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
+
+    win.close()
+
+
 def normalize(data, norm_dims, option):
     area = data.mean(norm_dims)
     minimum = data.min(norm_dims)

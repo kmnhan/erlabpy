@@ -38,7 +38,12 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, generate_code
+from erlab.interactive.utils import (
+    DictMenuBar,
+    ExclusiveComboGroup,
+    copy_to_clipboard,
+    generate_code,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable
@@ -576,6 +581,7 @@ class ItoolMenuBar(DictMenuBar):
                         },
                         "sep_after": True,
                     },
+                    "Crop": {"triggered": self._crop},
                 },
             },
             "helpMenu": {
@@ -695,6 +701,11 @@ class ItoolMenuBar(DictMenuBar):
     @QtCore.Slot()
     def _rotate(self) -> None:
         dialog = RotationDialog(self.slicer_area)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def _crop(self) -> None:
+        dialog = CropDialog(self.slicer_area)
         dialog.exec()
 
     @QtCore.Slot()
@@ -1038,6 +1049,117 @@ class RotationDialog(_DataTransformDialog):
         return generate_code(
             rotate, [f"|{placeholder}|"], self._rotate_params, module="era.transform"
         )
+
+
+class CropDialog(_DataTransformDialog):
+    suffix = " Cropped"
+    show_copy_button = True
+
+    @property
+    def _enabled_dims(self) -> list[Hashable]:
+        return [k for k, v in self.dim_checks.items() if v.isChecked()]
+
+    @property
+    def _cursor_indices(self) -> tuple[int, int]:
+        return cast(
+            tuple[int, int], tuple(combo.currentIndex() for combo in self.cursor_combos)
+        )
+
+    @property
+    def _slice_kwargs(self) -> dict[Hashable, slice]:
+        c0, c1 = self._cursor_indices
+
+        vals = self.array_slicer._values
+
+        slice_dict = {}
+
+        for k in self._enabled_dims:
+            ax_idx = self.slicer_area.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx)
+
+            v0, v1 = vals[c0][ax_idx], vals[c1][ax_idx]
+            if v0 > v1:
+                v0, v1 = v1, v0
+
+            slice_dict[k] = slice(
+                float(np.round(v0, sig_digits)), float(np.round(v1, sig_digits))
+            )
+        return slice_dict
+
+    def exec(self):
+        if self.slicer_area.n_cursors == 1:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Only 1 Cursor",
+                "You need at least 2 cursors to crop the data.",
+            )
+            return
+        super().exec()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self._slice_kwargs == {}:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "You need to select at least one dimension.",
+            )
+            return
+        super().accept()
+
+    def setup_widgets(self) -> None:
+        if self.slicer_area.n_cursors == 1:
+            return
+
+        self._cursors_group = ExclusiveComboGroup(self)
+
+        self.cursor_combos: list[QtWidgets.QComboBox] = []
+
+        cursor_group = QtWidgets.QGroupBox("Between")
+        cursor_layout = QtWidgets.QHBoxLayout()
+        cursor_group.setLayout(cursor_layout)
+
+        for i in range(2):
+            combo = QtWidgets.QComboBox()
+            for cursor_idx in range(self.slicer_area.n_cursors):
+                combo.addItem(
+                    self.slicer_area._cursor_icon(cursor_idx),
+                    self.slicer_area._cursor_name(cursor_idx),
+                )
+            combo.setCurrentIndex(i)
+            combo.setMaximumHeight(QtGui.QFontMetrics(combo.font()).height() + 3)
+            combo.setIconSize(QtCore.QSize(10, 10))
+            cursor_layout.addWidget(combo)
+            self._cursors_group.addCombo(combo)
+            self.cursor_combos.append(combo)
+
+        self.layout_.addRow(cursor_group)
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QVBoxLayout()
+        dim_group.setLayout(dim_layout)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+
+        for d in self.slicer_area.data.dims:
+            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
+            dim_layout.addWidget(self.dim_checks[d])
+
+        self.layout_.addRow(dim_group)
+
+    def process_data(self) -> xr.DataArray:
+        return self.slicer_area.data.sel(self._slice_kwargs)
+
+    def make_code(self) -> str:
+        kwargs: dict[Hashable, slice] = self._slice_kwargs
+        if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
+            out = generate_code(
+                xr.DataArray.sel, [], kwargs=cast(dict[str, slice], kwargs), module="."
+            )
+        else:
+            out = f".sel({self._slice_kwargs})"
+
+        return out.replace(", None)", ")")
 
 
 class NormalizeDialog(_DataFilterDialog):
