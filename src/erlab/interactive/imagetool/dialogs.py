@@ -255,7 +255,7 @@ class RotationDialog(DataTransformDialog):
         self.order_spin.setValue(1)
         self.layout_.addRow("Spline Order", self.order_spin)
 
-        self.reshape_check = QtWidgets.QCheckBox("Reshape")
+        self.reshape_check: QtWidgets.QCheckBox = QtWidgets.QCheckBox("Reshape")
         self.reshape_check.setChecked(True)
         self.layout_.addRow(self.reshape_check)
 

@@ -47,7 +47,7 @@ io = ["astropy>=5.1.1", "nexusformat>=1.0.6"]
 perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 dev = [
-    "mypy>=1.11.0",
+    "mypy>=1.13.0",
     "pooch>=1.8.0",
     "pre-commit>=3.7.0",
     "pytest-cov>=5.0.0",
