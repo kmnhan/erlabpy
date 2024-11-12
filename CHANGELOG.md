@@ -1,3 +1,37 @@
+## Unreleased
+
+### Features
+
+- **interactive.imagetool:** add equal aspect ratio checkbox to right-click menu ([d4db0cf](https://github.com/kmnhan/erlabpy/commit/d4db0cf71124870778ee3af1e90d5d8d319fa486))
+- **interactive.imagetool:** add crop menu ([639749f](https://github.com/kmnhan/erlabpy/commit/639749f30966181b619796d0b6bb2485db931e19))
+- **interactive.utils:** add qobject that handles mutually exclusive selection comboboxes ([33b5f6b](https://github.com/kmnhan/erlabpy/commit/33b5f6beead46b57bb3bdc54cffe29ec9862c0c5))
+- **interactive.imagetool:** add rename button to manager ([56ac884](https://github.com/kmnhan/erlabpy/commit/56ac88463b25257b3fc29fbbf78aa4670a5091b9))
+- **interactive.imagetool:** add open in new window option to right-click menu of each plot ([8742659](https://github.com/kmnhan/erlabpy/commit/874265909f8036da9e68b36046982f6d25ec3311))
+- **accessors.general:** added `qshow.params` accessors for fit results ([2592e5a](https://github.com/kmnhan/erlabpy/commit/2592e5a480970252b8ecd744c208a9cf3366c6ae))
+
+  Calling `ds.qshow.params()` on a fit result dataset will now plot the coefficient value and errorbars as a function of fit coordinates.
+- **analysis.fit:** add Fermi-Dirac distribution to MultiPeakFunction components ([65a1e8c](https://github.com/kmnhan/erlabpy/commit/65a1e8cdce5fc67a3a21c0019775cb380f8ff2aa))
+- **io.dataloader:** add itool button to interactive summary ([ba3aa15](https://github.com/kmnhan/erlabpy/commit/ba3aa15d84a675612cd174968c319e753c2c4f81))
+
+  A button that can open the data directly in ImageTool has been added to the interactive summary. The button is displayed when the interactive summary is called while the ImageTool manager is running.
+
+### Bug Fixes
+
+- **accessors.general:** allow `qshow` for fit results from multivariable Datasets ([f5b88e7](https://github.com/kmnhan/erlabpy/commit/f5b88e742f34819bbad6a46caebbcc54bed771bb))
+- **interactive.imagetool:** fix wrong decimals for rotation center ([3fc3a50](https://github.com/kmnhan/erlabpy/commit/3fc3a500da532d73792a77ac769d15349cd36622))
+- **accessors.general:** fix component plotting for concatenated fit datasets with multiple models ([7d2976d](https://github.com/kmnhan/erlabpy/commit/7d2976db0b7cc5721b192285170941b8434e6225))
+
+### Code Refactor
+
+- directly import `_THIS_ARRAY` from xarray core ([3bd72ec](https://github.com/kmnhan/erlabpy/commit/3bd72ecc8fd57abc6abe6624c360a3a06f72ae23))
+- **interactive.imagetool:** improve dialog code structure ([5a16686](https://github.com/kmnhan/erlabpy/commit/5a16686df302ecf69098f542179bedc20aa99226))
+- **interactive.imagetool:** move dialogs into new dedicated module ([a90a735](https://github.com/kmnhan/erlabpy/commit/a90a735874e16769b135df1d2e70ef04922f27c8))
+- **interactive.imagetool:** improve error messages for invalid data ([a715ba1](https://github.com/kmnhan/erlabpy/commit/a715ba131b032ba7b2258b7c934764bde6424f62))
+
+### Performance
+
+- **interactive.imagetool:** optimize memory usage by reducing circular references ([a675e1a](https://github.com/kmnhan/erlabpy/commit/a675e1a9d1d96f4ad4fa8d4853c2cca78864342e))
+
 ## v3.0.0 (2024-11-06)
 
 ### Breaking Changes
