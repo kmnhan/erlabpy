@@ -190,24 +190,24 @@ def interpn(
     return interp(xi)
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _do_interp1(x, v0, v1):
     return v0 * (1 - x) + v1 * x
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _do_interp2(x, y, v0, v1, v2, v3):
     return _do_interp1(y, _do_interp1(x, v0, v1), _do_interp1(x, v2, v3))
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _do_interp3(x, y, z, v0, v1, v2, v3, v4, v5, v6, v7):
     return _do_interp1(
         z, _do_interp2(x, y, v0, v1, v2, v3), _do_interp2(x, y, v4, v5, v6, v7)
     )
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _calc_interp1(values, v0):
     i0 = math.floor(v0)
     n0 = values.shape[0]
@@ -215,7 +215,7 @@ def _calc_interp1(values, v0):
     return _do_interp1(v0 - i0, values[i0], values[j0])
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _calc_interp2(values, v0, v1):
     i0, i1 = math.floor(v0), math.floor(v1)
     n0, n1 = values.shape[:2]
@@ -230,7 +230,7 @@ def _calc_interp2(values, v0, v1):
     )
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _calc_interp3(values, v0, v1, v2):
     i0, i1, i2 = math.floor(v0), math.floor(v1), math.floor(v2)
     n0, n1, n2 = values.shape[:3]
@@ -250,14 +250,14 @@ def _calc_interp3(values, v0, v1, v2):
     )
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, cache=True)
 def _val2ind(val, coord):
     if val > coord[-1] or val < coord[0]:
         return np.nan
     return np.divide(val - coord[0], coord[1] - coord[0])
 
 
-@numba.njit(nogil=True, parallel=True)
+@numba.njit(nogil=True, parallel=True, cache=True)
 def _interp1(x, values, xc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[1:]
     xc_flat = xc.ravel()
@@ -276,7 +276,7 @@ def _interp1(x, values, xc, fill_value=np.nan):
     return arr_new.reshape(out_shape)
 
 
-@numba.njit(nogil=True, parallel=True)
+@numba.njit(nogil=True, parallel=True, cache=True)
 def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[2:]
     xc_flat, yc_flat = xc.ravel(), yc.ravel()
@@ -295,7 +295,7 @@ def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     return arr_new.reshape(out_shape)
 
 
-@numba.njit(nogil=True, parallel=True)
+@numba.njit(nogil=True, parallel=True, cache=True)
 def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[3:]
     xc_flat, yc_flat, zc_flat = xc.ravel(), yc.ravel(), zc.ravel()
