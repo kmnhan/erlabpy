@@ -77,9 +77,6 @@ def format_value(
     various types including numpy arrays, lists of strings, floating-point numbers,
     integers, and datetime objects.
 
-    The function also tries to replace the Unicode hyphen-minus sign "-" (U+002D) with
-    the better-looking Unicode minus sign "−" (U+2212) in most cases.
-
     - For numpy arrays:
         - If the array has a size of 1, the value is recursively formatted using
           `format_value(val.item())`.

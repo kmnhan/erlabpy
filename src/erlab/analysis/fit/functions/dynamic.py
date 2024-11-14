@@ -293,9 +293,9 @@ class MultiPeakFunction(DynamicFunction):
         return self.peak_funcs[index](
             x,
             **{
-                k[3:]: v
+                k.removeprefix(f"p{index}_"): v
                 for k, v in params.items()
-                if k.startswith(f"p{index}") and not k.endswith(("sigma", "amplitude"))
+                if k.startswith(f"p{index}_") and not k.endswith(("sigma", "amplitude"))
             },
         )
 

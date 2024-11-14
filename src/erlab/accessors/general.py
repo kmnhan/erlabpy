@@ -5,6 +5,7 @@ __all__ = [
     "InteractiveDatasetAccessor",
     "PlotAccessor",
     "SelectionAccessor",
+    "InfoDataArrayAccessor",
 ]
 
 import functools

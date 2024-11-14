@@ -285,7 +285,7 @@ class LoaderBase(metaclass=_Loader):
     def name_map_reversed(self) -> dict[str, str]:
         """Reverse of :attr:`name_map <erlab.io.dataloader.LoaderBase.name_map>`.
 
-        This property is useful for mapping original names to new names.
+        Returns a mapping from original names to new names.
         """
         return self._reverse_mapping(self.name_map)
 
@@ -293,20 +293,25 @@ class LoaderBase(metaclass=_Loader):
     def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
         """Map from file dialog names to the loader method and its arguments.
 
-        Subclasses can override this property to provide support for loading data from
+        Override this property in the subclass to provide support for loading data from
         the load menu of the ImageTool GUI.
 
         Returns
         -------
-        loader_mapping
+        loader_mapping : dictionary of str to tuple of (callable, dict)
             A dictionary mapping the file dialog names to a tuple of length 2 containing
             the data loading function and arguments.
 
-            The first item of the tuple should be a callable that takes the first
+            The keys should be the names of the file dialog options passed to
+            :meth:`QtWidgets.QFileDialog.setNameFilter`.
+
+            The first item of the value tuple should be a callable that takes the first
             positional argument as a path to a file, usually ``self.load``.
 
             The second item should be a dictionary containing keyword arguments to be
             passed to the method.
+
+            Multiple key-value pairs can be returned to provide multiple options.
 
         Example
         -------
@@ -361,10 +366,10 @@ class LoaderBase(metaclass=_Loader):
     def value_to_string(cls, val: object) -> str:
         """Format the given value based on its type.
 
-        The default behavior formats the given value with :func:`format_value
-        <erlab.utils.formatting.format_value>`. Override this classmethod to change the
-        printed format of summaries and information accessors. This method is applied
-        after the formatters in :attr:`formatters
+        The default behavior formats the given value with
+        :func:`erlab.utils.formatting.format_value`. Override this classmethod to change
+        the printed format of summaries and information accessors. This method is
+        applied after the formatters in :attr:`formatters
         <erlab.io.dataloader.LoaderBase.formatters>`.
 
         """
@@ -424,8 +429,8 @@ class LoaderBase(metaclass=_Loader):
             Value that identifies a scan uniquely.
 
             - If a string or path-like object is given, it is assumed to be the path to
-              the data file relative to `data_dir`. If `data_dir` is not specified, it
-              is assumed to be the full path to the data file.
+              the data file relative to `data_dir`. If `data_dir` is not specified,
+              `identifier` is assumed to be the full path to the data file.
 
             - If an integer is given, it is assumed to be a number that specifies the
               scan number, and is used to automatically determine the path to the data
