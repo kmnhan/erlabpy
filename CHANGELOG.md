@@ -17,6 +17,8 @@
 
 ### Bug Fixes
 
+- **interactive.imagetool:** fix opening slice in new tool when manager is running ([db8e0af](https://github.com/kmnhan/erlabpy/commit/db8e0afaeb705a09a5395e67b83646e2aba4d6d0))
+- **interactive.utils:** fix opening with manager in tools ([3726049](https://github.com/kmnhan/erlabpy/commit/3726049c4383da5fa2224efa4a4596ba635ecb16))
 - **accessors.general:** allow `qshow` for fit results from multivariable Datasets ([f5b88e7](https://github.com/kmnhan/erlabpy/commit/f5b88e742f34819bbad6a46caebbcc54bed771bb))
 - **interactive.imagetool:** fix wrong decimals for rotation center ([3fc3a50](https://github.com/kmnhan/erlabpy/commit/3fc3a500da532d73792a77ac769d15349cd36622))
 - **accessors.general:** fix component plotting for concatenated fit datasets with multiple models ([7d2976d](https://github.com/kmnhan/erlabpy/commit/7d2976db0b7cc5721b192285170941b8434e6225))
@@ -30,6 +32,7 @@
 
 ### Performance
 
+- **analysis.interpolate:** cache jitted interpolation functions ([34521ef](https://github.com/kmnhan/erlabpy/commit/34521ef485a1ec0d3123885c6290f10410ce347e))
 - **interactive.imagetool:** optimize memory usage by reducing circular references ([a675e1a](https://github.com/kmnhan/erlabpy/commit/a675e1a9d1d96f4ad4fa8d4853c2cca78864342e))
 
 ## v3.0.0 (2024-11-06)
