@@ -896,7 +896,6 @@ class xImageItem(BetterImageItem):
         self.setImage(img, rect=rect, **kargs)
         self.data_array = data
 
-    @no_type_check
     def getMenu(self):
         if self.menu is None:
             if not self.removable:
@@ -922,17 +921,21 @@ class xImageItem(BetterImageItem):
             if isinstance(p, pg.PlotItem):
                 return p
 
+    @QtCore.Slot()
     def open_itool(self) -> None:
-        from erlab.interactive.imagetool import ImageTool
-
         if self.data_array is None:
             if self.image is None:
                 return
             da = xr.DataArray(np.asarray(self.image)).T
         else:
             da = self.data_array.T
-        self._itool = ImageTool(da)
-        self._itool.show()
+
+        from erlab.interactive.imagetool import ImageTool, itool
+
+        tool = cast(ImageTool | None, itool(da, execute=False))
+        if tool is not None:
+            self._itool = tool
+            self._itool.show()
 
 
 class ParameterGroup(QtWidgets.QGroupBox):
