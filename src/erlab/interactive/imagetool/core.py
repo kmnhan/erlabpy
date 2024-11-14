@@ -1723,9 +1723,12 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             from erlab.interactive.imagetool import itool
 
-            tool = cast(QtWidgets.QWidget, itool(self.current_data, execute=False))
-            self._associated_tools.append(tool)
-            tool.show()
+            tool = cast(
+                QtWidgets.QWidget | None, itool(self.current_data, execute=False)
+            )
+            if tool is not None:
+                self._associated_tools.append(tool)
+                tool.show()
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
