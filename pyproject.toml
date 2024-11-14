@@ -64,6 +64,7 @@ docs = [
     "sphinx-copybutton",
     "sphinxcontrib-bibtex",
     "sphinx-qt-documentation",
+    "sphinx-notfound-page",
     "pybtex",
     "nbsphinx",
     "myst-parser",

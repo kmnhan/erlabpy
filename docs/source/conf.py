@@ -54,7 +54,16 @@ extensions = [
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
     "myst_parser",
+    "notfound.extension",
 ]
+
+notfound_context = {
+    "title": "Page not found",
+    "body": "<h1>This page may have moved.</h1>"
+    "<p>The page you are looking for cannot be found.</p>"
+    "<p>If you just switched documentation versions, "
+    "it is likely that the page you were on doesn't exist in this version.</p>",
+}
 
 if os.getenv("READTHEDOCS"):
     extensions.append("sphinxcontrib.googleanalytics")
