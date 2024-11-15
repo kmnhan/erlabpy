@@ -290,7 +290,7 @@ class KspaceTool(KspaceToolGUI):
 
         self.data: xr.DataArray = data.copy(deep=True)
 
-        if self.data.kspace.has_eV:
+        if self.data.kspace._has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
             self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.update)
@@ -303,7 +303,7 @@ class KspaceTool(KspaceToolGUI):
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
-        for k in self.data.kspace.valid_offset_keys:
+        for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-180, 180)
             self._offset_spins[k].setSingleStep(0.01)
@@ -313,7 +313,7 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].setSuffix("°")
             self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
 
-        if self.data.kspace.has_hv:
+        if self.data.kspace._has_hv:
             self._offset_spins["V0"] = QtWidgets.QDoubleSpinBox()
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
@@ -369,7 +369,7 @@ class KspaceTool(KspaceToolGUI):
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
         for pi in self.plotitems:
-            if self.data.kspace.has_beta and not self.data.kspace.has_hv:
+            if self.data.kspace._has_beta and not self.data.kspace._has_hv:
                 pi.vb.setAspectLocked(lock=True, ratio=1)
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
@@ -388,7 +388,7 @@ class KspaceTool(KspaceToolGUI):
     def show_converted(self) -> None:
         self.data.kspace.offsets = self.offset_dict
 
-        if self.data.kspace.has_hv:
+        if self.data.kspace._has_hv:
             self.data.kspace.inner_potential = self._offset_spins["V0"].value()
 
         wait_dialog = QtWidgets.QDialog(self)
@@ -417,7 +417,7 @@ class KspaceTool(KspaceToolGUI):
 
         out_lines: list[str] = []
 
-        if self.data.kspace.has_hv:
+        if self.data.kspace._has_hv:
             out_lines.append(
                 f"{input_name}.kspace.inner_potential"
                 f" = {self._offset_spins['V0'].value()}"
@@ -467,11 +467,11 @@ class KspaceTool(KspaceToolGUI):
     def offset_dict(self) -> dict[str, float]:
         return {
             k: float(np.round(self._offset_spins[k].value(), 5))
-            for k in self.data.kspace.valid_offset_keys
+            for k in self.data.kspace._valid_offset_keys
         }
 
     def _angle_data(self) -> xr.DataArray:
-        if self.data.kspace.has_eV:
+        if self.data.kspace._has_eV:
             center, width = self.center_spin.value(), self.width_spin.value()
             if width == 0:
                 return self.data.sel(eV=center, method="nearest")
@@ -493,7 +493,7 @@ class KspaceTool(KspaceToolGUI):
         #     )
         data_ang.kspace.offsets = self.offset_dict
 
-        if self.data.kspace.has_hv:
+        if self.data.kspace._has_hv:
             data_ang.kspace.inner_potential = self._offset_spins["V0"].value()
 
         # Convert to kspace
@@ -510,7 +510,7 @@ class KspaceTool(KspaceToolGUI):
     def get_bz_lines(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        if self.data.kspace.has_hv:
+        if self.data.kspace._has_hv:
             # Out-of-plane BZ
             a, c = self.ab_spin.value(), self.c_spin.value()
             rot = np.deg2rad(self.rot_spin.value())
