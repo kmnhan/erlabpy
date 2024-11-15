@@ -25,6 +25,9 @@
 
 ### Code Refactor
 
+- **accessors.kspace:** cleanup namespace ([7af0d66](https://github.com/kmnhan/erlabpy/commit/7af0d66cf356f923014d1144c150ed2e85b954a9))
+
+  Withdraws some internal properties and methods from public API.
 - directly import `_THIS_ARRAY` from xarray core ([3bd72ec](https://github.com/kmnhan/erlabpy/commit/3bd72ecc8fd57abc6abe6624c360a3a06f72ae23))
 - **interactive.imagetool:** improve dialog code structure ([5a16686](https://github.com/kmnhan/erlabpy/commit/5a16686df302ecf69098f542179bedc20aa99226))
 - **interactive.imagetool:** move dialogs into new dedicated module ([a90a735](https://github.com/kmnhan/erlabpy/commit/a90a735874e16769b135df1d2e70ef04922f27c8))
