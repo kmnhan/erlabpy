@@ -696,7 +696,7 @@ class LoaderBase(metaclass=_Loader):
                 with pandas.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
-                    IPython.display.display(styled)  # type: ignore[misc]
+                    IPython.display.display(styled)
 
                 if importlib.util.find_spec("ipywidgets"):
                     return self._isummarize(df, rc=rc)
