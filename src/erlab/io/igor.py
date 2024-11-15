@@ -1,3 +1,5 @@
+"""Backend for Igor Pro files."""
+
 from __future__ import annotations
 
 __all__ = ["IgorBackendEntrypoint", "load_experiment", "load_igor_hdf5", "load_wave"]

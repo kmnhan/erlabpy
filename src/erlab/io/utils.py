@@ -1,3 +1,5 @@
+"""General-purpose I/O utilities."""
+
 __all__ = [
     "get_files",
     "load_hdf5",
