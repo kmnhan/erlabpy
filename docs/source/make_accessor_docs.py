@@ -96,7 +96,7 @@ def _make_section(table_content: str, header: str) -> str:
     if not table_content:
         return ""
 
-    return f"\n{header}\n{len(header) * "~"}\n\n.. list-table::\n{table_content}"
+    return f"\n{header}\n{len(header) * '~'}\n\n.. list-table::\n{table_content}"
 
 
 content = f"""Accessors (:mod:`erlab.accessors`)
@@ -106,13 +106,13 @@ content = f"""Accessors (:mod:`erlab.accessors`)
 
 Dataset accessors
 -----------------
-{_make_section(content_ds_methods, "Methods")}
-{_make_section(content_ds_attributes, "Attributes")}
+{_make_section(content_ds_methods, 'Methods')}
+{_make_section(content_ds_attributes, 'Attributes')}
 
 DataArray accessors
 -------------------
-{_make_section(content_da_methods, "Methods")}
-{_make_section(content_da_attributes, "Attributes")}
+{_make_section(content_da_methods, 'Methods')}
+{_make_section(content_da_attributes, 'Attributes')}
 
 """
 
