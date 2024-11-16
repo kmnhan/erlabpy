@@ -6,6 +6,7 @@ Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual load
 
 import configparser
 import os
+import pathlib
 import re
 import tempfile
 import zipfile
@@ -47,9 +48,9 @@ class DA30Loader(LoaderBase):
     def load_single(
         self, file_path: str | os.PathLike, without_values: bool = False
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
-        ext = os.path.splitext(file_path)[-1]
+        file_path = pathlib.Path(file_path)
 
-        match ext:
+        match file_path.suffix:
             case ".ibw":
                 data: xr.DataArray | xr.Dataset | xr.DataTree = xr.load_dataarray(
                     file_path, engine="erlab-igor"
@@ -66,7 +67,7 @@ class DA30Loader(LoaderBase):
                 data = load_zip(file_path, without_values)
 
             case _:
-                raise ValueError(f"Unsupported file extension {ext}")
+                raise ValueError(f"Unsupported file extension {file_path.suffix}")
 
         return data
 
@@ -128,18 +129,17 @@ def load_zip(
                 z.extract(f"Spectrum_{region}.ini", tmp_dir)
                 z.extract(f"{region}.ini", tmp_dir)
 
-                region_info = parse_ini(
-                    os.path.join(tmp_dir, f"Spectrum_{region}.ini")
-                )["spectrum"]
+                unzipped = pathlib.Path(tmp_dir)
+
+                region_info = parse_ini(unzipped / f"Spectrum_{region}.ini")["spectrum"]
                 attrs = {}
-                for d in parse_ini(os.path.join(tmp_dir, f"{region}.ini")).values():
+                for d in parse_ini(unzipped / f"{region}.ini").values():
                     attrs.update(d)
 
                 if not without_values:
                     z.extract(f"Spectrum_{region}.bin", tmp_dir)
                     arr = np.fromfile(
-                        os.path.join(tmp_dir, f"Spectrum_{region}.bin"),
-                        dtype=np.float32,
+                        unzipped / f"Spectrum_{region}.bin", dtype=np.float32
                     )
 
             shape = []

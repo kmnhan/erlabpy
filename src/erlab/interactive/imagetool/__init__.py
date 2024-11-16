@@ -282,7 +282,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """  # noqa: D205
         return self.slicer_area.array_slicer
 
-    def to_pickle(self, filename: str) -> None:
+    def to_pickle(self, filename: str | os.PathLike) -> None:
         """Save the data, state, title, and geometry of the tool to a pickle file.
 
         The saved pickle file can be used to recreate the ImageTool with the class

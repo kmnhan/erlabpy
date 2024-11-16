@@ -2147,14 +2147,12 @@ class ItoolPlotItem(pg.PlotItem):
             self.fileDialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
             self.fileDialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
             self.fileDialog.setNameFilter("xarray HDF5 Files (*.h5)")
-            if pg.PlotItem.lastFileDir is not None:
-                self.fileDialog.setDirectory(
-                    os.path.join(pg.PlotItem.lastFileDir, f"{default_name}.h5")
-                )
-            else:
-                self.fileDialog.setDirectory(
-                    os.path.join(os.getcwd(), f"{default_name}.h5")
-                )
+
+            last_dir = pg.PlotItem.lastFileDir
+            if not last_dir:
+                last_dir = os.getcwd()
+
+            self.fileDialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
             self.fileDialog.show()
             self.fileDialog.fileSelected.connect(self.save_current_data)
             return
