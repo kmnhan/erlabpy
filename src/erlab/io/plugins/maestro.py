@@ -111,15 +111,13 @@ class MAESTROMicroLoader(LoaderBase):
         return {"ALS BL7.0.2 Raw Data (*.h5)": (self.load, {})}
 
     def identify(self, num, data_dir):
-        file = None
-        for f in erlab.io.utils.get_files(data_dir, ".h5"):
-            if re.match(rf"(\d+)_{str(num).zfill(5)}.h5", os.path.basename(f)):
-                file = f
-
-        if file is None:
-            return None
-
-        return [file], {}
+        pattern = re.compile(rf"(\d+)_{str(num).zfill(5)}.h5")
+        matches = [
+            path
+            for path in erlab.io.utils.get_files(data_dir, ".h5")
+            if pattern.match(path.name)
+        ]
+        return matches, {}
 
     def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
         groups = xr.open_groups(file_path, engine="h5netcdf", phony_dims="sort")

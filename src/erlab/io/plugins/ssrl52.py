@@ -283,20 +283,14 @@ class SSRL52Loader(LoaderBase):
         zap: bool = False,
     ):
         if zap:
-            target_files = erlab.io.utils.get_files(
-                data_dir, extensions=(".h5",), contains="zap"
-            )
+            target_files = erlab.io.utils.get_files(data_dir, ".h5", contains="zap")
         else:
-            target_files = erlab.io.utils.get_files(
-                data_dir, extensions=(".h5",), notcontains="zap"
-            )
+            target_files = erlab.io.utils.get_files(data_dir, ".h5", notcontains="zap")
 
-        for path in target_files:
-            match = re.match(r"(.*?)_" + str(num).zfill(4) + r".h5", path.name)
-            if match is not None:
-                return [path], {}
+        pattern = re.compile(r"(.*?)_" + str(num).zfill(4) + r".h5")
+        matches = [path for path in target_files if pattern.match(path.name)]
 
-        return None
+        return matches, {}
 
     def load_zap(self, identifier, data_dir):
         return self.load(identifier, data_dir, zap=True)

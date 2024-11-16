@@ -72,26 +72,25 @@ class DA30Loader(LoaderBase):
         return data
 
     def identify(self, num: int, data_dir: str | os.PathLike):
+        matches = []
+
+        pattern = re.compile(r"(.*?)" + str(num).zfill(4))
+        pattern_ibw = re.compile(
+            r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3)
+        )
         for file in erlab.io.utils.get_files(
             data_dir, extensions=(".ibw", ".pxt", ".zip")
         ):
             match file.suffix:
-                case ".zip":
-                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
-
-                case ".pxt":
-                    m = re.match(r"(.*?)" + str(num).zfill(4), file.stem)
-
                 case ".ibw":
-                    m = re.match(
-                        r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3),
-                        file.stem,
-                    )
+                    m = pattern_ibw.match(file.stem)
+                case _:
+                    m = pattern.match(file.stem)
 
             if m is not None:
-                return [file], {}
+                matches.append(file)
 
-        return None
+        return matches, None
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)

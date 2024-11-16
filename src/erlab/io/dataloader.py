@@ -74,12 +74,11 @@ class LoaderNotFoundError(Exception):
 class _Loader(type):
     """Metaclass for data loaders.
 
-    This metaclass wraps the `identify` method to raise an informative
-    `FileNotFoundError` when subclasses of DataLoaderBase return None or an empty list.
+    This metaclass wraps the `identify` method to display informative warnings and error
+    messages for missing files or multiple files found for a single scan.
     """
 
     def __new__(cls, name, bases, dct):
-        # Create class
         new_class = super().__new__(cls, name, bases, dct)
 
         # Wrap identify
@@ -97,6 +96,12 @@ class _Loader(type):
                     if len(kwargs) > 0:
                         msg += f" with additional arguments {kwargs}"
                     raise FileNotFoundError(msg)
+
+                if self.always_single and len(result[0]) > 1:
+                    emit_user_level_warning(
+                        f"Multiple files found for scan {num}, using {result[0][0]}"
+                    )
+                    return result[0][:1], result[1]
                 return result
 
             wrapped_identify.__doc__ = original_identify.__doc__
@@ -1168,21 +1173,11 @@ class LoaderBase(metaclass=_Loader):
         r"""Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
-        coordinates. For scans spread over multiple files, the coordinates must be a
-        dictionary mapping scan axes names to scan coordinates. For single file scans,
-        the list should contain only one file path and coordinates must be an empty
-        dictionary.
+        coordinates. See below for the expected behavior.
 
-        The keys of the coordinates must match the coordinate name conventions used by
-        the data returned by :meth:`load_single
-        <erlab.io.dataloader.LoaderBase.load_single>`. For example, if
-        :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>` is implemented
-        so that it renames properties and coordinates using :meth:`process_keys
-        <erlab.io.dataloader.LoaderBase.process_keys>`, the dictionary must also be
-        transformed to new names prior to returning by using the mapping returned by
-        :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`.
-
-        If no files are found for the given parameters, `None` should be returned.
+        If no files are found for the given parameters, an empty list and an empty
+        dictionary should be returned. Alternatively, return a single `None` to indicate
+        a failure to identify the scan.
 
         Parameters
         ----------
@@ -1195,11 +1190,36 @@ class LoaderBase(metaclass=_Loader):
         -------
         files : list of str or path-like
             A list of file paths.
+
+            - For scans spread over multiple files, the list must contain all files that
+              correspond to the given scan index. The implementation should ensure that
+
+            - For single file scans, the behavior differs based on the value of
+              :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`.
+
+              - If `True`, all files that match the given scan index will be returned,
+                where the first one is chosen and a warning will be automatically
+                issued.
+
+              - If `False`, there is no way to know whether the returned files are part
+                of a valid multiple-file scan. Hence, it is up to the loader to ensure
+                that only a single file is returned and appropriate warnings are issued
+                for single file scans when multiple files for a single scan are
+                detected.
+
         coord_dict : dict of str to sequence
-            A dictionary mapping scan axes names to scan coordinates. For scans spread
-            over multiple files, the coordinates will be sequences, with each element
-            corresponding to each file in ``files``. For single file scans, an empty
-            dictionary must be returned.
+            A dictionary mapping scan axes names to scan coordinates.
+
+            The keys must match the coordinate name conventions used by the data
+            returned by :meth:`load_single
+            <erlab.io.dataloader.LoaderBase.load_single>`.
+
+            - For scans spread over multiple files, the coordinates will be sequences,
+              with each element corresponding to each file in ``files``.
+
+            - For single file scans or multiple file scans that have no well-defined
+              scan axes (such as multi-region scans), an empty dictionary should be
+              returned.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -1271,7 +1291,8 @@ class LoaderBase(metaclass=_Loader):
         `combine_attrs='override'` by taking the first set of attributes.
 
         The method can be overridden to provide fine-grained control over how the
-        attributes are combined.
+        attributes are combined, e.g., by merging dictionaries or taking the average of
+        some attributes.
 
         Parameters
         ----------
