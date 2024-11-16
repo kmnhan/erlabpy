@@ -25,6 +25,12 @@
 
 ### Code Refactor
 
+- **io:** update type hints for file handling functions to use Iterable ([e3caf83](https://github.com/kmnhan/erlabpy/commit/e3caf83735561de57d00b5088a34a884edfb4c00))
+- **io:** streamline file identification logic and add user warnings for multiple file scenarios ([05b7e6c](https://github.com/kmnhan/erlabpy/commit/05b7e6ccd2305aec0a743e36f1d6f53a1eeebdd6))
+- **io:** replace several `os.path` calls with pathlib ([bdfdd22](https://github.com/kmnhan/erlabpy/commit/bdfdd22536271bbbeafca8ef7f23fbed928130fa))
+- **dataloader:** make some methods private ([31cf008](https://github.com/kmnhan/erlabpy/commit/31cf00855d563536b4a410bf6257093b50c1601b))
+
+  This makes all dataloader methods and attributes that are not meant to be overriden private. Affected methods and properties are `combine_multiple`, `generate_summary`, and `name_map_reversed`.
 - **accessors.kspace:** cleanup namespace ([7af0d66](https://github.com/kmnhan/erlabpy/commit/7af0d66cf356f923014d1144c150ed2e85b954a9))
 
   Withdraws some internal properties and methods from public API.
