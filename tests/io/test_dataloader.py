@@ -1,8 +1,8 @@
 import csv
 import datetime
 import errno
-import glob
 import os
+import pathlib
 import re
 import tempfile
 from typing import ClassVar
@@ -185,18 +185,19 @@ def test_loader(qtbot):
 
         def identify(self, num, data_dir):
             coord_dict = {}
+            data_dir = pathlib.Path(data_dir)
 
             # Look for scans with data_###_S###.h5, and sort them
-            files = glob.glob(f"data_{str(num).zfill(3)}_S*.h5", root_dir=data_dir)
+            files = list(data_dir.glob(f"data_{str(num).zfill(3)}_S*.h5"))
             files.sort()
 
             if len(files) == 0:
                 # If no files found, look for data_###.h5
-                files = glob.glob(f"data_{str(num).zfill(3)}.h5", root_dir=data_dir)
+                files = list(data_dir.glob(f"data_{str(num).zfill(3)}.h5"))
             else:
                 # If files found, extract coordinate values from the filenames
-                axis_file = f"{data_dir}/data_{str(num).zfill(3)}_axis.csv"
-                with open(axis_file, encoding="locale") as f:
+                axis_file = data_dir / f"data_{str(num).zfill(3)}_axis.csv"
+                with axis_file.open("r", encoding="locale") as f:
                     header = f.readline().strip().split(",")
 
                 coord_arr = np.loadtxt(axis_file, delimiter=",", skiprows=1)
@@ -207,9 +208,6 @@ def test_loader(qtbot):
             if len(files) == 0:
                 # If no files found up to this point, return None
                 return None
-
-            # Files must be full paths
-            files = [os.path.join(data_dir, f) for f in files]
 
             return files, coord_dict
 

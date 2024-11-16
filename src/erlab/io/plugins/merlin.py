@@ -1,8 +1,8 @@
 """Data loader for beamline 4.0.3 at ALS."""
 
 import datetime
-import glob
 import os
+import pathlib
 import re
 import warnings
 from collections.abc import Callable
@@ -14,6 +14,7 @@ import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
+from erlab.utils.misc import emit_user_level_warning
 
 
 def _format_polarization(val) -> str:
@@ -113,38 +114,40 @@ class MERLINLoader(LoaderBase):
     def load_single(
         self, file_path: str | os.PathLike, without_values: bool = False
     ) -> xr.DataArray:
-        if os.path.splitext(file_path)[1] == ".ibw":
+        file_path = pathlib.Path(file_path)
+
+        if file_path.suffix == ".ibw":
             return self._load_live(file_path)
 
         # One file always corresponds to single region
         return xr.open_dataarray(file_path, engine="erlab-igor")
 
     def identify(self, num: int, data_dir: str | os.PathLike):
+        data_dir = pathlib.Path(data_dir)
+
         coord_dict: dict[str, npt.NDArray[np.float64]] = {}
 
-        # Look for multi-file scans
-        files = glob.glob(f"*_{str(num).zfill(3)}_S*.pxt", root_dir=data_dir)
-        files.sort()  # this should sort files by scan number
+        # Look for multi-file scan
+        files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_S*.pxt"))
 
         if len(files) == 0:
-            # Look for multiregion scans
-            files = glob.glob(f"*_{str(num).zfill(3)}_R*.pxt", root_dir=data_dir)
-            files.sort()
+            # Look for multiregion scan
+            files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*.pxt"))
 
         elif len(files) > 1:
+            # Extract motor positions for multi-file scan
             match_prefix = re.match(
-                r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0]
+                r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0].name
             )
             if match_prefix is None:
                 raise RuntimeError(f"Failed to determine prefix from {files[0]}")
             prefix: str = match_prefix.group(1)
 
-            motor_file = os.path.join(
-                data_dir, f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
-            )
+            motor_file = data_dir / f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
 
             coord_arr = np.loadtxt(motor_file, skiprows=1)
-            with open(motor_file, encoding="utf-8") as f:
+
+            with motor_file.open(encoding="utf-8") as f:
                 header = f.readline().strip().split("\t")  # motor coordinate names
 
             if coord_arr.ndim == 1:
@@ -156,12 +159,17 @@ class MERLINLoader(LoaderBase):
 
         if len(files) == 0:
             # Look for single file scan
-            files = glob.glob(f"*_{str(num).zfill(3)}.pxt", root_dir=data_dir)
+            files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}.pxt"))
+
+            # If there is more than one file found, this indicates a conflict
+            if len(files) > 1:
+                emit_user_level_warning(
+                    f"Multiple files found for scan {num}, using {files[0]}"
+                )
+                files = files[:1]
 
         if len(files) == 0:
             return None
-
-        files = [os.path.join(data_dir, f) for f in files]
 
         return files, coord_dict
 

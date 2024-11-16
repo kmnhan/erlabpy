@@ -76,7 +76,7 @@ def test_offsets(data_type, request):
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()
     data.kspace.offsets = {"xi": 10.0}
-    answer = dict.fromkeys(data.kspace.valid_offset_keys, 0.0)
+    answer = dict.fromkeys(data.kspace._valid_offset_keys, 0.0)
     answer["xi"] = 10.0
     assert dict(data.kspace.offsets) == answer
 

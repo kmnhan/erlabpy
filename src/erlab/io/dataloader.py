@@ -74,12 +74,11 @@ class LoaderNotFoundError(Exception):
 class _Loader(type):
     """Metaclass for data loaders.
 
-    This metaclass wraps the `identify` method to raise an informative
-    `FileNotFoundError` when subclasses of DataLoaderBase return None or an empty list.
+    This metaclass wraps the `identify` method to display informative warnings and error
+    messages for missing files or multiple files found for a single scan.
     """
 
     def __new__(cls, name, bases, dct):
-        # Create class
         new_class = super().__new__(cls, name, bases, dct)
 
         # Wrap identify
@@ -97,7 +96,15 @@ class _Loader(type):
                     if len(kwargs) > 0:
                         msg += f" with additional arguments {kwargs}"
                     raise FileNotFoundError(msg)
+
+                if self.always_single and len(result[0]) > 1:
+                    emit_user_level_warning(
+                        f"Multiple files found for scan {num}, using {result[0][0]}"
+                    )
+                    return result[0][:1], result[1]
                 return result
+
+            wrapped_identify.__doc__ = original_identify.__doc__
 
             new_class.identify = wrapped_identify
 
@@ -282,7 +289,7 @@ class LoaderBase(metaclass=_Loader):
         return {k: k for k in self.name_map if k not in excluded}
 
     @property
-    def name_map_reversed(self) -> dict[str, str]:
+    def _name_map_reversed(self) -> dict[str, str]:
         """Reverse of :attr:`name_map <erlab.io.dataloader.LoaderBase.name_map>`.
 
         Returns a mapping from original names to new names.
@@ -387,7 +394,7 @@ class LoaderBase(metaclass=_Loader):
         Parameters
         ----------
         df
-            Summary dataframe as returned by `generate_summary`.
+            The summary dataframe.
 
         Returns
         -------
@@ -467,7 +474,8 @@ class LoaderBase(metaclass=_Loader):
             Additional keyword arguments to be passed to :meth:`load_single
             <erlab.io.dataloader.LoaderBase.load_single>`.
         **kwargs
-            Additional keyword arguments are passed to `identify`.
+            Additional keyword arguments are passed to :meth:`identify
+            <erlab.io.dataloader.LoaderBase.identify>`.
 
         Returns
         -------
@@ -539,7 +547,7 @@ class LoaderBase(metaclass=_Loader):
             else:
                 # Multiple files resolved
                 if combine:
-                    data = self.combine_multiple(
+                    data = self._combine_multiple(
                         self.load_multiple_parallel(
                             file_paths, parallel=parallel, **load_kwargs
                         ),
@@ -593,43 +601,6 @@ class LoaderBase(metaclass=_Loader):
             self.validate(data)
 
         return data
-
-    def get_formatted_attr_or_coord(
-        self,
-        data: xr.DataArray,
-        attr_or_coord_name: str | Callable[[xr.DataArray], Any],
-    ) -> Any:
-        """Return the formatted value of the given attribute or coordinate.
-
-        The value is formatted using the function specified in :attr:`formatters
-        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
-        string is returned.
-
-        Parameters
-        ----------
-        data : DataArray
-            The data to extract the attribute or coordinate from.
-        attr_or_coord_name : str or callable
-            The name of the attribute or coordinate to extract. If a callable is passed,
-            it is called with the data as the only argument.
-
-        """
-        if callable(attr_or_coord_name):
-            return attr_or_coord_name(data)
-
-        func = self.formatters.get(attr_or_coord_name, lambda x: x)
-
-        if attr_or_coord_name in data.attrs:
-            val = func(data.attrs[attr_or_coord_name])
-        elif attr_or_coord_name in data.coords:
-            val = data.coords[attr_or_coord_name].values
-            if val.size == 1:
-                val = func(val.item())
-            else:
-                val = np.array(list(map(func, val)), dtype=val.dtype)
-        else:
-            val = ""
-        return val
 
     def summarize(
         self,
@@ -711,7 +682,7 @@ class LoaderBase(metaclass=_Loader):
                 df = None
 
         if df is None:
-            df = self.generate_summary(data_dir, exclude)
+            df = self._generate_summary(data_dir, exclude)
             if cache and os.access(data_dir, os.W_OK):
                 df.to_pickle(pkl_path)
 
@@ -725,12 +696,12 @@ class LoaderBase(metaclass=_Loader):
             if display and (
                 shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]
             ):
-                from IPython.display import display  # type: ignore[assignment]
+                import IPython.display
 
                 with pandas.option_context(
                     "display.max_rows", len(df), "display.max_columns", len(df.columns)
                 ):
-                    display(styled)  # type: ignore[misc]
+                    IPython.display.display(styled)
 
                 if importlib.util.find_spec("ipywidgets"):
                     return self._isummarize(df, rc=rc)
@@ -742,14 +713,47 @@ class LoaderBase(metaclass=_Loader):
 
         return styled
 
-    def generate_summary(
+    def get_formatted_attr_or_coord(
+        self,
+        data: xr.DataArray,
+        attr_or_coord_name: str | Callable[[xr.DataArray], Any],
+    ) -> Any:
+        """Return the formatted value of the given attribute or coordinate.
+
+        The value is formatted using the function specified in :attr:`formatters
+        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
+        string is returned.
+
+        Parameters
+        ----------
+        data : DataArray
+            The data to extract the attribute or coordinate from.
+        attr_or_coord_name : str or callable
+            The name of the attribute or coordinate to extract. If a callable is passed,
+            it is called with the data as the only argument.
+
+        """
+        if callable(attr_or_coord_name):
+            return attr_or_coord_name(data)
+
+        func = self.formatters.get(attr_or_coord_name, lambda x: x)
+
+        if attr_or_coord_name in data.attrs:
+            val = func(data.attrs[attr_or_coord_name])
+        elif attr_or_coord_name in data.coords:
+            val = data.coords[attr_or_coord_name].values
+            if val.size == 1:
+                val = func(val.item())
+            else:
+                val = np.array(list(map(func, val)), dtype=val.dtype)
+        else:
+            val = ""
+        return val
+
+    def _generate_summary(
         self, data_dir: str | os.PathLike, exclude: str | Sequence[str] | None = None
     ) -> pandas.DataFrame:
         """Generate a dataframe summarizing the data in the given directory.
-
-        Takes a path to a directory and summarizes the data in the directory to a pandas
-        DataFrame, much like a log file. This is useful for quickly inspecting the
-        contents of a directory.
 
         Parameters
         ----------
@@ -1155,10 +1159,9 @@ class LoaderBase(metaclass=_Loader):
           <erlab.io.dataloader.LoaderBase.always_single>` set to `False`, the return
           type of this method must be consistent across all associated files, i.e., for
           all files that can be returned together from :meth:`identify
-          <erlab.io.dataloader.LoaderBase.identify>` so that they can be combined with
-          :meth:`combine_multiple <erlab.io.dataloader.LoaderBase.combine_multiple>`.
-          This should not be a problem since in most cases, the data structure of
-          associated files acquired during the same scan will be identical.
+          <erlab.io.dataloader.LoaderBase.identify>` so that they can be combined
+          without conflicts. This should not be a problem since in most cases, the data
+          structure of associated files acquired during the same scan will be identical.
         - For `xarray.DataTree` objects, returned trees must be named with a unique
           identifier to avoid conflicts when combining.
         """
@@ -1167,24 +1170,14 @@ class LoaderBase(metaclass=_Loader):
     def identify(
         self, num: int, data_dir: str | os.PathLike
     ) -> tuple[list[str | os.PathLike], dict[str, Sequence]] | None:
-        """Identify the files and coordinates for a given scan number.
+        r"""Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
-        coordinates. For scans spread over multiple files, the coordinates must be a
-        dictionary mapping scan axes names to scan coordinates. For single file scans,
-        the list should contain only one file path and coordinates must be an empty
-        dictionary.
+        coordinates. See below for the expected behavior.
 
-        The keys of the coordinates must match the coordinate name conventions used by
-        the data returned by :meth:`load_single
-        <erlab.io.dataloader.LoaderBase.load_single>`. For example, if
-        :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>` is implemented
-        so that it renames properties and coordinates using :meth:`process_keys
-        <erlab.io.dataloader.LoaderBase.process_keys>`, the dictionary must also be
-        transformed to new names prior to returning by using the mapping returned by
-        :attr:`name_map_reversed <erlab.io.dataloader.LoaderBase.name_map_reversed>`.
-
-        If no files are found for the given parameters, `None` should be returned.
+        If no files are found for the given parameters, an empty list and an empty
+        dictionary should be returned. Alternatively, return a single `None` to indicate
+        a failure to identify the scan.
 
         Parameters
         ----------
@@ -1197,11 +1190,36 @@ class LoaderBase(metaclass=_Loader):
         -------
         files : list of str or path-like
             A list of file paths.
-        coord_dict : dict[str, Sequence]
-            A dictionary mapping scan axes names to scan coordinates. For scans spread
-            over multiple files, the coordinates will be sequences, with each element
-            corresponding to each file in ``files``. For single file scans, an empty
-            dictionary must be returned.
+
+            - For scans spread over multiple files, the list must contain all files that
+              correspond to the given scan index. The implementation should ensure that
+
+            - For single file scans, the behavior differs based on the value of
+              :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`.
+
+              - If `True`, all files that match the given scan index will be returned,
+                where the first one is chosen and a warning will be automatically
+                issued.
+
+              - If `False`, there is no way to know whether the returned files are part
+                of a valid multiple-file scan. Hence, it is up to the loader to ensure
+                that only a single file is returned and appropriate warnings are issued
+                for single file scans when multiple files for a single scan are
+                detected.
+
+        coord_dict : dict of str to sequence
+            A dictionary mapping scan axes names to scan coordinates.
+
+            The keys must match the coordinate name conventions used by the data
+            returned by :meth:`load_single
+            <erlab.io.dataloader.LoaderBase.load_single>`.
+
+            - For scans spread over multiple files, the coordinates will be sequences,
+              with each element corresponding to each file in ``files``.
+
+            - For single file scans or multiple file scans that have no well-defined
+              scan axes (such as multi-region scans), an empty dictionary should be
+              returned.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -1273,7 +1291,8 @@ class LoaderBase(metaclass=_Loader):
         `combine_attrs='override'` by taking the first set of attributes.
 
         The method can be overridden to provide fine-grained control over how the
-        attributes are combined.
+        attributes are combined, e.g., by merging dictionaries or taking the average of
+        some attributes.
 
         Parameters
         ----------
@@ -1292,27 +1311,27 @@ class LoaderBase(metaclass=_Loader):
         return dict(variable_attrs[0])
 
     @overload
-    def combine_multiple(
+    def _combine_multiple(
         self,
         data_list: list[xr.DataArray],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray: ...
 
     @overload
-    def combine_multiple(
+    def _combine_multiple(
         self,
         data_list: list[xr.Dataset],
         coord_dict: dict[str, Sequence],
     ) -> xr.Dataset: ...
 
     @overload
-    def combine_multiple(
+    def _combine_multiple(
         self,
         data_list: list[xr.DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataTree: ...
 
-    def combine_multiple(
+    def _combine_multiple(
         self,
         data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
         coord_dict: dict[str, Sequence],
@@ -1394,7 +1413,7 @@ class LoaderBase(metaclass=_Loader):
 
         """
         if key_mapping is None:
-            key_mapping = self.name_map_reversed
+            key_mapping = self._name_map_reversed
 
         # Rename coordinates
         data = data.rename({k: v for k, v in key_mapping.items() if k in data.coords})
@@ -1601,7 +1620,7 @@ class LoaderBase(metaclass=_Loader):
         post_process: bool = False,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
-        """Load multiple files in parallel.
+        """Load from multiple files in parallel.
 
         Parameters
         ----------
@@ -1666,6 +1685,13 @@ class _RegistryBase:
 
 
 class LoaderRegistry(_RegistryBase):
+    """Registry for data loaders.
+
+    Stores and manages data loaders. The loaders can be accessed by name or alias in a
+    dictionary-like manner.
+
+    """
+
     _loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
     """Mapping of registered loaders."""
 

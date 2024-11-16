@@ -1,3 +1,5 @@
+"""General-purpose I/O utilities."""
+
 __all__ = [
     "get_files",
     "load_hdf5",
@@ -10,7 +12,7 @@ __all__ = [
 import importlib.util
 import os
 import pathlib
-from collections.abc import Sequence
+from collections.abc import Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -43,10 +45,10 @@ def showfitsinfo(path: str | os.PathLike) -> None:
 
 def get_files(
     directory: str | os.PathLike,
-    extensions: Sequence[str] | str | None = None,
+    extensions: Iterable[str] | str | None = None,
     contains: str | None = None,
     notcontains: str | None = None,
-    exclude: str | Sequence[str] | None = None,
+    exclude: str | Iterable[str] | None = None,
 ) -> set[pathlib.Path]:
     """Return file names in a directory with the given extension(s).
 
@@ -74,18 +76,18 @@ def get_files(
     files: set[pathlib.Path] = set()
 
     if isinstance(extensions, str):
-        extensions = [extensions]
+        extensions = {extensions}
 
     dir_path = pathlib.Path(directory)
 
-    excluded: list[pathlib.Path] = []
+    excluded: set[pathlib.Path] = set()
 
     if exclude is not None:
         if isinstance(exclude, str):
-            exclude = [exclude]
+            exclude = {exclude}
 
         for pattern in exclude:
-            excluded = excluded + list(dir_path.glob(pattern))
+            excluded.update(dir_path.glob(pattern))
 
     for f in dir_path.iterdir():
         if (

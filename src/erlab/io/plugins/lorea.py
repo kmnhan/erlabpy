@@ -53,22 +53,16 @@ class LOREALoader(LoaderBase):
         return nxgroup_to_xarray(get_entry(file_path), _get_data, without_values)
 
     def identify(self, num, data_dir, krax=False):
-        file = None
         if krax:
-            for f in erlab.io.utils.get_files(data_dir, ".krx"):
-                if re.match(rf".+-\d-{str(num).zfill(5)}_\d.krx", f.name):
-                    file = f
-                    break
+            target_files = erlab.io.utils.get_files(data_dir, ".krx")
+            pattern = re.compile(rf".+-\d-{str(num).zfill(5)}_\d.krx")
         else:
-            for f in erlab.io.utils.get_files(data_dir, ".nxs"):
-                if re.match(rf"{str(num).zfill(3)}_.+.nxs", f.name):
-                    file = f
-                    break
+            target_files = erlab.io.utils.get_files(data_dir, ".nxs")
+            pattern = re.compile(rf"{str(num).zfill(3)}_.+.nxs")
 
-        if file is None:
-            return None
+        matches = [path for path in target_files if pattern.match(path.name)]
 
-        return [file], {}
+        return matches, {}
 
     def _load_krx(self, file_path):
         # Adapted from `load_krax_FS.ipf` Igor procedure by Felix Baumberger

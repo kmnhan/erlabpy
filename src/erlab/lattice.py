@@ -17,7 +17,7 @@ def angle_between(v1: npt.NDArray[np.float64], v2: npt.NDArray[np.float64]) -> f
 
     Parameters
     ----------
-    v1, v2:
+    v1, v2 : array-like
         1D array of length 3, specifying a vector.
 
     Returns
@@ -25,13 +25,35 @@ def angle_between(v1: npt.NDArray[np.float64], v2: npt.NDArray[np.float64]) -> f
     float
         The angle in degrees.
     """
-    return np.rad2deg(np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0)))
+    return float(np.rad2deg(np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))))
 
 
 def abc2avec(
     a: float, b: float, c: float, alpha: float, beta: float, gamma: float
 ) -> npt.NDArray:
-    """Construct lattice vectors from lattice parameters."""
+    r"""Construct lattice vectors from lattice parameters.
+
+    Parameters
+    ----------
+    a
+        Lattice parameter :math:`a`.
+    b
+        Lattice parameter :math:`b`.
+    c
+        Lattice parameter :math:`c`.
+    alpha
+        Lattice parameter :math:`\alpha` in degrees.
+    beta
+        Lattice parameter :math:`\beta` in degrees.
+    gamma
+        Lattice parameter :math:`\gamma` in degrees.
+
+    Returns
+    -------
+    avec
+        Real lattice vectors, given as a 3 by 3 numpy array with each basis vector given
+        in each row.
+    """
     alpha, beta, gamma = np.deg2rad(alpha), np.deg2rad(beta), np.deg2rad(gamma)
     sa, ca, sb, cb, cg = (
         np.sin(alpha),
@@ -54,9 +76,20 @@ def abc2avec(
 
 def avec2abc(
     avec: npt.NDArray[np.float64],
-) -> tuple[np.floating, np.floating, np.floating, float, float, float]:
-    """Determine lattice parameters from lattice vectors."""
-    a, b, c = (np.linalg.norm(x) for x in avec)
+) -> tuple[float, float, float, float, float, float]:
+    """Determine lattice parameters from lattice vectors.
+
+    Parameters
+    ----------
+    avec
+        Real lattice vectors, given as a 3 by 3 numpy array with each basis vector given
+        in each row.
+
+    Returns
+    -------
+    a, b, c, alpha, beta, gamma
+    """
+    a, b, c = tuple(float(np.linalg.norm(x)) for x in avec)
     alpha = angle_between(avec[1] / b, avec[2] / c)
     beta = angle_between(avec[2] / c, avec[0] / a)
     gamma = angle_between(avec[0] / a, avec[1] / b)
