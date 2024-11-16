@@ -21,7 +21,7 @@ def test_load(expected_dir, identifier):
     if isinstance(identifier, int):
         with pytest.warns(
             UserWarning,
-            match=r"Multiple files found for scan 25, using .*/esm/Sample0025025.ibw",
+            match=r"Multiple files found for scan 25, using .*/esm/Sample0025.pxt",
         ):
             loaded = erlab.io.load(identifier)
     else:

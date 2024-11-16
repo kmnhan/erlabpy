@@ -78,8 +78,8 @@ class DA30Loader(LoaderBase):
         pattern_ibw = re.compile(
             r"(.*?)" + str(num).zfill(4) + ".*" + str(num).zfill(3)
         )
-        for file in erlab.io.utils.get_files(
-            data_dir, extensions=(".ibw", ".pxt", ".zip")
+        for file in sorted(
+            erlab.io.utils.get_files(data_dir, extensions=(".ibw", ".pxt", ".zip"))
         ):
             match file.suffix:
                 case ".ibw":
