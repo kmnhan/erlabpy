@@ -8,6 +8,7 @@ from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import dtool
 from erlab.interactive.fermiedge import goldtool
+from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.kspace import ktool
 
 
@@ -71,6 +72,7 @@ result = _processed.differentiate('y').differentiate('y')"""
 
 
 def test_ktool(qtbot, anglemap):
+    anglemap = anglemap.copy()
     win = ktool(
         anglemap,
         avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
@@ -103,6 +105,24 @@ anglemap_kconv = anglemap.kspace.convert()"""
     roi_control_widget.y_spin.setValue(0.2)
     roi_control_widget.r_spin.setValue(0.3)
     assert roi.get_position() == (0.0, 0.2, 0.3)
+
+    anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
+    anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky", "eV")
+
+    # Show imagetool
+    win.show_converted()
+    xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
+    win._itool.close()
+
+    # Start manager
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+
+    # Show in manager
+    win.show_converted()
+    manager.remove_tool(0)
+    manager.close()
+    win.close()
 
 
 def test_curvefittingtool(qtbot):

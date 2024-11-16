@@ -21,7 +21,6 @@ from erlab.interactive.colors import (
     ColorMapComboBox,  # noqa: F401
     ColorMapGammaWidget,  # noqa: F401
 )
-from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utils import copy_to_clipboard, generate_code, xImageItem
 from erlab.plotting.bz import get_bz_edge
 
@@ -395,12 +394,19 @@ class KspaceTool(KspaceToolGUI):
         dialog_layout = QtWidgets.QVBoxLayout()
         wait_dialog.setLayout(dialog_layout)
         dialog_layout.addWidget(QtWidgets.QLabel("Converting..."))
+
         wait_dialog.open()
-        self._itool = ImageTool(
-            self.data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+        from erlab.interactive.imagetool import ImageTool, itool
+
+        data_kconv = self.data.kspace.convert(
+            bounds=self.bounds, resolution=self.resolution
         )
         wait_dialog.close()
-        self._itool.show()
+
+        tool = cast(ImageTool | None, itool(data_kconv, execute=False))
+        if tool is not None:
+            self._itool = tool
+            self._itool.show()
 
     def copy_code(self) -> str:
         arg_dict: dict[str, Any] = {}
