@@ -2,6 +2,7 @@
 
 ### Features
 
+- **interactive.imagetool:** open ktool from imagetool ([d2cb8a7](https://github.com/kmnhan/erlabpy/commit/d2cb8a734f51af68e2ab7cbc50cf43a50d61a136))
 - **interactive.imagetool:** add equal aspect ratio checkbox to right-click menu ([d4db0cf](https://github.com/kmnhan/erlabpy/commit/d4db0cf71124870778ee3af1e90d5d8d319fa486))
 - **interactive.imagetool:** add crop menu ([639749f](https://github.com/kmnhan/erlabpy/commit/639749f30966181b619796d0b6bb2485db931e19))
 - **interactive.utils:** add qobject that handles mutually exclusive selection comboboxes ([33b5f6b](https://github.com/kmnhan/erlabpy/commit/33b5f6beead46b57bb3bdc54cffe29ec9862c0c5))
@@ -17,6 +18,7 @@
 
 ### Bug Fixes
 
+- **interactive:** improve ktool compatibility with manager ([4c775cf](https://github.com/kmnhan/erlabpy/commit/4c775cf1b4018777275c95625915d23641e42bf0))
 - **interactive.imagetool:** fix opening slice in new tool when manager is running ([db8e0af](https://github.com/kmnhan/erlabpy/commit/db8e0afaeb705a09a5395e67b83646e2aba4d6d0))
 - **interactive.utils:** fix opening with manager in tools ([3726049](https://github.com/kmnhan/erlabpy/commit/3726049c4383da5fa2224efa4a4596ba635ecb16))
 - **accessors.general:** allow `qshow` for fit results from multivariable Datasets ([f5b88e7](https://github.com/kmnhan/erlabpy/commit/f5b88e742f34819bbad6a46caebbcc54bed771bb))
