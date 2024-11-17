@@ -319,11 +319,11 @@ def test_itool_tools(qtbot, gold):
 
     # Open goldtool from main image
     main_image.open_in_goldtool()
-    assert isinstance(main_image._associated_tools[0], GoldTool)
+    assert isinstance(win.slicer_area._associated_tools[0], GoldTool)
 
     # Close associated windows
     win.slicer_area.close_associated_windows()
-    assert len(main_image._associated_tools) == 0
+    assert len(win.slicer_area._associated_tools) == 0
 
     # Open dtool from main image
     main_image.open_in_dtool()
