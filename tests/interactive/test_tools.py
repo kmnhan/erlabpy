@@ -1,5 +1,8 @@
+import time
+
 import numpy as np
 import pyperclip
+import pytest
 import xarray as xr
 from numpy.testing import assert_allclose
 
@@ -71,8 +74,25 @@ result = _processed.differentiate('y').differentiate('y')"""
     assert win.copy_code() == "result = era.image.minimum_gradient(data)"
 
 
-def test_ktool(qtbot, anglemap):
+def test_ktool_compatible(anglemap):
+    cut = anglemap.qsel(beta=-8.3)
+    data_4d = anglemap.expand_dims("x", 2)
+    data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
+
+    for data in (cut, data_4d, data_3d_without_alpha):
+        with pytest.raises(
+            ValueError, match="Data is not compatible with the interactive tool."
+        ):
+            data.kspace.interactive()
+
+
+@pytest.mark.parametrize("constant_energy", [True, False])
+def test_ktool(qtbot, anglemap, constant_energy):
     anglemap = anglemap.copy()
+
+    if constant_energy:
+        anglemap = anglemap.qsel(eV=-0.1)
+
     win = ktool(
         anglemap,
         avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
@@ -107,7 +127,11 @@ anglemap_kconv = anglemap.kspace.convert()"""
     assert roi.get_position() == (0.0, 0.2, 0.3)
 
     anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
-    anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky", "eV")
+
+    if "eV" in anglemap.dims:
+        anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky", "eV")
+    else:
+        anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky")
 
     # Show imagetool
     win.show_converted()
@@ -120,9 +144,16 @@ anglemap_kconv = anglemap.kspace.convert()"""
 
     # Show in manager
     win.show_converted()
+    t0 = time.perf_counter()
+    while True:
+        if manager.ntools == 1:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
     manager.remove_tool(0)
-    manager.close()
-    win.close()
+
+    assert manager.ntools == 0
 
 
 def test_curvefittingtool(qtbot):

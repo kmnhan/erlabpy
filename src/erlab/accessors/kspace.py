@@ -523,6 +523,19 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
         return float(np.amin(1 / imfp))
 
+    @property
+    def _interactive_compatible(self) -> bool:
+        """Check if the data is compatible with the interactive tool."""
+        if self._obj.ndim == 2:
+            # alpha-beta 2D scan
+            return set(self._obj.dims) == {"alpha", "beta"}
+
+        if self._obj.ndim == 3:
+            # any 3D scan that has alpha & eV
+            return "alpha" in self._obj.dims and "eV" in self._obj.dims
+
+        return False
+
     def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self._alpha, self._beta)
         if "hv" in kx.dims:
@@ -859,11 +872,20 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return out
 
     def interactive(self, **kwargs):
-        """Open the interactive momentum space conversion tool."""
+        """Open the interactive momentum space conversion tool.
+
+        The interactive tool currently supports the following kinds of data:
+
+        - 2D data with `alpha` and `beta` dimensions (constant energy surfaces)
+
+        - 3D data with dimensions including `alpha` and `eV` (including maps and
+          hv-dependent cuts)
+
+        """
         from erlab.interactive.kspace import ktool
 
-        if self._obj.ndim < 3:
-            raise ValueError("Interactive tool requires three-dimensional data.")
+        if not self._interactive_compatible:
+            raise ValueError("Data is not compatible with the interactive tool.")
         return ktool(self._obj, **kwargs)
 
     @only_momentum

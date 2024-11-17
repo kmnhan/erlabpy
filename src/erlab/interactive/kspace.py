@@ -295,6 +295,13 @@ class KspaceTool(KspaceToolGUI):
             self.center_spin.valueChanged.connect(self.update)
             self.width_spin.valueChanged.connect(self.update)
         else:
+            if "eV" in self.data.coords and self.data["eV"].size == 1:
+                fixed_energy = float(self.data.eV)
+                # Although spinbox will be disabled, setting range and value for
+                # displaying the fixed energy value.
+                self.center_spin.setRange(fixed_energy - 0.1, fixed_energy + 0.1)
+                self.center_spin.setValue(fixed_energy)
+
             self.energy_group.setDisabled(True)
 
         self.bounds_group.toggled.connect(self.update)
@@ -579,7 +586,9 @@ def ktool(
     Parameters
     ----------
     data
-        Data to convert.
+        Data to convert. Currently supports constant energy slices (2D data with alpha
+        and beta dimensions) and all 3D data that has eV and alpha dimensions, including
+        maps and photon energy dependent data.
     avec : array-like, optional
         Real-space lattice vectors as a 2x2 or 3x3 numpy array. If provided, the
         Brillouin zone boundary overlay will be calculated based on these vectors.

@@ -441,6 +441,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.bench: bool = bench
 
+        # Stores ktool, dtool, goldtool, etc.
+        self._associated_tools: list[QtWidgets.QWidget] = []
+
         # Queues to handle undo and redo
         self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
             maxlen=1000
@@ -786,6 +789,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def get_axes(self, index: int) -> ItoolPlotItem:
         return self._plots[index].plotItem
+
+    @QtCore.Slot()
+    def close_associated_windows(self) -> None:
+        for tool in list(self._associated_tools):
+            tool.close()
+            self._associated_tools.remove(tool)
 
     @QtCore.Slot()
     @QtCore.Slot(tuple)
@@ -1224,6 +1233,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
+    @QtCore.Slot()
+    def open_in_ktool(self) -> None:
+        """Open the interactive momentum conversion tool."""
+        from erlab.interactive.kspace import KspaceTool
+
+        cmap_info = self.colormap_properties
+        if isinstance(cmap_info["cmap"], str):
+            cmap = cmap_info["cmap"]
+            if cmap_info["reverse"]:
+                cmap = cmap + "_r"
+            gamma = cmap_info["gamma"]
+        else:
+            cmap = None
+            gamma = 0.5
+
+        tool = KspaceTool(self.data, cmap=cmap, gamma=gamma)
+        self._associated_tools.append(tool)
+        tool.show()
+
     def adjust_layout(
         self,
         horiz_pad: int = 45,
@@ -1602,8 +1630,6 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
-        self._associated_tools: list[QtWidgets.QWidget] = []
-
         if image:
             itool_action = self.vb.menu.addAction("Open in new window")
             itool_action.triggered.connect(self.open_in_new_window)
@@ -1712,13 +1738,6 @@ class ItoolPlotItem(pg.PlotItem):
         return len(self._guidelines_items) != 0
 
     @QtCore.Slot()
-    def close_associated_windows(self) -> None:
-        if self.is_image:
-            for tool in list(self._associated_tools):
-                tool.close()
-                self._associated_tools.remove(tool)
-
-    @QtCore.Slot()
     def open_in_new_window(self) -> None:
         if self.is_image:
             from erlab.interactive.imagetool import itool
@@ -1727,7 +1746,7 @@ class ItoolPlotItem(pg.PlotItem):
                 QtWidgets.QWidget | None, itool(self.current_data, execute=False)
             )
             if tool is not None:
-                self._associated_tools.append(tool)
+                self.slicer_area._associated_tools.append(tool)
                 tool.show()
 
     @QtCore.Slot()
@@ -1748,7 +1767,7 @@ class ItoolPlotItem(pg.PlotItem):
             goldtool = GoldTool(
                 data, data_name="data" + self.selection_code, execute=False
             )
-            self._associated_tools.append(goldtool)
+            self.slicer_area._associated_tools.append(goldtool)
             goldtool.show()
 
     @QtCore.Slot()
@@ -1759,7 +1778,7 @@ class ItoolPlotItem(pg.PlotItem):
             tool = DerivativeTool(
                 self.current_data, data_name="data" + self.selection_code
             )
-            self._associated_tools.append(tool)
+            self.slicer_area._associated_tools.append(tool)
             tool.show()
 
     def refresh_manual_range(self) -> None:

@@ -563,6 +563,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
                 raise KeyError(f"Tool of index '{index}' is archived")
         return cast(ImageTool, opt.tool)
 
+    @QtCore.Slot()
     def deselect_all(self) -> None:
         """Clear selection."""
         for opt in self.tool_options.values():

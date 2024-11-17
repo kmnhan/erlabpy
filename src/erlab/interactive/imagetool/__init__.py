@@ -372,8 +372,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return group
 
     def closeEvent(self, evt: QtGui.QCloseEvent | None) -> None:
-        for ax in self.slicer_area.images:
-            ax.close_associated_windows()
+        self.slicer_area.close_associated_windows()
         super().closeEvent(evt)
 
 
@@ -541,6 +540,11 @@ class ItoolMenuBar(DictMenuBar):
                         "toggled": self._set_colormap_options,
                         "sep_after": True,
                     },
+                    "ktoolAct": {
+                        "text": "Open ktool",
+                        "triggered": self.slicer_area.open_in_ktool,
+                        "sep_after": True,
+                    },
                     "Normalize": {"triggered": self._normalize},
                     "Reset": {
                         "triggered": self._reset_filters,
@@ -667,10 +671,13 @@ class ItoolMenuBar(DictMenuBar):
         self.add_items(**menu_kwargs)
 
         # Disable/Enable menus based on context
-        self.menu_dict["viewMenu"].aboutToShow.connect(
-            lambda: self.action_dict["remCursorAct"].setDisabled(
-                self.slicer_area.n_cursors == 1
-            )
+        self.menu_dict["viewMenu"].aboutToShow.connect(self._view_menu_visibility)
+
+    @QtCore.Slot()
+    def _view_menu_visibility(self) -> None:
+        self.action_dict["remCursorAct"].setDisabled(self.slicer_area.n_cursors == 1)
+        self.action_dict["ktoolAct"].setEnabled(
+            self.slicer_area.data.kspace._interactive_compatible
         )
 
     @QtCore.Slot()
