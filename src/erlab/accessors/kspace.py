@@ -18,7 +18,7 @@ from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
 
-def only_angles(method=None):
+def _only_angles(method):
     """Decorate methods that require data to be in angle space.
 
     Ensures the data is in angle space before executing the decorated method.
@@ -38,12 +38,10 @@ def only_angles(method=None):
 
         return _impl
 
-    if method is not None:
-        return wrapper(method)
-    return wrapper
+    return wrapper(method)
 
 
-def only_momentum(method=None):
+def _only_momentum(method):
     """Decorate methods that require data to be in momentum space.
 
     Ensure the data is in momentum space before executing the decorated method.
@@ -63,9 +61,7 @@ def only_momentum(method=None):
 
         return _impl
 
-    if method is not None:
-        return wrapper(method)
-    return wrapper
+    return wrapper(method)
 
 
 class OffsetView:
@@ -316,7 +312,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 return "kx"
 
     @property
-    @only_angles
+    @_only_angles
     def momentum_axes(self) -> tuple[Literal["kx", "ky", "kz"], ...]:
         """Momentum axes of the data after conversion.
 
@@ -351,12 +347,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return params
 
     @property
-    @only_angles
+    @_only_angles
     def _alpha(self) -> xr.DataArray:
         return self._obj.alpha
 
     @property
-    @only_angles
+    @_only_angles
     def _beta(self) -> xr.DataArray:
         return self._obj.beta
 
@@ -382,13 +378,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return "eV" in self._obj.dims
 
     @property
-    @only_angles
+    @_only_angles
     def _has_hv(self) -> bool:
         """Return `True` for photon energy dependent data."""
         return self._obj["hv"].size > 1
 
     @property
-    @only_angles
+    @_only_angles
     def _has_beta(self) -> bool:
         """Check if the coordinate array for :math:`β` has more than one element.
 
@@ -487,7 +483,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._offsetview.update(offset_dict)
 
     @property
-    @only_angles
+    @_only_angles
     def best_kp_resolution(self) -> float:
         r"""Estimated minimum in-plane momentum resolution.
 
@@ -508,7 +504,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         )
 
     @property
-    @only_angles
+    @_only_angles
     def best_kz_resolution(self) -> float:
         r"""Estimated minimum out-of-plane momentum resolution.
 
@@ -559,7 +555,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             for k, v in self._get_transformed_coords().items()
         }
 
-    @only_angles
+    @_only_angles
     def estimate_resolution(
         self,
         axis: Literal["kx", "ky", "kz"],
@@ -658,7 +654,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             ),
         )
 
-    @only_angles
+    @_only_angles
     def convert_coords(self) -> xr.DataArray:
         """Convert coordinates to momentum space.
 
@@ -672,7 +668,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         return self._obj.assign_coords(self._get_transformed_coords())
 
-    @only_angles
+    @_only_angles
     def _coord_for_conversion(self, name: Hashable) -> xr.DataArray:
         """Get the coordinate array for given dimension name.
 
@@ -682,12 +678,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return self._binding_energy
         return self._obj[name]
 
-    @only_angles
+    @_only_angles
     def _data_ensure_binding(self) -> xr.DataArray:
         """Return the data while ensuring that the energy axis is in binding energy."""
         return self._obj.assign_coords(eV=self._binding_energy)
 
-    @only_angles
+    @_only_angles
     def convert(
         self,
         bounds: dict[str, tuple[float, float]] | None = None,
@@ -888,7 +884,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise ValueError("Data is not compatible with the interactive tool.")
         return ktool(self._obj, **kwargs)
 
-    @only_momentum
+    @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
         """Return :math:`k_z` for a given photon energy.
 
