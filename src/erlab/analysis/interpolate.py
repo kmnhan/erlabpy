@@ -374,7 +374,7 @@ def slice_along_path(
     Returns
     -------
     interpolated : DataArray
-        New dataarray on the new coordinate.
+        The interpolated data along the path.
 
     Examples
     --------
@@ -496,8 +496,8 @@ def slice_along_vector(
 
     Returns
     -------
-    xr.DataArray
-        The sliced data array.
+    interpolated : DataArray
+        The interpolated data along the vector.
 
     Examples
     --------
@@ -551,11 +551,13 @@ _get_interpolator_original = xarray.core.missing._get_interpolator
 def _get_interpolator_fast(method, **kwargs):
     if method == "linearfast":
         method = "linear"
+        # For 1D interpolation, always fall back to scipy
     return _get_interpolator_original(method, **kwargs)
 
 
 def _get_interpolator_nd_fast(method, **kwargs):
     if method == "linearfast":
+        # For ND interpolation, return the fast interpolator
         return interpn, kwargs
     return _get_interpolator_nd_original(method, **kwargs)
 
