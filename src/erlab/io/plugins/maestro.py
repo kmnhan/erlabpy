@@ -8,10 +8,12 @@
 
 """
 
+import datetime
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import xarray as xr
@@ -31,9 +33,7 @@ def get_cache_file(file_path: str | os.PathLike) -> Path:
     return cache_dir.joinpath(file_path.stem + "_2D_Data" + file_path.suffix)
 
 
-def cache_as_float32(
-    file_path: str | os.PathLike, data: xr.Dataset, without_values: bool
-) -> xr.DataArray:
+def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataArray:
     """Cache and return the 2D part of the data as a float32 DataArray.
 
     If the cache file exists, it is loaded and returned.
@@ -51,7 +51,7 @@ def cache_as_float32(
 
     writable: bool = os.access(cache_file.parent.parent, os.W_OK)
 
-    if writable and not cache_file.parent.is_dir() and not without_values:
+    if writable and not cache_file.parent.is_dir():
         cache_file.parent.mkdir(parents=True)
 
     if len(data.data_vars) > 1:
@@ -63,10 +63,7 @@ def cache_as_float32(
     # Get the first data variable
     data = data[next(iter(data.data_vars))]
 
-    if without_values:
-        data = xr.DataArray(np.zeros(data.shape), dims=data.dims, attrs=data.attrs)
-
-    elif writable:
+    if writable:
         # Save cache
         data = data.astype(np.float32)
         data.to_netcdf(cache_file, engine="h5netcdf")
@@ -105,6 +102,33 @@ class MAESTROMicroLoader(LoaderBase):
 
     skip_validate: bool = True
     always_single: bool = True
+
+    formatters: ClassVar[dict[str, Callable]] = {
+        "Main.START_T": lambda x: datetime.datetime.strptime(x, "%m/%d/%Y %I:%M:%S %p"),
+        "scan_type": lambda x: "" if x == "None" else x,
+        "DAQ_Swept.lens mode name": lambda x: x.replace("Angular", "A"),
+    }
+
+    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+        "time": "Main.START_T",
+        "type": "scan_type",
+        "pre": "pre_scan",
+        "post": "post_scan",
+        "lens mode": "DAQ_Swept.lens mode name",
+        "region": "DAQ_Swept.SS Region name",
+        "temperature": "sample_temp",
+        "pass energy": "DAQ_Swept.pass energy",
+        "analyzer slit": "DAQ_Swept.Electron Spectrometer  Entrance Slit",
+        "pol": "Beamline.EPU Polarization",
+        "hv": "hv",
+        "polar": "chi",
+        "tilt": "xi",
+        "azi": "delta",
+        "deflector": "beta",
+        "x": "x",
+        "y": "y",
+        "z": "z",
+    }
 
     @property
     def file_dialog_methods(self):
@@ -196,8 +220,15 @@ class MAESTROMicroLoader(LoaderBase):
         if len(motors) == 1:
             coords = coords.swap_dims({"phony_dim_3": motors[0]})
 
-        # Create or load cache
-        data = cache_as_float32(file_path, groups["/2D_Data"], without_values)
+        if without_values:
+            data = groups["/2D_Data"]
+            data = data[next(iter(data.data_vars))]
+            data = xr.DataArray(
+                np.zeros(data.shape, dtype=np.uint8), dims=data.dims, attrs=data.attrs
+            )
+        else:
+            # Create or load cache
+            data = cache_as_float32(file_path, groups["/2D_Data"])
 
         coord_dict = {
             name: np.linspace(offset, offset + (size - 1) * delta, size)
@@ -217,12 +248,10 @@ class MAESTROMicroLoader(LoaderBase):
         if len(motors) == 1:
             data = data.rename(phony_dim_3=motors[0]).assign_coords(coords)
         else:
-            # Stack and unstack to get the correct n-dimensional data
-            data = (
-                data.assign_coords(coords)
-                .set_index(phony_dim_3=motors)
-                .unstack("phony_dim_3")
-            )
+            # Just keep phony dims for now
+            data = data.assign_coords(coords)  # .set_xindex(motors)
+            # data = data.set_index(phony_dim_3=motors)
+            # data = data.unstack("phony_dim_3")
 
         # The configuration is hardcoded to 3, which is for vertical analyzer slit with
         # deflector map. For horizontal slit configuration and/or tilt/polar maps,
@@ -234,3 +263,6 @@ class MAESTROMicroLoader(LoaderBase):
             "configuration": 3,
         }
         return data.assign_attrs(human_readable_attrs).squeeze()
+
+    def files_for_summary(self, data_dir):
+        return sorted(erlab.io.utils.get_files(data_dir, extensions=(".h5",)))
