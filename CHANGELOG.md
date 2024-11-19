@@ -2,6 +2,7 @@
 
 ### Features
 
+- **plotting:** add fine-grained control over color limit normalization ([46c962f](https://github.com/kmnhan/erlabpy/commit/46c962f9131f9a1a691167eb192a13c2a5e7d2fa))
 - **interactive.imagetool:** open ktool from imagetool ([d2cb8a7](https://github.com/kmnhan/erlabpy/commit/d2cb8a734f51af68e2ab7cbc50cf43a50d61a136))
 - **interactive.imagetool:** add equal aspect ratio checkbox to right-click menu ([d4db0cf](https://github.com/kmnhan/erlabpy/commit/d4db0cf71124870778ee3af1e90d5d8d319fa486))
 - **interactive.imagetool:** add crop menu ([639749f](https://github.com/kmnhan/erlabpy/commit/639749f30966181b619796d0b6bb2485db931e19))
