@@ -5,6 +5,8 @@ Physical constants and unit conversion.
 
 """
 
+import enum
+
 import numpy as np
 
 #: Elementary charge :math:`e` (C)
@@ -78,3 +80,17 @@ def conv_watt_photons(value: float, wavelength: float) -> float:
 
     """
     return value / (hc * 1e9 / wavelength)
+
+
+class AxesConfiguration(enum.IntEnum):
+    """Enum class representing different types of axes configurations.
+
+    See :ref:`Nomenclature <nomenclature>` and Ref. :cite:p:`ishida2018kconv` for more
+    information.
+
+    """
+
+    Type1 = 1
+    Type2 = 2
+    Type1DA = 3
+    Type2DA = 4

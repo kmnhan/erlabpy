@@ -2,7 +2,7 @@ import pytest
 import xarray
 import xarray.testing
 
-from erlab.analysis.kspace import AxesConfiguration
+from erlab.constants import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles
 
 

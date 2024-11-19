@@ -11,9 +11,7 @@ import numpy as np
 import xarray as xr
 
 from erlab.accessors.utils import ERLabDataArrayAccessor
-from erlab.analysis.interpolate import interpn
-from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
-from erlab.constants import rel_kconv, rel_kzconv
+from erlab.constants import AxesConfiguration, rel_kconv, rel_kzconv
 from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
@@ -173,14 +171,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """Experimental configuration.
 
         For a properly implemented data loader, the configuration attribute must be set
-        on data import. See :class:`erlab.analysis.kspace.AxesConfiguration` for
-        details.
+        on data import. See :class:`erlab.constants.AxesConfiguration` for details.
         """
         if "configuration" not in self._obj.attrs:
             raise ValueError(
                 "Configuration not found in data attributes! "
                 "Data attributes may have been discarded since initial import."
             )
+
         return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
     @configuration.setter
@@ -535,6 +533,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self._alpha, self._beta)
         if "hv" in kx.dims:
+            from erlab.analysis.kspace import kz_func
+
             kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
             return {"kx": kx, "ky": ky, "kz": kz}
         return {"kx": kx, "ky": ky}
@@ -611,11 +611,15 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self.best_kp_resolution
 
     def _forward_func(self, alpha, beta):
+        from erlab.analysis.kspace import get_kconv_func
+
         return get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
         )[0](alpha, beta)
 
     def _inverse_func(self, kx, ky, kz=None):
+        from erlab.analysis.kspace import get_kconv_func
+
         return get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
         )[1](kx, ky, kz)
@@ -755,6 +759,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             "ky": 0.01} converted_data = data.kspace.convert(bounds, resolution)
 
         """
+        import erlab.analysis.interpolate
+
         if bounds is None:
             bounds = {}
 
@@ -837,7 +843,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         def _wrap_interpn(arr, *args):
             points, xi = args[: arr.ndim], args[arr.ndim :]
-            return interpn(points, arr, xi, method=method, bounds_error=False).squeeze()
+            return erlab.analysis.interpolate.interpn(
+                points, arr, xi, method=method, bounds_error=False
+            ).squeeze()
 
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])
@@ -901,6 +909,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         center since we lost the exact angle values, i.e. the exact momentum
         perpendicular to the slit, during momentum conversion.
         """
+        from erlab.analysis.kspace import get_kconv_func, kz_func
+
         if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
 
