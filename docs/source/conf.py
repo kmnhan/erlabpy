@@ -200,6 +200,7 @@ napoleon_type_aliases = {
     "NXgroup": "`NXgroup <nexusformat.nexus.tree.NXgroup>`",
     "NXlink": "`NXlink <nexusformat.nexus.tree.NXlink>`",
     "NXdata": "`NXdata <nexusformat.nexus.tree.NXdata>`",
+    "NXentry": "`NXentry <nexusformat.nexus.tree.NXentry>`",
     "lmfit.Parameters": "`lmfit.Parameters <lmfit.parameter.Parameters>`",
     "lmfit.Model": "`lmfit.Model <lmfit.model.Model>`",
 }

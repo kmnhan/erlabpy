@@ -9,8 +9,8 @@ import numpy as np
 import xarray as xr
 
 import erlab.io
+import erlab.io.nexusutils
 from erlab.io.dataloader import LoaderBase
-from erlab.io.nexusutils import get_entry, nxgroup_to_xarray
 
 
 def _get_data(group):
@@ -50,7 +50,9 @@ class LOREALoader(LoaderBase):
         if pathlib.Path(file_path).suffix == ".krx":
             return self._load_krx(file_path)
 
-        return nxgroup_to_xarray(get_entry(file_path), _get_data, without_values)
+        return erlab.io.nexusutils.nxgroup_to_xarray(
+            erlab.io.nexusutils.get_entry(file_path), _get_data, without_values
+        )
 
     def identify(self, num, data_dir, krax=False):
         if krax:
