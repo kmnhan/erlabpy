@@ -1497,8 +1497,9 @@ class LoaderBase(metaclass=_Loader):
         ordered_coords = {}
         coord_dict = dict(darr.coords)
         for d in darr.dims:
-            # Move dimension coords to the front
-            ordered_coords[d] = coord_dict.pop(d)
+            if d in coord_dict:
+                # Move dimension coords to the front
+                ordered_coords[d] = coord_dict.pop(d)
 
         for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
             if d in coord_dict:
