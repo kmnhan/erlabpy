@@ -30,8 +30,6 @@ import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 
-from erlab.io.igor import load_wave as _load_wave
-
 # Import colormaps if available
 if importlib.util.find_spec("cmasher"):
     importlib.import_module("cmasher")
@@ -41,41 +39,52 @@ if importlib.util.find_spec("colorcet"):
     importlib.import_module("colorcet")
 
 
-def load_igor_ct(fname: str, name: str) -> None:
-    """Load a Igor CT wave file (`.ibw`) and register as a matplotlib colormap.
+def load_igor_ct(
+    file: str | os.PathLike | io.BytesIO, name: str, register_reversed: bool = True
+) -> None:
+    """Load a Igor CT wave file (``.ibw``) and register as a matplotlib colormap.
 
     Parameters
     ----------
-    fname
-        Path to the Igor CT wave file.
+    file
+        Path to the color table wave. The wave must have three columns with the red,
+        green, and blue values in the range 0-65535.
     name
         The name to register the colormap as.
+    register_reversed
+        Whether to also register the reversed colormap with the name `name + "_r"`.
 
     """
-    file = pkgutil.get_data(__package__, "IgorCT/" + fname)
+    import igor2.binarywave
+
+    values = igor2.binarywave.load(file)["wave"]["wData"]
+
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+        name, values.astype(np.float64) / 65535
+    )
+    matplotlib.colormaps.register(cmap)
+    if register_reversed:
+        matplotlib.colormaps.register(cmap.reversed())
+
+
+def _get_ct_wave_bytes(file: str) -> io.BytesIO:
+    file = pkgutil.get_data(__package__, "IgorCT/" + file)
 
     if file is None:
-        raise FileNotFoundError(f"Could not find file {fname}")
+        raise FileNotFoundError(f"Could not find file {file}")
 
-    if fname.endswith(".txt"):
-        values = np.genfromtxt(io.StringIO(file.decode()))
-    elif fname.endswith(".ibw"):
-        values = _load_wave(io.BytesIO(file)).values
-
-    cmap = matplotlib.colors.LinearSegmentedColormap.from_list(name, values / 65535)
-    matplotlib.colormaps.register(cmap)
-    matplotlib.colormaps.register(cmap.reversed())
+    return io.BytesIO(file)
 
 
-load_igor_ct("CTBlueWhite.ibw", "BuWh")
-load_igor_ct("CTRainbowLIght.ibw", "RainbowLight")
-# load_igor_ct("CTRedTemperature.ibw", "RedTemperature")
-load_igor_ct("ColdWarm.ibw", "ColdWarm")
-load_igor_ct("BlueHot.ibw", "BlueHot")
-# load_igor_ct("PlanetEarth.ibw", "PlanetEarth")
-# load_igor_ct("ametrine.ibw", "ametrine")
-# load_igor_ct("isolum.ibw", "isolum")
-# load_igor_ct("morgenstemning.ibw", "morgenstemning")
+load_igor_ct(_get_ct_wave_bytes("CTBlueWhite.ibw"), "BuWh")
+load_igor_ct(_get_ct_wave_bytes("CTRainbowLIght.ibw"), "RainbowLight")
+# load_igor_ct(_get_ct_wave_bytes("CTRedTemperature.ibw"), "RedTemperature")
+load_igor_ct(_get_ct_wave_bytes("ColdWarm.ibw"), "ColdWarm")
+load_igor_ct(_get_ct_wave_bytes("BlueHot.ibw"), "BlueHot")
+load_igor_ct(_get_ct_wave_bytes("PlanetEarth.ibw"), "PlanetEarth")
+# load_igor_ct(_get_ct_wave_bytes("ametrine.ibw"), "ametrine")
+# load_igor_ct(_get_ct_wave_bytes("isolum.ibw"), "isolum")
+# load_igor_ct(_get_ct_wave_bytes("morgenstemning.ibw"), "morgenstemning")
 
 
 matplotlib.style.core.USER_LIBRARY_PATHS.append(
