@@ -28,8 +28,6 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import matplotlib
-import matplotlib.backends.backend_pdf
-import matplotlib.backends.backend_svg
 import matplotlib.figure
 import matplotlib.font_manager
 import matplotlib.mathtext
@@ -286,9 +284,14 @@ def copy_mathtext(
     fig.text(0, depth / height, s, fontproperties=fontproperties)
 
     if svg:
-        matplotlib.backends.backend_svg.FigureCanvasSVG(fig)
+        from matplotlib.backends.backend_svg import FigureCanvasSVG
+
+        FigureCanvasSVG(fig)
+
     else:
-        matplotlib.backends.backend_pdf.FigureCanvasPdf(fig)
+        from matplotlib.backends.backend_pdf import FigureCanvasPdf
+
+        FigureCanvasPdf(fig)
 
     for k, v in mathtext_rc.items():
         if k in ["bf", "cal", "it", "rm", "sf", "tt"] and isinstance(

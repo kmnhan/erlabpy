@@ -8,7 +8,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import scipy.spatial
 from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
@@ -69,6 +68,8 @@ def get_bz_edge(
 
     # Get index of origin
     zero_ind = np.where((points == 0).all(axis=1))[0][0]
+
+    import scipy.spatial
 
     vor = scipy.spatial.Voronoi(points)
 

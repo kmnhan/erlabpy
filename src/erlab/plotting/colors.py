@@ -7,8 +7,7 @@ In addition to the default `matplotlib
 <https://matplotlib.org/stable/tutorials/colors/colormaps.html>`_ colormaps, `cmasher
 <https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_, and
 `colorcet <https://colorcet.holoviz.org>`_ packages can be installed to extend the
-available colormaps. If these packages are installed, they will be automatically
-imported upon importing `erlab.plotting`.
+available colormaps.
 
 Colormap Normalization
 ----------------------

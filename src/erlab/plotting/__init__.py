@@ -19,7 +19,6 @@ Modules
 
 """
 
-import importlib
 import io
 import os
 import pkgutil
@@ -29,14 +28,6 @@ import matplotlib.colors
 import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
-
-# Import colormaps if available
-if importlib.util.find_spec("cmasher"):
-    importlib.import_module("cmasher")
-if importlib.util.find_spec("cmocean"):
-    importlib.import_module("cmocean")
-if importlib.util.find_spec("colorcet"):
-    importlib.import_module("colorcet")
 
 
 def load_igor_ct(
