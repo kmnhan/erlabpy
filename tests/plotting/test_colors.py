@@ -34,9 +34,7 @@ def sample_plot(norms, kw0, kw1, cmap):
             norm=norm(**k0, **k1),
         )
         eplt.proportional_colorbar(ax=ax)
-
-    eplt.unify_clim(axs)
-    plt.close()
+    return axs
 
 
 @pytest.mark.parametrize("gamma", [0.1, 0.5, 1, 2.0, 10.0])
@@ -88,3 +86,79 @@ def test_2d_cmap(cmap, lnorm, cnorm, background):
     assert cb.ax.get_xlim() == (0.0, 48.0)
 
     plt.close()
+
+
+@pytest.mark.parametrize("autoscale", [True, False])
+def test_unify_clim(autoscale):
+    fig, axs = plt.subplots(2, 2)
+
+    rng = np.random.default_rng(1)
+
+    data1 = rng.random((10, 10))
+    data2 = rng.random((10, 10)) * 2
+    data3 = rng.random((10, 10)) * 3
+    data4 = rng.random((10, 10)) * 4
+
+    im1 = axs[0, 0].imshow(data1, cmap="viridis")
+    im2 = axs[0, 1].imshow(data2, cmap="viridis")
+    im3 = axs[1, 0].imshow(data3, cmap="viridis")
+    im4 = axs[1, 1].imshow(data4, cmap="viridis")
+
+    eplt.unify_clim(axs, autoscale=autoscale)
+
+    vmin = min(im1.norm.vmin, im2.norm.vmin, im3.norm.vmin, im4.norm.vmin)
+    vmax = max(im1.norm.vmax, im2.norm.vmax, im3.norm.vmax, im4.norm.vmax)
+
+    assert im1.norm.vmin == vmin
+    assert im1.norm.vmax == vmax
+    assert im2.norm.vmin == vmin
+    assert im2.norm.vmax == vmax
+    assert im3.norm.vmin == vmin
+    assert im3.norm.vmax == vmax
+    assert im4.norm.vmin == vmin
+    assert im4.norm.vmax == vmax
+
+    plt.close(fig)
+
+
+def test_unify_clim_with_target():
+    fig, axs = plt.subplots(2, 2)
+
+    rng = np.random.default_rng(1)
+
+    data1 = rng.random((10, 10))
+    data2 = rng.random((10, 10)) * 2
+    data3 = rng.random((10, 10)) * 3
+    data4 = rng.random((10, 10)) * 4
+
+    im1 = axs[0, 0].imshow(data1, cmap="viridis")
+    im2 = axs[0, 1].imshow(data2, cmap="viridis")
+    im3 = axs[1, 0].imshow(data3, cmap="viridis")
+    im4 = axs[1, 1].imshow(data4, cmap="viridis")
+
+    vmin = im3.norm.vmin
+    vmax = im3.norm.vmax
+
+    eplt.unify_clim(axs, target=axs[1, 0])
+
+    assert im1.norm.vmin == vmin
+    assert im1.norm.vmax == vmax
+    assert im2.norm.vmin == vmin
+    assert im2.norm.vmax == vmax
+    assert im3.norm.vmin == vmin
+    assert im3.norm.vmax == vmax
+    assert im4.norm.vmin == vmin
+    assert im4.norm.vmax == vmax
+
+    eplt.unify_clim(axs, target=im3)
+
+    assert im1.norm.vmin == vmin
+    assert im1.norm.vmax == vmax
+    assert im2.norm.vmin == vmin
+    assert im2.norm.vmax == vmax
+    assert im3.norm.vmin == vmin
+    assert im3.norm.vmax == vmax
+    assert im4.norm.vmin == vmin
+    assert im4.norm.vmax == vmax
+
+    plt.close(fig)

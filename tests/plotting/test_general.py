@@ -151,9 +151,19 @@ def test_plot_slices():
     plt.close()
 
     # Test same_limits
-    fig, axes = plot_slices(maps, same_limits=True, order="F")
+    fig, axes = plot_slices(maps, same_limits="all", order="F")
     assert axes[0, 0].get_images()[0].norm.vmin == axes[0, 1].get_images()[0].norm.vmin
     assert axes[0, 0].get_images()[0].norm.vmax == axes[0, 1].get_images()[0].norm.vmax
+    plt.close()
+
+    fig, axes = plot_slices(maps, same_limits="row", order="F")
+    assert axes[0, 0].get_images()[0].norm.vmin == axes[0, 1].get_images()[0].norm.vmin
+    assert axes[0, 0].get_images()[0].norm.vmax == axes[0, 1].get_images()[0].norm.vmax
+    plt.close()
+
+    fig, axes = plot_slices(maps, same_limits="col", order="F")
+    assert axes[0, 0].get_images()[0].norm.vmin != axes[0, 1].get_images()[0].norm.vmin
+    assert axes[0, 0].get_images()[0].norm.vmax != axes[0, 1].get_images()[0].norm.vmax
     plt.close()
 
     # Test other options

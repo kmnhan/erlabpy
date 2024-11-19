@@ -38,6 +38,7 @@ from erlab.plotting.colors import (
     axes_textcolor,
     gen_2d_colormap,
     nice_colorbar,
+    unify_clim,
 )
 from erlab.utils.array import is_dims_uniform
 from erlab.utils.misc import emit_user_level_warning
@@ -209,8 +210,13 @@ def _imshow_nonuniform(
 
     im.set_data(x, y, A)
     im.set_alpha(alpha)
+
     if im.get_clip_path() is None:
-        im.set_clip_path(ax.patch)
+        patch = matplotlib.patches.Rectangle(
+            (x[0], y[0]), x[-1] - x[0], y[-1] - y[0], transform=ax.transData
+        )
+        im.set_clip_path(patch)
+
     im._scale_norm(norm, vmin, vmax)
     im.set_url(url)
 
@@ -660,7 +666,7 @@ def plot_slices(
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     crop: bool = True,
-    same_limits: bool = False,
+    same_limits: bool | Literal["row", "col", "all"] = False,
     axis: Literal[
         "on", "off", "equal", "scaled", "tight", "auto", "image", "square"
     ] = "auto",
@@ -706,7 +712,9 @@ def plot_slices(
         If `True`, crops the data to the limits given by `xlim` and `ylim` prior to
         plotting.
     same_limits
-        If `True`, all images will have the same vmin and vmax.
+        If `True`, all images will have the same vmin and vmax. Passing `'row'` or
+        `'col'` will set same limits for rows or columns, respectively. Passing `'all'`
+        is equivalent to `True`.
     axis
         Passed onto :func:`matplotlib.axes.Axes.axis`. Possible values are:
 
@@ -923,7 +931,7 @@ def plot_slices(
             qsel_kw[slice_dim] = slice_levels[i]
 
         for j in range(len(maps)):
-            dat_sel = maps[j].copy(deep=True).qsel(**qsel_kw)
+            dat_sel = maps[j].qsel(**qsel_kw)
 
             if order == "F":
                 ax = axes[i, j]
@@ -1002,15 +1010,19 @@ def plot_slices(
                     dat_sel, ax=ax, norm=cast(plt.Normalize, norm), cmap=cmap, **kwargs
                 )
 
-    if same_limits and len(plot_dims) == 2:
-        vmn, vmx = [], []
-        for ax in axes.flat:
-            vmn.append(ax.get_images()[0].norm.vmin)
-            vmx.append(ax.get_images()[0].norm.vmax)
-        vmn, vmx = min(vmn), max(vmx)
-        for ax in axes.flat:
-            ax.get_images()[0].norm.vmin = vmn
-            ax.get_images()[0].norm.vmax = vmx
+    if len(plot_dims) == 2:
+        if same_limits is True:
+            same_limits = "all"
+
+        match same_limits:
+            case "row":
+                for row in axes:
+                    unify_clim(row)
+            case "col":
+                for col in axes.T:
+                    unify_clim(col)
+            case "all":
+                unify_clim(axes)
 
     for ax in axes.flat:
         if not show_all_labels:

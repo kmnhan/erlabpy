@@ -497,8 +497,9 @@ def get_mappable(
 
 def unify_clim(
     axes: np.ndarray,
-    target: matplotlib.axes.Axes | None = None,
+    target: matplotlib.axes.Axes | matplotlib.cm.ScalarMappable | None = None,
     image_only: bool = False,
+    autoscale: bool = False,
 ) -> None:
     """Unify the color limits for mappables in multiple axes.
 
@@ -509,9 +510,14 @@ def unify_clim(
     target
         The target axis to unify the color limits. If provided, the target color limits
         will be taken from this axes. Otherwise, the color limits will be set to include
-        all mappables in the ``axes``.
+        all mappables in the ``axes``. Instead of an axes, a mappable can also be
+        provided.
     image_only
         If `True`, only consider mappables that are images. Default is `False`.
+    autoscale
+        If `True`, the color limits will be determined from the minimum and maximum
+        values of the plotted data. Otherwise, the color limits will be determined by
+        the vmin and vmax of the norm applied to the target mappable.
 
     """
     vmn: float | None
@@ -522,14 +528,21 @@ def unify_clim(
         for ax in axes.flat:
             mappable = get_mappable(ax, image_only=image_only, silent=True)
             if mappable is not None:
+                if autoscale:
+                    mappable.autoscale()
                 if mappable.norm.vmin is not None:
                     vmn_list.append(mappable.norm.vmin)
                 if mappable.norm.vmax is not None:
                     vmx_list.append(mappable.norm.vmax)
         vmn, vmx = min(vmn_list), max(vmx_list)
     else:
-        mappable = get_mappable(target, image_only=image_only, silent=True)
+        if isinstance(target, matplotlib.cm.ScalarMappable):
+            mappable = target
+        else:
+            mappable = get_mappable(target, image_only=image_only, silent=True)
         if mappable is not None:
+            if autoscale:
+                mappable.autoscale()
             vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
 
     # Apply color limits
