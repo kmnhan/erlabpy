@@ -8,6 +8,7 @@ import copy
 import functools
 import inspect
 import os
+import pathlib
 import time
 import warnings
 import weakref
@@ -525,7 +526,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp.aboutToQuit.connect(self.on_close)
 
         self._data: xr.DataArray | None = None
-        self._file_path: str | None = None
+        self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
         if data is not None:
@@ -853,7 +854,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self,
         data: xr.DataArray | npt.ArrayLike,
         rad2deg: bool | Iterable[str] = False,
-        file_path: str | None = None,
+        file_path: str | os.PathLike | None = None,
     ) -> None:
         """Set the data to be displayed.
 
@@ -874,7 +875,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             used to set the window title.
 
         """
-        self._file_path = file_path
+        self._file_path = pathlib.Path(file_path) if file_path is not None else None
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):
