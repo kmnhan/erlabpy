@@ -9,10 +9,10 @@ import xarray as xr
 
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "ad7dbdf35ef2404feee0854cb3a52973770709f4"
+DATA_COMMIT_HASH = "2a3cce968084aabaaf7a9f7b5c79b366bfca7ae8"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "43d89ef27482e127e7509b65d635b7a6a0cbf648f84aa597c8b4094bdc0c46ab"
+DATA_KNOWN_HASH = "a2d2d89b8c33ff04b2f9eec7d1e3cb11fee02242c37a21180623611f2d45cdb7"
 """The hash of the `.tar.gz` file."""
 
 

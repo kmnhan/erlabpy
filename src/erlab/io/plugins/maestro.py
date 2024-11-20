@@ -85,7 +85,7 @@ class MAESTROMicroLoader(LoaderBase):
         "delta": "Motors_Logical.Phi",  # azimuth
         "beta": ("Slit Defl", "Motors_Logical.Slit Defl"),
         "hv": ("MONOEV", "Beamline.Beamline Energy"),
-        "sample_temp": "Cryostat_D",
+        "sample_temp": "Cryostat_A",  # A/B/C/D is Sample/Shield/SupportTube/Coldtip
     }
     coordinate_attrs = (
         "beta",
