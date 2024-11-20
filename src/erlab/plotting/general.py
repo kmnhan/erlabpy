@@ -17,7 +17,7 @@ __all__ = [
 
 import contextlib
 import copy
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
 import matplotlib
@@ -44,7 +44,7 @@ from erlab.utils.array import is_dims_uniform
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Callable, Collection
 
     from matplotlib.typing import ColorType
 
@@ -1022,7 +1022,7 @@ def plot_slices(
                 for col in axes.T:
                     unify_clim(col)
             case "all":
-                unify_clim(axes)
+                unify_clim(cast(Sequence[matplotlib.axes.Axes], axes))
 
     for ax in axes.flat:
         if not show_all_labels:

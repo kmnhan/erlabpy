@@ -495,10 +495,12 @@ def get_mappable(
 
 
 def unify_clim(
-    axes: np.ndarray,
+    axes: Sequence[matplotlib.axes.Axes],
     target: matplotlib.axes.Axes | matplotlib.cm.ScalarMappable | None = None,
     image_only: bool = False,
     autoscale: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> None:
     """Unify the color limits for mappables in multiple axes.
 
@@ -517,10 +519,14 @@ def unify_clim(
         If `True`, the color limits will be determined from the minimum and maximum
         values of the plotted data. Otherwise, the color limits will be determined by
         the vmin and vmax of the norm applied to the target mappable.
+    vmin, vmax
+        If provided, the color limits will be set to these values.
 
     """
     vmn: float | None
     vmx: float | None
+
+    axes = np.asarray(axes, dtype=object)
 
     if target is None:
         vmn_list, vmx_list = [], []
@@ -544,11 +550,13 @@ def unify_clim(
                 mappable.autoscale()
             vmn, vmx = mappable.norm.vmin, mappable.norm.vmax
 
+    vmin = vmn if vmin is None else vmin
+    vmax = vmx if vmax is None else vmax
     # Apply color limits
     for ax in axes.flat:
         mappable = get_mappable(ax, image_only=image_only, silent=True)
         if mappable is not None:
-            mappable.norm.vmin, mappable.norm.vmax = vmn, vmx
+            mappable.norm.vmin, mappable.norm.vmax = vmin, vmax
 
 
 def proportional_colorbar(
