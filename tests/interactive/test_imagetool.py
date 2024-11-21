@@ -567,17 +567,25 @@ def test_manager(qtbot):
     win.tool_options[2].check.setChecked(True)
 
     def _handle_renaming(dialog: _RenameDialog):
-        dialog._rename_widgets[0].line_new.setText("new_name_1")
-        dialog._rename_widgets[1].line_new.setText("new_name_2")
+        dialog._new_name_lines[0].setText("new_name_1")
+        dialog._new_name_lines[1].setText("new_name_2")
 
-    accept_dialog(win.rename_selected, pre_call=_handle_renaming)
+    accept_dialog(win.rename_action.trigger, pre_call=_handle_renaming)
     assert win.tool_options[1].name == "new_name_1"
     assert win.tool_options[2].name == "new_name_2"
+
+    # Archive checked
+    win.tool_options[1].check.setChecked(True)
+    win.archive_action.trigger()
+    win.tool_options[1].unarchive()
+
+    # GC action
+    win.gc_action.trigger()
 
     # Remove all checked
     win.tool_options[1].check.setChecked(True)
     win.tool_options[2].check.setChecked(True)
-    accept_dialog(win.close_selected)
+    accept_dialog(win.close_action.trigger)
     qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
 
     win.close()
