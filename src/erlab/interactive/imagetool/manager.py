@@ -423,7 +423,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            cast(ImageTool, self.tool).to_pickle(self._archived_fname)
+            cast(ImageTool, self.tool).to_file(self._archived_fname)
 
             self.close_tool()
             self.check.blockSignals(True)
@@ -442,7 +442,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self.check.setDisabled(False)
             self.visibility_btn.setDisabled(False)
 
-            self.tool = ImageTool.from_pickle(cast(str, self._archived_fname))
+            self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
 
             self.manager.sigReloadLinkers.emit()

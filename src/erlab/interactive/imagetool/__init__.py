@@ -21,8 +21,8 @@ from __future__ import annotations
 
 __all__ = ["BaseImageTool", "ImageTool", "itool"]
 
+import json
 import os
-import pickle
 import sys
 import weakref
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import Callable, Collection
 
-    from erlab.interactive.imagetool.core import ImageSlicerState
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -275,47 +274,57 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """  # noqa: D205
         return self.slicer_area.array_slicer
 
-    def to_pickle(self, filename: str | os.PathLike) -> None:
-        """Save the data, state, title, and geometry of the tool to a pickle file.
+    def to_dataset(self) -> xr.Dataset:
+        return self.slicer_area.data.to_dataset(
+            name="<erlab-itool-data>", promote_attrs=False
+        ).assign_attrs(
+            {
+                "state": json.dumps(self.slicer_area.state),
+                "title": self.windowTitle(),
+                "rect": self.geometry().getRect(),
+            }
+        )
+
+    def to_file(self, filename: str | os.PathLike) -> None:
+        """Save the data, state, title, and geometry of the tool to a file.
 
         The saved pickle file can be used to recreate the ImageTool with the class
         method :meth:`from_pickle`.
 
-        This method is only meant for short-term storage of a tool's state. For
-        long-term storage, consider saving the data separately and use the data to
-        recreate the tool.
-
         Parameters
         ----------
         filename
             The name of the pickle file.
 
         """
-        info: tuple[xr.DataArray, ImageSlicerState, str, QtCore.QRect] = (
-            self.slicer_area.data,
-            self.slicer_area.state,
-            self.windowTitle(),
-            self.geometry(),
-        )
-        with open(filename, "wb") as file:
-            pickle.dump(info, file)
+        self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
-    def from_pickle(cls, filename: str) -> Self:
-        """Restore a window from a pickle file saved using :meth:`to_pickle`.
+    def from_dataset(self, ds: xr.Dataset) -> Self:
+        """Restore a window from a dataset saved using :meth:`to_dataset`.
+
+        Parameters
+        ----------
+        ds
+            The dataset.
+
+        """
+        tool = self(ds["<erlab-itool-data>"], state=json.loads(ds.attrs["state"]))
+        tool.setWindowTitle(ds.attrs["title"])
+        tool.setGeometry(*ds.attrs["rect"])
+        return tool
+
+    @classmethod
+    def from_file(cls, filename: str | os.PathLike) -> Self:
+        """Restore a window from a file saved using :meth:`to_file`.
 
         Parameters
         ----------
         filename
-            The name of the pickle file.
+            The name of the file.
 
         """
-        with open(filename, "rb") as file:
-            data, state, title, rect = pickle.load(file)
-        tool = cls(data, state=state)
-        tool.setWindowTitle(title)
-        tool.setGeometry(rect)
-        return tool
+        return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"))
 
     def _sync_dock_float(self, floating: bool, index: int) -> None:
         """Synchronize the floating state of the dock widgets.

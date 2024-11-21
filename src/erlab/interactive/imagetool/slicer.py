@@ -13,6 +13,7 @@ from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
 from erlab.interactive.utils import format_kwargs
+from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -26,7 +27,7 @@ class ArraySlicerState(TypedDict):
     dims: tuple[Hashable, ...]
     bins: list[list[int]]
     indices: list[list[int]]
-    values: list[list[np.float32]]
+    values: list[list[float]]
     snap_to_data: bool
 
 
@@ -171,6 +172,20 @@ class ArraySlicer(QtCore.QObject):
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
     ) -> None:
+        """Set the DataArray object to be sliced.
+
+        Parameters
+        ----------
+        xarray_obj : DataArray
+            The array to slice.
+        validate
+            If True, validate the array before setting it. This flag is intended for
+            internal use where the new array is guaranteed to be valid, such as when
+            transposing an already valid array.
+        reset
+            If True, reset cursors, bins, indices, and values.
+
+        """
         if hasattr(self, "_obj"):
             del self._obj
 
@@ -178,6 +193,9 @@ class ArraySlicer(QtCore.QObject):
             self._obj: xr.DataArray = self.validate_array(xarray_obj)
         else:
             self._obj = xarray_obj
+
+        # TODO: This is not robust, may break if user supplies dim that ends with "_idx"
+        # Need to find a better way to handle this.
         self._nonuniform_axes: list[int] = [
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
@@ -198,10 +216,11 @@ class ArraySlicer(QtCore.QObject):
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.floating], ...]:
+        """Coordinate values of each dimension in the array."""
         if self._nonuniform_axes:
             return tuple(
                 (
-                    self.values_of_dim(str(dim)[:-4])
+                    self.values_of_dim(str(dim).removesuffix("_idx"))
                     if i in self._nonuniform_axes
                     else self.values_of_dim(dim)
                 )
@@ -211,18 +230,31 @@ class ArraySlicer(QtCore.QObject):
 
     @functools.cached_property
     def coords_uniform(self) -> tuple[npt.NDArray[np.floating], ...]:
+        """Coordinate values of each dimension in the array.
+
+        Non-uniform coordinates are converted to uniform indices.
+        """
         return tuple(self.values_of_dim(dim) for dim in self._obj.dims)
 
     @functools.cached_property
     def incs(self) -> tuple[np.floating, ...]:
+        """Increment size of each dimension in the array.
+
+        Returns the difference between the second and first coordinate.
+        """
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
     @functools.cached_property
     def incs_uniform(self) -> tuple[np.floating, ...]:
+        """Increment size of each dimension in the array.
+
+        Non-uniform dimensions will increment by 1.
+        """
         return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
 
     @functools.cached_property
     def lims(self) -> tuple[tuple[np.floating, np.floating], ...]:
+        """Coordinate bounds of each dimension in the array."""
         if self._nonuniform_axes:
             return tuple(
                 (
@@ -236,10 +268,18 @@ class ArraySlicer(QtCore.QObject):
 
     @functools.cached_property
     def lims_uniform(self) -> tuple[tuple[np.floating, np.floating], ...]:
+        """Coordinate bounds of each dimension in the array.
+
+        Non-uniform dimensions are converted to uniform indices.
+        """
         return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
 
     @functools.cached_property
     def data_vals_T(self) -> npt.NDArray[np.floating]:
+        """Transposed data values.
+
+        This property is used for fast slicing and binning operations.
+        """
         return _transposed(self._obj.values)
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
@@ -272,7 +312,7 @@ class ArraySlicer(QtCore.QObject):
             "dims": copy.deepcopy(self._obj.dims),
             "bins": copy.deepcopy(self._bins),
             "indices": copy.deepcopy(self._indices),
-            "values": copy.deepcopy(self._values),
+            "values": _convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
         }
 
@@ -567,15 +607,11 @@ class ArraySlicer(QtCore.QObject):
             return float(self._indices[cursor][axis])
         return float(self._values[cursor][axis])
 
-    def set_values(
-        self, cursor: int, value: list[np.floating], update: bool = True
-    ) -> None:
-        if not len(value) == self._obj.ndim:
-            raise ValueError(
-                "length of value array must match the number of dimensions"
-            )
+    def set_values(self, cursor: int, values: list[float], update: bool = True) -> None:
+        if not len(values) == self._obj.ndim:
+            raise ValueError("length of values must match the number of dimensions")
         axes: list[int | None] = []
-        for i, x in enumerate(value):
+        for i, x in enumerate(values):
             axes += self.set_value(cursor, i, x, update=False)
         if update:
             self.sigIndexChanged.emit(cursor, tuple(axes))
@@ -649,11 +685,40 @@ class ArraySlicer(QtCore.QObject):
     def value_of_index(
         self, axis: int, value: int, uniform: bool = False
     ) -> np.floating:
+        """Get the value of the coordinate at the given index.
+
+        Parameters
+        ----------
+        axis
+            The axis to index into.
+        value
+            The index to get the value from.
+        uniform
+            This flag is only applied when the given `axis` corresponds to a
+            non-uniform coordinate. If `True`, an index is returned. If `False`, the
+            coordinate value at the given index is returned.
+
+        """
         if uniform or (axis not in self._nonuniform_axes):
             return self.coords_uniform[axis][value]
         return self.coords[axis][value]
 
     def index_of_value(self, axis: int, value: float, uniform: bool = False) -> int:
+        """Get the index of the coordinate closest to the given value.
+
+        Parameters
+        ----------
+        axis
+            The axis to search.
+        value
+            The value to search for.
+        uniform
+            This flag is only applied when the given `axis` corresponds to a non-uniform
+            coordinate. If `True`, `value` is treated as an index. If `False`, the index
+            corresponding to the coordinate with the closest value to `value` is
+            returned.
+
+        """
         if uniform or (axis not in self._nonuniform_axes):
             return _index_of_value(
                 axis, value, self.lims_uniform, self.incs_uniform, self._obj.shape
