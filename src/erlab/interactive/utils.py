@@ -1,4 +1,4 @@
-"""Various helper functions and extensions to pyqtgraph."""
+"""Various helper functions and extensions to PyQt and pyqtgraph."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ __all__ = [
     "BetterSpinBox",
     "DictMenuBar",
     "ExclusiveComboGroup",
+    "IconActionButton",
+    "IconButton",
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
@@ -1814,6 +1816,132 @@ class ExclusiveComboGroup(QtCore.QObject):
                 if (index > 0) or (index == 0 and not self._exclude_first):
                     combo.setItemData(index, groupid, self._role)
                     view.setRowHidden(index, True)
+
+
+class IconButton(QtWidgets.QPushButton):
+    """Convenience class for creating a QPushButton with a qtawesome icon.
+
+    This button adapts to dark mode changes by resetting the qtawesome cache when a
+    color palette change is detected.
+
+    Parameters
+    ----------
+    on : str, optional
+        The icon to display when the button is in the "on" state. If `off` is not
+        provided, this will be the only icon displayed.
+    off : str, optional
+        The icon to display when the button is in the "off" state. If provided, the
+        button will be checkable, and the icon will change when the button is toggled.
+    **kwargs
+        Additional keyword arguments passed to the QPushButton constructor.
+
+    """
+
+    def __init__(
+        self,
+        on: str | None = None,
+        off: str | None = None,
+        **kwargs,
+    ) -> None:
+        self.icon_key_on = None
+        self.icon_key_off = None
+
+        if on is not None:
+            self.icon_key_on = on
+            kwargs["icon"] = self.get_icon(self.icon_key_on)
+
+        if off is not None:
+            if on is None and kwargs["icon"] is None:
+                raise ValueError("Icon for `on` state was not supplied.")
+            self.icon_key_off = off
+            kwargs.setdefault("checkable", True)
+
+        super().__init__(**kwargs)
+        self.toggled.connect(self.refresh_icons)
+
+    def setChecked(self, value: bool) -> None:
+        super().setChecked(value)
+        self.refresh_icons()
+
+    def get_icon(self, icon: str) -> QtGui.QIcon:
+        import qtawesome
+
+        return qtawesome.icon(icon)
+
+    def refresh_icons(self) -> None:
+        if self.icon_key_off is not None and self.isChecked():
+            self.setIcon(self.get_icon(self.icon_key_off))
+            return
+        if self.icon_key_on is not None:
+            self.setIcon(self.get_icon(self.icon_key_on))
+
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:  # handles dark mode
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            import qtawesome
+
+            qtawesome.reset_cache()
+            self.refresh_icons()
+        super().changeEvent(evt)
+
+
+class IconActionButton(IconButton):
+    """IconButton that supports linking to a QAction.
+
+    Parameters
+    ----------
+    action : QtGui.QAction
+        The QAction to be associated with this button.
+    on : str, optional
+        The icon to display when the button is in the "on" state.
+    off : str, optional
+        The icon to display when the button is in the "off" state. If `action` is not
+        toggleable, this icon will never be displayed.
+    text_from_action : bool, optional
+        If True, the button's text will be set from the QAction's text. Otherwise, the
+        text will be left empty.
+    **kwargs
+        Additional keyword arguments passed to the IconButton constructor.
+
+    """
+
+    def __init__(
+        self,
+        action: QtGui.QAction,
+        on: str | None = None,
+        off: str | None = None,
+        text_from_action: bool = False,
+        **kwargs,
+    ):
+        super().__init__(on=on, off=off, **kwargs)
+
+        self._action: QtGui.QAction | None = None
+        self.text_from_action = text_from_action
+        self.setAction(action)
+
+    def setAction(self, action: QtGui.QAction) -> None:
+        if self._action:
+            self._action.changed.disconnect(self._update_from_action)
+            self.clicked.disconnect(self._action.trigger)
+
+        self._action = action
+        if action:
+            self._update_from_action()
+            action.changed.connect(self._update_from_action)
+            self.clicked.connect(action.trigger)
+
+    def _update_from_action(self) -> None:
+        if not self._action:
+            return
+
+        if self.text_from_action:
+            self.setText(self._action.text())
+        self.setEnabled(self._action.isEnabled())
+        self.setCheckable(self._action.isCheckable())
+        self.setChecked(self._action.isChecked())
+        self.setToolTip(self._action.toolTip())
+        self._action.blockSignals(True)
+        self._action.setIcon(self.icon())
+        self._action.blockSignals(False)
 
 
 class RotatableLine(pg.InfiniteLine):
