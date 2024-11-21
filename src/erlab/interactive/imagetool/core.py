@@ -329,7 +329,9 @@ class SlicerLinkProxy:
     ):
         if steps:
             return round(
-                index * source.array_slicer.incs[axis] / target.array_slicer.incs[axis]
+                index
+                * source.array_slicer.incs_uniform[axis]
+                / target.array_slicer.incs_uniform[axis]
             )
         value = source.array_slicer.value_of_index(axis, index, uniform=False)
         new_index: int = target.array_slicer.index_of_value(
