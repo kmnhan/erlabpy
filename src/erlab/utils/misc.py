@@ -7,6 +7,17 @@ import warnings
 from types import ModuleType
 from typing import Any
 
+import numpy as np
+
+
+def _convert_to_native(obj: list[Any]) -> list[Any]:
+    """Convert a nested list of numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
+
 
 def _find_stack_level() -> int:
     """Find the first place in the stack that is not inside erlab, xarray, or stdlib.

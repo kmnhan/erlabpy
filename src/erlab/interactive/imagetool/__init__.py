@@ -44,6 +44,7 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
 )
 from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
+from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     import pathlib
@@ -67,15 +68,6 @@ def _parse_input(
             raise ValueError("No valid data for ImageTool found in the Dataset")
 
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
-
-
-def _convert_to_native(obj: list[Any]) -> list[Any]:
-    """Convert a nested list of numpy objects to native types."""
-    if isinstance(obj, np.generic):
-        return obj.item()
-    if isinstance(obj, list):
-        return [_convert_to_native(item) for item in obj]
-    return obj
 
 
 def itool(
