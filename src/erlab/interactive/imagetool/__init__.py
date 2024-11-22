@@ -42,7 +42,7 @@ from erlab.interactive.imagetool.dialogs import (
     NormalizeDialog,
     RotationDialog,
 )
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard
+from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, wait_dialog
 from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
@@ -50,6 +50,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
+
+_ITOOL_DATA_NAME: str = "<erlab-itool-data>"
+#: Name to use for the data variable in cached datasets
 
 
 def _parse_input(
@@ -274,13 +277,16 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return self.slicer_area.array_slicer
 
     def to_dataset(self) -> xr.Dataset:
+        name = self.slicer_area.data.name
+        name = name if name else ""
         return self.slicer_area.data.to_dataset(
-            name="<erlab-itool-data>", promote_attrs=False
+            name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
             {
-                "state": json.dumps(self.slicer_area.state),
-                "title": self.windowTitle(),
-                "rect": self.geometry().getRect(),
+                "itool_state": json.dumps(self.slicer_area.state),
+                "itool_title": self.windowTitle(),
+                "itool_name": name,
+                "itool_rect": self.geometry().getRect(),
             }
         )
 
@@ -299,7 +305,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
-    def from_dataset(self, ds: xr.Dataset) -> Self:
+    def from_dataset(cls, ds: xr.Dataset) -> Self:
         """Restore a window from a dataset saved using :meth:`to_dataset`.
 
         Parameters
@@ -308,9 +314,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             The dataset.
 
         """
-        tool = self(ds["<erlab-itool-data>"], state=json.loads(ds.attrs["state"]))
-        tool.setWindowTitle(ds.attrs["title"])
-        tool.setGeometry(*ds.attrs["rect"])
+        name = ds.attrs["itool_name"]
+        name = None if name == "" else name
+        tool = cls(
+            ds[_ITOOL_DATA_NAME].rename(name), state=json.loads(ds.attrs["itool_state"])
+        )
+        tool.setWindowTitle(ds.attrs["itool_title"])
+        tool.setGeometry(*ds.attrs["itool_rect"])
         return tool
 
     @classmethod
@@ -405,7 +415,10 @@ class ImageTool(BaseImageTool):
 
     def __init__(self, data=None, **kwargs) -> None:
         super().__init__(data, **kwargs)
-        self.mnb = ItoolMenuBar(self.slicer_area, self)
+        self._recent_name_filter: str | None = None
+        self._recent_directory: str | None = None
+
+        self.mnb = ItoolMenuBar(self)
 
         self.slicer_area.sigDataChanged.connect(self._update_title)
         self._update_title()
@@ -419,10 +432,8 @@ class ImageTool(BaseImageTool):
                 # Name contains only whitespace
                 name = None
 
-            if name is None and path is None:
-                title = ""
-            elif name is None:
-                title = f"{path}"
+            if name is None:
+                title = "" if path is None else path.stem
             elif path is None or name == path.stem:
                 title = f"{name}"
             else:
@@ -481,7 +492,8 @@ class ImageTool(BaseImageTool):
             fn, kargs = valid_loaders[self._recent_name_filter]
 
             try:
-                self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
+                with wait_dialog(self, "Loading..."):
+                    self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -536,7 +548,8 @@ class ImageTool(BaseImageTool):
         if dialog.exec():
             files = dialog.selectedFiles()
             fn, kargs = valid_savers[dialog.selectedNameFilter()]
-            fn(self.slicer_area._data, files[0], **kargs)
+            with wait_dialog(self, "Saving..."):
+                fn(self.slicer_area._data, files[0], **kargs)
 
 
 class ItoolMenuBar(DictMenuBar):
@@ -817,6 +830,7 @@ class ItoolMenuBar(DictMenuBar):
     def _reset_filters(self) -> None:
         self.slicer_area.apply_func(None)
 
+    @QtCore.Slot()
     def _set_colormap_options(self) -> None:
         self.slicer_area.set_colormap(
             reverse=self.colorAct[0].isChecked(),
@@ -824,11 +838,13 @@ class ItoolMenuBar(DictMenuBar):
             zero_centered=self.colorAct[2].isChecked(),
         )
 
+    @QtCore.Slot()
     def _copy_cursor_val(self) -> None:
         copy_to_clipboard(
             str(_convert_to_native(self.slicer_area.array_slicer._values))
         )
 
+    @QtCore.Slot()
     def _copy_cursor_idx(self) -> None:
         copy_to_clipboard(
             str(_convert_to_native(self.slicer_area.array_slicer._indices))

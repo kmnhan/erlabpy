@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import itertools
@@ -43,6 +44,7 @@ __all__ = [
     "generate_code",
     "make_crosshairs",
     "parse_data",
+    "wait_dialog",
     "xImageItem",
 ]
 
@@ -69,6 +71,20 @@ def parse_data(data) -> xr.DataArray:
     if isinstance(data, np.ndarray):
         data = xr.DataArray(data)
     return data  # .astype(float, order="C")
+
+
+@contextlib.contextmanager
+def wait_dialog(parent: QtWidgets.QWidget, message: str):
+    wait_dialog = QtWidgets.QDialog(parent)
+    dialog_layout = QtWidgets.QVBoxLayout()
+    wait_dialog.setLayout(dialog_layout)
+    dialog_layout.addWidget(QtWidgets.QLabel(message))
+
+    try:
+        wait_dialog.open()
+        yield wait_dialog
+    finally:
+        wait_dialog.close()
 
 
 def array_rect(data):
