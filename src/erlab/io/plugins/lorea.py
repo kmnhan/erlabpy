@@ -44,7 +44,7 @@ class LOREALoader(LoaderBase):
 
     @property
     def file_dialog_methods(self):
-        return {"ALBA BL20 LOREA Raw Data (*.nxs, *.krx)": (self.load, {})}
+        return {"ALBA BL20 LOREA Raw Data (*.nxs *.krx)": (self.load, {})}
 
     def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
         if pathlib.Path(file_path).suffix == ".krx":
