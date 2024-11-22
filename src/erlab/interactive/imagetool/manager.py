@@ -915,7 +915,15 @@ def main() -> None:
     """
     qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
-    qapp.setWindowIcon(QtGui.QIcon(os.path.join(os.path.dirname(__file__), "icon.png")))
+
+    qapp.setWindowIcon(
+        QtGui.QIcon(
+            os.path.join(
+                os.path.dirname(__file__),
+                "icon.icns" if sys.platform == "darwin" else "icon.png",
+            )
+        )
+    )
     qapp.setApplicationDisplayName("ImageTool Manager")
 
     while is_running():
