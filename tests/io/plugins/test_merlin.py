@@ -51,7 +51,11 @@ def test_corrupt(data_dir):
 
 
 def test_summarize(data_dir):
-    erlab.io.summarize()
+    with pytest.warns(
+        UserWarning,
+        match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
+    ):
+        erlab.io.summarize()
 
 
 def test_qinfo(data_dir):
