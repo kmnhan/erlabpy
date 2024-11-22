@@ -1755,7 +1755,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
         if self.is_image:
-            data = self.current_data
+            data = self.current_data.T
 
             if "alpha" not in data.dims:
                 QtWidgets.QMessageBox.critical(
@@ -1779,7 +1779,7 @@ class ItoolPlotItem(pg.PlotItem):
             from erlab.interactive.derivative import DerivativeTool
 
             tool = DerivativeTool(
-                self.current_data, data_name="data" + self.selection_code
+                self.current_data.T, data_name="data" + self.selection_code
             )
             self.slicer_area._associated_tools.append(tool)
             tool.show()
