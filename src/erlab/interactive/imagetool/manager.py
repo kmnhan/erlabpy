@@ -32,6 +32,7 @@ import time
 import traceback
 import uuid
 import weakref
+from collections.abc import ValuesView
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
@@ -46,6 +47,7 @@ from erlab.interactive.utils import (
     IconActionButton,
     IconButton,
     _coverage_resolve_trace,
+    wait_dialog,
 )
 
 if TYPE_CHECKING:
@@ -141,6 +143,8 @@ class _ManagerServer(QtCore.QThread):
                 kwargs = pickle.loads(kwargs)
                 files = kwargs.pop("__filename")
                 self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+
+                # Clean up temporary files
                 for f in files:
                     os.remove(f)
                     dirname = os.path.dirname(f)
@@ -421,7 +425,8 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            cast(ImageTool, self.tool).to_file(self._archived_fname)
+            with wait_dialog(self.manager, "Archiving..."):
+                cast(ImageTool, self.tool).to_file(self._archived_fname)
 
             self.close_tool()
             self.check.blockSignals(True)
@@ -449,7 +454,8 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
                 self.archive_btn.setChecked(False)
                 self.archive_btn.blockSignals(False)
 
-            self.tool = ImageTool.from_file(cast(str, self._archived_fname))
+            with wait_dialog(self.manager, "Unarchiving..."):
+                self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
 
             self.manager.sigReloadLinkers.emit()
@@ -778,8 +784,19 @@ class ImageToolManager(_ImageToolManagerGUI):
         super().__init__()
         menu_bar: QtWidgets.QMenuBar = cast(QtWidgets.QMenuBar, self.menuBar())
 
+        self.save_action = QtWidgets.QAction("&Save Workspace As...", self)
+        self.save_action.setToolTip("Save all windows to a single file")
+        self.save_action.triggered.connect(self.save)
+
+        self.load_action = QtWidgets.QAction("&Open Workspace...", self)
+        self.load_action.setToolTip("Restore windows from a file")
+        self.load_action.triggered.connect(self.load)
+
         file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
         file_menu.addAction(self.add_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.load_action)
+        file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
 
@@ -797,18 +814,83 @@ class ImageToolManager(_ImageToolManagerGUI):
 
         self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
 
+    @QtCore.Slot()
+    def save(self, *, native: bool = True) -> None:
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog.setDefaultSuffix("h5")
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if dialog.exec():
+            fname = dialog.selectedFiles()[0]
+            self._recent_directory = os.path.dirname(fname)
+            with wait_dialog(self, "Saving workspace..."):
+                self._to_datatree().to_netcdf(
+                    fname, engine="h5netcdf", invalid_netcdf=True
+                )
+
+    @QtCore.Slot()
+    def load(self, *, native: bool = True) -> None:
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if dialog.exec():
+            fname = dialog.selectedFiles()[0]
+            self._recent_directory = os.path.dirname(fname)
+            try:
+                with wait_dialog(self, "Loading workspace..."):
+                    self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "An error occurred while loading the workspace file:\n\n"
+                    f"{type(e).__name__}: {e}",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                self.load()
+
+    def _to_datatree(self, close: bool = False) -> xr.DataTree:
+        constructor: dict[str, xr.Dataset] = {}
+        for index in tuple(self.tool_options.keys()):
+            ds = self.get_tool(index).to_dataset()
+            ds.attrs["itool_title"] = (
+                ds.attrs["itool_title"].removeprefix(f"{index}").removeprefix(": ")
+            )
+            constructor[str(index)] = ds
+            if close:
+                self.remove_tool(index)
+        tree = xr.DataTree.from_dict(constructor)
+        tree.attrs["is_itool_workspace"] = 1
+        return tree
+
+    def _from_datatree(self, tree: xr.DataTree) -> None:
+        if tree.attrs.get("is_itool_workspace", 0) != 1:
+            raise ValueError("Not a valid workspace file")
+        for node in cast(ValuesView[xr.DataTree], (tree.values())):
+            self.add_tool(ImageTool.from_dataset(node.to_dataset(inherit=False)))
+
     @QtCore.Slot(list, dict)
     def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]) -> None:
-        """
-        Slot function to receive data from the server.
+        """Slot function to receive data from the server.
 
-        Args:
-            data (list[xarray.DataArray]): The data received from the server.
-            kwargs (dict[str, Any]): Additional keyword arguments.
-
-        Returns
-        -------
-            None
+        Parameters
+        ----------
+        data
+            A list of xarray.DataArray objects received from the server.
+        kwargs
+            Additional keyword arguments received from the server.
 
         """
         link = kwargs.pop("link", False)
@@ -829,17 +911,6 @@ class ImageToolManager(_ImageToolManagerGUI):
             self.link_tools(*indices, link_colors=link_colors)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        """
-        Event handler for the close event.
-
-        Args:
-            event (QtGui.QCloseEvent | None): The close event.
-
-        Returns
-        -------
-            None
-
-        """
         if self.ntools != 0:
             if self.ntools == 1:
                 msg = "1 remaining window will be closed."

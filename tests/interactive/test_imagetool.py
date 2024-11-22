@@ -136,17 +136,17 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
 
 
 def test_itool_load(qtbot):
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/data.h5"
-
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    data.to_netcdf(filename, engine="h5netcdf")
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
+
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+    data.to_netcdf(filename, engine="h5netcdf")
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
@@ -165,9 +165,6 @@ def test_itool_load(qtbot):
 
 
 def test_itool_save(qtbot):
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/data.h5"
-
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)
 
@@ -175,6 +172,9 @@ def test_itool_save(qtbot):
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
+
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
@@ -506,6 +506,53 @@ def test_sync(qtbot):
     manager.close()
 
 
+def test_manager_io(qtbot):
+    win = ImageToolManager()
+
+    qtbot.addWidget(win)
+
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+    # Add two tools
+    t0 = time.perf_counter()
+    itool([data, data], link=False)
+    while True:
+        if win.ntools == 2:
+            break
+        assert time.perf_counter() - t0 < 20
+        qtbot.wait(10)
+
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/workspace.h5"
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("workspace.h5")
+
+    # Save workspace
+    accept_dialog(lambda: win.save(native=False), pre_call=_go_to_file)
+
+    # Load workspace
+    accept_dialog(lambda: win.load(native=False), pre_call=_go_to_file)
+
+    # Check if the data is loaded
+    assert win.ntools == 4
+
+    for opt in win.tool_options.values():
+        opt.check.setChecked(True)
+
+    accept_dialog(win.close_action.trigger)
+    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
+    win.close()
+
+
 def test_manager(qtbot):
     win = ImageToolManager()
 
@@ -574,7 +621,7 @@ def test_manager(qtbot):
     assert win.tool_options[1].name == "new_name_1"
     assert win.tool_options[2].name == "new_name_2"
 
-    # Archive checked
+    # Batch archiving
     win.tool_options[1].check.setChecked(True)
     win.archive_action.trigger()
     win.tool_options[1].unarchive()

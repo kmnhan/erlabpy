@@ -116,3 +116,15 @@ manager application, leaving the notebook free to run other code.
     directly while the manager is running by passing `use_manager=False` to :func:`itool
     <erlab.interactive.imagetool.itool>` or :class:`qshow
     <erlab.accessors.general.InteractiveDataArrayAccessor>`.
+
+The manager application consists of a small window that shows the list of opened
+ImageTools, along with some buttons to manage them. Hovering over the buttons will show
+tooltips that explain what each button does.
+
+One of the main features of the manager is that it can save and load the state of
+ImageTool windows to a HDF5 file. You can save all ImageTool windows in the manager to a
+single file through the ``Save Workspace As...`` menu item in the ``File`` menu. The
+saved windows can later be restored through the ``Open Workspace...`` item in the same
+menu.
+
+Try exploring the menubar of the manager application to see what you can do!

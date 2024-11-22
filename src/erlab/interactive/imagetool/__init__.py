@@ -458,13 +458,10 @@ class ImageTool(BaseImageTool):
                 {"engine": "erlab-igor"},
             ),
         }
-        try:
-            import erlab.io
-        except ImportError:
-            pass
-        else:
-            for k in erlab.io.loaders:
-                valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
+        import erlab.io
+
+        for k in erlab.io.loaders:
+            valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
 
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
