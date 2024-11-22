@@ -481,7 +481,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.gc_action.triggered.connect(self.garbage_collect)
         self.gc_action.setToolTip("Run garbage collection to free up memory")
 
-        self.add_action = QtWidgets.QAction("&Open...", self)
+        self.add_action = QtWidgets.QAction("Load File", self)
         self.add_action.triggered.connect(self.add_new)
         self.add_action.setToolTip("New ImageTool from file")
 
@@ -611,11 +611,11 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         tool = ImageTool(np.zeros((2, 2)))
         self.add_tool(tool, activate=True)
 
-        tool.mnb._open_file(
+        tool._open_file(
             name_filter=self._recent_name_filter, directory=self._recent_directory
         )
-        self._recent_name_filter = tool.mnb._recent_name_filter
-        self._recent_directory = tool.mnb._recent_directory
+        self._recent_name_filter = tool._recent_name_filter
+        self._recent_directory = tool._recent_directory
 
     def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
         """Get the color that should represent the given linker."""

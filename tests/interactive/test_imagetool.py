@@ -155,7 +155,7 @@ def test_itool_load(qtbot):
         if isinstance(focused, QtWidgets.QLineEdit):
             focused.setText("data.h5")
 
-    accept_dialog(lambda: win.mnb._open_file(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
@@ -183,7 +183,7 @@ def test_itool_save(qtbot):
         if isinstance(focused, QtWidgets.QLineEdit):
             focused.setText("data.h5")
 
-    accept_dialog(lambda: win.mnb._export_file(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: win._export_file(native=False), pre_call=_go_to_file)
 
     win.close()
 

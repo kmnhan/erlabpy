@@ -24,7 +24,6 @@ __all__ = ["BaseImageTool", "ImageTool", "itool"]
 import json
 import os
 import sys
-import weakref
 from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
@@ -431,33 +430,131 @@ class ImageTool(BaseImageTool):
             self.setWindowTitle(title)
             self.sigTitleChanged.emit(title)
 
+    @QtCore.Slot()
+    def _open_file(
+        self,
+        *,
+        name_filter: str | None = None,
+        directory: str | None = None,
+        native: bool = True,
+    ) -> None:
+        valid_loaders: dict[str, tuple[Callable, dict]] = {
+            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
+            "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
+            "Igor Packed Experiment Templates (*.pxt)": (
+                xr.load_dataarray,
+                {"engine": "erlab-igor"},
+            ),
+        }
+        try:
+            import erlab.io
+        except ImportError:
+            pass
+        else:
+            for k in erlab.io.loaders:
+                valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
+
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilters(valid_loaders.keys())
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if name_filter is None:
+            name_filter = self._recent_name_filter
+
+        if name_filter is not None:
+            dialog.selectNameFilter(name_filter)
+
+        if directory is None:
+            directory = self._recent_directory
+
+        if directory is not None:
+            dialog.setDirectory(directory)
+
+        if dialog.exec():
+            fname = dialog.selectedFiles()[0]
+            self._recent_name_filter = dialog.selectedNameFilter()
+            self._recent_directory = os.path.dirname(fname)
+            fn, kargs = valid_loaders[self._recent_name_filter]
+
+            try:
+                self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"An error occurred while loading the file: {e}"
+                    "\n\nTry again with a different loader.",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                self._open_file()
+            else:
+                self.slicer_area.view_all()
+
+    @QtCore.Slot()
+    def _export_file(self, native: bool = True) -> None:
+        if self.slicer_area._data is None:
+            raise ValueError("Data is Empty!")
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        # To avoid importing erlab.io, we define the following functions here
+        def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:
+            scaling = [[1, 0]]
+            for i in range(darr.ndim):
+                coord: npt.NDArray = np.asarray(darr[darr.dims[i]].values)
+                delta = coord[1] - coord[0]
+                scaling.append([delta, coord[0]])
+            if darr.ndim == 4:
+                scaling[0] = scaling.pop(-1)
+            darr.attrs["IGORWaveScaling"] = scaling
+            return darr
+
+        def _to_netcdf(darr: xr.DataArray, file: str, **kwargs) -> None:
+            darr.to_netcdf(file, **kwargs)
+
+        def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
+            _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
+
+        valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
+            "xarray HDF5 Files (*.h5)": (
+                _to_hdf5,
+                {"engine": "h5netcdf", "invalid_netcdf": True},
+            ),
+            "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
+        }
+
+        dialog.setNameFilters(valid_savers.keys())
+        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
+        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            fn, kargs = valid_savers[dialog.selectedNameFilter()]
+            fn(self.slicer_area._data, files[0], **kargs)
+
 
 class ItoolMenuBar(DictMenuBar):
-    def __init__(
-        self, slicer_area: ImageSlicerArea, parent: QtWidgets.QWidget | None
-    ) -> None:
-        super().__init__(parent)
-        self.slicer_area = slicer_area
-
+    def __init__(self, tool: ImageTool) -> None:
+        super().__init__(tool)
         self.createMenus()
         self.refreshMenus()
         self.refreshEditMenus()
         self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
         self.slicer_area.sigHistoryChanged.connect(self.refreshEditMenus)
 
-        self._recent_name_filter: str | None = None
-        self._recent_directory: str | None = None
+    @property
+    def image_tool(self) -> ImageTool:
+        return cast(ImageTool, self.parent())
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
-        raise LookupError("Parent was destroyed")
-
-    @slicer_area.setter
-    def slicer_area(self, value: ImageSlicerArea) -> None:
-        self._slicer_area = weakref.ref(value)
+        return self.image_tool.slicer_area
 
     @property
     def array_slicer(self) -> ArraySlicer:
@@ -478,11 +575,11 @@ class ItoolMenuBar(DictMenuBar):
                 "actions": {
                     "&Open...": {
                         "shortcut": QtGui.QKeySequence.StandardKey.Open,
-                        "triggered": self._open_file,
+                        "triggered": self.image_tool._open_file,
                     },
                     "&Save As...": {
                         "shortcut": QtGui.QKeySequence.StandardKey.SaveAs,
-                        "triggered": self._export_file,
+                        "triggered": self.image_tool._export_file,
                     },
                 },
             },
@@ -736,110 +833,3 @@ class ItoolMenuBar(DictMenuBar):
         copy_to_clipboard(
             str(_convert_to_native(self.slicer_area.array_slicer._indices))
         )
-
-    @QtCore.Slot()
-    def _open_file(
-        self,
-        *,
-        name_filter: str | None = None,
-        directory: str | None = None,
-        native: bool = True,
-    ) -> None:
-        valid_loaders: dict[str, tuple[Callable, dict]] = {
-            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
-            "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
-            "Igor Packed Experiment Templates (*.pxt)": (
-                xr.load_dataarray,
-                {"engine": "erlab-igor"},
-            ),
-        }
-        try:
-            import erlab.io
-        except ImportError:
-            pass
-        else:
-            for k in erlab.io.loaders:
-                valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
-
-        dialog = QtWidgets.QFileDialog(self)
-        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
-        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilters(valid_loaders.keys())
-        if not native:
-            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-
-        if name_filter is None:
-            name_filter = self._recent_name_filter
-
-        if name_filter is not None:
-            dialog.selectNameFilter(name_filter)
-
-        if directory is None:
-            directory = self._recent_directory
-
-        if directory is not None:
-            dialog.setDirectory(directory)
-
-        if dialog.exec():
-            fname = dialog.selectedFiles()[0]
-            self._recent_name_filter = dialog.selectedNameFilter()
-            self._recent_directory = os.path.dirname(fname)
-            fn, kargs = valid_loaders[self._recent_name_filter]
-
-            try:
-                self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"An error occurred while loading the file: {e}"
-                    "\n\nTry again with a different loader.",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
-                )
-                self._open_file()
-            else:
-                self.slicer_area.view_all()
-
-    def _export_file(self, native: bool = True) -> None:
-        if self.slicer_area._data is None:
-            raise ValueError("Data is Empty!")
-        dialog = QtWidgets.QFileDialog(self)
-        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
-        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-        if not native:
-            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-
-        # To avoid importing erlab.io, we define the following functions here
-        def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:
-            scaling = [[1, 0]]
-            for i in range(darr.ndim):
-                coord: npt.NDArray = np.asarray(darr[darr.dims[i]].values)
-                delta = coord[1] - coord[0]
-                scaling.append([delta, coord[0]])
-            if darr.ndim == 4:
-                scaling[0] = scaling.pop(-1)
-            darr.attrs["IGORWaveScaling"] = scaling
-            return darr
-
-        def _to_netcdf(darr: xr.DataArray, file: str, **kwargs) -> None:
-            darr.to_netcdf(file, **kwargs)
-
-        def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
-            _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
-
-        valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
-            "xarray HDF5 Files (*.h5)": (
-                _to_hdf5,
-                {"engine": "h5netcdf", "invalid_netcdf": True},
-            ),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
-        }
-
-        dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
-        # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-        if dialog.exec():
-            files = dialog.selectedFiles()
-            fn, kargs = valid_savers[dialog.selectedNameFilter()]
-            fn(self.slicer_area._data, files[0], **kargs)
