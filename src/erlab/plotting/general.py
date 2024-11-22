@@ -982,8 +982,9 @@ def plot_slices(
                         )
 
                 else:
-                    dat_sel.plot(ax=ax, **kwargs)
-                    ax.set_title("")
+                    ax.plot(dat_sel[plot_dims[0]], dat_sel.values, **kwargs)
+                    ax.set_xlabel(plot_dims[0])
+                    ax.set_ylabel(dat_sel.name)
 
                     if gradient:
                         gradient_fill(
