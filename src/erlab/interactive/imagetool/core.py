@@ -30,7 +30,7 @@ from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Hashable, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -2159,30 +2159,30 @@ class ItoolPlotItem(pg.PlotItem):
                 item.setVisible(i == index)
 
     @QtCore.Slot()
-    def save_current_data(self, fileName=None) -> None:
-        default_name = "data"
+    def save_current_data(self) -> None:
+        default_name: Hashable | None = None
         if self.slicer_area._data is not None:
-            default_name = str(self.slicer_area._data.name)
+            default_name = self.slicer_area._data.name
+        if not default_name:
+            default_name = "data"
 
-        if fileName is None:
-            self.fileDialog = QtWidgets.QFileDialog()
-            self.fileDialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-            self.fileDialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
-            self.fileDialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog = QtWidgets.QFileDialog()
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
 
-            last_dir = pg.PlotItem.lastFileDir
-            if not last_dir:
-                last_dir = os.getcwd()
+        last_dir = pg.PlotItem.lastFileDir
+        if not last_dir:
+            last_dir = os.getcwd()
 
-            self.fileDialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
-            self.fileDialog.show()
-            self.fileDialog.fileSelected.connect(self.save_current_data)
-            return
+        dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
 
-        fileName = str(fileName)
-        pg.PlotItem.lastFileDir = os.path.dirname(fileName)
-
-        self.current_data.to_netcdf(fileName, engine="h5netcdf")
+        if dialog.exec():
+            filename = dialog.selectedFiles()[0]
+            self.current_data.to_netcdf(
+                filename, engine="h5netcdf", invalid_netcdf=True
+            )
+            pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:
