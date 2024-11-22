@@ -150,8 +150,14 @@ class MERLINLoader(LoaderBase):
             with motor_file.open(encoding="utf-8") as f:
                 header = f.readline().strip().split("\t")  # motor coordinate names
 
-            if coord_arr.ndim == 1:
+            if coord_arr.ndim < 1:
                 coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
+
+            if len(files) > coord_arr.shape[0]:
+                raise RuntimeError(
+                    f"Number of motor positions ({coord_arr.shape[0]}) "
+                    f"does not match number of files ({len(files)})"
+                )
 
             for i, dim in enumerate(header):
                 # Trim coord to number of files
