@@ -40,6 +40,7 @@ __all__ = [
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
+    "file_loaders",
     "format_kwargs",
     "generate_code",
     "make_crosshairs",
@@ -75,6 +76,24 @@ def parse_data(data) -> xr.DataArray:
 
 @contextlib.contextmanager
 def wait_dialog(parent: QtWidgets.QWidget, message: str):
+    """Show a wait dialog while executing a block of code.
+
+    This context manager creates a simple dialog with a message while the block of code
+    is being executed. The dialog is closed when the block is done.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    message
+        Message to display in the dialog.
+
+    Example
+    -------
+    >>> with wait_dialog(self, "Processing data..."):
+    >>>    some_long_running_code()
+
+    """
     wait_dialog = QtWidgets.QDialog(parent)
     dialog_layout = QtWidgets.QVBoxLayout()
     wait_dialog.setLayout(dialog_layout)
@@ -147,6 +166,36 @@ def _parse_single_arg(arg):
         arg = str(arg).replace("'", '"')
 
     return arg
+
+
+def file_loaders() -> dict[str, tuple[Callable, dict]]:
+    """Generate a dictionary of namefilters and loader functions for file dialogs.
+
+    Returns
+    -------
+    dict
+        Dictionary of file loaders. The keys are name filters(argument to
+        :meth:`QtWidgets.QFileDialog.setNameFilter`), and the values are tuples of the
+        loader function and additional keyword arguments.
+    """
+    default_loaders: dict[str, tuple[Callable, dict]] = {
+        "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+        "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
+        "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
+        "Igor Packed Experiment Templates (*.pxt)": (
+            xr.load_dataarray,
+            {"engine": "erlab-igor"},
+        ),
+    }
+    import erlab.io
+
+    additional_loaders: dict[str, tuple[Callable, dict]] = {}
+    for k in erlab.io.loaders:
+        additional_loaders = (
+            additional_loaders | erlab.io.loaders[k].file_dialog_methods
+        )
+
+    return default_loaders | dict(sorted(additional_loaders.items()))
 
 
 def generate_code(

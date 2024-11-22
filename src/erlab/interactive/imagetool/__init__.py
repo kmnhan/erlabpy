@@ -42,7 +42,12 @@ from erlab.interactive.imagetool.dialogs import (
     NormalizeDialog,
     RotationDialog,
 )
-from erlab.interactive.utils import DictMenuBar, copy_to_clipboard, wait_dialog
+from erlab.interactive.utils import (
+    DictMenuBar,
+    copy_to_clipboard,
+    file_loaders,
+    wait_dialog,
+)
 from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
@@ -449,23 +454,10 @@ class ImageTool(BaseImageTool):
         directory: str | None = None,
         native: bool = True,
     ) -> None:
-        valid_loaders: dict[str, tuple[Callable, dict]] = {
-            "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
-            "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
-            "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
-            "Igor Packed Experiment Templates (*.pxt)": (
-                xr.load_dataarray,
-                {"engine": "erlab-igor"},
-            ),
-        }
-        import erlab.io
-
-        for k in erlab.io.loaders:
-            valid_loaders = valid_loaders | erlab.io.loaders[k].file_dialog_methods
-
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders()
         dialog.setNameFilters(valid_loaders.keys())
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
