@@ -1,7 +1,6 @@
 import tempfile
 import time
 import weakref
-from collections.abc import Callable
 
 import numpy as np
 import pyperclip
@@ -20,100 +19,11 @@ from erlab.interactive.imagetool.dialogs import (
     NormalizeDialog,
     RotationDialog,
 )
-from erlab.interactive.imagetool.manager import ImageToolManager, _RenameDialog
-
-
-def accept_dialog(
-    dialog_trigger: Callable,
-    time_out: int = 5,
-    pre_call: Callable | None = None,
-    accept_call: Callable | None = None,
-) -> QtWidgets.QDialog:
-    """Accept a dialog during testing.
-
-    If there is no dialog, it waits until one is created for a maximum of 5 seconds (by
-    default). Adapted from `this issue comment on pytest-qt
-    <https://github.com/pytest-dev/pytest-qt/issues/256#issuecomment-1915675942>`_.
-
-    Parameters
-    ----------
-    dialog_trigger
-        Callable that triggers the dialog creation.
-    time_out
-        Maximum time (seconds) to wait for the dialog creation.
-    pre_call
-        Callable that takes the dialog as a single argument. If provided, it is executed
-        before calling ``.accept()`` on the dialog.
-    accept_call
-        If provided, it is called instead of ``.accept()`` on the dialog.
-    """
-    dialog = None
-    start_time = time.time()
-
-    # Helper function to catch the dialog instance and hide it
-    def dialog_creation():
-        # Wait for the dialog to be created or timeout
-        nonlocal dialog
-        while dialog is None and time.time() - start_time < time_out:
-            dialog = QtWidgets.QApplication.activeModalWidget()
-
-        # Avoid errors when dialog is not created
-        if isinstance(dialog, QtWidgets.QDialog):
-            if pre_call is not None:
-                pre_call(dialog)
-
-            if accept_call is not None:
-                accept_call(dialog)
-            elif (
-                isinstance(dialog, QtWidgets.QMessageBox)
-                and dialog.defaultButton() is not None
-            ):
-                dialog.defaultButton().click()
-            else:
-                dialog.accept()
-
-    # Create a thread to get the dialog instance and call dialog_creation trigger
-    QtCore.QTimer.singleShot(1, dialog_creation)
-    dialog_trigger()
-
-    assert isinstance(
-        dialog, QtWidgets.QDialog
-    ), f"No dialog was created after {time_out} seconds. Dialog type: {type(dialog)}"
-
-
-def move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
-    if target_win is None:
-        target_win = win
-    assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
-
-    # Move left
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Left, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
-    assert_almost_equal(win.array_slicer.point_value(cursor), expected[1])
-
-    # Move down
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Down, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
-    assert_almost_equal(win.array_slicer.point_value(cursor), expected[2])
-
-    # Move right
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Right, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
-    assert_almost_equal(win.array_slicer.point_value(cursor), expected[3])
-
-    # Move up
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Up, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
-    assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
 
 @pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
 @pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
-def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
+def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype):
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(val_dtype),
         dims=["x", "y"],
@@ -135,7 +45,7 @@ def test_itool_dtypes(qtbot, val_dtype, coord_dtype):
     del win
 
 
-def test_itool_load(qtbot):
+def test_itool_load(qtbot, move_and_compare_values, accept_dialog):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
     win = itool(np.zeros((2, 2)), execute=False)
@@ -164,7 +74,7 @@ def test_itool_load(qtbot):
     tmp_dir.cleanup()
 
 
-def test_itool_save(qtbot):
+def test_itool_save(qtbot, accept_dialog):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)
 
@@ -191,7 +101,7 @@ def test_itool_save(qtbot):
     tmp_dir.cleanup()
 
 
-def test_itool(qtbot):
+def test_itool(qtbot, move_and_compare_values):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
@@ -389,7 +299,7 @@ def test_itool_ds(qtbot):
     del wins
 
 
-def test_itool_multidimensional(qtbot):
+def test_itool_multidimensional(qtbot, move_and_compare_values):
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
@@ -460,185 +370,7 @@ def test_value_update_errors(qtbot):
     win.close()
 
 
-def test_sync(qtbot):
-    manager = ImageToolManager()
-
-    qtbot.addWidget(manager)
-
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
-
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    itool([data, data], link=True, link_colors=True, use_manager=True)
-
-    t0 = time.perf_counter()
-    while True:
-        if manager.ntools == 2:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    win0, win1 = manager.get_tool(0), manager.get_tool(1)
-
-    win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
-    assert (
-        win0.slicer_area._colormap_properties == win1.slicer_area._colormap_properties
-    )
-
-    move_and_compare_values(qtbot, win0, [12.0, 7.0, 6.0, 11.0], target_win=win1)
-
-    # Transpose
-    qtbot.keyClick(win1, QtCore.Qt.Key.Key_T)
-    move_and_compare_values(qtbot, win0, [12.0, 11.0, 6.0, 7.0], target_win=win1)
-
-    # Set bin
-    win1.slicer_area.set_bin(0, 2, update=False)
-    win1.slicer_area.set_bin(1, 2, update=True)
-
-    # Set all bins, same effect as above since we only have 1 cursor
-    win1.slicer_area.set_bin_all(1, 2, update=True)
-
-    move_and_compare_values(qtbot, win0, [9.0, 8.0, 3.0, 4.0], target_win=win1)
-
-    manager.remove_tool(0)
-    manager.remove_tool(1)
-    manager.close()
-
-
-def test_manager_io(qtbot):
-    win = ImageToolManager()
-
-    qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-
-    # Add two tools
-    t0 = time.perf_counter()
-    itool([data, data], link=False)
-    while True:
-        if win.ntools == 2:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/workspace.h5"
-
-    def _go_to_file(dialog: QtWidgets.QFileDialog):
-        dialog.setDirectory(tmp_dir.name)
-        dialog.selectFile(filename)
-        focused = dialog.focusWidget()
-        if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("workspace.h5")
-
-    # Save workspace
-    accept_dialog(lambda: win.save(native=False), pre_call=_go_to_file)
-
-    # Load workspace
-    accept_dialog(lambda: win.load(native=False), pre_call=_go_to_file)
-
-    # Check if the data is loaded
-    assert win.ntools == 4
-
-    for opt in win.tool_options.values():
-        opt.check.setChecked(True)
-
-    accept_dialog(win.close_action.trigger)
-    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
-    win.close()
-
-
-def test_manager(qtbot):
-    win = ImageToolManager()
-
-    qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
-    data.qshow()
-
-    t0 = time.perf_counter()
-    while True:
-        if win.ntools > 0:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    assert win.get_tool(0).array_slicer.point_value(0) == 12.0
-
-    # Add two tools
-    itool([data, data], link=False)
-    while True:
-        if win.ntools == 3:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    # Linking
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    win.link_selected()
-
-    # Unlinking one unlinks both
-    win.tool_options[1].check.setChecked(True)
-    win.unlink_selected()
-    assert not win.get_tool(1).slicer_area.is_linked
-    assert not win.get_tool(2).slicer_area.is_linked
-
-    # Linking again
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    win.link_selected()
-    assert win.get_tool(1).slicer_area.is_linked
-    assert win.get_tool(2).slicer_area.is_linked
-
-    # Archiving and unarchiving
-    win.tool_options[1].archive()
-    win.tool_options[1].unarchive()
-
-    # Removing archived tool
-    win.tool_options[0].archive()
-    win.remove_tool(0)
-    qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
-
-    # Batch renaming
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-
-    def _handle_renaming(dialog: _RenameDialog):
-        dialog._new_name_lines[0].setText("new_name_1")
-        dialog._new_name_lines[1].setText("new_name_2")
-
-    accept_dialog(win.rename_action.trigger, pre_call=_handle_renaming)
-    assert win.tool_options[1].name == "new_name_1"
-    assert win.tool_options[2].name == "new_name_2"
-
-    # Batch archiving
-    win.tool_options[1].check.setChecked(True)
-    win.archive_action.trigger()
-    win.tool_options[1].unarchive()
-
-    # GC action
-    win.gc_action.trigger()
-
-    # Remove all checked
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    accept_dialog(win.close_action.trigger)
-    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
-
-    win.close()
-
-
-def test_itool_rotate(qtbot):
+def test_itool_rotate(qtbot, accept_dialog):
     data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -693,7 +425,7 @@ def test_itool_rotate(qtbot):
     win.close()
 
 
-def test_itool_crop(qtbot):
+def test_itool_crop(qtbot, accept_dialog):
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
@@ -770,7 +502,7 @@ def normalize(data, norm_dims, option):
 
 
 @pytest.mark.parametrize("option", [0, 1, 2, 3])
-def test_itool_normalize(qtbot, option):
+def test_itool_normalize(qtbot, accept_dialog, option):
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
