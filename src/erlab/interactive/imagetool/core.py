@@ -437,8 +437,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         state: ImageSlicerState | None = None,
         image_cls=None,
         plotdata_cls=None,
+        _in_manager: bool = False,
     ) -> None:
         super().__init__(parent)
+
+        self._in_manager: bool = _in_manager
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -917,6 +920,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             else:
                 self._array_slicer: ArraySlicer = ArraySlicer(self._data)
         except Exception as e:
+            if self._in_manager:
+                # Let the manager handle the exception
+                raise
             QtWidgets.QMessageBox.critical(self, "Error", str(e))
             self.set_data(xr.DataArray(np.zeros((2, 2))))
             return

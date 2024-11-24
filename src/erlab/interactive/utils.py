@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import functools
 import inspect
 import itertools
+import pathlib
 import re
 import sys
 import threading
 import types
 import warnings
 import weakref
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
@@ -24,6 +27,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Collection, Mapping
 
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
@@ -74,6 +78,16 @@ def parse_data(data) -> xr.DataArray:
     return data  # .astype(float, order="C")
 
 
+class _WaitDialog(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget | None, message: str) -> None:
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(QtWidgets.QLabel(message))
+        self.setLayout(layout)
+
+
 @contextlib.contextmanager
 def wait_dialog(parent: QtWidgets.QWidget, message: str):
     """Show a wait dialog while executing a block of code.
@@ -94,16 +108,12 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str):
     >>>    some_long_running_code()
 
     """
-    wait_dialog = QtWidgets.QDialog(parent)
-    dialog_layout = QtWidgets.QVBoxLayout()
-    wait_dialog.setLayout(dialog_layout)
-    dialog_layout.addWidget(QtWidgets.QLabel(message))
-
+    dialog = _WaitDialog(parent, message)
     try:
-        wait_dialog.open()
-        yield wait_dialog
+        dialog.open()
+        yield dialog
     finally:
-        wait_dialog.close()
+        dialog.close()
 
 
 def array_rect(data):
@@ -168,8 +178,24 @@ def _parse_single_arg(arg):
     return arg
 
 
-def file_loaders() -> dict[str, tuple[Callable, dict]]:
+# @functools.cache
+def _filter_to_patterns(name_filter: str) -> list[str]:
+    """Extract a list of patterns from a name filter."""
+    split = name_filter.split("(", 1)
+    return (split[0] if len(split) == 1 else split[1].rstrip(")")).split(" ")
+
+
+def file_loaders(
+    file_name: str | os.PathLike | None | Iterable[str | os.PathLike] = None,
+) -> dict[str, tuple[Callable, dict]]:
     """Generate a dictionary of namefilters and loader functions for file dialogs.
+
+    Parameters
+    ----------
+    file_name
+        Name of the file to load. If provided, only the loaders that match the file name
+        are returned. If an iterable of file names is provided, the loaders that match
+        all file names are returned.
 
     Returns
     -------
@@ -178,7 +204,7 @@ def file_loaders() -> dict[str, tuple[Callable, dict]]:
         :meth:`QtWidgets.QFileDialog.setNameFilter`), and the values are tuples of the
         loader function and additional keyword arguments.
     """
-    default_loaders: dict[str, tuple[Callable, dict]] = {
+    valid_loaders: dict[str, tuple[Callable, dict]] = {
         "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
         "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
@@ -195,7 +221,24 @@ def file_loaders() -> dict[str, tuple[Callable, dict]]:
             additional_loaders | erlab.io.loaders[k].file_dialog_methods
         )
 
-    return default_loaders | dict(sorted(additional_loaders.items()))
+    valid_loaders = valid_loaders | dict(sorted(additional_loaders.items()))
+
+    if not file_name:
+        return valid_loaders
+
+    if not isinstance(file_name, Iterable):
+        file_name = [file_name]
+
+    file_name = [pathlib.Path(f) for f in file_name]
+
+    valid_keys: list[str] = []
+    for name_filter in valid_loaders:
+        for pattern in _filter_to_patterns(name_filter):
+            if all(fnmatch.fnmatch(p.name, pattern) for p in file_name):
+                valid_keys.append(name_filter)
+                break
+
+    return {k: valid_loaders[k] for k in valid_keys}
 
 
 def generate_code(

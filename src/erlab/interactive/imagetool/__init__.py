@@ -310,35 +310,40 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
-    def from_dataset(cls, ds: xr.Dataset) -> Self:
+    def from_dataset(cls, ds: xr.Dataset, **kwargs) -> Self:
         """Restore a window from a dataset saved using :meth:`to_dataset`.
 
         Parameters
         ----------
         ds
             The dataset.
+        **kwargs
+            Additional keyword arguments passed to the constructor.
 
         """
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
-            ds[_ITOOL_DATA_NAME].rename(name), state=json.loads(ds.attrs["itool_state"])
+            ds[_ITOOL_DATA_NAME].rename(name),
+            state=json.loads(ds.attrs["itool_state"]),
+            **kwargs,
         )
         tool.setWindowTitle(ds.attrs["itool_title"])
         tool.setGeometry(*ds.attrs["itool_rect"])
         return tool
 
     @classmethod
-    def from_file(cls, filename: str | os.PathLike) -> Self:
+    def from_file(cls, filename: str | os.PathLike, **kwargs) -> Self:
         """Restore a window from a file saved using :meth:`to_file`.
 
         Parameters
         ----------
         filename
             The name of the file.
-
+        **kwargs
+            Additional keyword arguments passed to the constructor.
         """
-        return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"))
+        return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
 
     def _sync_dock_float(self, floating: bool, index: int) -> None:
         """Synchronize the floating state of the dock widgets.
@@ -450,8 +455,6 @@ class ImageTool(BaseImageTool):
     def _open_file(
         self,
         *,
-        name_filter: str | None = None,
-        directory: str | None = None,
         native: bool = True,
     ) -> None:
         dialog = QtWidgets.QFileDialog(self)
@@ -462,17 +465,11 @@ class ImageTool(BaseImageTool):
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        if name_filter is None:
-            name_filter = self._recent_name_filter
+        if self._recent_name_filter is not None:
+            dialog.selectNameFilter(self._recent_name_filter)
 
-        if name_filter is not None:
-            dialog.selectNameFilter(name_filter)
-
-        if directory is None:
-            directory = self._recent_directory
-
-        if directory is not None:
-            dialog.setDirectory(directory)
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
@@ -496,7 +493,7 @@ class ImageTool(BaseImageTool):
                 self.slicer_area.view_all()
 
     @QtCore.Slot()
-    def _export_file(self, native: bool = True) -> None:
+    def _export_file(self, *, native: bool = True) -> None:
         if self.slicer_area._data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)

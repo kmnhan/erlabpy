@@ -3,10 +3,15 @@ import time
 
 import numpy as np
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+import xarray.testing
+from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import ImageToolManager, _RenameDialog
+from erlab.interactive.imagetool.manager import (
+    ImageToolManager,
+    _NameFilterDialog,
+    _RenameDialog,
+)
 
 
 def test_manager(qtbot, accept_dialog):
@@ -58,7 +63,15 @@ def test_manager(qtbot, accept_dialog):
 
     # Archiving and unarchiving
     win.tool_options[1].archive()
-    win.tool_options[1].unarchive()
+    win.tool_options[1].toggle_archive()
+    assert not win.tool_options[1].archived
+
+    # Toggle visibility
+    geometry = win.get_tool(1).geometry()
+    win.tool_options[1].toggle_visibility()
+    assert not win.get_tool(1).isVisible()
+    win.tool_options[1].toggle_visibility()
+    assert win.get_tool(1).geometry() == geometry
 
     # Removing archived tool
     win.tool_options[0].archive()
@@ -140,14 +153,14 @@ def test_manager_sync(qtbot, move_and_compare_values):
     manager.close()
 
 
-def test_manager_io(qtbot, accept_dialog):
-    win = ImageToolManager()
+def test_manager_workspace_io(qtbot, accept_dialog):
+    manager = ImageToolManager()
 
-    qtbot.addWidget(win)
+    qtbot.addWidget(manager)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
@@ -155,7 +168,7 @@ def test_manager_io(qtbot, accept_dialog):
     t0 = time.perf_counter()
     itool([data, data], link=False)
     while True:
-        if win.ntools == 2:
+        if manager.ntools == 2:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
@@ -171,17 +184,86 @@ def test_manager_io(qtbot, accept_dialog):
             focused.setText("workspace.h5")
 
     # Save workspace
-    accept_dialog(lambda: win.save(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: manager.save(native=False), pre_call=_go_to_file)
 
     # Load workspace
-    accept_dialog(lambda: win.load(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: manager.load(native=False), pre_call=_go_to_file)
 
     # Check if the data is loaded
-    assert win.ntools == 4
+    assert manager.ntools == 4
 
-    for opt in win.tool_options.values():
+    for opt in manager.tool_options.values():
         opt.check.setChecked(True)
 
-    accept_dialog(win.close_action.trigger)
-    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
-    win.close()
+    accept_dialog(manager.close_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+    manager.close()
+
+
+def make_drop_event(filename: str) -> QtGui.QDropEvent:
+    mime_data = QtCore.QMimeData()
+    mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
+    return QtGui.QDropEvent(
+        QtCore.QPointF(0.0, 0.0),
+        QtCore.Qt.DropAction.CopyAction,
+        mime_data,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def test_manager_drag_drop(qtbot, accept_dialog):
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/data.h5"
+    data.to_netcdf(filename, engine="h5netcdf")
+
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+
+    mime_data = QtCore.QMimeData()
+    mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
+    evt = QtGui.QDropEvent(
+        QtCore.QPointF(0.0, 0.0),
+        QtCore.Qt.DropAction.CopyAction,
+        mime_data,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+    # Simulate drag and drop
+    accept_dialog(lambda: manager.dropEvent(evt))
+    qtbot.waitUntil(lambda: manager.ntools == 1, timeout=2000)
+    xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, data)
+
+    # Simulate drag and drop with wrong filter, retry with correct filter
+    # Dialogs created are:
+    # select loader → failed alert → retry → select loader
+    def _choose_wrong_filter(dialog: _NameFilterDialog):
+        assert dialog._valid_name_filters[0] == "xarray HDF5 Files (*.h5)"
+        dialog._button_group.buttons()[-1].setChecked(True)
+
+    def _choose_correct_filter(dialog: _NameFilterDialog):
+        dialog._button_group.buttons()[0].setChecked(True)
+
+    accept_dialog(
+        lambda: manager.dropEvent(evt),
+        pre_call=[_choose_wrong_filter, None, None, _choose_correct_filter],
+        chained_dialogs=4,
+    )
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+    xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, data)
+
+    # Cleanup
+    manager.remove_tool(0)
+    manager.remove_tool(1)
+    manager.close()
+    tmp_dir.cleanup()

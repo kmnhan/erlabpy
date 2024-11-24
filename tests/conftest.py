@@ -1,7 +1,9 @@
+import logging
 import os
 import pathlib
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import lmfit
 import numpy as np
@@ -11,6 +13,7 @@ import xarray as xr
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
+from erlab.interactive.utils import _WaitDialog
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
 DATA_COMMIT_HASH = "bd2c597a49dfbcb91961bef3dcf988179dbe1151"
@@ -18,6 +21,8 @@ DATA_COMMIT_HASH = "bd2c597a49dfbcb91961bef3dcf988179dbe1151"
 
 DATA_KNOWN_HASH = "434534c4e4d595aac073860289e2fcee09b31ca7655cb9b68a6143e34eecbae4"
 """The hash of the `.tar.gz` file."""
+
+log = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="session")
@@ -70,12 +75,86 @@ def gold():
     )
 
 
-def _accept_dialog(
-    dialog_trigger: Callable,
-    time_out: int = 5,
-    pre_call: Callable | None = None,
-    accept_call: Callable | None = None,
-) -> None:
+class _DialogDetectionThread(QtCore.QThread):
+    sigUpdate = QtCore.Signal(object)
+    sigTimeout = QtCore.Signal(int)
+    sigFinish = QtCore.Signal(int)
+    sigTrigger = QtCore.Signal(object, int)
+    sigPreCall = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        index: int,
+        pre_call: Callable | None,
+        accept_call: Callable | None,
+        timeout: float,
+    ) -> None:
+        super().__init__()
+        self.pre_call = pre_call
+        self.accept_call = accept_call
+        self.index = index
+        self.timeout = timeout
+        self._precall_called = threading.Event()
+
+    def precall_called(self):
+        if self.isRunning():
+            self.mutex.lock()
+        self._precall_called.set()
+        if self.isRunning():
+            self.mutex.unlock()
+
+    def run(self):
+        self.mutex = QtCore.QMutex()
+        time.sleep(0.001)
+        start_time = time.perf_counter()
+
+        self._mutex = QtCore.QMutex()
+
+        dialog = None
+
+        log.debug("handling dialog %d", self.index)
+        while (
+            dialog is None or isinstance(dialog, _WaitDialog)
+        ) and time.perf_counter() - start_time < self.timeout:
+            dialog = QtWidgets.QApplication.activeModalWidget()
+            time.sleep(0.01)
+
+        if dialog is None or isinstance(dialog, _WaitDialog):
+            log.debug("emitting timeout %d", self.index)
+            self.sigTimeout.emit(self.index)
+            return
+
+        log.debug("dialog %d detected: %s", self.index, dialog)
+
+        if self.pre_call is not None:
+            log.debug("pre_call %d...", self.index)
+            self.sigPreCall.emit(lambda d=dialog: self.pre_call(d))
+            while not self._precall_called.is_set():
+                time.sleep(0.01)
+            log.debug("pre_call %d done", self.index)
+
+        if self.accept_call is not None:
+
+            def _accept_call():
+                self.accept_call(dialog)
+                self.sigFinish.emit(self.index)
+        else:
+
+            def _accept_call():
+                if (
+                    isinstance(dialog, QtWidgets.QMessageBox)
+                    and dialog.defaultButton() is not None
+                ):
+                    dialog.defaultButton().click()
+                else:
+                    dialog.accept()
+                self.sigFinish.emit(self.index)
+
+        log.debug("emitting trigger for %d", self.index)
+        self.sigTrigger.emit(_accept_call, self.index + 1)
+
+
+class _DialogHandler(QtCore.QObject):
     """Accept a dialog during testing.
 
     If there is no dialog, it waits until one is created for a maximum of 5 seconds (by
@@ -86,56 +165,104 @@ def _accept_dialog(
     ----------
     dialog_trigger
         Callable that triggers the dialog creation.
-    time_out
+    timeout
         Maximum time (seconds) to wait for the dialog creation.
     pre_call
         Callable that takes the dialog as a single argument. If provided, it is executed
-        before calling ``.accept()`` on the dialog.
+        before calling ``.accept()`` on the dialog. If a sequence of callables of length
+        equal to ``chained_dialog`` is provided, each callable will be called before
+        each dialog is accepted.
     accept_call
-        If provided, it is called instead of ``.accept()`` on the dialog.
+        If provided, it is called instead of ``.accept()`` on the dialog. If a sequence
+        of callables of length equal to ``chained_dialog`` is provided, each callable
+        will be called instead of ``.accept()`` on each dialog.
+    chained_dialog
+        If 2, a new dialog is expected to be created right after the dialog is accepted.
+        The new dialog will also be accepted. Numbers greater than 1 will accept
+        multiple dialogs.
     """
-    dialog = None
-    start_time = time.time()
 
-    # Helper function to catch the dialog instance and hide it
-    def dialog_creation():
-        # Wait for the dialog to be created or timeout
-        nonlocal dialog
-        while dialog is None and time.time() - start_time < time_out:
-            dialog = QtWidgets.QApplication.activeModalWidget()
+    def __init__(
+        self,
+        dialog_trigger: Callable,
+        timeout: float = 5.0,
+        pre_call: Callable | Sequence[Callable | None] | None = None,
+        accept_call: Callable | Sequence[Callable | None] | None = None,
+        chained_dialogs: int = 1,
+    ):
+        super().__init__()
 
-        # Avoid errors when dialog is not created
-        if isinstance(dialog, QtWidgets.QDialog):
-            if pre_call is not None:
-                pre_call(dialog)
+        self.timeout: float = timeout
+        self.finished_indices = []
 
-            if accept_call is not None:
-                accept_call(dialog)
-            elif (
-                isinstance(dialog, QtWidgets.QMessageBox)
-                and dialog.defaultButton() is not None
-            ):
-                dialog.defaultButton().click()
-            else:
-                dialog.accept()
+        self._timed_out = False
 
-    # Create a thread to get the dialog instance and call dialog_creation trigger
-    QtCore.QTimer.singleShot(1, dialog_creation)
-    dialog_trigger()
+        self._mutex = QtCore.QMutex()
 
-    assert isinstance(
-        dialog, QtWidgets.QDialog
-    ), f"No dialog was created after {time_out} seconds. Dialog type: {type(dialog)}"
+        if not isinstance(pre_call, Sequence):
+            pre_call = [pre_call] + [None] * (chained_dialogs - 1)
+
+        if not isinstance(accept_call, Sequence):
+            accept_call = [accept_call] + [None] * (chained_dialogs - 1)
+        self._pre_call_list = pre_call
+        self._accept_call_list = accept_call
+        self._max_index = chained_dialogs - 1
+
+        self.trigger_index(dialog_trigger, 0)
+
+    @QtCore.Slot(int)
+    def _finished(self, index: int) -> None:
+        log.debug("finished %d", index)
+        self.finished_indices.append(index)
+
+    @QtCore.Slot(int)
+    def _timeout(self, index: int) -> None:
+        log.debug("timeout %d", index)
+        self._timed_out = True
+        self.finished_indices.append(index)
+        pytest.fail(
+            f"No dialog for index {index} was created after " f"{self.timeout} seconds."
+        )
+
+    @QtCore.Slot(object, int)
+    def trigger_index(self, new_trigger: Callable, index: int) -> None:
+        log.debug("trigger index %d", index)
+
+        if index <= self._max_index:
+            if hasattr(self, "_handler") and self._handler.isRunning():
+                self._handler.wait()
+
+            self._handler = _DialogDetectionThread(
+                index,
+                self._pre_call_list[index],
+                self._accept_call_list[index],
+                self.timeout,
+            )
+            self._handler.sigFinish.connect(self._finished)
+            self._handler.sigTimeout.connect(self._timeout)
+            self._handler.sigTrigger.connect(self.trigger_index)
+            self._handler.sigPreCall.connect(self.handle_pre_call)
+            self._handler.start()
+
+        new_trigger()
+
+    @QtCore.Slot(object)
+    def handle_pre_call(self, pre_call: Callable) -> None:
+        log.debug("pre-call callable received")
+        pre_call()
+        log.debug("pre-call successfully called")
+        self._handler.precall_called()
 
 
 @pytest.fixture
 def accept_dialog():
-    return _accept_dialog
+    return _DialogHandler
 
 
 def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
     if target_win is None:
         target_win = win
+    target_win.activateWindow()
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
     # Move left

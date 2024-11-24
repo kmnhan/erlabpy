@@ -366,6 +366,10 @@ class ArraySlicer(QtCore.QObject):
         if data.ndim > 4:
             raise ValueError("Data must have at most four dimensions.")
 
+        for d in data.dims:
+            if data[d].ndim != 1:
+                raise ValueError(f"Coordinate of dimension {d} is not one-dimensional.")
+
         # Convert coords to C-contiguous array
         data = data.assign_coords(
             {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}

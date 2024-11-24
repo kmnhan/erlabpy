@@ -46,7 +46,11 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype):
 
 
 def test_itool_load(qtbot, move_and_compare_values, accept_dialog):
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
@@ -66,7 +70,6 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog):
             focused.setText("data.h5")
 
     accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
-
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     win.close()
