@@ -42,8 +42,20 @@ def test_load_live(expected_dir):
         )
 
 
+def test_corrupt(data_dir):
+    with pytest.warns(
+        UserWarning,
+        match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
+    ):
+        erlab.io.load("f_001_S001.pxt")
+
+
 def test_summarize(data_dir):
-    erlab.io.summarize()
+    with pytest.warns(
+        UserWarning,
+        match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
+    ):
+        erlab.io.summarize()
 
 
 def test_qinfo(data_dir):

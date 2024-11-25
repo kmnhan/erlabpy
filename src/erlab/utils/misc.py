@@ -1,9 +1,22 @@
+import functools
+import importlib
 import inspect
 import pathlib
 import sys
 import warnings
+from types import ModuleType
+from typing import Any
 
-import xarray
+import numpy as np
+
+
+def _convert_to_native(obj: list[Any]) -> list[Any]:
+    """Convert a nested list of numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
 
 
 def _find_stack_level() -> int:
@@ -19,6 +32,8 @@ def _find_stack_level() -> int:
     stacklevel : int
         First level in the stack that is not part of erlab or stdlib.
     """
+    import xarray
+
     import erlab
 
     xarray_dir = pathlib.Path(xarray.__file__).parent
@@ -55,3 +70,32 @@ def emit_user_level_warning(message, category=None) -> None:
     """Emit a warning at the user level by inspecting the stack trace."""
     stacklevel = _find_stack_level()
     return warnings.warn(message, category=category, stacklevel=stacklevel)
+
+
+class LazyImport:
+    """Lazily import a module when an attribute is accessed.
+
+    Used to delay the import of a module until it is actually needed.
+
+    Parameters
+    ----------
+    module_name : str
+        The name of the module to be imported lazily.
+
+    Examples
+    --------
+    >>> np = LazyImport("numpy")
+    >>> np.array([1, 2, 3])
+    array([1, 2, 3])
+
+    """
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._module, item)
+
+    @functools.cached_property
+    def _module(self) -> ModuleType:
+        return importlib.import_module(self._module_name)

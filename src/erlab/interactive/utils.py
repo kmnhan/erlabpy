@@ -1,16 +1,20 @@
-"""Various helper functions and extensions to pyqtgraph."""
+"""Various helper functions and extensions to PyQt and pyqtgraph."""
 
 from __future__ import annotations
 
+import contextlib
+import fnmatch
 import functools
 import inspect
 import itertools
+import pathlib
 import re
 import sys
 import threading
 import types
 import warnings
 import weakref
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
@@ -23,6 +27,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
+    import os
     from collections.abc import Callable, Collection, Mapping
 
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
@@ -34,13 +39,17 @@ __all__ = [
     "BetterSpinBox",
     "DictMenuBar",
     "ExclusiveComboGroup",
+    "IconActionButton",
+    "IconButton",
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
+    "file_loaders",
     "format_kwargs",
     "generate_code",
     "make_crosshairs",
     "parse_data",
+    "wait_dialog",
     "xImageItem",
 ]
 
@@ -67,6 +76,44 @@ def parse_data(data) -> xr.DataArray:
     if isinstance(data, np.ndarray):
         data = xr.DataArray(data)
     return data  # .astype(float, order="C")
+
+
+class _WaitDialog(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget | None, message: str) -> None:
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(QtWidgets.QLabel(message))
+        self.setLayout(layout)
+
+
+@contextlib.contextmanager
+def wait_dialog(parent: QtWidgets.QWidget, message: str):
+    """Show a wait dialog while executing a block of code.
+
+    This context manager creates a simple dialog with a message while the block of code
+    is being executed. The dialog is closed when the block is done.
+
+    Parameters
+    ----------
+    parent
+        Parent widget.
+    message
+        Message to display in the dialog.
+
+    Example
+    -------
+    >>> with wait_dialog(self, "Processing data..."):
+    >>>    some_long_running_code()
+
+    """
+    dialog = _WaitDialog(parent, message)
+    try:
+        dialog.open()
+        yield dialog
+    finally:
+        dialog.close()
 
 
 def array_rect(data):
@@ -129,6 +176,69 @@ def _parse_single_arg(arg):
         arg = str(arg).replace("'", '"')
 
     return arg
+
+
+# @functools.cache
+def _filter_to_patterns(name_filter: str) -> list[str]:
+    """Extract a list of patterns from a name filter."""
+    split = name_filter.split("(", 1)
+    return (split[0] if len(split) == 1 else split[1].rstrip(")")).split(" ")
+
+
+def file_loaders(
+    file_name: str | os.PathLike | None | Iterable[str | os.PathLike] = None,
+) -> dict[str, tuple[Callable, dict]]:
+    """Generate a dictionary of namefilters and loader functions for file dialogs.
+
+    Parameters
+    ----------
+    file_name
+        Name of the file to load. If provided, only the loaders that match the file name
+        are returned. If an iterable of file names is provided, the loaders that match
+        all file names are returned.
+
+    Returns
+    -------
+    dict
+        Dictionary of file loaders. The keys are name filters(argument to
+        :meth:`QtWidgets.QFileDialog.setNameFilter`), and the values are tuples of the
+        loader function and additional keyword arguments.
+    """
+    valid_loaders: dict[str, tuple[Callable, dict]] = {
+        "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+        "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
+        "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
+        "Igor Packed Experiment Templates (*.pxt)": (
+            xr.load_dataarray,
+            {"engine": "erlab-igor"},
+        ),
+    }
+    import erlab.io
+
+    additional_loaders: dict[str, tuple[Callable, dict]] = {}
+    for k in erlab.io.loaders:
+        additional_loaders = (
+            additional_loaders | erlab.io.loaders[k].file_dialog_methods
+        )
+
+    valid_loaders = valid_loaders | dict(sorted(additional_loaders.items()))
+
+    if not file_name:
+        return valid_loaders
+
+    if not isinstance(file_name, Iterable):
+        file_name = [file_name]
+
+    file_name = [pathlib.Path(f) for f in file_name]
+
+    valid_keys: list[str] = []
+    for name_filter in valid_loaders:
+        for pattern in _filter_to_patterns(name_filter):
+            if all(fnmatch.fnmatch(p.name, pattern) for p in file_name):
+                valid_keys.append(name_filter)
+                break
+
+    return {k: valid_loaders[k] for k in valid_keys}
 
 
 def generate_code(
@@ -1814,6 +1924,132 @@ class ExclusiveComboGroup(QtCore.QObject):
                 if (index > 0) or (index == 0 and not self._exclude_first):
                     combo.setItemData(index, groupid, self._role)
                     view.setRowHidden(index, True)
+
+
+class IconButton(QtWidgets.QPushButton):
+    """Convenience class for creating a QPushButton with a qtawesome icon.
+
+    This button adapts to dark mode changes by resetting the qtawesome cache when a
+    color palette change is detected.
+
+    Parameters
+    ----------
+    on : str, optional
+        The icon to display when the button is in the "on" state. If `off` is not
+        provided, this will be the only icon displayed.
+    off : str, optional
+        The icon to display when the button is in the "off" state. If provided, the
+        button will be checkable, and the icon will change when the button is toggled.
+    **kwargs
+        Additional keyword arguments passed to the QPushButton constructor.
+
+    """
+
+    def __init__(
+        self,
+        on: str | None = None,
+        off: str | None = None,
+        **kwargs,
+    ) -> None:
+        self.icon_key_on = None
+        self.icon_key_off = None
+
+        if on is not None:
+            self.icon_key_on = on
+            kwargs["icon"] = self.get_icon(self.icon_key_on)
+
+        if off is not None:
+            if on is None and kwargs["icon"] is None:
+                raise ValueError("Icon for `on` state was not supplied.")
+            self.icon_key_off = off
+            kwargs.setdefault("checkable", True)
+
+        super().__init__(**kwargs)
+        self.toggled.connect(self.refresh_icons)
+
+    def setChecked(self, value: bool) -> None:
+        super().setChecked(value)
+        self.refresh_icons()
+
+    def get_icon(self, icon: str) -> QtGui.QIcon:
+        import qtawesome
+
+        return qtawesome.icon(icon)
+
+    def refresh_icons(self) -> None:
+        if self.icon_key_off is not None and self.isChecked():
+            self.setIcon(self.get_icon(self.icon_key_off))
+            return
+        if self.icon_key_on is not None:
+            self.setIcon(self.get_icon(self.icon_key_on))
+
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:  # handles dark mode
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            import qtawesome
+
+            qtawesome.reset_cache()
+            self.refresh_icons()
+        super().changeEvent(evt)
+
+
+class IconActionButton(IconButton):
+    """IconButton that supports linking to a QAction.
+
+    Parameters
+    ----------
+    action : QtGui.QAction
+        The QAction to be associated with this button.
+    on : str, optional
+        The icon to display when the button is in the "on" state.
+    off : str, optional
+        The icon to display when the button is in the "off" state. If `action` is not
+        toggleable, this icon will never be displayed.
+    text_from_action : bool, optional
+        If True, the button's text will be set from the QAction's text. Otherwise, the
+        text will be left empty.
+    **kwargs
+        Additional keyword arguments passed to the IconButton constructor.
+
+    """
+
+    def __init__(
+        self,
+        action: QtGui.QAction,
+        on: str | None = None,
+        off: str | None = None,
+        text_from_action: bool = False,
+        **kwargs,
+    ):
+        super().__init__(on=on, off=off, **kwargs)
+
+        self._action: QtGui.QAction | None = None
+        self.text_from_action = text_from_action
+        self.setAction(action)
+
+    def setAction(self, action: QtGui.QAction) -> None:
+        if self._action:
+            self._action.changed.disconnect(self._update_from_action)
+            self.clicked.disconnect(self._action.trigger)
+
+        self._action = action
+        if action:
+            self._update_from_action()
+            action.changed.connect(self._update_from_action)
+            self.clicked.connect(action.trigger)
+
+    def _update_from_action(self) -> None:
+        if not self._action:
+            return
+
+        if self.text_from_action:
+            self.setText(self._action.text())
+        self.setEnabled(self._action.isEnabled())
+        self.setCheckable(self._action.isCheckable())
+        self.setChecked(self._action.isChecked())
+        self.setToolTip(self._action.toolTip())
+        self._action.blockSignals(True)
+        self._action.setIcon(self.icon())
+        self._action.blockSignals(False)
 
 
 class RotatableLine(pg.InfiniteLine):

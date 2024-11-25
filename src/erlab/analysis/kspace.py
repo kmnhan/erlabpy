@@ -7,7 +7,6 @@ Angle conventions and function forms are based on Ref. :cite:p:`ishida2018kconv`
 
 """
 
-import enum
 from collections.abc import Callable
 
 import numpy as np
@@ -15,19 +14,7 @@ import numpy.typing as npt
 import xarray
 
 import erlab.constants
-
-
-class AxesConfiguration(enum.IntEnum):
-    """Enum class representing different types of axes configurations.
-
-    See Ref. :cite:p:`ishida2018kconv`.
-
-    """
-
-    Type1 = 1
-    Type2 = 2
-    Type1DA = 3
-    Type2DA = 4
+from erlab.constants import AxesConfiguration
 
 
 def _sinc(x):

@@ -5,14 +5,14 @@ __all__ = ["joblib_progress", "joblib_progress_qt"]
 import contextlib
 import sys
 
-import joblib
-import joblib._parallel_backends
 import tqdm.auto
 
 
 @contextlib.contextmanager
 def joblib_progress(file=None, **kwargs):
     """Patches joblib to report into a tqdm progress bar."""
+    import joblib
+
     if file is None:
         file = sys.stdout
 
@@ -39,6 +39,7 @@ def joblib_progress_qt(signal):
 
     The number of completed tasks are emitted by the given signal.
     """
+    import joblib
 
     def qt_print_progress(self) -> None:
         signal.emit(self.n_completed_tasks)

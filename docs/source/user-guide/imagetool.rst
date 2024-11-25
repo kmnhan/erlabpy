@@ -99,11 +99,15 @@ execution is a blocking call. This means that you cannot run any other code whil
 tool is running. As a workaround, we provide :class:`ImageToolManager
 <erlab.interactive.imagetool.ImageToolManager>`.
 
-In the environment where ERLabPy installed, run ``itool-manager`` in a shell to start
-the manager application. Subsequent invocations of ImageTool from :func:`itool
-<erlab.interactive.imagetool.itool>` and :class:`qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor>` will open the tool in the
-manager application, leaving the notebook free to run other code.
+In the environment where ERLabPy installed, run ``itool-manager`` in a terminal to start
+the manager application. Subsequent calls to :func:`itool
+<erlab.interactive.imagetool.itool>` and :meth:`DataArray.qshow
+<erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` will open the ImageTool
+in the manager.
+
+Alternatively, you can run the following code in a python environment where ERLabPy is installed: ::
+
+    python -m erlab.interactive.imagetool.manager
 
 .. note::
 
@@ -116,3 +120,25 @@ manager application, leaving the notebook free to run other code.
     directly while the manager is running by passing `use_manager=False` to :func:`itool
     <erlab.interactive.imagetool.itool>` or :class:`qshow
     <erlab.accessors.general.InteractiveDataArrayAccessor>`.
+
+The manager application consists of a small window that shows the list of opened
+ImageTools, along with some buttons to manage them. Hovering over the buttons will show
+tooltips that explain what each button does.
+
+There are three ways to open an ImageTool with the manager:
+
+- Invocations of ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` and :class:`qshow
+  <erlab.accessors.general.InteractiveDataArrayAccessor>` from any python script or
+  Jupyter notebook will automatically be added to the manager.
+
+- Open files through the ``File`` menu in the menu bar of the manager application.
+
+- Drag and drop supported files to the manager window.
+
+One of the main features of the manager is that it can save and load the state of
+ImageTool windows to a HDF5 file. You can save all ImageTool windows in the manager to a
+single file through the ``Save Workspace As...`` menu item in the ``File`` menu. The
+saved windows can later be restored through the ``Open Workspace...`` item in the same
+menu.
+
+Try exploring the menubar of the manager application to see what you can do!

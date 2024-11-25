@@ -4,8 +4,8 @@ from typing import ClassVar
 
 import xarray as xr
 
+import erlab.io.nexusutils
 from erlab.io.dataloader import LoaderBase
-from erlab.io.nexusutils import get_entry, nxgroup_to_xarray
 
 
 class I05Loader(LoaderBase):
@@ -41,8 +41,8 @@ class I05Loader(LoaderBase):
         return {"Diamond I05 Raw Data (*.nxs)": (self.load, {})}
 
     def load_single(self, file_path, without_values=False) -> xr.DataArray:
-        out = nxgroup_to_xarray(
-            get_entry(file_path), "analyser/data", without_values
+        out = erlab.io.nexusutils.nxgroup_to_xarray(
+            erlab.io.nexusutils.get_entry(file_path), "analyser/data", without_values
         ).squeeze()
 
         if (

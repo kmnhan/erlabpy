@@ -11,14 +11,12 @@ import numpy as np
 import xarray as xr
 
 from erlab.accessors.utils import ERLabDataArrayAccessor
-from erlab.analysis.interpolate import interpn
-from erlab.analysis.kspace import AxesConfiguration, get_kconv_func, kz_func
-from erlab.constants import rel_kconv, rel_kzconv
+from erlab.constants import AxesConfiguration, rel_kconv, rel_kzconv
 from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
 
-def only_angles(method=None):
+def _only_angles(method):
     """Decorate methods that require data to be in angle space.
 
     Ensures the data is in angle space before executing the decorated method.
@@ -38,12 +36,10 @@ def only_angles(method=None):
 
         return _impl
 
-    if method is not None:
-        return wrapper(method)
-    return wrapper
+    return wrapper(method)
 
 
-def only_momentum(method=None):
+def _only_momentum(method):
     """Decorate methods that require data to be in momentum space.
 
     Ensure the data is in momentum space before executing the decorated method.
@@ -63,9 +59,7 @@ def only_momentum(method=None):
 
         return _impl
 
-    if method is not None:
-        return wrapper(method)
-    return wrapper
+    return wrapper(method)
 
 
 class OffsetView:
@@ -177,14 +171,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """Experimental configuration.
 
         For a properly implemented data loader, the configuration attribute must be set
-        on data import. See :class:`erlab.analysis.kspace.AxesConfiguration` for
-        details.
+        on data import. See :class:`erlab.constants.AxesConfiguration` for details.
         """
         if "configuration" not in self._obj.attrs:
             raise ValueError(
                 "Configuration not found in data attributes! "
                 "Data attributes may have been discarded since initial import."
             )
+
         return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
     @configuration.setter
@@ -316,7 +310,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 return "kx"
 
     @property
-    @only_angles
+    @_only_angles
     def momentum_axes(self) -> tuple[Literal["kx", "ky", "kz"], ...]:
         """Momentum axes of the data after conversion.
 
@@ -351,12 +345,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return params
 
     @property
-    @only_angles
+    @_only_angles
     def _alpha(self) -> xr.DataArray:
         return self._obj.alpha
 
     @property
-    @only_angles
+    @_only_angles
     def _beta(self) -> xr.DataArray:
         return self._obj.beta
 
@@ -382,13 +376,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return "eV" in self._obj.dims
 
     @property
-    @only_angles
+    @_only_angles
     def _has_hv(self) -> bool:
         """Return `True` for photon energy dependent data."""
         return self._obj["hv"].size > 1
 
     @property
-    @only_angles
+    @_only_angles
     def _has_beta(self) -> bool:
         """Check if the coordinate array for :math:`β` has more than one element.
 
@@ -487,7 +481,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._offsetview.update(offset_dict)
 
     @property
-    @only_angles
+    @_only_angles
     def best_kp_resolution(self) -> float:
         r"""Estimated minimum in-plane momentum resolution.
 
@@ -508,7 +502,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         )
 
     @property
-    @only_angles
+    @_only_angles
     def best_kz_resolution(self) -> float:
         r"""Estimated minimum out-of-plane momentum resolution.
 
@@ -539,6 +533,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self._alpha, self._beta)
         if "hv" in kx.dims:
+            from erlab.analysis.kspace import kz_func
+
             kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
             return {"kx": kx, "ky": ky, "kz": kz}
         return {"kx": kx, "ky": ky}
@@ -559,7 +555,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             for k, v in self._get_transformed_coords().items()
         }
 
-    @only_angles
+    @_only_angles
     def estimate_resolution(
         self,
         axis: Literal["kx", "ky", "kz"],
@@ -615,11 +611,15 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self.best_kp_resolution
 
     def _forward_func(self, alpha, beta):
+        from erlab.analysis.kspace import get_kconv_func
+
         return get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
         )[0](alpha, beta)
 
     def _inverse_func(self, kx, ky, kz=None):
+        from erlab.analysis.kspace import get_kconv_func
+
         return get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
         )[1](kx, ky, kz)
@@ -658,7 +658,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             ),
         )
 
-    @only_angles
+    @_only_angles
     def convert_coords(self) -> xr.DataArray:
         """Convert coordinates to momentum space.
 
@@ -672,7 +672,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         return self._obj.assign_coords(self._get_transformed_coords())
 
-    @only_angles
+    @_only_angles
     def _coord_for_conversion(self, name: Hashable) -> xr.DataArray:
         """Get the coordinate array for given dimension name.
 
@@ -682,12 +682,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return self._binding_energy
         return self._obj[name]
 
-    @only_angles
+    @_only_angles
     def _data_ensure_binding(self) -> xr.DataArray:
         """Return the data while ensuring that the energy axis is in binding energy."""
         return self._obj.assign_coords(eV=self._binding_energy)
 
-    @only_angles
+    @_only_angles
     def convert(
         self,
         bounds: dict[str, tuple[float, float]] | None = None,
@@ -759,6 +759,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             "ky": 0.01} converted_data = data.kspace.convert(bounds, resolution)
 
         """
+        import erlab.analysis.interpolate
+
         if bounds is None:
             bounds = {}
 
@@ -841,7 +843,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         def _wrap_interpn(arr, *args):
             points, xi = args[: arr.ndim], args[arr.ndim :]
-            return interpn(points, arr, xi, method=method, bounds_error=False).squeeze()
+            return erlab.analysis.interpolate.interpn(
+                points, arr, xi, method=method, bounds_error=False
+            ).squeeze()
 
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])
@@ -888,7 +892,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise ValueError("Data is not compatible with the interactive tool.")
         return ktool(self._obj, **kwargs)
 
-    @only_momentum
+    @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
         """Return :math:`k_z` for a given photon energy.
 
@@ -905,6 +909,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         center since we lost the exact angle values, i.e. the exact momentum
         perpendicular to the slit, during momentum conversion.
         """
+        from erlab.analysis.kspace import get_kconv_func, kz_func
+
         if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
 

@@ -8,6 +8,7 @@ import copy
 import functools
 import inspect
 import os
+import pathlib
 import time
 import warnings
 import weakref
@@ -29,7 +30,7 @@ from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Hashable, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -328,7 +329,9 @@ class SlicerLinkProxy:
     ):
         if steps:
             return round(
-                index * source.array_slicer.incs[axis] / target.array_slicer.incs[axis]
+                index
+                * source.array_slicer.incs_uniform[axis]
+                / target.array_slicer.incs_uniform[axis]
             )
         value = source.array_slicer.value_of_index(axis, index, uniform=False)
         new_index: int = target.array_slicer.index_of_value(
@@ -434,8 +437,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         state: ImageSlicerState | None = None,
         image_cls=None,
         plotdata_cls=None,
+        _in_manager: bool = False,
     ) -> None:
         super().__init__(parent)
+
+        self._in_manager: bool = _in_manager
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -525,7 +531,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp.aboutToQuit.connect(self.on_close)
 
         self._data: xr.DataArray | None = None
-        self._file_path: str | None = None
+        self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
         if data is not None:
@@ -853,7 +859,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self,
         data: xr.DataArray | npt.ArrayLike,
         rad2deg: bool | Iterable[str] = False,
-        file_path: str | None = None,
+        file_path: str | os.PathLike | None = None,
     ) -> None:
         """Set the data to be displayed.
 
@@ -874,7 +880,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             used to set the window title.
 
         """
-        self._file_path = file_path
+        self._file_path = pathlib.Path(file_path) if file_path is not None else None
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):
@@ -914,6 +920,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             else:
                 self._array_slicer: ArraySlicer = ArraySlicer(self._data)
         except Exception as e:
+            if self._in_manager:
+                # Let the manager handle the exception
+                raise
             QtWidgets.QMessageBox.critical(self, "Error", str(e))
             self.set_data(xr.DataArray(np.zeros((2, 2))))
             return
@@ -1752,7 +1761,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
         if self.is_image:
-            data = self.current_data
+            data = self.current_data.T
 
             if "alpha" not in data.dims:
                 QtWidgets.QMessageBox.critical(
@@ -1776,7 +1785,7 @@ class ItoolPlotItem(pg.PlotItem):
             from erlab.interactive.derivative import DerivativeTool
 
             tool = DerivativeTool(
-                self.current_data, data_name="data" + self.selection_code
+                self.current_data.T, data_name="data" + self.selection_code
             )
             self.slicer_area._associated_tools.append(tool)
             tool.show()
@@ -2156,30 +2165,30 @@ class ItoolPlotItem(pg.PlotItem):
                 item.setVisible(i == index)
 
     @QtCore.Slot()
-    def save_current_data(self, fileName=None) -> None:
-        default_name = "data"
+    def save_current_data(self) -> None:
+        default_name: Hashable | None = None
         if self.slicer_area._data is not None:
-            default_name = str(self.slicer_area._data.name)
+            default_name = self.slicer_area._data.name
+        if not default_name:
+            default_name = "data"
 
-        if fileName is None:
-            self.fileDialog = QtWidgets.QFileDialog()
-            self.fileDialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-            self.fileDialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
-            self.fileDialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog = QtWidgets.QFileDialog()
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
 
-            last_dir = pg.PlotItem.lastFileDir
-            if not last_dir:
-                last_dir = os.getcwd()
+        last_dir = pg.PlotItem.lastFileDir
+        if not last_dir:
+            last_dir = os.getcwd()
 
-            self.fileDialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
-            self.fileDialog.show()
-            self.fileDialog.fileSelected.connect(self.save_current_data)
-            return
+        dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
 
-        fileName = str(fileName)
-        pg.PlotItem.lastFileDir = os.path.dirname(fileName)
-
-        self.current_data.to_netcdf(fileName, engine="h5netcdf")
+        if dialog.exec():
+            filename = dialog.selectedFiles()[0]
+            self.current_data.to_netcdf(
+                filename, engine="h5netcdf", invalid_netcdf=True
+            )
+            pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:

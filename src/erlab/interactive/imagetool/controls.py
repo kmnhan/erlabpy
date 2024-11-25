@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import weakref
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
-import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
-from erlab.interactive.utils import BetterSpinBox
+from erlab.interactive.utils import BetterSpinBox, IconButton
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -20,76 +19,32 @@ if TYPE_CHECKING:
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
-class IconButton(QtWidgets.QPushButton):
-    """Convenience class for creating a QPushButton with a qtawesome icon."""
-
-    ICON_ALIASES: ClassVar[dict[str, str]] = {
-        "invert": "mdi6.invert-colors",
-        "invert_off": "mdi6.invert-colors-off",
-        "contrast": "mdi6.contrast-box",
-        "lock": "mdi6.lock",
-        "unlock": "mdi6.lock-open-variant",
-        "bright_auto": "mdi6.brightness-auto",
-        "bright_percent": "mdi6.brightness-percent",
-        "colorbar": "mdi6.gradient-vertical",
-        "transpose_0": "mdi6.arrow-top-left-bottom-right",
-        "transpose_1": "mdi6.arrow-up-down",
-        "transpose_2": "mdi6.arrow-left-right",
-        "transpose_3": "mdi6.axis-z-arrow",
-        "snap": "mdi6.grid",
-        "snap_off": "mdi6.grid-off",
-        "palette": "mdi6.palette-advanced",
-        "styles": "mdi6.palette-swatch",
-        "layout": "mdi6.page-layout-body",
-        "zero_center": "mdi6.format-vertical-align-center",
-        "table_eye": "mdi6.table-eye",
-        "plus": "mdi6.plus",
-        "minus": "mdi6.minus",
-        "reset": "mdi6.backup-restore",
-        # all_cursors="mdi6.checkbox-multiple-outline",
-        "all_cursors": "mdi6.select-multiple",
-    }  #: Mapping from custom aliases to qtawesome icon names.
-
-    def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
-        self.icon_key_on = None
-        self.icon_key_off = None
-
-        if on is not None:
-            self.icon_key_on = on
-            kwargs["icon"] = self.get_icon(self.icon_key_on)
-
-        if off is not None:
-            if on is None and kwargs["icon"] is None:
-                raise ValueError("Icon for `on` state was not supplied.")
-            self.icon_key_off = off
-            kwargs.setdefault("checkable", True)
-
-        super().__init__(**kwargs)
-        if self.isCheckable() and off is not None:
-            self.toggled.connect(self.refresh_icons)
-
-    def setChecked(self, value: bool) -> None:
-        super().setChecked(value)
-        self.refresh_icons()
-
-    def get_icon(self, icon: str) -> QtGui.QIcon:
-        try:
-            return qta.icon(self.ICON_ALIASES[icon])
-        except KeyError:
-            return qta.icon(icon)
-
-    def refresh_icons(self) -> None:
-        if self.icon_key_off is not None and self.isChecked():
-            self.setIcon(self.get_icon(self.icon_key_off))
-            return
-        if self.icon_key_on is not None:
-            self.setIcon(self.get_icon(self.icon_key_on))
-
-    def changeEvent(self, evt: QtCore.QEvent | None) -> None:  # handles dark mode
-        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
-            qta.reset_cache()
-            self.refresh_icons()
-        super().changeEvent(evt)
+_ICON_ALIASES: dict[str, str] = {
+    "invert": "mdi6.invert-colors",
+    "invert_off": "mdi6.invert-colors-off",
+    "contrast": "mdi6.contrast-box",
+    "lock": "mdi6.lock",
+    "unlock": "mdi6.lock-open-variant",
+    "bright_auto": "mdi6.brightness-auto",
+    "bright_percent": "mdi6.brightness-percent",
+    "colorbar": "mdi6.gradient-vertical",
+    "transpose_0": "mdi6.arrow-top-left-bottom-right",
+    "transpose_1": "mdi6.arrow-up-down",
+    "transpose_2": "mdi6.arrow-left-right",
+    "transpose_3": "mdi6.axis-z-arrow",
+    "snap": "mdi6.grid",
+    "snap_off": "mdi6.grid-off",
+    "palette": "mdi6.palette-advanced",
+    "styles": "mdi6.palette-swatch",
+    "layout": "mdi6.page-layout-body",
+    "zero_center": "mdi6.format-vertical-align-center",
+    "table_eye": "mdi6.table-eye",
+    "plus": "mdi6.plus",
+    "minus": "mdi6.minus",
+    "reset": "mdi6.backup-restore",
+    # all_cursors="mdi6.checkbox-multiple-outline",
+    "all_cursors": "mdi6.select-multiple",
+}  #: Mapping from custom aliases to qtawesome icon names.
 
 
 def clear_layout(layout: QtWidgets.QLayout | None) -> None:
@@ -262,16 +217,18 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
             s.setSpacing(3)
         # buttons for multicursor control
-        self.btn_add = IconButton("plus", toolTip="Add cursor")
+        self.btn_add = IconButton(_ICON_ALIASES["plus"], toolTip="Add cursor")
         self.btn_add.clicked.connect(self.slicer_area.add_cursor)
 
-        self.btn_rem = IconButton("minus", toolTip="Remove cursor")
+        self.btn_rem = IconButton(_ICON_ALIASES["minus"], toolTip="Remove cursor")
         self.btn_rem.clicked.connect(
             lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         )
 
         self.btn_snap = IconButton(
-            on="snap", off="snap_off", toolTip="Snap cursor to data points"
+            on=_ICON_ALIASES["snap"],
+            off=_ICON_ALIASES["snap_off"],
+            toolTip="Snap cursor to data points",
         )
         self.btn_snap.toggled.connect(self.slicer_area.toggle_snap)
 
@@ -349,10 +306,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
 
         if self.data.ndim <= 3:
-            icons = [f"transpose_{i}" for i in range(self.data.ndim)]
+            icons = [_ICON_ALIASES[f"transpose_{i}"] for i in range(self.data.ndim)]
         else:
-            icons = [f"transpose_{i}" for i in (0, 1, 3, 2)]
-        self.btn_transpose = tuple(IconButton(on=i) for i in icons)
+            icons = [_ICON_ALIASES[f"transpose_{i}"] for i in (0, 1, 3, 2)]
+        self.btn_transpose = tuple(IconButton(on=icon) for icon in icons)
 
         # add and connect info widgets
         for i in range(self.data.ndim):
@@ -532,25 +489,24 @@ class ItoolColorControls(ItoolControlsBase):
 
     def initialize_widgets(self) -> None:
         self.btn_reverse = IconButton(
-            on="invert",
-            off="invert_off",
+            on=_ICON_ALIASES["invert"],
+            off=_ICON_ALIASES["invert_off"],
             checkable=True,
             toolTip="Invert colormap",
         )
         self.btn_contrast = IconButton(
-            on="contrast",
+            on=_ICON_ALIASES["contrast"],
             checkable=True,
             toolTip="High contrast mode",
         )
         self.btn_zero = IconButton(
-            on="zero_center",
+            on=_ICON_ALIASES["zero_center"],
             checkable=True,
             toolTip="Keep center color fixed",
         )
         self.btn_lock = IconButton(
-            # on="unlock", off="lock",
-            on="bright_auto",
-            off="bright_percent",
+            on=_ICON_ALIASES["bright_auto"],
+            off=_ICON_ALIASES["bright_percent"],
             checkable=True,
             toolTip="Lock color limits",
         )
@@ -706,11 +662,11 @@ class ItoolBinningControls(ItoolControlsBase):
         for i, spin in enumerate(self.spins):
             spin.valueChanged.connect(lambda n, axis=i: self._update_bin(axis, n))
 
-        self.reset_btn = IconButton("reset", toolTip="Reset bins")
+        self.reset_btn = IconButton(_ICON_ALIASES["reset"], toolTip="Reset bins")
         self.reset_btn.clicked.connect(self.reset)
 
         self.all_btn = IconButton(
-            on="all_cursors",
+            on=_ICON_ALIASES["all_cursors"],
             checkable=True,
             toolTip="When checked, apply bins to all cursors upon change",
         )

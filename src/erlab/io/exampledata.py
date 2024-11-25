@@ -11,7 +11,7 @@ import xarray as xr
 
 import erlab.analysis.image
 import erlab.analysis.kspace
-from erlab.constants import kb_eV
+import erlab.constants
 
 
 def _func(kvec, a):
@@ -161,8 +161,8 @@ def generate_data_angles(
     Erange: tuple[float, float] = (-0.45, 0.12),
     hv: float = 50.0,
     configuration: (
-        erlab.analysis.kspace.AxesConfiguration | int
-    ) = erlab.analysis.kspace.AxesConfiguration.Type1,
+        erlab.constants.AxesConfiguration | int
+    ) = erlab.constants.AxesConfiguration.Type1,
     temp: float = 20.0,
     a: float = 6.97,
     t: float = 0.43,
@@ -238,8 +238,8 @@ def generate_data_angles(
         alpha = np.linspace(-angrange, angrange, shape[0])
         beta = np.linspace(-angrange, angrange, shape[1])
 
-    if not isinstance(configuration, erlab.analysis.kspace.AxesConfiguration):
-        configuration = erlab.analysis.kspace.AxesConfiguration(configuration)
+    if not isinstance(configuration, erlab.constants.AxesConfiguration):
+        configuration = erlab.constants.AxesConfiguration(configuration)
 
     eV = np.linspace(*Erange, shape[2])
 
@@ -286,8 +286,8 @@ def generate_data_angles(
 
     match configuration:
         case (
-            erlab.analysis.kspace.AxesConfiguration.Type1DA
-            | erlab.analysis.kspace.AxesConfiguration.Type2DA
+            erlab.constants.AxesConfiguration.Type1DA
+            | erlab.constants.AxesConfiguration.Type2DA
         ):
             out = out.assign_coords(chi=0.0)
 
@@ -369,7 +369,7 @@ def generate_gold_edge(
     center = np.polynomial.polynomial.polyval(alpha, edge_coeffs)
 
     data = (b - c + a * eV) / (
-        1 + np.exp((1.0 * eV - center) / max(1e-15, temp * kb_eV))
+        1 + np.exp((1.0 * eV - center) / max(1e-15, temp * erlab.constants.kb_eV))
     ) + c
 
     background = np.polynomial.polynomial.polyval(alpha, background_coeffs).clip(min=0)

@@ -243,8 +243,10 @@ class RotationDialog(DataTransformDialog):
             axis: int = main_image.display_axis[i]
             dim: str = str(main_image.axis_dims[i])
 
-            self.center_spins[i].setRange(*map(float, self.array_slicer.lims[i]))
-            self.center_spins[i].setSingleStep(float(self.array_slicer.incs[i]))
+            self.center_spins[i].setRange(
+                *map(float, self.array_slicer.lims_uniform[i])
+            )
+            self.center_spins[i].setSingleStep(float(self.array_slicer.incs_uniform[i]))
             self.center_spins[i].setValue(0.0)
             self.center_spins[i].setDecimals(self.array_slicer.get_significant(axis))
 

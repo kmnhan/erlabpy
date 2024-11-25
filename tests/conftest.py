@@ -1,19 +1,28 @@
+import logging
 import os
 import pathlib
+import threading
+import time
+from collections.abc import Callable, Sequence
 
 import lmfit
 import numpy as np
 import pooch
 import pytest
 import xarray as xr
+from numpy.testing import assert_almost_equal
+from qtpy import QtCore, QtWidgets
 
+from erlab.interactive.utils import _WaitDialog
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "ad7dbdf35ef2404feee0854cb3a52973770709f4"
+DATA_COMMIT_HASH = "bd2c597a49dfbcb91961bef3dcf988179dbe1151"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "43d89ef27482e127e7509b65d635b7a6a0cbf648f84aa597c8b4094bdc0c46ab"
+DATA_KNOWN_HASH = "434534c4e4d595aac073860289e2fcee09b31ca7655cb9b68a6143e34eecbae4"
 """The hash of the `.tar.gz` file."""
+
+log = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="session")
@@ -64,3 +73,232 @@ def gold():
     return generate_gold_edge(
         temp=100, Eres=1e-2, nx=15, ny=150, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
+
+
+class _DialogDetectionThread(QtCore.QThread):
+    sigUpdate = QtCore.Signal(object)
+    sigTimeout = QtCore.Signal(int)
+    sigFinish = QtCore.Signal(int)
+    sigTrigger = QtCore.Signal(int, object)
+    sigPreCall = QtCore.Signal(int, object)
+
+    def __init__(
+        self,
+        index: int,
+        pre_call: Callable | None,
+        accept_call: Callable | None,
+        timeout: float,
+    ) -> None:
+        super().__init__()
+        self.pre_call = pre_call
+        self.accept_call = accept_call
+        self.index = index
+        self.timeout = timeout
+        self._precall_called = threading.Event()
+
+    def precall_called(self):
+        if self.isRunning():
+            self.mutex.lock()
+        self._precall_called.set()
+        if self.isRunning():
+            self.mutex.unlock()
+
+    def run(self):
+        self.mutex = QtCore.QMutex()
+        time.sleep(0.001)
+        start_time = time.perf_counter()
+
+        self._mutex = QtCore.QMutex()
+
+        dialog = None
+
+        log.debug("handling dialog %d", self.index)
+        while (
+            dialog is None or isinstance(dialog, _WaitDialog)
+        ) and time.perf_counter() - start_time < self.timeout:
+            dialog = QtWidgets.QApplication.activeModalWidget()
+            time.sleep(0.01)
+
+        if dialog is None or isinstance(dialog, _WaitDialog):
+            log.debug("emitting timeout %d", self.index)
+            self.sigTimeout.emit(self.index)
+            return
+
+        log.debug("dialog %d detected: %s", self.index, dialog)
+
+        if self.pre_call is not None:
+            log.debug("pre_call %d...", self.index)
+            self.sigPreCall.emit(self.index, dialog)
+            while not self._precall_called.is_set():
+                time.sleep(0.01)
+            log.debug("pre_call %d done", self.index)
+
+        if self.accept_call is not None:
+
+            def _accept_call():
+                self.accept_call(dialog)
+                self.sigFinish.emit(self.index)
+        else:
+
+            def _accept_call():
+                if (
+                    isinstance(dialog, QtWidgets.QMessageBox)
+                    and dialog.defaultButton() is not None
+                ):
+                    dialog.defaultButton().click()
+                else:
+                    dialog.accept()
+                self.sigFinish.emit(self.index)
+
+        log.debug("emitting trigger for %d", self.index)
+        self.sigTrigger.emit(self.index + 1, _accept_call)
+
+
+class _DialogHandler(QtCore.QObject):
+    """Accept a dialog during testing.
+
+    If there is no dialog, it waits until one is created for a maximum of 5 seconds (by
+    default). Adapted from `this issue comment on pytest-qt
+    <https://github.com/pytest-dev/pytest-qt/issues/256#issuecomment-1915675942>`_.
+
+    Parameters
+    ----------
+    dialog_trigger
+        Callable that triggers the dialog creation.
+    timeout
+        Maximum time (seconds) to wait for the dialog creation.
+    pre_call
+        Callable that takes the dialog as a single argument. If provided, it is executed
+        before calling ``.accept()`` on the dialog. If a sequence of callables of length
+        equal to ``chained_dialog`` is provided, each callable will be called before
+        each dialog is accepted.
+    accept_call
+        If provided, it is called instead of ``.accept()`` on the dialog. If a sequence
+        of callables of length equal to ``chained_dialog`` is provided, each callable
+        will be called instead of ``.accept()`` on each dialog.
+    chained_dialog
+        If 2, a new dialog is expected to be created right after the dialog is accepted.
+        The new dialog will also be accepted. Numbers greater than 1 will accept
+        multiple dialogs.
+    """
+
+    def __init__(
+        self,
+        dialog_trigger: Callable,
+        timeout: float = 5.0,
+        pre_call: Callable | Sequence[Callable | None] | None = None,
+        accept_call: Callable | Sequence[Callable | None] | None = None,
+        chained_dialogs: int = 1,
+    ):
+        super().__init__()
+
+        self.timeout: float = timeout
+        self.finished_indices = []
+
+        self._timed_out = False
+
+        self._mutex = QtCore.QMutex()
+
+        if not isinstance(pre_call, Sequence):
+            pre_call = [pre_call] + [None] * (chained_dialogs - 1)
+
+        if not isinstance(accept_call, Sequence):
+            accept_call = [accept_call] + [None] * (chained_dialogs - 1)
+        self._pre_call_list = pre_call
+        self._accept_call_list = accept_call
+        self._max_index = chained_dialogs - 1
+
+        self.trigger_index(0, dialog_trigger)
+
+    @QtCore.Slot(int)
+    def _finished(self, index: int) -> None:
+        log.debug("finished %d", index)
+        self.finished_indices.append(index)
+
+    @QtCore.Slot(int)
+    def _timeout(self, index: int) -> None:
+        log.debug("timeout %d", index)
+        self._timed_out = True
+        self.finished_indices.append(index)
+        pytest.fail(
+            f"No dialog for index {index} was created after " f"{self.timeout} seconds."
+        )
+
+    @QtCore.Slot(int, object)
+    def trigger_index(self, index: int, new_trigger: Callable) -> None:
+        log.debug("trigger index %d", index)
+
+        if index <= self._max_index:
+            if hasattr(self, "_handler") and self._handler.isRunning():
+                self._handler.wait()
+
+            self._handler = _DialogDetectionThread(
+                index,
+                self._pre_call_list[index],
+                self._accept_call_list[index],
+                self.timeout,
+            )
+            self._handler.sigFinish.connect(self._finished)
+            self._handler.sigTimeout.connect(self._timeout)
+            self._handler.sigTrigger.connect(self.trigger_index)
+            self._handler.sigPreCall.connect(self.handle_pre_call)
+            self._handler.start()
+
+        new_trigger()
+
+    @QtCore.Slot(int, object)
+    def handle_pre_call(self, index: int, dialog) -> None:
+        log.debug("pre-call callable received")
+        self._pre_call_list[index](dialog)
+        log.debug("pre-call successfully called")
+        self._handler.precall_called()
+
+
+@pytest.fixture
+def accept_dialog():
+    return _DialogHandler
+
+
+def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
+    if target_win is None:
+        target_win = win
+    target_win.activateWindow()
+    target_win.setFocus()
+    assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
+
+    x_ax = win.slicer_area.main_image.display_axis[0]
+    y_ax = win.slicer_area.main_image.display_axis[1]
+
+    x0, y0 = (
+        win.slicer_area.get_current_index(x_ax),
+        win.slicer_area.get_current_index(y_ax),
+    )
+
+    # Move left
+    win.slicer_area.step_index(x_ax, -1)
+    qtbot.waitUntil(
+        lambda: win.slicer_area.get_current_index(x_ax) == x0 - 1, timeout=2000
+    )
+    assert_almost_equal(win.array_slicer.point_value(cursor), expected[1])
+
+    # Move down
+    win.slicer_area.step_index(y_ax, -1)
+    qtbot.waitUntil(
+        lambda: win.slicer_area.get_current_index(y_ax) == y0 - 1, timeout=2000
+    )
+    assert_almost_equal(win.array_slicer.point_value(cursor), expected[2])
+
+    # Move right
+    win.slicer_area.step_index(x_ax, 1)
+    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(x_ax) == x0, timeout=2000)
+    assert_almost_equal(win.array_slicer.point_value(cursor), expected[3])
+
+    # Move up
+    win.slicer_area.step_index(y_ax, 1)
+    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(y_ax) == y0, timeout=2000)
+    assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
+
+
+@pytest.fixture
+def move_and_compare_values():
+    return _move_and_compare_values

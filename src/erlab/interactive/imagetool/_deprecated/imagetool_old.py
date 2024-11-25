@@ -1333,8 +1333,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
 
     def autoRange(self, padding=None) -> None:
         for ax in self.axes:
-            if not all(ax.autoRangeEnabled()):
-                ax.autoRange(padding=padding)
+            ax.autoRange(padding=padding)
 
     def toggle_axes(self, axis) -> None:
         target = self.axes[axis]
@@ -2540,7 +2539,7 @@ class itoolJoystick(pg.JoystickButton):
 
     def mousePressEvent(self, ev) -> None:
         super().mousePressEvent(ev)
-        self.timer.start(1000 / 30)
+        self.timer.start(round(1000 / 30))
 
     def mouseReleaseEvent(self, ev) -> None:
         super().mouseReleaseEvent(ev)
@@ -2855,7 +2854,7 @@ class itoolColorControls(QtWidgets.QWidget):
         gamma_label = QtWidgets.QLabel("γ")
         gamma_label.setBuddy(self._gamma_spin)
 
-        self.gamma_scale = lambda y: 1000 * np.log10(y)
+        self.gamma_scale = lambda y: int(1000 * np.log10(y))
         self.gamma_scale_inv = lambda x: np.power(10, x / 1000)
         self._gamma_slider = QtWidgets.QSlider(
             toolTip="Colormap gamma",

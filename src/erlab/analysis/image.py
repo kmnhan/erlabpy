@@ -530,7 +530,7 @@ def gradient_magnitude(
     mode: str = "nearest",
     cval: float = 0.0,
 ) -> npt.NDArray[np.float64]:
-    r"""Calculate the gradient magnitude of an input array.
+    r"""Calculate the gradient magnitude of an image.
 
     The gradient magnitude is calculated as defined in Ref. :cite:p:`he2017mingrad`,
     using given :math:`\Delta x` and :math:`\Delta y` values.
@@ -557,12 +557,11 @@ def gradient_magnitude(
 
     Note
     ----
-    This function calculates the gradient magnitude of an input array by applying a
-    filter to the input array using the given dx and dy values. The filter is defined by
-    a kernel function that computes the squared difference between each element of the
-    input array and the central element, divided by the corresponding distance value.
-    The gradient magnitude is then calculated as the square root of the sum of the
-    squared differences.
+    This function calculates the gradient magnitude of an image by applying a filter
+    that uses the given dx and dy values. The filter is defined by a kernel function
+    that computes the squared difference between each element of the input array and the
+    central element, divided by the corresponding distance value. The gradient magnitude
+    is then calculated as the square root of the sum of the squared differences.
     """
     dxy = np.sqrt(dx**2 + dy**2)
     dist = np.array([[dxy, dy, dxy], [dx, 0.0, dx], [dxy, dy, dxy]]).flatten()

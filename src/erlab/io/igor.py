@@ -17,9 +17,6 @@ from xarray.backends import BackendEntrypoint
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from io import BufferedIOBase
-
-    from xarray.backends.common import AbstractDataStore
 
 
 class IgorBackendEntrypoint(BackendEntrypoint):
@@ -37,9 +34,9 @@ class IgorBackendEntrypoint(BackendEntrypoint):
     description = "Open Igor Pro files (.pxt, .pxp and .ibw) in Xarray"
     url = "https://erlabpy.readthedocs.io/en/stable/generated/erlab.io.igor.html"
 
-    def open_dataset(  # type: ignore[override]  # allow LSP violation
+    def open_dataset(
         self,
-        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
+        filename_or_obj,
         *,
         drop_variables: str | Iterable[str] | None = None,
         recursive: bool = False,
@@ -50,21 +47,14 @@ class IgorBackendEntrypoint(BackendEntrypoint):
             filename_or_obj, drop_variables=drop_variables, recursive=recursive
         )
 
-    def guess_can_open(
-        self,
-        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
-    ) -> bool:
+    def guess_can_open(self, filename_or_obj) -> bool:
         if isinstance(filename_or_obj, str | os.PathLike):
             _, ext = os.path.splitext(filename_or_obj)
             return ext in {".pxt", ".pxp", ".ibw"}
         return False
 
     def open_datatree(
-        self,
-        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
-        *,
-        recursive: bool = True,
-        **kwargs,
+        self, filename_or_obj, *, recursive: bool = True, **kwargs
     ) -> xr.DataTree:
         if not isinstance(filename_or_obj, str | os.PathLike):
             raise TypeError("filename_or_obj must be a string or a path-like object")
@@ -73,11 +63,7 @@ class IgorBackendEntrypoint(BackendEntrypoint):
         )
 
     def open_groups_as_dict(
-        self,
-        filename_or_obj: str | os.PathLike[Any] | BufferedIOBase | AbstractDataStore,
-        *,
-        recursive: bool = True,
-        **kwargs,
+        self, filename_or_obj, *, recursive: bool = True, **kwargs
     ) -> dict[str, xr.Dataset]:
         if not isinstance(filename_or_obj, str | os.PathLike):
             raise TypeError("filename_or_obj must be a string or a path-like object")

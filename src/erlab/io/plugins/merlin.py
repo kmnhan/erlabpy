@@ -150,8 +150,14 @@ class MERLINLoader(LoaderBase):
             with motor_file.open(encoding="utf-8") as f:
                 header = f.readline().strip().split("\t")  # motor coordinate names
 
-            if coord_arr.ndim == 1:
+            if coord_arr.ndim <= 1:
                 coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
+
+            if len(files) > coord_arr.shape[0]:
+                raise RuntimeError(
+                    f"Number of motor positions ({coord_arr.shape[0]}) "
+                    f"does not match number of files ({len(files)})"
+                )
 
             for i, dim in enumerate(header):
                 # Trim coord to number of files
@@ -175,7 +181,7 @@ class MERLINLoader(LoaderBase):
 
     def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         try:
-            match_scan = re.match(r".*?(\d{3})(?:_S\d{3})?", name)
+            match_scan = re.match(r".*?(\d{3})(?:_S\d{3})", name)
             if match_scan is None:
                 return None, {}
 

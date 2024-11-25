@@ -1,6 +1,6 @@
 ## Unreleased
 
-### Features
+### ✨ Features
 
 - **plotting:** add fine-grained control over color limit normalization ([46c962f](https://github.com/kmnhan/erlabpy/commit/46c962f9131f9a1a691167eb192a13c2a5e7d2fa))
 - **interactive.imagetool:** open ktool from imagetool ([d2cb8a7](https://github.com/kmnhan/erlabpy/commit/d2cb8a734f51af68e2ab7cbc50cf43a50d61a136))
@@ -17,7 +17,7 @@
 
   A button that can open the data directly in ImageTool has been added to the interactive summary. The button is displayed when the interactive summary is called while the ImageTool manager is running.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive:** improve ktool compatibility with manager ([4c775cf](https://github.com/kmnhan/erlabpy/commit/4c775cf1b4018777275c95625915d23641e42bf0))
 - **interactive.imagetool:** fix opening slice in new tool when manager is running ([db8e0af](https://github.com/kmnhan/erlabpy/commit/db8e0afaeb705a09a5395e67b83646e2aba4d6d0))
@@ -26,8 +26,14 @@
 - **interactive.imagetool:** fix wrong decimals for rotation center ([3fc3a50](https://github.com/kmnhan/erlabpy/commit/3fc3a500da532d73792a77ac769d15349cd36622))
 - **accessors.general:** fix component plotting for concatenated fit datasets with multiple models ([7d2976d](https://github.com/kmnhan/erlabpy/commit/7d2976db0b7cc5721b192285170941b8434e6225))
 
-### Code Refactor
+### ⚡️ Performance
 
+- **analysis.interpolate:** cache jitted interpolation functions ([34521ef](https://github.com/kmnhan/erlabpy/commit/34521ef485a1ec0d3123885c6290f10410ce347e))
+- **interactive.imagetool:** optimize memory usage by reducing circular references ([a675e1a](https://github.com/kmnhan/erlabpy/commit/a675e1a9d1d96f4ad4fa8d4853c2cca78864342e))
+
+### 🛠 Code Refactor
+
+- **plotting:** streamline igor CT loading ([e1e8baa](https://github.com/kmnhan/erlabpy/commit/e1e8baac003be0a763cc22bc9cf2d7e3e9ce03cb))
 - **io:** update type hints for file handling functions to use Iterable ([e3caf83](https://github.com/kmnhan/erlabpy/commit/e3caf83735561de57d00b5088a34a884edfb4c00))
 - **io:** streamline file identification logic and add user warnings for multiple file scenarios ([05b7e6c](https://github.com/kmnhan/erlabpy/commit/05b7e6ccd2305aec0a743e36f1d6f53a1eeebdd6))
 - **io:** replace several `os.path` calls with pathlib ([bdfdd22](https://github.com/kmnhan/erlabpy/commit/bdfdd22536271bbbeafca8ef7f23fbed928130fa))
@@ -42,14 +48,9 @@
 - **interactive.imagetool:** move dialogs into new dedicated module ([a90a735](https://github.com/kmnhan/erlabpy/commit/a90a735874e16769b135df1d2e70ef04922f27c8))
 - **interactive.imagetool:** improve error messages for invalid data ([a715ba1](https://github.com/kmnhan/erlabpy/commit/a715ba131b032ba7b2258b7c934764bde6424f62))
 
-### Performance
-
-- **analysis.interpolate:** cache jitted interpolation functions ([34521ef](https://github.com/kmnhan/erlabpy/commit/34521ef485a1ec0d3123885c6290f10410ce347e))
-- **interactive.imagetool:** optimize memory usage by reducing circular references ([a675e1a](https://github.com/kmnhan/erlabpy/commit/a675e1a9d1d96f4ad4fa8d4853c2cca78864342e))
-
 ## v3.0.0 (2024-11-06)
 
-### Breaking Changes
+### 🚨 Breaking Changes
 
 - Deprecated module `erlab.io.utilities` is removed. Use `erlab.io.utils` instead. ([e189722](https://github.com/kmnhan/erlabpy/commit/e189722f129d55cab0d2ec279e5303929cb09979))
 - Deprecated module `erlab.interactive.utilities` is removed. Use `erlab.interactive.utils` instead. ([af2c81c](https://github.com/kmnhan/erlabpy/commit/af2c81c676455ddfa19ae9bbbbdbdd68d257f26c))
@@ -69,7 +70,7 @@
 
   The `usecache` argument to the `summarize` method is no longer available, and the cache will be updated whenever it is outdated. ([0f5dab4](https://github.com/kmnhan/erlabpy/commit/0f5dab46e3d3a75fc77908b4072f08aa89059acd))
 
-### Features
+### ✨ Features
 
 - **io.igor:** enable loading experiment files to DataTree ([1835be0](https://github.com/kmnhan/erlabpy/commit/1835be0d08ed899b2edbb06fb442cd9addb40929))
 
@@ -91,7 +92,7 @@
   It is now much easier to implement a summary generation mechanism. This commit also adds a new keyword argument to `load_single` that can greatly speed up summary generation.
 - **io.dataloader:** support callable objects in `additional_attrs` ([e209499](https://github.com/kmnhan/erlabpy/commit/e209499c8044f0085fda74b7dc491517a695099c))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** fix copy cursor value for numpy 2 ([dc19c82](https://github.com/kmnhan/erlabpy/commit/dc19c827c4082989e47b0f8e2d7adda45ad62aaa))
 - **io.dataloader:** retain selected dimension in interactive summary ([9d54f8b](https://github.com/kmnhan/erlabpy/commit/9d54f8b3402767cf15e6cf5ab00ee5a1b766d172))
@@ -101,7 +102,15 @@
 - **analysis.gold:** retain attributes in `quick_resolution` ([504acdc](https://github.com/kmnhan/erlabpy/commit/504acdc1d7d9b8dcd4613ca97551d78c366f0337))
 - do not require qt libs on initial import ([118ead6](https://github.com/kmnhan/erlabpy/commit/118ead603b89867e56b29932f59bd02b476ab43b))
 
-### Code Refactor
+### ⚡️ Performance
+
+- **io.plugins.da30:** faster summary generation for DA30 zip files ([22b77bf](https://github.com/kmnhan/erlabpy/commit/22b77bf0ee787fe1236fb85262702b79265e3b8d))
+- **io.igor:** suppress `igor2` logging ([5cd3a8c](https://github.com/kmnhan/erlabpy/commit/5cd3a8c273b143d1a83f3286678638fede1ddd01))
+- **analysis.interpolate:** extend acceleration ([84daa88](https://github.com/kmnhan/erlabpy/commit/84daa8866ec4223555568f441b6010bb4936a413))
+
+  The fast linear interpolator now allows more general interpolation points like interpolating 3D data on a 2D grid. This means that passing `method='linearfast'` to `DataArray.interp` is faster in many cases.
+
+### 🛠 Code Refactor
 
 - **io.igor:** change wave dimension name handling ([3e0586a](https://github.com/kmnhan/erlabpy/commit/3e0586ae34893698317136bfccc5fd839b91332e))
 
@@ -137,17 +146,9 @@
 
   Also, the `current_loader` and `current_data_dir` can now be assigned directly with a syntax like `erlab.io.loaders.current_loader = "merlin"`.
 
-### Performance
-
-- **io.plugins.da30:** faster summary generation for DA30 zip files ([22b77bf](https://github.com/kmnhan/erlabpy/commit/22b77bf0ee787fe1236fb85262702b79265e3b8d))
-- **io.igor:** suppress `igor2` logging ([5cd3a8c](https://github.com/kmnhan/erlabpy/commit/5cd3a8c273b143d1a83f3286678638fede1ddd01))
-- **analysis.interpolate:** extend acceleration ([84daa88](https://github.com/kmnhan/erlabpy/commit/84daa8866ec4223555568f441b6010bb4936a413))
-
-  The fast linear interpolator now allows more general interpolation points like interpolating 3D data on a 2D grid. This means that passing `method='linearfast'` to `DataArray.interp` is faster in many cases.
-
 ## v2.12.0 (2024-10-22)
 
-### Features
+### ✨ Features
 
 - **interactive.imagetool:** add normalization option to View menu ([53e2cf2](https://github.com/kmnhan/erlabpy/commit/53e2cf2b6e49de70a6857b782acc8ec0815a93b5))
 - **io.dataloader:** allow passing additional arguments to `load_single` ([1652c20](https://github.com/kmnhan/erlabpy/commit/1652c20de102f7bb5fa4a26360652341f3249c2e))
@@ -158,42 +159,42 @@
 
   This commit adds a new submodule `io.nexusutils` that contains utilities for converting NeXus data to xarray data structures.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **erlab.io.plugins.merlin:** resolve typo in file dialog methods ([39caa99](https://github.com/kmnhan/erlabpy/commit/39caa998cc6857cd197dc1a0a7efc961ad3afe46))
 - **erlab.accessors.general:** make `qsel` accessor work along dimensions with no coordinates ([7f0d259](https://github.com/kmnhan/erlabpy/commit/7f0d259f75626316d28497a3e25e1009d7c05851))
 - **interactive.imagetool:** avoid errors on termination ([9fd044b](https://github.com/kmnhan/erlabpy/commit/9fd044bae170e025f5e27eb392fc600c19ec30b8))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **io:** return path-like objects instead of strings in `get_files` ([2eb9166](https://github.com/kmnhan/erlabpy/commit/2eb9166e4183222e9cb282fc0bf4984d76bf3124))
 
 ## v2.11.2 (2024-10-14)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io.dataloader:** fix `coordinate_attrs` not being propagated ([278675b](https://github.com/kmnhan/erlabpy/commit/278675b54d2e12471ce8629fbd6d249aa7184c0e))
 
 ## v2.11.1 (2024-10-14)
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - add app icon for imagetool manager ([e1cbcd2](https://github.com/kmnhan/erlabpy/commit/e1cbcd29b045cb2d586baa3c6272fd60cfd05979))
 
 ## v2.11.0 (2024-10-13)
 
-### Features
+### ✨ Features
 
 - **io.dataloader:** add new argument that can control combining ([bdec5ff](https://github.com/kmnhan/erlabpy/commit/bdec5ff24e02e82597cef10d225997599efaa257))
 
   Adds a new parameter `combine` to `io.load`. If `False`, returns a list of post-processed files without attempting to concatenate or merge the data into a single object. If `True`, retains the current default behavior.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **imagetool:** allow coords of any dtype coercible to float64 ([4342ebc](https://github.com/kmnhan/erlabpy/commit/4342ebc1bc4be01fcc9c7883ecfbaef0f5857e5d))
 - **io.dataloader:** properly handle combining multi-axis scans ([2cd22c7](https://github.com/kmnhan/erlabpy/commit/2cd22c7998cd22d399e59a86131e4c5712127b23))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **io.plugins:** update type hints ([54d0c5d](https://github.com/kmnhan/erlabpy/commit/54d0c5d7e55cc7e6af6b4d83feeb9d6c863e52f6))
 - remove unused imports ([f1e35de](https://github.com/kmnhan/erlabpy/commit/f1e35ded993f1fb2be04c549aa241809c7d68a4d))
@@ -202,7 +203,7 @@
 
 ## v2.10.0 (2024-10-08)
 
-### Features
+### ✨ Features
 
 - **io.plugins:** add loader for beamline ID21 ESM at NSLS-II ([c07e490](https://github.com/kmnhan/erlabpy/commit/c07e490c37b52706aa9407d6adb5aa7787e2c1b0))
 
@@ -215,7 +216,7 @@
 
   `.pxt`, `.pxp`, and `.ibw` files can now be opened with xarray methods such as `xr.open_dataset` and `xr.open_dataarray`. See the updated user guide for more information.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io.dataloader:** properly reorder coordinates ([3ebfb0f](https://github.com/kmnhan/erlabpy/commit/3ebfb0fdbc21e690e51c185da92ed9c88921d3b1))
 
@@ -237,7 +238,11 @@
 
   Memmapping seemed to interfere loading multiple files when called through ipywidgets.
 
-### Code Refactor
+### ⚡️ Performance
+
+- **interactive.imagetool:** improve manager speed ([891c4ee](https://github.com/kmnhan/erlabpy/commit/891c4eed0921fdb5b4ebd2cb17e6c932afa79ccc))
+
+### 🛠 Code Refactor
 
 - **io.utils:** use pathlib in `get_files` ([b7a0f5b](https://github.com/kmnhan/erlabpy/commit/b7a0f5b33e9a1f7a6840413f431fd60a10bb754e))
 - **io.plugins.merlin:** combine ImageTool file menu into single entry ([6e28ac2](https://github.com/kmnhan/erlabpy/commit/6e28ac21d7b534f5243f25a40710910eefb3a2b8))
@@ -262,19 +267,15 @@
 
   Calling `erlab.io.load_wave` and `erlab.io.load_experiment` is deprecated. When writing new code, use `xarray.load_dataarray` and `xarray.load_dataset` instead.
 
-### Performance
-
-- **interactive.imagetool:** improve manager speed ([891c4ee](https://github.com/kmnhan/erlabpy/commit/891c4eed0921fdb5b4ebd2cb17e6c932afa79ccc))
-
 ## v2.9.1 (2024-09-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - ui file compatibility with Qt5 ([66c776d](https://github.com/kmnhan/erlabpy/commit/66c776d912e5cf3ba1be819bd46b972f22cbb560))
 
 ## v2.9.0 (2024-08-30)
 
-### Features
+### ✨ Features
 
 - **interactive.imagetool:** add rotation ([fdeb8a9](https://github.com/kmnhan/erlabpy/commit/fdeb8a96be515b75d0536c48f2e3b042e9eccea5))
 
@@ -309,7 +310,7 @@
 
   Right-clicking on the colorbar will now show a menu which contains a button that copies the current color limits to the clipboard. This is useful when manually adjusting color limits.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** properly disconnect signals ([dce236f](https://github.com/kmnhan/erlabpy/commit/dce236f1da1aae44bc3210aac1ff2eb710d71f41))
 - **interactive.imagetool:** fix autoscale when loading data ([2c12f59](https://github.com/kmnhan/erlabpy/commit/2c12f592e3d1d57de649aabae742eee230545387))
@@ -321,7 +322,7 @@
 - **interactive.imagetool:** make manager socket use default backlog ([0ac7f0b](https://github.com/kmnhan/erlabpy/commit/0ac7f0b35b3288a62708c1c5e2c54a483e563bd7))
 - **interactive.imagetool:** ensure proper socket termination in manager ([2cceb27](https://github.com/kmnhan/erlabpy/commit/2cceb27a7d0e9db80fc39aa65340df6612587206))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **interactive.utils:** improve code generation ([78c403f](https://github.com/kmnhan/erlabpy/commit/78c403fed2220a8033acc71ba8280f1446509bc1))
 - **analysis:** move `shift` to `transform` ([08baf05](https://github.com/kmnhan/erlabpy/commit/08baf0556650167bd495628e65e5f2e415380712))
@@ -341,7 +342,7 @@
 
 ## v2.8.5 (2024-07-31)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **plotting.annotations:** properly pass keyword arguments in `mark_points_outside` ([2136939](https://github.com/kmnhan/erlabpy/commit/2136939e09656f921aed7204ca11cc6615605b7f))
 - **plotting.annotations:** expose property label generation to public api ([545781d](https://github.com/kmnhan/erlabpy/commit/545781d1aa5d04b5dd3bf6d0498821d104f837ac))
@@ -350,7 +351,7 @@
 
 ## v2.8.4 (2024-07-26)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **erlab.plotting.general:** improve `plot_array` keyword versatility ([1dc41cd](https://github.com/kmnhan/erlabpy/commit/1dc41cd52f8d7f879cfe54f2adf3a512b78ac007))
 
@@ -358,7 +359,7 @@
 - **erlab.analysis.gold:** fix `quick_fit` attribute detection ([3797f93](https://github.com/kmnhan/erlabpy/commit/3797f93e1a578e356ce21e7b7c933341099ab156))
 - **interactive.imagetool:** retain window title upon archiving ([b5d8aa4](https://github.com/kmnhan/erlabpy/commit/b5d8aa4884562ba4b53351baf58d598e27a1e757))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **plotting.general:** remove `LabeledCursor` ([912b4fb](https://github.com/kmnhan/erlabpy/commit/912b4fb73f88e3a529d1e3880a2253e0cb26e7ae))
 
@@ -370,7 +371,7 @@
 
 ## v2.8.3 (2024-07-08)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** various fixes related to manager ([3d3f55e](https://github.com/kmnhan/erlabpy/commit/3d3f55e84c2837dc86592bc2f5aa68282ca44fa5))
 
@@ -389,30 +390,30 @@
 - replace broken signature for dynamic functions ([39a3954](https://github.com/kmnhan/erlabpy/commit/39a39549b074055bafb93238492dc2dd3ba3c834))
 - **interactive.imagetool:** fix broken binning controls on loading fron GUI ([0ca5437](https://github.com/kmnhan/erlabpy/commit/0ca5437481e4b7c269acde8bb1badec1070752e7))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - satisfy type checker ([042a7b1](https://github.com/kmnhan/erlabpy/commit/042a7b1f72a9a29b93736fe1eea61f18cc8ea49d))
 - **interactive.imagetool:** add batch close button to manager ([efc6089](https://github.com/kmnhan/erlabpy/commit/efc6089669d73ec5ba39acbbeb08720f0543fe3e))
 
 ## v2.8.2 (2024-07-01)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** fix crash while linking more than 3 tools ([d5f8a30](https://github.com/kmnhan/erlabpy/commit/d5f8a30224f72d7159216fa5638056569521f75f))
 - update resistance loader ([6fcf2ab](https://github.com/kmnhan/erlabpy/commit/6fcf2abe797313ee3c21fd3cd2f4daebf412225f))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **interactive.imagetool:** show error message in GUI when opening file ([287a7e8](https://github.com/kmnhan/erlabpy/commit/287a7e84e5110ac08e17d9a852b0d2b0da830e42))
 
 ## v2.8.1 (2024-06-21)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** properly implement caching and linking from GUI ([ffacdce](https://github.com/kmnhan/erlabpy/commit/ffacdce93d1ff89e1be823317a6d59a400a6dee2))
 - **plotting.general:** pass DataArray to `func` argument to `plot_array` ([ed76e64](https://github.com/kmnhan/erlabpy/commit/ed76e64e45eb3ea93fba61380bc0d63864446fd3))
 
-### Performance
+### ⚡️ Performance
 
 - **interactive.imagetool:** speedup file loading and saving ([a6c869b](https://github.com/kmnhan/erlabpy/commit/a6c869b7d6ce0419d84a46086004d451845c23e3))
 
@@ -420,7 +421,7 @@
 
 ## v2.8.0 (2024-06-17)
 
-### Features
+### ✨ Features
 
 - **erlab.io.plugins.ssrl52:** changes to loader ([512a89b](https://github.com/kmnhan/erlabpy/commit/512a89b051911c88bafd59bdc9bd993ec727321a))
 
@@ -436,23 +437,23 @@
   Adjustments made in ImageTool can now be undone with Ctrl+Z. Virtually all actions except window size change and splitter position change should be undoable. Up to 1000 recent actions are stored in memory.
 - **interactive.imagetool:** remember last used loader for each tool ([eb0cd2f](https://github.com/kmnhan/erlabpy/commit/eb0cd2f41992845988f5e500416ed98f5d078c14))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** fix code generation behaviour for non-uniform coordinates ([3652a21](https://github.com/kmnhan/erlabpy/commit/3652a21cf126ebcde015d5b7373bf5d5a675b177))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **interactive.imagetool:** preparation for saving and loading state ([eca8262](https://github.com/kmnhan/erlabpy/commit/eca8262defe8d135168ca7da115d947bda3c1040))
 
 ## v2.7.2 (2024-06-14)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **erlab.io:** regression in handling getattr of dataloader ([dd0a568](https://github.com/kmnhan/erlabpy/commit/dd0a5680c6aed6e3b7ab391a10fbeb5c3cdc9c14))
 
 ## v2.7.1 (2024-06-14)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** Integrate data loaders to imagetool ([7e7ea25](https://github.com/kmnhan/erlabpy/commit/7e7ea25a8fbe3a43222fbc7baedaa04c6522e24d))
 
@@ -461,40 +462,40 @@
 
 ## v2.7.0 (2024-06-09)
 
-### Features
+### ✨ Features
 
 - **analysis.gold:** add function for quick resolution fitting ([2fae1c3](https://github.com/kmnhan/erlabpy/commit/2fae1c351f29b2fb1ceef39a69706b3f198e4659))
 - **analysis.fit:** Add background option to `MultiPeakModel` and `MultiPeakFunction` ([2ccd8ad](https://github.com/kmnhan/erlabpy/commit/2ccd8ad835cbc8de9764d2f8bbadda425babddb1))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **erlab.io.plugins:** fix for hv-dependent data ([d52152f](https://github.com/kmnhan/erlabpy/commit/d52152f24807b9334ad5ffcc22c45a4af7a8d9ec))
 
 ## v2.6.3 (2024-06-07)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **erlab.io.plugins:** support SSRL hv dependent data ([1529b6a](https://github.com/kmnhan/erlabpy/commit/1529b6a0af43f09c51691ad8bebf9208d421940a))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - cleanup namespace ([847fbbe](https://github.com/kmnhan/erlabpy/commit/847fbbe4975b507905dc85ca5ae75fe16f5f887e))
 
 ## v2.6.2 (2024-06-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive.imagetool:** fix regression with nonuniform data ([67df972](https://github.com/kmnhan/erlabpy/commit/67df9720193611816e2a562ce71d080fccbbec5e))
 
 ## v2.6.1 (2024-05-30)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - re-trigger due to CI failure ([b6d69b5](https://github.com/kmnhan/erlabpy/commit/b6d69b556e3d0dbe6d8d71596e32d9d7cfdc5267))
 
 ## v2.6.0 (2024-05-30)
 
-### Features
+### ✨ Features
 
 - **interactive.imagetool:** add bin amount label to binning controls ([7a7a692](https://github.com/kmnhan/erlabpy/commit/7a7a692b881e4cc1bd49342f31f3fe50407d72b5))
 - add accessor for selecting around a point ([aa24457](https://github.com/kmnhan/erlabpy/commit/aa244576fcfa17f71be0a765be8f270a6ae28080))
@@ -507,11 +508,11 @@
 
   For more fine-grained control of the resulting data attributes, a new method `combine_attrs` can be overridden to take care of attributes for scans over multiple files. The default behavior is to just use the attributes from the first file.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **plotting:** make `gradient_fill` keep axis scaling ([51507dd](https://github.com/kmnhan/erlabpy/commit/51507dd966a0ce2db4aabff2aac8222bee184cf8))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **analysis.image:** add check for 2D and uniform inputs ([22bb02d](https://github.com/kmnhan/erlabpy/commit/22bb02dd8dfbd5eb6b5d577abe9138a769a079b3))
 - try to fix synced itool garbage collection ([932cc5a](https://github.com/kmnhan/erlabpy/commit/932cc5a690dcebc92c65ea3f17081ac9f9c3ef8f))
@@ -530,19 +531,19 @@
 
 ## v2.5.4 (2024-05-23)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io.plugins.maestro:** load correct beta for non deflector scans ([5324c36](https://github.com/kmnhan/erlabpy/commit/5324c362d7bdd1dcf0c21303f370fd2e77f12448))
 
 ## v2.5.3 (2024-05-22)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io.utilities:** `get_files` now only list files, not directories ([60f9230](https://github.com/kmnhan/erlabpy/commit/60f92307f94484361e0ba11b10a52be4c4cc05a1))
 - **accessors.fit:** add `make_params` call before determining param names, closes [#38](https://github.com/kmnhan/erlabpy/issues/38) ([f1d161d](https://github.com/kmnhan/erlabpy/commit/f1d161de089b93e16b2947b126ac075764d98f75))
 - **analysis.fit:** make some models more robust to DataArray input ([afe5ddd](https://github.com/kmnhan/erlabpy/commit/afe5ddd9d1e6796ba0261a147c2733d607916d81))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - add loader for ALS BL7 MAESTRO `.h5` files ([4f33402](https://github.com/kmnhan/erlabpy/commit/4f3340228ae2e1cbd8baf57d5d426043f5e28688))
 - **interactive:** add informative error message for missing Qt bindings ([560615b](https://github.com/kmnhan/erlabpy/commit/560615bb89d2646965d1a2a967133f0df08e3f6e))
@@ -552,7 +553,7 @@
 
 ## v2.5.2 (2024-05-16)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - make mathtext copy default to svg ([2f6e0e5](https://github.com/kmnhan/erlabpy/commit/2f6e0e558f251c846bc3dec39cd150391802460d))
 - resolve MemoryError in prominent color estimation ([3bdcd03](https://github.com/kmnhan/erlabpy/commit/3bdcd0341c41b424ebbcb565b7cda0db839e4cb8))
@@ -561,20 +562,20 @@
 
 ## v2.5.1 (2024-05-15)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **plotting:** fixes [#35](https://github.com/kmnhan/erlabpy/issues/35) ([a67be68](https://github.com/kmnhan/erlabpy/commit/a67be6869c2d25780f8a56794aad0386379202dd))
 
   Gradient fill disappears upon adding labels
 - **fit.models:** wrong StepEdgeModel guess with DataArray input ([6778c8d](https://github.com/kmnhan/erlabpy/commit/6778c8dd2c048b0cab67c6d3668b25b3f79a71da))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **plotting:** code cleanup ([aef10e4](https://github.com/kmnhan/erlabpy/commit/aef10e472a3ebc935711253e91124cfd87beb9cc))
 
 ## v2.5.0 (2024-05-13)
 
-### Features
+### ✨ Features
 
 - extended interactive accessor ([f6f19ab](https://github.com/kmnhan/erlabpy/commit/f6f19abd8edfb33585b5e19040a2ebaff39b2b70))
 
@@ -586,26 +587,26 @@
   When a Dataset is passed to `itool`, each data variable will be shown in a separate ImageTool window.
 - **analysis.image:** add multidimensional Savitzky-Golay filter ([131b32d](https://github.com/kmnhan/erlabpy/commit/131b32d9e562693e98a2f9e45cf6db4635405b44))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **itool:** add input data dimension check ([984f2db](https://github.com/kmnhan/erlabpy/commit/984f2db0f69db2b5b99211728840447d9617f8bf))
 - **analysis.image:** correct argument order parsing in some filters ([6043413](https://github.com/kmnhan/erlabpy/commit/60434136224c0875ed8fba41d24e32fc6868127c))
 - **interactive:** improve formatting for code copied to clipboard ([d8b6d91](https://github.com/kmnhan/erlabpy/commit/d8b6d91a4d2688486886f2464426935fdf8cabc2))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **plotting:** update `clean_labels` to use `Axes.label_outer` ([0c64756](https://github.com/kmnhan/erlabpy/commit/0c647564c6027f5b60f9ff288f13019e0e5933b6))
 
 ## v2.4.2 (2024-05-07)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **ktool:** resolve ktool initialization problem, closes [#32](https://github.com/kmnhan/erlabpy/issues/32) ([e88a58e](https://github.com/kmnhan/erlabpy/commit/e88a58e6aaed326af1a68aa33322d6ea9f0e800d))
 - **itool:** disable flag checking for non-numpy arrays ([da6eb1d](https://github.com/kmnhan/erlabpy/commit/da6eb1db9e81d51b52d4b361de938bcf7ba45e68))
 
 ## v2.4.1 (2024-05-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **plotting:** fix wrong regex in `scale_units` ([d7826d0](https://github.com/kmnhan/erlabpy/commit/d7826d0269214dfd822a4d0293e42a9840015ce8))
 - fix bug in `modelfit` parameter concatenation ([edaa556](https://github.com/kmnhan/erlabpy/commit/edaa5566c6e3817e1d9220f7a96e8e731cf7eede))
@@ -613,14 +614,14 @@
 
 ## v2.4.0 (2024-05-02)
 
-### Features
+### ✨ Features
 
 - **imagetool:** add method to update only the values ([ca40fe4](https://github.com/kmnhan/erlabpy/commit/ca40fe41a0320fd7843c86f95b68f8b6e19adca8))
 - add interpolation along a path ([7366ec4](https://github.com/kmnhan/erlabpy/commit/7366ec4db600617e585c724d05aafea387456cf2))
 
   The `slice_along_path` function has been added to `analysis.interpolate`, which enables easy interpolation along a evenly spaced path that is specified by its vertices and step size. The path can have an arbitrary number of dimensions and points.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** remove direct display call in interactive summary ([d44b3a5](https://github.com/kmnhan/erlabpy/commit/d44b3a56aecfb054a38d944c5c8b7f45d362cf3b))
 
@@ -633,7 +634,7 @@
   The default `width` argument to `nice_colorbar` is changed to 8 points. This ensures visibility in subplots, especially when constrained layout is used.
 - delay interactive imports until called ([ad15910](https://github.com/kmnhan/erlabpy/commit/ad15910f921cb5ffffc388e7a5e02832935f8547))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - various cleanup ([2b38397](https://github.com/kmnhan/erlabpy/commit/2b383970b602507b6efedbf396f14d470db60d8f))
 
@@ -641,7 +642,7 @@
 
 ## v2.3.2 (2024-04-25)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** make summary caching togglable ([99b8e22](https://github.com/kmnhan/erlabpy/commit/99b8e221e75db73382bf599170c58d8a68ca049e))
 
@@ -654,17 +655,17 @@
 
 ## v2.3.1 (2024-04-25)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive:** keep pointer for imagetool, fix typing issues ([c98c38e](https://github.com/kmnhan/erlabpy/commit/c98c38ea11bce50ed9bfd8d374064bb2b1659d0c))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - move `characterization` to `io` ([9c30f1b](https://github.com/kmnhan/erlabpy/commit/9c30f1b7df51460f502dcbf999e3fac34be1cf99))
 
 ## v2.3.0 (2024-04-22)
 
-### Features
+### ✨ Features
 
 - **kspace:** rewrite conversion with `xarray.apply_ufunc` ([156cef8](https://github.com/kmnhan/erlabpy/commit/156cef830582e01dc378a7437a0c85f4c7efc077))
 
@@ -688,7 +689,7 @@
 
   This improves performance and results when eV is large like ~100eV.
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **kspace:** allow explicit coordinate kwargs ([fe47efc](https://github.com/kmnhan/erlabpy/commit/fe47efcde941767c02b582ce8b29d4b3678fd843))
 - **exampledata:** change noise generation parameters ([b213f11](https://github.com/kmnhan/erlabpy/commit/b213f1151ed2555fc80374e9ebe3fc0856a13948))
@@ -700,7 +701,7 @@
 
   Allow images including nan to be plotted with gen_2d_colormap, also handle plot_array_2d colorbar aspect
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - make zip strict (ruff B905) ([78bf5f5](https://github.com/kmnhan/erlabpy/commit/78bf5f5a2db52c14ccf5bfd3c83659ca53c4a408))
 - fix some type hints ([2dfa5e1](https://github.com/kmnhan/erlabpy/commit/2dfa5e1b4582e00d0631376ee32aa7d0b1b945b6))
@@ -718,13 +719,17 @@
 
 ## v2.2.2 (2024-04-15)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** unify call signature for summarize ([e2782c8](https://github.com/kmnhan/erlabpy/commit/e2782c898d5aaaa1443b2bc82bb61fb40a28d232))
 - resolve failing tests due to changes in sample data generation ([80f0045](https://github.com/kmnhan/erlabpy/commit/80f004574950834e42dbfa7677031d0f9f113bda))
 - **interactive.exampledata:** properly generate 2D data ([825260c](https://github.com/kmnhan/erlabpy/commit/825260c8ceb0a79b8c071750003529b91cda3573))
 
-### Code Refactor
+### ⚡️ Performance
+
+- **io:** speedup merlin summary generation by excluding duplicates ([d6b4253](https://github.com/kmnhan/erlabpy/commit/d6b42537ce48232b5112daef8f31e5cf86ea921a))
+
+### 🛠 Code Refactor
 
 - **io:** allow for more complex setups ([f67b2e4](https://github.com/kmnhan/erlabpy/commit/f67b2e4c7b092b7ca2db00ce02a23647879c514b))
 
@@ -733,34 +738,30 @@
 - **io:** include "Path" column in ssrl loader summary ([ae1d8ae](https://github.com/kmnhan/erlabpy/commit/ae1d8aee051aa71563f6a6009ce9672e56edfae7))
 - **io:** improve array formatting in summary ([1718529](https://github.com/kmnhan/erlabpy/commit/171852957db7fe53ff6a5c5c5f843530078d4b46))
 
-### Performance
-
-- **io:** speedup merlin summary generation by excluding duplicates ([d6b4253](https://github.com/kmnhan/erlabpy/commit/d6b42537ce48232b5112daef8f31e5cf86ea921a))
-
 ## v2.2.1 (2024-04-14)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **fit:** add sigma and amplitude expressions to MultiPeakModel parameters ([3f6ba5e](https://github.com/kmnhan/erlabpy/commit/3f6ba5e84922129296183e02255506df73da0276))
 - **fit.minuit:** properly handle parameters constrained with expressions ([d03f012](https://github.com/kmnhan/erlabpy/commit/d03f012b4fde92f445a24657dca1fb5b3600fa45))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - set informative model name for MultiPeakModel ([d14ee9d](https://github.com/kmnhan/erlabpy/commit/d14ee9d6ac7962207700de50039a5b7a858fea6a))
 - add gaussian and lorentzian for consistency ([07c0dfb](https://github.com/kmnhan/erlabpy/commit/07c0dfb9ecfb882e4f5f0ccfe942c1a835b613b2))
 
 ## v2.2.0 (2024-04-12)
 
-### Features
+### ✨ Features
 
 - enable component evaluation for MultiPeakModel ([8875b74](https://github.com/kmnhan/erlabpy/commit/8875b7443d26313156fcdcc43586d40af4ff4f00))
 - **analysis.fit:** add BCS gap equation and Dynes formula ([f862aa4](https://github.com/kmnhan/erlabpy/commit/f862aa4af4d2ba470f1ea074fc90442d9b18b336))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - curvefittingtool errors ([9abb99c](https://github.com/kmnhan/erlabpy/commit/9abb99c35633bc722469276d4837a2372c132042))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - cleanup fit namespace ([906aa99](https://github.com/kmnhan/erlabpy/commit/906aa99193f78577e705218b2d6c22378611f84b))
 - rename ExtendedAffineBroadenedFD to FermiEdgeModel ([a98aa82](https://github.com/kmnhan/erlabpy/commit/a98aa82bcbdf22ff8a156d800e336653f9afba07))
@@ -768,13 +769,13 @@
 
 ## v2.1.3 (2024-04-11)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **interactive:** update data load functions used in imagetool ([c3abe35](https://github.com/kmnhan/erlabpy/commit/c3abe3517046ed603a9221de38b22257322d3a51))
 
 ## v2.1.2 (2024-04-11)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** prevent specifying invalid data_dir ([701b011](https://github.com/kmnhan/erlabpy/commit/701b011339ecba657a0f4a14e2fef19adeb4bf2b))
 - **io:** fixes merlin summary data type resolving ([a91ad3d](https://github.com/kmnhan/erlabpy/commit/a91ad3d4387a23d25ac1b208cba8217e67efbec0))
@@ -782,19 +783,19 @@
 
 ## v2.1.1 (2024-04-10)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** enable specifying data_dir in loader context manager ([37913b8](https://github.com/kmnhan/erlabpy/commit/37913b80a1d7c6313a5b6cc4a3ab614565274c81))
 - **io:** allow loader_class aliases to be None ([7eae2eb](https://github.com/kmnhan/erlabpy/commit/7eae2ebf13f972d368ddb9922a71fd3bbed014e5))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - remove igor2 import checking ([b64d8f7](https://github.com/kmnhan/erlabpy/commit/b64d8f7fe22ebc1c4818e26f93f864fd402bbd05))
 - **io:** default to always_single=True ([007bb3b](https://github.com/kmnhan/erlabpy/commit/007bb3b2703a647856c0a85e89075cf6572d263a))
 
 ## v2.1.0 (2024-04-09)
 
-### Features
+### ✨ Features
 
 - **interactive:** overhaul dtool ([8e5ec38](https://github.com/kmnhan/erlabpy/commit/8e5ec3827dd2bd52475d454d5c5ef8aef7d665aa))
 
@@ -804,23 +805,23 @@
   Automatically shortens code and allows literals in kwargs
 - **interactive:** extend xImageItem, add right-click menu to open imagetool ([2b5bb2d](https://github.com/kmnhan/erlabpy/commit/2b5bb2dfc3d4173d950135306b3b30a018c6d389))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - sign error in minimum gradient ([c45be0c](https://github.com/kmnhan/erlabpy/commit/c45be0cf1a025c67e8af959ff83a9339cddbaaaa))
 - **analysis.image:** normalize data for mingrad output for numerical stability ([0fc3711](https://github.com/kmnhan/erlabpy/commit/0fc3711a521ffb0cbb4f5206c06d923eced1200c))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - **io:** validation now defaults to warning instead of raising an error ([8867a07](https://github.com/kmnhan/erlabpy/commit/8867a07304129beda749fa82d3909bf920fdb975))
 
 ## v2.0.0 (2024-04-08)
 
-### Breaking Changes
+### 🚨 Breaking Changes
 
 - `PolyFunc` is now `PolynomialFunction`, and `FermiEdge2dFunc` is now `FermiEdge2dFunction`. The corresponding model names are unchanged. ([20d784c](https://github.com/kmnhan/erlabpy/commit/20d784c1d8fdcd786ab73b3ae03d3e331dc04df5))
 - This change disables the use of guess_fit. All fitting must be performed in the syntax recommended by lmfit. Addition of a accessor or a convenience function for coordinate-aware fitting is planned in the next release. ([59163d5](https://github.com/kmnhan/erlabpy/commit/59163d5f0e000d65aa53690a51b6db82df1ce5f1))
 
-### Features
+### ✨ Features
 
 - **itool:** add copy code to PlotItem vb menu ([7b4f30a](https://github.com/kmnhan/erlabpy/commit/7b4f30ada21c5accc1d3824ad3d0f8097f9a99c1))
 
@@ -832,7 +833,7 @@
 - add derivative module with minimum gradient implementation ([e0eabde](https://github.com/kmnhan/erlabpy/commit/e0eabde60e6860c3827959b45be6d4f491918363))
 - **fit:** directly base models on lmfit.Model ([59163d5](https://github.com/kmnhan/erlabpy/commit/59163d5f0e000d65aa53690a51b6db82df1ce5f1))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **dynamic:** properly broadcast xarray input ([2f6672f](https://github.com/kmnhan/erlabpy/commit/2f6672f3b003792ecd98b4fbc99fb11fcc0efb8b))
 - **fit.functions:** polynomial function now works for xarray input ([3eb80de](https://github.com/kmnhan/erlabpy/commit/3eb80dea31b6414fa9a694049b92b7334a4e10f5))
@@ -841,7 +842,13 @@
 - set autodownsample off for colorbar ([256bf2d](https://github.com/kmnhan/erlabpy/commit/256bf2dc8c368d093a3578d7f9279b1ee4653534))
 - disable itool downsample ([e626bba](https://github.com/kmnhan/erlabpy/commit/e626bba9fcd4fd31387ca3a07a9a33b7690f3645))
 
-### Code Refactor
+### ⚡️ Performance
+
+- **itool:** add explicit signatures to fastbinning ([62e1d51](https://github.com/kmnhan/erlabpy/commit/62e1d516f0260f661fe9cd8f1fae9cb81afbcabe))
+
+  Speedup initial binning by providing explicit signatures.
+
+### 🛠 Code Refactor
 
 - **fit:** unify dynamic function names ([20d784c](https://github.com/kmnhan/erlabpy/commit/20d784c1d8fdcd786ab73b3ae03d3e331dc04df5))
 - update dtool to use new functions ([a6e46bb](https://github.com/kmnhan/erlabpy/commit/a6e46bb8b19512e438291afbbd5e0e9a4eb4fe87))
@@ -849,65 +856,59 @@
 - rename module to image and add citation ([b74a654](https://github.com/kmnhan/erlabpy/commit/b74a654e07d9f4522cee2db0b897f1ffcdb86e94))
 - **dtool:** cleanup unused code ([f4abd34](https://github.com/kmnhan/erlabpy/commit/f4abd34bbf3130c0ec0fd2f9c830c8da43849f13))
 
-### Performance
-
-- **itool:** add explicit signatures to fastbinning ([62e1d51](https://github.com/kmnhan/erlabpy/commit/62e1d516f0260f661fe9cd8f1fae9cb81afbcabe))
-
-  Speedup initial binning by providing explicit signatures.
-
 ## v1.6.5 (2024-04-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - make imports work without optional pip dependencies ([b8ac11d](https://github.com/kmnhan/erlabpy/commit/b8ac11d8fb4379f70a39c817332382c352391a64))
 
 ## v1.6.4 (2024-04-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - load colormaps only when igor2 is  available ([7927c7d](https://github.com/kmnhan/erlabpy/commit/7927c7db264bedb1a27b980d820d352f779b64c9))
 
 ## v1.6.3 (2024-04-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - leave out type annotation for passing tests ([eb25008](https://github.com/kmnhan/erlabpy/commit/eb2500838820172529ee751b5d8a624c950f66d2))
 
 ## v1.6.2 (2024-04-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - igor2 does not have to be installed on import time ([186727a](https://github.com/kmnhan/erlabpy/commit/186727ac8d50b662efeba8bee567cf1013ca936a))
 
 ## v1.6.1 (2024-04-03)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - remove all pypi dependencies from pyproject.toml ([1b2fd55](https://github.com/kmnhan/erlabpy/commit/1b2fd5594f00bba8367419cd00919eba45cde5a7))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - remove ktool_old ([18ea072](https://github.com/kmnhan/erlabpy/commit/18ea0723fdf538bdbf2789ca73b2b962839ca3e5))
 
 ## v1.6.0 (2024-04-02)
 
-### Features
+### ✨ Features
 
 - add mdctool ([a4976f9](https://github.com/kmnhan/erlabpy/commit/a4976f93cde51a41d667321a93dc2a90f23bddc3))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - remove deprecated function and dependencies ([4b9c7b1](https://github.com/kmnhan/erlabpy/commit/4b9c7b1629d99fbf0108ca33791d1bfd59632199))
 
 ## v1.5.2 (2024-04-01)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - set values after setting bounds ([ab6d682](https://github.com/kmnhan/erlabpy/commit/ab6d682d0afafefcaec4c1ab6d673a39a75f40a6))
 - proper patch all interpolator selection functions ([b91834e](https://github.com/kmnhan/erlabpy/commit/b91834e1b0be200bafb86ed3581f08cf1a5d42ef))
 - make bz voronoi robust ([8259760](https://github.com/kmnhan/erlabpy/commit/8259760249be45892cd32f143b1b83aefe166c49))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - remove debug print statement in FastInterpolator class ([712bd2c](https://github.com/kmnhan/erlabpy/commit/712bd2ce90ad3534212d8a63c3fe10d780e243f5))
 - add edge correction ([87adcef](https://github.com/kmnhan/erlabpy/commit/87adceffda2364f404de0860bfe8bf36b4cc1394))
@@ -922,13 +923,13 @@
 
 ## v1.5.1 (2024-03-28)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - restore argname detection that was broken with namespace changes ([863b702](https://github.com/kmnhan/erlabpy/commit/863b702b6373f9a219a1e770aa49c71145371681))
 - namespace collision ([10edcdc](https://github.com/kmnhan/erlabpy/commit/10edcdc8b06425c380ca6caa2d3f5f2be5c13733))
 - followup namespace change ([4c5222c](https://github.com/kmnhan/erlabpy/commit/4c5222cc93196f0b6a75a0101107a37e73748eeb))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - allow offsetview upate chaining ([8d5ca4f](https://github.com/kmnhan/erlabpy/commit/8d5ca4f5b12c7d7060ea444773a9851f23db9850))
 
@@ -944,17 +945,17 @@
 
 ## v1.5.0 (2024-03-27)
 
-### Features
+### ✨ Features
 
 - add interactive tool to kspace accessor ([fb91cdb](https://github.com/kmnhan/erlabpy/commit/fb91cdb50229154c070df8dfaa80cddc8520ae6d))
 
-### Code Refactor
+### 🛠 Code Refactor
 
 - accessors are now registered upon package import ([d79fee2](https://github.com/kmnhan/erlabpy/commit/d79fee2a28dd5ee59bfc6bd1ce224a44c5f40a24))
 
 ## v1.4.1 (2024-03-26)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - update package metadata ([ecfb88f](https://github.com/kmnhan/erlabpy/commit/ecfb88f2c23a7681e12d6f2dedcc316a28aa22c7))
 
@@ -962,7 +963,7 @@
 
 ## v1.4.0 (2024-03-26)
 
-### Features
+### ✨ Features
 
 - calculate kz in MomentumAccessor ([46979f9](https://github.com/kmnhan/erlabpy/commit/46979f907b120e5a4a88fdacd7d74a4b9dd41d6d))
 
@@ -971,17 +972,17 @@
 
 ## v1.3.1 (2024-03-25)
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - fixes [#12](https://github.com/kmnhan/erlabpy/issues/12) ([02b49a1](https://github.com/kmnhan/erlabpy/commit/02b49a1da7550ae2b07819e6ccde3dcf750fc527))
 
 ## v1.3.0 (2024-03-25)
 
-### Features
+### ✨ Features
 
 - **io:** add new data loader plugin for DA30 + SES ([7a27a2f](https://github.com/kmnhan/erlabpy/commit/7a27a2f27d9658f1091aaa48bcc78dea562898d8))
 
-### Bug Fixes
+### 🐞 Bug Fixes
 
 - **io:** properly handle registry getattr ([499526f](https://github.com/kmnhan/erlabpy/commit/499526fc1705bfbfbf8d3b80d50d65450dec7eae))
 

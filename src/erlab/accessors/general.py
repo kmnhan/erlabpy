@@ -13,7 +13,6 @@ import importlib
 from collections.abc import Hashable, Mapping
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
@@ -54,6 +53,8 @@ class PlotAccessor(ERLabDataArrayAccessor):
             Keyword arguments to be passed to the plotting function.
 
         """
+        import matplotlib.pyplot
+
         from erlab.plotting.erplot import fancy_labels, plot_array
 
         if len(self._obj.dims) == 2:
@@ -61,7 +62,7 @@ class PlotAccessor(ERLabDataArrayAccessor):
 
         ax = kwargs.pop("ax", None)
         if ax is None:
-            ax = plt.gca()
+            ax = matplotlib.pyplot.gca()
         kwargs["ax"] = ax
 
         out = self._obj.plot(*args, **kwargs)

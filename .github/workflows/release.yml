@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  workflow_dispatch:
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'kmnhan/erlabpy'
+    environment:
+      name: pypi
+      url: https://pypi.org/p/erlab
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run commitizen
+        id: cz
+        uses: commitizen-tools/commitizen-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          changelog_increment_filename: body.md
+          extra_requirements : "cz-changeup"
+
+      - name: Build package distributions
+        id: build
+        if: env.REVISION != env.PREVIOUS_REVISION
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Publish package distributions to PyPI
+        id: pypi-publish
+        if: env.REVISION != env.PREVIOUS_REVISION
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+
+      - name: Publish package distributions to GitHub Releases
+        id: github-release
+        if: env.REVISION != env.PREVIOUS_REVISION
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: "body.md"
+          tag_name: v${{ steps.cz.outputs.version }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/*

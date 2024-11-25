@@ -17,7 +17,7 @@ __all__ = [
 
 import contextlib
 import copy
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
 import matplotlib
@@ -44,7 +44,7 @@ from erlab.utils.array import is_dims_uniform
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Callable, Collection
 
     from matplotlib.typing import ColorType
 
@@ -982,8 +982,9 @@ def plot_slices(
                         )
 
                 else:
-                    dat_sel.plot(ax=ax, **kwargs)
-                    ax.set_title("")
+                    ax.plot(dat_sel[plot_dims[0]], dat_sel.values, **kwargs)
+                    ax.set_xlabel(plot_dims[0])
+                    ax.set_ylabel(dat_sel.name)
 
                     if gradient:
                         gradient_fill(
@@ -1022,7 +1023,7 @@ def plot_slices(
                 for col in axes.T:
                     unify_clim(col)
             case "all":
-                unify_clim(axes)
+                unify_clim(cast(Sequence[matplotlib.axes.Axes], axes))
 
     for ax in axes.flat:
         if not show_all_labels:

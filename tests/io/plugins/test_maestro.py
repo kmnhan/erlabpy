@@ -29,3 +29,7 @@ def test_load(expected_dir, args, expected):
     xr.testing.assert_identical(
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
     )
+
+
+def test_summarize(data_dir):
+    erlab.io.summarize()

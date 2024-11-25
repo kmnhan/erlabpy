@@ -580,15 +580,27 @@ class LoaderBase(metaclass=_Loader):
                     new_dir: str = os.path.dirname(identifier)
 
                     new_kwargs = kwargs | additional_kwargs
-                    return self.load(
-                        new_identifier,
-                        new_dir,
-                        single=single,
-                        combine=combine,
-                        parallel=parallel,
-                        load_kwargs=load_kwargs,
-                        **new_kwargs,
-                    )
+                    try:
+                        return self.load(
+                            new_identifier,
+                            new_dir,
+                            single=single,
+                            combine=combine,
+                            parallel=parallel,
+                            load_kwargs=load_kwargs,
+                            **new_kwargs,
+                        )
+                    except Exception as e:
+                        warning_message = (
+                            f"Loading {basename_no_ext} with inferred index "
+                            f"{new_identifier} resulted in an error:\n"
+                            f"{type(e).__name__}: {e}\n"
+                            "Possible causes:\n"
+                            "- The inferred index may be incorrect.\n"
+                            "- The file may be corrupted or in an unsupported format.\n"
+                            "The data will be loaded as a single file."
+                        )
+                        emit_user_level_warning(warning_message)
 
                 # On failure, assume single file
                 single = True
@@ -840,13 +852,16 @@ class LoaderBase(metaclass=_Loader):
                     _add_content(leaf.dataset, file_path, suffix=leaf.path)
 
         for f in target_files:
-            _add_content(
-                cast(
-                    xr.DataArray | xr.Dataset | xr.DataTree,
-                    self.load(f, load_kwargs={"without_values": True}),
-                ),
-                f,
-            )
+            try:
+                _add_content(
+                    cast(
+                        xr.DataArray | xr.Dataset | xr.DataTree,
+                        self.load(f, load_kwargs={"without_values": True}),
+                    ),
+                    f,
+                )
+            except Exception as e:
+                emit_user_level_warning(f"Failed to load {f} for summary: {e}")
 
         sort_by = self.summary_sort if self.summary_sort is not None else "File Name"
 
@@ -1497,8 +1512,9 @@ class LoaderBase(metaclass=_Loader):
         ordered_coords = {}
         coord_dict = dict(darr.coords)
         for d in darr.dims:
-            # Move dimension coords to the front
-            ordered_coords[d] = coord_dict.pop(d)
+            if d in coord_dict:
+                # Move dimension coords to the front
+                ordered_coords[d] = coord_dict.pop(d)
 
         for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
             if d in coord_dict:

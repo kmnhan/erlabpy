@@ -12,16 +12,12 @@ port number 45555. The port number can be changed by setting the environment var
 
 from __future__ import annotations
 
-__all__ = [
-    "PORT",
-    "ImageToolManager",
-    "is_running",
-    "main",
-    "show_in_manager",
-]
+__all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
+
 import contextlib
 import gc
 import os
+import pathlib
 import pickle
 import socket
 import struct
@@ -32,6 +28,7 @@ import time
 import traceback
 import uuid
 import weakref
+from collections.abc import ValuesView
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,12 +38,17 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.imagetool import ImageTool, _parse_input
-from erlab.interactive.imagetool.controls import IconButton
 from erlab.interactive.imagetool.core import SlicerLinkProxy
-from erlab.interactive.utils import _coverage_resolve_trace
+from erlab.interactive.utils import (
+    IconActionButton,
+    IconButton,
+    _coverage_resolve_trace,
+    file_loaders,
+    wait_dialog,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     import numpy.typing as npt
     import xarray
@@ -138,6 +140,8 @@ class _ManagerServer(QtCore.QThread):
                 kwargs = pickle.loads(kwargs)
                 files = kwargs.pop("__filename")
                 self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+
+                # Clean up temporary files
                 for f in files:
                     os.remove(f)
                     dirname = os.path.dirname(f)
@@ -170,39 +174,31 @@ class _QHLine(QtWidgets.QFrame):
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
 
 
-class _RenameWidget(QtWidgets.QWidget):
-    def __init__(self, original_name: str) -> None:
-        super().__init__()
-        layout = QtWidgets.QHBoxLayout()
-        self.setLayout(layout)
-
-        self.line_original = QtWidgets.QLineEdit(original_name)
-        self.line_original.setReadOnly(True)
-
-        self.line_new = QtWidgets.QLineEdit()
-        self.line_new.setPlaceholderText("New name")
-
-        layout.addWidget(self.line_original)
-        layout.addWidget(QtWidgets.QLabel("→"))
-        layout.addWidget(self.line_new)
-
-
 class _RenameDialog(QtWidgets.QDialog):
-    def __init__(
-        self, manager: _ImageToolManagerGUI, original_names: list[str]
-    ) -> None:
+    def __init__(self, manager: ImageToolManager, original_names: list[str]) -> None:
         super().__init__(manager)
+        self.setWindowTitle("Rename selected tools")
         self._manager = weakref.ref(manager)
 
-        self._layout = QtWidgets.QVBoxLayout()
+        self._layout = QtWidgets.QGridLayout()
         self.setLayout(self._layout)
 
-        self._rename_widgets: list[_RenameWidget] = []
+        self._new_name_lines: list[QtWidgets.QLineEdit] = []
 
-        for name in original_names:
-            rename_widget = _RenameWidget(name)
-            self._layout.addWidget(rename_widget)
-            self._rename_widgets.append(rename_widget)
+        for i, name in enumerate(original_names):
+            line_new = QtWidgets.QLineEdit(name)
+            line_new.setPlaceholderText("New name")
+            self._layout.addWidget(QtWidgets.QLabel(name), i, 0)
+            self._layout.addWidget(QtWidgets.QLabel("→"), i, 1)
+            self._layout.addWidget(line_new, i, 2)
+            self._new_name_lines.append(line_new)
+
+        fm = self._new_name_lines[0].fontMetrics()
+        max_width = max(
+            fm.boundingRect(line.text()).width() for line in self._new_name_lines
+        )
+        for line in self._new_name_lines:
+            line.setMinimumWidth(max_width + 10)
 
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -213,7 +209,7 @@ class _RenameDialog(QtWidgets.QDialog):
         self._layout.addWidget(button_box)
 
     def new_names(self) -> list[str]:
-        return [w.line_new.text() for w in self._rename_widgets]
+        return [w.text() for w in self._new_name_lines]
 
     def accept(self) -> None:
         manager = self._manager()
@@ -225,10 +221,42 @@ class _RenameDialog(QtWidgets.QDialog):
         super().accept()
 
 
+class _NameFilterDialog(QtWidgets.QDialog):
+    def __init__(self, parent: ImageToolManager, valid_name_filters: list[str]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select Loader")
+
+        self._valid_name_filters = valid_name_filters
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self._button_group = QtWidgets.QButtonGroup(self)
+
+        for i, name in enumerate(valid_name_filters):
+            radio_button = QtWidgets.QRadioButton(name)
+            self._button_group.addButton(radio_button, i)
+            layout.addWidget(radio_button)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def check_filter(self, name_filter: str | None) -> None:
+        self._button_group.buttons()[
+            self._valid_name_filters.index(name_filter)
+            if name_filter in self._valid_name_filters
+            else 0
+        ].setChecked(True)
+
+    def checked_filter(self) -> str:
+        return self._valid_name_filters[self._button_group.checkedId()]
+
+
 class _ImageToolOptionsWidget(QtWidgets.QWidget):
-    def __init__(
-        self, manager: _ImageToolManagerGUI, index: int, tool: ImageTool
-    ) -> None:
+    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
         super().__init__()
         self._tool: ImageTool | None = None
 
@@ -244,7 +272,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
     @property
-    def manager(self) -> _ImageToolManagerGUI:
+    def manager(self) -> ImageToolManager:
         _manager = self._manager()
         if _manager:
             return _manager
@@ -260,6 +288,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             if self._archived_fname is not None:
                 # Remove the archived file
                 os.remove(self._archived_fname)
+                self._archived_fname = None
         else:
             # Close and cleanup existing tool
             self._tool.slicer_area.unlink()
@@ -311,7 +340,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
     def _destroyed_callback(self) -> None:
-        self.manager.sigReloadLinkers.emit()
+        self.manager._sigReloadLinkers.emit()
 
     def _setup_gui(self) -> None:
         layout = QtWidgets.QHBoxLayout()
@@ -319,7 +348,7 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
         self.setLayout(layout)
 
         self.check = QtWidgets.QCheckBox(cast(ImageTool, self.tool).windowTitle())
-        self.check.toggled.connect(self.manager._update_button_state)
+        self.check.toggled.connect(self.manager._update_action_state)
 
         self.link_icon = qta.IconWidget("mdi6.link-variant", opacity=0.0)
 
@@ -384,8 +413,6 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def visibility_changed(self) -> None:
-        if self.archived:
-            return
         tool = cast(ImageTool, self.tool)
         self._recent_geometry = tool.geometry()
         self.visibility_btn.blockSignals(True)
@@ -394,8 +421,6 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def toggle_visibility(self) -> None:
-        if self.archived:
-            return
         tool = cast(ImageTool, self.tool)
         if tool.isVisible():
             tool.close()
@@ -423,7 +448,8 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            cast(ImageTool, self.tool).to_pickle(self._archived_fname)
+            with wait_dialog(self.manager, "Archiving..."):
+                cast(ImageTool, self.tool).to_file(self._archived_fname)
 
             self.close_tool()
             self.check.blockSignals(True)
@@ -434,7 +460,11 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self.visibility_btn.setChecked(False)
             self.visibility_btn.setDisabled(True)
             self.visibility_btn.blockSignals(False)
-            gc.collect()
+
+            if not self.archive_btn.isChecked():
+                self.archive_btn.blockSignals(True)
+                self.archive_btn.setChecked(True)
+                self.archive_btn.blockSignals(False)
 
     @QtCore.Slot()
     def unarchive(self) -> None:
@@ -442,10 +472,16 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self.check.setDisabled(False)
             self.visibility_btn.setDisabled(False)
 
-            self.tool = ImageTool.from_pickle(cast(str, self._archived_fname))
+            if self.archive_btn.isChecked():
+                self.archive_btn.blockSignals(True)
+                self.archive_btn.setChecked(False)
+                self.archive_btn.blockSignals(False)
+
+            with wait_dialog(self.manager, "Unarchiving..."):
+                self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
 
-            self.manager.sigReloadLinkers.emit()
+            self.manager._sigReloadLinkers.emit()
 
     @QtCore.Slot()
     def toggle_archive(self) -> None:
@@ -455,13 +491,32 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self.archive()
 
 
-class _ImageToolManagerGUI(QtWidgets.QMainWindow):
-    sigLinkersChanged = QtCore.Signal()
-    sigReloadLinkers = QtCore.Signal()
+class ImageToolManager(QtWidgets.QMainWindow):
+    """The ImageToolManager window.
 
-    def __init__(self: _ImageToolManagerGUI) -> None:
+    This class implements a GUI application for managing multiple ImageTool windows.
+
+    Users do not need to create an instance of this class directly. Instead, use the
+    command line script ``itool-manager`` or the function :func:`main
+    <erlab.interactive.imagetool.manager.main>` to start the application.
+
+
+    Signals
+    -------
+    sigLinkersChanged()
+        Signal emitted when the linker state is changed.
+
+    """
+
+    sigLinkersChanged = QtCore.Signal()  #: :meta private:
+    _sigReloadLinkers = QtCore.Signal()  #: Emitted when linker state needs refreshing
+
+    def __init__(self: ImageToolManager) -> None:
         super().__init__()
         self.setWindowTitle("ImageTool Manager")
+
+        menu_bar: QtWidgets.QMenuBar = cast(QtWidgets.QMenuBar, self.menuBar())
+
         self.tool_options: dict[int, _ImageToolOptionsWidget] = {}
         self.linkers: list[SlicerLinkProxy] = []
 
@@ -470,27 +525,81 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self.titlebar_layout.setContentsMargins(0, 0, 0, 0)
         self.titlebar.setLayout(self.titlebar_layout)
 
-        self.add_button = IconButton("mdi6.folder-open-outline")
-        self.add_button.clicked.connect(self.add_new)
-        self.add_button.setToolTip("New ImageTool from file")
+        self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
+        self.gc_action.triggered.connect(self.garbage_collect)
+        self.gc_action.setToolTip("Run garbage collection to free up memory")
 
-        self.close_button = IconButton("mdi6.close-box-multiple-outline")
-        self.close_button.clicked.connect(self.close_selected)
-        self.close_button.setToolTip("Close selected windows")
+        self.open_action = QtWidgets.QAction("&Open File...", self)
+        self.open_action.triggered.connect(self.open)
+        self.open_action.setShortcut(QtGui.QKeySequence("Ctrl+O"))
+        self.open_action.setToolTip("Open file(s) in ImageTool")
 
-        self.rename_button = IconButton("mdi6.rename")
-        self.rename_button.clicked.connect(self.rename_selected)
-        self.rename_button.setToolTip("Rename selected windows")
+        self.save_action = QtWidgets.QAction("&Save Workspace As...", self)
+        self.save_action.setToolTip("Save all windows to a single file")
+        self.save_action.triggered.connect(self.save)
 
-        self.link_button = IconButton("mdi6.link-variant")
-        self.link_button.clicked.connect(self.link_selected)
-        self.link_button.setToolTip("Link selected windows")
+        self.load_action = QtWidgets.QAction("&Open Workspace...", self)
+        self.load_action.setToolTip("Restore windows from a file")
+        self.load_action.triggered.connect(self.load)
 
-        self.unlink_button = IconButton("mdi6.link-variant-off")
-        self.unlink_button.clicked.connect(self.unlink_selected)
-        self.unlink_button.setToolTip("Unlink selected windows")
+        self.close_action = QtWidgets.QAction("Close Selected", self)
+        self.close_action.triggered.connect(self.close_selected)
+        self.close_action.setToolTip("Close selected windows")
 
-        self.titlebar_layout.addWidget(self.add_button)
+        self.rename_action = QtWidgets.QAction("Rename Selected", self)
+        self.rename_action.triggered.connect(self.rename_selected)
+        self.rename_action.setToolTip("Rename selected windows")
+
+        self.link_action = QtWidgets.QAction("Link Selected", self)
+        self.link_action.triggered.connect(self.link_selected)
+        self.link_action.setToolTip("Link selected windows")
+
+        self.unlink_action = QtWidgets.QAction("Unlink Selected", self)
+        self.unlink_action.triggered.connect(self.unlink_selected)
+        self.unlink_action.setToolTip("Unlink selected windows")
+
+        self.archive_action = QtWidgets.QAction("Archive Selected", self)
+        self.archive_action.triggered.connect(self.archive_selected)
+        self.archive_action.setToolTip("Archive selected windows")
+
+        file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
+        file_menu.addAction(self.open_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.load_action)
+        file_menu.addAction(self.save_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.gc_action)
+
+        edit_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&Edit"))
+        edit_menu.addAction(self.close_action)
+        edit_menu.addAction(self.archive_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.rename_action)
+        edit_menu.addAction(self.link_action)
+        edit_menu.addAction(self.unlink_action)
+
+        self.open_button = IconActionButton(
+            self.open_action,
+            "mdi6.folder-open-outline",
+        )
+        self.close_button = IconActionButton(
+            self.close_action,
+            "mdi6.close-box-multiple-outline",
+        )
+        self.rename_button = IconActionButton(
+            self.rename_action,
+            "mdi6.rename",
+        )
+        self.link_button = IconActionButton(
+            self.link_action,
+            "mdi6.link-variant",
+        )
+        self.unlink_button = IconActionButton(
+            self.unlink_action,
+            "mdi6.link-variant-off",
+        )
+
+        self.titlebar_layout.addWidget(self.open_button)
         self.titlebar_layout.addWidget(self.close_button)
         self.titlebar_layout.addWidget(self.rename_button)
         self.titlebar_layout.addWidget(self.link_button)
@@ -512,9 +621,18 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         self._recent_directory: str | None = None
 
         self.setCentralWidget(self.options)
-        self.sigLinkersChanged.connect(self._update_button_state)
-        self.sigReloadLinkers.connect(self._cleanup_linkers)
-        self._update_button_state()
+        self.sigLinkersChanged.connect(self._update_action_state)
+        self._sigReloadLinkers.connect(self._cleanup_linkers)
+        self._update_action_state()
+
+        self.server: _ManagerServer = _ManagerServer()
+        self.server.sigReceived.connect(self.data_recv)
+        self.server.start()
+
+        self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
+
+        self.setMinimumWidth(300)
+        self.setMinimumHeight(200)
 
     @property
     def cache_dir(self) -> str:
@@ -537,7 +655,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         return max(self.tool_options.keys(), default=-1) + 1
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
-        """Get the ImageTool object corresponding to the index.
+        """Get the ImageTool object corresponding to the given index.
 
         Parameters
         ----------
@@ -569,18 +687,6 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         for opt in self.tool_options.values():
             opt.check.setChecked(False)
 
-    @QtCore.Slot()
-    def add_new(self) -> None:
-        """Add a new ImageTool window and open a file dialog."""
-        tool = ImageTool(np.zeros((2, 2)))
-        self.add_tool(tool, activate=True)
-
-        tool.mnb._open_file(
-            name_filter=self._recent_name_filter, directory=self._recent_directory
-        )
-        self._recent_name_filter = tool.mnb._recent_name_filter
-        self._recent_directory = tool.mnb._recent_directory
-
     def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
         idx = self.linkers.index(linker)
@@ -603,7 +709,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
 
         self.options_layout.insertWidget(self.options_layout.count() - 1, opt)
 
-        self.sigReloadLinkers.emit()
+        self._sigReloadLinkers.emit()
 
         tool.show()
 
@@ -614,35 +720,40 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         return index
 
     @QtCore.Slot()
-    def _update_button_state(self) -> None:
-        """Update the state of the buttons based on the current selection."""
+    def _update_action_state(self) -> None:
+        """Update the state of the actions based on the current selection."""
         selection = self.selected_tool_indices
-        self.close_button.setEnabled(len(selection) != 0)
-        self.rename_button.setEnabled(len(selection) != 0)
+
+        something_selected: bool = len(selection) != 0
+
+        self.close_action.setEnabled(something_selected)
+        self.rename_action.setEnabled(something_selected)
+        self.archive_action.setEnabled(something_selected)
 
         match len(selection):
             case 0:
-                self.link_button.setDisabled(True)
-                self.unlink_button.setDisabled(True)
+                self.link_action.setDisabled(True)
+                self.unlink_action.setDisabled(True)
                 return
             case 1:
-                self.link_button.setDisabled(True)
+                self.link_action.setDisabled(True)
             case _:
-                self.link_button.setDisabled(False)
+                self.link_action.setDisabled(False)
 
         is_linked: list[bool] = [
             self.get_tool(index).slicer_area.is_linked for index in selection
         ]
-        self.unlink_button.setEnabled(any(is_linked))
+        self.unlink_action.setEnabled(any(is_linked))
 
         if all(is_linked):
             proxies = [
                 self.get_tool(index).slicer_area._linking_proxy for index in selection
             ]
             if all(p == proxies[0] for p in proxies):
-                self.link_button.setEnabled(False)
+                self.link_action.setEnabled(False)
 
-    def remove_tool(self, index: int, collect: bool = True) -> None:
+    def remove_tool(self, index: int) -> None:
+        """Remove the ImageTool window corresponding to the given index."""
         opt = self.tool_options.pop(index)
         if not opt.archived:
             cast(ImageTool, opt.tool).removeEventFilter(opt)
@@ -651,8 +762,6 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         opt.close_tool()
         opt.close()
         del opt
-        if collect:
-            gc.collect()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -665,6 +774,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def close_selected(self) -> None:
+        """Close selected ImageTool windows."""
         checked_names = self.selected_tool_indices
         ret = QtWidgets.QMessageBox.question(
             self,
@@ -678,11 +788,11 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
         )
         if ret == QtWidgets.QMessageBox.StandardButton.Yes:
             for name in checked_names:
-                self.remove_tool(name, collect=False)
-            gc.collect()
+                self.remove_tool(name)
 
     @QtCore.Slot()
     def rename_selected(self) -> None:
+        """Rename selected ImageTool windows."""
         dialog = _RenameDialog(
             self, [self.tool_options[i].name for i in self.selected_tool_indices]
         )
@@ -692,6 +802,7 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
     @QtCore.Slot(bool)
     @QtCore.Slot(bool, bool)
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
+        """Link selected ImageTool windows."""
         self.unlink_selected(deselect=False)
         self.link_tools(*self.selected_tool_indices, link_colors=link_colors)
         if deselect:
@@ -700,85 +811,399 @@ class _ImageToolManagerGUI(QtWidgets.QMainWindow):
     @QtCore.Slot()
     @QtCore.Slot(bool)
     def unlink_selected(self, deselect: bool = True) -> None:
+        """Unlink selected ImageTool windows."""
         for index in self.selected_tool_indices:
             self.get_tool(index).slicer_area.unlink()
-        self.sigReloadLinkers.emit()
+        self._sigReloadLinkers.emit()
         if deselect:
             self.deselect_all()
 
+    @QtCore.Slot()
+    def archive_selected(self) -> None:
+        """Archive selected ImageTool windows."""
+        for index in self.selected_tool_indices:
+            self.tool_options[index].archive()
+
     def rename_tool(self, index: int, new_name: str) -> None:
+        """Rename the ImageTool window corresponding to the given index."""
         self.tool_options[index].name = new_name
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
+        """Link the ImageTool windows corresponding to the given indices."""
         linker = SlicerLinkProxy(
             *[self.get_tool(t).slicer_area for t in indices], link_colors=link_colors
         )
         self.linkers.append(linker)
-        self.sigReloadLinkers.emit()
+        self._sigReloadLinkers.emit()
 
+    @QtCore.Slot()
+    def garbage_collect(self) -> None:
+        """Run garbage collection to free up memory."""
+        gc.collect()
 
-class ImageToolManager(_ImageToolManagerGUI):
-    """The ImageToolManager window.
+    def _to_datatree(self, close: bool = False) -> xr.DataTree:
+        """Convert the current state of the manager to a DataTree object."""
+        constructor: dict[str, xr.Dataset] = {}
+        for index in tuple(self.tool_options.keys()):
+            ds = self.get_tool(index).to_dataset()
+            ds.attrs["itool_title"] = (
+                ds.attrs["itool_title"].removeprefix(f"{index}").removeprefix(": ")
+            )
+            constructor[str(index)] = ds
+            if close:
+                self.remove_tool(index)
+        tree = xr.DataTree.from_dict(constructor)
+        tree.attrs["is_itool_workspace"] = 1
+        return tree
 
-    This class implements a GUI application for managing multiple ImageTool windows.
+    def _from_datatree(self, tree: xr.DataTree) -> None:
+        """Restore the state of the manager from a DataTree object."""
+        if not self._is_datatree_workspace(tree):
+            raise ValueError("Not a valid workspace file")
+        for node in cast(ValuesView[xr.DataTree], (tree.values())):
+            self.add_tool(
+                ImageTool.from_dataset(node.to_dataset(inherit=False), _in_manager=True)
+            )
 
-    Users do not need to create an instance of this class directly. Instead, use the
-    command line script ``itool-manager`` or the function :func:`main
-    <erlab.interactive.imagetool.manager.main>` to start the application.
+    def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
+        """Check if the given DataTree object is a valid workspace file."""
+        return tree.attrs.get("is_itool_workspace", 0) == 1
 
-    """
+    @QtCore.Slot()
+    def save(self, *, native: bool = True) -> None:
+        """Save the current state of the manager to a file.
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.server = _ManagerServer()
-        self.server.sigReceived.connect(self.data_recv)
-        self.server.start()
+        Parameters
+        ----------
+        native
+            Whether to use the native file dialog, by default `True`. This option is
+            used when testing the application to ensure reproducibility.
+        """
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog.setDefaultSuffix("h5")
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
+        if dialog.exec():
+            fname = dialog.selectedFiles()[0]
+            self._recent_directory = os.path.dirname(fname)
+            with wait_dialog(self, "Saving workspace..."):
+                self._to_datatree().to_netcdf(
+                    fname, engine="h5netcdf", invalid_netcdf=True
+                )
+
+    @QtCore.Slot()
+    def load(self, *, native: bool = True) -> None:
+        """Load the state of the manager from a file.
+
+        Parameters
+        ----------
+        native
+            Whether to use the native file dialog, by default `True`. This option is
+            used when testing the application to ensure reproducibility.
+        """
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if dialog.exec():
+            fname = dialog.selectedFiles()[0]
+            self._recent_directory = os.path.dirname(fname)
+            try:
+                with wait_dialog(self, "Loading workspace..."):
+                    self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "An error occurred while loading the workspace file:\n\n"
+                    f"{type(e).__name__}: {e}",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                self.load()
+
+    @QtCore.Slot()
+    def open(self, *, native: bool = True) -> None:
+        """Open files in a new ImageTool window.
+
+        Parameters
+        ----------
+        native
+            Whether to use the native file dialog, by default `True`. This option is
+            used when testing the application to ensure reproducibility.
+        """
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
+        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders()
+        dialog.setNameFilters(valid_loaders.keys())
+        if not native:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        if self._recent_name_filter is not None:
+            dialog.selectNameFilter(self._recent_name_filter)
+        if self._recent_directory is not None:
+            dialog.setDirectory(self._recent_directory)
+
+        if dialog.exec():
+            file_names = dialog.selectedFiles()
+            self._recent_name_filter = dialog.selectedNameFilter()
+            self._recent_directory = os.path.dirname(file_names[0])
+            func, kwargs = valid_loaders[self._recent_name_filter]
+            self._add_from_multiple_files(
+                loaded=[],
+                queued=[pathlib.Path(f) for f in file_names],
+                failed=[],
+                func=func,
+                kwargs=kwargs,
+                retry_callback=lambda _: self.open(),
+            )
 
     @QtCore.Slot(list, dict)
     def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]) -> None:
-        """
-        Slot function to receive data from the server.
+        """Slot function to receive data from the server.
 
-        Args:
-            data (list[xarray.DataArray]): The data received from the server.
-            kwargs (dict[str, Any]): Additional keyword arguments.
+        DataArrays passed to this function are displayed in new ImageTool windows which
+        are added to the manager.
 
-        Returns
-        -------
-            None
+        Parameters
+        ----------
+        data
+            A list of xarray.DataArray objects received from the server.
+        kwargs
+            Additional keyword arguments received from the server.
 
         """
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = []
+        kwargs["_in_manager"] = True
 
         for d in data:
             try:
                 indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
             except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"An error occurred while creating the ImageTool window:\n{e}",
-                )
+                self._error_creating_tool(e)
 
         if link:
             self.link_tools(*indices, link_colors=link_colors)
 
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None):
+        if event:
+            mime_data: QtCore.QMimeData | None = event.mimeData()
+            if mime_data and mime_data.hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+    def dropEvent(self, event: QtGui.QDropEvent | None):
+        if event:
+            mime_data: QtCore.QMimeData | None = event.mimeData()
+            if mime_data and mime_data.hasUrls():
+                urls = mime_data.urls()
+                file_paths: list[pathlib.Path] = [
+                    pathlib.Path(url.toLocalFile()) for url in urls
+                ]
+                extensions: set[str] = {file_path.suffix for file_path in file_paths}
+                if len(extensions) != 1:
+                    QtWidgets.QMessageBox.critical(
+                        self,
+                        "Error",
+                        "Multiple file types are not supported in a single "
+                        "drag-and-drop operation.",
+                    )
+                    return
+
+                msg = f"Loading {'file' if len(file_paths) == 1 else 'files'}..."
+                with wait_dialog(self, msg):
+                    self.open_multiple_files(
+                        file_paths, try_workspace=extensions == {".h5"}
+                    )
+
+    def _show_loaded_info(
+        self,
+        loaded: list[pathlib.Path],
+        canceled: list[pathlib.Path],
+        failed: list[pathlib.Path],
+        retry_callback: Callable[[list[pathlib.Path]], Any],
+    ) -> None:
+        """Show a message box with information about the loaded files.
+
+        Nothing is shown if all files were successfully loaded.
+
+        Parameters
+        ----------
+        loaded
+            List of successfully loaded files.
+        canceled
+            List of files that were aborted before trying to load.
+        failed
+            List of files that failed to load.
+        retry_callback
+            Callback function to retry loading the failed files. It should accept a list
+            of path objects as its only argument.
+
+        """
+        n_done, n_fail = len(loaded), len(failed)
+        if n_fail == 0:
+            return
+
+        message = f"Loaded {n_done} file"
+        if n_done != 1:
+            message += "s"
+        message = message + f" with {n_fail} failure"
+        if n_fail != 1:
+            message += "s"
+        message += "."
+
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setText(message)
+
+        loaded_str = "\n".join(p.name for p in loaded)
+        if loaded_str:
+            loaded_str = f"Loaded:\n{loaded_str}\n\n"
+
+        failed_str = "\n".join(p.name for p in failed)
+        if failed_str:
+            failed_str = f"Failed:\n{failed_str}\n\n"
+
+        canceled_str = "\n".join(p.name for p in canceled)
+        if canceled_str:
+            canceled_str = f"Canceled:\n{canceled_str}\n\n"
+        msg_box.setDetailedText(f"{loaded_str}{failed_str}{canceled_str}")
+
+        msg_box.setInformativeText("Do you want to retry loading the failed files?")
+        msg_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Retry
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Retry)
+        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Retry:
+            retry_callback(failed)
+
+    def open_multiple_files(
+        self, queued: list[pathlib.Path], try_workspace: bool = False
+    ) -> None:
+        """Open multiple files in the manager."""
+        n_files: int = int(len(queued))
+        loaded: list[pathlib.Path] = []
+        failed: list[pathlib.Path] = []
+
+        if try_workspace:
+            for p in list(queued):
+                try:
+                    dt = xr.open_datatree(p, engine="h5netcdf")
+                except Exception:
+                    pass
+                else:
+                    if self._is_datatree_workspace(dt):
+                        self._from_datatree(dt)
+                        queued.remove(p)
+                        loaded.append(p)
+
+        if len(queued) == 0:
+            return
+
+        # Get loaders applicable to input files
+        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders(queued)
+
+        if len(valid_loaders) == 0:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error",
+                f"The selected {'file' if n_files == 1 else 'files'} "
+                f"with extension '{queued[0].suffix}' is not supported by "
+                "any available plugin.",
+            )
+            return
+
+        if len(valid_loaders) == 1:
+            func, kargs = next(iter(valid_loaders.values()))
+        else:
+            valid_name_filters: list[str] = list(valid_loaders.keys())
+
+            dialog = _NameFilterDialog(self, valid_name_filters)
+            dialog.check_filter(self._recent_name_filter)
+
+            if dialog.exec():
+                selected = dialog.checked_filter()
+                func, kargs = valid_loaders[selected]
+                self._recent_name_filter = selected
+            else:
+                return
+
+        self._add_from_multiple_files(
+            loaded, queued, failed, func, kargs, self.open_multiple_files
+        )
+
+    def _error_creating_tool(self, e: Exception) -> None:
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
+        msg_box.setText("An error occurred while creating the ImageTool window.")
+        msg_box.setInformativeText("The data may be incompatible with ImageTool.")
+        msg_box.setDetailedText(f"{type(e).__name__}: {e}")
+        msg_box.exec()
+
+    def _add_from_multiple_files(
+        self,
+        loaded: list[pathlib.Path],
+        queued: list[pathlib.Path],
+        failed: list[pathlib.Path],
+        func: Callable,
+        kwargs: dict[str, Any],
+        retry_callback: Callable,
+    ) -> None:
+        for p in list(queued):
+            queued.remove(p)
+            try:
+                data = func(p, **kwargs)
+            except Exception as e:
+                failed.append(p)
+
+                msg_box = QtWidgets.QMessageBox(self)
+                msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+                msg_box.setText(f"Failed to load {p.name}")
+                msg_box.setInformativeText(
+                    "Do you want to skip this file and continue loading?"
+                )
+                msg_box.setStandardButtons(
+                    QtWidgets.QMessageBox.StandardButton.Abort
+                    | QtWidgets.QMessageBox.StandardButton.Yes
+                )
+                msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+                msg_box.setDetailedText(f"{type(e).__name__}: {e}")
+                match msg_box.exec():
+                    case QtWidgets.QMessageBox.StandardButton.Yes:
+                        continue
+                    case QtWidgets.QMessageBox.StandardButton.Abort:
+                        break
+            else:
+                try:
+                    tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
+                    tool._recent_name_filter = self._recent_name_filter
+                    tool._recent_directory = self._recent_directory
+                    tool.slicer_area.set_data(data, file_path=p)
+                except Exception as e:
+                    failed.append(p)
+                    self._error_creating_tool(e)
+                else:
+                    loaded.append(p)
+                    self.add_tool(tool, activate=True)
+
+        self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        """
-        Event handler for the close event.
-
-        Args:
-            event (QtGui.QCloseEvent | None): The close event.
-
-        Returns
-        -------
-            None
-
-        """
+        """Properly clear all resources before closing the application."""
         if self.ntools != 0:
             if self.ntools == 1:
                 msg = "1 remaining window will be closed."
@@ -792,7 +1217,7 @@ class ImageToolManager(_ImageToolManagerGUI):
                 return
 
             for tool in list(self.tool_options.keys()):
-                self.remove_tool(tool, collect=False)
+                self.remove_tool(tool)
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()
@@ -854,7 +1279,15 @@ def main() -> None:
     """
     qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
-    qapp.setWindowIcon(QtGui.QIcon(os.path.join(os.path.dirname(__file__), "icon.png")))
+
+    qapp.setWindowIcon(
+        QtGui.QIcon(
+            os.path.join(
+                os.path.dirname(__file__),
+                "icon.icns" if sys.platform == "darwin" else "icon.png",
+            )
+        )
+    )
     qapp.setApplicationDisplayName("ImageTool Manager")
 
     while is_running():
