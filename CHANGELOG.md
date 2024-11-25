@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **interactive.imagetool.manager:** improve file opening ([da3425f](https://github.com/kmnhan/erlabpy/commit/da3425f6ec66364bfdb909c4742d6447d441c1b3))
+
+  Implements opening multiple files at once through the open menu of the manager. Also, add support for opening data files by dragging them into the manager window.
+- **interactive.imagetool:** add save and load functionality for workspace ([a5d38af](https://github.com/kmnhan/erlabpy/commit/a5d38affa85db0a213eecc86e48741b7506892fa))
+
+  Enables users to save multiple ImageTool windows to a single file using the manager.
+- **interactive.imagetool:** show dialog when data is being loaded ([5577249](https://github.com/kmnhan/erlabpy/commit/557724964f60db7f8c587d0c0b2d76b0a21e0dd6))
+- **interactive.imagetool:** change manager icon ([3e20e63](https://github.com/kmnhan/erlabpy/commit/3e20e6342c5cf164dc2662e1de7fe5bceefa3007))
+- **interactive.imagetool.manager:** add menubar to manager ([59326a1](https://github.com/kmnhan/erlabpy/commit/59326a1e0b37291a1c920c80c948dd23e5a678f7))
+- **io.plugins:** add summary generation to maestro loader ([aa6f5d2](https://github.com/kmnhan/erlabpy/commit/aa6f5d28e1dd0a441e6440eb0fab61db5544896d))
 - **plotting:** add fine-grained control over color limit normalization ([46c962f](https://github.com/kmnhan/erlabpy/commit/46c962f9131f9a1a691167eb192a13c2a5e7d2fa))
 - **interactive.imagetool:** open ktool from imagetool ([d2cb8a7](https://github.com/kmnhan/erlabpy/commit/d2cb8a734f51af68e2ab7cbc50cf43a50d61a136))
 - **interactive.imagetool:** add equal aspect ratio checkbox to right-click menu ([d4db0cf](https://github.com/kmnhan/erlabpy/commit/d4db0cf71124870778ee3af1e90d5d8d319fa486))
@@ -19,6 +29,13 @@
 
 ### 🐞 Bug Fixes
 
+- **io.plugins.lorea:** fix file dialog method ([4c74105](https://github.com/kmnhan/erlabpy/commit/4c741055d156bb4121fb7420ff1106ffe16282f3))
+- **interactive.imagetool:** resolve segfault on save current data ([5699fa3](https://github.com/kmnhan/erlabpy/commit/5699fa3960b1a876c70771d37033aff8c610829b))
+- **interactive.imagetool:** retain axis order when opening dtool and goldtool ([e14c9fc](https://github.com/kmnhan/erlabpy/commit/e14c9fc778759a961154f4360d69c80c8ec098d6))
+- **io.plugins.merlin:** fix match signature ([5586cce](https://github.com/kmnhan/erlabpy/commit/5586cce9fa32d2ce6b3d6ef0538f1894d80bfe92))
+- **interactive.imagetool:** cursor sync for non-uniform coords ([4aa1425](https://github.com/kmnhan/erlabpy/commit/4aa1425e1009ae50d40485dfa99fecc6146f9c0a))
+- **io.plugins.maestro:** fix wrong temperature attribute ([6ed2a70](https://github.com/kmnhan/erlabpy/commit/6ed2a7075c71af972eff36250b073f6f7cba5566))
+- **io.dataloader:** allow dimensions without coordinates in output data ([752facf](https://github.com/kmnhan/erlabpy/commit/752facfeda2f2a5ce2312a6fe355654baf4f2423))
 - **interactive:** improve ktool compatibility with manager ([4c775cf](https://github.com/kmnhan/erlabpy/commit/4c775cf1b4018777275c95625915d23641e42bf0))
 - **interactive.imagetool:** fix opening slice in new tool when manager is running ([db8e0af](https://github.com/kmnhan/erlabpy/commit/db8e0afaeb705a09a5395e67b83646e2aba4d6d0))
 - **interactive.utils:** fix opening with manager in tools ([3726049](https://github.com/kmnhan/erlabpy/commit/3726049c4383da5fa2224efa4a4596ba635ecb16))
@@ -28,11 +45,22 @@
 
 ### ⚡️ Performance
 
+- **io:** implement lazy loading for h5netcdf and nexusformat imports ([3f219ae](https://github.com/kmnhan/erlabpy/commit/3f219aef8764859f1eaccb2e354c7780f41133bb))
+- speed up initial import ([d7f3b3c](https://github.com/kmnhan/erlabpy/commit/d7f3b3c2b5a1265c52f6416c7050ccda724532a2))
+
+  Accelerates initial import time by refactoring heavy imports to reside inside functions.
+
+  Importing the plotting module no longer automatically imports the colormap packages `cmocean`, `cmasher`, and `colorcet`. The user must add manual import statements.
 - **analysis.interpolate:** cache jitted interpolation functions ([34521ef](https://github.com/kmnhan/erlabpy/commit/34521ef485a1ec0d3123885c6290f10410ce347e))
 - **interactive.imagetool:** optimize memory usage by reducing circular references ([a675e1a](https://github.com/kmnhan/erlabpy/commit/a675e1a9d1d96f4ad4fa8d4853c2cca78864342e))
 
 ### 🛠 Code Refactor
 
+- **plotting.general:** use matplotlib api instead of xarray plot for 1D ([9e38b2c](https://github.com/kmnhan/erlabpy/commit/9e38b2cab68386443dfe04ce829032fe5836fcdf))
+- **io.dataloader:** improve warning messages and error handling ([1ebfa72](https://github.com/kmnhan/erlabpy/commit/1ebfa7257b2238f8df34fd687f26f8a8a2c6c2ea))
+- **interactive:** move IconButton to interactive utils and add IconActionButton ([e78190f](https://github.com/kmnhan/erlabpy/commit/e78190f286f5cf79978d499276be41c7900b76ae))
+- **interactive.imagetool:** use HDF5 files instead of pickle to cache tools ([be66297](https://github.com/kmnhan/erlabpy/commit/be66297c76ed2062cc281ff9c21e761b94d2616b))
+- move `AxesConfiguration` from `erlab.analysis.kspace` to `erlab.constants` ([3593d41](https://github.com/kmnhan/erlabpy/commit/3593d41e864caa68400fb806b5ce0c86de86e29d))
 - **plotting:** streamline igor CT loading ([e1e8baa](https://github.com/kmnhan/erlabpy/commit/e1e8baac003be0a763cc22bc9cf2d7e3e9ce03cb))
 - **io:** update type hints for file handling functions to use Iterable ([e3caf83](https://github.com/kmnhan/erlabpy/commit/e3caf83735561de57d00b5088a34a884edfb4c00))
 - **io:** streamline file identification logic and add user warnings for multiple file scenarios ([05b7e6c](https://github.com/kmnhan/erlabpy/commit/05b7e6ccd2305aec0a743e36f1d6f53a1eeebdd6))
