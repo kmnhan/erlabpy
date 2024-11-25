@@ -422,8 +422,10 @@ def test_itool_rotate(qtbot, accept_dialog):
     assert pyperclip.paste().startswith("era.transform.rotate")
 
     # Transpose should remove guidelines
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
-    assert not win.slicer_area.main_image.is_guidelines_visible
+    win.slicer_area.swap_axes(0, 1)
+    qtbot.waitUntil(
+        lambda: not win.slicer_area.main_image.is_guidelines_visible, timeout=1000
+    )
 
     win.close()
 

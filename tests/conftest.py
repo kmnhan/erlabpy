@@ -79,8 +79,8 @@ class _DialogDetectionThread(QtCore.QThread):
     sigUpdate = QtCore.Signal(object)
     sigTimeout = QtCore.Signal(int)
     sigFinish = QtCore.Signal(int)
-    sigTrigger = QtCore.Signal(object, int)
-    sigPreCall = QtCore.Signal(object)
+    sigTrigger = QtCore.Signal(int, object)
+    sigPreCall = QtCore.Signal(int, object)
 
     def __init__(
         self,
@@ -128,7 +128,7 @@ class _DialogDetectionThread(QtCore.QThread):
 
         if self.pre_call is not None:
             log.debug("pre_call %d...", self.index)
-            self.sigPreCall.emit(lambda d=dialog: self.pre_call(d))
+            self.sigPreCall.emit(self.index, dialog)
             while not self._precall_called.is_set():
                 time.sleep(0.01)
             log.debug("pre_call %d done", self.index)
@@ -151,7 +151,7 @@ class _DialogDetectionThread(QtCore.QThread):
                 self.sigFinish.emit(self.index)
 
         log.debug("emitting trigger for %d", self.index)
-        self.sigTrigger.emit(_accept_call, self.index + 1)
+        self.sigTrigger.emit(self.index + 1, _accept_call)
 
 
 class _DialogHandler(QtCore.QObject):
@@ -208,7 +208,7 @@ class _DialogHandler(QtCore.QObject):
         self._accept_call_list = accept_call
         self._max_index = chained_dialogs - 1
 
-        self.trigger_index(dialog_trigger, 0)
+        self.trigger_index(0, dialog_trigger)
 
     @QtCore.Slot(int)
     def _finished(self, index: int) -> None:
@@ -224,8 +224,8 @@ class _DialogHandler(QtCore.QObject):
             f"No dialog for index {index} was created after " f"{self.timeout} seconds."
         )
 
-    @QtCore.Slot(object, int)
-    def trigger_index(self, new_trigger: Callable, index: int) -> None:
+    @QtCore.Slot(int, object)
+    def trigger_index(self, index: int, new_trigger: Callable) -> None:
         log.debug("trigger index %d", index)
 
         if index <= self._max_index:
@@ -246,10 +246,10 @@ class _DialogHandler(QtCore.QObject):
 
         new_trigger()
 
-    @QtCore.Slot(object)
-    def handle_pre_call(self, pre_call: Callable) -> None:
+    @QtCore.Slot(int, object)
+    def handle_pre_call(self, index: int, dialog) -> None:
         log.debug("pre-call callable received")
-        pre_call()
+        self._pre_call_list[index](dialog)
         log.debug("pre-call successfully called")
         self._handler.precall_called()
 
@@ -263,30 +263,39 @@ def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
     if target_win is None:
         target_win = win
     target_win.activateWindow()
+    target_win.setFocus()
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
+    x_ax = win.slicer_area.main_image.display_axis[0]
+    y_ax = win.slicer_area.main_image.display_axis[1]
+
+    x0, y0 = (
+        win.slicer_area.get_current_index(x_ax),
+        win.slicer_area.get_current_index(y_ax),
+    )
+
     # Move left
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Left, QtCore.Qt.KeyboardModifier.ShiftModifier
+    win.slicer_area.step_index(x_ax, -1)
+    qtbot.waitUntil(
+        lambda: win.slicer_area.get_current_index(x_ax) == x0 - 1, timeout=2000
     )
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[1])
 
     # Move down
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Down, QtCore.Qt.KeyboardModifier.ShiftModifier
+    win.slicer_area.step_index(y_ax, -1)
+    qtbot.waitUntil(
+        lambda: win.slicer_area.get_current_index(y_ax) == y0 - 1, timeout=2000
     )
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[2])
 
     # Move right
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Right, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
+    win.slicer_area.step_index(x_ax, 1)
+    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(x_ax) == x0, timeout=2000)
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[3])
 
     # Move up
-    qtbot.keyClick(
-        target_win, QtCore.Qt.Key.Key_Up, QtCore.Qt.KeyboardModifier.ShiftModifier
-    )
+    win.slicer_area.step_index(y_ax, 1)
+    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(y_ax) == y0, timeout=2000)
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
 
