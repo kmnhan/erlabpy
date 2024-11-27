@@ -14,97 +14,116 @@ from erlab.interactive.imagetool.manager import (
 )
 
 
+def select_tools(manager: ImageToolManager, indices: list[int]):
+    selection_model = manager.list_view.selectionModel()
+
+    for index in indices:
+        qmodelindex = manager.list_view._model._row_index(index)
+        selection_model.select(
+            QtCore.QItemSelection(qmodelindex, qmodelindex),
+            QtCore.QItemSelectionModel.SelectionFlag.Select,
+        )
+
+
+def make_drop_event(filename: str) -> QtGui.QDropEvent:
+    mime_data = QtCore.QMimeData()
+    mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
+    return QtGui.QDropEvent(
+        QtCore.QPointF(0.0, 0.0),
+        QtCore.Qt.DropAction.CopyAction,
+        mime_data,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+
 def test_manager(qtbot, accept_dialog):
-    win = ImageToolManager()
+    manager = ImageToolManager()
 
-    qtbot.addWidget(win)
+    qtbot.addWidget(manager)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     data.qshow()
 
     t0 = time.perf_counter()
     while True:
-        if win.ntools > 0:
+        if manager.ntools > 0:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
 
-    assert win.get_tool(0).array_slicer.point_value(0) == 12.0
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
     itool([data, data], link=False)
     while True:
-        if win.ntools == 3:
+        if manager.ntools == 3:
             break
         assert time.perf_counter() - t0 < 20
         qtbot.wait(10)
 
     # Linking
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    win.link_selected()
+    select_tools(manager, [1, 2])
+    manager.link_selected()
 
     # Unlinking one unlinks both
-    win.tool_options[1].check.setChecked(True)
-    win.unlink_selected()
-    assert not win.get_tool(1).slicer_area.is_linked
-    assert not win.get_tool(2).slicer_area.is_linked
+    select_tools(manager, [1])
+    manager.unlink_selected()
+    assert not manager.get_tool(1).slicer_area.is_linked
+    assert not manager.get_tool(2).slicer_area.is_linked
 
     # Linking again
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    win.link_selected()
-    assert win.get_tool(1).slicer_area.is_linked
-    assert win.get_tool(2).slicer_area.is_linked
+    select_tools(manager, [1, 2])
+    manager.link_selected()
+    assert manager.get_tool(1).slicer_area.is_linked
+    assert manager.get_tool(2).slicer_area.is_linked
 
     # Archiving and unarchiving
-    win.tool_options[1].archive()
-    win.tool_options[1].toggle_archive()
-    assert not win.tool_options[1].archived
+    manager._tool_wrappers[1].archive()
+    manager._tool_wrappers[1].unarchive()
+    assert not manager._tool_wrappers[1].archived
 
     # Toggle visibility
-    geometry = win.get_tool(1).geometry()
-    win.tool_options[1].toggle_visibility()
-    assert not win.get_tool(1).isVisible()
-    win.tool_options[1].toggle_visibility()
-    assert win.get_tool(1).geometry() == geometry
+    geometry = manager.get_tool(1).geometry()
+    manager._tool_wrappers[1].close_tool()
+    assert not manager.get_tool(1).isVisible()
+    manager._tool_wrappers[1].show_tool()
+    assert manager.get_tool(1).geometry() == geometry
 
     # Removing archived tool
-    win.tool_options[0].archive()
-    win.remove_tool(0)
-    qtbot.waitUntil(lambda: win.ntools == 2, timeout=2000)
+    manager._tool_wrappers[0].archive()
+    manager.remove_tool(0)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
 
     # Batch renaming
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
+    select_tools(manager, [1, 2])
 
     def _handle_renaming(dialog: _RenameDialog):
         dialog._new_name_lines[0].setText("new_name_1")
         dialog._new_name_lines[1].setText("new_name_2")
 
-    accept_dialog(win.rename_action.trigger, pre_call=_handle_renaming)
-    assert win.tool_options[1].name == "new_name_1"
-    assert win.tool_options[2].name == "new_name_2"
+    accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
+    assert manager._tool_wrappers[1].name == "new_name_1"
+    assert manager._tool_wrappers[2].name == "new_name_2"
 
     # Batch archiving
-    win.tool_options[1].check.setChecked(True)
-    win.archive_action.trigger()
-    win.tool_options[1].unarchive()
+    select_tools(manager, [1])
+    manager.archive_action.trigger()
+    manager._tool_wrappers[1].unarchive()
 
     # GC action
-    win.gc_action.trigger()
+    manager.gc_action.trigger()
 
-    # Remove all checked
-    win.tool_options[1].check.setChecked(True)
-    win.tool_options[2].check.setChecked(True)
-    accept_dialog(win.close_action.trigger)
-    qtbot.waitUntil(lambda: win.ntools == 0, timeout=2000)
+    # Remove all selected
+    select_tools(manager, [1, 2])
+    accept_dialog(manager.remove_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 
-    win.close()
+    manager.close()
 
 
 def test_manager_sync(qtbot, move_and_compare_values):
@@ -192,24 +211,11 @@ def test_manager_workspace_io(qtbot, accept_dialog):
     # Check if the data is loaded
     assert manager.ntools == 4
 
-    for opt in manager.tool_options.values():
-        opt.check.setChecked(True)
+    select_tools(manager, list(manager._tool_wrappers.keys()))
 
-    accept_dialog(manager.close_action.trigger)
+    accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
     manager.close()
-
-
-def make_drop_event(filename: str) -> QtGui.QDropEvent:
-    mime_data = QtCore.QMimeData()
-    mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
-    return QtGui.QDropEvent(
-        QtCore.QPointF(0.0, 0.0),
-        QtCore.Qt.DropAction.CopyAction,
-        mime_data,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
 
 
 def test_manager_drag_drop(qtbot, accept_dialog):

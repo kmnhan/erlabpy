@@ -1258,6 +1258,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             gamma = 0.5
 
         tool = KspaceTool(self.data, cmap=cmap, gamma=gamma)
+        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         self._associated_tools.append(tool)
         tool.show()
 
@@ -1765,7 +1766,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             if "alpha" not in data.dims:
                 QtWidgets.QMessageBox.critical(
-                    self,
+                    None,
                     "Error",
                     "Data must have an 'alpha' dimension to be opened in GoldTool",
                 )
@@ -1776,6 +1777,7 @@ class ItoolPlotItem(pg.PlotItem):
             goldtool = GoldTool(
                 data, data_name="data" + self.selection_code, execute=False
             )
+            goldtool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self.slicer_area._associated_tools.append(goldtool)
             goldtool.show()
 
@@ -1787,6 +1789,7 @@ class ItoolPlotItem(pg.PlotItem):
             tool = DerivativeTool(
                 self.current_data.T, data_name="data" + self.selection_code
             )
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self.slicer_area._associated_tools.append(tool)
             tool.show()
 

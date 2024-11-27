@@ -55,7 +55,7 @@ def test_summarize(data_dir):
         UserWarning,
         match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
     ):
-        erlab.io.summarize()
+        erlab.io.summarize(cache=False)
 
 
 def test_qinfo(data_dir):

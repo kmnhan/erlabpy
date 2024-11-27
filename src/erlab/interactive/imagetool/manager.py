@@ -15,6 +15,7 @@ from __future__ import annotations
 __all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
 
 import contextlib
+import enum
 import gc
 import os
 import pathlib
@@ -28,7 +29,7 @@ import time
 import traceback
 import uuid
 import weakref
-from collections.abc import ValuesView
+from collections.abc import Iterable, ValuesView
 from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
@@ -41,7 +42,6 @@ from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.core import SlicerLinkProxy
 from erlab.interactive.utils import (
     IconActionButton,
-    IconButton,
     _coverage_resolve_trace,
     file_loaders,
     wait_dialog,
@@ -84,6 +84,10 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 """Colors for different linkers."""
 
 
+class _WrapperItemDataRole(enum.IntEnum):
+    ToolIndexRole = QtCore.Qt.ItemDataRole.UserRole + 1
+
+
 def _save_pickle(obj: Any, filename: str) -> None:
     with open(filename, "wb") as file:
         pickle.dump(obj, file, protocol=-1)
@@ -100,6 +104,28 @@ def _recv_all(conn, size):
         part = conn.recv(size - len(data))
         data += part
     return data
+
+
+def fill_rounded_rect(
+    painter: QtGui.QPainter,
+    rect: QtCore.QRect | QtCore.QRectF,
+    facecolor: QtGui.QColor | QtGui.QBrush,
+    edgecolor: QtGui.QColor | QtGui.QBrush,
+    linewidth: float,
+    radius: float,
+):
+    painter.save()
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    rect = QtCore.QRectF(rect)
+    rect.adjust(linewidth / 2, linewidth / 2, -linewidth / 2, -linewidth / 2)
+    path = QtGui.QPainterPath()
+    path.addRoundedRect(rect, radius, radius)
+
+    painter.setClipPath(path)
+    painter.fillPath(path, QtGui.QBrush(facecolor))
+    painter.setPen(QtGui.QPen(edgecolor, linewidth))
+    painter.drawPath(path)
+    painter.restore()
 
 
 class ItoolManagerParseError(Exception):
@@ -165,15 +191,6 @@ class _ManagerServer(QtCore.QThread):
         soc.close()
 
 
-class _QHLine(QtWidgets.QFrame):
-    """Horizontal line widget."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        self.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-
-
 class _RenameDialog(QtWidgets.QDialog):
     def __init__(self, manager: ImageToolManager, original_names: list[str]) -> None:
         super().__init__(manager)
@@ -215,7 +232,7 @@ class _RenameDialog(QtWidgets.QDialog):
         manager = self._manager()
         if manager is not None:
             for index, new_name in zip(
-                manager.selected_tool_indices, self.new_names(), strict=True
+                manager.list_view.selected_tool_indices, self.new_names(), strict=True
             ):
                 manager.rename_tool(index, new_name)
         super().accept()
@@ -255,21 +272,32 @@ class _NameFilterDialog(QtWidgets.QDialog):
         return self._valid_name_filters[self._button_group.checkedId()]
 
 
-class _ImageToolOptionsWidget(QtWidgets.QWidget):
-    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
-        super().__init__()
-        self._tool: ImageTool | None = None
+class _ImageToolWrapper(QtCore.QObject):
+    """Wrapper for ImageTool objects.
 
+    This class wraps an ImageTool object and provides additional functionality in the
+    manager such as archiving and unarchiving and window geometry tracking.
+    """
+
+    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
+        super().__init__(manager)
         self._manager = weakref.ref(manager)
-        self.index: int = index
-        self._archived_fname: str | None = None
+        self._index: int = index
+        self._tool: ImageTool | None = None
         self._recent_geometry: QtCore.QRect | None = None
+        self._name: str = tool.windowTitle()
+        self._archived_fname: str | None = None
 
         self.tool = tool
 
-        self.manager.sigLinkersChanged.connect(self.update_link_icon)
-        self._setup_gui()
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    @property
+    def index(self) -> int:
+        """Index of the ImageTool in the manager.
+
+        This index is unique for each ImageTool and is used to identify the tool in the
+        manager.
+        """
+        return self._index
 
     @property
     def manager(self) -> ImageToolManager:
@@ -320,15 +348,23 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
 
     @property
     def name(self) -> str:
-        return self.check.text().removeprefix(f"{self.index}").removeprefix(": ")
+        return self._name
 
     @name.setter
-    def name(self, title: str) -> None:
+    def name(self, name: str) -> None:
+        self._name = name
+        cast(ImageTool, self.tool).setWindowTitle(self.label_text)
+
+    @property
+    def label_text(self) -> str:
+        """Label text shown in the window title and the manager.
+
+        The label text is a combination of the index and the name of the tool.
+        """
         new_title = f"{self.index}"
-        if title != "":
-            new_title += f": {title}"
-        cast(ImageTool, self.tool).setWindowTitle(new_title)
-        self.check.setText(new_title)
+        if self.name != "":
+            new_title += f": {self.name}"
+        return new_title
 
     def eventFilter(self, obj, event):
         if obj == self.tool and (
@@ -342,53 +378,6 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
     def _destroyed_callback(self) -> None:
         self.manager._sigReloadLinkers.emit()
 
-    def _setup_gui(self) -> None:
-        layout = QtWidgets.QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(layout)
-
-        self.check = QtWidgets.QCheckBox(cast(ImageTool, self.tool).windowTitle())
-        self.check.toggled.connect(self.manager._update_action_state)
-
-        self.link_icon = qta.IconWidget("mdi6.link-variant", opacity=0.0)
-
-        self.visibility_btn = IconButton(
-            on="mdi6.eye-outline", off="mdi6.eye-off-outline"
-        )
-        self.visibility_btn.toggled.connect(self.toggle_visibility)
-        self.visibility_btn.setToolTip("Show/Hide")
-
-        self.close_btn = IconButton("mdi6.window-close")
-        self.close_btn.clicked.connect(lambda: self.manager.remove_tool(self.index))
-        self.close_btn.setToolTip("Close")
-
-        self.archive_btn = IconButton(
-            on="mdi6.archive-outline", off="mdi6.archive-off-outline"
-        )
-        self.archive_btn.toggled.connect(self.toggle_archive)
-        self.archive_btn.setToolTip(
-            "Archive/Unarchive"
-            "\n"
-            "Archived windows use minimal resources, but cannot be interacted with."
-        )
-
-        for btn in (
-            self.link_icon,
-            self.visibility_btn,
-            self.archive_btn,
-            self.close_btn,
-        ):
-            btn.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed
-            )
-
-        layout.addWidget(self.check)
-        layout.addStretch()
-        layout.addWidget(self.link_icon)
-        layout.addWidget(self.visibility_btn)
-        layout.addWidget(self.close_btn)
-        layout.addWidget(self.archive_btn)
-
     @QtCore.Slot()
     @QtCore.Slot(str)
     def update_title(self, title: str | None = None) -> None:
@@ -398,48 +387,39 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             self.name = title
 
     @QtCore.Slot()
-    def update_link_icon(self) -> None:
-        if self.archived or not self.slicer_area.is_linked:
-            self.link_icon.setIcon(qta.icon("mdi6.link-variant", opacity=0.0))
-        else:
-            self.link_icon.setIcon(
-                qta.icon(
-                    "mdi6.link-variant",
-                    color=self.manager.color_for_linker(
-                        cast(SlicerLinkProxy, self.slicer_area._linking_proxy)
-                    ),
-                )
-            )
-
-    @QtCore.Slot()
     def visibility_changed(self) -> None:
         tool = cast(ImageTool, self.tool)
         self._recent_geometry = tool.geometry()
-        self.visibility_btn.blockSignals(True)
-        self.visibility_btn.setChecked(tool.isVisible())
-        self.visibility_btn.blockSignals(False)
 
     @QtCore.Slot()
-    def toggle_visibility(self) -> None:
-        tool = cast(ImageTool, self.tool)
-        if tool.isVisible():
-            tool.close()
-        else:
-            if self._recent_geometry is not None:
-                tool.setGeometry(self._recent_geometry)
-            tool.show()
-            tool.activateWindow()
+    def show_tool(self) -> None:
+        if self.tool is None:
+            self.unarchive()
 
-    @QtCore.Slot()
-    def show_clicked(self) -> None:
-        if self.archived:
-            return
-        tool = cast(ImageTool, self.tool)
-        tool.show()
-        tool.activateWindow()
+        if self.tool is not None:
+            if not self.tool.isVisible() and self._recent_geometry is not None:
+                self.tool.setGeometry(self._recent_geometry)
+            self.tool.show()
+            self.tool.raise_()
+            self.tool.activateWindow()
 
     @QtCore.Slot()
     def close_tool(self) -> None:
+        """Close the tool window.
+
+        This method only closes the tool window. The tool object is not destroyed and
+        can be reopened later.
+        """
+        if self.tool is not None:
+            self.tool.close()
+
+    @QtCore.Slot()
+    def dispose_tool(self) -> None:
+        """Dispose the tool object.
+
+        This method closes the tool window and destroys the tool object. The tool object
+        is not recoverable after this operation.
+        """
         self.tool = None
 
     @QtCore.Slot()
@@ -451,44 +431,521 @@ class _ImageToolOptionsWidget(QtWidgets.QWidget):
             with wait_dialog(self.manager, "Archiving..."):
                 cast(ImageTool, self.tool).to_file(self._archived_fname)
 
-            self.close_tool()
-            self.check.blockSignals(True)
-            self.check.setChecked(False)
-            self.check.setDisabled(True)
-            self.check.blockSignals(False)
-            self.visibility_btn.blockSignals(True)
-            self.visibility_btn.setChecked(False)
-            self.visibility_btn.setDisabled(True)
-            self.visibility_btn.blockSignals(False)
-
-            if not self.archive_btn.isChecked():
-                self.archive_btn.blockSignals(True)
-                self.archive_btn.setChecked(True)
-                self.archive_btn.blockSignals(False)
+            self.dispose_tool()
 
     @QtCore.Slot()
     def unarchive(self) -> None:
         if self.archived:
-            self.check.setDisabled(False)
-            self.visibility_btn.setDisabled(False)
-
-            if self.archive_btn.isChecked():
-                self.archive_btn.blockSignals(True)
-                self.archive_btn.setChecked(False)
-                self.archive_btn.blockSignals(False)
-
             with wait_dialog(self.manager, "Unarchiving..."):
                 self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
 
             self.manager._sigReloadLinkers.emit()
 
-    @QtCore.Slot()
-    def toggle_archive(self) -> None:
-        if self.archived:
-            self.unarchive()
+
+class _ResizingLineEdit(QtWidgets.QLineEdit):
+    """:class:`QtWidgets.QLineEdit` that resizes itself to fit the text."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.textChanged.connect(self._on_text_changed)
+
+    @QtCore.Slot(str)
+    def _on_text_changed(self, text):
+        # https://stackoverflow.com/a/73663065
+        font_metrics = QtGui.QFontMetrics(self.font())
+
+        tm = self.textMargins()
+        tm_size = QtCore.QSize(tm.left() + tm.right(), tm.top() + tm.bottom())
+
+        cm = self.contentsMargins()
+        cm_size = QtCore.QSize(cm.left() + cm.right(), cm.top() + cm.bottom())
+
+        contents_size = (
+            font_metrics.size(0, text) + tm_size + cm_size + QtCore.QSize(8, 4)
+        )
+
+        self.setFixedSize(
+            self.style().sizeFromContents(
+                QtWidgets.QStyle.ContentsType.CT_LineEdit, None, contents_size, self
+            )
+        )
+
+
+class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
+    """
+    A :class:`QtWidgets.QStyledItemDelegate` that handles displaying list view items.
+
+    Methods
+    -------
+    manager
+        Returns the manager instance, raises LookupError if the manager is destroyed.
+    _combine_colors(c1, c2, weight=1.0)
+        Combines two colors with a given weight.
+    createEditor(parent, option, index)
+        Creates an editor widget for editing item names.
+    updateEditorGeometry(editor, option, index)
+        Updates the geometry of the editor widget.
+    paint(painter, option, index)
+        Custom paint method for rendering items in the list view.
+    """
+
+    icon_width: int = 16
+    icon_height: int = 16
+    icon_right_pad: int = 5
+    icon_inner_pad: float = 1.5
+    icon_border_width: float = 1.5
+    icon_corner_radius: float = 5.0
+
+    def __init__(
+        self, manager: ImageToolManager, parent: _ImageToolWrapperListView
+    ) -> None:
+        super().__init__(parent)
+        self._manager = weakref.ref(manager)
+        self._font_size = QtGui.QFont().pointSize()
+
+    @property
+    def manager(self) -> ImageToolManager:
+        _manager = self._manager()
+        if _manager:
+            return _manager
+        raise LookupError("Parent was destroyed")
+
+    @staticmethod
+    def _combine_colors(
+        c1: QtGui.QColor, c2: QtGui.QColor, weight: float = 1.0
+    ) -> QtGui.QColor:
+        """Combine two colors with a given weight.
+
+        Default weight is 1.0, which returns the average of the two colors for each RGB
+        channel.
+        """
+        c3 = QtGui.QColor()
+        c3.setRedF((c1.redF() * weight + c2.redF() * (2 - weight)) / 2.0)
+        c3.setGreenF((c1.greenF() * weight + c2.greenF() * (2 - weight)) / 2.0)
+        c3.setBlueF((c1.blueF() * weight + c2.blueF() * (2 - weight)) / 2.0)
+        return c3
+
+    def createEditor(
+        self,
+        parent: QtWidgets.QWidget | None,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ) -> QtWidgets.QWidget | None:
+        option.font.setPointSize(self._font_size)
+        editor = _ResizingLineEdit(parent)
+        editor.setFont(option.font)
+        editor.setFrame(True)
+        editor.setPlaceholderText("Enter new name")
+        return editor
+
+    def updateEditorGeometry(
+        self,
+        editor: QtWidgets.QWidget | None,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ) -> None:
+        if editor is not None:
+            rect = QtCore.QRectF(option.rect)
+            rect.setLeft(rect.left() + 5)
+            rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
+            editor.setGeometry(rect.toRect())
+
+    def paint(
+        self,
+        painter: QtGui.QPainter | None,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+    ) -> None:
+        if painter is None:
+            return
+        painter.save()
+
+        # Set font size
+        option.font.setPointSize(self._font_size)
+        painter.setFont(option.font)
+
+        # Draw background
+        if QtWidgets.QStyle.StateFlag.State_Selected in option.state:
+            # Dilute the highlight color with the base color
+            painter.fillRect(
+                option.rect,
+                self._combine_colors(
+                    option.palette.color(QtGui.QPalette.ColorRole.Highlight),
+                    option.palette.color(QtGui.QPalette.ColorRole.Base),
+                    weight=0.5,
+                ),
+            )
         else:
-            self.archive()
+            painter.fillRect(option.rect, option.palette.base())
+
+        # Draw text if not editing
+        view = cast(_ImageToolWrapperListView, self.parent())
+        if not (
+            view.state() == QtWidgets.QAbstractItemView.State.EditingState
+            and view.currentIndex() == index
+        ):
+            # Grey text for archived tools
+            painter.setPen(index.data(role=QtCore.Qt.ItemDataRole.ForegroundRole))
+
+            # A bit of left pad for cosmetic reasons
+            text_rect = option.rect.adjusted(5, 0, 0, 0)
+
+            # Space for icon
+            right_pad = int(
+                self.icon_width + self.icon_right_pad * 2 + self.icon_inner_pad * 2
+            )
+
+            # Elide text if necessary
+            elided_text = QtGui.QFontMetrics(option.font).elidedText(
+                index.data(role=QtCore.Qt.ItemDataRole.DisplayRole),  # Tool label
+                view.textElideMode(),
+                text_rect.width() - right_pad,
+            )
+            painter.drawText(
+                text_rect,
+                QtCore.Qt.AlignmentFlag.AlignVCenter
+                | QtCore.Qt.AlignmentFlag.AlignLeft,
+                elided_text,
+            )
+
+        # Draw icon for linked tools
+        tool_wrapper: _ImageToolWrapper = self.manager._tool_wrappers[
+            index.data(role=_WrapperItemDataRole.ToolIndexRole)
+        ]
+        if not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked:
+            icon_x = option.rect.right() - self.icon_width - self.icon_right_pad
+            icon_y = option.rect.center().y() - self.icon_height // 2
+
+            icon = qta.icon(
+                "mdi6.link-variant",
+                color=self.manager.color_for_linker(
+                    cast(SlicerLinkProxy, tool_wrapper.slicer_area._linking_proxy)
+                ),
+            )
+            fill_rounded_rect(
+                painter,
+                QtCore.QRectF(
+                    icon_x - self.icon_inner_pad,
+                    icon_y - self.icon_inner_pad,
+                    self.icon_width + 2 * self.icon_inner_pad,
+                    self.icon_height + 2 * self.icon_inner_pad,
+                ),
+                facecolor=option.palette.base(),
+                edgecolor=option.palette.mid(),
+                linewidth=self.icon_border_width,
+                radius=self.icon_corner_radius,
+            )
+            icon.paint(
+                painter,
+                QtCore.QRect(icon_x, icon_y, self.icon_width, self.icon_height),
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            )
+
+        painter.restore()
+
+
+class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
+    def __init__(self, manager: ImageToolManager, parent: QtCore.QObject | None = None):
+        super().__init__(parent)
+        self._manager = weakref.ref(manager)
+
+    @property
+    def manager(self) -> ImageToolManager:
+        _manager = self._manager()
+        if _manager:
+            return _manager
+        raise LookupError("Parent was destroyed")
+
+    def _tool_index(self, row_index: int | QtCore.QModelIndex) -> int:
+        if isinstance(row_index, QtCore.QModelIndex):
+            row_index = row_index.row()
+        return self.manager._displayed_indices[row_index]
+
+    def _tool_wrapper(self, row_index: int | QtCore.QModelIndex) -> _ImageToolWrapper:
+        return self.manager._tool_wrappers[self._tool_index(row_index)]
+
+    def _row_index(self, tool_index: int) -> QtCore.QModelIndex:
+        return self.index(self.manager._displayed_indices.index(tool_index))
+
+    def _is_archived(self, row_index: int | QtCore.QModelIndex) -> bool:
+        if isinstance(row_index, QtCore.QModelIndex):
+            row_index = row_index.row()
+        return self._tool_wrapper(row_index).archived
+
+    def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        return len(self.manager._displayed_indices)
+
+    def data(
+        self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole
+    ) -> Any:
+        if not index.isValid():
+            return None
+
+        tool_idx: int = self._tool_index(index)
+
+        match role:
+            case QtCore.Qt.ItemDataRole.DisplayRole:
+                if tool_idx < 0:
+                    return ""
+                return self.manager.label_of_tool(tool_idx)
+
+            case QtCore.Qt.ItemDataRole.EditRole:
+                if tool_idx < 0:
+                    return ""
+                return self.manager.name_of_tool(tool_idx)
+
+            case _WrapperItemDataRole.ToolIndexRole:
+                return tool_idx
+
+            case QtCore.Qt.ItemDataRole.SizeHintRole:
+                return QtCore.QSize(100, 30)
+
+            case QtCore.Qt.ItemDataRole.ForegroundRole:
+                palette = QtWidgets.QApplication.palette()
+                if self._is_archived(index):
+                    # Make text seem disabled for archived tools
+                    return palette.color(
+                        QtGui.QPalette.ColorGroup.Disabled,
+                        QtGui.QPalette.ColorRole.Text,
+                    )
+                return palette.color(
+                    QtGui.QPalette.ColorGroup.Active,
+                    QtGui.QPalette.ColorRole.Text,
+                )
+
+        return None
+
+    def removeRows(
+        self, row: int, count: int, parent: QtCore.QModelIndex | None = None
+    ) -> bool:
+        if parent is None:
+            parent = QtCore.QModelIndex()
+        self.beginRemoveRows(parent, row, row + count - 1)
+        del self.manager._displayed_indices[row : row + count]
+        self.endRemoveRows()
+        return True
+
+    def insertRows(
+        self, row: int, count: int, parent: QtCore.QModelIndex | None = None
+    ) -> bool:
+        if parent is None:
+            parent = QtCore.QModelIndex()
+        self.beginInsertRows(parent, row, row + count - 1)
+        for i in range(count):
+            self.manager._displayed_indices.insert(row + i, -1)
+        self.endInsertRows()
+        return True
+
+    def setData(
+        self,
+        index: QtCore.QModelIndex,
+        value: Any,
+        role: int = QtCore.Qt.ItemDataRole.EditRole,
+    ) -> bool:
+        if not index.isValid():
+            return False
+
+        if role == QtCore.Qt.ItemDataRole.EditRole:
+            self.manager.rename_tool(self._tool_index(index), value)
+
+            self.dataChanged.emit(index, index, [role])
+            return True
+
+        if role == _WrapperItemDataRole.ToolIndexRole:
+            if index.row() >= len(self.manager._displayed_indices):
+                self.manager._displayed_indices.append(value)
+            else:
+                self.manager._displayed_indices[index.row()] = value
+            self.dataChanged.emit(index, index, [role])
+            return True
+
+        return False
+
+    def canDropMimeData(
+        self,
+        data: QtCore.QMimeData | None,
+        action: QtCore.Qt.DropAction,
+        row: int,
+        column: int,
+        parent: QtCore.QModelIndex,
+    ):
+        if data is None:
+            return False
+        if not data.hasFormat("application/json"):
+            return False
+        return not column > 0
+
+    def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlag:
+        default_flags = (
+            QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
+        )
+
+        if not self._is_archived(index):
+            default_flags |= QtCore.Qt.ItemFlag.ItemIsEditable
+
+        if index.isValid():
+            return (
+                QtCore.Qt.ItemFlag.ItemIsDragEnabled
+                | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+                | default_flags
+            )
+        return QtCore.Qt.ItemFlag.ItemIsDropEnabled | default_flags
+
+    def supportedDropActions(self) -> QtCore.Qt.DropAction:
+        return QtCore.Qt.DropAction.MoveAction
+
+    def dropMimeData(
+        self,
+        data: QtCore.QMimeData | None,
+        action: QtCore.Qt.DropAction,
+        row: int,
+        column: int,
+        parent: QtCore.QModelIndex,
+    ) -> bool:
+        if data is None:
+            return False
+        if not self.canDropMimeData(data, action, row, column, parent):
+            return False
+
+        if action == QtCore.Qt.DropAction.IgnoreAction:
+            return True
+
+        start: int = -1
+        if row != -1:
+            # Inserting above/below an existing node
+            start = row
+        elif parent.isValid():
+            # Inserting onto an existing node
+            start = parent.row()
+        else:
+            # Inserting at the root
+            start = self.rowCount(QtCore.QModelIndex())
+
+        encoded_data = data.data("application/json")
+        stream = QtCore.QDataStream(
+            encoded_data, QtCore.QIODevice.OpenModeFlag.ReadOnly
+        )
+        new_items: list[int] = []
+        rows: int = 0
+
+        while not stream.atEnd():
+            new_items.append(int(stream.readInt()))
+            rows += 1
+
+        self.insertRows(start, rows, QtCore.QModelIndex())
+        for tool_idx in new_items:
+            self.setData(
+                self.index(start), tool_idx, _WrapperItemDataRole.ToolIndexRole
+            )
+            start += 1
+
+        return True
+
+    def mimeData(self, indexes: Iterable[QtCore.QModelIndex]) -> QtCore.QMimeData:
+        mime_data = QtCore.QMimeData()
+        encoded_data = QtCore.QByteArray()
+        stream = QtCore.QDataStream(
+            encoded_data, QtCore.QIODevice.OpenModeFlag.WriteOnly
+        )
+
+        for index in indexes:
+            if index.isValid():
+                tool_idx = self.data(index, _WrapperItemDataRole.ToolIndexRole)
+                stream.writeInt(tool_idx)
+
+        mime_data.setData("application/json", encoded_data)
+        return mime_data
+
+    def mimeTypes(self) -> list[str]:
+        return ["application/json"]
+
+
+class _ImageToolWrapperListView(QtWidgets.QListView):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__()
+        self.setSelectionMode(self.SelectionMode.ExtendedSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(self.DragDropMode.InternalMove)
+        self.setEditTriggers(
+            self.EditTrigger.SelectedClicked | self.EditTrigger.EditKeyPressed
+        )
+        self.setWordWrap(True)
+
+        self._model = _ImageToolWrapperListModel(manager, self)
+        self.setModel(self._model)
+
+        self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
+
+        self._selection_model = cast(QtCore.QItemSelectionModel, self.selectionModel())
+
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
+
+        self.doubleClicked.connect(self.double_clicked)
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_menu(self, position: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu("Menu", self)
+        manager: ImageToolManager = self._model.manager
+
+        menu.addAction(manager.open_action)
+
+        if self.selectedIndexes():
+            menu.addSeparator()
+            menu.addAction(manager.remove_action)
+            menu.addAction(manager.archive_action)
+            menu.addAction(manager.unarchive_action)
+            menu.addSeparator()
+            menu.addAction(manager.rename_action)
+            menu.addAction(manager.link_action)
+            menu.addAction(manager.unlink_action)
+
+        menu.exec(self.mapToGlobal(position))
+
+    @property
+    def selected_tool_indices(self) -> list[int]:
+        """Currently selected tools."""
+        return [
+            self._model.manager._displayed_indices[index.row()]
+            for index in self.selectedIndexes()
+        ]
+
+    @QtCore.Slot(QtCore.QModelIndex)
+    def double_clicked(self, index: QtCore.QModelIndex) -> None:
+        self._model._tool_wrapper(index).show_tool()
+
+    @QtCore.Slot()
+    def select_all(self) -> None:
+        self.selectAll()
+
+    @QtCore.Slot()
+    def deselect_all(self) -> None:
+        self.clearSelection()
+
+    @QtCore.Slot()
+    def refresh(self) -> None:
+        self._model.dataChanged.emit(
+            self._model.index(0), self._model.index(self._model.rowCount() - 1)
+        )
+
+    def add_tool(self, index: int) -> None:
+        n_rows = self._model.rowCount()
+        self._model.insertRows(n_rows, 1)
+        self._model.setData(
+            self._model.index(n_rows),
+            index,
+            _WrapperItemDataRole.ToolIndexRole,
+        )
+
+    def remove_tool(self, index: int) -> None:
+        for i, tool_idx in enumerate(self._model.manager._displayed_indices):
+            if tool_idx == index:
+                self._model.removeRows(i, 1)
+                break
 
 
 class ImageToolManager(QtWidgets.QMainWindow):
@@ -499,7 +956,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
     Users do not need to create an instance of this class directly. Instead, use the
     command line script ``itool-manager`` or the function :func:`main
     <erlab.interactive.imagetool.manager.main>` to start the application.
-
 
     Signals
     -------
@@ -517,13 +973,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         menu_bar: QtWidgets.QMenuBar = cast(QtWidgets.QMenuBar, self.menuBar())
 
-        self.tool_options: dict[int, _ImageToolOptionsWidget] = {}
-        self.linkers: list[SlicerLinkProxy] = []
+        self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
+        self._displayed_indices: list[int] = []
+        self._linkers: list[SlicerLinkProxy] = []
 
-        self.titlebar = QtWidgets.QWidget()
-        self.titlebar_layout = QtWidgets.QHBoxLayout()
-        self.titlebar_layout.setContentsMargins(0, 0, 0, 0)
-        self.titlebar.setLayout(self.titlebar_layout)
+        # Initialize actions
 
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
         self.gc_action.triggered.connect(self.garbage_collect)
@@ -542,25 +996,36 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.load_action.setToolTip("Restore windows from a file")
         self.load_action.triggered.connect(self.load)
 
-        self.close_action = QtWidgets.QAction("Close Selected", self)
-        self.close_action.triggered.connect(self.close_selected)
-        self.close_action.setToolTip("Close selected windows")
+        self.remove_action = QtWidgets.QAction("Remove", self)
+        self.remove_action.triggered.connect(self.remove_selected)
+        self.remove_action.setToolTip("Remove selected windows")
 
-        self.rename_action = QtWidgets.QAction("Rename Selected", self)
+        self.rename_action = QtWidgets.QAction("Rename", self)
         self.rename_action.triggered.connect(self.rename_selected)
         self.rename_action.setToolTip("Rename selected windows")
 
-        self.link_action = QtWidgets.QAction("Link Selected", self)
+        self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
         self.link_action.setToolTip("Link selected windows")
 
-        self.unlink_action = QtWidgets.QAction("Unlink Selected", self)
+        self.unlink_action = QtWidgets.QAction("Unlink", self)
         self.unlink_action.triggered.connect(self.unlink_selected)
         self.unlink_action.setToolTip("Unlink selected windows")
 
-        self.archive_action = QtWidgets.QAction("Archive Selected", self)
+        self.archive_action = QtWidgets.QAction("Archive", self)
         self.archive_action.triggered.connect(self.archive_selected)
         self.archive_action.setToolTip("Archive selected windows")
+
+        self.unarchive_action = QtWidgets.QAction("Unarchive", self)
+        self.unarchive_action.triggered.connect(self.unarchive_selected)
+        self.unarchive_action.setToolTip("Unarchive selected windows")
+
+        # Construct GUI
+
+        titlebar = QtWidgets.QWidget()
+        titlebar_layout = QtWidgets.QHBoxLayout()
+        titlebar_layout.setContentsMargins(0, 0, 0, 0)
+        titlebar.setLayout(titlebar_layout)
 
         file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
         file_menu.addAction(self.open_action)
@@ -571,8 +1036,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.gc_action)
 
         edit_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&Edit"))
-        edit_menu.addAction(self.close_action)
+        edit_menu.addAction(self.remove_action)
         edit_menu.addAction(self.archive_action)
+        edit_menu.addAction(self.unarchive_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.rename_action)
         edit_menu.addAction(self.link_action)
@@ -582,9 +1048,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.open_action,
             "mdi6.folder-open-outline",
         )
-        self.close_button = IconActionButton(
-            self.close_action,
-            "mdi6.close-box-multiple-outline",
+        self.remove_button = IconActionButton(
+            self.remove_action,
+            "mdi6.window-close",
         )
         self.rename_button = IconActionButton(
             self.rename_action,
@@ -599,19 +1065,23 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "mdi6.link-variant-off",
         )
 
-        self.titlebar_layout.addWidget(self.open_button)
-        self.titlebar_layout.addWidget(self.close_button)
-        self.titlebar_layout.addWidget(self.rename_button)
-        self.titlebar_layout.addWidget(self.link_button)
-        self.titlebar_layout.addWidget(self.unlink_button)
+        titlebar_layout.addWidget(self.open_button)
+        titlebar_layout.addWidget(self.remove_button)
+        titlebar_layout.addWidget(self.rename_button)
+        titlebar_layout.addWidget(self.link_button)
+        titlebar_layout.addWidget(self.unlink_button)
 
-        self.options = QtWidgets.QWidget()
-        self.options_layout = QtWidgets.QVBoxLayout()
-        self.options.setLayout(self.options_layout)
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        container.setLayout(layout)
 
-        self.options_layout.addWidget(self.titlebar)
-        self.options_layout.addWidget(_QHLine())
-        self.options_layout.addStretch()
+        layout.addWidget(titlebar)
+
+        self.list_view = _ImageToolWrapperListView(self)
+        layout.addWidget(self.list_view)
+        self.list_view._selection_model.selectionChanged.connect(
+            self._update_action_state
+        )
 
         # Temporary directory for storing archived data
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
@@ -620,8 +1090,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
 
-        self.setCentralWidget(self.options)
+        self.setCentralWidget(container)
         self.sigLinkersChanged.connect(self._update_action_state)
+        self.sigLinkersChanged.connect(self.list_view.refresh)
         self._sigReloadLinkers.connect(self._cleanup_linkers)
         self._update_action_state()
 
@@ -640,19 +1111,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return self._tmp_dir.name
 
     @property
-    def selected_tool_indices(self) -> list[int]:
-        """Names of currently checked tools."""
-        return [t for t, opt in self.tool_options.items() if opt.check.isChecked()]
-
-    @property
     def ntools(self) -> int:
         """Number of ImageTool windows being handled by the manager."""
-        return len(self.tool_options)
+        return len(self._tool_wrappers)
 
     @property
     def next_idx(self) -> int:
         """Index for the next ImageTool window."""
-        return max(self.tool_options.keys(), default=-1) + 1
+        return max(self._tool_wrappers.keys(), default=-1) + 1
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
@@ -670,26 +1136,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ImageTool
             The ImageTool object corresponding to the index.
         """
-        if index not in self.tool_options:
+        if index not in self._tool_wrappers:
             raise KeyError(f"Tool of index '{index}' not found")
 
-        opt = self.tool_options[index]
-        if opt.archived:
+        wrapper = self._tool_wrappers[index]
+        if wrapper.archived:
             if unarchive:
-                opt.unarchive()
+                wrapper.unarchive()
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
-        return cast(ImageTool, opt.tool)
-
-    @QtCore.Slot()
-    def deselect_all(self) -> None:
-        """Clear selection."""
-        for opt in self.tool_options.values():
-            opt.check.setChecked(False)
+        return cast(ImageTool, wrapper.tool)
 
     def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
-        idx = self.linkers.index(linker)
+        idx = self._linkers.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
     def add_tool(self, tool: ImageTool, activate: bool = False) -> int:
@@ -703,11 +1163,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             Whether to focus on the window after adding, by default `False`.
         """
         index = int(self.next_idx)
-        opt = _ImageToolOptionsWidget(self, index, tool)
-        self.tool_options[index] = opt
-        opt.update_title()
-
-        self.options_layout.insertWidget(self.options_layout.count() - 1, opt)
+        wrapper = _ImageToolWrapper(self, index, tool)
+        self._tool_wrappers[index] = wrapper
+        wrapper.update_title()
 
         self._sigReloadLinkers.emit()
 
@@ -717,65 +1175,84 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool.activateWindow()
             tool.raise_()
 
+        # Add to view after initialization
+        self.list_view.add_tool(index)
+
         return index
 
     @QtCore.Slot()
     def _update_action_state(self) -> None:
         """Update the state of the actions based on the current selection."""
-        selection = self.selected_tool_indices
+        selection_archived: list[int] = []
+        selection_unarchived: list[int] = []
+        for s in self.list_view.selected_tool_indices:
+            if self._tool_wrappers[s].archived:
+                selection_archived.append(s)
+            else:
+                selection_unarchived.append(s)
 
-        something_selected: bool = len(selection) != 0
+        selection_all = selection_archived + selection_unarchived
 
-        self.close_action.setEnabled(something_selected)
-        self.rename_action.setEnabled(something_selected)
-        self.archive_action.setEnabled(something_selected)
+        something_selected: bool = len(selection_all) != 0
+        only_unarchived: bool = len(selection_archived) == 0
+        only_archived: bool = len(selection_unarchived) == 0
 
-        match len(selection):
-            case 0:
-                self.link_action.setDisabled(True)
-                self.unlink_action.setDisabled(True)
-                return
-            case 1:
-                self.link_action.setDisabled(True)
-            case _:
-                self.link_action.setDisabled(False)
+        self.remove_action.setEnabled(something_selected)
+        self.rename_action.setEnabled(something_selected and only_unarchived)
+        self.archive_action.setEnabled(something_selected and only_unarchived)
+        self.unarchive_action.setEnabled(something_selected and only_archived)
 
-        is_linked: list[bool] = [
-            self.get_tool(index).slicer_area.is_linked for index in selection
-        ]
-        self.unlink_action.setEnabled(any(is_linked))
+        self.link_action.setDisabled(only_archived)
+        self.unlink_action.setDisabled(only_archived)
 
-        if all(is_linked):
-            proxies = [
-                self.get_tool(index).slicer_area._linking_proxy for index in selection
+        if only_unarchived:
+            match len(selection_unarchived):
+                case 0:
+                    self.link_action.setDisabled(True)
+                    self.unlink_action.setDisabled(True)
+                    return
+                case 1:
+                    self.link_action.setDisabled(True)
+                case _:
+                    self.link_action.setDisabled(False)
+
+            is_linked: list[bool] = [
+                self.get_tool(index).slicer_area.is_linked
+                for index in selection_unarchived
             ]
-            if all(p == proxies[0] for p in proxies):
-                self.link_action.setEnabled(False)
+            self.unlink_action.setEnabled(any(is_linked))
+
+            if all(is_linked):
+                proxies = [
+                    self.get_tool(index).slicer_area._linking_proxy
+                    for index in selection_unarchived
+                ]
+                if all(p == proxies[0] for p in proxies):
+                    self.link_action.setEnabled(False)
 
     def remove_tool(self, index: int) -> None:
         """Remove the ImageTool window corresponding to the given index."""
-        opt = self.tool_options.pop(index)
-        if not opt.archived:
-            cast(ImageTool, opt.tool).removeEventFilter(opt)
+        self.list_view.remove_tool(index)
 
-        self.options_layout.removeWidget(opt)
-        opt.close_tool()
-        opt.close()
-        del opt
+        wrapper = self._tool_wrappers.pop(index)
+        if not wrapper.archived:
+            cast(ImageTool, wrapper.tool).removeEventFilter(wrapper)
+        wrapper.dispose_tool()
+        del wrapper
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
         """Remove linkers with one or no children."""
-        for linker in list(self.linkers):
+        for linker in list(self._linkers):
             if linker.num_children <= 1:
                 linker.unlink_all()
-                self.linkers.remove(linker)
+                self._linkers.remove(linker)
         self.sigLinkersChanged.emit()
 
     @QtCore.Slot()
-    def close_selected(self) -> None:
+    def remove_selected(self) -> None:
         """Close selected ImageTool windows."""
-        checked_names = self.selected_tool_indices
+        checked_names = self.list_view.selected_tool_indices
         ret = QtWidgets.QMessageBox.question(
             self,
             "Close selected windows?",
@@ -793,9 +1270,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def rename_selected(self) -> None:
         """Rename selected ImageTool windows."""
-        dialog = _RenameDialog(
-            self, [self.tool_options[i].name for i in self.selected_tool_indices]
-        )
+        selected = self.list_view.selected_tool_indices
+        if len(selected) == 1:
+            self.list_view.edit(self.list_view._model._row_index(selected[0]))
+            return
+        dialog = _RenameDialog(self, [self._tool_wrappers[i].name for i in selected])
         dialog.exec()
 
     @QtCore.Slot()
@@ -804,37 +1283,51 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
         """Link selected ImageTool windows."""
         self.unlink_selected(deselect=False)
-        self.link_tools(*self.selected_tool_indices, link_colors=link_colors)
+        self.link_tools(*self.list_view.selected_tool_indices, link_colors=link_colors)
         if deselect:
-            self.deselect_all()
+            self.list_view.deselect_all()
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
     def unlink_selected(self, deselect: bool = True) -> None:
         """Unlink selected ImageTool windows."""
-        for index in self.selected_tool_indices:
+        for index in self.list_view.selected_tool_indices:
             self.get_tool(index).slicer_area.unlink()
         self._sigReloadLinkers.emit()
         if deselect:
-            self.deselect_all()
+            self.list_view.deselect_all()
 
     @QtCore.Slot()
     def archive_selected(self) -> None:
         """Archive selected ImageTool windows."""
-        for index in self.selected_tool_indices:
-            self.tool_options[index].archive()
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].archive()
+
+    @QtCore.Slot()
+    def unarchive_selected(self) -> None:
+        """Unarchive selected ImageTool windows."""
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].unarchive()
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
-        self.tool_options[index].name = new_name
+        self._tool_wrappers[index].name = new_name
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
         linker = SlicerLinkProxy(
             *[self.get_tool(t).slicer_area for t in indices], link_colors=link_colors
         )
-        self.linkers.append(linker)
+        self._linkers.append(linker)
         self._sigReloadLinkers.emit()
+
+    def name_of_tool(self, index: int) -> str:
+        """Get the name of the ImageTool window corresponding to the given index."""
+        return self._tool_wrappers[index].name
+
+    def label_of_tool(self, index: int) -> str:
+        """Get the label of the ImageTool window corresponding to the given index."""
+        return self._tool_wrappers[index].label_text
 
     @QtCore.Slot()
     def garbage_collect(self) -> None:
@@ -844,7 +1337,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _to_datatree(self, close: bool = False) -> xr.DataTree:
         """Convert the current state of the manager to a DataTree object."""
         constructor: dict[str, xr.Dataset] = {}
-        for index in tuple(self.tool_options.keys()):
+        for index in tuple(self._tool_wrappers.keys()):
             ds = self.get_tool(index).to_dataset()
             ds.attrs["itool_title"] = (
                 ds.attrs["itool_title"].removeprefix(f"{index}").removeprefix(": ")
@@ -1216,7 +1709,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-            for tool in list(self.tool_options.keys()):
+            for tool in list(self._tool_wrappers.keys()):
                 self.remove_tool(tool)
 
         # Clean up temporary directory
@@ -1229,7 +1722,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Stop the server
         self.server.stopped.set()
         self.server.wait()
-
         super().closeEvent(event)
 
 
