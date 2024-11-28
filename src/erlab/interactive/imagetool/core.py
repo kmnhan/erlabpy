@@ -10,6 +10,7 @@ import inspect
 import os
 import pathlib
 import time
+import uuid
 import warnings
 import weakref
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
@@ -448,7 +449,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.bench: bool = bench
 
         # Stores ktool, dtool, goldtool, etc.
-        self._associated_tools: list[QtWidgets.QWidget] = []
+        self._associated_tools: dict[str, QtWidgets.QWidget] = {}
 
         # Queues to handle undo and redo
         self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
@@ -798,9 +799,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
-        for tool in list(self._associated_tools):
+        for tool in dict(self._associated_tools).values():
             tool.close()
-            self._associated_tools.remove(tool)
 
     @QtCore.Slot()
     @QtCore.Slot(tuple)
@@ -1242,6 +1242,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
+    def add_tool_window(self, tool: QtWidgets.QWidget) -> None:
+        """Add and show a tool window to this slicer.
+
+        The tool window is automatically cleared from memory when it is closed. Be sure
+        to not pass a widget that is already associated with another parent.
+
+        Parameters
+        ----------
+        tool
+            The tool window widget to add.
+        """
+        uid: str = str(uuid.uuid4())
+        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._associated_tools[uid] = tool
+
+        tool.destroyed.connect(lambda: self._associated_tools.pop(uid))
+        tool.show()
+
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
         """Open the interactive momentum conversion tool."""
@@ -1257,10 +1275,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = None
             gamma = 0.5
 
-        tool = KspaceTool(self.data, cmap=cmap, gamma=gamma)
-        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._associated_tools.append(tool)
-        tool.show()
+        self.add_tool_window(KspaceTool(self.data, cmap=cmap, gamma=gamma))
 
     def adjust_layout(
         self,
@@ -1756,8 +1771,7 @@ class ItoolPlotItem(pg.PlotItem):
                 QtWidgets.QWidget | None, itool(self.current_data, execute=False)
             )
             if tool is not None:
-                self.slicer_area._associated_tools.append(tool)
-                tool.show()
+                self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
@@ -1774,24 +1788,20 @@ class ItoolPlotItem(pg.PlotItem):
 
             from erlab.interactive.fermiedge import GoldTool
 
-            goldtool = GoldTool(
-                data, data_name="data" + self.selection_code, execute=False
+            self.slicer_area.add_tool_window(
+                GoldTool(data, data_name="data" + self.selection_code, execute=False)
             )
-            goldtool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            self.slicer_area._associated_tools.append(goldtool)
-            goldtool.show()
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:
             from erlab.interactive.derivative import DerivativeTool
 
-            tool = DerivativeTool(
-                self.current_data.T, data_name="data" + self.selection_code
+            self.slicer_area.add_tool_window(
+                DerivativeTool(
+                    self.current_data.T, data_name="data" + self.selection_code
+                )
             )
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            self.slicer_area._associated_tools.append(tool)
-            tool.show()
 
     def refresh_manual_range(self) -> None:
         if self.is_independent:
