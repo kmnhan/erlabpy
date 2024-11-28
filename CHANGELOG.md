@@ -1,5 +1,7 @@
 ## Unreleased
 
+## v3.1.0 (2024-11-28)
+
 ### ✨ Features
 
 - **interactive.imagetool:** overhaul manager UI ([a2ce551](https://github.com/kmnhan/erlabpy/commit/a2ce551067e05dba018bfef8dcae14d7a836afe9))
