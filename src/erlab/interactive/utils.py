@@ -755,7 +755,7 @@ class BetterAxisItem(pg.AxisItem):
             if abs(vs) < 0.001 or abs(vs) >= 10000:
                 vstr = f"{vs:g}"
             else:
-                vstr = ("%%0.%df" % places) % vs
+                vstr = f"{vs:.{places:.0f}f}"
             strings.append(vstr.replace("-", "−"))
         return strings
 
