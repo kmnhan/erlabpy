@@ -853,7 +853,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
         rows: int = 0
 
         while not stream.atEnd():
-            new_items.append(int(stream.readInt()))
+            new_items.append(int(stream.readInt64()))
             rows += 1
 
         self.insertRows(start, rows, QtCore.QModelIndex())
@@ -875,7 +875,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
         for index in indexes:
             if index.isValid():
                 tool_idx = self.data(index, _WrapperItemDataRole.ToolIndexRole)
-                stream.writeInt(tool_idx)
+                stream.writeInt64(tool_idx)
 
         mime_data.setData("application/json", encoded_data)
         return mime_data

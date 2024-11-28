@@ -86,6 +86,10 @@ class _WaitDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(QtWidgets.QLabel(message))
         self.setLayout(layout)
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint
+        )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
 
 
 @contextlib.contextmanager
