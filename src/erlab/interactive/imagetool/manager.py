@@ -30,7 +30,6 @@ import traceback
 import uuid
 import weakref
 from collections.abc import Iterable, ValuesView
-from multiprocessing import shared_memory
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -63,7 +62,7 @@ The default port number 45555 can be overridden by setting the environment varia
 """
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
-"""Name of the sharedmemory object that enforces single instance of ImageToolManager.
+"""Name of `QtCore.QSharedMemory` that enforces single instance of ImageToolManager.
 
 If a shared memory object with this name exists, it means that an instance is running.
 """
@@ -1104,7 +1103,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.server.sigReceived.connect(self.data_recv)
         self.server.start()
 
-        self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
+        # Shared memory for detecting multiple instances
+        self._shm = QtCore.QSharedMemory(_SHM_NAME)
+        self._shm.create(1)  # Create segment so that it can be attached to
 
         self.setMinimumWidth(300)
         self.setMinimumHeight(200)
@@ -1732,10 +1733,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Clean up temporary directory
         self._tmp_dir.cleanup()
 
-        # Clean up shared memory
-        self._shm.close()
-        self._shm.unlink()
-
         # Stop the server
         self.server.stopped.set()
         self.server.wait()
@@ -1771,14 +1768,15 @@ def is_running() -> bool:
     bool
         True if an instance of ImageToolManager is running, False otherwise.
     """
-    try:
-        shm = shared_memory.SharedMemory(name=_SHM_NAME, create=True, size=1)
-    except FileExistsError:
-        return True
-    else:
-        shm.close()
-        shm.unlink()
-        return False
+    if sys.platform != "win32":
+        # Shared memory is removed on crash only on Windows
+        unix_fix_shared_mem = QtCore.QSharedMemory(_SHM_NAME)
+        if unix_fix_shared_mem.attach():
+            # Detaching will release the shared memory if no other process is attached
+            unix_fix_shared_mem.detach()
+
+    # If attaching succeeds, another instance is running
+    return QtCore.QSharedMemory(_SHM_NAME).attach()
 
 
 def main() -> None:
