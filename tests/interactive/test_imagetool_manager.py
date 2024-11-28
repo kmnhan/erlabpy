@@ -258,6 +258,7 @@ def test_can_drop_mime_data(qtbot):
     assert model.canDropMimeData(
         mime_data, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
     )
+    manager.close()
 
 
 def test_listview(qtbot, accept_dialog, data):
