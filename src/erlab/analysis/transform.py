@@ -1,6 +1,6 @@
 """Transformations."""
 
-__all__ = ["rotate", "shift", "rotateinplane", "rotatestackinplane"]
+__all__ = ["rotate", "rotateinplane", "rotatestackinplane", "shift"]
 
 import itertools
 import warnings

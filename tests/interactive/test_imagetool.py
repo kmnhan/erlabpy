@@ -232,19 +232,24 @@ def test_itool_tools(qtbot, gold):
 
     # Open goldtool from main image
     main_image.open_in_goldtool()
-    assert isinstance(win.slicer_area._associated_tools[0], GoldTool)
+
+    assert isinstance(next(iter(win.slicer_area._associated_tools.values())), GoldTool)
 
     # Close associated windows
     win.slicer_area.close_associated_windows()
-    assert len(win.slicer_area._associated_tools) == 0
+    qtbot.waitUntil(
+        lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+    )
 
     # Open dtool from main image
     main_image.open_in_dtool()
-    assert isinstance(win.slicer_area._associated_tools[0], DerivativeTool)
+    assert isinstance(
+        next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
+    )
 
     # Open main image in new window
     main_image.open_in_new_window()
-    assert isinstance(win.slicer_area._associated_tools[1], ImageTool)
+    assert isinstance(list(win.slicer_area._associated_tools.values())[1], ImageTool)
 
     win.slicer_area.close_associated_windows()
 
