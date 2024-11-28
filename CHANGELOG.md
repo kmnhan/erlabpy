@@ -2,6 +2,9 @@
 
 ### ✨ Features
 
+- **interactive.imagetool:** overhaul manager UI ([a2ce551](https://github.com/kmnhan/erlabpy/commit/a2ce551067e05dba018bfef8dcae14d7a836afe9))
+
+  Replaced widget-based implemenation with a model/view architecture. As a consequence, the displayed interface looks like a list. The user can now click a selected item to rename it, and drag items to reorder them. Each item now has a dedicated right-click menu.
 - **interactive.imagetool.manager:** improve file opening ([da3425f](https://github.com/kmnhan/erlabpy/commit/da3425f6ec66364bfdb909c4742d6447d441c1b3))
 
   Implements opening multiple files at once through the open menu of the manager. Also, add support for opening data files by dragging them into the manager window.
@@ -45,6 +48,7 @@
 
 ### ⚡️ Performance
 
+- **interactive.imagetool:** improve associated tool garbage collection ([839dab0](https://github.com/kmnhan/erlabpy/commit/839dab01682d4903ede92144a3337a69684c3a38))
 - **io:** implement lazy loading for h5netcdf and nexusformat imports ([3f219ae](https://github.com/kmnhan/erlabpy/commit/3f219aef8764859f1eaccb2e354c7780f41133bb))
 - speed up initial import ([d7f3b3c](https://github.com/kmnhan/erlabpy/commit/d7f3b3c2b5a1265c52f6416c7050ccda724532a2))
 
@@ -56,6 +60,8 @@
 
 ### 🛠 Code Refactor
 
+- **interactive.imagetool:** make it easier to show and hide windows in manager ([aefc560](https://github.com/kmnhan/erlabpy/commit/aefc5600d82d0cfea24d2f4f1ef5b0e29b212f69))
+- **interactive.imagetool:** use `QSharedMemory` instead of `multiprocessing` ([234c19f](https://github.com/kmnhan/erlabpy/commit/234c19f25ef2669cc32f45c4c56d9f40566a082b))
 - **plotting.general:** use matplotlib api instead of xarray plot for 1D ([9e38b2c](https://github.com/kmnhan/erlabpy/commit/9e38b2cab68386443dfe04ce829032fe5836fcdf))
 - **io.dataloader:** improve warning messages and error handling ([1ebfa72](https://github.com/kmnhan/erlabpy/commit/1ebfa7257b2238f8df34fd687f26f8a8a2c6c2ea))
 - **interactive:** move IconButton to interactive utils and add IconActionButton ([e78190f](https://github.com/kmnhan/erlabpy/commit/e78190f286f5cf79978d499276be41c7900b76ae))
