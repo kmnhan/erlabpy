@@ -2,6 +2,7 @@ import tempfile
 import time
 
 import numpy as np
+import pytest
 import xarray as xr
 import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
@@ -9,19 +10,32 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
+    _ImageToolWrapperItemDelegate,
+    _ImageToolWrapperListModel,
     _NameFilterDialog,
     _RenameDialog,
 )
 
 
-def select_tools(manager: ImageToolManager, indices: list[int]):
+@pytest.fixture
+def data():
+    return xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+
+def select_tools(manager: ImageToolManager, indices: list[int], deselect: bool = False):
     selection_model = manager.list_view.selectionModel()
 
     for index in indices:
         qmodelindex = manager.list_view._model._row_index(index)
         selection_model.select(
             QtCore.QItemSelection(qmodelindex, qmodelindex),
-            QtCore.QItemSelectionModel.SelectionFlag.Select,
+            QtCore.QItemSelectionModel.SelectionFlag.Deselect
+            if deselect
+            else QtCore.QItemSelectionModel.SelectionFlag.Select,
         )
 
 
@@ -37,7 +51,7 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
     )
 
 
-def test_manager(qtbot, accept_dialog):
+def test_manager(qtbot, accept_dialog, data):
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -46,7 +60,6 @@ def test_manager(qtbot, accept_dialog):
         manager.show()
         manager.activateWindow()
 
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     data.qshow()
 
     t0 = time.perf_counter()
@@ -110,6 +123,25 @@ def test_manager(qtbot, accept_dialog):
     assert manager._tool_wrappers[1].name == "new_name_1"
     assert manager._tool_wrappers[2].name == "new_name_2"
 
+    # Rename single
+    select_tools(manager, [2], deselect=True)
+    select_tools(manager, [1])
+    manager.rename_action.trigger()
+
+    qtbot.waitUntil(
+        lambda: manager.list_view.state()
+        == QtWidgets.QAbstractItemView.State.EditingState,
+        timeout=2000,
+    )
+    delegate = manager.list_view.itemDelegate()
+    assert isinstance(delegate, _ImageToolWrapperItemDelegate)
+    assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
+    delegate._current_editor().setText("new_name_1_single")
+    qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(
+        lambda: manager._tool_wrappers[1].name == "new_name_1_single", timeout=2000
+    )
+
     # Batch archiving
     select_tools(manager, [1])
     manager.archive_action.trigger()
@@ -126,7 +158,7 @@ def test_manager(qtbot, accept_dialog):
     manager.close()
 
 
-def test_manager_sync(qtbot, move_and_compare_values):
+def test_manager_sync(qtbot, move_and_compare_values, data):
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -135,7 +167,6 @@ def test_manager_sync(qtbot, move_and_compare_values):
         manager.show()
         manager.activateWindow()
 
-    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     itool([data, data], link=True, link_colors=True, use_manager=True)
 
     t0 = time.perf_counter()
@@ -218,12 +249,60 @@ def test_manager_workspace_io(qtbot, accept_dialog):
     manager.close()
 
 
-def test_manager_drag_drop(qtbot, accept_dialog):
-    data = xr.DataArray(
-        np.arange(25).reshape((5, 5)),
-        dims=["x", "y"],
-        coords={"x": np.arange(5), "y": np.arange(5)},
+def test_can_drop_mime_data(qtbot):
+    manager = ImageToolManager()
+    model = _ImageToolWrapperListModel(manager)
+
+    mime_data = QtCore.QMimeData()
+    mime_data.setData("application/json", QtCore.QByteArray())
+    assert model.canDropMimeData(
+        mime_data, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
     )
+
+
+def test_listview(qtbot, accept_dialog, data):
+    manager = ImageToolManager()
+
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+
+    data.qshow()
+    data.qshow()
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+
+    manager.raise_()
+    manager.activateWindow()
+
+    model = manager.list_view._model
+    assert model.supportedDropActions() == QtCore.Qt.DropAction.MoveAction
+    first_row_rect = manager.list_view.rectForIndex(model.index(0))
+
+    # Click on first row
+    qtbot.mouseMove(manager.list_view.viewport(), first_row_rect.center())
+    qtbot.mousePress(
+        manager.list_view.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=first_row_rect.center(),
+    )
+    assert manager.list_view.selected_tool_indices == [0]
+
+    # Show context menu
+    manager.list_view._show_menu(first_row_rect.center())
+    menu = None
+    for tl in QtWidgets.QApplication.topLevelWidgets():
+        if isinstance(tl, QtWidgets.QMenu):
+            menu = tl
+            break
+    assert isinstance(menu, QtWidgets.QMenu)
+    menu.close()
+
+    accept_dialog(manager.close)
+
+
+def test_manager_drag_drop_files(qtbot, accept_dialog, data):
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
     data.to_netcdf(filename, engine="h5netcdf")
@@ -270,6 +349,5 @@ def test_manager_drag_drop(qtbot, accept_dialog):
 
     # Cleanup
     manager.remove_tool(0)
-    manager.remove_tool(1)
-    manager.close()
+    accept_dialog(manager.close)
     tmp_dir.cleanup()

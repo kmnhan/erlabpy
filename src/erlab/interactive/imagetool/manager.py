@@ -472,6 +472,10 @@ class _ResizingLineEdit(QtWidgets.QLineEdit):
         )
 
 
+class _Placeholder:
+    pass
+
+
 class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     """
     A :class:`QtWidgets.QStyledItemDelegate` that handles displaying list view items.
@@ -503,6 +507,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         super().__init__(parent)
         self._manager = weakref.ref(manager)
         self._font_size = QtGui.QFont().pointSize()
+        self._current_editor: weakref.ref[QtWidgets.QLineEdit | _Placeholder] = (
+            weakref.ref(_Placeholder())
+        )
 
     @property
     def manager(self) -> ImageToolManager:
@@ -537,6 +544,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         editor.setFont(option.font)
         editor.setFrame(True)
         editor.setPlaceholderText("Enter new name")
+        self._current_editor = weakref.ref(editor)
         return editor
 
     def updateEditorGeometry(
@@ -887,24 +895,20 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
         self.doubleClicked.connect(self.double_clicked)
 
+        self._menu = QtWidgets.QMenu("Menu", self)
+        self._menu.addAction(manager.open_action)
+        self._menu.addSeparator()
+        self._menu.addAction(manager.remove_action)
+        self._menu.addAction(manager.archive_action)
+        self._menu.addAction(manager.unarchive_action)
+        self._menu.addSeparator()
+        self._menu.addAction(manager.rename_action)
+        self._menu.addAction(manager.link_action)
+        self._menu.addAction(manager.unlink_action)
+
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
-        menu = QtWidgets.QMenu("Menu", self)
-        manager: ImageToolManager = self._model.manager
-
-        menu.addAction(manager.open_action)
-
-        if self.selectedIndexes():
-            menu.addSeparator()
-            menu.addAction(manager.remove_action)
-            menu.addAction(manager.archive_action)
-            menu.addAction(manager.unarchive_action)
-            menu.addSeparator()
-            menu.addAction(manager.rename_action)
-            menu.addAction(manager.link_action)
-            menu.addAction(manager.unlink_action)
-
-        menu.exec(self.mapToGlobal(position))
+        self._menu.popup(self.mapToGlobal(position))
 
     @property
     def selected_tool_indices(self) -> list[int]:
@@ -1253,17 +1257,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def remove_selected(self) -> None:
         """Close selected ImageTool windows."""
         checked_names = self.list_view.selected_tool_indices
-        ret = QtWidgets.QMessageBox.question(
-            self,
-            "Close selected windows?",
+
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setText("Close selected windows?")
+        msg_box.setInformativeText(
             "1 selected window will be closed."
             if len(checked_names) == 1
-            else f"{len(checked_names)} selected windows will be closed.",
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.Cancel,
-            QtWidgets.QMessageBox.StandardButton.Yes,
+            else f"{len(checked_names)} selected windows will be closed."
         )
-        if ret == QtWidgets.QMessageBox.StandardButton.Yes:
+        msg_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+
+        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
             for name in checked_names:
                 self.remove_tool(name)
 
@@ -1698,13 +1707,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Properly clear all resources before closing the application."""
         if self.ntools != 0:
-            if self.ntools == 1:
-                msg = "1 remaining window will be closed."
-            else:
-                msg = f"All {self.ntools} remaining windows will be closed."
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            msg_box.setText("Close ImageTool Manager?")
+            msg_box.setInformativeText(
+                "1 remaining window will be removed."
+                if self.ntools == 1
+                else f"All {self.ntools} remaining windows will be removed."
+            )
+            msg_box.setStandardButtons(
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.Cancel
+            )
+            msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
-            ret = QtWidgets.QMessageBox.question(self, "Do you want to close?", msg)
-            if ret != QtWidgets.QMessageBox.StandardButton.Yes:
+            if msg_box.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
                 if event:
                     event.ignore()
                 return
