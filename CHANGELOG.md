@@ -1,3 +1,9 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **interactive.imagetool:** fix compatibility issues with Windows ([8691014](https://github.com/kmnhan/erlabpy/commit/86910140b25c62a093f68bd34efd1bce68587cba))
+
 ## v3.1.0 (2024-11-28)
 
 ### ✨ Features
