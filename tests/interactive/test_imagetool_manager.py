@@ -150,6 +150,19 @@ def test_manager(qtbot, accept_dialog, data):
     # GC action
     manager.gc_action.trigger()
 
+    # Show and hide windows including archived ones
+    select_tools(manager, [1])
+    manager.archive_action.trigger()
+
+    select_tools(manager, [1, 2])
+    manager.hide_action.trigger()  # Hide non-archived window, does nothing to archived
+    manager.show_action.trigger()  # Unarchive the archived one and show both
+
+    assert not manager._tool_wrappers[1].archived
+    assert not manager._tool_wrappers[2].archived
+    assert manager.get_tool(1).isVisible()
+    assert manager.get_tool(2).isVisible()
+
     # Remove all selected
     select_tools(manager, [1, 2])
     accept_dialog(manager.remove_action.trigger)

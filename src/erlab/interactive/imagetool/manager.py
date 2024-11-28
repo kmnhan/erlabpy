@@ -392,6 +392,11 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @QtCore.Slot()
     def show_tool(self) -> None:
+        """Show the tool window.
+
+        If the tool is not visible, it is shown and raised to the top. Archived tools
+        are unarchived before being shown.
+        """
         if self.tool is None:
             self.unarchive()
 
@@ -423,22 +428,32 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @QtCore.Slot()
     def archive(self) -> None:
+        """Archive the ImageTool.
+
+        Unlike :meth:`dispose_tool`, this method saves the tool object to a file and can
+        be recovered later. The archived tools are grayed out in the manager.
+
+        Instead of calling this directly, use :meth:`ImageToolManager.archive_selected`
+        which displays a wait dialog.
+        """
         if not self.archived:
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            with wait_dialog(self.manager, "Archiving..."):
-                cast(ImageTool, self.tool).to_file(self._archived_fname)
-
+            cast(ImageTool, self.tool).to_file(self._archived_fname)
             self.dispose_tool()
 
     @QtCore.Slot()
     def unarchive(self) -> None:
-        if self.archived:
-            with wait_dialog(self.manager, "Unarchiving..."):
-                self.tool = ImageTool.from_file(cast(str, self._archived_fname))
-            self.tool.show()
+        """
+        Restore the ImageTool from the archive.
 
+        Instead of calling this directly, use
+        :meth:`ImageToolManager.unarchive_selected` which displays a wait dialog.
+        """
+        if self.archived:
+            self.tool = ImageTool.from_file(cast(str, self._archived_fname))
+            self.tool.show()
             self.manager._sigReloadLinkers.emit()
 
 
@@ -897,6 +912,9 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction(manager.open_action)
         self._menu.addSeparator()
+        self._menu.addAction(manager.show_action)
+        self._menu.addAction(manager.hide_action)
+        self._menu.addSeparator()
         self._menu.addAction(manager.remove_action)
         self._menu.addAction(manager.archive_action)
         self._menu.addAction(manager.unarchive_action)
@@ -982,6 +1000,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Initialize actions
 
+        self.show_action = QtWidgets.QAction("Show", self)
+        self.show_action.triggered.connect(self.show_selected)
+        self.show_action.setToolTip("Show selected windows")
+
+        self.hide_action = QtWidgets.QAction("Hide", self)
+        self.hide_action.triggered.connect(self.hide_selected)
+        self.hide_action.setToolTip("Hide selected windows")
+
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
         self.gc_action.triggered.connect(self.garbage_collect)
         self.gc_action.setToolTip("Run garbage collection to free up memory")
@@ -1046,6 +1072,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.rename_action)
         edit_menu.addAction(self.link_action)
         edit_menu.addAction(self.unlink_action)
+
+        view_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&View"))
+        view_menu.addAction(self.show_action)
+        view_menu.addAction(self.hide_action)
 
         self.open_button = IconActionButton(
             self.open_action,
@@ -1202,6 +1232,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         only_unarchived: bool = len(selection_archived) == 0
         only_archived: bool = len(selection_unarchived) == 0
 
+        self.show_action.setEnabled(something_selected)
+        self.hide_action.setEnabled(something_selected)
         self.remove_action.setEnabled(something_selected)
         self.rename_action.setEnabled(something_selected and only_unarchived)
         self.archive_action.setEnabled(something_selected and only_unarchived)
@@ -1253,6 +1285,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 linker.unlink_all()
                 self._linkers.remove(linker)
         self.sigLinkersChanged.emit()
+
+    @QtCore.Slot()
+    def show_selected(self) -> None:
+        """Show selected ImageTool windows."""
+        index_list = self.list_view.selected_tool_indices
+
+        require_unarchive = any(self._tool_wrappers[i].archived for i in index_list)
+        if require_unarchive:
+            # This is just to display the wait dialog for unarchiving.
+            # If this part is removed, the showing will just hang until the unarchiving
+            # is finished without any feedback.
+            self.unarchive_selected()
+
+        for index in index_list:
+            self._tool_wrappers[index].show_tool()
+
+    @QtCore.Slot()
+    def hide_selected(self) -> None:
+        """Hide selected ImageTool windows."""
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].close_tool()
 
     @QtCore.Slot()
     def remove_selected(self) -> None:
@@ -1310,14 +1363,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def archive_selected(self) -> None:
         """Archive selected ImageTool windows."""
-        for index in self.list_view.selected_tool_indices:
-            self._tool_wrappers[index].archive()
+        with wait_dialog(self, "Archiving..."):
+            for index in self.list_view.selected_tool_indices:
+                self._tool_wrappers[index].archive()
 
     @QtCore.Slot()
     def unarchive_selected(self) -> None:
         """Unarchive selected ImageTool windows."""
-        for index in self.list_view.selected_tool_indices:
-            self._tool_wrappers[index].unarchive()
+        with wait_dialog(self, "Unarchiving..."):
+            for index in self.list_view.selected_tool_indices:
+                self._tool_wrappers[index].unarchive()
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
