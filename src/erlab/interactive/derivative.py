@@ -334,7 +334,19 @@ class DerivativeTool(
         return copy_to_clipboard(lines)
 
 
-def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
+def dtool(
+    data: xr.DataArray, data_name: str | None = None, *, execute: bool | None = None
+) -> DerivativeTool | None:
+    """Interactive tool for visualizing dispersive data.
+
+    Parameters
+    ----------
+    data
+        Data to visualize. Must be a 2D DataArray with no NaN values.
+    data_name
+        Name of the data variable in the generated code. If not provided, the name is
+        automatically determined.
+    """
     if data_name is None:
         try:
             data_name = str(varname.argname("data", func=dtool, vars_only=False))
@@ -345,7 +357,8 @@ def dtool(data, data_name: str | None = None, *, execute: bool | None = None):
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 
-    cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
+    if isinstance(qapp, QtWidgets.QApplication):  # to appease mypy
+        qapp.setStyle("Fusion")
 
     win = DerivativeTool(data, data_name=data_name)
     win.show()

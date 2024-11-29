@@ -607,7 +607,8 @@ def ktool(
     gamma
         Initial gamma value for the colormap.
     data_name
-        Name to use in code generation. If not provided, the name will be inferred.
+        Name of the data variable in the generated code. If not provided, the name is
+        automatically determined.
 
     """
     if data_name is None:
