@@ -15,7 +15,6 @@ Interactive tools
    curvefittingtool
    fermiedge
    kspace
-   masktool
    derivative
    utils
 

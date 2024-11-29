@@ -1,4 +1,4 @@
-"""Plugin for data acquired at KRISS."""
+"""Data loader for KRISS."""
 
 from typing import ClassVar
 

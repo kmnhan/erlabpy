@@ -15,10 +15,14 @@ Modules
 .. autosummary::
    :toctree:
 
+   da30
+   esm
+   i05
+   kriss
+   lorea
+   maestro
    merlin
    ssrl52
-   da30
-   kriss
 
 """
 

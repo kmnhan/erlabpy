@@ -1,4 +1,4 @@
-"""Loader for Scienta Omicron DA30 analyzer with SES.
+"""Data loader for the Scienta Omicron DA30 analyzer.
 
 Provides a base class for implementing loaders that can load data acquired with Scienta
 Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual loading.
