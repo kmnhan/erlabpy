@@ -20,7 +20,7 @@ class BZPlotter(QtWidgets.QMainWindow):
 
     Parameters
     ----------
-    params :
+    params : tuple of floats or 3 by 3 array-like, optional
         Input parameter for plotting. If `param_type` is 'lattice', it must be a
         6-tuple containing the lengths a, b, c and angles alpha, beta, gamma.
         Otherwise, it must be a 3 by 3 numpy array with each row vector containing

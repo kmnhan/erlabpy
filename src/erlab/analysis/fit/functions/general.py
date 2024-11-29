@@ -1,6 +1,12 @@
 """Some general functions and utilities used in fitting.
 
-Many functions are `numba`-compiled for speed.
+Many functions are ``numba``-compiled for speed.
+
+.. note::
+
+    ``numba``-compiled functions do not accept xarray objects. To broadcast over xarray
+    objects, use :func:`xarray.apply_ufunc`.
+
 """
 
 __all__ = [

@@ -83,7 +83,7 @@ def conv_watt_photons(value: float, wavelength: float) -> float:
 
 
 class AxesConfiguration(enum.IntEnum):
-    """Enum class representing different types of axes configurations.
+    """Enum class for different types of axes configurations in an ARPES experiment.
 
     See :ref:`Nomenclature <nomenclature>` and Ref. :cite:p:`ishida2018kconv` for more
     information.
