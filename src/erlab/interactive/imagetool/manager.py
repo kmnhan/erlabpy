@@ -907,7 +907,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
 
-        self.doubleClicked.connect(self.double_clicked)
+        self.doubleClicked.connect(self._model.manager.show_selected)
 
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction(manager.open_action)
@@ -934,10 +934,6 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
             self._model.manager._displayed_indices[index.row()]
             for index in self.selectedIndexes()
         ]
-
-    @QtCore.Slot(QtCore.QModelIndex)
-    def double_clicked(self, index: QtCore.QModelIndex) -> None:
-        self._model._tool_wrapper(index).show_tool()
 
     @QtCore.Slot()
     def select_all(self) -> None:
