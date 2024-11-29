@@ -392,6 +392,8 @@ class ArraySlicer(QtCore.QObject):
             if not _is_uniform(data[d].values.astype(np.float64))
         ]
         for d in nonuniform_dims:
+            if d + "_idx" in data.dims:
+                continue
             data = data.assign_coords(
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
             ).swap_dims({d: d + "_idx"})

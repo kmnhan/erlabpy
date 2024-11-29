@@ -282,9 +282,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return self.slicer_area.array_slicer
 
     def to_dataset(self) -> xr.Dataset:
-        name = self.slicer_area.data.name
+        name = self.slicer_area._data.name
         name = name if name else ""
-        return self.slicer_area.data.to_dataset(
+        return self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
             {

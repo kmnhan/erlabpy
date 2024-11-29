@@ -427,8 +427,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def __init__(
         self,
-        parent: QtWidgets.QWidget | None = None,
-        data: xr.DataArray | npt.ArrayLike | None = None,
+        parent: QtWidgets.QWidget,
+        data: xr.DataArray | npt.ArrayLike,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
         zero_centered: bool = False,
@@ -531,12 +531,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         self.qapp.aboutToQuit.connect(self.on_close)
 
-        self._data: xr.DataArray | None = None
         self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
-        if data is not None:
-            self.set_data(data, rad2deg=rad2deg)
+        self.set_data(data, rad2deg=rad2deg)
 
         if self.bench:
             print("\n")
@@ -902,7 +900,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             data = data.copy()
 
         if not rad2deg:
-            self._data = data
+            self._data: xr.DataArray = data
         else:
             if np.iterable(rad2deg):
                 conv_dims = rad2deg
