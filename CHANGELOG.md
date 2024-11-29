@@ -1,3 +1,9 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **interactive.imagetool:** fix saving and loading non-uniform data ([73a1d4b](https://github.com/kmnhan/erlabpy/commit/73a1d4b23d2a043f3400b609e8f6343beda7c5d2))
+
 ## v3.1.1 (2024-11-28)
 
 ### 🐞 Bug Fixes
