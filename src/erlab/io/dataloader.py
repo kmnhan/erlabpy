@@ -112,7 +112,7 @@ class _Loader(type):
 
 
 class LoaderBase(metaclass=_Loader):
-    """Base class for all data loaders."""
+    """Base class for loader plugins."""
 
     name: str
     """
@@ -430,6 +430,12 @@ class LoaderBase(metaclass=_Loader):
     ):
         """Load ARPES data.
 
+        This method is the main entry point for loading ARPES data.
+
+        .. note::
+
+            This method is not meant to be overriden in subclasses.
+
         Parameters
         ----------
         identifier
@@ -624,6 +630,10 @@ class LoaderBase(metaclass=_Loader):
         rc: dict[str, Any] | None = None,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         """Summarize the data in the given directory.
+
+        .. note::
+
+            This method is not meant to be overriden in subclasses.
 
         Takes a path to a directory and summarizes the data in the directory to a table,
         much like a log file. This is useful for quickly inspecting the contents of a
@@ -1175,7 +1185,7 @@ class LoaderBase(metaclass=_Loader):
           type of this method must be consistent across all associated files, i.e., for
           all files that can be returned together from :meth:`identify
           <erlab.io.dataloader.LoaderBase.identify>` so that they can be combined
-          without conflicts. This should not be a problem since in most cases, the data
+          without conflicts. This should not be a problem in most cases since the data
           structure of associated files acquired during the same scan will be identical.
         - For `xarray.DataTree` objects, returned trees must be named with a unique
           identifier to avoid conflicts when combining.
@@ -1237,7 +1247,10 @@ class LoaderBase(metaclass=_Loader):
               returned.
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError(
+            "This loader does not support loading data by scan index. "
+            "Try providing a file path instead."
+        )
 
     def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
         """Infer the index for the given file name.
@@ -1259,8 +1272,8 @@ class LoaderBase(metaclass=_Loader):
         index
             The inferred index if found, otherwise None.
         additional_kwargs
-            Additional keyword arguments to be passed to :meth:`load
-            <erlab.io.dataloader.LoaderBase.load>` when the index is found. This
+            Additional keyword arguments to be passed to :meth:`identify
+            <erlab.io.dataloader.LoaderBase.identify>` when the index is found. This
             argument is useful when the index alone is not enough to load the data.
 
         Note
@@ -1475,6 +1488,11 @@ class LoaderBase(metaclass=_Loader):
         -------
         DataArray
             The post-processed `DataArray`.
+
+        Note
+        ----
+        When introducing a custom post-processing step in a loader, make sure to call
+        the parent method in the subclass implementation.
 
         """
         darr = self.process_keys(darr)
@@ -1701,10 +1719,13 @@ class _RegistryBase:
 
 
 class LoaderRegistry(_RegistryBase):
-    """Registry for data loaders.
+    """Registry of loader plugins.
 
     Stores and manages data loaders. The loaders can be accessed by name or alias in a
     dictionary-like manner.
+
+    Most public methods of this class instance can be accessed through the `erlab.io`
+    namespace.
 
     """
 
