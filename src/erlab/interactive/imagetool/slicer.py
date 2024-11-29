@@ -378,6 +378,11 @@ class ArraySlicer(QtCore.QObject):
         if data.dtype not in (np.float32, np.float64):
             data = data.astype(np.float64)
 
+        # Handle loading saved non-uniform data
+        for d in data.dims:
+            if str(d).endswith("_idx") and str(d).removesuffix("_idx") in data.coords:
+                data = data.swap_dims({d: str(d).removesuffix("_idx")})
+
         new_dims: tuple[str, ...] = ("kx", "ky")
         if all(d in data.dims for d in new_dims):
             # if data has kx and ky axis, transpose
@@ -392,8 +397,6 @@ class ArraySlicer(QtCore.QObject):
             if not _is_uniform(data[d].values.astype(np.float64))
         ]
         for d in nonuniform_dims:
-            if d + "_idx" in data.dims:
-                continue
             data = data.assign_coords(
                 {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
             ).swap_dims({d: d + "_idx"})
@@ -732,12 +735,16 @@ class ArraySlicer(QtCore.QObject):
         return _index_of_value_nonuniform(self.coords[axis], value)
 
     def isel_args(
-        self, cursor: int, disp: Sequence[int], int_if_one: bool = False
+        self,
+        cursor: int,
+        disp: Sequence[int],
+        int_if_one: bool = False,
+        uniform: bool = False,
     ) -> dict[str, slice | int]:
         axis: list[int] = sorted(set(range(self._obj.ndim)) - set(disp))
         return {
-            str(self._obj.dims[ax]).rstrip("_idx")
-            if ax in self._nonuniform_axes
+            str(self._obj.dims[ax]).removesuffix("_idx")
+            if (ax in self._nonuniform_axes and not uniform)
             else str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
             for ax in axis
         }
@@ -798,7 +805,7 @@ class ArraySlicer(QtCore.QObject):
         return ""
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
-        isel_kw = self.isel_args(cursor, disp, int_if_one=False)
+        isel_kw = self.isel_args(cursor, disp, int_if_one=False, uniform=True)
         binned_coord_average: dict[str, xr.DataArray] = {
             str(k): self._obj[k][isel_kw[str(k)]].mean()
             for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)

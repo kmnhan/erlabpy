@@ -1776,11 +1776,12 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             data = self.current_data.T
 
-            if "alpha" not in data.dims:
+            if set(data.dims) != {"alpha", "eV"}:
                 QtWidgets.QMessageBox.critical(
                     None,
                     "Error",
-                    "Data must have an 'alpha' dimension to be opened in GoldTool",
+                    "Data must have 'alpha' and 'eV' dimensions"
+                    "to be opened in GoldTool.",
                 )
                 return
 

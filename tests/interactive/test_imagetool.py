@@ -20,6 +20,28 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
 )
 
+_TEST_DATA: dict[str, xr.DataArray] = {
+    "2D": xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5), "eV": np.arange(5)},
+    ),
+    "3D": xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=["alpha", "eV", "beta"],
+        coords={"alpha": np.arange(5), "eV": np.arange(5), "beta": np.arange(5)},
+    ),
+    "3D_nonuniform": xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=["alpha", "eV", "beta"],
+        coords={
+            "alpha": np.array([0.1, 0.4, 0.5, 0.55, 0.8]),
+            "eV": np.arange(5),
+            "beta": np.arange(5),
+        },
+    ),
+}
+
 
 @pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
 @pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
@@ -218,8 +240,10 @@ def test_itool(qtbot, move_and_compare_values):
     del win
 
 
-def test_itool_tools(qtbot, gold):
-    win = itool(gold, execute=False)
+@pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
+def test_itool_tools(qtbot, test_data_type):
+    data = _TEST_DATA[test_data_type]
+    win = itool(data, execute=False)
     qtbot.addWidget(win)
 
     with qtbot.waitExposed(win):
@@ -228,18 +252,25 @@ def test_itool_tools(qtbot, gold):
 
     main_image = win.slicer_area.images[0]
     # Test code generation
-    assert main_image.selection_code == ""
+
+    if data.ndim == 2:
+        assert main_image.selection_code == ""
+    else:
+        assert main_image.selection_code == ".qsel(beta=2.0)"
 
     # Open goldtool from main image
-    main_image.open_in_goldtool()
 
-    assert isinstance(next(iter(win.slicer_area._associated_tools.values())), GoldTool)
+    if not test_data_type.endswith("nonuniform"):
+        main_image.open_in_goldtool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), GoldTool
+        )
 
-    # Close associated windows
-    win.slicer_area.close_associated_windows()
-    qtbot.waitUntil(
-        lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
-    )
+        # Close associated windows
+        win.slicer_area.close_associated_windows()
+        qtbot.waitUntil(
+            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+        )
 
     # Open dtool from main image
     main_image.open_in_dtool()
@@ -303,8 +334,6 @@ def test_itool_ds(qtbot):
     wins[1].slicer_area.unlink()
     wins[0].close()
     wins[1].close()
-
-    del wins
 
 
 def test_itool_multidimensional(qtbot, move_and_compare_values):
