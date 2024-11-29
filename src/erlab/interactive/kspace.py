@@ -135,6 +135,7 @@ class KspaceToolGUI(
     def __init__(
         self,
         avec: npt.NDArray | None = None,
+        rotate_bz: float = 0.0,
         cmap: str | None = None,
         gamma: float = 0.5,
     ) -> None:
@@ -164,7 +165,7 @@ class KspaceToolGUI(
         # Set up colormap controls
         self.cmap_combo.setDefaultCmap(cmap)
         self.cmap_combo.textActivated.connect(self.update_cmap)
-        self.gamma_widget.setValue(0.5)
+        self.gamma_widget.setValue(gamma)
         self.gamma_widget.valueChanged.connect(self.update_cmap)
         self.invert_check.stateChanged.connect(self.update_cmap)
         self.contrast_check.stateChanged.connect(self.update_cmap)
@@ -193,8 +194,12 @@ class KspaceToolGUI(
 
         if avec is not None:
             self._populate_bz(avec)
+        self.rot_spin.setValue(rotate_bz)
 
     def _populate_bz(self, avec) -> None:
+        if avec.shape == (2, 2):
+            avec = np.pad(avec, ((0, 1), (0, 1)))
+            avec[2, 2] = 1.0e-15
         a, b, c, _, _, gamma = erlab.lattice.avec2abc(avec)
         self.a_spin.setValue(a)
         self.b_spin.setValue(b)
@@ -271,12 +276,13 @@ class KspaceTool(KspaceToolGUI):
         self,
         data: xr.DataArray,
         avec: npt.NDArray | None = None,
+        rotate_bz: float = 0.0,
         cmap: str | None = None,
         gamma: float = 0.5,
         *,
         data_name: str | None = None,
     ) -> None:
-        super().__init__(avec=avec, cmap=cmap, gamma=gamma)
+        super().__init__(avec=avec, rotate_bz=rotate_bz, cmap=cmap, gamma=gamma)
 
         self._argnames = {}
 
@@ -485,7 +491,7 @@ class KspaceTool(KspaceToolGUI):
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
             center, width = self.center_spin.value(), self.width_spin.value()
-            if width == 0:
+            if width == 1:
                 return self.data.sel(eV=center, method="nearest")
             arr = self.data.eV.values
             idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
@@ -574,6 +580,7 @@ class KspaceTool(KspaceToolGUI):
 def ktool(
     data: xr.DataArray,
     avec: npt.NDArray | None = None,
+    rotate_bz: float = 0.0,
     cmap: str | None = None,
     gamma: float = 0.5,
     *,
@@ -590,11 +597,15 @@ def ktool(
         maps and photon energy dependent data.
     avec : array-like, optional
         Real-space lattice vectors as a 2x2 or 3x3 numpy array. If provided, the
-        Brillouin zone boundary overlay will be calculated based on these vectors.
+        Brillouin zone boundary overlay will be calculated based on these vectors. If
+        given as a 2x2 array, the third row and column will be assumed to be all 0. You
+        can use utilities from :mod:`erlab.lattice` to construct these vectors.
+    rotate_bz
+        Rotation angle for the Brillouin zone boundary overlay.
     cmap : str, optional
-        Name of the default colormap to use.
+        Name of the colormap to use.
     gamma
-        Default gamma value for the colormap.
+        Initial gamma value for the colormap.
     data_name
         Name to use in code generation. If not provided, the name will be inferred.
 
@@ -611,7 +622,14 @@ def ktool(
 
     cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
 
-    win = KspaceTool(data, avec=avec, cmap=cmap, gamma=gamma, data_name=data_name)
+    win = KspaceTool(
+        data,
+        avec=avec,
+        rotate_bz=rotate_bz,
+        cmap=cmap,
+        gamma=gamma,
+        data_name=data_name,
+    )
     win.show()
     win.raise_()
     win.activateWindow()

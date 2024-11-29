@@ -96,6 +96,7 @@ def test_ktool(qtbot, anglemap, constant_energy):
     win = ktool(
         anglemap,
         avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
+        rotate_bz=30.0,
         cmap="terrain_r",
         execute=False,
     )

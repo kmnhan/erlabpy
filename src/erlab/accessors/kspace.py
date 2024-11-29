@@ -360,9 +360,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def _binding_energy(self) -> xr.DataArray:
-        if self._obj.eV.values.min() > 0:
+        # If scalar, may be a constant energy contour above EF
+        if self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0):
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
+            emit_user_level_warning(
+                "The energy axis seems to be in terms of kinetic energy, "
+                "attempting conversion to binding energy."
+            )
             return binding.assign_coords(eV=binding.values)
         return self._obj.eV
 
