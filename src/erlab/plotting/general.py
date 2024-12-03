@@ -559,8 +559,8 @@ def plot_array_2d(
         )
 
     im = ax.imshow(img, extent=array_extent(larr, rtol, atol), **imshow_kw)
-    ax.set_xlabel(str(larr.dims[0]))
-    ax.set_ylabel(str(larr.dims[1]))
+    ax.set_xlabel(str(larr.dims[1]))
+    ax.set_ylabel(str(larr.dims[0]))
     fancy_labels(ax)
 
     if colorbar:
