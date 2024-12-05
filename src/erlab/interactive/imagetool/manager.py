@@ -434,7 +434,7 @@ class _ImageToolWrapper(QtCore.QObject):
         else:
             text = _format_info_html(self.slicer_area._data, self._created_time)
 
-        if int(f"{QtCore.QT_VERSION:x}") >= 60600:
+        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
             # Accent color is available from Qt 6.6
             accent_color = QtWidgets.QApplication.palette().accent().color().name()
         else:
