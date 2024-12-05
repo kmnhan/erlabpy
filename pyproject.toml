@@ -128,6 +128,7 @@ select = [
     "UP",
     "YTT",
     "ASYNC",
+    "S",
     "B",
     "A",
     "C4",
@@ -160,6 +161,10 @@ select = [
     "RUF",
 ]
 ignore = [
+    "S101",    # Use of assert
+    "S301",    # Suspicious pickle usage
+    "S603",    # `subprocess` call
+    "S607",    # Starting a process with a partial executable path
     "PLW2901", # Outer variable overwritten by inner target
     "ICN001",  # Import conventions
     "TRY003",  # Long exception messages

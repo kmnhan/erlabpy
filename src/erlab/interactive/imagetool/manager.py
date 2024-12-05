@@ -19,6 +19,7 @@ import datetime
 import enum
 import gc
 import importlib
+import logging
 import os
 import pathlib
 import pickle
@@ -28,7 +29,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import uuid
 import weakref
 from collections.abc import Hashable, Iterable, ValuesView
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
 
+logger = logging.getLogger(__name__)
 
 PORT: int = int(os.getenv("ITOOL_MANAGER_PORT", "45555"))
 """Port number for the manager server.
@@ -254,11 +255,13 @@ class _ManagerServer(QtCore.QThread):
     def run(self) -> None:
         self.stopped.clear()
 
+        logger.debug("Starting server...")
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
         soc.setblocking(False)
         soc.listen()
-        print("Server is listening...")
+
+        logger.info("Server is listening...")
 
         while not self.stopped.is_set():
             try:
@@ -268,6 +271,7 @@ class _ManagerServer(QtCore.QThread):
                 continue
 
             conn.setblocking(True)
+            logger.debug("Connection accepted")
             # Receive the size of the data first
             data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
 
@@ -275,8 +279,11 @@ class _ManagerServer(QtCore.QThread):
             kwargs = _recv_all(conn, data_size)
             try:
                 kwargs = pickle.loads(kwargs)
+                logger.debug("Received data: %s", kwargs)
+
                 files = kwargs.pop("__filename")
                 self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+                logger.debug("Emitted loaded data")
 
                 # Clean up temporary files
                 for f in files:
@@ -285,6 +292,8 @@ class _ManagerServer(QtCore.QThread):
                     if os.path.isdir(dirname):
                         with contextlib.suppress(OSError):
                             os.rmdir(dirname)
+                logger.debug("Cleaned up temporary files")
+
             except (
                 pickle.UnpicklingError,
                 AttributeError,
@@ -292,12 +301,10 @@ class _ManagerServer(QtCore.QThread):
                 ImportError,
                 IndexError,
             ):
-                print(
-                    f"Failed to unpickle data due to the following error:\n"
-                    f"{traceback.format_exc()}"
-                )
+                logger.exception("Failed to unpickle received data")
 
             conn.close()
+            logger.debug("Connection closed")
 
         soc.close()
 
@@ -1705,6 +1712,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             try:
                 indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
             except Exception as e:
+                logger.exception("Error creating tool from received data")
                 self._error_creating_tool(e)
 
         if link:
@@ -1818,7 +1826,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 try:
                     dt = xr.open_datatree(p, engine="h5netcdf")
                 except Exception:
-                    pass
+                    logger.debug("Failed to open %s as datatree workspace", p)
                 else:
                     if self._is_datatree_workspace(dt):
                         self._from_datatree(dt)
@@ -2062,12 +2070,11 @@ def show_in_manager(
             "application before using this function"
         )
 
-    client_socket = socket.socket()
-    client_socket.connect(("localhost", PORT))
-
+    logger.debug("Parsing input data into DataArrays")
     darr_list: list[xarray.DataArray] = _parse_input(data)
 
     # Save the data to a temporary file
+    logger.debug("Pickling data to temporary files")
     tmp_dir = tempfile.mkdtemp(prefix="erlab_manager_")
 
     files: list[str] = []
@@ -2083,10 +2090,17 @@ def show_in_manager(
     # Serialize kwargs dict into a byte stream
     kwargs = pickle.dumps(kwargs, protocol=-1)
 
+    logger.debug("Connecting to server")
+    client_socket = socket.socket()
+    client_socket.connect(("localhost", PORT))
+
+    logger.debug("Sending data")
     # Send the size of the data first
     client_socket.sendall(struct.pack(">L", len(kwargs)))
     client_socket.sendall(kwargs)
     client_socket.close()
+
+    logger.debug("Data sent successfully")
 
 
 if __name__ == "__main__":
