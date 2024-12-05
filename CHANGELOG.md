@@ -2,6 +2,7 @@
 
 ### 🐞 Bug Fixes
 
+- **plotting:** correct axis labels in `plot_array_2d` ([2fa358a](https://github.com/kmnhan/erlabpy/commit/2fa358af3c1866c6f886f03f23ec03eebdde08ec))
 - **interactive.imagetool:** fix selection and io for non-uniform data ([5670a15](https://github.com/kmnhan/erlabpy/commit/5670a153fd19fcca93c9a926e57c32d29b25aac3))
 - **accessors.kspace:** fix binding energy detection ([ed26162](https://github.com/kmnhan/erlabpy/commit/ed26162724ffb1fb263347f1a1c21d26602b6784))
 - **interactive.imagetool:** show unarchiving message on double click ([d3dd3ee](https://github.com/kmnhan/erlabpy/commit/d3dd3eeffc25ccb10d507962815019deb961fa3c))
