@@ -260,7 +260,7 @@ def test_loader(qtbot):
                     errno.ENOENT, os.strerror(errno.ENOENT), "some_nonexistent_dir"
                 )
             )
-        ),
+        ).replace("some_nonexistent_dir", ".*some_nonexistent_dir"),
     ):
         erlab.io.loaders.set_data_dir("some_nonexistent_dir")
 
