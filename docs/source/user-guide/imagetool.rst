@@ -96,8 +96,8 @@ Using the ImageTool manager
 ---------------------------
 One drawback of using interactive tools inside Jupyter notebooks is that the tool
 execution is a blocking call. This means that you cannot run any other code while the
-tool is running. As a workaround, we provide :class:`ImageToolManager
-<erlab.interactive.imagetool.ImageToolManager>`.
+tool is running. As a workaround, we provide a standalone application called
+:class:`ImageToolManager <erlab.interactive.imagetool.ImageToolManager>`.
 
 In the environment where ERLabPy installed, run ``itool-manager`` in a terminal to start
 the manager application. Subsequent calls to :func:`itool
@@ -112,28 +112,27 @@ Alternatively, you can run the following code in a python environment where ERLa
 .. note::
 
   - The manager is designed to be global, so you can only have one manager running on a
-    single machine that will handle all ImageTool instances opened from different
+    single machine. The manager can handle ImageTool windows opened from different
     sessions.
 
-  - Opening in the manager has a slight overhead compared to opening directly from the
-    notebook. The overhead is more noticeable for larger data. You can still open
-    directly while the manager is running by passing `use_manager=False` to :func:`itool
-    <erlab.interactive.imagetool.itool>` or :class:`qshow
-    <erlab.accessors.general.InteractiveDataArrayAccessor>`.
+  - Sending the data to the manager has a slight overhead which is more noticeable for
+    larger data. You can still open data directly while the manager is running by
+    passing `use_manager=False` to :func:`itool <erlab.interactive.imagetool.itool>` or
+    :class:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor>`.
 
 The manager application consists of a small window that shows the list of opened
 ImageTools, along with some buttons to manage them. Hovering over the buttons will show
 tooltips that explain what each button does.
 
-There are three ways to open an ImageTool with the manager:
+There are three ways to open data in the manager:
 
-- Invocations of ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` and :class:`qshow
-  <erlab.accessors.general.InteractiveDataArrayAccessor>` from any python script or
-  Jupyter notebook will automatically be added to the manager.
+- Invocations of ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` and
+  :class:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor>` from *any*
+  python script or Jupyter notebook session will automatically be added to the manager.
 
 - Open files through the ``File`` menu in the menu bar of the manager application.
 
-- Drag and drop supported files to the manager window.
+- Drag and drop supported files from your system file browser to the manager window.
 
 One of the main features of the manager is that it can save and load the state of
 ImageTool windows to a HDF5 file. You can save all ImageTool windows in the manager to a
