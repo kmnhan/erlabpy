@@ -257,7 +257,7 @@ def test_loader(qtbot) -> None:
         match=re.escape(
             str(
                 FileNotFoundError(
-                    errno.ENOENT, os.strerror(errno.ENOENT), ".*some_nonexistent_dir"
+                    errno.ENOENT, os.strerror(errno.ENOENT), "some_nonexistent_dir"
                 )
             )
         ).replace("some_nonexistent_dir", ".*some_nonexistent_dir"),
