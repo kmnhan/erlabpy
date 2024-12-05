@@ -15,8 +15,11 @@ from __future__ import annotations
 __all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
 
 import contextlib
+import datetime
 import enum
 import gc
+import importlib
+import logging
 import os
 import pathlib
 import pickle
@@ -26,16 +29,16 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import uuid
 import weakref
-from collections.abc import Iterable, ValuesView
+from collections.abc import Hashable, Iterable, ValuesView
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import qtawesome as qta
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
+from xarray.core.formatting import render_human_readable_nbytes
 
 from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.core import SlicerLinkProxy
@@ -45,6 +48,8 @@ from erlab.interactive.utils import (
     file_loaders,
     wait_dialog,
 )
+from erlab.utils.array import is_monotonic, is_uniform_spaced
+from erlab.utils.formatting import format_html_table, format_value
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -53,6 +58,8 @@ if TYPE_CHECKING:
     import xarray
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
+
+logger = logging.getLogger(__name__)
 
 PORT: int = int(os.getenv("ITOOL_MANAGER_PORT", "45555"))
 """Port number for the manager server.
@@ -82,6 +89,9 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 )
 """Colors for different linkers."""
 
+_ACCENT_PLACEHOLDER: str = "<info-accent-color>"
+"""Placeholder for accent color in HTML strings."""
+
 
 class _WrapperItemDataRole(enum.IntEnum):
     ToolIndexRole = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -105,7 +115,110 @@ def _recv_all(conn, size):
     return data
 
 
-def fill_rounded_rect(
+def _format_dim_name(s: Hashable) -> str:
+    return f"<b>{s}</b>"
+
+
+def _format_dim_sizes(darr: xr.DataArray, prefix: str) -> str:
+    out = f"<p>{prefix}("
+
+    dims_list = []
+    for d in darr.dims:
+        dim_label = _format_dim_name(d) if d in darr.coords else str(d)
+        dims_list.append(f"{dim_label}: {darr.sizes[d]}")
+
+    out += ", ".join(dims_list)
+    out += r")</p>"
+    return out
+
+
+def _format_coord_dims(coord: xr.DataArray) -> str:
+    dims = tuple(str(d) for d in coord.variable.dims)
+
+    if len(dims) > 1:
+        return f"({', '.join(dims)})&emsp;"
+
+    if len(dims) == 1 and dims[0] != coord.name:
+        return f"({dims[0]})&emsp;"
+
+    return ""
+
+
+def _format_array_values(val: npt.NDArray) -> str:
+    if val.size == 1:
+        return format_value(val.item())
+
+    val = val.squeeze()
+
+    if val.ndim == 1:
+        if len(val) == 2:
+            return f"[{format_value(val[0])}, {format_value(val[1])}]"
+
+        if is_uniform_spaced(val):
+            if val[0] == val[-1]:
+                return format_value(val[0])
+
+            start, end, step = tuple(
+                format_value(v) for v in (val[0], val[-1], val[1] - val[0])
+            )
+            return f"{start} : {step} : {end}"
+
+        if is_monotonic(val):
+            if val[0] == val[-1]:
+                return format_value(val[0])
+
+            return f"{format_value(val[0])} to {format_value(val[-1])}"
+
+    mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
+    return f"min {mn} max {mx}"
+
+
+def _format_coord_key(key: Hashable, is_dim: bool) -> str:
+    style = f"color: {_ACCENT_PLACEHOLDER}; "
+    if is_dim:
+        style += "font-weight: bold; "
+    return f"<span style='{style}'>{key}</span>&emsp;"
+
+
+def _format_attr_key(key: Hashable) -> str:
+    style = f"color: {_ACCENT_PLACEHOLDER};"
+    return f"<span style='{style}'>{key}</span>&emsp;"
+
+
+def _format_info_html(darr: xr.DataArray, created_time: datetime.datetime) -> str:
+    out = ""
+
+    name = ""
+    if darr.name is not None and darr.name != "":
+        name = f"'{darr.name}'&emsp;"
+
+    out += _format_dim_sizes(darr, name)
+    out += rf"<p>Size {render_human_readable_nbytes(darr.nbytes)}</p>"
+    out += rf"<p>Added {created_time.isoformat(sep=' ', timespec='seconds')}</p>"
+
+    out += r"Coordinates:"
+    coord_rows: list[list[str]] = []
+    for key, coord in darr.coords.items():
+        is_dim: bool = key in darr.dims
+        coord_rows.append(
+            [
+                _format_coord_key(key, is_dim),
+                _format_coord_dims(coord),
+                _format_array_values(coord.values),
+            ]
+        )
+    out += format_html_table(coord_rows)
+
+    out += r"<br>Attributes:"
+    attr_rows: list[list[str]] = []
+    for key, attr in darr.attrs.items():
+        attr_rows.append([_format_attr_key(key), format_value(attr)])
+    out += format_html_table(attr_rows)
+
+    return out
+
+
+def _fill_rounded_rect(
     painter: QtGui.QPainter,
     rect: QtCore.QRect | QtCore.QRectF,
     facecolor: QtGui.QColor | QtGui.QBrush,
@@ -142,11 +255,13 @@ class _ManagerServer(QtCore.QThread):
     def run(self) -> None:
         self.stopped.clear()
 
+        logger.debug("Starting server...")
         soc = socket.socket()
         soc.bind(("127.0.0.1", PORT))
         soc.setblocking(False)
         soc.listen()
-        print("Server is listening...")
+
+        logger.info("Server is listening...")
 
         while not self.stopped.is_set():
             try:
@@ -156,6 +271,7 @@ class _ManagerServer(QtCore.QThread):
                 continue
 
             conn.setblocking(True)
+            logger.debug("Connection accepted")
             # Receive the size of the data first
             data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
 
@@ -163,8 +279,11 @@ class _ManagerServer(QtCore.QThread):
             kwargs = _recv_all(conn, data_size)
             try:
                 kwargs = pickle.loads(kwargs)
+                logger.debug("Received data: %s", kwargs)
+
                 files = kwargs.pop("__filename")
                 self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+                logger.debug("Emitted loaded data")
 
                 # Clean up temporary files
                 for f in files:
@@ -173,6 +292,8 @@ class _ManagerServer(QtCore.QThread):
                     if os.path.isdir(dirname):
                         with contextlib.suppress(OSError):
                             os.rmdir(dirname)
+                logger.debug("Cleaned up temporary files")
+
             except (
                 pickle.UnpicklingError,
                 AttributeError,
@@ -180,12 +301,10 @@ class _ManagerServer(QtCore.QThread):
                 ImportError,
                 IndexError,
             ):
-                print(
-                    f"Failed to unpickle data due to the following error:\n"
-                    f"{traceback.format_exc()}"
-                )
+                logger.exception("Failed to unpickle received data")
 
             conn.close()
+            logger.debug("Connection closed")
 
         soc.close()
 
@@ -286,6 +405,9 @@ class _ImageToolWrapper(QtCore.QObject):
         self._recent_geometry: QtCore.QRect | None = None
         self._name: str = tool.windowTitle()
         self._archived_fname: str | None = None
+        self._created_time: datetime.datetime = datetime.datetime.now()
+
+        self._info_text_archived: str = ""
 
         self.tool = tool
 
@@ -304,6 +426,21 @@ class _ImageToolWrapper(QtCore.QObject):
         if _manager:
             return _manager
         raise LookupError("Parent was destroyed")
+
+    @property
+    def info_text(self) -> str:
+        if self.archived:
+            text: str = self._info_text_archived
+        else:
+            text = _format_info_html(self.slicer_area._data, self._created_time)
+
+        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
+            # Accent color is available from Qt 6.6
+            accent_color = QtWidgets.QApplication.palette().accent().color().name()
+        else:
+            accent_color = "#0078d7"
+
+        return text.replace(_ACCENT_PLACEHOLDER, accent_color)
 
     @property
     def tool(self) -> ImageTool | None:
@@ -440,7 +577,12 @@ class _ImageToolWrapper(QtCore.QObject):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            cast(ImageTool, self.tool).to_file(self._archived_fname)
+            tool = cast(ImageTool, self.tool)
+            tool.to_file(self._archived_fname)
+
+            self._info_text_archived = _format_info_html(
+                self.slicer_area._data, self._created_time
+            )
             self.dispose_tool()
 
     @QtCore.Slot()
@@ -455,6 +597,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
             self.manager._sigReloadLinkers.emit()
+            self._info_text_archived = ""
 
 
 class _ResizingLineEdit(QtWidgets.QLineEdit):
@@ -498,8 +641,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     -------
     manager
         Returns the manager instance, raises LookupError if the manager is destroyed.
-    _combine_colors(c1, c2, weight=1.0)
-        Combines two colors with a given weight.
     createEditor(parent, option, index)
         Creates an editor widget for editing item names.
     updateEditorGeometry(editor, option, index)
@@ -645,7 +786,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     cast(SlicerLinkProxy, tool_wrapper.slicer_area._linking_proxy)
                 ),
             )
-            fill_rounded_rect(
+            _fill_rounded_rect(
                 painter,
                 QtCore.QRectF(
                     icon_x - self.icon_inner_pad,
@@ -995,7 +1136,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._linkers: list[SlicerLinkProxy] = []
 
         # Initialize actions
-
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
         self.show_action.setToolTip("Show selected windows")
@@ -1106,11 +1246,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         layout.addWidget(titlebar)
 
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+
+        self.text_box = QtWidgets.QTextEdit()
+        self.text_box.setReadOnly(True)
+
         self.list_view = _ImageToolWrapperListView(self)
-        layout.addWidget(self.list_view)
-        self.list_view._selection_model.selectionChanged.connect(
-            self._update_action_state
-        )
+        self.list_view._selection_model.selectionChanged.connect(self._update_actions)
+        self.list_view._selection_model.selectionChanged.connect(self._update_info)
+        self.list_view._model.dataChanged.connect(self._update_info)
+
+        layout.addWidget(splitter)
+        splitter.addWidget(self.list_view)
+        splitter.addWidget(self.text_box)
+        splitter.setSizes([150, 100])
 
         # Temporary directory for storing archived data
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
@@ -1120,10 +1269,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_directory: str | None = None
 
         self.setCentralWidget(container)
-        self.sigLinkersChanged.connect(self._update_action_state)
+        self.sigLinkersChanged.connect(self._update_actions)
         self.sigLinkersChanged.connect(self.list_view.refresh)
         self._sigReloadLinkers.connect(self._cleanup_linkers)
-        self._update_action_state()
+        self._update_actions()
+        self._update_info()
 
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self.data_recv)
@@ -1133,8 +1283,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._shm = QtCore.QSharedMemory(_SHM_NAME)
         self._shm.create(1)  # Create segment so that it can be attached to
 
-        self.setMinimumWidth(300)
-        self.setMinimumHeight(200)
+        # Golden ratio :)
+        self.setMinimumWidth(301)
+        self.setMinimumHeight(487)
 
     @property
     def cache_dir(self) -> str:
@@ -1212,7 +1363,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return index
 
     @QtCore.Slot()
-    def _update_action_state(self) -> None:
+    def _update_info(self) -> None:
+        """Update the information text box."""
+        selection = self.list_view.selected_tool_indices
+        match len(selection):
+            case 0:
+                self.text_box.setPlainText("Select a window to view its information.")
+                return
+            case 1:
+                self.text_box.setHtml(self._tool_wrappers[selection[0]].info_text)
+                return
+            case _:
+                self.text_box.setPlainText(f"{len(selection)} selected")
+
+    @QtCore.Slot()
+    def _update_actions(self) -> None:
         """Update the state of the actions based on the current selection."""
         selection_archived: list[int] = []
         selection_unarchived: list[int] = []
@@ -1547,12 +1712,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
             try:
                 indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
             except Exception as e:
+                logger.exception("Error creating tool from received data")
                 self._error_creating_tool(e)
 
         if link:
             self.link_tools(*indices, link_colors=link_colors)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None):
+        """Handle drag-and-drop operations entering the window."""
         if event:
             mime_data: QtCore.QMimeData | None = event.mimeData()
             if mime_data and mime_data.hasUrls():
@@ -1561,6 +1728,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 event.ignore()
 
     def dropEvent(self, event: QtGui.QDropEvent | None):
+        """Handle drag-and-drop operations dropping files into the window."""
         if event:
             mime_data: QtCore.QMimeData | None = event.mimeData()
             if mime_data and mime_data.hasUrls():
@@ -1658,7 +1826,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 try:
                     dt = xr.open_datatree(p, engine="h5netcdf")
                 except Exception:
-                    pass
+                    logger.debug("Failed to open %s as datatree workspace", p)
                 else:
                     if self._is_datatree_workspace(dt):
                         self._from_datatree(dt)
@@ -1757,7 +1925,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        """Properly clear all resources before closing the application."""
+        """Handle proper termination of resources before closing the application."""
         if self.ntools != 0:
             msg_box = QtWidgets.QMessageBox(self)
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -1835,9 +2003,18 @@ def main() -> None:
 
     Running ``itool-manager`` from a shell will invoke this function.
     """
+    # Import colormaps if available
+    if importlib.util.find_spec("cmasher"):
+        importlib.import_module("cmasher")
+    if importlib.util.find_spec("cmocean"):
+        importlib.import_module("cmocean")
+    if importlib.util.find_spec("colorcet"):
+        importlib.import_module("colorcet")
+    if importlib.util.find_spec("seaborn"):
+        importlib.import_module("seaborn")
+
     qapp = QtWidgets.QApplication(sys.argv)
     qapp.setStyle("Fusion")
-
     qapp.setWindowIcon(
         QtGui.QIcon(
             os.path.join(
@@ -1893,12 +2070,11 @@ def show_in_manager(
             "application before using this function"
         )
 
-    client_socket = socket.socket()
-    client_socket.connect(("localhost", PORT))
-
+    logger.debug("Parsing input data into DataArrays")
     darr_list: list[xarray.DataArray] = _parse_input(data)
 
     # Save the data to a temporary file
+    logger.debug("Pickling data to temporary files")
     tmp_dir = tempfile.mkdtemp(prefix="erlab_manager_")
 
     files: list[str] = []
@@ -1914,10 +2090,17 @@ def show_in_manager(
     # Serialize kwargs dict into a byte stream
     kwargs = pickle.dumps(kwargs, protocol=-1)
 
+    logger.debug("Connecting to server")
+    client_socket = socket.socket()
+    client_socket.connect(("localhost", PORT))
+
+    logger.debug("Sending data")
     # Send the size of the data first
     client_socket.sendall(struct.pack(">L", len(kwargs)))
     client_socket.sendall(kwargs)
     client_socket.close()
+
+    logger.debug("Data sent successfully")
 
 
 if __name__ == "__main__":
