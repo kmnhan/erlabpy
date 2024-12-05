@@ -85,7 +85,7 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
-change_type_map = { "BREAKING CHANGE" = "🚨 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance",  "refactor" = "🛠 Code Refactor" }
+change_type_map = { "BREAKING CHANGE" = "🚨 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "🛠 Code Refactor" }
 
 version_provider = "pep621"
 update_changelog_on_bump = true
