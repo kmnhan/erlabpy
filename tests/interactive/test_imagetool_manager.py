@@ -266,7 +266,6 @@ def test_manager_workspace_io(qtbot, accept_dialog):
     assert manager.ntools == 4
 
     select_tools(manager, list(manager._tool_wrappers.keys()))
-
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
     manager.close()
@@ -375,3 +374,58 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data):
     manager.remove_tool(0)
     accept_dialog(manager.close)
     tmp_dir.cleanup()
+
+
+def test_manager_console(qtbot, accept_dialog, data):
+    manager = ImageToolManager()
+
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+
+    itool([data, data], link=True, link_colors=True, use_manager=True)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+
+    # Open console
+    manager.toggle_console()
+    qtbot.waitUntil(manager.console.isVisible, timeout=2000)
+
+    def _get_last_output_line() -> str:
+        return (
+            manager.console._console_widget.output.toPlainText().strip().split("\n")[-1]
+        )
+
+    # Test delayed import
+    manager.console._console_widget.repl.runCmd("era")
+    assert _get_last_output_line().startswith("<module 'erlab.analysis'")
+
+    # Test repr
+    manager.console._console_widget.repl.runCmd("tools")
+    assert _get_last_output_line() == "1:"
+    manager.console._console_widget.repl.runCmd("tools[0]")
+
+    # Test calling wrapped methods
+    manager.console._console_widget.repl.runCmd("tools[0].archive()")
+    qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)
+
+    # Test setting data
+    manager.console._console_widget.repl.runCmd(
+        "tools[1].data = xr.DataArray("
+        "np.arange(25).reshape((5, 5)) * 2, "
+        "dims=['x', 'y'], "
+        "coords={'x': np.arange(5), 'y': np.arange(5)}"
+        ")"
+    )
+    xr.testing.assert_identical(manager.get_tool(1).slicer_area.data, data * 2)
+
+    # Remove all tools
+    select_tools(manager, list(manager._tool_wrappers.keys()))
+    accept_dialog(manager.remove_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+
+    # Test repr
+    manager.console._console_widget.repl.runCmd("tools")
+    assert _get_last_output_line() == "No tools"
+    manager.close()

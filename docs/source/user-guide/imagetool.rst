@@ -140,4 +140,9 @@ single file through the ``Save Workspace As...`` menu item in the ``File`` menu.
 saved windows can later be restored through the ``Open Workspace...`` item in the same
 menu.
 
+The manager also has an incorporated Python console that can manipulate ImageTool
+windows and the data they contain, as well as run arbitrary Python code. The console can
+be toggled by pressing :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through the
+``View`` menu in the menubar.
+
 Try exploring the menubar of the manager application to see what you can do!
