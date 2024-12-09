@@ -221,10 +221,6 @@ class KspaceToolGUI(
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
-        if name == self.cmap_combo.LOAD_ALL_TEXT:
-            self.cmap_combo.load_all()
-            return
-
         for im in self.images:
             im.set_colormap(
                 name,
