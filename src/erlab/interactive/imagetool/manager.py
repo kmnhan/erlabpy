@@ -453,11 +453,10 @@ class _ImageToolWrapper(QtCore.QObject):
         else:
             text = _format_info_html(self.slicer_area._data, self._created_time)
 
+        accent_color = "#0078d7"
         if hasattr(QtGui.QPalette.ColorRole, "Accent"):
             # Accent color is available from Qt 6.6
             accent_color = QtWidgets.QApplication.palette().accent().color().name()
-        else:
-            accent_color = "#0078d7"
 
         return text.replace(_ACCENT_PLACEHOLDER, accent_color)
 

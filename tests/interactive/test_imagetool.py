@@ -235,6 +235,10 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     win.slicer_area.set_data(data.rename("new_data"))
     assert win.windowTitle() == "new_data"
 
+    # Colormap combobox
+    win.slicer_area._colorbar.cb.load_all()
+    win.slicer_area._colorbar.cb.showPopup()
+
     win.close()
 
     del win
