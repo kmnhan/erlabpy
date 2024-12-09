@@ -605,6 +605,11 @@ class ItoolMenuBar(DictMenuBar):
                         "shortcut": QtGui.QKeySequence.StandardKey.SaveAs,
                         "triggered": self.image_tool._export_file,
                     },
+                    "&Close": {
+                        "shortcut": QtGui.QKeySequence.StandardKey.Close,
+                        "triggered": self.image_tool.close,
+                        "sep_before": True,
+                    },
                 },
             },
             "viewMenu": {
