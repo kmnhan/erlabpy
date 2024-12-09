@@ -35,7 +35,7 @@ values_4d = value_func_4d(*np.meshgrid(x, y, z, w, indexing="ij"))
 
 @pytest.mark.parametrize("values", [values_1d, values_2d, values_3d, values_4d])
 @pytest.mark.parametrize("point", [np.array([2.21, 2.67]), np.array([[2.21], [2.67]])])
-def test_interpn_1d(values, point):
+def test_interpn_1d(values, point) -> None:
     points = (x,)
     assert np.allclose(
         interpn(points, values, point),
@@ -49,7 +49,7 @@ def test_interpn_1d(values, point):
 @pytest.mark.parametrize(
     "point", [np.array([2.21, 3.12]), np.array([[2.21, 3.12], [2.67, 3.54]])]
 )
-def test_interpn_2d(values, point):
+def test_interpn_2d(values, point) -> None:
     points = (x, y)
     assert np.allclose(
         interpn(points, values, point),
@@ -61,7 +61,7 @@ def test_interpn_2d(values, point):
 
 @pytest.mark.parametrize("values", [values_3d, values_4d])
 @pytest.mark.parametrize("point", [np.array([[2.21, 3.12, 1.15], [2.67, 3.54, 1.03]])])
-def test_interpn_3d(values, point):
+def test_interpn_3d(values, point) -> None:
     points = (x, y, z)
     assert np.allclose(
         interpn(points, values, point),
@@ -71,7 +71,7 @@ def test_interpn_3d(values, point):
     )
 
 
-def test_slice_along_path():
+def test_slice_along_path() -> None:
     x = np.linspace(0, 10, 11)
     y = np.linspace(0, 10, 11)
     z = np.linspace(0, 10, 11)
@@ -134,7 +134,7 @@ def test_slice_along_path():
     )
 
 
-def test_slice_along_vector():
+def test_slice_along_vector() -> None:
     x = np.linspace(0, 1, 5)
     y = np.linspace(0, 1, 5)
     z = np.linspace(0, 1, 5)

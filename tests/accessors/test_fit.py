@@ -25,7 +25,7 @@ def test_modelfit(
     exp_decay_model: lmfit.Model,
     fit_test_darr: xr.DataArray,
     fit_expected_darr: xr.DataArray,
-):
+) -> None:
     # Tests are adapted from xarray's curvefit tests
     if use_dask:
         fit_test_darr = fit_test_darr.chunk({"x": 1})
@@ -61,7 +61,7 @@ def test_modelfit(
     assert fit.modelfit_results.dims == ()
 
 
-def test_parallel_fit(fit_test_darr, fit_expected_darr):
+def test_parallel_fit(fit_test_darr, fit_expected_darr) -> None:
     def exp_decay(t, n0, tau=1):
         return n0 * np.exp(-t / tau)
 
@@ -88,7 +88,7 @@ def test_parallel_fit(fit_test_darr, fit_expected_darr):
 
 
 @pytest.mark.parametrize("use_dask", [True, False])
-def test_modelfit_params(use_dask: bool):
+def test_modelfit_params(use_dask: bool) -> None:
     def sine(t, a, f, p):
         return a * np.sin(2 * np.pi * (f * t + p))
 

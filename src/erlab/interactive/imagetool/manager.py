@@ -1959,7 +1959,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.console._console_widget.output.setFocus()
             self.console._console_widget.input.setFocus()
 
-    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None):
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
         """Handle drag-and-drop operations entering the window."""
         if event:
             mime_data: QtCore.QMimeData | None = event.mimeData()
@@ -1968,7 +1968,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 event.ignore()
 
-    def dropEvent(self, event: QtGui.QDropEvent | None):
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
         """Handle drag-and-drop operations dropping files into the window."""
         if event:
             mime_data: QtCore.QMimeData | None = event.mimeData()

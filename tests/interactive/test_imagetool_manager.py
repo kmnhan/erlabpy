@@ -27,7 +27,9 @@ def data():
     )
 
 
-def select_tools(manager: ImageToolManager, indices: list[int], deselect: bool = False):
+def select_tools(
+    manager: ImageToolManager, indices: list[int], deselect: bool = False
+) -> None:
     selection_model = manager.list_view.selectionModel()
 
     for index in indices:
@@ -53,7 +55,7 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
 
 
 @pytest.mark.parametrize("use_socket", [True, False])
-def test_manager(qtbot, accept_dialog, data, use_socket):
+def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = use_socket
 
     erlab.interactive.imagetool.manager.main(execute=False)
@@ -181,7 +183,7 @@ def test_manager(qtbot, accept_dialog, data, use_socket):
     erlab.interactive.imagetool.manager._always_use_socket = False
 
 
-def test_manager_sync(qtbot, move_and_compare_values, data):
+def test_manager_sync(qtbot, move_and_compare_values, data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -226,7 +228,7 @@ def test_manager_sync(qtbot, move_and_compare_values, data):
     manager.close()
 
 
-def test_manager_workspace_io(qtbot, accept_dialog):
+def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -271,7 +273,7 @@ def test_manager_workspace_io(qtbot, accept_dialog):
     manager.close()
 
 
-def test_can_drop_mime_data(qtbot):
+def test_can_drop_mime_data(qtbot) -> None:
     manager = ImageToolManager()
     model = _ImageToolWrapperListModel(manager)
 
@@ -283,7 +285,7 @@ def test_can_drop_mime_data(qtbot):
     manager.close()
 
 
-def test_listview(qtbot, accept_dialog, data):
+def test_listview(qtbot, accept_dialog, data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -325,7 +327,7 @@ def test_listview(qtbot, accept_dialog, data):
     accept_dialog(manager.close)
 
 
-def test_manager_drag_drop_files(qtbot, accept_dialog, data):
+def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
     data.to_netcdf(filename, engine="h5netcdf")
@@ -376,7 +378,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data):
     tmp_dir.cleanup()
 
 
-def test_manager_console(qtbot, accept_dialog, data):
+def test_manager_console(qtbot, accept_dialog, data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)

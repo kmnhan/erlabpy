@@ -4,7 +4,7 @@ import xarray as xr
 from erlab.analysis.fit import models
 
 
-def test_fermi_edge_model():
+def test_fermi_edge_model() -> None:
     # Create a test input DataArray
     x = np.linspace(-0.1, 0.1, 100)
     data = np.zeros_like(x)
@@ -44,7 +44,7 @@ def test_fermi_edge_model():
     assert np.allclose(result.best_fit, data)
 
 
-def test_fermi_edge_2d_model():
+def test_fermi_edge_2d_model() -> None:
     # Create a test input DataArray
     eV = np.linspace(-1.1, 0.1, 100)
     alpha = np.linspace(-10.0, 10.0, 100)
@@ -70,7 +70,7 @@ def test_fermi_edge_2d_model():
     assert result["temp"].value == 300.0
 
 
-def test_multi_peak_model():
+def test_multi_peak_model() -> None:
     # Create test data
     x = np.linspace(-10, 10, 100)
     y = np.zeros_like(x)
@@ -135,7 +135,7 @@ def test_multi_peak_model():
         model.fit(y, params, x=x)
 
 
-def test_polynomial_model():
+def test_polynomial_model() -> None:
     # Create test data
     x = np.linspace(-10, 10, 100)
     y = np.polyval([3, -2, 1], x)
@@ -164,7 +164,7 @@ def test_polynomial_model():
     assert np.allclose(result.best_fit, y)
 
 
-def test_step_edge_model():
+def test_step_edge_model() -> None:
     # Create a test input DataArray
     x = np.linspace(-10, 10, 100)
     data = np.zeros_like(x)

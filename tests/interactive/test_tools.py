@@ -15,7 +15,7 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.kspace import ktool
 
 
-def test_goldtool(qtbot, gold):
+def test_goldtool(qtbot, gold) -> None:
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
@@ -39,7 +39,7 @@ def test_goldtool(qtbot, gold):
     )
 
 
-def test_dtool(qtbot):
+def test_dtool(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]).astype(
         np.float64
     )
@@ -74,7 +74,7 @@ result = _processed.differentiate('y').differentiate('y')"""
     assert win.copy_code() == "result = era.image.minimum_gradient(data)"
 
 
-def test_ktool_compatible(anglemap):
+def test_ktool_compatible(anglemap) -> None:
     cut = anglemap.qsel(beta=-8.3)
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
@@ -87,7 +87,7 @@ def test_ktool_compatible(anglemap):
 
 
 @pytest.mark.parametrize("constant_energy", [True, False])
-def test_ktool(qtbot, anglemap, constant_energy):
+def test_ktool(qtbot, anglemap, constant_energy) -> None:
     anglemap = anglemap.copy()
 
     if constant_energy:
@@ -157,7 +157,7 @@ anglemap_kconv = anglemap.kspace.convert()"""
     assert manager.ntools == 0
 
 
-def test_curvefittingtool(qtbot):
+def test_curvefittingtool(qtbot) -> None:
     data = xr.DataArray(np.arange(25), dims=["x"]).astype(np.float64)
     win_mdc = mdctool(data, execute=False)
     win_edc = edctool(data, execute=False)
@@ -165,7 +165,7 @@ def test_curvefittingtool(qtbot):
     qtbot.addWidget(win_mdc)
 
 
-def test_bzplot(qtbot):
+def test_bzplot(qtbot) -> None:
     win = BZPlotter(execute=False)
     qtbot.addWidget(win)
     qtbot.addWidget(win.controls)

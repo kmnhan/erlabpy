@@ -326,15 +326,15 @@ class CropDialog(DataTransformDialog):
             )
         return slice_dict
 
-    def exec(self):
+    def exec(self) -> int:
         if self.slicer_area.n_cursors == 1:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Only 1 Cursor",
                 "You need at least 2 cursors to crop the data.",
             )
-            return
-        super().exec()
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super().exec()
 
     @QtCore.Slot()
     def accept(self) -> None:

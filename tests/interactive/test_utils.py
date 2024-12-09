@@ -11,7 +11,7 @@ def action():
     return action
 
 
-def test_icon_action_button_initialization(qtbot, action):
+def test_icon_action_button_initialization(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     assert button._action == action
     assert button.icon_key_on == "mdi6.plus"
@@ -19,7 +19,7 @@ def test_icon_action_button_initialization(qtbot, action):
     assert button.isCheckable()
 
 
-def test_icon_action_button_set_action(qtbot, action):
+def test_icon_action_button_set_action(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     new_action = QtGui.QAction("New Action")
     new_action.setCheckable(True)
@@ -27,7 +27,7 @@ def test_icon_action_button_set_action(qtbot, action):
     assert button._action == new_action
 
 
-def test_icon_action_button_update_from_action(qtbot, action):
+def test_icon_action_button_update_from_action(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     action.setText("Updated Action")
     action.setEnabled(False)
@@ -38,14 +38,14 @@ def test_icon_action_button_update_from_action(qtbot, action):
     assert button.toolTip() == "Updated Tooltip"
 
 
-def test_icon_action_button_click(qtbot, action):
+def test_icon_action_button_click(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     qtbot.addWidget(button)
     qtbot.mouseClick(button, QtCore.Qt.LeftButton)
     assert action.isChecked()
 
 
-def test_icon_action_button_toggle(qtbot, action):
+def test_icon_action_button_toggle(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     qtbot.addWidget(button)
     qtbot.mouseClick(button, QtCore.Qt.LeftButton)

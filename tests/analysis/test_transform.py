@@ -6,7 +6,7 @@ import xarray.testing
 from erlab.analysis.transform import rotate, shift
 
 
-def test_rotate():
+def test_rotate() -> None:
     input_arr = xr.DataArray(
         np.arange(12).reshape((3, 4)).astype(float),
         dims=("y", "x"),
@@ -120,7 +120,7 @@ def test_rotate():
         )
 
 
-def test_shift():
+def test_shift() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(
         np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float), dims=["x", "y"]

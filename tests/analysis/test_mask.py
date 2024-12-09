@@ -4,7 +4,7 @@ import xarray as xr
 from erlab.analysis.mask import mask_with_hex_bz, mask_with_polygon, spherical_mask
 
 
-def test_mask_with_hex_bz():
+def test_mask_with_hex_bz() -> None:
     rng = np.random.default_rng(1)
     kxymap = xr.DataArray(
         rng.random((5, 5)),
@@ -25,7 +25,7 @@ def test_mask_with_hex_bz():
     xr.testing.assert_equal(masked_map[1:-1, 1:-1], kxymap[1:-1, 1:-1])
 
 
-def test_mask_with_polygon():
+def test_mask_with_polygon() -> None:
     # Create a sample input array
     arr = xr.DataArray(
         np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
@@ -50,7 +50,7 @@ def test_mask_with_polygon():
     xr.testing.assert_equal(masked_arr, arr.where(expected_mask))
 
 
-def test_spherical_mask():
+def test_spherical_mask() -> None:
     # Create a test data array
     darr = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
 

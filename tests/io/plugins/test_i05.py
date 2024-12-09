@@ -17,7 +17,7 @@ def expected_dir(data_dir):
 
 
 @pytest.mark.parametrize("fname", ["core", "cut", "fs", "kz"])
-def test_load(expected_dir, fname):
+def test_load(expected_dir, fname) -> None:
     xr.testing.assert_identical(
         erlab.io.load(f"{fname}.nxs"),
         xr.load_dataarray(expected_dir / f"{fname}.h5", engine="h5netcdf"),

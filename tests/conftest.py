@@ -191,7 +191,7 @@ class _DialogHandler(QtCore.QObject):
         log.debug("timeout %d", index)
         self._timed_out = True
         pytest.fail(
-            f"No dialog for index {index} was created after " f"{self.timeout} seconds."
+            f"No dialog for index {index} was created after {self.timeout} seconds."
         )
 
     @QtCore.Slot(int, object)

@@ -27,7 +27,7 @@ def expected_dir(data_dir):
         (3, "f0003.h5"),
     ],
 )
-def test_load(expected_dir, args, expected):
+def test_load(expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
     xr.testing.assert_identical(

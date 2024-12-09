@@ -5,7 +5,7 @@ import xarray as xr
 import erlab.analysis as era
 
 
-def test_gaussian_filter():
+def test_gaussian_filter() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
 
@@ -30,7 +30,7 @@ def test_gaussian_filter():
     assert np.allclose(result, expected_output)
 
 
-def test_gaussian_laplace():
+def test_gaussian_laplace() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
 
@@ -76,7 +76,7 @@ def test_gaussian_laplace():
     assert np.allclose(result2, expected_output2)
 
 
-def test_laplace():
+def test_laplace() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
 
@@ -101,7 +101,7 @@ def test_laplace():
     assert np.allclose(result, expected_output)
 
 
-def test_minimum_gradient():
+def test_minimum_gradient() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
 
@@ -143,7 +143,7 @@ def test_minimum_gradient():
         era.image.minimum_gradient(darr)
 
 
-def test_scaled_laplace():
+def test_scaled_laplace() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(
         np.arange(50, step=2).reshape((5, 5)).astype(float), dims=["x", "y"]
@@ -170,7 +170,7 @@ def test_scaled_laplace():
     assert np.allclose(result, expected_output)
 
 
-def test_curvature():
+def test_curvature() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"]) ** 2
 

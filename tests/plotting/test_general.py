@@ -6,7 +6,7 @@ import xarray as xr
 from erlab.plotting.general import plot_array, plot_slices
 
 
-def test_plot_slices():
+def test_plot_slices() -> None:
     # Create some sample data
     x = np.linspace(0, 1, 11)
     y = np.linspace(0, 1, 11)
@@ -196,7 +196,7 @@ def test_plot_slices():
         ),
     ],
 )
-def test_plot_array(data, colorbar, xlim, ylim, crop, kwargs):
+def test_plot_array(data, colorbar, xlim, ylim, crop, kwargs) -> None:
     _, ax = plt.subplots()
     plot_array(data, colorbar=colorbar, xlim=xlim, ylim=ylim, crop=crop, **kwargs)
     assert ax.get_xlabel() == "y"

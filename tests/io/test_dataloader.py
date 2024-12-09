@@ -85,7 +85,7 @@ def _determine_kind(darr: xr.DataArray) -> str:
     return data_type
 
 
-def test_loader(qtbot):
+def test_loader(qtbot) -> None:
     # Create a temporary directory
     tmp_dir = tempfile.TemporaryDirectory()
 

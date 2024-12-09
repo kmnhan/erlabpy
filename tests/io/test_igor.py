@@ -14,15 +14,15 @@ WAVE1 = xr.DataArray(
 )
 
 
-def test_backend_dataarray(datadir):
+def test_backend_dataarray(datadir) -> None:
     xarray.testing.assert_equal(xr.load_dataarray(datadir / "wave0.ibw"), WAVE0)
 
 
-def test_backend_dataset(datadir):
+def test_backend_dataset(datadir) -> None:
     xarray.testing.assert_equal(xr.load_dataset(datadir / "exp0.pxt")["wave0"], WAVE0)
 
 
-def test_backend_datatree(datadir):
+def test_backend_datatree(datadir) -> None:
     dt = xr.open_datatree(datadir / "exp1.pxt")
     assert dt.groups == ("/", "/wave0", "/testfolder", "/testfolder/wave1")
 
@@ -30,5 +30,5 @@ def test_backend_datatree(datadir):
     xr.testing.assert_equal(dt["testfolder/wave1/wave1"], WAVE1)
 
 
-def test_load_wave(datadir):
+def test_load_wave(datadir) -> None:
     xarray.testing.assert_equal(load_wave(datadir / "wave0.ibw"), WAVE0)

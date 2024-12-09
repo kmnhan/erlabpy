@@ -72,7 +72,7 @@ def config_4_cut(cut):
 
 
 @pytest.mark.parametrize("data_type", ["anglemap", "cut"])
-def test_offsets(data_type, request):
+def test_offsets(data_type, request) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()
     data.kspace.offsets = {"xi": 10.0}
@@ -93,7 +93,7 @@ def test_kconv(
     configuration: AxesConfiguration,
     extra_dims: int,
     request,
-):
+) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
 
     expected = request.getfixturevalue(

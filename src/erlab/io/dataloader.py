@@ -1149,6 +1149,7 @@ class LoaderBase(metaclass=_Loader):
     def load_single(
         self,
         file_path: str | os.PathLike,
+        *,
         without_values: bool = False,
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         r"""Load a single file and return it as an xarray data structure.
