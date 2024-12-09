@@ -15,6 +15,7 @@ __all__ = [
 ]
 
 import contextlib
+import importlib.util
 import weakref
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Literal
@@ -51,26 +52,34 @@ continuous data, and looks horrible.
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
-    LOAD_ALL_TEXT = "Load all..."
-
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.setPlaceholderText("Select colormap...")
         self.setToolTip("Colormap")
-        w, h = 64, 16
-        self.setIconSize(QtCore.QSize(w, h))
-        # for name in pg_colormap_names("local"):
-        for name in pg_colormap_names("all", exclude_local=True):
+        self.setIconSize(QtCore.QSize(64, 16))
+
+        for name in pg_colormap_names("matplotlib", exclude_local=True):
             self.addItem(name)
-        # self.insertItem(0, self.LOAD_ALL_TEXT)
-        self.thumbnails_loaded = False
+
+        self.thumbnails_loaded: bool = False
+        self.loaded_all: bool = False
         self.currentIndexChanged.connect(self.load_thumbnail)
         self.default_cmap: str | None = None
 
         sc_p = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Up"), self)
-        sc_p.activated.connect(self.previousIndex)
+        sc_p.activated.connect(self._prev_idx)
         sc_m = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Alt+Down"), self)
-        sc_m.activated.connect(self.nextIndex)
+        sc_m.activated.connect(self._next_idx)
+
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
+        self._menu = QtWidgets.QMenu("Menu", self)
+        self._menu.addAction("Load All Colormaps", self.load_all)
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_menu(self, position: QtCore.QPoint) -> None:
+        if not self.loaded_all:
+            self._menu.popup(self.mapToGlobal(position))
 
     def load_thumbnail(self, index: int) -> None:
         if not self.thumbnails_loaded:
@@ -79,16 +88,27 @@ class ColorMapComboBox(QtWidgets.QComboBox):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
+        # Import colormap packages if available
+        if importlib.util.find_spec("cmasher"):
+            importlib.import_module("cmasher")
+        if importlib.util.find_spec("cmocean"):
+            importlib.import_module("cmocean")
+        if importlib.util.find_spec("colorcet"):
+            importlib.import_module("colorcet")
+        if importlib.util.find_spec("seaborn"):
+            importlib.import_module("seaborn")
+
         self.clear()
         for name in pg_colormap_names("all", exclude_local=True):
             self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
+        self.thumbnails_loaded = False
+        self.loaded_all = True
         self.resetCmap()
-        self.showPopup()
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
     def showPopup(self) -> None:
         maxWidth = self.maximumWidth()
-        if maxWidth and maxWidth < 16777215:
+        if maxWidth and maxWidth < 16777215:  # default maxwidth of QWidgets
             self.setPopupMinimumWidthForItems()
         if not self.thumbnails_loaded:
             for i in range(self.count()):
@@ -106,7 +126,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             view.setMinimumWidth(maxWidth)
 
     @QtCore.Slot()
-    def nextIndex(self) -> None:
+    def _next_idx(self) -> None:
         self.wheelEvent(
             QtGui.QWheelEvent(
                 QtCore.QPointF(0, 0),
@@ -121,7 +141,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         )
 
     @QtCore.Slot()
-    def previousIndex(self) -> None:
+    def _prev_idx(self) -> None:
         self.wheelEvent(
             QtGui.QWheelEvent(
                 QtCore.QPointF(0, 0),

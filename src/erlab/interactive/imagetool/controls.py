@@ -580,7 +580,7 @@ class ItoolColormapControls(ItoolControlsBase):
     def initialize_widgets(self) -> None:
         super().initialize_widgets()
         self.cb_colormap = ColorMapComboBox(self, maximumWidth=175)
-        self.cb_colormap.textActivated.connect(self.change_colormap)
+        self.cb_colormap.textActivated.connect(self.slicer_area.set_colormap)
 
         self.gamma_widget = ColorMapGammaWidget(spin_cls=BetterSpinBox)
         self.gamma_widget.valueChanged.connect(
@@ -610,12 +610,6 @@ class ItoolColormapControls(ItoolControlsBase):
         self.gamma_widget.blockSignals(True)
         self.gamma_widget.setValue(self.slicer_area.colormap_properties["gamma"])
         self.gamma_widget.blockSignals(False)
-
-    def change_colormap(self, name) -> None:
-        if name == self.cb_colormap.LOAD_ALL_TEXT:
-            self.cb_colormap.load_all()
-        else:
-            self.slicer_area.set_colormap(name)
 
     def connect_signals(self) -> None:
         super().connect_signals()
