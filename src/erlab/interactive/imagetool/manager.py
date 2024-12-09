@@ -528,7 +528,7 @@ class _ImageToolWrapper(QtCore.QObject):
         self._recent_geometry = tool.geometry()
 
     @QtCore.Slot()
-    def show_tool(self) -> None:
+    def show(self) -> None:
         """Show the tool window.
 
         If the tool is not visible, it is shown and raised to the top. Archived tools
@@ -545,7 +545,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self.tool.activateWindow()
 
     @QtCore.Slot()
-    def close_tool(self) -> None:
+    def close(self) -> None:
         """Close the tool window.
 
         This method only closes the tool window. The tool object is not destroyed and
@@ -555,7 +555,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self.tool.close()
 
     @QtCore.Slot()
-    def dispose_tool(self) -> None:
+    def dispose(self) -> None:
         """Dispose the tool object.
 
         This method closes the tool window and destroys the tool object. The tool object
@@ -583,7 +583,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self._info_text_archived = _format_info_html(
                 self.slicer_area._data, self._created_time
             )
-            self.dispose_tool()
+            self.dispose()
 
     @QtCore.Slot()
     def unarchive(self) -> None:
@@ -1142,6 +1142,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.hide_action = QtWidgets.QAction("Hide", self)
         self.hide_action.triggered.connect(self.hide_selected)
+        self.hide_action.setShortcut(QtGui.QKeySequence.StandardKey.Close)
         self.hide_action.setToolTip("Hide selected windows")
 
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
@@ -1150,7 +1151,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.open_action = QtWidgets.QAction("&Open File...", self)
         self.open_action.triggered.connect(self.open)
-        self.open_action.setShortcut(QtGui.QKeySequence("Ctrl+O"))
+        self.open_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.open_action.setToolTip("Open file(s) in ImageTool")
 
         self.save_action = QtWidgets.QAction("&Save Workspace As...", self)
@@ -1167,14 +1168,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.rename_action = QtWidgets.QAction("Rename", self)
         self.rename_action.triggered.connect(self.rename_selected)
+        self.rename_action.setShortcut(QtGui.QKeySequence("Ctrl+R"))
         self.rename_action.setToolTip("Rename selected windows")
 
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
+        self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
         self.link_action.setToolTip("Link selected windows")
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
         self.unlink_action.triggered.connect(self.unlink_selected)
+        self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
         self.unlink_action.setToolTip("Unlink selected windows")
 
         self.archive_action = QtWidgets.QAction("Archive", self)
@@ -1435,7 +1439,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         wrapper = self._tool_wrappers.pop(index)
         if not wrapper.archived:
             cast(ImageTool, wrapper.tool).removeEventFilter(wrapper)
-        wrapper.dispose_tool()
+        wrapper.dispose()
         del wrapper
 
     @QtCore.Slot()
@@ -1460,13 +1464,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.unarchive_selected()
 
         for index in index_list:
-            self._tool_wrappers[index].show_tool()
+            self._tool_wrappers[index].show()
 
     @QtCore.Slot()
     def hide_selected(self) -> None:
         """Hide selected ImageTool windows."""
         for index in self.list_view.selected_tool_indices:
-            self._tool_wrappers[index].close_tool()
+            self._tool_wrappers[index].close()
 
     @QtCore.Slot()
     def remove_selected(self) -> None:

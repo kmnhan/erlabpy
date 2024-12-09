@@ -102,9 +102,9 @@ def test_manager(qtbot, accept_dialog, data):
 
     # Toggle visibility
     geometry = manager.get_tool(1).geometry()
-    manager._tool_wrappers[1].close_tool()
+    manager._tool_wrappers[1].close()
     assert not manager.get_tool(1).isVisible()
-    manager._tool_wrappers[1].show_tool()
+    manager._tool_wrappers[1].show()
     assert manager.get_tool(1).geometry() == geometry
 
     # Removing archived tool
