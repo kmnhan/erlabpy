@@ -14,6 +14,7 @@ import erlab.analysis.transform
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
+from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
@@ -236,8 +237,10 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     assert win.windowTitle() == "new_data"
 
     # Colormap combobox
-    win.slicer_area._colorbar.cb.load_all()
-    win.slicer_area._colorbar.cb.showPopup()
+    cmap_ctrl = win.docks[1].widget().layout().itemAt(0).widget()
+    assert isinstance(cmap_ctrl, ItoolColormapControls)
+    cmap_ctrl.cb_colormap.load_all()
+    cmap_ctrl.cb_colormap.showPopup()
 
     win.close()
 
