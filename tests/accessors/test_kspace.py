@@ -114,7 +114,15 @@ def test_kconv(
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
             data = data.assign_coords(chi=0.0)
 
-    kconv = data.kspace.convert(silent=True)
+    if energy_axis == "kinetic":
+        with pytest.warns(
+            UserWarning,
+            match="The energy axis seems to be in terms of kinetic energy, "
+            "attempting conversion to binding energy.",
+        ):
+            kconv = data.kspace.convert(silent=True)
+    else:
+        kconv = data.kspace.convert(silent=True)
 
     if use_dask:
         kconv = kconv.compute()
