@@ -392,6 +392,27 @@ class BaseImageTool(QtWidgets.QMainWindow):
         group_layout.addWidget(widget)
         return group
 
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        # For some reason, the select all and copy shortcuts don't work in vbox menu
+        # widgets. The events start at the ItoolGraphicsLayoutWidget and is never passed
+        # to menu widgets so we need to intercept them at a higher level.
+        if event is not None and event.type() == QtCore.QEvent.Type.ShortcutOverride:
+            event = cast(QtGui.QKeyEvent, event)
+            focused = QtWidgets.QApplication.focusWidget()
+            if isinstance(
+                focused,
+                QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit,
+            ) and (
+                event.matches(QtGui.QKeySequence.StandardKey.SelectAll)
+                or event.matches(QtGui.QKeySequence.StandardKey.Copy)
+            ):
+                QtWidgets.QApplication.sendEvent(focused, event)
+                return True
+
+        return super().eventFilter(obj, event)
+
     def closeEvent(self, evt: QtGui.QCloseEvent | None) -> None:
         self.slicer_area.close_associated_windows()
         super().closeEvent(evt)
@@ -427,11 +448,15 @@ class ImageTool(BaseImageTool):
         super().__init__(data, **kwargs)
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
-
-        self.mnb = ItoolMenuBar(self)
+        self.setMenuBar(ItoolMenuBar(self))
 
         self.slicer_area.sigDataChanged.connect(self._update_title)
         self._update_title()
+        self.slicer_area.installEventFilter(self)
+
+    @property
+    def mnb(self) -> ItoolMenuBar:
+        return cast(ItoolMenuBar, self.menuBar())
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
