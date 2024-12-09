@@ -7,6 +7,7 @@ import xarray as xr
 import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.imagetool.manager
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -51,8 +52,12 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
     )
 
 
-def test_manager(qtbot, accept_dialog, data):
-    manager = ImageToolManager()
+@pytest.mark.parametrize("use_socket", [True, False])
+def test_manager(qtbot, accept_dialog, data, use_socket):
+    erlab.interactive.imagetool.manager._always_use_socket = use_socket
+
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
 
     qtbot.addWidget(manager)
 
@@ -168,7 +173,12 @@ def test_manager(qtbot, accept_dialog, data):
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 
+    # Show about dialog
+    accept_dialog(manager.about)
+
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
 
 
 def test_manager_sync(qtbot, move_and_compare_values, data):

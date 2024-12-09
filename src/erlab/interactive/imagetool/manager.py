@@ -35,11 +35,15 @@ from collections.abc import Hashable, Iterable, ValuesView
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+import pyqtgraph
 import qtawesome as qta
+import qtpy
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
+import erlab
+import erlab.interactive
 from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.core import SlicerLinkProxy
 from erlab.interactive.utils import (
@@ -74,6 +78,12 @@ _SHM_NAME: str = "__enforce_single_itoolmanager"
 If a shared memory object with this name exists, it means that an instance is running.
 """
 
+_ICON_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "icon.icns" if sys.platform == "darwin" else "icon.png",
+)
+"""Path to the icon file for the manager window."""
+
 
 _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
     QtGui.QColor(76, 114, 176),
@@ -91,6 +101,12 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 
 _ACCENT_PLACEHOLDER: str = "<info-accent-color>"
 """Placeholder for accent color in HTML strings."""
+
+_manager_instance: ImageToolManager | None = None
+"""Reference to the running manager instance."""
+
+_always_use_socket: bool = False
+"""Internal flag to use sockets within same process for test coverage."""
 
 
 class _WrapperItemDataRole(enum.IntEnum):
@@ -1189,8 +1205,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unarchive_action.triggered.connect(self.unarchive_selected)
         self.unarchive_action.setToolTip("Unarchive selected windows")
 
+        self.about_action = QtWidgets.QAction("About", self)
+        self.about_action.triggered.connect(self.about)
         # Construct GUI
-
         titlebar = QtWidgets.QWidget()
         titlebar_layout = QtWidgets.QHBoxLayout()
         titlebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -1203,6 +1220,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.about_action)
 
         edit_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&Edit"))
         edit_menu.addAction(self.remove_action)
@@ -1305,6 +1324,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def next_idx(self) -> int:
         """Index for the next ImageTool window."""
         return max(self._tool_wrappers.keys(), default=-1) + 1
+
+    @QtCore.Slot()
+    def about(self) -> None:
+        """Show the about dialog."""
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIconPixmap(QtGui.QIcon(_ICON_PATH).pixmap(64, 64))
+        msg_box.setText("About ImageTool Manager")
+
+        version_info = {
+            "erlab": erlab.__version__,
+            "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
+            "pyqtgraph": pyqtgraph.__version__,
+            "xarray": xr.__version__,
+            "numpy": np.__version__,
+        }
+        msg_box.setInformativeText(
+            "\n".join(f"{k}: {v}" for k, v in version_info.items())
+        )
+        msg_box.exec()
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
@@ -2002,11 +2040,13 @@ def is_running() -> bool:
     return QtCore.QSharedMemory(_SHM_NAME).attach()
 
 
-def main() -> None:
+def main(execute: bool = True) -> None:
     """Start the ImageToolManager application.
 
     Running ``itool-manager`` from a shell will invoke this function.
     """
+    global _manager_instance
+
     # Import colormaps if available
     if importlib.util.find_spec("cmasher"):
         importlib.import_module("cmasher")
@@ -2017,27 +2057,27 @@ def main() -> None:
     if importlib.util.find_spec("seaborn"):
         importlib.import_module("seaborn")
 
-    qapp = QtWidgets.QApplication(sys.argv)
+    qapp = cast(QtWidgets.QApplication | None, QtWidgets.QApplication.instance())
+    if not qapp:
+        qapp = QtWidgets.QApplication(sys.argv)
+
     qapp.setStyle("Fusion")
-    qapp.setWindowIcon(
-        QtGui.QIcon(
-            os.path.join(
-                os.path.dirname(__file__),
-                "icon.icns" if sys.platform == "darwin" else "icon.png",
-            )
-        )
-    )
+    qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
+    qapp.setApplicationName("imagetool-manager")
     qapp.setApplicationDisplayName("ImageTool Manager")
+    qapp.setApplicationVersion(erlab.__version__)
 
     while is_running():
         dialog = _InitDialog()
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
     else:
-        win = ImageToolManager()
-        win.show()
-        win.activateWindow()
-        qapp.exec()
+        _manager_instance = ImageToolManager()
+        _manager_instance.show()
+        _manager_instance.activateWindow()
+        if execute:
+            qapp.exec()
+            _manager_instance = None
 
 
 def show_in_manager(
@@ -2076,6 +2116,11 @@ def show_in_manager(
 
     logger.debug("Parsing input data into DataArrays")
     darr_list: list[xarray.DataArray] = _parse_input(data)
+
+    if _manager_instance is not None and not _always_use_socket:
+        # If the manager is running in the same process, directly pass the data
+        _manager_instance.data_recv(darr_list, kwargs)
+        return
 
     # Save the data to a temporary file
     logger.debug("Pickling data to temporary files")
