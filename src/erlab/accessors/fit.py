@@ -14,6 +14,7 @@ import itertools
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import lazy_loader as _lazy
 import numpy as np
 import tqdm.auto
 import xarray as xr
@@ -25,7 +26,11 @@ from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
+    import joblib
     import lmfit
+else:
+    lmfit = _lazy.load("lmfit")
+    joblib = _lazy.load("joblib")
 
 
 def _nested_dict_vals(d):
@@ -57,8 +62,6 @@ def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArra
 def _parse_params(
     d: dict[str, Any] | lmfit.Parameters, dask: bool
 ) -> xr.DataArray | _ParametersWrapper:
-    import lmfit
-
     if isinstance(d, lmfit.Parameters):
         # Input to apply_ufunc cannot be a Mapping, so wrap in a class
         return _ParametersWrapper(d)
@@ -74,8 +77,6 @@ def _parse_params(
 
 
 def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
-    import lmfit
-
     for k in d:
         if isinstance(d[k], int | float | complex | xr.DataArray):
             d[k] = {"value": d[k]}
@@ -258,8 +259,6 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         scipy.optimize.curve_fit
 
         """
-        import lmfit
-
         # Implementation analogous to xarray.Dataset.curve_fit
 
         if params is None:
@@ -547,9 +546,6 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         }
 
         if parallel:
-            # Avoid importing until runtime for initial import performance
-            import joblib
-
             if is_dask:
                 emit_user_level_warning(
                     "The input Dataset is chunked. Parallel fitting will not offer any "

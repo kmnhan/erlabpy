@@ -20,7 +20,6 @@ import weakref
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Literal
 
-import matplotlib.colors
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
@@ -694,6 +693,8 @@ def color_to_QColor(c: ColorType, alpha: float | None = None) -> QtGui.QColor:
     PySide6.QtGui.QColor
 
     """
+    import matplotlib.colors
+
     return QtGui.QColor.fromRgbF(*matplotlib.colors.to_rgba(c, alpha=alpha))
 
 

@@ -21,6 +21,7 @@ import weakref
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
+import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import pyperclip
@@ -28,13 +29,17 @@ import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 
 if TYPE_CHECKING:
     import os
     from collections.abc import Callable, Collection, Mapping
 
+    import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
+else:
+    qtawesome = _lazy.load("qtawesome")
 
 __all__ = [
     "AnalysisWidgetBase",
@@ -222,7 +227,6 @@ def file_loaders(
             {"engine": "erlab-igor"},
         ),
     }
-    import erlab.io
 
     additional_loaders: dict[str, tuple[Callable, dict]] = {}
     for k in erlab.io.loaders:
@@ -1080,10 +1084,9 @@ class xImageItem(BetterImageItem):
         else:
             da = self.data_array.T
 
-        from erlab.interactive.imagetool import ImageTool, itool
-
-        tool = cast(ImageTool | None, itool(da, execute=False))
-        if tool is not None:
+        tool = erlab.interactive.itool(da, execute=False)
+        if isinstance(tool, QtWidgets.QWidget):
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._itool = tool
             self._itool.show()
 
@@ -2025,8 +2028,6 @@ class IconButton(QtWidgets.QPushButton):
         self.refresh_icons()
 
     def get_icon(self, icon: str) -> QtGui.QIcon:
-        import qtawesome
-
         return qtawesome.icon(icon)
 
     def refresh_icons(self) -> None:
@@ -2038,8 +2039,6 @@ class IconButton(QtWidgets.QPushButton):
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:  # handles dark mode
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
-            import qtawesome
-
             qtawesome.reset_cache()
             self.refresh_icons()
         super().changeEvent(evt)

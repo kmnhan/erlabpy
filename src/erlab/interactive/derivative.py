@@ -343,7 +343,7 @@ class DerivativeTool(
 
 def dtool(
     data: xr.DataArray, data_name: str | None = None, *, execute: bool | None = None
-) -> DerivativeTool | None:
+) -> DerivativeTool:
     """Interactive tool for visualizing dispersive data.
 
     Parameters
@@ -385,6 +385,4 @@ def dtool(
             pass
     if execute:
         qapp.exec()
-    if not execute:
-        return win
-    return None
+    return win

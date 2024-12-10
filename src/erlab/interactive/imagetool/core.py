@@ -21,6 +21,7 @@ import xarray as xr
 from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.colors import (
     BetterColorBarItem,
     BetterImageItem,
@@ -1260,8 +1261,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
         """Open the interactive momentum conversion tool."""
-        from erlab.interactive.kspace import KspaceTool
-
         cmap_info = self.colormap_properties
         if isinstance(cmap_info["cmap"], str):
             cmap = cmap_info["cmap"]
@@ -1272,7 +1271,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = None
             gamma = 0.5
 
-        self.add_tool_window(KspaceTool(self.data, cmap=cmap, gamma=gamma))
+        self.add_tool_window(
+            erlab.interactive.ktool(self.data, cmap=cmap, gamma=gamma, execute=False)
+        )
 
     def adjust_layout(
         self,
@@ -1761,11 +1762,11 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
+        """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
-            from erlab.interactive.imagetool import itool
-
             tool = cast(
-                QtWidgets.QWidget | None, itool(self.current_data, execute=False)
+                QtWidgets.QWidget | None,
+                erlab.interactive.itool(self.current_data, execute=False),
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
@@ -1784,20 +1785,20 @@ class ItoolPlotItem(pg.PlotItem):
                 )
                 return
 
-            from erlab.interactive.fermiedge import GoldTool
-
             self.slicer_area.add_tool_window(
-                GoldTool(data, data_name="data" + self.selection_code, execute=False)
+                erlab.interactive.goldtool(
+                    data, data_name="data" + self.selection_code, execute=False
+                )
             )
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:
-            from erlab.interactive.derivative import DerivativeTool
-
             self.slicer_area.add_tool_window(
-                DerivativeTool(
-                    self.current_data.T, data_name="data" + self.selection_code
+                erlab.interactive.dtool(
+                    self.current_data.T,
+                    data_name="data" + self.selection_code,
+                    execute=False,
                 )
             )
 

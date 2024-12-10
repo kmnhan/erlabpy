@@ -38,6 +38,7 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
+    "lazy-loader>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -135,7 +136,6 @@ select = [
     "C4",
     # "DTZ",
     "FA",
-    "ISC",
     "ICN",
     "LOG",
     "G",
