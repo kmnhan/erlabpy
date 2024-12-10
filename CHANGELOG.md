@@ -1,3 +1,33 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool.manager:** add console ([470808f](https://github.com/kmnhan/erlabpy/commit/470808fca209d93d18db041eb5a3a0cbb71f4672))
+
+  Adds a python console to the manager that can be triggered from the `View` menu.
+- **imagetool:** add keyboard shortcut to close ImageTool window ([97a7533](https://github.com/kmnhan/erlabpy/commit/97a7533d578b2e28dc5e05c9ab4484762bb77817))
+- **interactive.imagetool:** add info box to manager ([0918a5b](https://github.com/kmnhan/erlabpy/commit/0918a5b357298bf4bf943e785c2f4cfa111dce29))
+
+  Adds a textbox to ImageTool manager that shows coordinates and attributes of the selected window.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** fix wrong cursor position when loading ImageTool state from file ([e8191a8](https://github.com/kmnhan/erlabpy/commit/e8191a87aa9663c4e0ac5098ce0fcfe623fe5396))
+- **imagetool:** resolve menu widgets losing keyboard focus ([90f8868](https://github.com/kmnhan/erlabpy/commit/90f8868de7a22b997cefd5b74a1f5a7f2e592c67))
+
+### ⚡️ Performance
+
+- **imagetool.manager:** accelerate opening new windows within the manager ([d4380b7](https://github.com/kmnhan/erlabpy/commit/d4380b7fca42e857f8cace0b6bd0d42a20bdbbda))
+- delay imports for performance optimization in interactive tools ([abac874](https://github.com/kmnhan/erlabpy/commit/abac87401237d7f695261c51cb1a98d56841b49a))
+
+### 🛠 Code Refactor
+
+- **analysis.gold:** adjust resolution plot cosmetics ([5d4a486](https://github.com/kmnhan/erlabpy/commit/5d4a4863391e08392f3b65e11e9b086cf98d831f))
+- **interactive.colors:** minimize number of default colormaps ([a4c750c](https://github.com/kmnhan/erlabpy/commit/a4c750c21e8fbb11a93b3bc2f33cfb0477c4cf5a))
+
+  Reduces the number of colormaps initially available in ImageTool. All colormaps can be loaded from the right-click menu of the colormap selection widget.
+- **interactive.imagetool:** simplify method names for clarity ([48d0453](https://github.com/kmnhan/erlabpy/commit/48d04531c9b11ed120fbecac7885a7503c732973))
+
 ## v3.1.2 (2024-12-05)
 
 ### 🐞 Bug Fixes
