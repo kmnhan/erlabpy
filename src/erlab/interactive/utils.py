@@ -1,4 +1,8 @@
-"""Various helper functions and extensions to PyQt and pyqtgraph."""
+"""Various helper functions and extensions to Qt and pyqtgraph.
+
+This module contains various helper functions and classes that extend the functionality
+of pyqtgraph and Qt.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ __all__ = [
     "ExclusiveComboGroup",
     "IconActionButton",
     "IconButton",
+    "KeyboardEventFilter",
     "ParameterGroup",
     "RotatableLine",
     "copy_to_clipboard",
@@ -411,6 +416,37 @@ def _gen_single_function_code(
         code = code.replace(", )", ")").replace("( ", "(")
 
     return code
+
+
+class KeyboardEventFilter(QtCore.QObject):
+    """Event filter that intercepts select all and copy shortcuts.
+
+    For some operating systems, shortcuts are often intercepted by actions in the menu
+    bar. This filter ensures that the shortcuts work as expected when the target widget
+    has focus.
+
+    This filter can be used when the target widget does receive the shortcut event with
+    type `QtCore.QEvent.Type.ShortcutOverride`, but does not respond to it. If the
+    target widget never receives the event, a different approach using the current focus
+    widget is needed.
+    """
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        if (
+            event is not None
+            and event.type() == QtCore.QEvent.Type.ShortcutOverride
+            and isinstance(obj, QtWidgets.QWidget)
+            and obj.hasFocus()
+        ):
+            event = cast(QtGui.QKeyEvent, event)
+            if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
+                QtGui.QKeySequence.StandardKey.Copy
+            ):
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
 
 class BetterSpinBox(QtWidgets.QAbstractSpinBox):
@@ -1870,18 +1906,31 @@ class DictMenuBar(QtWidgets.QMenuBar):
                 if sep_after:
                     menu.addSeparator()
 
-    @staticmethod
-    def parse_action(actopts: dict):
+    def parse_action(self, actopts: dict):
+        text = actopts.pop("text", None)
+        tooltip = actopts.pop("tooltip", None)
+        checkable = actopts.pop("checkable", None)
         shortcut = actopts.pop("shortcut", None)
         triggered = actopts.pop("triggered", None)
         toggled = actopts.pop("toggled", None)
         changed = actopts.pop("changed", None)
 
         if shortcut is not None:
-            actopts["shortcut"] = QtGui.QKeySequence(shortcut)
+            shortcut = QtGui.QKeySequence(shortcut)
 
-        action = QtGui.QAction(**actopts)
+        parent = self.parent()
+        if parent is None:
+            parent = self
 
+        action = QtGui.QAction(parent)
+        if text is not None:
+            action.setText(text)
+        if checkable is not None:
+            action.setCheckable(checkable)
+        if tooltip is not None:
+            action.setToolTip(tooltip)
+        if shortcut is not None:
+            action.setShortcut(shortcut)
         if triggered is not None:
             action.triggered.connect(triggered)
         if toggled is not None:

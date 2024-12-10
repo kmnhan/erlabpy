@@ -668,7 +668,7 @@ def quick_resolution(
     data = darr.mean([d for d in darr.dims if d != "eV"])
 
     ax.plot(
-        data.eV, data, ".", mec="0.6", alpha=1, mfc="none", ms=5, mew=0.3, label="Data"
+        data.eV, data, ".", mec="0.5", alpha=1, mfc="none", ms=5, mew=0.4, label="Data"
     )
 
     result.modelfit_best_fit.qplot(ax=ax, c="r", label="Fit")
@@ -706,17 +706,21 @@ def quick_resolution(
         )
         resolution_repr = f"$\\Delta E = {resolution * 1e3:.3f}$ meV"
 
+    info_list: list[str] = [
+        f"$T ={coeffs.sel(param='temp'):.3f}$ K",
+        center_repr,
+        resolution_repr,
+    ]
+
     if kwargs.get("fix_center", False):
-        center_repr = ""
+        info_list.pop(1)
 
     fig = ax.figure
     if fig is not None:
         ax.text(
             0,
             0,
-            "\n".join(
-                [f"$T ={coeffs.sel(param='temp'):.3f}$ K", center_repr, resolution_repr]
-            ),
+            "\n".join(info_list),
             ha="left",
             va="baseline",
             transform=ax.transAxes

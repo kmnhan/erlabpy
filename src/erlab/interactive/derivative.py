@@ -13,12 +13,6 @@ import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
 
-from erlab.analysis.image import (
-    curvature,
-    gaussian_filter,
-    minimum_gradient,
-    scaled_laplace,
-)
 from erlab.interactive.utils import (
     copy_to_clipboard,
     generate_code,
@@ -42,6 +36,19 @@ class DerivativeTool(
                 )
             except varname.VarnameRetrievingError:
                 data_name = "data"
+
+        # Delayed import for performance
+        from erlab.analysis.image import (
+            curvature,
+            gaussian_filter,
+            minimum_gradient,
+            scaled_laplace,
+        )
+
+        self.curvature = curvature
+        self.gaussian_filter = gaussian_filter
+        self.minimum_gradient = minimum_gradient
+        self.scaled_laplace = scaled_laplace
 
         self.data_name: str = data_name
 
@@ -163,7 +170,7 @@ class DerivativeTool(
             )
         if self.smooth_group.isChecked():
             for _ in range(self.sn_spin.value()):
-                out = gaussian_filter(
+                out = self.gaussian_filter(
                     out,
                     sigma={
                         self.xdim: np.round(
@@ -207,14 +214,14 @@ class DerivativeTool(
                 dim = self.xdim if self.x_radio.isChecked() else self.ydim
                 self.result = self.processed_data.differentiate(dim).differentiate(dim)
             case 1:
-                self.result = scaled_laplace(
+                self.result = self.scaled_laplace(
                     self.processed_data,
                     factor=np.round(
                         self.lapl_factor_spin.value(), self.lapl_factor_spin.decimals()
                     ),
                 )
             case 2:
-                self.result = curvature(
+                self.result = self.curvature(
                     self.processed_data,
                     a0=np.round(
                         self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
@@ -224,7 +231,7 @@ class DerivativeTool(
                     ),
                 )
             case 3:
-                self.result = minimum_gradient(self.processed_data)
+                self.result = self.minimum_gradient(self.processed_data)
 
     def copy_code(self) -> str:
         lines: list[str] = []
@@ -273,7 +280,7 @@ class DerivativeTool(
                     f"for _ in range({self.sn_spin.value()}):",
                     "\t"
                     + generate_code(
-                        gaussian_filter,
+                        self.gaussian_filter,
                         [f"|{data_name}|"],
                         arg_dict,
                         module="era.image",
@@ -292,7 +299,7 @@ class DerivativeTool(
         else:
             match self.tab_widget.currentIndex():
                 case 1:
-                    func = scaled_laplace
+                    func = self.scaled_laplace
                     arg_dict = {
                         "factor": float(
                             np.round(
@@ -302,7 +309,7 @@ class DerivativeTool(
                         )
                     }
                 case 2:
-                    func = curvature
+                    func = self.curvature
                     arg_dict = {
                         "a0": float(
                             np.round(
@@ -317,7 +324,7 @@ class DerivativeTool(
                         ),
                     }
                 case 3:
-                    func = minimum_gradient
+                    func = self.minimum_gradient
                     arg_dict = {}
 
             lines.append(

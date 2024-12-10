@@ -7,6 +7,7 @@ import xarray as xr
 import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.imagetool.manager
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -26,7 +27,9 @@ def data():
     )
 
 
-def select_tools(manager: ImageToolManager, indices: list[int], deselect: bool = False):
+def select_tools(
+    manager: ImageToolManager, indices: list[int], deselect: bool = False
+) -> None:
     selection_model = manager.list_view.selectionModel()
 
     for index in indices:
@@ -51,8 +54,12 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
     )
 
 
-def test_manager(qtbot, accept_dialog, data):
-    manager = ImageToolManager()
+@pytest.mark.parametrize("use_socket", [True, False])
+def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
+    erlab.interactive.imagetool.manager._always_use_socket = use_socket
+
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
 
     qtbot.addWidget(manager)
 
@@ -102,9 +109,9 @@ def test_manager(qtbot, accept_dialog, data):
 
     # Toggle visibility
     geometry = manager.get_tool(1).geometry()
-    manager._tool_wrappers[1].close_tool()
+    manager._tool_wrappers[1].close()
     assert not manager.get_tool(1).isVisible()
-    manager._tool_wrappers[1].show_tool()
+    manager._tool_wrappers[1].show()
     assert manager.get_tool(1).geometry() == geometry
 
     # Removing archived tool
@@ -168,10 +175,15 @@ def test_manager(qtbot, accept_dialog, data):
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 
+    # Show about dialog
+    accept_dialog(manager.about)
+
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
 
 
-def test_manager_sync(qtbot, move_and_compare_values, data):
+def test_manager_sync(qtbot, move_and_compare_values, data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -216,7 +228,7 @@ def test_manager_sync(qtbot, move_and_compare_values, data):
     manager.close()
 
 
-def test_manager_workspace_io(qtbot, accept_dialog):
+def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -256,13 +268,12 @@ def test_manager_workspace_io(qtbot, accept_dialog):
     assert manager.ntools == 4
 
     select_tools(manager, list(manager._tool_wrappers.keys()))
-
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
     manager.close()
 
 
-def test_can_drop_mime_data(qtbot):
+def test_can_drop_mime_data(qtbot) -> None:
     manager = ImageToolManager()
     model = _ImageToolWrapperListModel(manager)
 
@@ -274,7 +285,7 @@ def test_can_drop_mime_data(qtbot):
     manager.close()
 
 
-def test_listview(qtbot, accept_dialog, data):
+def test_listview(qtbot, accept_dialog, data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -316,7 +327,7 @@ def test_listview(qtbot, accept_dialog, data):
     accept_dialog(manager.close)
 
 
-def test_manager_drag_drop_files(qtbot, accept_dialog, data):
+def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
     data.to_netcdf(filename, engine="h5netcdf")
@@ -365,3 +376,58 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data):
     manager.remove_tool(0)
     accept_dialog(manager.close)
     tmp_dir.cleanup()
+
+
+def test_manager_console(qtbot, accept_dialog, data) -> None:
+    manager = ImageToolManager()
+
+    qtbot.addWidget(manager)
+
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
+
+    itool([data, data], link=True, link_colors=True, use_manager=True)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+
+    # Open console
+    manager.toggle_console()
+    qtbot.waitUntil(manager.console.isVisible, timeout=2000)
+
+    def _get_last_output_line() -> str:
+        return (
+            manager.console._console_widget.output.toPlainText().strip().split("\n")[-1]
+        )
+
+    # Test delayed import
+    manager.console._console_widget.repl.runCmd("era")
+    assert _get_last_output_line().startswith("<module 'erlab.analysis'")
+
+    # Test repr
+    manager.console._console_widget.repl.runCmd("tools")
+    assert _get_last_output_line() == "1:"
+    manager.console._console_widget.repl.runCmd("tools[0]")
+
+    # Test calling wrapped methods
+    manager.console._console_widget.repl.runCmd("tools[0].archive()")
+    qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)
+
+    # Test setting data
+    manager.console._console_widget.repl.runCmd(
+        "tools[1].data = xr.DataArray("
+        "np.arange(25).reshape((5, 5)) * 2, "
+        "dims=['x', 'y'], "
+        "coords={'x': np.arange(5), 'y': np.arange(5)}"
+        ")"
+    )
+    xr.testing.assert_identical(manager.get_tool(1).slicer_area.data, data * 2)
+
+    # Remove all tools
+    select_tools(manager, list(manager._tool_wrappers.keys()))
+    accept_dialog(manager.remove_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+
+    # Test repr
+    manager.console._console_widget.repl.runCmd("tools")
+    assert _get_last_output_line() == "No tools"
+    manager.close()

@@ -10,14 +10,14 @@ import xarray as xr
 import erlab.accessors  # noqa: F401
 
 
-def test_da_qplot():
+def test_da_qplot() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
 
     assert isinstance(dat.qplot(), matplotlib.image.AxesImage)
     assert isinstance(dat[0].qplot()[0], matplotlib.lines.Line2D)
 
 
-def test_da_qshow_hvplot():
+def test_da_qshow_hvplot() -> None:
     # Imagetool from 2D data is tested in interactive/test_imagetool.py
     # Hvplot curve from 1D data is tested here
     dat = xr.DataArray(
@@ -27,7 +27,7 @@ def test_da_qshow_hvplot():
 
 
 @pytest.mark.parametrize("plot_components", [True, False])
-def test_ds_qshow_fit(plot_components: bool):
+def test_ds_qshow_fit(plot_components: bool) -> None:
     # Define angle coordinates for 2D data
     alpha = np.linspace(-5.0, 5.0, 100)
     beta = np.linspace(-1.0, 1.0, 3)
@@ -89,13 +89,13 @@ def test_ds_qshow_fit(plot_components: bool):
         ({"x": slice(1.0, 3.0), "y": 2.0}, (3,)),
     ],
 )
-def test_qsel_shape(indexers, expected_shape):
+def test_qsel_shape(indexers, expected_shape) -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     result = dat.qsel(indexers)
     assert result.shape == expected_shape
 
 
-def test_qsel_verbose(capfd):
+def test_qsel_verbose(capfd) -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     dat.qsel({"x": 2.0, "x_width": 1.0}, verbose=True)
     captured = capfd.readouterr()
@@ -105,13 +105,13 @@ def test_qsel_verbose(capfd):
     )
 
 
-def test_qsel_invalid_dimension():
+def test_qsel_invalid_dimension() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     with pytest.raises(ValueError, match="Dimension `z` not found in data"):
         dat.qsel({"z": 2.0})
 
 
-def test_qsel_slice_with_width():
+def test_qsel_slice_with_width() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     with pytest.raises(
         ValueError,
@@ -120,7 +120,7 @@ def test_qsel_slice_with_width():
         dat.qsel({"x": slice(1.0, 3.0), "x_width": 1.0})
 
 
-def test_qsel_associated_dim():
+def test_qsel_associated_dim() -> None:
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
         dims=("x", "y"),
@@ -136,7 +136,7 @@ def test_qsel_associated_dim():
     )
 
 
-def test_qsel_value_outside_bounds():
+def test_qsel_value_outside_bounds() -> None:
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
         dims=("x", "y"),
@@ -148,14 +148,14 @@ def test_qsel_value_outside_bounds():
         dat.qsel({"x": 10.0})
 
 
-def test_qsel_drop_unindexed_dims():
+def test_qsel_drop_unindexed_dims() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     result = dat.qsel({"x": 2.0})
 
     xr.testing.assert_equal(result, dat.isel(x=2))
 
 
-def test_qsel_around():
+def test_qsel_around() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     result = dat.qsel.around(radius=2.0, x=2.0, y=2.0, average=False)
     xr.testing.assert_identical(

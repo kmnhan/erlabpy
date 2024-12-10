@@ -17,7 +17,7 @@ def expected_dir(data_dir):
 
 
 @pytest.mark.parametrize("identifier", [25, "Sample0025025.ibw", "Sample0025.pxt"])
-def test_load(expected_dir, identifier):
+def test_load(expected_dir, identifier) -> None:
     if isinstance(identifier, int):
         with pytest.warns(
             UserWarning,

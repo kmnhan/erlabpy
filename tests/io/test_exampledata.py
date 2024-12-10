@@ -3,7 +3,7 @@ import numpy as np
 from erlab.io.exampledata import generate_data, generate_data_angles, generate_gold_edge
 
 
-def test_generate_data():
+def test_generate_data() -> None:
     data = generate_data((3, 3, 3), seed=1)
 
     np.testing.assert_allclose(
@@ -33,7 +33,7 @@ def test_generate_data():
     np.testing.assert_allclose(data.ky.values, np.array([-0.89, 0.0, 0.89]))
 
 
-def test_generate_data_angles():
+def test_generate_data_angles() -> None:
     data = generate_data_angles(
         (3, 3, 3),
         hv=50.0,
@@ -76,7 +76,7 @@ def test_generate_data_angles():
     assert data.attrs["configuration"] == 1
 
 
-def test_generate_gold_edge():
+def test_generate_gold_edge() -> None:
     data = generate_gold_edge(nx=3, ny=5, seed=1)
 
     np.testing.assert_allclose(

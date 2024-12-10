@@ -85,7 +85,7 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
-change_type_map = { "BREAKING CHANGE" = "🚨 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance",  "refactor" = "🛠 Code Refactor" }
+change_type_map = { "BREAKING CHANGE" = "🚨 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "🛠 Code Refactor" }
 
 version_provider = "pep621"
 update_changelog_on_bump = true
@@ -128,15 +128,19 @@ select = [
     "UP",
     "YTT",
     "ASYNC",
+    "S",
+    # "FBT",
     "B",
     "A",
     "C4",
     # "DTZ",
     "FA",
+    "ISC",
     "ICN",
     "LOG",
     "G",
     "PIE",
+    # "T20",
     "PYI",
     "PT",
     "Q",
@@ -144,7 +148,7 @@ select = [
     "RET",
     "SIM",
     "TID",
-    "TCH",
+    "TC",
     "INT",
     # "ARG",
     # "PTH",
@@ -160,6 +164,10 @@ select = [
     "RUF",
 ]
 ignore = [
+    "S101",    # Use of assert
+    "S301",    # Suspicious pickle usage
+    "S603",    # `subprocess` call
+    "S607",    # Starting a process with a partial executable path
     "PLW2901", # Outer variable overwritten by inner target
     "ICN001",  # Import conventions
     "TRY003",  # Long exception messages

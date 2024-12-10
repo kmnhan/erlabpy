@@ -157,6 +157,8 @@ def format_value(
                     return f"[{_format(val[0])}, {_format(val[1])}]"
 
                 if is_uniform_spaced(val):
+                    if val[0] == val[-1]:
+                        return _format(val[0])
                     start, end, step = tuple(
                         _format(v) for v in (val[0], val[-1], val[1] - val[0])
                     )
@@ -198,7 +200,7 @@ def format_value(
             return _format(val.item())
 
         if isinstance(val, datetime.datetime):
-            return val.strftime("%Y-%m-%d %H:%M:%S")
+            return val.isoformat(sep=" ", timespec="seconds")
 
         return str(val)
 

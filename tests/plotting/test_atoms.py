@@ -7,7 +7,7 @@ import erlab.lattice
 from erlab.plotting.atoms import CrystalProperty
 
 
-def test_CrystalProperty():
+def test_CrystalProperty() -> None:
     prop = CrystalProperty.from_fractional(
         {
             "C": [

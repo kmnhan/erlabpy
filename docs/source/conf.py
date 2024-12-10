@@ -128,7 +128,7 @@ def linkcode_resolve(domain, info) -> str | None:
 
 # -- Custom script to generate accessor docs ---------------------------------
 # Generates `erlab.accessors.rst` dynamically at build time
-def make_accessor_docs(app, config):
+def make_accessor_docs(app, config) -> None:
     import pathlib
     import subprocess
 
@@ -139,7 +139,7 @@ def make_accessor_docs(app, config):
     )
 
 
-def setup(app):
+def setup(app) -> None:
     app.connect("config-inited", make_accessor_docs)
 
 

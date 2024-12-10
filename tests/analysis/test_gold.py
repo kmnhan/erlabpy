@@ -8,7 +8,7 @@ from erlab.analysis.gold import correct_with_edge, poly, quick_resolution, splin
 
 @pytest.mark.parametrize("parallel_kw", [None, {"n_jobs": 1, "return_as": "list"}])
 @pytest.mark.parametrize("fast", [True, False])
-def test_poly(gold, parallel_kw: dict, fast: bool):
+def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
     res = poly(
         gold,
         angle_range=(-15, 15),
@@ -32,7 +32,7 @@ def test_poly(gold, parallel_kw: dict, fast: bool):
     correct_with_edge(gold, res, shift_coords=False, plot=False)
 
 
-def test_spline(gold):
+def test_spline(gold) -> None:
     spl = spline(
         gold,
         angle_range=(-15, 15),
@@ -61,7 +61,7 @@ def test_spline(gold):
 @pytest.mark.parametrize("eV_range", [None, (-0.2, 0.2)])
 def test_quick_resolution(
     gold, eV_range, temp, resolution, fix_temp, fix_center, fix_resolution, bkg_slope
-):
+) -> None:
     ds = quick_resolution(
         gold,
         eV_range=eV_range,

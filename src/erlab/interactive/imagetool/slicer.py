@@ -332,6 +332,12 @@ class ArraySlicer(QtCore.QObject):
             self.set_values(i, values, update=True)
             self.set_bins(i, bins, update=True)
 
+        self.set_array(self._obj, validate=False)
+        # Not sure why the last line is needed but the cursor is not fully restored
+        # without it, and requires a transpose before the cursor position and the
+        # dimension label is correct. Must be a bug in the order of operations or
+        # something... reproduce by archiving a 3D array with one non-uniform axis.
+
     @staticmethod
     def validate_array(data: xr.DataArray) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.

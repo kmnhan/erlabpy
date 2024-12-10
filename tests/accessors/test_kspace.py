@@ -72,7 +72,7 @@ def config_4_cut(cut):
 
 
 @pytest.mark.parametrize("data_type", ["anglemap", "cut"])
-def test_offsets(data_type, request):
+def test_offsets(data_type, request) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()
     data.kspace.offsets = {"xi": 10.0}
@@ -93,7 +93,7 @@ def test_kconv(
     configuration: AxesConfiguration,
     extra_dims: int,
     request,
-):
+) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
 
     expected = request.getfixturevalue(
@@ -114,7 +114,15 @@ def test_kconv(
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
             data = data.assign_coords(chi=0.0)
 
-    kconv = data.kspace.convert(silent=True)
+    if energy_axis == "kinetic":
+        with pytest.warns(
+            UserWarning,
+            match="The energy axis seems to be in terms of kinetic energy, "
+            "attempting conversion to binding energy.",
+        ):
+            kconv = data.kspace.convert(silent=True)
+    else:
+        kconv = data.kspace.convert(silent=True)
 
     if use_dask:
         kconv = kconv.compute()

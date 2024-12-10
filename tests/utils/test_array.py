@@ -13,7 +13,7 @@ from erlab.utils.array import (
 )
 
 
-def test_is_uniform_spaced():
+def test_is_uniform_spaced() -> None:
     assert is_uniform_spaced([1])
     assert is_uniform_spaced([1, 2, 3, 4])
     assert is_uniform_spaced([1, 2, 3, 4], atol=1e-6)
@@ -23,7 +23,7 @@ def test_is_uniform_spaced():
     assert not is_uniform_spaced([1, 2, 3, 5], rtol=1e-6)
 
 
-def test_is_monotonic():
+def test_is_monotonic() -> None:
     assert is_monotonic([])
     assert is_monotonic([1])
     assert is_monotonic([1, 1, 1, 1])
@@ -37,7 +37,7 @@ def test_is_monotonic():
     assert not is_monotonic([3, 2, 1, 2])
 
 
-def test_uniform():
+def test_uniform() -> None:
     # Test case 1: Uniformly spaced dimensions
     darr = xr.DataArray(
         np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
@@ -67,7 +67,7 @@ def test_uniform():
     assert is_dims_uniform(darr)
 
 
-def test_check_arg_has_no_nans():
+def test_check_arg_has_no_nans() -> None:
     @check_arg_has_no_nans
     def decorated_func(arr):
         pass
@@ -91,7 +91,7 @@ def test_check_arg_has_no_nans():
     assert decorated_func(arr) is None
 
 
-def test_trim_na():
+def test_trim_na() -> None:
     # Test case 1: Trim along all dimensions
     darr = xr.DataArray(
         np.array([[np.nan, 2, 3], [np.nan, 5, 6], [np.nan, np.nan, np.nan]]),

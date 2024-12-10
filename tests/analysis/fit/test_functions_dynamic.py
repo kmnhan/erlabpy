@@ -12,7 +12,7 @@ from erlab.analysis.fit.functions.general import gaussian_wh, lorentzian_wh
 RAND_STATE = np.random.RandomState(1)
 
 
-def test_poly_func_call():
+def test_poly_func_call() -> None:
     # Test case 1: Evaluate polynomial function with numpy array input
     x = np.arange(5, dtype=np.float64)
     coeffs = RAND_STATE.randn(3)
@@ -39,7 +39,7 @@ def test_poly_func_call():
     assert np.allclose(result, expected_result)
 
 
-def test_multi_peak_function_call():
+def test_multi_peak_function_call() -> None:
     # Test case 1: Evaluate multi-peak function with numpy array input
     x = np.linspace(-5, 5, 20, dtype=np.float64)
     npeaks = 2
@@ -166,7 +166,7 @@ def test_multi_peak_function_call():
 
 
 @pytest.mark.filterwarnings("ignore:overflow encountered in exp.*:RuntimeWarning")
-def test_fermi_edge_2d_function_call():
+def test_fermi_edge_2d_function_call() -> None:
     # Difficult to test function values, just check if equal for numpy and xarray
     eV = np.linspace(-5, 5, 25, dtype=np.float64)
     alpha = RAND_STATE.randn(20)

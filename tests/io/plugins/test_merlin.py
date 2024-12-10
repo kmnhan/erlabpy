@@ -16,14 +16,14 @@ def expected_dir(data_dir):
     return data_dir / "expected"
 
 
-def test_load_xps(expected_dir):
+def test_load_xps(expected_dir) -> None:
     xr.testing.assert_identical(
         erlab.io.load("core.pxt"),
         xr.load_dataarray(expected_dir / "core.h5"),
     )
 
 
-def test_load_multiple(expected_dir):
+def test_load_multiple(expected_dir) -> None:
     xr.testing.assert_identical(
         erlab.io.load("f_005_S001.pxt"),
         xr.load_dataarray(expected_dir / "5.h5"),
@@ -34,7 +34,7 @@ def test_load_multiple(expected_dir):
     )
 
 
-def test_load_live(expected_dir):
+def test_load_live(expected_dir) -> None:
     for live in ("lp", "lxy"):
         xr.testing.assert_identical(
             erlab.io.load(f"{live}.ibw"),
@@ -42,7 +42,7 @@ def test_load_live(expected_dir):
         )
 
 
-def test_corrupt(data_dir):
+def test_corrupt(data_dir) -> None:
     with pytest.warns(
         UserWarning,
         match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
@@ -50,7 +50,7 @@ def test_corrupt(data_dir):
         erlab.io.load("f_001_S001.pxt")
 
 
-def test_summarize(data_dir):
+def test_summarize(data_dir) -> None:
     with pytest.warns(
         UserWarning,
         match=r"Loading f_001_S001 with inferred index 1 resulted in an error[\s\S]*",
@@ -58,7 +58,7 @@ def test_summarize(data_dir):
         erlab.io.summarize(cache=False)
 
 
-def test_qinfo(data_dir):
+def test_qinfo(data_dir) -> None:
     data = erlab.io.load(5)
     assert (
         data.qinfo.__repr__()

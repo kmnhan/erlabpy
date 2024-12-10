@@ -14,7 +14,6 @@ import pyqtgraph as pg
 import varname
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
-import erlab.analysis
 import erlab.lattice
 from erlab.interactive.colors import (
     BetterColorBarItem,  # noqa: F401
@@ -27,7 +26,6 @@ from erlab.interactive.utils import (
     wait_dialog,
     xImageItem,
 )
-from erlab.plotting.bz import get_bz_edge
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -223,10 +221,6 @@ class KspaceToolGUI(
 
     def update_cmap(self) -> None:
         name = self.cmap_combo.currentText()
-        if name == self.cmap_combo.LOAD_ALL_TEXT:
-            self.cmap_combo.load_all()
-            return
-
         for im in self.images:
             im.set_colormap(
                 name,
@@ -528,6 +522,8 @@ class KspaceTool(KspaceToolGUI):
     def get_bz_lines(
         self,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        from erlab.plotting.bz import get_bz_edge
+
         if self.data.kspace._has_hv:
             # Out-of-plane BZ
             a, c = self.ab_spin.value(), self.c_spin.value()

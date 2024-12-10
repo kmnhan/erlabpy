@@ -38,7 +38,7 @@ def _generate_funclist() -> list[tuple[Callable, Callable]]:
     return funcs
 
 
-def test_transform():
+def test_transform() -> None:
     for forward_func, inverse_func in _generate_funclist():
         alpha, beta = inverse_func(*forward_func(10.0, 20.0))
         assert alpha.size == beta.size == k_tot.size

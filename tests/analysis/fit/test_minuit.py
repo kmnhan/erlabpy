@@ -7,7 +7,7 @@ from erlab.analysis.fit.minuit import Minuit
 from erlab.analysis.fit.models import MultiPeakModel
 
 
-def test_minuit_from_lmfit():
+def test_minuit_from_lmfit() -> None:
     # Generate 2 lorentzian peaks with poisson noise
     xval = np.linspace(-1, 1, 250)
 

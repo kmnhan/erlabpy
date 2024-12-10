@@ -38,14 +38,14 @@ def sample_plot(norms, kw0, kw1, cmap):
 
 
 @pytest.mark.parametrize("gamma", [0.1, 0.5, 1, 2.0, 10.0])
-def test_InversePowerNorm(gamma):
+def test_InversePowerNorm(gamma) -> None:
     cmap = "Greys"
     sample_plot([eplt.InversePowerNorm], {"vmin": 0, "vmax": 1}, {"gamma": gamma}, cmap)
     plt.close()
 
 
 @pytest.mark.parametrize("gamma", [0.1, 0.5, 1, 2.0, 10.0])
-def test_norms_diverging(gamma):
+def test_norms_diverging(gamma) -> None:
     cmap = "RdYlBu"
     sample_plot(
         [
@@ -67,7 +67,7 @@ def test_norms_diverging(gamma):
 )
 @pytest.mark.parametrize("lnorm", [None, eplt.InversePowerNorm(0.5)])
 @pytest.mark.parametrize("cmap", [None, "bwr"])
-def test_2d_cmap(cmap, lnorm, cnorm, background):
+def test_2d_cmap(cmap, lnorm, cnorm, background) -> None:
     test = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]).astype(
         np.float64
     )
@@ -89,7 +89,7 @@ def test_2d_cmap(cmap, lnorm, cnorm, background):
 
 
 @pytest.mark.parametrize("autoscale", [True, False])
-def test_unify_clim(autoscale):
+def test_unify_clim(autoscale) -> None:
     fig, axs = plt.subplots(2, 2)
 
     rng = np.random.default_rng(1)
@@ -121,7 +121,7 @@ def test_unify_clim(autoscale):
     plt.close(fig)
 
 
-def test_unify_clim_with_target():
+def test_unify_clim_with_target() -> None:
     fig, axs = plt.subplots(2, 2)
 
     rng = np.random.default_rng(1)

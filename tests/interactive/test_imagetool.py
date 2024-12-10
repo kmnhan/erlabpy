@@ -14,6 +14,7 @@ import erlab.analysis.transform
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
+from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
@@ -45,7 +46,7 @@ _TEST_DATA: dict[str, xr.DataArray] = {
 
 @pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
 @pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
-def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype):
+def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(val_dtype),
         dims=["x", "y"],
@@ -67,7 +68,7 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype):
     del win
 
 
-def test_itool_load(qtbot, move_and_compare_values, accept_dialog):
+def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
         dims=["x", "y"],
@@ -99,7 +100,7 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog):
     tmp_dir.cleanup()
 
 
-def test_itool_save(qtbot, accept_dialog):
+def test_itool_save(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)
 
@@ -126,7 +127,7 @@ def test_itool_save(qtbot, accept_dialog):
     tmp_dir.cleanup()
 
 
-def test_itool(qtbot, move_and_compare_values):
+def test_itool(qtbot, move_and_compare_values) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
@@ -235,13 +236,19 @@ def test_itool(qtbot, move_and_compare_values):
     win.slicer_area.set_data(data.rename("new_data"))
     assert win.windowTitle() == "new_data"
 
+    # Colormap combobox
+    cmap_ctrl = win.docks[1].widget().layout().itemAt(0).widget()
+    assert isinstance(cmap_ctrl, ItoolColormapControls)
+    cmap_ctrl.cb_colormap.load_all()
+    cmap_ctrl.cb_colormap.showPopup()
+
     win.close()
 
     del win
 
 
 @pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
-def test_itool_tools(qtbot, test_data_type):
+def test_itool_tools(qtbot, test_data_type) -> None:
     data = _TEST_DATA[test_data_type]
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -288,7 +295,7 @@ def test_itool_tools(qtbot, test_data_type):
     del win
 
 
-def test_parse_input():
+def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
         ValueError, match="No valid data for ImageTool found in the Dataset"
@@ -303,7 +310,7 @@ def test_parse_input():
         )
 
 
-def test_itool_ds(qtbot):
+def test_itool_ds(qtbot) -> None:
     data = xr.Dataset(
         {
             "data1d": xr.DataArray(np.arange(5), dims=["x"]),
@@ -336,7 +343,7 @@ def test_itool_ds(qtbot):
     wins[1].close()
 
 
-def test_itool_multidimensional(qtbot, move_and_compare_values):
+def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
@@ -364,7 +371,7 @@ def test_itool_multidimensional(qtbot, move_and_compare_values):
     win.close()
 
 
-def test_value_update(qtbot):
+def test_value_update(qtbot) -> None:
     win = itool(
         xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
     )
@@ -381,7 +388,7 @@ def test_value_update(qtbot):
     win.close()
 
 
-def test_value_update_errors(qtbot):
+def test_value_update_errors(qtbot) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
 
@@ -407,7 +414,7 @@ def test_value_update_errors(qtbot):
     win.close()
 
 
-def test_itool_rotate(qtbot, accept_dialog):
+def test_itool_rotate(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -464,7 +471,7 @@ def test_itool_rotate(qtbot, accept_dialog):
     win.close()
 
 
-def test_itool_crop(qtbot, accept_dialog):
+def test_itool_crop(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
@@ -541,7 +548,7 @@ def normalize(data, norm_dims, option):
 
 
 @pytest.mark.parametrize("option", [0, 1, 2, 3])
-def test_itool_normalize(qtbot, accept_dialog, option):
+def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],

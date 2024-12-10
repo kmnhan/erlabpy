@@ -11,7 +11,6 @@ import os
 import pathlib
 import time
 import uuid
-import warnings
 import weakref
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 
@@ -29,6 +28,7 @@ from erlab.interactive.colors import (
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable, Sequence
@@ -576,13 +576,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.manual_limits = state.get("manual_limits", {})
         self.sigShapeChanged.emit()  # to trigger manual limits update
-        self.refresh_all()
 
         # Restore colormap settings
         try:
             self.set_colormap(**state.get("color", {}), update=True)
         except Exception:
-            warnings.warn("Failed to restore colormap settings, skipping", stacklevel=1)
+            emit_user_level_warning("Failed to restore colormap settings, skipping")
 
     @property
     def splitter_sizes(self) -> list[list[int]]:

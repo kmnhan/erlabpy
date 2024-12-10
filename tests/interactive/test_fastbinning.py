@@ -3,7 +3,7 @@ import numpy as np
 from erlab.interactive.imagetool.fastbinning import NANMEAN_FUNCS, fast_nanmean
 
 
-def test_fast_nanmean():
+def test_fast_nanmean() -> None:
     for nd, funcs in NANMEAN_FUNCS.items():
         x = np.random.RandomState(42).randn(*((10,) * nd))
         x_double = x.astype(np.float64)

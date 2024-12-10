@@ -23,7 +23,7 @@ def expected_dir(data_dir):
         ("20241026_00001.h5", "20241026_00001.h5"),
     ],
 )
-def test_load(expected_dir, args, expected):
+def test_load(expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
     xr.testing.assert_identical(
@@ -31,5 +31,5 @@ def test_load(expected_dir, args, expected):
     )
 
 
-def test_summarize(data_dir):
+def test_summarize(data_dir) -> None:
     erlab.io.summarize()

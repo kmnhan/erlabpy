@@ -5,7 +5,7 @@ from scipy.signal import savgol_coeffs
 from erlab.analysis.image import _ndsavgol_coeffs, ndsavgol
 
 
-def compare_coeffs_to_scipy(window_length, order, deriv):
+def compare_coeffs_to_scipy(window_length, order, deriv) -> None:
     # For the given window_length and order, compare the results to scipy
     h1 = _ndsavgol_coeffs((window_length,), order, deriv_idx=deriv, delta=(1.0,))
     h2 = savgol_coeffs(window_length, order, deriv=deriv, use="dot")
@@ -17,7 +17,7 @@ def compare_coeffs_to_scipy(window_length, order, deriv):
     )
 
 
-def test_ndsavgol_coeffs_compare_scipy():
+def test_ndsavgol_coeffs_compare_scipy() -> None:
     # Compare _ndsavgol_coeffs() to savgol_coeffs().
     for window_length in range(1, 10, 2):
         for order in range(window_length):
@@ -25,7 +25,7 @@ def test_ndsavgol_coeffs_compare_scipy():
                 compare_coeffs_to_scipy(window_length, order, deriv)
 
 
-def test_ndsavgol_trivial():
+def test_ndsavgol_trivial() -> None:
     # Adapted from scipy tests
     x = np.array([1.0])
     y = ndsavgol(x, 1, 0)
@@ -47,7 +47,7 @@ def test_ndsavgol_trivial():
     assert_almost_equal(y, [1.0, 1.0, 1.0], decimal=15)
 
 
-def test_ndsavgol_basic():
+def test_ndsavgol_basic() -> None:
     # Some basic test cases for savgol_filter().
     x = np.array([1.0, 2.0, 1.0])
     y = ndsavgol(x, 3, 1, mode="constant")
@@ -60,7 +60,7 @@ def test_ndsavgol_basic():
     assert_allclose(y, [4.0 / 3, 4.0 / 3, 4.0 / 3])
 
 
-def test_ndsavgol_2d():
+def test_ndsavgol_2d() -> None:
     # Test 2D savgol_filter() with a 2D Gaussian.
     x, y = np.meshgrid(np.linspace(-3, 3, 5), np.linspace(-3, 3, 5))
     z = np.exp(-(x**2 + y**2))

@@ -17,7 +17,7 @@ from erlab.analysis.fit.functions.general import (
 KB_EV = 8.617333262145179e-5
 
 
-def test_gen_kernel():
+def test_gen_kernel() -> None:
     # Define test input values
     x = np.array([0, 1, 2, 3, 4])
     resolution = 2.0
@@ -47,7 +47,7 @@ def test_gen_kernel():
     assert np.allclose(gauss, expected_gauss)
 
 
-def test_do_convolve():
+def test_do_convolve() -> None:
     # Test case 1: Convolve a linear function with a Gaussian kernel
     x = np.linspace(0, 10, 5)
 
@@ -87,7 +87,7 @@ def test_do_convolve():
     assert np.allclose(result, expected)
 
 
-def test_gaussian_wh():
+def test_gaussian_wh() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     width = 2.0
@@ -98,7 +98,7 @@ def test_gaussian_wh():
     assert np.allclose(gaussian_wh(x, center, width, height), expected_result)
 
 
-def test_lorentzian_wh():
+def test_lorentzian_wh() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     width = 2.0
@@ -108,7 +108,7 @@ def test_lorentzian_wh():
 
 
 @pytest.mark.filterwarnings("ignore:overflow encountered in exp.*:RuntimeWarning")
-def test_fermi_dirac():
+def test_fermi_dirac() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     temp = 2.0
@@ -117,7 +117,7 @@ def test_fermi_dirac():
 
 
 @pytest.mark.filterwarnings("ignore:overflow encountered in exp.*:RuntimeWarning")
-def test_fermi_dirac_linbkg():
+def test_fermi_dirac_linbkg() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     temp = 2.0
@@ -133,7 +133,7 @@ def test_fermi_dirac_linbkg():
     )
 
 
-def test_fermi_dirac_linbkg_broad():
+def test_fermi_dirac_linbkg_broad() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     temp = 300.0
@@ -159,7 +159,7 @@ def test_fermi_dirac_linbkg_broad():
     )
 
 
-def test_step_broad():
+def test_step_broad() -> None:
     x = np.linspace(-10, 10, 100)
     center = 0.0
     sigma = 1.0
@@ -172,7 +172,7 @@ def test_step_broad():
     assert np.allclose(step_broad(x, center, sigma, amplitude), expected_result)
 
 
-def test_step_linbkg_broad():
+def test_step_linbkg_broad() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
     sigma = 2.0
