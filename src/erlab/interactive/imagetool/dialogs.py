@@ -10,6 +10,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool.slicer import restore_nonuniform_dims
 from erlab.interactive.utils import (
     ExclusiveComboGroup,
     copy_to_clipboard,
@@ -146,17 +147,26 @@ class DataTransformDialog(_DataManipulationDialog):
             new_name = None
 
         try:
-            if self.new_window_check.isChecked():
-                from erlab.interactive.imagetool import itool
+            applied_func = None
+            if self.slicer_area._applied_func is not None:
+                # Transform must be done on unfiltered data
+                applied_func = self.slicer_area._applied_func
+                self.slicer_area.apply_func(None)
 
-                itool(
-                    self.process_data(self.slicer_area.data).rename(new_name),
-                    execute=False,
-                )
+            processed = restore_nonuniform_dims(
+                self.process_data(self.slicer_area.data)
+            ).rename(new_name)
+
+            if self.new_window_check.isChecked():
+                erlab.interactive.itool(processed, execute=False)
             else:
-                self.slicer_area.set_data(
-                    self.process_data(self.slicer_area.data).rename(new_name)
-                )
+                self.slicer_area.set_data(processed)
+
+            del processed
+
+            if applied_func is not None:
+                self.slicer_area.apply_func(applied_func)
+
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
             return

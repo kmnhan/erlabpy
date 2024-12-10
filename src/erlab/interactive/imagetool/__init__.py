@@ -554,7 +554,7 @@ class ImageTool(BaseImageTool):
         }
 
         dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
+        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()
@@ -670,7 +670,8 @@ class ItoolMenuBar(DictMenuBar):
                         "sep_after": True,
                     },
                     "Normalize": {"triggered": self._normalize},
-                    "Reset": {
+                    "resetAct": {
+                        "text": "Reset",
                         "triggered": self._reset_filters,
                         "sep_after": True,
                     },
@@ -802,6 +803,9 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["remCursorAct"].setDisabled(self.slicer_area.n_cursors == 1)
         self.action_dict["ktoolAct"].setEnabled(
             self.slicer_area.data.kspace._interactive_compatible
+        )
+        self.action_dict["resetAct"].setEnabled(
+            self.slicer_area._applied_func is not None
         )
 
     @QtCore.Slot()

@@ -452,6 +452,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Stores ktool, dtool, goldtool, etc.
         self._associated_tools: dict[str, QtWidgets.QWidget] = {}
 
+        # Applied filter function
+        self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
+
         # Queues to handle undo and redo
         self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
             maxlen=1000
@@ -1013,10 +1016,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self._data is None:
             return
 
-        if func is None:
+        self._applied_func = func
+
+        if self._applied_func is None:
             self.update_values(self._data)
         else:
-            self.update_values(func(self._data))
+            self.update_values(self._applied_func(self._data))
 
     @QtCore.Slot(int, int)
     @link_slicer
