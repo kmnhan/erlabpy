@@ -32,7 +32,7 @@ from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_cros
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -1537,7 +1537,10 @@ class ItoolDisplayObject:
     @property
     def sliced_data(self) -> xr.DataArray:
         with xr.set_options(keep_attrs=True):
-            return self.array_slicer.xslice(self.cursor_index, self.display_axis)
+            sliced = self.array_slicer.xslice(self.cursor_index, self.display_axis)
+            if sliced.name:
+                sliced = sliced.rename(f"{sliced.name} Sliced")
+            return sliced
 
     def refresh_data(self) -> None:
         pass
@@ -2086,7 +2089,9 @@ class ItoolPlotItem(pg.PlotItem):
                 self._guideline_offset[i] = float(
                     np.round(
                         self._guideline_offset[i],
-                        self.array_slicer.get_significant(self.display_axis[i]),
+                        self.array_slicer.get_significant(
+                            self.display_axis[i], uniform=True
+                        ),
                     )
                 )
 
@@ -2178,9 +2183,9 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def save_current_data(self) -> None:
-        default_name: Hashable | None = None
-        if self.slicer_area._data is not None:
-            default_name = self.slicer_area._data.name
+        data_to_save = self.current_data
+
+        default_name = data_to_save.name
         if not default_name:
             default_name = "data"
 
@@ -2197,9 +2202,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         if dialog.exec():
             filename = dialog.selectedFiles()[0]
-            self.current_data.to_netcdf(
-                filename, engine="h5netcdf", invalid_netcdf=True
-            )
+            data_to_save.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()

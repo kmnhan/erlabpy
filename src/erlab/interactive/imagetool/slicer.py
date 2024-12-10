@@ -117,6 +117,72 @@ def _index_of_value_nonuniform(
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
+@numba.njit(
+    [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])],
+    cache=True,
+)
+def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> np.floating:
+    diff = np.diff(arr)
+    return np.mean(diff[diff != 0])
+
+
+def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
+    """Ensure that all dimensions of the given DataArray are uniform.
+
+    This function checks each dimension of the input DataArray to determine if its
+    coordinate is evenly spaced. If a dimension is found to be non-uniform, a new
+    coordinate named ``{dim}_idx`` is created with indices ranging from 0 to N-1, where
+    N is the length of the original coordinate. The original dimension is then swapped
+    with the new uniform dimension, and is left in the DataArray as a coordinate.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray to be processed.
+
+    Returns
+    -------
+    DataArray
+        A new DataArray with all dimensions made uniform.
+    """
+    nonuniform_dims: list[str] = [
+        str(d) for d in darr.dims if not _is_uniform(darr[d].values.astype(np.float64))
+    ]
+    for d in nonuniform_dims:
+        darr = darr.assign_coords(
+            {d + "_idx": (d, list(np.arange(len(darr[d]), dtype=np.float32)))}
+        ).swap_dims({d: d + "_idx"})
+
+    return darr
+
+
+def restore_nonuniform_dims(darr: xr.DataArray) -> xr.DataArray:
+    """Undo the effect of :func:`make_dims_uniform`.
+
+    Restore non-uniform dimensions by swapping dimensions that end with ``'_idx'`` with
+    their corresponding coordinates and dropping the uniform dimensions.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray with dimensions that may end with ``'_idx'``.
+
+    Returns
+    -------
+    DataArray
+        The DataArray with ``'_idx'`` dimensions swapped with their corresponding
+        coordinates and the ``'_idx'`` dimensions dropped.
+    """
+    nonuniform_dims: list[Hashable] = []
+    for d in darr.dims:
+        if str(d).endswith("_idx"):
+            stripped = str(d).removesuffix("_idx")
+            if stripped in darr.coords:
+                nonuniform_dims.append(d)
+                darr = darr.swap_dims({d: stripped})
+    return darr.drop_vars(nonuniform_dims)
+
+
 class ArraySlicer(QtCore.QObject):
     """Internal class used to slice a :class:`xarray.DataArray` rapidly.
 
@@ -240,8 +306,18 @@ class ArraySlicer(QtCore.QObject):
     def incs(self) -> tuple[np.floating, ...]:
         """Increment size of each dimension in the array.
 
-        Returns the difference between the second and first coordinate.
+        Returns the step size of each dimension in the array. Non-uniform dimensions
+        will return the absolute average of all non-zero step sizes.
         """
+        if self._nonuniform_axes:
+            return tuple(
+                (
+                    _avg_nonzero_abs_diff(coord)
+                    if i in self._nonuniform_axes
+                    else coord[1] - coord[0]
+                )
+                for i, coord in enumerate(self.coords)
+            )
         return tuple(coord[1] - coord[0] for coord in self.coords)
 
     @functools.cached_property
@@ -376,6 +452,10 @@ class ArraySlicer(QtCore.QObject):
             if data[d].ndim != 1:
                 raise ValueError(f"Coordinate of dimension {d} is not one-dimensional.")
 
+        # Handle loading non-uniform data saved in older versions.
+        # erlab>=3.2.0 should not save non-uniform data in the first place.
+        data = restore_nonuniform_dims(data)
+
         # Convert coords to C-contiguous array
         data = data.assign_coords(
             {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
@@ -384,30 +464,7 @@ class ArraySlicer(QtCore.QObject):
         if data.dtype not in (np.float32, np.float64):
             data = data.astype(np.float64)
 
-        # Handle loading saved non-uniform data
-        for d in data.dims:
-            if str(d).endswith("_idx") and str(d).removesuffix("_idx") in data.coords:
-                data = data.swap_dims({d: str(d).removesuffix("_idx")})
-
-        new_dims: tuple[str, ...] = ("kx", "ky")
-        if all(d in data.dims for d in new_dims):
-            # if data has kx and ky axis, transpose
-            if "eV" in data.dims:
-                new_dims += ("eV",)
-            new_dims += tuple(str(d) for d in data.dims if d not in new_dims)
-            data = data.transpose(*new_dims)
-
-        nonuniform_dims: list[str] = [
-            str(d)
-            for d in data.dims
-            if not _is_uniform(data[d].values.astype(np.float64))
-        ]
-        for d in nonuniform_dims:
-            data = data.assign_coords(
-                {d + "_idx": (d, list(np.arange(len(data[d]), dtype=np.float32)))}
-            ).swap_dims({d: d + "_idx"})
-
-        return data
+        return make_dims_uniform(data)
 
     def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
@@ -486,9 +543,12 @@ class ArraySlicer(QtCore.QObject):
         """
         return self._obj._coords[dim]._data.array._data  # type: ignore[union-attr]
 
-    def get_significant(self, axis: int) -> int:
+    def get_significant(self, axis: int, uniform: bool = False) -> int:
         """Return the number of significant digits for a given axis."""
-        step = self.incs[axis]
+        if uniform and axis in self._nonuniform_axes:
+            step = self.incs_uniform[axis]
+        else:
+            step = self.incs[axis]
         return int(np.clip(np.ceil(-np.log10(abs(step)) + 1), 0, None))
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
@@ -817,12 +877,15 @@ class ArraySlicer(QtCore.QObject):
             for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
             if v
         }
-        return (
+        sliced = (
             self._obj.isel(isel_kw)
             .squeeze()
             .mean(binned_coord_average.keys())
             .assign_coords(binned_coord_average)
         )
+        if self._nonuniform_axes:
+            return restore_nonuniform_dims(sliced)
+        return sliced
 
     @QtCore.Slot(int, tuple, result=np.ndarray)
     def slice_with_coord(

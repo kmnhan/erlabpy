@@ -9,6 +9,7 @@ import numpy as np
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.utils import (
     ExclusiveComboGroup,
     copy_to_clipboard,
@@ -56,9 +57,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         )
         if self.enable_copy:
             self.copy_button = QtWidgets.QPushButton("Copy Code")
-            self.copy_button.clicked.connect(
-                lambda: copy_to_clipboard(self.make_code())
-            )
+            self.copy_button.clicked.connect(self._copy)
             self.buttonBox.addButton(
                 self.copy_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
             )
@@ -85,6 +84,16 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
+
+    @QtCore.Slot()
+    def _copy(self) -> None:
+        code = self.make_code()
+        if code:
+            copy_to_clipboard(code)
+        else:
+            QtWidgets.QMessageBox.warning(
+                self, "Nothing to Copy", "Generated code is empty."
+            )
 
     def setup_widgets(self) -> None:
         # Overridden by subclasses
@@ -248,7 +257,9 @@ class RotationDialog(DataTransformDialog):
             )
             self.center_spins[i].setSingleStep(float(self.array_slicer.incs_uniform[i]))
             self.center_spins[i].setValue(0.0)
-            self.center_spins[i].setDecimals(self.array_slicer.get_significant(axis))
+            self.center_spins[i].setDecimals(
+                self.array_slicer.get_significant(axis, uniform=True)
+            )
 
             self.layout_.addRow(f"Center {dim}", self.center_spins[i])
 
@@ -270,13 +281,9 @@ class RotationDialog(DataTransformDialog):
                 spin.setValue(val)
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        from erlab.analysis.transform import rotate
-
-        return rotate(data, **self._rotate_params)
+        return erlab.analysis.transform.rotate(data, **self._rotate_params)
 
     def make_code(self) -> str:
-        from erlab.analysis.transform import rotate
-
         placeholder = " "
         params = dict(self._rotate_params)
 
@@ -287,7 +294,10 @@ class RotationDialog(DataTransformDialog):
                 params[k] = str(v)
 
         return generate_code(
-            rotate, [f"|{placeholder}|"], self._rotate_params, module="era.transform"
+            erlab.analysis.transform.rotate,
+            [f"|{placeholder}|"],
+            self._rotate_params,
+            module="era.transform",
         )
 
 
@@ -309,21 +319,22 @@ class CropDialog(DataTransformDialog):
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         c0, c1 = self._cursor_indices
 
-        vals = self.array_slicer._values
-
         slice_dict = {}
 
         for k in self._enabled_dims:
             ax_idx = self.slicer_area.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
 
-            v0, v1 = vals[c0][ax_idx], vals[c1][ax_idx]
+            v0 = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
+            v1 = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
+
             if v0 > v1:
                 v0, v1 = v1, v0
 
             slice_dict[k] = slice(
                 float(np.round(v0, sig_digits)), float(np.round(v1, sig_digits))
             )
+
         return slice_dict
 
     def exec(self) -> int:
@@ -391,13 +402,31 @@ class CropDialog(DataTransformDialog):
         return data.sel(self._slice_kwargs)
 
     def make_code(self) -> str:
-        kwargs: dict[Hashable, slice] = self._slice_kwargs
-        if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
-            out = generate_code(
-                xr.DataArray.sel, [], kwargs=cast(dict[str, slice], kwargs), module="."
-            )
-        else:
-            out = f".sel({self._slice_kwargs})"
+        kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+
+        isel_kwargs: dict[str, slice] = {}
+        for k in list(kwargs.keys()):
+            if str(k).endswith("_idx"):
+                isel_kwargs[str(k).removesuffix("_idx")] = kwargs.pop(k)
+
+        out: str = ""
+
+        if kwargs:
+            if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
+                out = generate_code(
+                    xr.DataArray.sel,
+                    [],
+                    kwargs=cast(dict[str, slice], kwargs),
+                    module=out,
+                )
+            else:
+                out += f".sel({kwargs})"
+
+        if isel_kwargs:
+            if all(isinstance(k, str) and str(k).isidentifier() for k in isel_kwargs):
+                out = generate_code(xr.DataArray.isel, [], isel_kwargs, module=out)
+            else:
+                out += f".isel({isel_kwargs})"
 
         return out.replace(", None)", ")")
 
