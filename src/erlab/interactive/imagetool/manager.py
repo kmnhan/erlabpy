@@ -1327,7 +1327,8 @@ class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
         if (
-            obj == self._console_widget
+            hasattr(self, "_console_widget")
+            and obj == self._console_widget
             and event is not None
             and event.type() == QtCore.QEvent.Type.Show
         ):
