@@ -483,7 +483,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     win.slicer_area.add_cursor()
     win.slicer_area.add_cursor()
 
-    # 2D crop
+    # Move cursors to define 2D crop region
     win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=1, value=0.0, cursor=0)
     win.slicer_area.set_value(axis=0, value=3.0, cursor=1)
@@ -491,6 +491,19 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     win.slicer_area.set_value(axis=0, value=4.0, cursor=2)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=2)
 
+    # Test 1D plot normalization
+    for profile_axis in win.slicer_area.profiles:
+        profile_axis.set_normalize(True)
+        for data_item in profile_axis.slicer_data_items:
+            yvals = (
+                data_item.getData()[0]
+                if data_item.is_vertical
+                else data_item.getData()[1]
+            )
+            assert_almost_equal(yvals.mean(), 1.0)
+        profile_axis.set_normalize(False)
+
+    # Test 2D crop
     def _set_dialog_params(dialog: CropDialog) -> None:
         # activate combo to increase ExclusiveComboGroup coverage
         dialog.cursor_combos[0].activated.emit(0)
