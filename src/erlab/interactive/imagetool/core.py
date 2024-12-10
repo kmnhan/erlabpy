@@ -1512,6 +1512,12 @@ class ItoolCursorSpan(pg.LinearRegionItem):
 
 
 class ItoolDisplayObject:
+    """Parent class for sliced data.
+
+    Stores the axes and cursor index for the object, and retrieves the sliced data from
+    `ArraySlicer` when needed.
+    """
+
     def __init__(self, axes, cursor: int | None = None) -> None:
         self.axes = axes
         if cursor is None:
@@ -1552,6 +1558,8 @@ class ItoolDisplayObject:
 
 
 class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
+    """Display a 1D slice of data in a plot."""
+
     def __init__(
         self,
         axes,
@@ -1561,7 +1569,8 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
     ) -> None:
         pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
-        self.is_vertical = is_vertical
+        self.is_vertical: bool = is_vertical
+        self.normalize: bool = False
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def refresh_data(self) -> None:
@@ -1569,6 +1578,11 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         coord, vals = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
+        if self.normalize:
+            avg = np.nanmean(vals)
+            if not np.isnan(avg):
+                vals = vals / avg
+
         if self.is_vertical:
             self.setData(vals, coord)
         else:
@@ -1576,6 +1590,8 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
 
 
 class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
+    """Display a 2D slice of data as an image."""
+
     def __init__(
         self,
         axes,
@@ -1623,7 +1639,8 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
 class ItoolPlotItem(pg.PlotItem):
     """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
 
-    This class tracks axes and cursors for the image it displays.
+    This class tracks axes and cursors for the data displayed in the plot, and provides
+    context menu actions for interacting with the data.
 
     """
 
@@ -1686,8 +1703,12 @@ class ItoolPlotItem(pg.PlotItem):
                     equal_aspect_action.blockSignals(False)
 
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
-
-            self.vb.menu.addSeparator()
+        else:
+            norm_action = self.vb.menu.addAction("Normalize by mean")
+            norm_action.setCheckable(True)
+            norm_action.setChecked(False)
+            norm_action.toggled.connect(self.set_normalize)
+        self.vb.menu.addSeparator()
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
@@ -1767,6 +1788,14 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
+
+    @QtCore.Slot(bool)
+    def set_normalize(self, normalize: bool) -> None:
+        """Toggle normalization for 1D plots."""
+        if not self.is_image:
+            for item in self.slicer_data_items:
+                item.normalize = normalize
+                item.refresh_data()
 
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
