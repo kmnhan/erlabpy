@@ -18,8 +18,6 @@ import contextlib
 import datetime
 import enum
 import gc
-import html
-import importlib
 import logging
 import os
 import pathlib
@@ -33,19 +31,19 @@ import time
 import uuid
 import weakref
 from collections.abc import Hashable, Iterable, ValuesView
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph
 import pyqtgraph.console
 import qtawesome as qta
+import qtconsole.inprocess
 import qtpy
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
-import erlab.interactive
 from erlab.interactive.imagetool import ImageTool, _parse_input
 from erlab.interactive.imagetool.core import SlicerLinkProxy
 from erlab.interactive.utils import (
@@ -57,6 +55,7 @@ from erlab.interactive.utils import (
 )
 from erlab.utils.array import is_monotonic, is_uniform_spaced
 from erlab.utils.formatting import format_html_table, format_value
+from erlab.utils.misc import LazyImport
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -1175,7 +1174,7 @@ class _ImageToolCLI:
     def __repr__(self) -> str:
         time_repr = self.wrapper._created_time.isoformat(sep=" ", timespec="seconds")
         out = f"ImageTool {self.wrapper.index}: {self.wrapper.name}\n"
-        out += f"  Created: {time_repr}\n"
+        out += f"  Added: {time_repr}\n"
         out += f"  Archived: {self.wrapper.archived}\n"
         if not self.wrapper.archived:
             out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
@@ -1209,84 +1208,137 @@ class _ToolsCLI:
         return "\n".join(output)
 
 
-class _NamespaceDict(dict):
-    """Handle delayed imports in the console namespace."""
+class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
+    def __init__(self, parent=None, namespace: dict[str, Any] | None = None) -> None:
+        super().__init__(parent)
+        self.kernel_manager = qtconsole.inprocess.QtInProcessKernelManager()
+        self._namespace = namespace
+        self._kernel_banner_default: str = ""
 
-    ALIASES: ClassVar[dict[str, str]] = {
-        "era": "erlab.analysis",
-        "eplt": "erlab.plotting.erplot",
-        "plt": "matplotlib.pyplot",
-    }
+    def set_namespace(self, namespace: dict[str, Any]) -> None:
+        self.kernel_manager.kernel.shell.push(namespace)
 
-    def __getitem__(self, key):
-        if key in self.ALIASES:
-            return importlib.import_module(self.ALIASES[key])
+    def initialize_kernel(self) -> None:
+        if not self.kernel_manager.kernel:
+            self.kernel_manager.start_kernel()
+            self.kernel_client = self.kernel_manager.client()
+            self.kernel_client.start_channels()
+            if self._namespace is not None:
+                self.set_namespace(self._namespace)
 
-        return super().__getitem__(key)
+    @QtCore.Slot()
+    def shutdown_kernel(self) -> None:
+        self.kernel_client.stop_channels()
+        self.kernel_manager.shutdown_kernel()
 
+    def _banner_default(self) -> str:
+        banner = super()._banner_default()
+        return banner.strip() + f" | ERLabPy {erlab.__version__}\n"
 
-class ImageToolManagerConsole(QtWidgets.QDockWidget):
-    def __init__(self, manager: ImageToolManager) -> None:
-        super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
-        self._console_widget = pyqtgraph.console.ConsoleWidget(
-            parent=self,
-            namespace=_NamespaceDict(
-                np=np,
-                xr=xr,
-                pathlib=pathlib,
-                erlab=erlab,
-                eri=erlab.interactive,
-                tools=_ToolsCLI(manager),
-            ),
-        )
-        self._console_widget.layout.setContentsMargins(11, 11, 11, 11)
-        font = self._console_widget.output.font()
-        for font_name in ["SF Mono", "Consolas", "Courier New"]:
-            if font_name in QtGui.QFontDatabase.families():
-                font.setFamily(font_name)
-                break
-        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
-        self._console_widget.output.setFont(font)
-        self._console_widget.input.setFont(font)
-
-        self._console_widget.output.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-
-        def _alias_html(alias: str, module: str):
-            return f"<li><b>{html.escape(alias)}</b>: {html.escape(module)}</li>"
-
-        def _command_html(title: str, command_list: list[str]):
-            out = f"<li><b>{html.escape(title)}</b>"
+    @property
+    def kernel_banner(self) -> str:
+        def _command_ansi(title: str, command_list: list[str]):
+            out = f"\033[1m* {title}\033[0m"
             for command in command_list:
-                out += f"<br>{html.escape(command)}"
-            out += "</li>"
+                out += f"\n  {command}"
             return out
 
-        self._console_widget.output.setHtml(
-            "<p>Available module aliases:</p><ul>"
-            + _alias_html("numpy", "np")
-            + _alias_html("xarray", "xr")
-            + _alias_html("matplotlib.pyplot", "plt")
-            + _alias_html("erlab.analysis", "era")
-            + _alias_html("erlab.plotting.erplot", "eplt")
-            + _alias_html("erlab.interactive", "eri")
-            + "</ul><p>Working with ImageTool windows:</p><ul>"
-            + _command_html("Access data", ["tools[<index>].data"])
-            + _command_html("Change data", ["tools[<index>].data = <value>"])
-            + _command_html(
+        info_str = (
+            _command_ansi("Access data", ["tools[<index>].data"])
+            + "\n"
+            + _command_ansi("Change data", ["tools[<index>].data = <value>"])
+            + "\n"
+            + _command_ansi(
                 "Control window visibility",
                 [
-                    "tools[<index>].show()",
-                    "tools[<index>].close()",
-                    "tools[<index>].dispose()",
+                    "tools[<index>].show(), .close(), .dispose(), "
+                    ".archive(), .unarchive()",
                 ],
             )
-            + "</ul><br>"
+            + "\n"
         )
+
+        return f"{self._kernel_banner_default}{info_str}"
+
+    @kernel_banner.setter
+    def kernel_banner(self, value: str) -> None:
+        self._kernel_banner_default = value
+
+    def _update_colors(self) -> None:
+        """Detect dark mode and update the console colors accordingly."""
+        if self.kernel_manager.kernel:
+            is_dark: bool = (
+                self.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
+            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
+            colors = "linux" if is_dark else "lightbg"
+            self.set_default_style(colors)
+            self._syntax_style_changed()
+            self._style_sheet_changed()
+            self._execute(
+                f"""
+from IPython.core.ultratb import VerboseTB
+if getattr(VerboseTB, 'tb_highlight_style', None) is not None:
+    VerboseTB.tb_highlight_style = '{self.syntax_style}'
+elif getattr(VerboseTB, '_tb_highlight_style', None) is not None:
+    VerboseTB._tb_highlight_style = '{self.syntax_style}'
+else:
+    get_ipython().run_line_magic('colors', '{colors}')
+""",
+                True,
+            )  # Adapted from qtconsole.mainwindow.MainWindow.set_syntax_style
+
+
+class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
+
+        self._console_widget = _JupyterConsoleWidget(
+            parent=self,
+            namespace={
+                "np": np,
+                "xr": xr,
+                "erlab": erlab,
+                "eri": erlab.interactive,
+                "tools": _ToolsCLI(manager),
+                "era": erlab.analysis,
+                "eplt": LazyImport("erlab.plotting.erplot"),
+                "plt": LazyImport("matplotlib.pyplot"),
+            },
+        )
+        qapp = QtWidgets.QApplication.instance()
+
+        if qapp:
+            # Shutdown kernel when application quits
+            qapp.aboutToQuit.connect(self._console_widget.shutdown_kernel)
+
+            # Trigger color update
+            qapp.sendEvent(self, QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
+
         self.setWidget(self._console_widget)
         manager.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self)
         self.setFloating(True)
-        self.resize(487, 274)
+        self.resize(750, 250)
         self.hide()
+
+        # Start kernel when console is shown
+        self._console_widget.installEventFilter(self)
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        if (
+            obj == self._console_widget
+            and event is not None
+            and event.type() == QtCore.QEvent.Type.Show
+        ):
+            self._console_widget.initialize_kernel()
+        return super().eventFilter(obj, event)
+
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            self._console_widget._update_colors()
+
+        super().changeEvent(evt)
 
 
 class ImageToolManager(QtWidgets.QMainWindow):
@@ -1489,12 +1541,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.setMinimumWidth(301)
         self.setMinimumHeight(487)
 
-        self.console = ImageToolManagerConsole(self)
+        self.console = ImageToolManagerJupyterConsole(self)
 
         # Event filters
         self._kb_filter = KeyboardEventFilter(self)
         self.text_box.installEventFilter(self._kb_filter)
-        self.console._console_widget.output.installEventFilter(self._kb_filter)
 
     @property
     def cache_dir(self) -> str:
@@ -1955,8 +2006,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.console.show()
             self.console.activateWindow()
             self.console.raise_()
-            self.console._console_widget.output.setFocus()
-            self.console._console_widget.input.setFocus()
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
         """Handle drag-and-drop operations entering the window."""

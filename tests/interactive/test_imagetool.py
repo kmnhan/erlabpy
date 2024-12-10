@@ -279,15 +279,15 @@ def test_itool_tools(qtbot, test_data_type) -> None:
             lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
         )
 
-    # Open dtool from main image
-    main_image.open_in_dtool()
-    assert isinstance(
-        next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
-    )
+        # Open dtool from main image
+        main_image.open_in_dtool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
+        )
 
     # Open main image in new window
     main_image.open_in_new_window()
-    assert isinstance(list(win.slicer_area._associated_tools.values())[1], ImageTool)
+    assert isinstance(list(win.slicer_area._associated_tools.values())[-1], ImageTool)
 
     win.slicer_area.close_associated_windows()
 
