@@ -153,8 +153,8 @@ anglemap_kconv = anglemap.kspace.convert()"""
         qtbot.wait(10)
 
     manager.remove_tool(0)
-
     assert manager.ntools == 0
+    manager.close()
     win.close()
 
 
