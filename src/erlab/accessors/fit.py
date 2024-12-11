@@ -267,9 +267,6 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         if parallel_kw is None:
             parallel_kw = {}
 
-        if kwargs is None:
-            kwargs = {}
-
         is_dask: bool = not (
             self._obj.chunksizes is None or len(self._obj.chunksizes) == 0
         )

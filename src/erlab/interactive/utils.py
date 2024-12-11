@@ -934,7 +934,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
             return self.check.isChecked()
         return False
 
-    def setFixed(self, value: bool) -> None:
+    def setFixed(self, value: bool | QtCore.Qt.CheckState) -> None:
         if isinstance(value, QtCore.Qt.CheckState):
             if value == QtCore.Qt.CheckState.Unchecked:
                 value = False
@@ -1064,10 +1064,11 @@ class xImageItem(BetterImageItem):
         return self.menu
 
     def getPlotItem(self) -> pg.PlotItem | None:
-        p = self
+        p: Self | None = self
         while True:
             try:
-                p = p.parentItem()
+                if p is not None:
+                    p = p.parentItem()
             except RuntimeError:
                 return None
             if p is None:
@@ -1685,7 +1686,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             raise ValueError("Orientation must be 'vertical' or 'horizontal'.")
         self.cut_to_data = cut_to_data
 
-        self.input: None | xr.DataArray = None
+        self.input: None | xr.DataArray | npt.NDArray = None
 
         self.initialize_layout(num_ax)
 

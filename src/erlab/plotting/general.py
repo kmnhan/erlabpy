@@ -304,8 +304,6 @@ def plot_array(
     if func_args is None:
         func_args = {}
 
-    if isinstance(arr, np.ndarray):
-        arr = xr.DataArray(arr)
     if arr.ndim != 2:
         raise ValueError("Input array must be 2D")
 
@@ -515,12 +513,6 @@ def plot_array_2d(
 
     if normalize_with_larr:
         carr = carr / larr
-
-    if lnorm is None:
-        lnorm = plt.Normalize()
-
-    if cnorm is None:
-        cnorm = plt.Normalize()
 
     cmap_img, img = gen_2d_colormap(
         larr.values,

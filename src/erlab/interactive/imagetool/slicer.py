@@ -602,7 +602,7 @@ class ArraySlicer(QtCore.QObject):
 
     @QtCore.Slot(int, int, int, bool, result=list)
     def set_bin(
-        self, cursor: int, axis: int, value: int, update: bool = True
+        self, cursor: int, axis: int, value: int | None, update: bool = True
     ) -> list[int]:
         if value is None:
             return []
@@ -639,7 +639,7 @@ class ArraySlicer(QtCore.QObject):
 
     @QtCore.Slot(int, int, int, bool, result=list)
     def set_index(
-        self, cursor: int, axis: int, value: int, update: bool = True
+        self, cursor: int, axis: int, value: int | None, update: bool = True
     ) -> list[int | None]:
         if value is None:
             return []
@@ -696,7 +696,7 @@ class ArraySlicer(QtCore.QObject):
         self,
         cursor: int,
         axis: int,
-        value: float,
+        value: float | None,
         update: bool = True,
         uniform: bool = False,
     ) -> list[int | None]:

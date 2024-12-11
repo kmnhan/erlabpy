@@ -250,6 +250,7 @@ plugins = ["numpy.typing.mypy_plugin"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+warn_unreachable = true
 allow_redefinition = true
 check_untyped_defs = false
 exclude = [

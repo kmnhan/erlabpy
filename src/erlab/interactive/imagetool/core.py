@@ -1013,9 +1013,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         # self._data is original data passed to `set_data`
         # self.data is the current data transformed by ArraySlicer
-        if self._data is None:
-            return
-
         self._applied_func = func
 
         if self._applied_func is None:
