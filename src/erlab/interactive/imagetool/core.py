@@ -1546,7 +1546,7 @@ class ItoolDisplayObject:
     def sliced_data(self) -> xr.DataArray:
         with xr.set_options(keep_attrs=True):
             sliced = self.array_slicer.xslice(self.cursor_index, self.display_axis)
-            if sliced.name:
+            if sliced.name is not None and sliced.name != "":
                 sliced = sliced.rename(f"{sliced.name} Sliced")
             return sliced
 
@@ -2217,7 +2217,7 @@ class ItoolPlotItem(pg.PlotItem):
         data_to_save = self.current_data
 
         default_name = data_to_save.name
-        if not default_name:
+        if default_name is not None and default_name != "":
             default_name = "data"
 
         dialog = QtWidgets.QFileDialog()

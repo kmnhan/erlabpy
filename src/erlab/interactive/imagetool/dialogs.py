@@ -433,7 +433,7 @@ class CropDialog(DataTransformDialog):
                 out += f".sel({kwargs})"
 
         if isel_kwargs:
-            if all(isinstance(k, str) and str(k).isidentifier() for k in isel_kwargs):
+            if all(k.isidentifier() for k in isel_kwargs):
                 out = generate_code(xr.DataArray.isel, [], isel_kwargs, module=out)
             else:
                 out += f".isel({isel_kwargs})"

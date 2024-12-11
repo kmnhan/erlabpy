@@ -267,9 +267,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         if parallel_kw is None:
             parallel_kw = {}
 
-        is_dask: bool = not (
-            self._obj.chunksizes is None or len(self._obj.chunksizes) == 0
-        )
+        is_dask: bool = not (not self._obj.chunksizes or len(self._obj.chunksizes) == 0)
 
         if not isinstance(params, xr.Dataset) and isinstance(params, Mapping):
             # Given as a mapping from str to ...

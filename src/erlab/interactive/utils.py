@@ -1568,7 +1568,9 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         *args,
         **kwargs,
     ) -> None:
-        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
+        self.qapp = cast(
+            QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
+        )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
         self.qapp.setStyle("Fusion")

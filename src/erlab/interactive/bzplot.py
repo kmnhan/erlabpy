@@ -39,7 +39,9 @@ class BZPlotter(QtWidgets.QMainWindow):
         param_type: Literal["lattice", "avec", "bvec"] | None = None,
         execute: bool = True,
     ) -> None:
-        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
+        self.qapp = cast(
+            QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
+        )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
 

@@ -715,9 +715,7 @@ class LoaderBase(metaclass=_Loader):
 
         try:
             shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if display and (
-                shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]
-            ):
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 import IPython.display
 
                 with pandas.option_context(

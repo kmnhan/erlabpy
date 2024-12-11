@@ -214,9 +214,18 @@ docstring-code-line-length = "dynamic"
 profile = "black"
 
 [tool.pytest.ini_options]
-addopts = ["--import-mode=importlib"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--import-mode=importlib",
+]
 pythonpath = "src"
 testpaths = "tests"
+minversion = "8.3"
+log_cli_level = "DEBUG"
+xfail_strict = true
+filterwarnings = ["always"]
 
 [tool.coverage.run]
 source = ["src"]
@@ -260,5 +269,6 @@ exclude = [
     '_deprecated/',
     '^src/erlab/interactive/curvefittingtool.py',
 ]
-disable_error_code = ['import-untyped']
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+disable_error_code = ["import-untyped"]
 pretty = true
