@@ -407,6 +407,13 @@ def test_manager_console(qtbot, accept_dialog, data) -> None:
     assert str(_get_last_output_contents()) == "0: \n1: "
     manager.console._console_widget.execute("tools[0]")
 
+    # Select all
+    select_tools(manager, list(manager._tool_wrappers.keys()))
+    manager.console._console_widget.execute("tools.selected_data")
+    assert _get_last_output_contents() == [
+        wrapper.tool.slicer_area._data for wrapper in manager._tool_wrappers.values()
+    ]
+
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")
     qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)

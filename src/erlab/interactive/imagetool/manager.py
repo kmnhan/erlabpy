@@ -766,7 +766,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         else:
             painter.fillRect(option.rect, option.palette.base())
 
-        # Draw text if not editing
+        # Draw text only if not editing
         view = cast(_ImageToolWrapperListView, self.parent())
         if not (
             view.state() == QtWidgets.QAbstractItemView.State.EditingState
@@ -1121,7 +1121,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
                     self._model._row_index(idx), self._model._row_index(idx)
                 )
 
-    def add_tool(self, index: int) -> None:
+    def tool_added(self, index: int) -> None:
         n_rows = self._model.rowCount()
         self._model.insertRows(n_rows, 1)
         self._model.setData(
@@ -1130,34 +1130,36 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
             _WrapperItemDataRole.ToolIndexRole,
         )
 
-    def remove_tool(self, index: int) -> None:
+    def tool_removed(self, index: int) -> None:
         for i, tool_idx in enumerate(self._model.manager._displayed_indices):
             if tool_idx == index:
                 self._model.removeRows(i, 1)
                 break
 
 
-class _ImageToolCLI:
-    """A console interface for ImageTool objects."""
+class ToolNamespace:
+    """A console interface that represents a single ImageTool object."""
 
     def __init__(self, wrapper: _ImageToolWrapper) -> None:
-        self._wrapper = weakref.ref(wrapper)
+        self._wrapper_ref = weakref.ref(wrapper)
 
     @property
-    def wrapper(self) -> _ImageToolWrapper:
-        _wrapper = self._wrapper()
-        if _wrapper:
-            return _wrapper
+    def _wrapper(self) -> _ImageToolWrapper:
+        wrapper = self._wrapper_ref()
+        if wrapper:
+            return wrapper
         raise LookupError("Parent was destroyed")
 
     @property
     def tool(self) -> ImageTool:
-        if self.wrapper.archived:
-            self.wrapper.unarchive()
-        return cast(ImageTool, self.wrapper.tool)
+        """The underlying ImageTool object."""
+        if self._wrapper.archived:
+            self._wrapper.unarchive()
+        return cast(ImageTool, self._wrapper.tool)
 
     @property
     def data(self) -> xr.DataArray:
+        """The DataArray associated with the ImageTool."""
         return self.tool.slicer_area._data
 
     @data.setter
@@ -1165,43 +1167,55 @@ class _ImageToolCLI:
         self.tool.slicer_area.set_data(value)
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
-        if hasattr(self.wrapper, attr):
-            m = getattr(self.wrapper, attr)
+        if hasattr(self._wrapper, attr):
+            m = getattr(self._wrapper, attr)
             if callable(m):
                 return m
         raise AttributeError(attr)
 
     def __repr__(self) -> str:
-        time_repr = self.wrapper._created_time.isoformat(sep=" ", timespec="seconds")
-        out = f"ImageTool {self.wrapper.index}: {self.wrapper.name}\n"
+        time_repr = self._wrapper._created_time.isoformat(sep=" ", timespec="seconds")
+        out = f"ImageTool {self._wrapper.index}: {self._wrapper.name}\n"
         out += f"  Added: {time_repr}\n"
-        out += f"  Archived: {self.wrapper.archived}\n"
-        if not self.wrapper.archived:
+        out += f"  Archived: {self._wrapper.archived}\n"
+        if not self._wrapper.archived:
             out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
         return out
 
 
-class _ToolsCLI:
+class ToolsNamespace:
+    """A console interface that represents the ImageToolManager and its tools."""
+
     def __init__(self, manager: ImageToolManager) -> None:
-        self._manager = weakref.ref(manager)
+        self._manager_ref = weakref.ref(manager)
 
     @property
-    def manager(self) -> ImageToolManager:
-        _manager = self._manager()
-        if _manager:
-            return _manager
+    def _manager(self) -> ImageToolManager:
+        """Access the ImageToolManager instance."""
+        manager = self._manager_ref()
+        if manager:
+            return manager
         raise LookupError("Parent was destroyed")
 
-    def __getitem__(self, index: int) -> _ImageToolCLI | None:
-        if index not in self.manager._tool_wrappers:
+    @property
+    def selected_data(self) -> list[xr.DataArray]:
+        """Get a list of DataArrays from the selected windows."""
+        return [
+            self._manager.get_tool(idx).slicer_area._data
+            for idx in self._manager.list_view.selected_tool_indices
+        ]
+
+    def __getitem__(self, index: int) -> ToolNamespace | None:
+        """Access a specific ImageTool object by its index."""
+        if index not in self._manager._tool_wrappers:
             print(f"Tool {index} not found")
             return None
 
-        return _ImageToolCLI(self.manager._tool_wrappers[index])
+        return ToolNamespace(self._manager._tool_wrappers[index])
 
     def __repr__(self) -> str:
         output = []
-        for index, wrapper in self.manager._tool_wrappers.items():
+        for index, wrapper in self._manager._tool_wrappers.items():
             output.append(f"{index}: {wrapper.name}")
         if not output:
             return "No tools"
@@ -1244,16 +1258,13 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             return out
 
         info_str = (
-            _command_ansi("Access data", ["tools[<index>].data"])
+            _command_ansi("Access data", ["tools[<index>].data", "tools.selected_data"])
             + "\n"
             + _command_ansi("Change data", ["tools[<index>].data = <value>"])
             + "\n"
             + _command_ansi(
                 "Control window visibility",
-                [
-                    "tools[<index>].show(), .close(), .dispose(), "
-                    ".archive(), .unarchive()",
-                ],
+                ["tools[<index>].show(), .close(), .dispose()"],
             )
             + "\n"
         )
@@ -1299,7 +1310,7 @@ class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
                 "xr": xr,
                 "erlab": erlab,
                 "eri": erlab.interactive,
-                "tools": _ToolsCLI(manager),
+                "tools": ToolsNamespace(manager),
                 "era": erlab.analysis,
                 "eplt": LazyImport("erlab.plotting.erplot"),
                 "plt": LazyImport("matplotlib.pyplot"),
@@ -1638,7 +1649,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool.raise_()
 
         # Add to view after initialization
-        self.list_view.add_tool(index)
+        self.list_view.tool_added(index)
 
         return index
 
@@ -1710,7 +1721,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def remove_tool(self, index: int) -> None:
         """Remove the ImageTool window corresponding to the given index."""
-        self.list_view.remove_tool(index)
+        self.list_view.tool_removed(index)
 
         wrapper = self._tool_wrappers.pop(index)
         if not wrapper.archived:
