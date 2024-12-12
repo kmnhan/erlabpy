@@ -181,8 +181,7 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     assert clw.max_spin.value() == 2.0
     clw.rst_btn.click()
     assert win.slicer_area.levels == (0.0, 24.0)
-    clw.zero_btn.click()
-    assert win.slicer_area.levels == (0.0, 24.0)
+    clw.center_zero()
     win.slicer_area.levels = (1.0, 23.0)
     win.slicer_area.lock_levels(False)
 

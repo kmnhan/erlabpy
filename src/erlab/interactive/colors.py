@@ -347,23 +347,19 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.max_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
         self.min_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
-        self.zero_btn = QtWidgets.QPushButton("Center Zero")
         self.rst_btn = QtWidgets.QPushButton("Reset")
 
         self.max_spin.setObjectName("_vmax_spin")
         self.min_spin.setObjectName("_vmin_spin")
-        self.zero_btn.setObjectName("_vlim_zero_btn")
         self.rst_btn.setObjectName("_vlim_reset_btn")
 
         layout.addRow("Max", self.max_spin)
         layout.addRow("Min", self.min_spin)
-        layout.addRow(self.zero_btn)
         layout.addRow(self.rst_btn)
 
         self.cb._span.sigRegionChanged.connect(self.region_changed)
         self.min_spin.sigValueChanged.connect(self.update_region)
         self.max_spin.sigValueChanged.connect(self.update_region)
-        self.zero_btn.clicked.connect(self.center_zero)
         self.rst_btn.clicked.connect(self.reset)
 
     def _set_spin_values(self, mn: float, mx: float) -> None:
@@ -464,6 +460,9 @@ class BetterColorBarItem(pg.PlotItem):
         act = QtWidgets.QWidgetAction(self._clim_menu)
         act.setDefaultWidget(clw)
         self._clim_menu.addAction(act)
+
+        center_zero_action = self.vb.menu.addAction("Center zero")
+        center_zero_action.triggered.connect(clw.center_zero)
 
         if image is not None:
             self.setImageItem(image)
