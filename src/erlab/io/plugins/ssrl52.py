@@ -11,12 +11,14 @@ import xarray as xr
 
 import erlab.io.utils
 from erlab.io.dataloader import LoaderBase
-from erlab.utils.misc import LazyImport, emit_user_level_warning
+from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     import h5netcdf
 else:
-    h5netcdf = LazyImport("h5netcdf")
+    import lazy_loader as _lazy
+
+    h5netcdf = _lazy.load("h5netcdf")
 
 
 def _format_polarization(val) -> str:

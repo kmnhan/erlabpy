@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
 env:
   FORCE_COLOR: 1
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   release:

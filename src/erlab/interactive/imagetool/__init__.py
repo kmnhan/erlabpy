@@ -189,7 +189,7 @@ def itool(
     if execute is None:
         execute = True
         try:
-            shell = get_ipython().__class__.__name__  # type: ignore
+            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
@@ -283,7 +283,8 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
     def to_dataset(self) -> xr.Dataset:
         name = self.slicer_area._data.name
-        name = name if name else ""
+        if name is None:
+            name = ""
         return self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
@@ -554,7 +555,7 @@ class ImageTool(BaseImageTool):
         }
 
         dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area.data.name}.h5")
+        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()
@@ -670,7 +671,8 @@ class ItoolMenuBar(DictMenuBar):
                         "sep_after": True,
                     },
                     "Normalize": {"triggered": self._normalize},
-                    "Reset": {
+                    "resetAct": {
+                        "text": "Reset",
                         "triggered": self._reset_filters,
                         "sep_after": True,
                     },
@@ -802,6 +804,9 @@ class ItoolMenuBar(DictMenuBar):
         self.action_dict["remCursorAct"].setDisabled(self.slicer_area.n_cursors == 1)
         self.action_dict["ktoolAct"].setEnabled(
             self.slicer_area.data.kspace._interactive_compatible
+        )
+        self.action_dict["resetAct"].setEnabled(
+            self.slicer_area._applied_func is not None
         )
 
     @QtCore.Slot()

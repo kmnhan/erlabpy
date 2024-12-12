@@ -380,7 +380,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].blockSignals(True)
 
             if i in self.array_slicer._nonuniform_axes:
-                self.label_dim[i].setText(str(self.data.dims[i])[:-4])
+                self.label_dim[i].setText(str(self.data.dims[i]).removesuffix("_idx"))
             else:
                 self.label_dim[i].setText(str(self.data.dims[i]))
 

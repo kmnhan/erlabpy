@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+import erlab
 from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
@@ -106,9 +107,7 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
             <erlab.interactive.imagetool.itool>`.
 
         """
-        from erlab.interactive.imagetool import itool
-
-        return itool(self._obj, *args, **kwargs)
+        return erlab.interactive.itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
         """`hvplot <https://hvplot.holoviz.org/>`_-based interactive visualization.
@@ -185,9 +184,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         ]
 
     def itool(self, *args, **kwargs):
-        from erlab.interactive.imagetool import itool
-
-        return itool(self._obj, *args, **kwargs)
+        return erlab.interactive.itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
         _check_hvplot()

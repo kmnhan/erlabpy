@@ -130,9 +130,9 @@ anglemap_kconv = anglemap.kspace.convert()"""
     anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
 
     if "eV" in anglemap.dims:
-        anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky", "eV")
+        anglemap_kconv = anglemap.kspace.convert()
     else:
-        anglemap_kconv = anglemap.kspace.convert().transpose("kx", "ky")
+        anglemap_kconv = anglemap.kspace.convert()
 
     # Show imagetool
     win.show_converted()
@@ -153,8 +153,9 @@ anglemap_kconv = anglemap.kspace.convert()"""
         qtbot.wait(10)
 
     manager.remove_tool(0)
-
     assert manager.ntools == 0
+    manager.close()
+    win.close()
 
 
 def test_curvefittingtool(qtbot) -> None:

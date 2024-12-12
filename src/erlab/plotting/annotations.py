@@ -606,7 +606,7 @@ def label_subplots_nature(
         | Literal[
             "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
         ]
-    ) = 8,
+    ) = "medium",
     **kwargs,
 ) -> None:
     r"""Labels subplots with automatically generated labels.
@@ -672,9 +672,6 @@ def label_subplots_nature(
         trans = matplotlib.transforms.ScaledTranslation(
             offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
         )
-
-        if fontsize is None:
-            fontsize = "medium"
         axlist[i].figure.text(
             # axlist[i].text(
             0.0,

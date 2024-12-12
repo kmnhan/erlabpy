@@ -21,6 +21,7 @@ import xarray as xr
 from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.colors import (
     BetterColorBarItem,
     BetterImageItem,
@@ -31,7 +32,7 @@ from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_cros
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -450,6 +451,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # Stores ktool, dtool, goldtool, etc.
         self._associated_tools: dict[str, QtWidgets.QWidget] = {}
+
+        # Applied filter function
+        self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
 
         # Queues to handle undo and redo
         self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
@@ -1009,13 +1013,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         # self._data is original data passed to `set_data`
         # self.data is the current data transformed by ArraySlicer
-        if self._data is None:
-            return
+        self._applied_func = func
 
-        if func is None:
+        if self._applied_func is None:
             self.update_values(self._data)
         else:
-            self.update_values(func(self._data))
+            self.update_values(self._applied_func(self._data))
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -1260,8 +1263,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
         """Open the interactive momentum conversion tool."""
-        from erlab.interactive.kspace import KspaceTool
-
         cmap_info = self.colormap_properties
         if isinstance(cmap_info["cmap"], str):
             cmap = cmap_info["cmap"]
@@ -1272,7 +1273,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = None
             gamma = 0.5
 
-        self.add_tool_window(KspaceTool(self.data, cmap=cmap, gamma=gamma))
+        self.add_tool_window(
+            erlab.interactive.ktool(self.data, cmap=cmap, gamma=gamma, execute=False)
+        )
 
     def adjust_layout(
         self,
@@ -1506,6 +1509,12 @@ class ItoolCursorSpan(pg.LinearRegionItem):
 
 
 class ItoolDisplayObject:
+    """Parent class for sliced data.
+
+    Stores the axes and cursor index for the object, and retrieves the sliced data from
+    `ArraySlicer` when needed.
+    """
+
     def __init__(self, axes, cursor: int | None = None) -> None:
         self.axes = axes
         if cursor is None:
@@ -1536,13 +1545,18 @@ class ItoolDisplayObject:
     @property
     def sliced_data(self) -> xr.DataArray:
         with xr.set_options(keep_attrs=True):
-            return self.array_slicer.xslice(self.cursor_index, self.display_axis)
+            sliced = self.array_slicer.xslice(self.cursor_index, self.display_axis)
+            if sliced.name is not None and sliced.name != "":
+                sliced = sliced.rename(f"{sliced.name} Sliced")
+            return sliced
 
     def refresh_data(self) -> None:
         pass
 
 
 class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
+    """Display a 1D slice of data in a plot."""
+
     def __init__(
         self,
         axes,
@@ -1552,7 +1566,8 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
     ) -> None:
         pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
-        self.is_vertical = is_vertical
+        self.is_vertical: bool = is_vertical
+        self.normalize: bool = False
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
     def refresh_data(self) -> None:
@@ -1560,6 +1575,11 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         coord, vals = self.array_slicer.slice_with_coord(
             self.cursor_index, self.display_axis
         )
+        if self.normalize:
+            avg = np.nanmean(vals)
+            if not np.isnan(avg):
+                vals = vals / avg
+
         if self.is_vertical:
             self.setData(vals, coord)
         else:
@@ -1567,6 +1587,8 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
 
 
 class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
+    """Display a 2D slice of data as an image."""
+
     def __init__(
         self,
         axes,
@@ -1614,7 +1636,8 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
 class ItoolPlotItem(pg.PlotItem):
     """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
 
-    This class tracks axes and cursors for the image it displays.
+    This class tracks axes and cursors for the data displayed in the plot, and provides
+    context menu actions for interacting with the data.
 
     """
 
@@ -1677,8 +1700,12 @@ class ItoolPlotItem(pg.PlotItem):
                     equal_aspect_action.blockSignals(False)
 
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
-
-            self.vb.menu.addSeparator()
+        else:
+            norm_action = self.vb.menu.addAction("Normalize by mean")
+            norm_action.setCheckable(True)
+            norm_action.setChecked(False)
+            norm_action.toggled.connect(self.set_normalize)
+        self.vb.menu.addSeparator()
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
@@ -1759,13 +1786,21 @@ class ItoolPlotItem(pg.PlotItem):
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
 
+    @QtCore.Slot(bool)
+    def set_normalize(self, normalize: bool) -> None:
+        """Toggle normalization for 1D plots."""
+        if not self.is_image:
+            for item in self.slicer_data_items:
+                item.normalize = normalize
+                item.refresh_data()
+
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
+        """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
-            from erlab.interactive.imagetool import itool
-
             tool = cast(
-                QtWidgets.QWidget | None, itool(self.current_data, execute=False)
+                QtWidgets.QWidget | None,
+                erlab.interactive.itool(self.current_data, execute=False),
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
@@ -1784,20 +1819,20 @@ class ItoolPlotItem(pg.PlotItem):
                 )
                 return
 
-            from erlab.interactive.fermiedge import GoldTool
-
             self.slicer_area.add_tool_window(
-                GoldTool(data, data_name="data" + self.selection_code, execute=False)
+                erlab.interactive.goldtool(
+                    data, data_name="data" + self.selection_code, execute=False
+                )
             )
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:
-            from erlab.interactive.derivative import DerivativeTool
-
             self.slicer_area.add_tool_window(
-                DerivativeTool(
-                    self.current_data.T, data_name="data" + self.selection_code
+                erlab.interactive.dtool(
+                    self.current_data.T,
+                    data_name="data" + self.selection_code,
+                    execute=False,
                 )
             )
 
@@ -2085,7 +2120,9 @@ class ItoolPlotItem(pg.PlotItem):
                 self._guideline_offset[i] = float(
                     np.round(
                         self._guideline_offset[i],
-                        self.array_slicer.get_significant(self.display_axis[i]),
+                        self.array_slicer.get_significant(
+                            self.display_axis[i], uniform=True
+                        ),
                     )
                 )
 
@@ -2177,10 +2214,10 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def save_current_data(self) -> None:
-        default_name: Hashable | None = None
-        if self.slicer_area._data is not None:
-            default_name = self.slicer_area._data.name
-        if not default_name:
+        data_to_save = self.current_data
+
+        default_name = data_to_save.name
+        if default_name is not None and default_name != "":
             default_name = "data"
 
         dialog = QtWidgets.QFileDialog()
@@ -2196,9 +2233,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         if dialog.exec():
             filename = dialog.selectedFiles()[0]
-            self.current_data.to_netcdf(
-                filename, engine="h5netcdf", invalid_netcdf=True
-            )
+            data_to_save.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
 
     @QtCore.Slot()

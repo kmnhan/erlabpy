@@ -29,13 +29,13 @@ import scipy.interpolate
 import tqdm.auto
 import xarray as xr
 
+import erlab
 from erlab.analysis.fit.models import (
     FermiEdge2dModel,
     FermiEdgeModel,
     PolynomialModel,
     StepEdgeModel,
 )
-from erlab.analysis.transform import shift
 from erlab.plotting.colors import proportional_colorbar
 from erlab.plotting.general import autoscale_to, figwh, plot_array
 from erlab.utils.parallel import joblib_progress
@@ -117,7 +117,9 @@ def correct_with_edge(
             edge_quad, coords={"alpha": darr.alpha}, dims=["alpha"]
         )
 
-    corrected = shift(darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs)
+    corrected = erlab.analysis.transform.shift(
+        darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs
+    )
 
     if plot is True:
         axes = cast(
