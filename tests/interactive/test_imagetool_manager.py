@@ -171,8 +171,24 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     assert manager.get_tool(1).isVisible()
     assert manager.get_tool(2).isVisible()
 
-    # Remove all selected
+    # Select tools
     select_tools(manager, [1, 2])
+    accept_dialog(manager.concat_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 3, timeout=2000)
+
+    xr.testing.assert_identical(
+        manager.get_tool(3).slicer_area._data,
+        xr.concat(
+            [
+                manager.get_tool(1).slicer_area._data,
+                manager.get_tool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        ),
+    )
+
+    # Remove all selected
+    select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 

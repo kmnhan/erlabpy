@@ -1073,7 +1073,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self.doubleClicked.connect(self._model.manager.show_selected)
 
         self._menu = QtWidgets.QMenu("Menu", self)
-        self._menu.addAction(manager.open_action)
+        self._menu.addAction(manager.concat_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.show_action)
         self._menu.addAction(manager.hide_action)
@@ -1453,6 +1453,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.triggered.connect(self.about)
 
+        self.concat_action = QtWidgets.QAction("Concatenate", self)
+        self.concat_action.triggered.connect(self.concat_selected)
+        self.concat_action.setToolTip("Concatenate data in selected windows")
+
         # Construct GUI
         titlebar = QtWidgets.QWidget()
         titlebar_layout = QtWidgets.QVBoxLayout()
@@ -1469,6 +1473,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.about_action)
 
         edit_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&Edit"))
+        edit_menu.addAction(self.concat_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.show_action)
+        edit_menu.addAction(self.hide_action)
         edit_menu.addAction(self.remove_action)
         edit_menu.addAction(self.archive_action)
         edit_menu.addAction(self.unarchive_action)
@@ -1476,9 +1484,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.rename_action)
         edit_menu.addAction(self.link_action)
         edit_menu.addAction(self.unlink_action)
-        edit_menu.addSeparator()
-        edit_menu.addAction(self.show_action)
-        edit_menu.addAction(self.hide_action)
 
         view_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&View"))
         view_menu.addAction(self.console_action)
@@ -1700,6 +1705,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selection_all = selection_archived + selection_unarchived
 
         something_selected: bool = len(selection_all) != 0
+        multiple_selected: bool = len(selection_all) > 1
         only_unarchived: bool = len(selection_archived) == 0
         only_archived: bool = len(selection_unarchived) == 0
 
@@ -1709,6 +1715,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.rename_action.setEnabled(something_selected and only_unarchived)
         self.archive_action.setEnabled(something_selected and only_unarchived)
         self.unarchive_action.setEnabled(something_selected and only_archived)
+        self.concat_action.setEnabled(multiple_selected)
 
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
@@ -1844,6 +1851,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
         with wait_dialog(self, "Unarchiving..."):
             for index in self.list_view.selected_tool_indices:
                 self._tool_wrappers[index].unarchive()
+
+    @QtCore.Slot()
+    def concat_selected(self) -> None:
+        """Concatenate the selected data using :func:`xarray.concat`."""
+        text, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Concatenate",
+            "Dimension name:",
+            QtWidgets.QLineEdit.EchoMode.Normal,
+            "concat_dim",
+        )
+
+        if ok and text:
+            try:
+                show_in_manager(
+                    xr.concat(
+                        [
+                            self.get_tool(index).slicer_area._data
+                            for index in self.list_view.selected_tool_indices
+                        ],
+                        dim=text,
+                    )
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "An error occurred while concatenating data:\n\n"
+                    f"{type(e).__name__}: {e}",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                return
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
