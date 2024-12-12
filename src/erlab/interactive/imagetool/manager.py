@@ -18,10 +18,12 @@ import contextlib
 import datetime
 import enum
 import gc
+import importlib
 import logging
 import os
 import pathlib
 import pickle
+import platform
 import socket
 import struct
 import sys
@@ -55,7 +57,6 @@ from erlab.interactive.utils import (
 )
 from erlab.utils.array import is_monotonic, is_uniform_spaced
 from erlab.utils.formatting import format_html_table, format_value
-from erlab.utils.misc import LazyImport
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -476,9 +477,6 @@ class _ImageToolWrapper(QtCore.QObject):
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
             self._tool.sigTitleChanged.disconnect(self.update_title)
-            self._tool.slicer_area.set_data(
-                xr.DataArray(np.zeros((2, 2)), name=self._tool.slicer_area.data.name)
-            )
             self._tool.destroyed.connect(self._destroyed_callback)
             self._tool.close()
 
@@ -1229,21 +1227,27 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
         self._namespace = namespace
         self._kernel_banner_default: str = ""
 
-    def set_namespace(self, namespace: dict[str, Any]) -> None:
-        self.kernel_manager.kernel.shell.push(namespace)
-
     def initialize_kernel(self) -> None:
         if not self.kernel_manager.kernel:
             self.kernel_manager.start_kernel()
             self.kernel_client = self.kernel_manager.client()
             self.kernel_client.start_channels()
+
             if self._namespace is not None:
-                self.set_namespace(self._namespace)
+                self.kernel_manager.kernel.shell.push(
+                    {
+                        name: importlib.import_module(module)
+                        if isinstance(module, str)
+                        else module
+                        for name, module in self._namespace.items()
+                    }
+                )
 
     @QtCore.Slot()
     def shutdown_kernel(self) -> None:
-        self.kernel_client.stop_channels()
-        self.kernel_manager.shutdown_kernel()
+        if self.kernel_manager.kernel:
+            self.kernel_client.stop_channels()
+            self.kernel_manager.shutdown_kernel()
 
     def _banner_default(self) -> str:
         banner = super()._banner_default()
@@ -1298,6 +1302,9 @@ else:
                 True,
             )  # Adapted from qtconsole.mainwindow.MainWindow.set_syntax_style
 
+    def sizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(300, 186)
+
 
 class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
     def __init__(self, manager: ImageToolManager) -> None:
@@ -1312,8 +1319,8 @@ class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
                 "eri": erlab.interactive,
                 "tools": ToolsNamespace(manager),
                 "era": erlab.analysis,
-                "eplt": LazyImport("erlab.plotting.erplot"),
-                "plt": LazyImport("matplotlib.pyplot"),
+                "eplt": "erlab.plotting.erplot",
+                "plt": "matplotlib.pyplot",
             },
         )
         qapp = QtWidgets.QApplication.instance()
@@ -1327,8 +1334,7 @@ class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
 
         self.setWidget(self._console_widget)
         manager.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self)
-        self.setFloating(True)
-        self.resize(750, 250)
+        self.setFloating(False)
         self.hide()
 
         # Start kernel when console is shown
@@ -1449,8 +1455,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Construct GUI
         titlebar = QtWidgets.QWidget()
-        titlebar_layout = QtWidgets.QHBoxLayout()
-        titlebar_layout.setContentsMargins(0, 0, 0, 0)
+        titlebar_layout = QtWidgets.QVBoxLayout()
         titlebar.setLayout(titlebar_layout)
 
         file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
@@ -1505,27 +1510,31 @@ class ImageToolManager(QtWidgets.QMainWindow):
         titlebar_layout.addWidget(self.rename_button)
         titlebar_layout.addWidget(self.link_button)
         titlebar_layout.addWidget(self.unlink_button)
+        titlebar_layout.addStretch()
 
         container = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout()
+        layout = QtWidgets.QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         container.setLayout(layout)
 
-        layout.addWidget(titlebar)
-
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-
-        self.text_box = QtWidgets.QTextEdit()
-        self.text_box.setReadOnly(True)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
 
         self.list_view = _ImageToolWrapperListView(self)
         self.list_view._selection_model.selectionChanged.connect(self._update_actions)
         self.list_view._selection_model.selectionChanged.connect(self._update_info)
         self.list_view._model.dataChanged.connect(self._update_info)
 
-        layout.addWidget(splitter)
-        splitter.addWidget(self.list_view)
+        self.text_box = QtWidgets.QTextEdit()
+        self.text_box.setReadOnly(True)
+
+        self.setCentralWidget(splitter)
+        layout.addWidget(titlebar)
+        layout.addWidget(self.list_view)
+        # layout.addWidget(splitter)
+        splitter.addWidget(container)
         splitter.addWidget(self.text_box)
-        splitter.setSizes([150, 100])
+        splitter.setSizes([100, 150])
 
         # Temporary directory for storing archived data
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
@@ -1534,7 +1543,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
 
-        self.setCentralWidget(container)
         self.sigLinkersChanged.connect(self._update_actions)
         self.sigLinkersChanged.connect(self.list_view.refresh)
         self._sigReloadLinkers.connect(self._cleanup_linkers)
@@ -1583,15 +1591,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         version_info = {
             "erlab": erlab.__version__,
-            "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
-            "pyqtgraph": pyqtgraph.__version__,
-            "xarray": xr.__version__,
             "numpy": np.__version__,
+            "xarray": xr.__version__,
+            "pyqtgraph": pyqtgraph.__version__,
+            "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
+            "Python": platform.python_version(),
+            "OS": platform.platform(),
         }
         msg_box.setInformativeText(
             "\n".join(f"{k}: {v}" for k, v in version_info.items())
         )
+        msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Close)
+        copy_btn = msg_box.addButton(
+            "Copy", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
         msg_box.exec()
+
+        if msg_box.clickedButton() == copy_btn:
+            cb = QtWidgets.QApplication.clipboard()
+            if cb:
+                cb.setText(msg_box.informativeText())
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
