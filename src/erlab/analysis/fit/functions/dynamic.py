@@ -185,6 +185,7 @@ class MultiPeakFunction(DynamicFunction):
         self,
         npeaks: int,
         peak_shapes: list[str] | str | None = None,
+        *,
         fd: bool = True,
         background: Literal["constant", "linear", "polynomial", "none"] = "linear",
         degree: int = 2,
