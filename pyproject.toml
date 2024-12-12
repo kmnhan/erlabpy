@@ -256,6 +256,7 @@ exclude_also = [
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
+strict = false
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
