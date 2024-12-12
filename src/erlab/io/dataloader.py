@@ -35,6 +35,7 @@ import numpy as np
 import pandas
 import xarray as xr
 
+import erlab
 from erlab.utils.formatting import format_html_table, format_value
 from erlab.utils.misc import emit_user_level_warning
 
@@ -918,8 +919,6 @@ class LoaderBase(metaclass=_Loader):
         )
         from ipywidgets.widgets.interaction import show_inline_matplotlib_plots
 
-        import erlab.plotting.erplot as eplt
-
         try:
             from erlab.interactive.imagetool.manager import is_running, show_in_manager
 
@@ -1071,7 +1070,7 @@ class LoaderBase(metaclass=_Loader):
                 if (plot_data.ndim == 2 and "eV" in plot_data.dims) and (
                     plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0
                 ):
-                    eplt.fermiline(
+                    erlab.plotting.fermiline(
                         orientation="h" if plot_data.dims[0] == "eV" else "v"
                     )
                 show_inline_matplotlib_plots()

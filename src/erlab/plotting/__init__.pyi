@@ -1,5 +1,3 @@
-"""Deprecated convenience module for plotting. Use `erlab.plotting` instead."""
-
 __all__ = [
     "CenteredInversePowerNorm",
     "CenteredPowerNorm",
@@ -40,10 +38,7 @@ __all__ = [
     "unify_clim",
 ]
 
-
-import warnings
-
-from erlab.plotting.annotations import (
+from .annotations import (
     copy_mathtext,
     fancy_labels,
     integer_ticks,
@@ -60,8 +55,8 @@ from erlab.plotting.annotations import (
     set_ylabels,
     sizebar,
 )
-from erlab.plotting.bz import get_bz_edge, plot_hex_bz
-from erlab.plotting.colors import (
+from .bz import get_bz_edge, plot_hex_bz
+from .colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,
     InversePowerNorm,
@@ -74,7 +69,7 @@ from erlab.plotting.colors import (
     proportional_colorbar,
     unify_clim,
 )
-from erlab.plotting.general import (
+from .general import (
     autoscale_to,
     clean_labels,
     fermiline,
@@ -84,11 +79,4 @@ from erlab.plotting.general import (
     plot_array,
     plot_array_2d,
     plot_slices,
-)
-
-warnings.warn(
-    "The convenience `erlab.plotting.erplot` is deprecated and will be removed in the "
-    "next major release. Please import from `erlab.plotting` instead.",
-    DeprecationWarning,
-    stacklevel=2,
 )

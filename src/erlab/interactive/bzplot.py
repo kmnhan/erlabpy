@@ -9,7 +9,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as Navigation
 from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
-import erlab.plotting.erplot as eplt
+import erlab.plotting as eplt
 from erlab.interactive.utils import ParameterGroup
 from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
 

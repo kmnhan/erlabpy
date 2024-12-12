@@ -78,14 +78,14 @@ The following import conventions are recommended for ERLabPy modules: ::
   import erlab.analysis as era
   import erlab.interactive as eri
   import erlab.io
-  import erlab.plotting.erplot as eplt
+  import erlab.plotting as eplt
 
 Along with frequently used modules, your import statements may look like this: ::
 
   import erlab.analysis as era
   import erlab.interactive as eri
   import erlab.io
-  import erlab.plotting.erplot as eplt
+  import erlab.plotting as eplt
   import matplotlib.pyplot as plt
   import numpy as np
   import xarray as xr

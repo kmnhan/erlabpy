@@ -23,14 +23,17 @@ import io
 import os
 import pkgutil
 
+import lazy_loader as _lazy
 import matplotlib
 import matplotlib.colors
 import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 
+__getattr__, __dir__, __lazy_all__ = _lazy.attach_stub(__name__, __file__)
 
-def load_igor_ct(
+
+def _load_igor_ct(
     file: str | os.PathLike | io.BytesIO, name: str, register_reversed: bool = True
 ) -> None:
     """Load a Igor CT wave file (``.ibw``) and register as a matplotlib colormap.
@@ -67,15 +70,15 @@ def _get_ct_wave_bytes(file: str) -> io.BytesIO:
     return io.BytesIO(file)
 
 
-load_igor_ct(_get_ct_wave_bytes("CTBlueWhite.ibw"), "BuWh")
-load_igor_ct(_get_ct_wave_bytes("CTRainbowLIght.ibw"), "RainbowLight")
-# load_igor_ct(_get_ct_wave_bytes("CTRedTemperature.ibw"), "RedTemperature")
-load_igor_ct(_get_ct_wave_bytes("ColdWarm.ibw"), "ColdWarm")
-load_igor_ct(_get_ct_wave_bytes("BlueHot.ibw"), "BlueHot")
-load_igor_ct(_get_ct_wave_bytes("PlanetEarth.ibw"), "PlanetEarth")
-# load_igor_ct(_get_ct_wave_bytes("ametrine.ibw"), "ametrine")
-# load_igor_ct(_get_ct_wave_bytes("isolum.ibw"), "isolum")
-# load_igor_ct(_get_ct_wave_bytes("morgenstemning.ibw"), "morgenstemning")
+_load_igor_ct(_get_ct_wave_bytes("CTBlueWhite.ibw"), "BuWh")
+_load_igor_ct(_get_ct_wave_bytes("CTRainbowLIght.ibw"), "RainbowLight")
+# _load_igor_ct(_get_ct_wave_bytes("CTRedTemperature.ibw"), "RedTemperature")
+_load_igor_ct(_get_ct_wave_bytes("ColdWarm.ibw"), "ColdWarm")
+_load_igor_ct(_get_ct_wave_bytes("BlueHot.ibw"), "BlueHot")
+_load_igor_ct(_get_ct_wave_bytes("PlanetEarth.ibw"), "PlanetEarth")
+# _load_igor_ct(_get_ct_wave_bytes("ametrine.ibw"), "ametrine")
+# _load_igor_ct(_get_ct_wave_bytes("isolum.ibw"), "isolum")
+# _load_igor_ct(_get_ct_wave_bytes("morgenstemning.ibw"), "morgenstemning")
 
 
 matplotlib.style.core.USER_LIBRARY_PATHS.append(

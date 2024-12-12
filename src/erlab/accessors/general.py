@@ -56,10 +56,8 @@ class PlotAccessor(ERLabDataArrayAccessor):
         """
         import matplotlib.pyplot
 
-        from erlab.plotting.erplot import fancy_labels, plot_array
-
         if len(self._obj.dims) == 2:
-            return plot_array(self._obj, *args, **kwargs)
+            return erlab.plotting.plot_array(self._obj, *args, **kwargs)
 
         ax = kwargs.pop("ax", None)
         if ax is None:
@@ -67,7 +65,7 @@ class PlotAccessor(ERLabDataArrayAccessor):
         kwargs["ax"] = ax
 
         out = self._obj.plot(*args, **kwargs)
-        fancy_labels(ax)
+        erlab.plotting.fancy_labels(ax)
         return out
 
 

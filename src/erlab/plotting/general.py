@@ -466,7 +466,7 @@ def plot_array_2d(
 
     Example
     -------
-    >>> import erlab.plotting.erplot as eplt
+    >>> import erlab.plotting as eplt
     >>> import matplotlib.pyplot as plt
     >>> import xarray as xr
     >>> larr = xr.DataArray([[1, 2, 3], [4, 5, 6]])

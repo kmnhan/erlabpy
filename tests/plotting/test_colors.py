@@ -4,7 +4,7 @@ import pytest
 import xarray as xr
 from pyqtgraph.colormap import modulatedBarData
 
-import erlab.plotting.erplot as eplt
+import erlab.plotting as eplt
 
 
 def sample_plot(norms, kw0, kw1, cmap):
