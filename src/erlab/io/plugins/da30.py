@@ -16,7 +16,7 @@ from typing import ClassVar
 import numpy as np
 import xarray as xr
 
-import erlab.io
+import erlab
 from erlab.io.dataloader import LoaderBase
 
 

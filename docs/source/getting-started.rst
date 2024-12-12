@@ -75,16 +75,16 @@ Once installed, you can import ERLabPy in your Python scripts or interactive ses
 
 The following import conventions are recommended for ERLabPy modules: ::
 
+  import erlab
   import erlab.analysis as era
   import erlab.interactive as eri
-  import erlab.io
   import erlab.plotting as eplt
 
 Along with frequently used modules, your import statements may look like this: ::
 
+  import erlab
   import erlab.analysis as era
   import erlab.interactive as eri
-  import erlab.io
   import erlab.plotting as eplt
   import matplotlib.pyplot as plt
   import numpy as np

@@ -519,7 +519,7 @@ class LoaderBase(metaclass=_Loader):
 
           .. code-block:: python
 
-            import erlab.io
+            import erlab
 
             erlab.io.set_data_dir("data")
             erlab.io.load("example.txt")

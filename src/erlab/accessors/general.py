@@ -635,8 +635,6 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         `sel_kw`.
 
         """
-        import erlab.analysis
-
         masked = self._obj.where(
             erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw),
             drop=average,
@@ -669,8 +667,6 @@ class InfoDataArrayAccessor(ERLabDataArrayAccessor):
 
     @functools.cached_property
     def _summary_table(self) -> list[tuple[str, str, str]]:
-        import erlab.io
-
         if "data_loader_name" in self._obj.attrs:
             loader = erlab.io.loaders[self._obj.attrs["data_loader_name"]]
         else:

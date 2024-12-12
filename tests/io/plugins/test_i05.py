@@ -1,7 +1,7 @@
 import pytest
 import xarray as xr
 
-import erlab.io
+import erlab
 
 
 @pytest.fixture(scope="module")

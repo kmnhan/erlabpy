@@ -10,7 +10,7 @@ import xarray.testing
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
-import erlab.analysis.transform
+import erlab
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
