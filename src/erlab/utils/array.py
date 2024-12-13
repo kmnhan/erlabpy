@@ -37,22 +37,27 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     return np.allclose(dif, dif[0], **kwargs)
 
 
-def is_monotonic(arr: npt.NDArray) -> np.bool_:
+def is_monotonic(arr: npt.NDArray, strict: bool = False) -> np.bool_:
     """Check if an array is monotonic.
 
     Parameters
     ----------
     arr : array-like
         The input array.
+    strict : bool, optional
+        If `True`, the array must be strictly monotonic, i.e., either strictly
+        increasing or strictly decreasing. If `False`, the array can be non-decreasing
+        or non-increasing.
 
     Returns
     -------
     bool
-        `True` if the array is monotonic (either non-decreasing or non-increasing),
-        `False` otherwise.
+        `True` if the array is monotonic, `False` otherwise.
     """
     arr = np.atleast_1d(np.array(arr, dtype=float))
     dif = np.diff(arr)
+    if strict:
+        return np.all(dif > 0) or np.all(dif < 0)
     return np.all(dif >= 0) or np.all(dif <= 0)
 
 
