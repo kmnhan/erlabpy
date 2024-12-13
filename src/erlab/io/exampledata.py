@@ -157,7 +157,7 @@ def generate_data(
     Akw_m *= np.abs(1 - np.cos(phase))[:, :, None] ** 2
     out = Akw_p + Akw_m
 
-    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count * 1e-7, const_bkg=const_bkg)
+    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count * 1e-6, const_bkg=const_bkg)
 
     if noise:
         rng = np.random.default_rng(seed)
