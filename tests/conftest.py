@@ -71,7 +71,7 @@ def anglemap():
 @pytest.fixture
 def gold():
     return generate_gold_edge(
-        temp=100, Eres=1e-2, nx=15, ny=150, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
+        (15, 150), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
 
 

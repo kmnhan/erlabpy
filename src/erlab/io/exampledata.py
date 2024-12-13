@@ -7,11 +7,10 @@ from typing import cast
 
 import numpy as np
 import scipy.ndimage
+import scipy.special
 import xarray as xr
 
-import erlab.analysis.image
-import erlab.analysis.kspace
-import erlab.constants
+import erlab
 
 
 def _func(kvec, a):
@@ -23,6 +22,26 @@ def _func(kvec, a):
         + np.exp(1j * np.dot(kvec, n2))
         + np.exp(1j * np.dot(kvec, n3))
     )
+
+
+def _calc_graphene_mat_el(alpha, beta, polarization, factor_f, factor_g):
+    eps_m, eps_0, eps_p = np.linalg.solve(
+        np.array(
+            [
+                [1 / np.sqrt(2), -1j / np.sqrt(2), 0],
+                [0.0, 0.0, 1.0],
+                [-1 / np.sqrt(2), -1j / np.sqrt(2), 0],
+            ]
+        ).T,
+        polarization,
+    )
+    d_channel = -factor_f * (
+        np.sqrt(3 / 10) * eps_m * scipy.special.sph_harm(1, 2, alpha, beta)
+        - np.sqrt(2 / 5) * eps_0 * scipy.special.sph_harm(0, 2, alpha, beta)
+        + np.sqrt(3 / 10) * eps_p * scipy.special.sph_harm(-1, 2, alpha, beta)
+    )
+    s_channel = factor_g * eps_0 * scipy.special.sph_harm(0, 0, alpha, beta)
+    return d_channel + s_channel
 
 
 def _fermi_dirac(E, T):
@@ -37,19 +56,17 @@ def _spectral_function(w, bareband, Sreal, Simag):
     return Simag / (np.pi * ((w - bareband - Sreal) ** 2 + Simag**2))
 
 
-def _add_fd_norm(image, eV, temp=30, efermi=0, count=1e7) -> None:
+def _add_fd_norm(image, eV, temp=30, efermi=0, count=1e7, const_bkg=1e-3) -> None:
     if temp != 0:
         image *= _fermi_dirac(eV - efermi, temp)[None, None, :]
-    image += 0.1e-2
-    image /= image.sum()
     image *= count
+    image += const_bkg * count
 
 
 # Changing default values may break tests
-
-
 def generate_data(
     shape: tuple[int, int, int] = (250, 250, 300),
+    *,
     krange: float | tuple[float, float] | dict[str, tuple[float, float]] = 0.89,
     Erange: tuple[float, float] = (-0.45, 0.09),
     temp: float = 20.0,
@@ -64,8 +81,11 @@ def generate_data(
     seed: int | None = None,
     count: int = 100000000,
     ccd_sigma: float = 0.6,
+    const_bkg: float = 1e-3,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in momentum space.
+
+    Generates simulated ARPES data based on a simple graphene-like tight-binding model.
 
     Parameters
     ----------
@@ -102,6 +122,8 @@ def generate_data(
         Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
         The sigma value for CCD noise generation when `noise` is `True`, by default 0.6
+    const_bkg
+        Constant background as a fraction of the count, by default 1e-3
 
     Returns
     -------
@@ -131,11 +153,11 @@ def generate_data(
     Akw_m = _spectral_function(eV[None, None, :], -Eij + bandshift, Sreal, Simag)
 
     phase = np.angle(_func(point_iter, a)).reshape(shape[0], shape[1])
-    Akw_p *= (1 + np.cos(phase))[:, :, None]
-    Akw_m *= (1 - np.cos(phase))[:, :, None]
+    Akw_p *= np.abs(1 + np.cos(phase))[:, :, None] ** 2
+    Akw_m *= np.abs(1 - np.cos(phase))[:, :, None] ** 2
     out = Akw_p + Akw_m
 
-    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
+    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count * 1e-7, const_bkg=const_bkg)
 
     if noise:
         rng = np.random.default_rng(seed)
@@ -157,6 +179,7 @@ def generate_data(
 
 def generate_data_angles(
     shape: tuple[int, int, int] = (500, 60, 500),
+    *,
     angrange: float | tuple[float, float] | dict[str, tuple[float, float]] = 15.0,
     Erange: tuple[float, float] = (-0.45, 0.12),
     hv: float = 50.0,
@@ -175,7 +198,11 @@ def generate_data_angles(
     seed: int | None = None,
     count: int = 100000000,
     ccd_sigma: float = 0.6,
+    const_bkg: float = 1e-3,
     assign_attributes: bool = False,
+    extended: bool = True,
+    polarization: Sequence[float] = (0.0, 0.0, 1.0),
+    inner_potential: float = 10.0,
 ) -> xr.DataArray:
     """Generate simulated data for a given shape in angle space.
 
@@ -219,8 +246,18 @@ def generate_data_angles(
         Determines the signal-to-noise ratio when `noise` is `True`, by default 1e+8
     ccd_sigma
         The sigma value for CCD noise generation when `noise` is `True`, by default 0.6
+    const_bkg
+        Constant background as a fraction of the count, by default 1e-3
     assign_attributes
         Whether to assign attributes to the generated data, by default `False`
+    extended
+        Whether to include additional effects such as kz modulation and polarization, by
+        default `True`
+    polarization
+        Photon polarization vector, by default (0.0, 0.0, 1.0). Only used if `extended`
+        is `True`
+    inner_potential
+        Inner potential in eV, by default 10.0. Only used if `extended` is `True`.
 
     Returns
     -------
@@ -243,40 +280,102 @@ def generate_data_angles(
 
     eV = np.linspace(*Erange, shape[2])
 
-    Ekin = hv - 4.5 + eV[None, None, :]
+    # Pad energy range for gaussian kernel
+    eV_extended, gaussian_kernel = erlab.analysis.fit.functions.general._gen_kernel(
+        eV, float(Eres), pad=5
+    )
+    Ekin = hv - 4.5 + eV_extended[None, None, :]
     forward_func, _ = erlab.analysis.kspace.get_kconv_func(
         Ekin, configuration=configuration, angle_params={}
     )
 
-    dE = eV[1] - eV[0]
-
     a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
-    kxv, kyv = forward_func(a_mesh[:, :, None], b_mesh[:, :, None])
+    a_mesh, b_mesh = a_mesh[:, :, None], b_mesh[:, :, None]
+    kxv, kyv = forward_func(a_mesh, b_mesh)
+
+    # k-point grid
     point_iter = np.stack([kxv, kyv], axis=3)
 
+    # Energy eigenvalues
     Eij = _band(point_iter, t, a)
 
-    Akw_p = _spectral_function(eV, Eij + bandshift, Sreal, Simag)
-    Akw_m = _spectral_function(eV, -Eij + bandshift, Sreal, Simag)
+    # Spectral function
+    Akw_p = _spectral_function(eV_extended, Eij + bandshift, Sreal, Simag)
+    Akw_m = _spectral_function(eV_extended, -Eij + bandshift, Sreal, Simag)
 
+    # Matrix element phase
     phase = np.angle(_func(point_iter, a))
-    Akw_p *= 1 + np.cos(phase)
-    Akw_m *= 1 - np.cos(phase)
-    out = Akw_p + Akw_m
+    mat_el_p = 1 + np.exp(1j * phase)
+    mat_el_m = 1 - np.exp(1j * phase)
 
-    _add_fd_norm(out, eV, efermi=0, temp=temp, count=count)
+    if extended:
+        dummy_data = xr.DataArray(
+            np.empty((*tuple(shape[:-1]), len(eV_extended))),
+            dims=["alpha", "beta", "eV"],
+            coords={"alpha": alpha, "beta": beta, "eV": eV_extended, "hv": hv},
+        )
+        dummy_data = dummy_data.expand_dims("hv")
 
-    if noise:
-        rng = np.random.default_rng(seed)
-        out = rng.poisson(out).astype(float)
+        Ekin = dummy_data.hv - 4.5 + dummy_data.eV
+        forward_func, _ = erlab.analysis.kspace.get_kconv_func(
+            Ekin, configuration=configuration, angle_params={}
+        )
+        kx, ky = forward_func(dummy_data.alpha, dummy_data.beta)
 
+        c1, c2 = 641.0, 0.096
+        imfp = (c1 / (Ekin**2) + c2 * np.sqrt(Ekin)) * 10
+
+        # Initial out-of-plane momentum
+        kz = erlab.analysis.kspace.kz_func(Ekin, inner_potential, kx, ky)
+
+        k_tot = erlab.constants.rel_kconv * np.sqrt(Ekin)
+
+        # Final out-of-plane momentum
+        k_perp = erlab.analysis.kspace._kperp_func(k_tot**2, kx, ky)
+
+        # Photon polarization
+        pol = np.array([0.0, 0.0, 1.0])
+
+        terms = (
+            1j * kx * pol[0] + 1j * ky * pol[1] + (1j * k_perp - (1 / imfp)) * pol[2]
+        )
+        terms = terms * (1 / (1j * (kz - k_perp) + 1 / imfp))
+        terms = terms * _calc_graphene_mat_el(
+            np.deg2rad(dummy_data.beta),
+            np.deg2rad(dummy_data.alpha),
+            polarization=pol,
+            factor_f=0.0,
+            factor_g=1.0,
+        )
+
+        # Recast into numpy array
+        terms = terms.isel(hv=0).transpose("alpha", "beta", "eV").values
+
+        mat_el_p = mat_el_p.astype(np.complex128) * terms
+        mat_el_m = mat_el_m.astype(np.complex128) * terms
+
+    out = Akw_p * np.abs(mat_el_p) ** 2 + Akw_m * np.abs(mat_el_m) ** 2
+
+    # Apply momentum broadening
     out = scipy.ndimage.gaussian_filter(
         out,
         sigma=[angres / (a[1] - a[0]) if len(a) > 1 else 0 for a in (alpha, beta)]
-        + [Eres / dE],
-        truncate=10.0,
+        + [0],
+        truncate=5.0,
     )
+
+    # Multiply by Fermi-Dirac distribution and add constant background
+    _add_fd_norm(
+        out, eV_extended, efermi=0, temp=temp, count=count * 1e-6, const_bkg=const_bkg
+    )
+
+    # Apply energy broadening
+    out = np.apply_along_axis(
+        lambda m: np.convolve(m, gaussian_kernel, mode="valid"), axis=-1, arr=out
+    )
+
     if noise:
+        rng = np.random.default_rng(seed)
         out = scipy.ndimage.gaussian_filter(
             rng.poisson(out).astype(float), ccd_sigma, truncate=10.0, axes=(0, 2)
         )
@@ -302,32 +401,34 @@ def generate_data_angles(
 
 
 def generate_gold_edge(
+    shape: tuple[int, int] = (200, 300),
+    *,
     a: float = -0.05,
     b: float = 0.1,
-    c: float = 0.0,
+    c: float = 1e-3,
     temp: float = 100.0,
     Eres: float = 1e-2,
     angres: float = 0.1,
     edge_coeffs: Sequence[float] = (0.04, 1e-5, -3e-4),
     background_coeffs: Sequence[float] = (1.0, 0.0, -2e-3),
-    count: int = 1000000,
+    count: int = 100000000,
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
-    nx: int = 200,
-    ny: int = 300,
 ) -> xr.DataArray:
     """
     Generate a curved Fermi edge with a linear density of states.
 
     Parameters
     ----------
+    shape
+        Shape of the generated data. Default is (200, 300).
     a
         Slope of the linear density of states. Default is -0.05.
     b
         Intercept of the linear density of states. Default is 0.1.
     c
-        Constant background. Default is 0.0.
+        Constant background. Default is 1e-3.
     temp
         Temperature in Kelvin. Default is 100.0.
     Eres
@@ -335,13 +436,14 @@ def generate_gold_edge(
     angres
         Angular resolution. Default is 0.1.
     edge_coeffs
-        Coefficients for the polynomial equation used to calculate the center of the
-        spectrum. Default is (0.04, 1e-5, -3e-4).
+        Coefficients for the polynomial equation used to calculate the curved Fermi
+        level as a function of angle in degrees. Default is (0.04, 1e-5, -3e-4).
     background_coeffs
-        Coefficients for the polynomial equation used to calculate the background of the
-        spectrum. Default is (1.0, 0.0, -2e-3).
+        Coefficients for the polynomial equation used to calculate the polynomial
+        background of the spectrum as a function of angle in degrees. Negative values
+        are clipped. Default is (1.0, 0.0, -2e-3).
     count
-        Total count of the spectrum. Default is 1e6.
+        Determines the signal-to-noise ratio when `noise` is `True`. Default is 1e+8.
     noise
         Flag indicating whether to add noise to the spectrum. Default is True.
     seed
@@ -349,6 +451,8 @@ def generate_gold_edge(
     ccd_sigma
         Standard deviation of the Gaussian filter applied to the spectrum. Default is
         0.6.
+    const_bkg
+        Constant background as a fraction of the count, by default 1e-3
     nx
         Number of angle points. Default is 200.
     ny
@@ -360,8 +464,8 @@ def generate_gold_edge(
         Simulated gold edge spectrum.
 
     """
-    alpha = np.linspace(-15, 15, nx)
-    eV = np.linspace(-1.3, 0.3, ny)
+    alpha = np.linspace(-15, 15, shape[0])
+    eV = np.linspace(-1.3, 0.3, shape[1])
 
     alpha = xr.DataArray(alpha, dims="alpha", coords={"alpha": alpha})
     eV = xr.DataArray(eV, dims="eV", coords={"eV": eV})
@@ -374,10 +478,7 @@ def generate_gold_edge(
 
     background = np.polynomial.polynomial.polyval(alpha, background_coeffs).clip(min=0)
 
-    data *= background
-    data += 0.1e-2
-    data = data / data.sum()
-    data = data * count
+    data = data * background * count * 1e-6
 
     if noise:
         rng = np.random.default_rng(seed)
