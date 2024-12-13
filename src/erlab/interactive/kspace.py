@@ -8,6 +8,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
+import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
@@ -28,7 +29,10 @@ from erlab.interactive.utils import (
 )
 
 if TYPE_CHECKING:
+    import matplotlib
     import xarray as xr
+else:
+    matplotlib = _lazy.load("matplotlib")
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -154,7 +158,7 @@ class KspaceToolGUI(
             plot.showGrid(x=True, y=True, alpha=0.5)
 
         if cmap is None:
-            cmap = "ColdWarm"
+            cmap = matplotlib.rcParams["image.cmap"]
 
         if cmap.endswith("_r"):
             cmap = cmap[:-2]

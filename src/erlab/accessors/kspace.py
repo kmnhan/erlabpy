@@ -621,20 +621,22 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             self._kinetic_energy, self.configuration, self.angle_params
         )[0](alpha, beta)
 
-    def _inverse_func(self, kx, ky, kz=None):
+    def _inverse_func(self, kx, ky, kperp=None):
         return erlab.analysis.kspace.get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
-        )[1](kx, ky, kz)
+        )[1](kx, ky, kperp)
 
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
         kyval = xr.DataArray(ky, dims="ky", coords={"ky": ky})
         if kz is not None:
             kzval = xr.DataArray(kz, dims="kz", coords={"kz": kz})
+            kperp = erlab.analysis.kspace.kperp_from_kz(kzval, self.inner_potential)
         else:
             kzval = None
+            kperp = None
 
-        alpha, beta = self._inverse_func(kxval, kyval, kzval)
+        alpha, beta = self._inverse_func(kxval, kyval, kperp)
 
         out_dict = {"alpha": alpha, "beta": beta}
 
@@ -642,11 +644,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             out_dict["eV"] = self._binding_energy
 
         if kzval is not None:
-            out_dict["hv"] = (
-                erlab.constants.rel_kzconv * (kxval**2 + kyval**2 + kzval**2)
-                - self.inner_potential
-                + self.work_function
-                - self._binding_energy
+            out_dict["hv"] = erlab.analysis.kspace.hv_func(
+                kxval,
+                kyval,
+                kzval,
+                self.inner_potential,
+                self.work_function,
+                self._binding_energy,
             )
 
         return cast(
@@ -749,7 +753,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         .. code-block:: python
 
             data.kspace.offsets = {"delta": 0.1, "xi": 0.0, "beta": 0.3}
-            data.kspace.work_function = 4.3 data.kspace.inner_potential = 12.0
+
+            data.kspace.work_function = 4.3
+
+            data.kspace.inner_potential = 12.0
+
             converted_data = data.kspace.convert()
 
 
@@ -757,8 +765,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         .. code-block:: python
 
-            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)} resolution = {"kx": 0.01,
-            "ky": 0.01} converted_data = data.kspace.convert(bounds, resolution)
+            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)}
+
+            resolution = {"kx": 0.01, "ky": 0.01}
+
+            converted_data = data.kspace.convert(bounds, resolution)
 
         """
         if bounds is None:
