@@ -5,9 +5,11 @@ Colormaps
 
 In addition to the default `matplotlib
 <https://matplotlib.org/stable/tutorials/colors/colormaps.html>`_ colormaps, `cmasher
-<https://cmasher.readthedocs.io>`_, `cmocean <https://matplotlib.org/cmocean/>`_, and
-`colorcet <https://colorcet.holoviz.org>`_ packages can be installed to extend the
-available colormaps.
+<https://github.com/1313e/CMasher>`_, `cmocean
+<https://github.com/matplotlib/cmocean>`_, `colorcet
+<https://github.com/holoviz/colorcet>`_, and `cmcrameri
+<https://github.com/callumrollo/cmcrameri>`_ can be installed to extend the available
+colormaps.
 
 Colormap Normalization
 ----------------------

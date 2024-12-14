@@ -96,6 +96,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             importlib.import_module("cmocean")
         if importlib.util.find_spec("colorcet"):
             importlib.import_module("colorcet")
+        if importlib.util.find_spec("cmcrameri"):
+            importlib.import_module("cmcrameri")
         if importlib.util.find_spec("seaborn"):
             importlib.import_module("seaborn")
 
