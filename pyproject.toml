@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "erlab"
-version = "3.2.1"
+version = "3.2.2"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
@@ -88,7 +88,7 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [tool.commitizen]
-change_type_map = { "BREAKING CHANGE" = "🚨 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "🛠 Code Refactor" }
+change_type_map = { "BREAKING CHANGE" = "💥 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "♻️ Code Refactor" }
 
 version_provider = "pep621"
 update_changelog_on_bump = true
@@ -97,11 +97,11 @@ changelog_start_rev = "v1.2.1"
 changelog_merge_prerelease = true
 name = 'cz_changeup'
 change_type_order = [
-    "🚨 Breaking Changes",
+    "💥 Breaking Changes",
     "✨ Features",
     "🐞 Bug Fixes",
     "⚡️ Performance",
-    "🛠 Code Refactor",
+    "♻️ Code Refactor",
 ]
 # cz-changeup configuration
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"

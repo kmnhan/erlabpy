@@ -363,7 +363,7 @@ def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
     warnings.warn(
         "erlab.analysis.transform.rotateinplane is deprecated, "
         "use erlab.analysis.transform.rotate instead",
-        DeprecationWarning,
+        FutureWarning,
         stacklevel=1,
     )
     interp_kwargs.setdefault("method", "linearfast")
@@ -386,7 +386,7 @@ def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):
     warnings.warn(
         "erlab.analysis.transform.rotateinplane is deprecated, "
         "use erlab.analysis.transform.rotate instead",
-        DeprecationWarning,
+        FutureWarning,
         stacklevel=1,
     )
     interp_kwargs.setdefault("method", "linearfast")

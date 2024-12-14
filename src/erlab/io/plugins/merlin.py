@@ -204,7 +204,7 @@ class MERLINLoader(LoaderBase):
     def load_live(self, identifier, data_dir):
         warnings.warn(
             "load_live is deprecated, use load instead",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=1,
         )
         return self.load(identifier, data_dir)
