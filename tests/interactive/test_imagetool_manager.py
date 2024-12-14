@@ -7,6 +7,7 @@ import xarray as xr
 import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 import erlab.interactive.imagetool.manager
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
@@ -170,8 +171,24 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     assert manager.get_tool(1).isVisible()
     assert manager.get_tool(2).isVisible()
 
-    # Remove all selected
+    # Select tools
     select_tools(manager, [1, 2])
+    accept_dialog(manager.concat_action.trigger)
+    qtbot.waitUntil(lambda: manager.ntools == 3, timeout=2000)
+
+    xr.testing.assert_identical(
+        manager.get_tool(3).slicer_area._data,
+        xr.concat(
+            [
+                manager.get_tool(1).slicer_area._data,
+                manager.get_tool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        ),
+    )
+
+    # Remove all selected
+    select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 
@@ -394,26 +411,31 @@ def test_manager_console(qtbot, accept_dialog, data) -> None:
     manager.toggle_console()
     qtbot.waitUntil(manager.console.isVisible, timeout=2000)
 
-    def _get_last_output_line() -> str:
-        return (
-            manager.console._console_widget.output.toPlainText().strip().split("\n")[-1]
-        )
+    def _get_last_output_contents():
+        return manager.console._console_widget.kernel_manager.kernel.shell.user_ns["_"]
 
     # Test delayed import
-    manager.console._console_widget.repl.runCmd("era")
-    assert _get_last_output_line().startswith("<module 'erlab.analysis'")
+    manager.console._console_widget.execute("era")
+    assert _get_last_output_contents() == erlab.analysis
 
     # Test repr
-    manager.console._console_widget.repl.runCmd("tools")
-    assert _get_last_output_line() == "1:"
-    manager.console._console_widget.repl.runCmd("tools[0]")
+    manager.console._console_widget.execute("tools")
+    assert str(_get_last_output_contents()) == "0: \n1: "
+    manager.console._console_widget.execute("tools[0]")
+
+    # Select all
+    select_tools(manager, list(manager._tool_wrappers.keys()))
+    manager.console._console_widget.execute("tools.selected_data")
+    assert _get_last_output_contents() == [
+        wrapper.tool.slicer_area._data for wrapper in manager._tool_wrappers.values()
+    ]
 
     # Test calling wrapped methods
-    manager.console._console_widget.repl.runCmd("tools[0].archive()")
+    manager.console._console_widget.execute("tools[0].archive()")
     qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)
 
     # Test setting data
-    manager.console._console_widget.repl.runCmd(
+    manager.console._console_widget.execute(
         "tools[1].data = xr.DataArray("
         "np.arange(25).reshape((5, 5)) * 2, "
         "dims=['x', 'y'], "
@@ -428,6 +450,6 @@ def test_manager_console(qtbot, accept_dialog, data) -> None:
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
 
     # Test repr
-    manager.console._console_widget.repl.runCmd("tools")
-    assert _get_last_output_line() == "No tools"
+    manager.console._console_widget.execute("tools")
+    assert str(_get_last_output_contents()) == "No tools"
     manager.close()

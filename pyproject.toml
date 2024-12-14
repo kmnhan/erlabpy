@@ -26,6 +26,7 @@ dependencies = [
     "h5netcdf>=1.2.0",
     "igor2>=0.5.9",
     "joblib>=1.3.2",
+    "lazy-loader>=0.4",
     "lmfit>=1.3.2",
     "matplotlib>=3.8.0",
     "numba>=0.59.0",
@@ -33,6 +34,7 @@ dependencies = [
     "pyperclip>=1.8.2",
     "pyqtgraph>=0.13.1",
     "qtawesome>=1.3.1",
+    "qtconsole>=5.6.0",
     "qtpy>=2.4.1",
     "scipy>=1.13.0",
     "tqdm>=4.66.2",
@@ -135,7 +137,6 @@ select = [
     "C4",
     # "DTZ",
     "FA",
-    "ISC",
     "ICN",
     "LOG",
     "G",
@@ -213,9 +214,18 @@ docstring-code-line-length = "dynamic"
 profile = "black"
 
 [tool.pytest.ini_options]
-addopts = ["--import-mode=importlib"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+    "--import-mode=importlib",
+]
 pythonpath = "src"
 testpaths = "tests"
+minversion = "8.3"
+log_cli_level = "DEBUG"
+xfail_strict = true
+filterwarnings = ["always"]
 
 [tool.coverage.run]
 source = ["src"]
@@ -246,9 +256,11 @@ exclude_also = [
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
+strict = false
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+warn_unreachable = true
 allow_redefinition = true
 check_untyped_defs = false
 exclude = [
@@ -258,5 +270,6 @@ exclude = [
     '_deprecated/',
     '^src/erlab/interactive/curvefittingtool.py',
 ]
-disable_error_code = ['import-untyped']
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+disable_error_code = ["import-untyped"]
 pretty = true

@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pyqtgraph.colormap import modulatedBarData
 
-import erlab.plotting.erplot as eplt
+import erlab.plotting as eplt
 
 plt.style.use("khan")
 

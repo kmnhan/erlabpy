@@ -35,6 +35,8 @@ import numpy as np
 import pandas
 import xarray as xr
 
+import erlab
+from erlab.utils.array import is_monotonic
 from erlab.utils.formatting import format_html_table, format_value
 from erlab.utils.misc import emit_user_level_warning
 
@@ -518,7 +520,7 @@ class LoaderBase(metaclass=_Loader):
 
           .. code-block:: python
 
-            import erlab.io
+            import erlab
 
             erlab.io.set_data_dir("data")
             erlab.io.load("example.txt")
@@ -715,9 +717,7 @@ class LoaderBase(metaclass=_Loader):
 
         try:
             shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if display and (
-                shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]
-            ):
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 import IPython.display
 
                 with pandas.option_context(
@@ -920,8 +920,6 @@ class LoaderBase(metaclass=_Loader):
         )
         from ipywidgets.widgets.interaction import show_inline_matplotlib_plots
 
-        import erlab.plotting.erplot as eplt
-
         try:
             from erlab.interactive.imagetool.manager import is_running, show_in_manager
 
@@ -1073,7 +1071,7 @@ class LoaderBase(metaclass=_Loader):
                 if (plot_data.ndim == 2 and "eV" in plot_data.dims) and (
                     plot_data["eV"].values[0] * plot_data["eV"].values[-1] < 0
                 ):
-                    eplt.fermiline(
+                    erlab.plotting.fermiline(
                         orientation="h" if plot_data.dims[0] == "eV" else "v"
                     )
                 show_inline_matplotlib_plots()
@@ -1393,19 +1391,45 @@ class LoaderBase(metaclass=_Loader):
         if _is_sequence_of(data_list, xr.DataArray) or _is_sequence_of(
             data_list, xr.Dataset
         ):
-            # Rename with process_keys after assigning coords and expanding dims
-            # This is necessary to ensure that coordinate_attrs are preserved
-            combined = xr.combine_by_coords(
-                [
+            # If all coordinates are monotonic, all points are unique; in this case,
+            # indexing along only the first dimension will not discard any data. For
+            # example, hv-dependent cuts with coords 'hv' and 'beta' should be combined
+            # into a 3D array rather than 4D, but position dependent cuts with coords
+            # 'x' and 'y' should be combined into a 4D array. To handle the former case,
+            # we combine along the first dimension only if all coordinates are
+            # monotonic. Otherwise, we combine along all coordinates.
+            if (
+                len(coord_dict) > 1
+                and len(data_list) > 1
+                and all(is_monotonic(np.asarray(v)) for v in coord_dict.values())
+            ):
+                # We rename with process_keys after assigning coords and expanding dims.
+                # This is necessary to ensure that coordinate_attrs are preserved.
+                concat_dim = next(iter(coord_dict.keys()))
+                concat_coord = coord_dict.pop(concat_dim)
+                processed: list[xr.DataArray] = [
+                    self.process_keys(
+                        data.assign_coords({concat_dim: concat_coord[i]})
+                        .expand_dims(concat_dim)
+                        .assign_coords(
+                            {k: (concat_dim, [v[i]]) for k, v in coord_dict.items()}
+                        )
+                    )
+                    for i, data in enumerate(data_list)
+                ]
+            else:
+                processed = [
                     self.process_keys(
                         data.assign_coords(
                             {k: v[i] for k, v in coord_dict.items()}
                         ).expand_dims(tuple(coord_dict.keys()))
                     )
                     for i, data in enumerate(data_list)
-                ],
-                combine_attrs=self.combine_attrs,
-            )
+                ]
+
+            # Magically combine the data
+            combined = xr.combine_by_coords(processed, combine_attrs=self.combine_attrs)
+
             if (
                 isinstance(combined, xr.Dataset)
                 and len(combined.data_vars) == 1

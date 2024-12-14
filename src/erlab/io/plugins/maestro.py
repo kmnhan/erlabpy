@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 import xarray as xr
 
-import erlab.io
+import erlab
 from erlab.io.dataloader import LoaderBase
 from erlab.utils.misc import emit_user_level_warning
 

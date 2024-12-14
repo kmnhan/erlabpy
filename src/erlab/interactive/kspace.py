@@ -8,13 +8,14 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
+import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import varname
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
-import erlab.lattice
+import erlab
 from erlab.interactive.colors import (
     BetterColorBarItem,  # noqa: F401
     ColorMapComboBox,  # noqa: F401
@@ -28,7 +29,10 @@ from erlab.interactive.utils import (
 )
 
 if TYPE_CHECKING:
+    import matplotlib
     import xarray as xr
+else:
+    matplotlib = _lazy.load("matplotlib")
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -154,7 +158,7 @@ class KspaceToolGUI(
             plot.showGrid(x=True, y=True, alpha=0.5)
 
         if cmap is None:
-            cmap = "ColdWarm"
+            cmap = matplotlib.rcParams["image.cmap"]
 
         if cmap.endswith("_r"):
             cmap = cmap[:-2]
@@ -403,14 +407,13 @@ class KspaceTool(KspaceToolGUI):
             self.data.kspace.inner_potential = self._offset_spins["V0"].value()
 
         with wait_dialog(self, "Converting..."):
-            from erlab.interactive.imagetool import ImageTool, itool
-
             data_kconv = self.data.kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
 
-        tool = cast(ImageTool | None, itool(data_kconv, execute=False))
-        if tool is not None:
+        tool = erlab.interactive.itool(data_kconv, execute=False)
+        if isinstance(tool, QtWidgets.QWidget):
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._itool = tool
             self._itool.show()
 
@@ -634,7 +637,7 @@ def ktool(
     if execute is None:
         execute = True
         try:
-            shell = get_ipython().__class__.__name__  # type: ignore
+            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4

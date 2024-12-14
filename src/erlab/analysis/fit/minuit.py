@@ -15,7 +15,7 @@ import numpy.typing as npt
 import xarray
 from iminuit.util import _detect_log_spacing, _smart_sampling
 
-import erlab.plotting.general
+import erlab
 
 if TYPE_CHECKING:
     import lmfit
@@ -217,7 +217,7 @@ class Minuit(iminuit.Minuit):
             try:
                 self.visualize()
 
-                with _TempFig(*erlab.plotting.general.figwh()):
+                with _TempFig(*erlab.plotting.figwh()):
                     self.visualize()
                     # import io
                     # with io.StringIO() as io:

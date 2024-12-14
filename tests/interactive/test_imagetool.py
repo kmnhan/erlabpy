@@ -10,7 +10,7 @@ import xarray.testing
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
-import erlab.analysis.transform
+import erlab
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
@@ -181,8 +181,7 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     assert clw.max_spin.value() == 2.0
     clw.rst_btn.click()
     assert win.slicer_area.levels == (0.0, 24.0)
-    clw.zero_btn.click()
-    assert win.slicer_area.levels == (0.0, 24.0)
+    clw.center_zero()
     win.slicer_area.levels = (1.0, 23.0)
     win.slicer_area.lock_levels(False)
 
@@ -279,15 +278,15 @@ def test_itool_tools(qtbot, test_data_type) -> None:
             lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
         )
 
-    # Open dtool from main image
-    main_image.open_in_dtool()
-    assert isinstance(
-        next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
-    )
+        # Open dtool from main image
+        main_image.open_in_dtool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
+        )
 
     # Open main image in new window
     main_image.open_in_new_window()
-    assert isinstance(list(win.slicer_area._associated_tools.values())[1], ImageTool)
+    assert isinstance(list(win.slicer_area._associated_tools.values())[-1], ImageTool)
 
     win.slicer_area.close_associated_windows()
 
@@ -483,7 +482,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     win.slicer_area.add_cursor()
     win.slicer_area.add_cursor()
 
-    # 2D crop
+    # Move cursors to define 2D crop region
     win.slicer_area.set_value(axis=0, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=1, value=0.0, cursor=0)
     win.slicer_area.set_value(axis=0, value=3.0, cursor=1)
@@ -491,6 +490,19 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     win.slicer_area.set_value(axis=0, value=4.0, cursor=2)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=2)
 
+    # Test 1D plot normalization
+    for profile_axis in win.slicer_area.profiles:
+        profile_axis.set_normalize(True)
+        for data_item in profile_axis.slicer_data_items:
+            yvals = (
+                data_item.getData()[0]
+                if data_item.is_vertical
+                else data_item.getData()[1]
+            )
+            assert_almost_equal(yvals.mean(), 1.0)
+        profile_axis.set_normalize(False)
+
+    # Test 2D crop
     def _set_dialog_params(dialog: CropDialog) -> None:
         # activate combo to increase ExclusiveComboGroup coverage
         dialog.cursor_combos[0].activated.emit(0)

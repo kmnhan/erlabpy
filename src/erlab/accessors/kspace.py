@@ -10,8 +10,9 @@ from typing import Literal, Self, cast
 import numpy as np
 import xarray as xr
 
+import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor
-from erlab.constants import AxesConfiguration, rel_kconv, rel_kzconv
+from erlab.constants import AxesConfiguration
 from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
@@ -500,7 +501,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         min_Ek = np.amin(self._kinetic_energy.values)
         max_angle = max(np.abs(self._alpha.values))
         return (
-            rel_kconv
+            erlab.constants.rel_kconv
             * np.sqrt(min_Ek)
             * np.cos(np.deg2rad(max_angle))
             * np.deg2rad(self.angle_resolution)
@@ -538,9 +539,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self._alpha, self._beta)
         if "hv" in kx.dims:
-            from erlab.analysis.kspace import kz_func
-
-            kz = kz_func(self._kinetic_energy, self.inner_potential, kx, ky)
+            kz = erlab.analysis.kspace.kz_func(
+                self._kinetic_energy, self.inner_potential, kx, ky
+            )
             return {"kx": kx, "ky": ky, "kz": kz}
         return {"kx": kx, "ky": ky}
 
@@ -616,28 +617,26 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self.best_kp_resolution
 
     def _forward_func(self, alpha, beta):
-        from erlab.analysis.kspace import get_kconv_func
-
-        return get_kconv_func(
+        return erlab.analysis.kspace.get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
         )[0](alpha, beta)
 
-    def _inverse_func(self, kx, ky, kz=None):
-        from erlab.analysis.kspace import get_kconv_func
-
-        return get_kconv_func(
+    def _inverse_func(self, kx, ky, kperp=None):
+        return erlab.analysis.kspace.get_kconv_func(
             self._kinetic_energy, self.configuration, self.angle_params
-        )[1](kx, ky, kz)
+        )[1](kx, ky, kperp)
 
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
         kyval = xr.DataArray(ky, dims="ky", coords={"ky": ky})
         if kz is not None:
             kzval = xr.DataArray(kz, dims="kz", coords={"kz": kz})
+            kperp = erlab.analysis.kspace.kperp_from_kz(kzval, self.inner_potential)
         else:
             kzval = None
+            kperp = None
 
-        alpha, beta = self._inverse_func(kxval, kyval, kzval)
+        alpha, beta = self._inverse_func(kxval, kyval, kperp)
 
         out_dict = {"alpha": alpha, "beta": beta}
 
@@ -645,11 +644,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             out_dict["eV"] = self._binding_energy
 
         if kzval is not None:
-            out_dict["hv"] = (
-                rel_kzconv * (kxval**2 + kyval**2 + kzval**2)
-                - self.inner_potential
-                + self.work_function
-                - self._binding_energy
+            out_dict["hv"] = erlab.analysis.kspace.hv_func(
+                kxval,
+                kyval,
+                kzval,
+                self.inner_potential,
+                self.work_function,
+                self._binding_energy,
             )
 
         return cast(
@@ -752,7 +753,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         .. code-block:: python
 
             data.kspace.offsets = {"delta": 0.1, "xi": 0.0, "beta": 0.3}
-            data.kspace.work_function = 4.3 data.kspace.inner_potential = 12.0
+
+            data.kspace.work_function = 4.3
+
+            data.kspace.inner_potential = 12.0
+
             converted_data = data.kspace.convert()
 
 
@@ -760,12 +765,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         .. code-block:: python
 
-            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)} resolution = {"kx": 0.01,
-            "ky": 0.01} converted_data = data.kspace.convert(bounds, resolution)
+            bounds = {"kx": (0.0, 1.0), "ky": (-1.0, 1.0)}
+
+            resolution = {"kx": 0.01, "ky": 0.01}
+
+            converted_data = data.kspace.convert(bounds, resolution)
 
         """
-        import erlab.analysis.interpolate
-
         if bounds is None:
             bounds = {}
 
@@ -891,11 +897,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
           hv-dependent cuts)
 
         """
-        from erlab.interactive.kspace import ktool
-
         if not self._interactive_compatible:
             raise ValueError("Data is not compatible with the interactive tool.")
-        return ktool(self._obj, **kwargs)
+        return erlab.interactive.ktool(self._obj, **kwargs)
 
     @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
@@ -914,8 +918,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         center since we lost the exact angle values, i.e. the exact momentum
         perpendicular to the slit, during momentum conversion.
         """
-        from erlab.analysis.kspace import get_kconv_func, kz_func
-
         if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
 
@@ -923,10 +925,12 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         kinetic = hv - self.work_function + self._obj.eV
 
         # Get momentum conversion functions
-        ang2k, k2ang = get_kconv_func(kinetic, self.configuration, self.angle_params)
+        ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
+            kinetic, self.configuration, self.angle_params
+        )
 
         # Transformation yields in-plane momentum at given photon energy
         kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
 
         # Calculate kz
-        return kz_func(kinetic, self.inner_potential, kx, ky)
+        return erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)

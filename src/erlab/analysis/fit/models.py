@@ -266,6 +266,7 @@ class MultiPeakModel(lmfit.Model):
         self,
         npeaks: int = 1,
         peak_shapes: list[str] | str | None = None,
+        *,
         fd: bool = True,
         background: Literal["none", "constant", "linear", "polynomial"] = "linear",
         degree: int = 2,

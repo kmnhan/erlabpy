@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-import erlab.analysis.kspace
+import erlab.analysis
 
 k_tot = np.array([1.0, 2.0, 3.0])
 

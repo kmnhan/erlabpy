@@ -17,10 +17,14 @@ if TYPE_CHECKING:
     from nexusformat import nexus
 
 else:
+    import lazy_loader as _lazy
+
+    h5py = _lazy.load("h5py")
+
     from erlab.utils.misc import LazyImport
 
+    # lazy-loader does not support importing from a submodule
     nexus = LazyImport("nexusformat.nexus")
-    h5py = LazyImport("h5py")
 
 
 def _parse_value(value):

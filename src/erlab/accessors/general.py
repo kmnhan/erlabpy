@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+import erlab
 from erlab.accessors.utils import (
     ERLabDataArrayAccessor,
     ERLabDatasetAccessor,
@@ -55,10 +56,8 @@ class PlotAccessor(ERLabDataArrayAccessor):
         """
         import matplotlib.pyplot
 
-        from erlab.plotting.erplot import fancy_labels, plot_array
-
         if len(self._obj.dims) == 2:
-            return plot_array(self._obj, *args, **kwargs)
+            return erlab.plotting.plot_array(self._obj, *args, **kwargs)
 
         ax = kwargs.pop("ax", None)
         if ax is None:
@@ -66,7 +65,7 @@ class PlotAccessor(ERLabDataArrayAccessor):
         kwargs["ax"] = ax
 
         out = self._obj.plot(*args, **kwargs)
-        fancy_labels(ax)
+        erlab.plotting.fancy_labels(ax)
         return out
 
 
@@ -106,9 +105,7 @@ class InteractiveDataArrayAccessor(ERLabDataArrayAccessor):
             <erlab.interactive.imagetool.itool>`.
 
         """
-        from erlab.interactive.imagetool import itool
-
-        return itool(self._obj, *args, **kwargs)
+        return erlab.interactive.itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
         """`hvplot <https://hvplot.holoviz.org/>`_-based interactive visualization.
@@ -185,9 +182,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         ]
 
     def itool(self, *args, **kwargs):
-        from erlab.interactive.imagetool import itool
-
-        return itool(self._obj, *args, **kwargs)
+        return erlab.interactive.itool(self._obj, *args, **kwargs)
 
     def hvplot(self, *args, **kwargs):
         _check_hvplot()
@@ -640,8 +635,6 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         `sel_kw`.
 
         """
-        import erlab.analysis
-
         masked = self._obj.where(
             erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw),
             drop=average,
@@ -674,8 +667,6 @@ class InfoDataArrayAccessor(ERLabDataArrayAccessor):
 
     @functools.cached_property
     def _summary_table(self) -> list[tuple[str, str, str]]:
-        import erlab.io
-
         if "data_loader_name" in self._obj.attrs:
             loader = erlab.io.loaders[self._obj.attrs["data_loader_name"]]
         else:

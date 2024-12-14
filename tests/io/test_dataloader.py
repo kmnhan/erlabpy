@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import erlab.io
+import erlab
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles

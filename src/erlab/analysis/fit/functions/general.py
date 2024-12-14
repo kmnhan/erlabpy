@@ -116,7 +116,7 @@ def do_convolve(
     Parameters
     ----------
     x
-        A evenly spaced array specifying where to evaluate the convolution.
+        A evenly spaced 1D array specifying where to evaluate the convolution.
     func
         Function to convolve.
     resolution

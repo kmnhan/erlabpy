@@ -21,19 +21,13 @@ def _sinc(x):
     return np.sin(x) / (x + 1e-15)
 
 
-def _kz_func_inv(kz, inner_potential, kx, ky):
-    k_perp_sq = kx**2 + ky**2
-    k_z_sq = kz**2
-    return k_perp_sq + k_z_sq - inner_potential / erlab.constants.rel_kzconv
-
-
 def _kperp_func(k_tot_sq, kx, ky):
     r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`."""
     return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
 
 
 def kz_func(kinetic_energy, inner_potential, kx, ky):
-    r"""Calculate the out-of-plane momentum.
+    r"""Calculate the out-of-plane momentum inside the sample.
 
     :math:`k_z` is computed from the given kinetic energy :math:`E_k`, inner potential
     :math:`V_0`, and in-plane momenta :math:`k_x`, and :math:`k_y` by
@@ -50,19 +44,60 @@ def kz_func(kinetic_energy, inner_potential, kx, ky):
     return np.sqrt(np.clip(k_z_sq, a_min=0, a_max=None))
 
 
+def kperp_from_kz(kz, inner_potential):
+    r"""Calculate the out-of-plane momentum outside the sample, given :math:`k_z`.
+
+    :math:`k_\perp` is computed from the given out-of-plane momentum :math:`k_z` and
+    inner potential :math:`V_0` by
+
+    .. math::
+
+        k_\perp = \sqrt{k_z^2 - \frac{2 m_e V_0}{\hbar^2}}
+
+    """
+    k_perp_sq = kz**2 - inner_potential / erlab.constants.rel_kzconv
+    return np.sqrt(np.clip(k_perp_sq, a_min=0, a_max=None))
+
+
+def hv_func(kx, ky, kz, inner_potential, work_function, binding_energy):
+    r"""Calculate the kinetic energy from the out-of-plane momentum.
+
+    The kinetic energy :math:`E_k` is computed from the given out-of-plane momentum
+    :math:`k_z`, inner potential :math:`V_0`, and in-plane momenta :math:`k_x`, and
+    :math:`k_y` by
+
+    .. math::
+
+        E_k = \frac{\hbar^2}{2 m_e} \left(k_x^2 + k_y^2 + k_z^2\right) - V_0
+
+    Then, the kinetic energy is converted to the photon energy :math:`hν` by
+
+    .. math::
+
+        hν = E_k + \Phi - E_b
+
+    """
+    return (
+        erlab.constants.rel_kzconv * (kx**2 + ky**2 + kz**2)
+        - inner_potential
+        + work_function
+        - binding_energy
+    )
+
+
 def get_kconv_func(
     kinetic_energy: float | npt.NDArray | xarray.DataArray,
-    configuration: AxesConfiguration,
+    configuration: AxesConfiguration | int,
     angle_params: dict[str, float],
 ) -> tuple[Callable, Callable]:
-    """Return appropriate momentum conversion functions.
+    r"""Return appropriate momentum conversion functions.
 
     The appropriate function is created by the given configuration and kinetic energy.
 
     Parameters
     ----------
     kinetic_energy
-        The kinetic energy in eV.
+        The kinetic energy of the photoelectrons in eV.
     configuration
         Experimental configuration.
     angle_params
@@ -76,9 +111,9 @@ def get_kconv_func(
     forward_func : Callable
         Forward function that takes :math:`(α, β)` and returns :math:`(k_x, k_y)`.
     inverse_func : Callable
-        Inverse function that takes :math:`(k_x, k_y)` or :math:`(k_x, k_y, k_z)` and
-        returns :math:`(α, β)`. If :math:`k_z` is given, it will return the angles
-        broadcasted to :math:`k_z` instead of the provided kinetic energy.
+        Inverse function that takes :math:`(k_x, k_y)` or :math:`(k_x, k_y, k_\perp)`
+        and returns :math:`(α, β)`. If :math:`k_\perp` is given, it will return the
+        angles broadcasted to :math:`k_\perp` instead of the provided kinetic energy.
 
     Raises
     ------
@@ -139,16 +174,16 @@ def _kconv_func_type1(k_tot, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0):
 
         return kx, ky
 
-    def _inverse_func(kx, ky, kz=None):
+    def _inverse_func(kx, ky, kperp=None):
         # cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
         # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
         # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
-        if kz is None:
+        if kperp is None:
             k_sq = k_tot_sq
             k = k_tot
         else:
-            k_sq = kx**2 + ky**2 + kz**2
-            k = np.sqrt(k_sq)
+            k_sq = kx**2 + ky**2 + kperp**2
+            k = np.sqrt(k_sq)  # total momentum inside sample
 
         kperp = _kperp_func(k_sq, kx, ky)
 
@@ -176,15 +211,15 @@ def _kconv_func_type2(k_tot, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0):
 
         return kx, ky
 
-    def _inverse_func(kx, ky, kz=None):
+    def _inverse_func(kx, ky, kperp=None):
         # cx, sx = np.cos(np.deg2rad(xi)), np.sin(np.deg2rad(xi))  # ξ
         # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
         # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
-        if kz is None:
+        if kperp is None:
             k_sq = k_tot_sq
             k = k_tot
         else:
-            k_sq = kx**2 + ky**2 + kz**2
+            k_sq = kx**2 + ky**2 + kperp**2
             k = np.sqrt(k_sq)
 
         kperp = _kperp_func(k_sq, kx, ky)
@@ -204,8 +239,8 @@ def _kconv_func_type1_da(k_tot, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0):
     def _forward_func(alpha, beta):
         return _fwd_2(-beta, alpha)
 
-    def _inverse_func(kx, ky, kz=None):
-        alpha, beta = _inv_2(kx, ky, kz)
+    def _inverse_func(kx, ky, kperp=None):
+        alpha, beta = _inv_2(kx, ky, kperp)
         return beta, -alpha
 
     return _forward_func, _inverse_func
@@ -250,15 +285,15 @@ def _kconv_func_type2_da(k_tot, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0):
 
         return kx, ky
 
-    def _inverse_func(kx, ky, kz=None):
+    def _inverse_func(kx, ky, kperp=None):
         # mask = kx**2 + ky**2 > k_tot_sq + 1e-15
         # kx, ky = np.ma.masked_where(mask, kx), np.ma.masked_where(mask, ky)
 
-        if kz is None:
+        if kperp is None:
             k_sq = k_tot_sq
             k = k_tot
         else:
-            k_sq = kx**2 + ky**2 + kz**2
+            k_sq = kx**2 + ky**2 + kperp**2
             k = np.sqrt(k_sq)
 
         kperp = _kperp_func(k_sq, kx, ky)  # sqrt(k² - k_x² - k_y²)

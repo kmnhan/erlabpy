@@ -20,9 +20,6 @@ Interactive tools
 
 """
 
-__all__ = ["dtool", "goldtool", "itool", "ktool"]
-
-
 try:
     import qtpy  # noqa: F401
 except ImportError as e:
@@ -33,7 +30,7 @@ except ImportError as e:
         "  - PyQt6: 'pip install PyQt6'\n"
         "For more information, visit the official documentation of these packages."
     ) from e
-from erlab.interactive.derivative import dtool
-from erlab.interactive.fermiedge import goldtool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.kspace import ktool
+
+import lazy_loader as _lazy
+
+__getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)

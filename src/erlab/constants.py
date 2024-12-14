@@ -47,6 +47,9 @@ hbarsq_eV: float = 4.332429802731423e-31
 #: :math:`hc`  (eV·nm), Used in energy-wavelength conversion
 rel_eV_nm: float = 1239.8419843320028
 
+#: Bohr radius :math:`a_0` (m) (±0.000 000 000 82e-11)
+a0: float = 5.29177210544e-11
+
 #: :math:`\frac{\sqrt{2 m_e}}{\hbar}`, Used in momentum conversion
 rel_kconv: float = 0.512316721967493
 #: :math:`\frac{\hbar^2}{2 m_e}`, Used in momentum conversion

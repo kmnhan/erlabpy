@@ -343,7 +343,7 @@ class DerivativeTool(
 
 def dtool(
     data: xr.DataArray, data_name: str | None = None, *, execute: bool | None = None
-) -> DerivativeTool | None:
+) -> DerivativeTool:
     """Interactive tool for visualizing dispersive data.
 
     Parameters
@@ -375,7 +375,7 @@ def dtool(
     if execute is None:
         execute = True
         try:
-            shell = get_ipython().__class__.__name__  # type: ignore
+            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
             if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
                 execute = False
                 from IPython.lib.guisupport import start_event_loop_qt4
@@ -385,6 +385,4 @@ def dtool(
             pass
     if execute:
         qapp.exec()
-    if not execute:
-        return win
-    return None
+    return win
