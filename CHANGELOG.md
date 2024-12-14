@@ -1,3 +1,9 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **docs:** ensure docstring compatibility with matplotlib 3.10.0 ([b72a020](https://github.com/kmnhan/erlabpy/commit/b72a020f6fa5fcc8a90d00b29a6cf6184a32c197))
+
 ## v3.2.0 (2024-12-14)
 
 ### ✨ Features
