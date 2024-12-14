@@ -1318,8 +1318,8 @@ class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
                 "erlab": erlab,
                 "eri": erlab.interactive,
                 "tools": ToolsNamespace(manager),
-                "era": erlab.analysis,
-                "eplt": "erlab.plotting.erplot",
+                "era": "erlab.analysis",
+                "eplt": "erlab.plotting",
                 "plt": "matplotlib.pyplot",
             },
         )

@@ -139,8 +139,16 @@ def make_accessor_docs(app, config) -> None:
     )
 
 
+def fix_matplotlib_set_inheritance(app, config) -> None:
+    import erlab.plotting.plot3d
+
+    erlab.plotting.plot3d.FancyArrowPatch3D.set.__doc__ = ""
+    erlab.plotting.plot3d.FancyArrow3D.set.__doc__ = ""
+
+
 def setup(app) -> None:
     app.connect("config-inited", make_accessor_docs)
+    app.connect("config-inited", fix_matplotlib_set_inheritance)
 
 
 # -- Autosummary and autodoc settings ----------------------------------------

@@ -26,7 +26,6 @@ class FancyArrow3D(matplotlib.patches.FancyArrow):
 class FancyArrowPatch3D(matplotlib.patches.FancyArrowPatch):
     def __init__(self, posA, posB, *args, **kwargs) -> None:
         super().__init__((0, 0), (0, 0), *args, **kwargs)
-
         self._verts3d = tuple((posA[i], posB[i]) for i in range(3))
 
     def do_3d_projection(self, renderer=None):
