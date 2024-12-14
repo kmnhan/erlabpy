@@ -11,7 +11,6 @@ from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import dtool
 from erlab.interactive.fermiedge import goldtool
-from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.kspace import ktool
 
 
@@ -140,7 +139,8 @@ anglemap_kconv = anglemap.kspace.convert()"""
     win._itool.close()
 
     # Start manager
-    manager = ImageToolManager()
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.addWidget(manager)
 
     # Show in manager
@@ -155,6 +155,9 @@ anglemap_kconv = anglemap.kspace.convert()"""
     manager.remove_tool(0)
     assert manager.ntools == 0
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
+
     win.close()
 
 

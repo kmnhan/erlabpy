@@ -288,6 +288,7 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
     manager.close()
+    tmp_dir.cleanup()
 
 
 def test_can_drop_mime_data(qtbot) -> None:
