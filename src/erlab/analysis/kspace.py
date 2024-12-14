@@ -21,12 +21,6 @@ def _sinc(x):
     return np.sin(x) / (x + 1e-15)
 
 
-def _kz_func_inv(kz, inner_potential, kx, ky):
-    k_perp_sq = kx**2 + ky**2
-    k_z_sq = kz**2
-    return k_perp_sq + k_z_sq - inner_potential / erlab.constants.rel_kzconv
-
-
 def _kperp_func(k_tot_sq, kx, ky):
     r""":math:`\sqrt{k^2 - k_x^2 - k_y^2}`."""
     return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
@@ -93,7 +87,7 @@ def hv_func(kx, ky, kz, inner_potential, work_function, binding_energy):
 
 def get_kconv_func(
     kinetic_energy: float | npt.NDArray | xarray.DataArray,
-    configuration: AxesConfiguration,
+    configuration: AxesConfiguration | int,
     angle_params: dict[str, float],
 ) -> tuple[Callable, Callable]:
     r"""Return appropriate momentum conversion functions.

@@ -87,6 +87,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
+        import erlab.plotting  # noqa: F401
+
         # Import colormap packages if available
         if importlib.util.find_spec("cmasher"):
             importlib.import_module("cmasher")
