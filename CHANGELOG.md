@@ -2,6 +2,25 @@
 
 ### ✨ Features
 
+- **io.dataloader:** enhance data combination logic ([80f2772](https://github.com/kmnhan/erlabpy/commit/80f2772f2e991032c795b317d9502f7846f5766f))
+
+  When given multi-file data with multiple coordinates, the previous behavior was to include every coordinate as a dimension. This is logical for scans such as 4D position-dependent scans, but unnecessary for data like hv and angle dependent scans. Now, the loader will concatenate only along one axis if all motor coordinates are strictly monotonic.
+- **constants:** add Bohr radius ([f8e4ca2](https://github.com/kmnhan/erlabpy/commit/f8e4ca2245e3e2a922dc26387fa97bdc62c14340))
+- **imagetool.manager:** enable concatenating selected data ([44d61ba](https://github.com/kmnhan/erlabpy/commit/44d61ba559d26a11b72d6151e08d490a91f5ca9f))
+- **imagetool:** add normalization option for 1D plot data ([5417a32](https://github.com/kmnhan/erlabpy/commit/5417a32f4ea4fb661036279e00289d2a9012ddc1))
+
+  Adds an option to normalize 1D data with its mean to the right-click menu of 1D plots.
+- add lazy-loader support ([e5ec658](https://github.com/kmnhan/erlabpy/commit/e5ec65895f347ce69c70bf999ec876261abbdd2b))
+
+  Properly implements [SPEC 1](https://scientific-python.org/specs/spec-0001/) lazy-loading to top-level modules and the analysis module. Users can now directly access submodules after importing the top-level module only:
+
+  ```
+
+  import erlab
+
+  erlab.analysis.transform.rotate(...)
+
+  ```
 - **imagetool.manager:** add console ([470808f](https://github.com/kmnhan/erlabpy/commit/470808fca209d93d18db041eb5a3a0cbb71f4672))
 
   Adds a python console to the manager that can be triggered from the `View` menu.
@@ -12,6 +31,11 @@
 
 ### 🐞 Bug Fixes
 
+- **kspace:** fix broken hv-dependent data momentum conversion ([4695583](https://github.com/kmnhan/erlabpy/commit/46955838e18d9ab940e2f786711a9a78626da3d3))
+
+  Fixes completely wrong implementation of kz-dependent momentum conversion. I can't believe this went unnoticed!
+- **imagetool:** remove and reapply filter upon transformation ([af54a1d](https://github.com/kmnhan/erlabpy/commit/af54a1d52b8f8b53250aae9c9a950590a97853ad))
+- **imagetool:** fix nonuniform data io and cropping ([8b538e6](https://github.com/kmnhan/erlabpy/commit/8b538e68312c3c92f223be0d8d1653c36c664abf))
 - **imagetool:** fix wrong cursor position when loading ImageTool state from file ([e8191a8](https://github.com/kmnhan/erlabpy/commit/e8191a87aa9663c4e0ac5098ce0fcfe623fe5396))
 - **imagetool:** resolve menu widgets losing keyboard focus ([90f8868](https://github.com/kmnhan/erlabpy/commit/90f8868de7a22b997cefd5b74a1f5a7f2e592c67))
 
@@ -22,6 +46,15 @@
 
 ### 🛠 Code Refactor
 
+- **plotting:** update import statements to use `erlab.plotting` directly and deprecate `erlab.plotting.erplot` ([6a19f6a](https://github.com/kmnhan/erlabpy/commit/6a19f6ab57c9f65fdc855d1f1a155adc52421316))
+
+  The import convention `import erlab.plotting.erplot as eplt` is now deprecated. Users should replace them with `import erlab.plotting as eplt`.
+- **imagetool:** streamline namespace handling and improve layout structure ([5506f18](https://github.com/kmnhan/erlabpy/commit/5506f18888093da7842b98ed87b768f317bff38e))
+- **imagetool:** move center zero button to context menu ([48deb6d](https://github.com/kmnhan/erlabpy/commit/48deb6d41a0a31c0815c9cdb7553783bc185f552))
+- improve cli interface ([34a4db1](https://github.com/kmnhan/erlabpy/commit/34a4db1f120ae5839fa8c0375d7d951d9407e36b))
+- cleanup some function signatures ([b04df05](https://github.com/kmnhan/erlabpy/commit/b04df05559f75b882075ab223adc8013f25241bc))
+- **analysis.fit:** enable lazy loading for fit functions ([e877e12](https://github.com/kmnhan/erlabpy/commit/e877e12360157e8303ec0177e8a8999b4c307ab4))
+- **imagetool.manager:** add ipython-based console ([f0b0adf](https://github.com/kmnhan/erlabpy/commit/f0b0adfefc5bd4e71ed0be427dd530bca89ff024))
 - **analysis.gold:** adjust resolution plot cosmetics ([5d4a486](https://github.com/kmnhan/erlabpy/commit/5d4a4863391e08392f3b65e11e9b086cf98d831f))
 - **interactive.colors:** minimize number of default colormaps ([a4c750c](https://github.com/kmnhan/erlabpy/commit/a4c750c21e8fbb11a93b3bc2f33cfb0477c4cf5a))
 
@@ -638,7 +671,7 @@
 - make mathtext copy default to svg ([2f6e0e5](https://github.com/kmnhan/erlabpy/commit/2f6e0e558f251c846bc3dec39cd150391802460d))
 - resolve MemoryError in prominent color estimation ([3bdcd03](https://github.com/kmnhan/erlabpy/commit/3bdcd0341c41b424ebbcb565b7cda0db839e4cb8))
 
-  Due to numpy/numpy/#11879 changed the auto method to sqrt. This should also improve memory usage and speed, with little to no impact on the end result.
+  Due to [numpy/numpy/#11879](https://github.com/numpy/numpy/issues/11879) changed the auto method to sqrt. This should also improve memory usage and speed, with little to no impact on the end result.
 
 ## v2.5.1 (2024-05-15)
 
