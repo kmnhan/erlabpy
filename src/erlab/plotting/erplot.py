@@ -89,6 +89,6 @@ from erlab.plotting.general import (
 warnings.warn(
     "The convenience `erlab.plotting.erplot` is deprecated and will be removed in the "
     "next major release. Please import as `erlab.plotting` instead.",
-    DeprecationWarning,
+    FutureWarning,
     stacklevel=2,
 )

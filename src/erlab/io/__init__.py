@@ -86,14 +86,12 @@ summarize = loaders.summarize
 def load_wave(*args, **kwargs):
     from erlab.io.igor import load_wave as _load_wave
 
-    warnings.warn(
-        "Use `xarray.open_dataarray` instead", DeprecationWarning, stacklevel=2
-    )
+    warnings.warn("Use `xarray.open_dataarray` instead", FutureWarning, stacklevel=2)
     return _load_wave(*args, **kwargs)
 
 
 def load_experiment(*args, **kwargs):
     from erlab.io.igor import load_experiment as _load_experiment
 
-    warnings.warn("Use `xarray.open_dataset` instead", DeprecationWarning, stacklevel=2)
+    warnings.warn("Use `xarray.open_dataset` instead", FutureWarning, stacklevel=2)
     return _load_experiment(*args, **kwargs)

@@ -1791,7 +1791,7 @@ class LoaderRegistry(_RegistryBase):
         """
         warnings.warn(
             "`default_data_dir` is deprecated, use `current_data_dir` instead",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=1,
         )
         return self.current_data_dir
