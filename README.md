@@ -10,43 +10,21 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)
 
-A library that provides a set of tools and utilities to handle, manipulate, and
-visualize data from condensed matter physics experiments, with a focus on angle-resolved
-photoemission spectroscopy (ARPES).
+ERLabPy provides tools to handle, manipulate, and visualize data from condensed matter physics experiments, focusing on angle-resolved photoemission spectroscopy (ARPES).
 
-*ERLabPy* is built on top of the popular scientific computing libraries
-[*numpy*](https://numpy.org/), [*scipy*](https://scipy.org/), and
-[*xarray*](https://xarray.pydata.org/), and is designed to be easy to use and integrate
-with existing scientific Python workflows so that you can quickly get started with your
-data analysis. The package is still under development, so if you have any questions or
-suggestions, please feel free to contact us. We hope you find ERLabPy useful for your
-research!
-
-*ERLabPy* is developed and maintained by the electronic structure research
-laboratory at Korea Advanced Institute of Science and Technology (KAIST).
+ERLabPy integrates with scientific Python workflows for efficient data analysis.
 
 ## Features
 
-- **Data Loading**: A flexible and extensible data loading system is included, capable
-  of handling various data formats.
-- **Data Manipulation**: A set of tools for manipulating and transforming data,
-  including interpolation, masking and symmetrization is provided.
-- **Plotting**: ERLabPy provides many different plotting functions for visualizing image
-  data, including 2D and 3D plots. Publication-quality plots can be generated with
-  minimal effort.
-- **Fitting**: Several functions and models are implemented for fitting various types of
-  data, including broadened Fermi-Dirac distributions, momentum distribution curves
-  (MDCs), and energy distribution curves (EDCs).
-- **Interactive Data Visualization**: ERLabPy includes many interactive plotting
-  routines that resemble panels in Igor Pro that are very responsive and easy to use.
-  See screenshots below.
-- **Active Development**: ERLabPy is actively developed and maintained, with new
-  features and improvements being added regularly.
+- **Data Loading**: Flexible system for various data formats.
+- **Data Manipulation**: Tools for interpolation, masking, and symmetrization.
+- **Plotting**: Functions for 2D and 3D publication-quality plots.
+- **Fitting**: Functions for fitting data, including Fermi-Dirac distributions, MDCs, EDCs, and more.
+- **Interactive Visualization**: Responsive plotting routines similar to Igor Pro.
 
 ## Screenshots
 
-Most interactive windows support dark mode. Viewing this page from a supported browser
-with dark mode enabled will show the dark mode screenshots.
+Interactive windows support dark mode.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/imagetool_dark.png?raw=true">
@@ -62,27 +40,16 @@ with dark mode enabled will show the dark mode screenshots.
 
 ## Getting Started
 
-To get started, see [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+See [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
 
 ## Documentation
 
-The full documentation for ERLabPy is available on [Read the Docs](https://erlabpy.readthedocs.io/).
+Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Contributing
 
-ERLabPy is an open-source project and we welcome contributions from the community. If
-you find any bugs, issues, or have any suggestions, please open an issue
-[here](https://github.com/kmnhan/erlabpy/issues).
-
-If you have any questions or need help with using ERLabPy, please feel free to ask on
-the [Discussions page](https://github.com/kmnhan/erlabpy/discussions).
-
-If you would like to add a new feature or fix a bug yourself, we would love to have your
-contribution. Feel free to fork the repository and submit a pull request with your
-changes.
-
-For more information on contributing, see our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html).
+We welcome contributions. Report issues [here](https://github.com/kmnhan/erlabpy/issues). For questions, visit the [Discussions page](https://github.com/kmnhan/erlabpy/discussions). To contribute, fork the repository and submit a pull request. See our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html) for more information.
 
 ## License
 
-This project is licensed under the terms of the [GPL-3.0 License](LICENSE).
+Licensed under the [GPL-3.0 License](LICENSE).

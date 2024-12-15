@@ -1,6 +1,6 @@
-#######
-ERLabPy
-#######
+#####################
+ERLabPy documentation
+#####################
 
 .. only:: format_html
 
@@ -19,17 +19,15 @@ ERLabPy
        :target: https://github.com/kmnhan/erlabpy.git
        :alt: Last Commit
 
-A library that provides a set of tools and utilities to handle, manipulate, and
-visualize data from condensed matter physics experiments, with a focus on
-angle-resolved photoemission spectroscopy (ARPES).
+ERLabPy is a complete python workflow for ARPES (Angle-Resolved Photoemission
+Spectroscopy) experiments. It provides a set of tools for processing, analyzing, and
+visualizing ARPES data.
 
 *ERLabPy* is built on top of the popular scientific python libraries `numpy
 <https://numpy.org>`_, `scipy <https://scipy.org>`_, and `xarray
 <https://xarray.pydata.org>`_, and is designed to be easy to use and integrate with
 existing scientific Python workflows so that you can quickly get started with your data
-analysis. The package is still under development, so if you have any questions or
-suggestions, please feel free to contact us. We hope you find ERLabPy useful for your
-research!
+analysis.
 
 .. only:: format_html
 
