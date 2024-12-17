@@ -1,5 +1,9 @@
 ## Unreleased
 
+### 🐞 Bug Fixes
+
+- **io.plugins.merlin:** adjust handling logic for motor scan aborted after one file ([1ac25f1](https://github.com/kmnhan/erlabpy/commit/1ac25f1ec84a84199fba7ca1428859df28355f4c))
+
 ## v3.2.2 (2024-12-14)
 
 ### ♻️ Code Refactor
