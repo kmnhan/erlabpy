@@ -33,12 +33,12 @@ Subpackage                 Description
 Submodules
 ==========
 
-===================  ==================
-Submodule           Description
-===================  ==================
-``erlab.lattice``   Tools for working with real and reciprocal lattices.
-``erlab.constants`` Physical constants and functions for unit conversion.
-===================  ==================
+====================  ==================
+Submodule             Description
+====================  ==================
+``erlab.lattice``     Tools for working with real and reciprocal lattices.
+``erlab.constants``   Physical constants and functions for unit conversion.
+====================  ==================
 
 .. toctree::
    :hidden:
