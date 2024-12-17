@@ -134,7 +134,7 @@ class MERLINLoader(LoaderBase):
             # Look for multiregion scan
             files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*.pxt"))
 
-        elif len(files) > 1:
+        elif len(files) >= 1:
             # Extract motor positions for multi-file scan
             match_prefix = re.match(
                 r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0].name
@@ -151,7 +151,7 @@ class MERLINLoader(LoaderBase):
                 header = f.readline().strip().split("\t")  # motor coordinate names
 
             if coord_arr.ndim <= 1:
-                coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
+                coord_arr = coord_arr.reshape(1, -1)  # ensure 2D
 
             if len(files) > coord_arr.shape[0]:
                 raise RuntimeError(
