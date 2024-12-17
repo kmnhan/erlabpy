@@ -12,6 +12,14 @@ A detailed guide on how to implement a data loader can be found in the :ref:`Use
 
 from __future__ import annotations
 
+__all__ = [
+    "LoaderBase",
+    "LoaderNotFoundError",
+    "LoaderRegistry",
+    "ValidationError",
+    "ValidationWarning",
+]
+
 import contextlib
 import errno
 import importlib
@@ -107,8 +115,11 @@ class _Loader(type):
                 return result
 
             wrapped_identify.__doc__ = original_identify.__doc__
-
             new_class.identify = wrapped_identify
+
+            # For linkcode to work in the documentation
+            # See linkcode_resolve in conf.py
+            new_class._original_identify = original_identify
 
         return new_class
 
@@ -547,7 +558,7 @@ class LoaderBase(metaclass=_Loader):
             )  # Return type enforced by metaclass, cast to avoid mypy error
             # file_paths: list of file paths with at least one element
 
-            if len(file_paths) == 1:
+            if len(coord_dict) == 0:
                 # Single file resolved
                 data: xr.DataArray | xr.Dataset | xr.DataTree = self.load_single(
                     file_paths[0], **load_kwargs
@@ -1193,7 +1204,7 @@ class LoaderBase(metaclass=_Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[str | os.PathLike], dict[str, Sequence]] | None:
+    ) -> tuple[list[pathlib.Path] | list[str], dict] | None:
         r"""Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -1216,20 +1227,21 @@ class LoaderBase(metaclass=_Loader):
             A list of file paths.
 
             - For scans spread over multiple files, the list must contain all files that
-              correspond to the given scan index. The implementation should ensure that
+              correspond to the given scan index.
 
             - For single file scans, the behavior differs based on the value of
               :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`.
 
-              - If `True`, all files that match the given scan index will be returned,
-                where the first one is chosen and a warning will be automatically
-                issued.
+              - If `True`, all files that match the given scan index should be returned.
+                In this case, only the first file will be loaded, and a warning will be
+                shown to the user.
 
-              - If `False`, there is no way to know whether the returned files are part
+              - If `False`, there is no way to tell whether the returned files are part
                 of a valid multiple-file scan. Hence, it is up to the loader to ensure
                 that only a single file is returned and appropriate warnings are issued
                 for single file scans when multiple files for a single scan are
-                detected.
+                detected. See the source code of
+                :meth:`erlab.io.plugins.merlin.MERLINLoader.identify` for an example.
 
         coord_dict : dict of str to sequence
             A dictionary mapping scan axes names to scan coordinates.
@@ -2051,3 +2063,17 @@ class LoaderRegistry(_RegistryBase):
 
     load.__doc__ = LoaderBase.load.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__
+
+
+loaders = LoaderRegistry.instance()
+"""
+Global instance of :class:`LoaderRegistry <erlab.io.dataloader.LoaderRegistry>`.
+
+:meta hide-value:
+"""
+
+load = loaders.load
+loader_context = loaders.loader_context
+set_data_dir = loaders.set_data_dir
+set_loader = loaders.set_loader
+summarize = loaders.summarize

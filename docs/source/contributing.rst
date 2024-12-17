@@ -29,7 +29,7 @@ report <https://stackoverflow.com/help/mcve>`_, and this `article on minimal bug
 Creating a development environment
 ==================================
 
-First, you will need to install `git` and `conda` (or `mamba`).
+First, you will need to install ``git`` and ``conda`` (or ``mamba``).
 
 Installing git
 --------------
@@ -80,7 +80,7 @@ Cloning the repository
     cd erlabpy
     git remote add upstream https://github.com/kmnhan/erlabpy.git
 
-   This creates the directory `erlabpy` and connects your repository to the upstream
+   This creates the directory ``erlabpy`` and connects your repository to the upstream
    (main project) *erlabpy* repository.
 
 
@@ -297,14 +297,14 @@ add tests, follow these steps:
    return, and use this as a reference in the tests. See preexisting directories and
    tests for examples.
 
-4. Set the environment variable `ERLAB_TEST_DATA_DIR` to the path of the cloned
+4. Set the environment variable ``ERLAB_TEST_DATA_DIR`` to the path of the cloned
    `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ repository in your
    development environment. This will allow the tests to access the test data.
 
 5. Now, we can work with the original `erlabpy <https://github.com/kmnhan/erlabpy>`_
    repository to write and run tests for the plugin. Add your tests in
-   `tests/io/plugins/test_<plugin_name>.py`. You can use the `test_data_dir` fixture to
-   access the test data directory. See other modules in the folder for examples.
+   ``tests/io/plugins/test_<plugin_name>.py``. You can use the ``test_data_dir`` fixture
+   to access the test data directory. See other modules in the folder for examples.
 
 6. Run the tests using `pytest <https://docs.pytest.org/>`_ and make sure they pass.
 
@@ -312,10 +312,10 @@ add tests, follow these steps:
    <https://github.com/kmnhan/erlabpy-data>`_ and create a pull request.
 
 8. Once your pull request to `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ is
-   merged, update the `DATA_COMMIT_HASH` and `DATA_KNOWN_HASH` attributes in
-   `tests/conftest.py`.
+   merged, update the ``DATA_COMMIT_HASH`` and ``DATA_KNOWN_HASH`` attributes in
+   ``tests/conftest.py``.
 
-   - `DATA_COMMIT_HASH` should be the commit hash of `erlabpy-data
+   - ``DATA_COMMIT_HASH`` should be the commit hash of `erlabpy-data
      <https://github.com/kmnhan/erlabpy-data>`_ that contains your test data. This will
      ensure that the version of the test data used in the tests is consistent.
 
@@ -325,7 +325,7 @@ add tests, follow these steps:
        <https://github.com/kmnhan/erlabpy-data/commits/main/>`_ page will copy the full
        hash to your clipboard.
 
-   - `DATA_KNOWN_HASH` is the file hash of the test data tarball. This will ensure that
+   - ``DATA_KNOWN_HASH`` is the file hash of the test data tarball. This will ensure that
      the test data has not been modified or corrupted since the last time the tests were
      run.
 

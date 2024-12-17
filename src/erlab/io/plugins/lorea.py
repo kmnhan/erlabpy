@@ -9,7 +9,6 @@ import numpy as np
 import xarray as xr
 
 import erlab
-import erlab.io.nexusutils
 from erlab.io.dataloader import LoaderBase
 
 

@@ -94,6 +94,10 @@ def linkcode_resolve(domain, info) -> str | None:
     modname = info["module"]
     fullname = info["fullname"]
 
+    # Handle dataloader metaclass substitution
+    if fullname.endswith(".identify") and not fullname.endswith(".LoaderBase.identify"):
+        fullname = fullname.replace(".identify", "._original_identify")
+
     submod = sys.modules.get(modname)
     if submod is None:
         return None

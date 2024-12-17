@@ -90,7 +90,7 @@ class DA30Loader(LoaderBase):
             if m is not None:
                 matches.append(file)
 
-        return matches, None
+        return matches, {}
 
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)

@@ -35,7 +35,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           changelog_increment_filename: body.md
-          extra_requirements : "cz-changeup"
+          extra_requirements: "cz-changeup"
 
       - name: Build package distributions
         id: build

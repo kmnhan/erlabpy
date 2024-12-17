@@ -15,60 +15,60 @@ Using ImageTool
 
 Inspired by *Image Tool* for Igor Pro written by the Advanced Light Source at Lawrence
 Berkeley National Laboratory, :class:`ImageTool <erlab.interactive.imagetool.ImageTool>`
-is a simple tool for interactively exploring images.
+is a simple tool exploring images interactively.
 
-Features include:
+Features:
 
-- Zooming and panning
-- Extremely fast and smooth data exploration
-- Real-time binning across multiple dimensions
-- Multiple cursors!
-- Easy and intuitive plot size adjustment with splitters
+- Zoom and pan
+
+- Real-time slicing & binning
+
+- Multiple cursors
+
+- Easy size adjustment
+
 - Advanced colormap control
 
-ImageTool can be used to display *image-like* :class:`xarray.DataArray`\ s ranging from
-2 to 4 dimensions. If a coordinate of the input data happens to be non-uniform, it will
-automatically be converted to an index array so that the data can be displayed as an
-image.
+- Interactive editing like rotation, normalization, cropping, momentum conversion, and
+  more
 
-There are two main ways to invoke the ImageTool. The first way is to call the
-:func:`itool <erlab.interactive.imagetool.itool>` convenience function, which will
-create a new ImageTool instance and handle the event loop execution: ::
+ImageTool displays *image-like* :class:`xarray.DataArray`\ s from 2 to 4 dimensions. Non-uniform coordinates are converted to index arrays automatically.
+
+Invoke ImageTool by calling :func:`itool <erlab.interactive.imagetool.itool>`: ::
 
     import erlab.interactive as eri
     eri.itool(data)
 
-Another way is to use the :class:`qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor>` accessor: ::
+Or use the :class:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor>` accessor: ::
 
     data.qshow()
 
 Tips
 ----
 
-- If you don't know what a button does, many buttons have tooltips that will appear when
-  you hover over them.
+- Hover over buttons for tooltips.
 
-- Right-clicking on each plot will bring up a context menu with various options. One
-  useful menu is ``Copy selection code`` that copies the selection code which can be
-  quickly pasted to a Python script or Jupyter notebook to reproduce the data in the
-  clicked region.
+- Right-click plots for context menus.
 
-- Right-clicking on the colorbar allows you to manually set the color range or to
-  copy the color range to the clipboard.
+  - ``Copy selection code``: copies code to reproduce the data.
 
-- Data manipulation such as rotation and normalization are also possible. Try exploring
-  the edit and view menus.
+- Toggle the ``Lock color limits`` button to lock color range and display a colorbar.
 
-- ImageTool is also very extensible. At our home lab, we use a modified version of
-  ImageTool to plot data as it is being collected in real-time!
+  - When toggled on, the color range is locked to the minimum and maximum of the entire
+    data.
+
+  - The color range can be manually set by dragging or right-clicking on the colorbar.
+
+- Rotate and normalize data via the edit and view menus.
+
+- ImageTool is extensible. At our home lab, we use a modified version of ImageTool to
+  plot data as it is being collected in real-time!
 
 Keyboard shortcuts
 ------------------
 
-Hints for most keyboard shortcuts are displayed in the menu bar. Here, some shortcuts
-that are not found in the menu bar are listed. Mac users must replace :kbd:`Ctrl` with
-:kbd:`⌘` and :kbd:`Alt` with :kbd:`⌥`.
+Some shortcuts not in the menu bar. Mac users replace :kbd:`Ctrl` with :kbd:`⌘` and
+:kbd:`Alt` with :kbd:`⌥`.
 
 .. list-table::
     :header-rows: 1
@@ -76,73 +76,60 @@ that are not found in the menu bar are listed. Mac users must replace :kbd:`Ctrl
     * - Shortcut
       - Description
     * - :kbd:`LMB` Drag
-      - Pan around
+      - Pan
     * - :kbd:`RMB` Drag
       - Zoom and scale
     * - :kbd:`Ctrl+LMB` Drag
-      - Move current cursor around
+      - Move active cursor
     * - :kbd:`Ctrl+Alt+LMB` Drag
-      - Move all cursors around
+      - Move all cursors
     * - :kbd:`Alt` while dragging a cursor line
-      - Make all cursor lines move together
+      - Move all cursor lines
 
-The rule of thumb is that if you can do something that applies to a single cursor, you
-can do it to all cursors by holding :kbd:`Alt`. Also, keyboard shortcuts that are
-related to 'shifting' a cursor usually involves holding :kbd:`Shift`.
+Rule of thumb: hold :kbd:`Alt` to apply actions to all cursors. Shortcuts for 'shifting'
+a cursor involves the :kbd:`Shift` key.
 
 .. _imagetool-manager-guide:
 
 Using the ImageTool manager
 ---------------------------
-One drawback of using interactive tools inside Jupyter notebooks is that the tool
-execution is a blocking call. This means that you cannot run any other code while the
-tool is running. As a workaround, we provide a standalone application called
-:class:`ImageToolManager <erlab.interactive.imagetool.ImageToolManager>`.
+Interactive tools in Jupyter notebooks block other code. Use :class:`ImageToolManager
+<erlab.interactive.imagetool.ImageToolManager>` as a workaround.
 
-In the environment where ERLabPy installed, run ``itool-manager`` in a terminal to start
-the manager application. Subsequent calls to :func:`itool
+Run ``itool-manager`` in a terminal to start the manager. Calls to :func:`itool
 <erlab.interactive.imagetool.itool>` and :meth:`DataArray.qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` will open the ImageTool
-in the manager.
+<erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` will open ImageTool in
+the manager.
 
-Alternatively, you can run the following code in a python environment where ERLabPy is installed: ::
+Or run: ::
 
     python -m erlab.interactive.imagetool.manager
 
 .. note::
 
-  - The manager is designed to be global, so you can only have one manager running on a
-    single machine. The manager can handle ImageTool windows opened from different
-    sessions.
+  - Only one manager can run per machine.
 
-  - Sending the data to the manager has a slight overhead which is more noticeable for
-    larger data. You can still open data directly while the manager is running by
-    passing `use_manager=False` to :func:`itool <erlab.interactive.imagetool.itool>` or
-    :class:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor>`.
+  - Sending data to the manager has slight overhead, noticeable for large data. Use
+    `use_manager=False` to :func:`itool <erlab.interactive.imagetool.itool>` and
+    :meth:`DataArray.qshow
+    <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` to open data
+    directly.
 
-The manager application consists of a small window that shows the list of opened
-ImageTools, along with some buttons to manage them. Hovering over the buttons will show
-tooltips that explain what each button does.
+The manager shows a list of opened ImageTools and buttons to manage them. Hover over
+buttons for tooltips.
 
-There are three ways to open data in the manager:
+Open data in the manager by:
 
-- Invocations of ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` and
-  :class:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor>` from *any*
-  python script or Jupyter notebook session will automatically be added to the manager.
+- Invoking ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` or
+  :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` from any
+  script or notebook.
 
-- Open files through the ``File`` menu in the menu bar of the manager application.
+- Opening files through the ``File`` menu in the manager.
 
-- Drag and drop supported files from your system file browser to the manager window.
+- Dragging and dropping ARPES data into the manager window.
 
-One of the main features of the manager is that it can save and load the state of
-ImageTool windows to a HDF5 file. You can save all ImageTool windows in the manager to a
-single file through the ``Save Workspace As...`` menu item in the ``File`` menu. The
-saved windows can later be restored through the ``Open Workspace...`` item in the same
-menu.
+Save and load ImageTool windows to a HDF5 file via the ``Save Workspace As...`` and ``Open Workspace...`` menu items.
 
-The manager also has an incorporated Python console that can manipulate ImageTool
-windows and the data they contain, as well as run arbitrary Python code. The console can
-be toggled by pressing :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through the
-``View`` menu in the menubar.
+The manager has a Python console to manipulate ImageTool windows and data, and run Python code. Toggle the console with :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through the ``View`` menu.
 
-Try exploring the menubar of the manager application to see what you can do!
+Explore the menubar for more options!
