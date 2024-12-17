@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
-import erlab.io.utils
+import erlab
 from erlab.io.dataloader import LoaderBase
 from erlab.utils.misc import emit_user_level_warning
 

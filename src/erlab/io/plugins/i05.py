@@ -4,7 +4,7 @@ from typing import ClassVar
 
 import xarray as xr
 
-import erlab.io.nexusutils
+import erlab
 from erlab.io.dataloader import LoaderBase
 
 

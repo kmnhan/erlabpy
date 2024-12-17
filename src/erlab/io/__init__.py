@@ -47,40 +47,14 @@ Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
 
 """
 
-__all__ = [
-    "load",
-    "load_hdf5",
-    "loader_context",
-    "loaders",
-    "open_hdf5",
-    "save_as_hdf5",
-    "save_as_netcdf",
-    "set_data_dir",
-    "set_loader",
-    "summarize",
-]
-
 import warnings
-
-from erlab.io.dataloader import LoaderRegistry
-from erlab.io.utils import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
 
 # Import plugins last
 # isort: off
 import erlab.io.plugins  # noqa: F401
+import lazy_loader as _lazy
 
-loaders = LoaderRegistry.instance()
-"""
-Global instance of :class:`LoaderRegistry <erlab.io.dataloader.LoaderRegistry>`.
-
-:meta hide-value:
-"""
-
-load = loaders.load
-loader_context = loaders.loader_context
-set_data_dir = loaders.set_data_dir
-set_loader = loaders.set_loader
-summarize = loaders.summarize
+__getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
 
 
 def load_wave(*args, **kwargs):
