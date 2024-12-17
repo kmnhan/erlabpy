@@ -2,9 +2,15 @@
 
 ### 🐞 Bug Fixes
 
+- **da30:** return empty dict instead of None for matches in loader ([2d8b8ae](https://github.com/kmnhan/erlabpy/commit/2d8b8ae7f045ae085a35b6fdcce96b62a325f07e))
+
 - **io.dataloader:** assign coords also for multifile scan of length 1 ([0b14f75](https://github.com/kmnhan/erlabpy/commit/0b14f750973b0dc897536a93ef50bfbdb1af216b))
 
 - **io.plugins.merlin:** adjust handling logic for motor scan aborted after one file ([1ac25f1](https://github.com/kmnhan/erlabpy/commit/1ac25f1ec84a84199fba7ca1428859df28355f4c))
+
+### ♻️ Code Refactor
+
+- **io:** implement lazy loading ([da5244a](https://github.com/kmnhan/erlabpy/commit/da5244a10f100f670f67cf28e58fdf862342e1bb))
 
 ## v3.2.2 (2024-12-14)
 
