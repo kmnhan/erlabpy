@@ -547,7 +547,7 @@ class LoaderBase(metaclass=_Loader):
             )  # Return type enforced by metaclass, cast to avoid mypy error
             # file_paths: list of file paths with at least one element
 
-            if len(file_paths) == 1:
+            if len(coord_dict) == 0:
                 # Single file resolved
                 data: xr.DataArray | xr.Dataset | xr.DataTree = self.load_single(
                     file_paths[0], **load_kwargs
