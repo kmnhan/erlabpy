@@ -6,7 +6,6 @@ ci:
 default_install_hook_types: [pre-commit, commit-msg]
 
 repos:
-
   # Meta hooks
   - repo: meta
     hooks:
@@ -30,6 +29,16 @@ repos:
       - id: mixed-line-ending
       - id: trailing-whitespace
 
+  # Pygrep hooks
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: v1.10.0
+    hooks:
+      - id: rst-backticks
+      - id: rst-directive-colons
+      - id: rst-inline-touching-normal
+      - id: text-unicode-replacement-char
+      - id: python-use-type-annotations
+
   # Lint and format with ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
@@ -37,7 +46,7 @@ repos:
     hooks:
       # Run the linter.
       - id: ruff
-        args: [ --fix, --show-fixes ]
+        args: [--fix, --show-fixes]
       # Run the formatter.
       - id: ruff-format
 
@@ -46,7 +55,7 @@ repos:
     rev: v4.0.0
     hooks:
       - id: commitizen
-        additional_dependencies: [ cz-changeup ]
+        additional_dependencies: [cz-changeup]
       - id: commitizen-branch
-        additional_dependencies: [ cz-changeup ]
+        additional_dependencies: [cz-changeup]
         stages: [pre-push]
