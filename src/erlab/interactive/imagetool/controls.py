@@ -43,7 +43,7 @@ _ICON_ALIASES: dict[str, str] = {
     "minus": "mdi6.minus",
     "reset": "mdi6.backup-restore",
     # all_cursors="mdi6.checkbox-multiple-outline",
-    "all_cursors": "mdi6.select-multiple",
+    "all_cursors": "mdi6.sync",
 }  #: Mapping from custom aliases to qtawesome icon names.
 
 

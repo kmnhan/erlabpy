@@ -21,13 +21,13 @@ If you are new to using ERLabPy, you may want to start with the `getting started
    :caption: Table of Contents
    :maxdepth: 2
 
+   imagetool
    io
    indexing
    plotting
    kconv
    curve-fitting
    filtering
-   imagetool
 
 Further reading
 ===============

@@ -12,7 +12,15 @@ port number 45555. The port number can be changed by setting the environment var
 
 from __future__ import annotations
 
-__all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
+__all__ = [
+    "PORT",
+    "ImageToolManager",
+    "ToolNamespace",
+    "ToolsNamespace",
+    "is_running",
+    "main",
+    "show_in_manager",
+]
 
 import contextlib
 import datetime
@@ -1306,7 +1314,7 @@ else:
         return QtCore.QSize(300, 186)
 
 
-class ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
+class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
 
@@ -1566,7 +1574,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.setMinimumWidth(301)
         self.setMinimumHeight(487)
 
-        self.console = ImageToolManagerJupyterConsole(self)
+        self.console = _ImageToolManagerJupyterConsole(self)
 
         # Event filters
         self._kb_filter = KeyboardEventFilter(self)

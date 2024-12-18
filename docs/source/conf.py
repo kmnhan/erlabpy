@@ -56,6 +56,7 @@ extensions = [
     "myst_parser",
     "notfound.extension",
 ]
+sd_fontawesome_latex = True
 
 notfound_context = {
     "title": "Page not found",
