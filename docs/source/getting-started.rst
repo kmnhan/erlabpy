@@ -20,10 +20,15 @@ familiar with xarray.
 Installing
 ==========
 
-ERLabPy depends on a number of scientific python libraries. The recommended way to
-install ERLabPy is via conda. If you do not have conda installed, follow the :ref:`conda
-installation instructions <Installing conda>`. Once you have a working conda
-environment, you can install ERLabPy with the conda command line tool: ::
+ERLabPy depends on a number of scientific python libraries.
+
+
+conda
+-----
+
+The recommended way to install ERLabPy is via conda. If you do not have conda installed,
+follow the :ref:`conda installation instructions <Installing conda>`. Once you have a
+working conda environment, you can install ERLabPy with the conda command line tool: ::
 
   conda install -c conda-forge erlab
 
@@ -51,6 +56,10 @@ If you require other :ref:`optional dependencies`, add them to the line above.
   `conda-forge documentation
   <https://conda-forge.org/docs/maintainer/knowledge_base/#switching-blas-implementation>`_.
 
+
+pip
+---
+
 If you don’t use conda, you can install ERLabPy with pip: ::
 
   python -m pip install erlab
@@ -65,6 +74,9 @@ Optional dependency groups can be installed with the following commands: ::
 
 See the :ref:`optional dependencies` section for all available groups and their
 contents.
+
+From source
+-----------
 
 If you wish to install ERLabPy from source, see the :doc:`contributing`.
 
