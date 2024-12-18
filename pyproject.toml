@@ -57,7 +57,7 @@ dev = [
     "pytest-datadir>=1.5.0",
     "pytest>=8.3.0",
     "commitizen>=3.29.0",
-    "cz-changeup>=1.0.1",
+    "cz-changeup>=1.1.2",
     "ruff>=0.6.3",
 ]
 docs = [
