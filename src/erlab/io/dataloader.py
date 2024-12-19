@@ -1413,7 +1413,10 @@ class LoaderBase(metaclass=_Loader):
             if (
                 len(coord_dict) > 1
                 and len(data_list) > 1
-                and all(is_monotonic(np.asarray(v)) for v in coord_dict.values())
+                and all(
+                    is_monotonic(np.asarray(v), strict=True)
+                    for v in coord_dict.values()
+                )
             ):
                 # We rename with process_keys after assigning coords and expanding dims.
                 # This is necessary to ensure that coordinate_attrs are preserved.
