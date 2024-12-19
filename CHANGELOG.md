@@ -1,6 +1,8 @@
-## Unreleased
+## v3.2.3 (2024-12-19)
 
 ### 🐞 Bug Fixes
+
+- enforce strict monotonicity check in data loader ([513554e](https://github.com/kmnhan/erlabpy/commit/513554efd350d5acffba0b6c0c1e787161052bf9))
 
 - **da30:** return empty dict instead of None for matches in loader ([2d8b8ae](https://github.com/kmnhan/erlabpy/commit/2d8b8ae7f045ae085a35b6fdcce96b62a325f07e))
 

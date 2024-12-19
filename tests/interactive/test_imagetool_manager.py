@@ -90,21 +90,25 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     # Linking
     select_tools(manager, [1, 2])
     manager.link_selected()
+    manager.list_view.refresh(None)
 
     # Unlinking one unlinks both
     select_tools(manager, [1])
     manager.unlink_selected()
+    manager.list_view.refresh(None)
     assert not manager.get_tool(1).slicer_area.is_linked
     assert not manager.get_tool(2).slicer_area.is_linked
 
     # Linking again
     select_tools(manager, [1, 2])
     manager.link_selected()
+    manager.list_view.refresh(None)
     assert manager.get_tool(1).slicer_area.is_linked
     assert manager.get_tool(2).slicer_area.is_linked
 
     # Archiving and unarchiving
     manager._tool_wrappers[1].archive()
+    assert manager._tool_wrappers[1].archived
     manager._tool_wrappers[1].unarchive()
     assert not manager._tool_wrappers[1].archived
 
