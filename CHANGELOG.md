@@ -2,6 +2,8 @@
 
 ### 🐞 Bug Fixes
 
+- enforce strict monotonicity check in data loader ([513554e](https://github.com/kmnhan/erlabpy/commit/513554efd350d5acffba0b6c0c1e787161052bf9))
+
 - **da30:** return empty dict instead of None for matches in loader ([2d8b8ae](https://github.com/kmnhan/erlabpy/commit/2d8b8ae7f045ae085a35b6fdcce96b62a325f07e))
 
 - **io.dataloader:** assign coords also for multifile scan of length 1 ([0b14f75](https://github.com/kmnhan/erlabpy/commit/0b14f750973b0dc897536a93ef50bfbdb1af216b))
