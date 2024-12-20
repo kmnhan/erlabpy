@@ -16,6 +16,10 @@
 
 - **io.plugins.da30:** update `DA30Loader` to handle multiple regions in one `.pxt` file ([1ff8b93](https://github.com/kmnhan/erlabpy/commit/1ff8b93590d78db041409a1e914fdf9c7d5d799b))
 
+### ♻️ Code Refactor
+
+- **io.nexusutils:** defer error message until actually trying to load nexus files ([8eec5aa](https://github.com/kmnhan/erlabpy/commit/8eec5aabd40a75f6f26e113cc0bdd9c0d35759ec))
+
 ## v3.2.3 (2024-12-19)
 
 ### 🐞 Bug Fixes
