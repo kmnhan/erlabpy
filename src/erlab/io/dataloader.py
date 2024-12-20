@@ -239,6 +239,15 @@ class LoaderBase(metaclass=_Loader):
     scan. This is useful for setups where each scan is always stored in a single file.
     """
 
+    parallel_threshold: int = 30
+    """
+    Minimum number of files in a scan to use parallel loading. If the number of files is
+    less than this threshold, files are loaded sequentially.
+
+    Only used when :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`
+    is `False`.
+    """
+
     skip_validate: bool = False
     """
     If `True`, validation checks will be skipped. If `False`, data will be checked with
@@ -431,7 +440,7 @@ class LoaderBase(metaclass=_Loader):
         *,
         single: bool = False,
         combine: bool = True,
-        parallel: bool = False,
+        parallel: bool | None = None,
         load_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> (
@@ -487,7 +496,9 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel using the `joblib` library.
+            Whether to load multiple files in parallel using the `joblib` library. For
+            possible values, see :meth:`load_multiple_parallel
+            <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
 
             This argument is only used when `single` is `False`.
         load_kwargs
@@ -1697,7 +1708,7 @@ class LoaderBase(metaclass=_Loader):
     def load_multiple_parallel(
         self,
         file_paths: list[str],
-        parallel: bool = False,
+        parallel: bool | None = None,
         post_process: bool = False,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
@@ -1708,7 +1719,15 @@ class LoaderBase(metaclass=_Loader):
         file_paths
             A list of file paths to load.
         parallel
-            If `True`, data loading will be performed in parallel using `dask.delayed`.
+            Whether to load data in parallel using `joblib`.
+
+            - If `None`, parallel loading is enabled only if the number of files is
+              greater than the loader's :attr:`parallel_threshold
+              <erlab.io.dataloader.LoaderBase.parallel_threshold>`.
+
+            - If `True`, data loading will always be performed in parallel.
+
+            - If `False`, data will be loaded sequentially.
         post_process
             Whether to post-process each data object after loading.
         **kwargs
@@ -1719,6 +1738,9 @@ class LoaderBase(metaclass=_Loader):
         -------
         A list of the loaded data.
         """
+        if parallel is None:
+            parallel = len(file_paths) > self.parallel_threshold
+
         if post_process:
 
             def _load_func(filename):
