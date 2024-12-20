@@ -54,8 +54,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
-from erlab.interactive.imagetool import ImageTool, _parse_input
-from erlab.interactive.imagetool.core import SlicerLinkProxy
+from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
 from erlab.interactive.utils import (
     IconActionButton,
     KeyboardEventFilter,
@@ -2143,6 +2143,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             of path objects as its only argument.
 
         """
+        loaded, canceled, failed = (
+            list(dict.fromkeys(loaded)),
+            list(dict.fromkeys(canceled)),
+            list(dict.fromkeys(failed)),
+        )  # Remove duplicate entries
+
         n_done, n_fail = len(loaded), len(failed)
         if n_fail == 0:
             return
@@ -2255,7 +2261,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for p in list(queued):
             queued.remove(p)
             try:
-                data = func(p, **kwargs)
+                data_list = _parse_input(func(p, **kwargs))
             except Exception as e:
                 failed.append(p)
 
@@ -2277,17 +2283,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     case QtWidgets.QMessageBox.StandardButton.Abort:
                         break
             else:
-                try:
-                    tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
-                    tool._recent_name_filter = self._recent_name_filter
-                    tool._recent_directory = self._recent_directory
-                    tool.slicer_area.set_data(data, file_path=p)
-                except Exception as e:
-                    failed.append(p)
-                    self._error_creating_tool(e)
-                else:
-                    loaded.append(p)
-                    self.add_tool(tool, activate=True)
+                for data in data_list:
+                    try:
+                        tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
+                        tool._recent_name_filter = self._recent_name_filter
+                        tool._recent_directory = self._recent_directory
+                        tool.slicer_area.set_data(data, file_path=p)
+                    except Exception as e:
+                        failed.append(p)
+                        self._error_creating_tool(e)
+                    else:
+                        loaded.append(p)
+                        self.add_tool(tool, activate=True)
 
         self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
 
@@ -2392,7 +2399,8 @@ def show_in_manager(
     data: Collection[xarray.DataArray | npt.NDArray]
     | xarray.DataArray
     | npt.NDArray
-    | xarray.Dataset,
+    | xarray.Dataset
+    | xarray.DataTree,
     **kwargs,
 ) -> None:
     """Create and display ImageTool windows in the ImageToolManager.

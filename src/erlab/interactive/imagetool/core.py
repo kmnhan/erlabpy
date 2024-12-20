@@ -7,6 +7,7 @@ import contextlib
 import copy
 import functools
 import inspect
+import itertools
 import os
 import pathlib
 import time
@@ -32,7 +33,7 @@ from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_cros
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Collection, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -62,6 +63,39 @@ class ImageSlicerState(TypedDict):
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
+
+
+def _supported_shape(data: xr.DataArray) -> bool:
+    shape_squeezed = tuple(s for s in data.shape if s != 1)
+    return len(shape_squeezed) in (2, 3, 4)
+
+
+def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
+    return tuple(d for d in data.data_vars.values() if _supported_shape(d))
+
+
+def _parse_input(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+) -> list[xr.DataArray]:
+    input_cls: str = data.__class__.__name__
+    if isinstance(data, np.ndarray | xr.DataArray):
+        data = (data,)
+    elif isinstance(data, xr.Dataset):
+        data = _parse_dataset(data)
+    elif isinstance(data, xr.DataTree):
+        data = tuple(
+            itertools.chain.from_iterable(
+                _parse_dataset(leaf.dataset) for leaf in data.leaves
+            )
+        )
+    if len(data) == 0:
+        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
+
+    return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
 
 def _link_splitters(
@@ -429,7 +463,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def __init__(
         self,
         parent: QtWidgets.QWidget,
-        data: xr.DataArray | npt.ArrayLike,
+        data: xr.DataArray | npt.NDArray,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
         zero_centered: bool = False,
@@ -858,7 +892,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def set_data(
         self,
-        data: xr.DataArray | npt.ArrayLike,
+        data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
     ) -> None:
@@ -891,14 +925,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         else:
             n_cursors_old = 1
 
-        if not isinstance(data, xr.DataArray):
-            if isinstance(data, xr.Dataset):
-                try:
-                    data = cast(xr.DataArray, data[next(iter(data.data_vars.keys()))])
-                except StopIteration as e:
-                    raise ValueError("No data variables found in Dataset") from e
-            else:
-                data = xr.DataArray(np.asarray(data))
+        darr_list: list[xr.DataArray] = _parse_input(data)
+        if len(darr_list) > 1:
+            raise ValueError(
+                "This object cannot be opened in a single window. "
+                "Use the manager instead."
+            )
+
+        data = darr_list[0]
         if hasattr(data.data, "flags") and not data.data.flags["WRITEABLE"]:
             data = data.copy()
 
