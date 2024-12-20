@@ -1,4 +1,10 @@
-"""Utilities for reading NeXus files into xarray objects."""
+"""Utilities for reading NeXus files into xarray objects.
+
+This module provides functions that can be used to extract coordinates and data from
+NeXus files and convert them into xarray DataArrays conveniently. All functions in this
+module require the `nexusformat <https://github.com/nexpy/nexusformat>`_ package to be
+installed.
+"""
 
 import os
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
