@@ -1,10 +1,5 @@
 """Utilities for reading NeXus files into xarray objects."""
 
-import importlib
-
-if not importlib.util.find_spec("nexusformat"):
-    raise ImportError("The `nexusformat` package is required to read NeXus files")
-
 import os
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
@@ -24,7 +19,10 @@ else:
     from erlab.utils.misc import LazyImport
 
     # lazy-loader does not support importing from a submodule
-    nexus = LazyImport("nexusformat.nexus")
+    nexus = LazyImport(
+        "nexusformat.nexus",
+        err_msg="The `nexusformat` package is required to read NeXus files",
+    )
 
 
 def _parse_value(value):

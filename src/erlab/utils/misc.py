@@ -85,6 +85,9 @@ class LazyImport:
     ----------
     module_name : str
         The name of the module to be imported lazily.
+    err_msg : str, optional
+        If present, this message will be displayed in the ImportError raised when the
+        accessed module is not found.
 
     Examples
     --------
@@ -94,12 +97,18 @@ class LazyImport:
 
     """
 
-    def __init__(self, module_name: str) -> None:
+    def __init__(self, module_name: str, err_msg: str | None) -> None:
         self._module_name = module_name
+        self._err_msg = err_msg
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._module, item)
 
     @functools.cached_property
     def _module(self) -> ModuleType:
+        if (self._err_msg is not None) and (
+            not importlib.util.find_spec(self._module_name)
+        ):
+            raise ImportError(self._err_msg)
+
         return importlib.import_module(self._module_name)
