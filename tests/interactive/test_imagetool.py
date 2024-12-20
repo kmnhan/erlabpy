@@ -297,7 +297,7 @@ def test_itool_tools(qtbot, test_data_type) -> None:
 def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
-        ValueError, match="No valid data for ImageTool found in the Dataset"
+        ValueError, match="No valid data for ImageTool found in Dataset"
     ):
         _parse_input(
             xr.Dataset(
