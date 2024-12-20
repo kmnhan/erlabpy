@@ -612,16 +612,12 @@ class LoaderBase(metaclass=_Loader):
                     new_dir: str = os.path.dirname(identifier)
 
                     new_kwargs = kwargs | additional_kwargs
+                    new_kwargs.setdefault("single", single)
+                    new_kwargs.setdefault("combine", combine)
+                    new_kwargs.setdefault("parallel", parallel)
+                    new_kwargs.setdefault("load_kwargs", load_kwargs)
                     try:
-                        return self.load(
-                            new_identifier,
-                            new_dir,
-                            single=single,
-                            combine=combine,
-                            parallel=parallel,
-                            load_kwargs=load_kwargs,
-                            **new_kwargs,
-                        )
+                        return self.load(new_identifier, new_dir, **new_kwargs)
                     except Exception as e:
                         warning_message = (
                             f"Loading {basename_no_ext} with inferred index "
@@ -1309,7 +1305,7 @@ class LoaderBase(metaclass=_Loader):
         ----
         For loaders with :attr:`always_single
         <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
-        not used.
+        unused.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -1395,8 +1391,10 @@ class LoaderBase(metaclass=_Loader):
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         if _is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
-                "Combining DataTrees into a single tree "
-                "will be supported in a future release of ERLabPy"
+                "Combining DataTrees into a single tree will be supported "
+                "in a future release of ERLabPy. In the meantime, consider supplying "
+                "`combine=False` to get a list of the data in each file, or "
+                "`single=True` to load only one file."
             )
 
         if len(coord_dict) == 0:
