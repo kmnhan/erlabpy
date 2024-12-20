@@ -40,6 +40,7 @@ from typing import (
 )
 
 import numpy as np
+import numpy.typing as npt
 import pandas
 import xarray as xr
 
@@ -534,6 +535,7 @@ class LoaderBase(metaclass=_Loader):
             import erlab
 
             erlab.io.set_data_dir("data")
+
             erlab.io.load("example.txt")
 
           However, if ``./data/example.txt`` also exists, the same code will load that
@@ -1204,7 +1206,12 @@ class LoaderBase(metaclass=_Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[pathlib.Path] | list[str], dict] | None:
+    ) -> (
+        tuple[
+            list[pathlib.Path] | list[str], dict[str, Sequence] | dict[str, npt.NDArray]
+        ]
+        | None
+    ):
         r"""Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -1378,7 +1385,7 @@ class LoaderBase(metaclass=_Loader):
         if _is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
                 "Combining DataTrees into a single tree "
-                "will be supported in a future release"
+                "will be supported in a future release of ERLabPy"
             )
 
         if len(coord_dict) == 0:
