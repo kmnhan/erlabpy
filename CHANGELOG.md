@@ -1,3 +1,21 @@
+## Unreleased
+
+### ✨ Features
+
+- **io.plugins.erpes:** add data loader for our homelab system! ([48dcbb4](https://github.com/kmnhan/erlabpy/commit/48dcbb47691f1250ade2f93968521471e61e08f6))
+
+- **io.plugins.merlin:** allow loading BL4 single file in `ImageTool` file menu ([079914e](https://github.com/kmnhan/erlabpy/commit/079914e7d8e5c49fbb234bb1c50482559512f9af))
+
+- **io.dataloader:** automatically load in parallel with per-loader threshold ([33a8c63](https://github.com/kmnhan/erlabpy/commit/33a8c63abed6bd8cf0db20aac8ea1cb0c6610232))
+
+- **imagetool:** add support for DataTree objects ([c4c03e3](https://github.com/kmnhan/erlabpy/commit/c4c03e363f850551b59f6f683983f5ee48b0aa3c))
+
+### 🐞 Bug Fixes
+
+- **io.dataloader:** adjust condition to handle single file loading ([d98c71f](https://github.com/kmnhan/erlabpy/commit/d98c71f2e900884c8649741f3fe7c57c5838a3de))
+
+- **io.plugins.da30:** update `DA30Loader` to handle multiple regions in one `.pxt` file ([1ff8b93](https://github.com/kmnhan/erlabpy/commit/1ff8b93590d78db041409a1e914fdf9c7d5d799b))
+
 ## v3.2.3 (2024-12-19)
 
 ### 🐞 Bug Fixes
