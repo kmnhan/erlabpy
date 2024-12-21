@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **dtool:** add boxcar filter and 1D curvature, along with internal improvements ([48e5421](https://github.com/kmnhan/erlabpy/commit/48e54219ea1ea1eff956173aa2e3c8667645880d))
+
+- **analysis.image:** add `diffn` function for nth derivative calculation ([e3c917b](https://github.com/kmnhan/erlabpy/commit/e3c917bd21643a10be96d9016d71721dcaf6dbe4))
+
+  Adds a function that calculates accurate n-th order partial derivatives of DataArrays using (findiff)[https://github.com/maroba/findiff].
+
+- **analysis.image:** add boxcar filter ([7475266](https://github.com/kmnhan/erlabpy/commit/74752663d065104db9d01e5407c490e7153aab97))
+
+- **analysis.image:** add 1D curvature ([522d554](https://github.com/kmnhan/erlabpy/commit/522d5540ebb8c5831421ceec039884d0896ff8fc))
+
 - **io.plugins.erpes:** add data loader for our homelab system! ([48dcbb4](https://github.com/kmnhan/erlabpy/commit/48dcbb47691f1250ade2f93968521471e61e08f6))
 
 - **io.plugins.merlin:** allow loading BL4 single file in `ImageTool` file menu ([079914e](https://github.com/kmnhan/erlabpy/commit/079914e7d8e5c49fbb234bb1c50482559512f9af))
@@ -12,11 +22,27 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool.manager:** bind associated tools to the manager ([bf5f0fa](https://github.com/kmnhan/erlabpy/commit/bf5f0fa4fd4dbba94d5feaba9c5693458466d534))
+
+  With this change, closing an ImageTool window no longer affects tools such as ktool and dtool opened in that ImageTool.
+
+- **imagetool:** make dimension order in exported image data from image plot consistent with the GUI ([727a2c3](https://github.com/kmnhan/erlabpy/commit/727a2c34174f52802b365966f932ff7183c1b021))
+
+- **imagetool:** fix issue with selection with multiple binned dimensions ([121c968](https://github.com/kmnhan/erlabpy/commit/121c968a68da82bd53fa95d596d1486aa21e3715))
+
 - **io.dataloader:** adjust condition to handle single file loading ([d98c71f](https://github.com/kmnhan/erlabpy/commit/d98c71f2e900884c8649741f3fe7c57c5838a3de))
 
 - **io.plugins.da30:** update `DA30Loader` to handle multiple regions in one `.pxt` file ([1ff8b93](https://github.com/kmnhan/erlabpy/commit/1ff8b93590d78db041409a1e914fdf9c7d5d799b))
 
 ### ♻️ Code Refactor
+
+- **interactive.utils:** improve code generation ([a213e8d](https://github.com/kmnhan/erlabpy/commit/a213e8d007675f7e4eddbb250ef43409077a3b68))
+
+- replace direct imports with module references ([b6a2f0c](https://github.com/kmnhan/erlabpy/commit/b6a2f0c60c4cf8a6b5c5595595e0a56292b237f2))
+
+- **analysis.image:** use `findiff` for derivatives ([119385c](https://github.com/kmnhan/erlabpy/commit/119385c7304a0c91d33bc85e8c0a7d30e997ae50))
+
+  Functions that use derivatives including `curvature` and `scaled_laplace` now uses properly scaled derivatives from [findiff](https://github.com/maroba/findiff). As a consequence, the output of these functions may be slightly different.
 
 - **io.nexusutils:** defer error message until actually trying to load nexus files ([8eec5aa](https://github.com/kmnhan/erlabpy/commit/8eec5aabd40a75f6f26e113cc0bdd9c0d35759ec))
 
