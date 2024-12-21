@@ -247,7 +247,8 @@ def test_itool(qtbot, move_and_compare_values) -> None:
 
 
 @pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
-def test_itool_tools(qtbot, test_data_type) -> None:
+@pytest.mark.parametrize("condition", ["unbinned", "binned"])
+def test_itool_tools(qtbot, test_data_type, condition) -> None:
     data = _TEST_DATA[test_data_type]
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -257,12 +258,18 @@ def test_itool_tools(qtbot, test_data_type) -> None:
         win.activateWindow()
 
     main_image = win.slicer_area.images[0]
-    # Test code generation
 
+    # Test code generation
     if data.ndim == 2:
         assert main_image.selection_code == ""
     else:
         assert main_image.selection_code == ".qsel(beta=2.0)"
+
+    if condition == "binned":
+        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+        win.array_slicer.set_bin(0, axis=1, value=2, update=True)
+        if data.ndim == 3:
+            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
     # Open goldtool from main image
 
@@ -297,7 +304,7 @@ def test_itool_tools(qtbot, test_data_type) -> None:
 def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
-        ValueError, match="No valid data for ImageTool found in the Dataset"
+        ValueError, match="No valid data for ImageTool found in Dataset"
     ):
         _parse_input(
             xr.Dataset(

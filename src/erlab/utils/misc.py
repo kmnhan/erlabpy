@@ -5,22 +5,26 @@ import pathlib
 import sys
 import warnings
 from types import ModuleType
-from typing import Any
+from typing import Any, overload
 
 import numpy as np
 
+_NestedGeneric = np.generic | list["_NestedGeneric"] | Any
 
-def _convert_to_native(obj: list[Any]) -> list[Any]:
-    """Convert a nested list of numpy objects to native types."""
 
-    def _convert(obj: Any) -> Any:
-        if isinstance(obj, np.generic):
-            return obj.item()
-        if isinstance(obj, list):
-            return [_convert(item) for item in obj]
-        return obj
-
-    return _convert(obj)
+@overload
+def _convert_to_native(obj: np.generic) -> Any: ...
+@overload
+def _convert_to_native(obj: list[_NestedGeneric]) -> list[Any]: ...
+@overload
+def _convert_to_native(obj: Any) -> Any: ...
+def _convert_to_native(obj: _NestedGeneric) -> Any:
+    """Convert numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
 
 
 def _find_stack_level() -> int:
@@ -85,6 +89,9 @@ class LazyImport:
     ----------
     module_name : str
         The name of the module to be imported lazily.
+    err_msg : str, optional
+        If present, this message will be displayed in the ImportError raised when the
+        accessed module is not found.
 
     Examples
     --------
@@ -94,12 +101,18 @@ class LazyImport:
 
     """
 
-    def __init__(self, module_name: str) -> None:
+    def __init__(self, module_name: str, err_msg: str | None) -> None:
         self._module_name = module_name
+        self._err_msg = err_msg
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._module, item)
 
     @functools.cached_property
     def _module(self) -> ModuleType:
+        if (self._err_msg is not None) and (
+            not importlib.util.find_spec(self._module_name)
+        ):
+            raise ImportError(self._err_msg)
+
         return importlib.import_module(self._module_name)

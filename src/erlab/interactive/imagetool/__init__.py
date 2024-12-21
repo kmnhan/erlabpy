@@ -36,7 +36,11 @@ from erlab.interactive.imagetool.controls import (
     ItoolColormapControls,
     ItoolCrosshairControls,
 )
-from erlab.interactive.imagetool.core import ImageSlicerArea, SlicerLinkProxy
+from erlab.interactive.imagetool.core import (
+    ImageSlicerArea,
+    SlicerLinkProxy,
+    _parse_input,
+)
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
@@ -60,27 +64,12 @@ _ITOOL_DATA_NAME: str = "<erlab-itool-data>"
 #: Name to use for the data variable in cached datasets
 
 
-def _parse_input(
-    data: Collection[xr.DataArray | npt.NDArray]
-    | xr.DataArray
-    | npt.NDArray
-    | xr.Dataset,
-) -> list[xr.DataArray]:
-    if isinstance(data, np.ndarray | xr.DataArray):
-        data = (data,)
-    elif isinstance(data, xr.Dataset):
-        data = tuple(d for d in data.data_vars.values() if d.ndim >= 2 and d.ndim <= 4)
-        if len(data) == 0:
-            raise ValueError("No valid data for ImageTool found in the Dataset")
-
-    return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
-
-
 def itool(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
-    | xr.Dataset,
+    | xr.Dataset
+    | xr.DataTree,
     *,
     link: bool = False,
     link_colors: bool = True,
@@ -92,7 +81,7 @@ def itool(
 
     Parameters
     ----------
-    data : DataArray, Dataset, ndarray, list of DataArray or list of ndarray
+    data : DataArray, Dataset, DataTree, ndarray, list of DataArray or list of ndarray
         The data to be displayed. Data can be provided as:
 
         - A `xarray.DataArray` with 2 to 4 dimensions
@@ -112,6 +101,10 @@ def itool(
           Every DataArray in the Dataset will be displayed across multiple ImageTool
           windows. Data variables that have less than 2 dimensions or more than 4
           dimensions are ignored. Dimensions with length 1 are automatically squeezed.
+
+        - A `xarray.DataTree`
+
+          Every leaf node will be parsed as a `xarray.Dataset`.
     link
         Whether to enable linking between multiple ImageTool windows when `data` is a
         sequence or a `xarray.Dataset`, by default `False`.

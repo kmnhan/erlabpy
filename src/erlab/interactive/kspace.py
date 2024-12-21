@@ -16,6 +16,7 @@ import varname
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
+from erlab.accessors.kspace import MomentumAccessor
 from erlab.interactive.colors import (
     BetterColorBarItem,  # noqa: F401
     ColorMapComboBox,  # noqa: F401
@@ -439,8 +440,6 @@ class KspaceTool(KspaceToolGUI):
             )
 
         offset_dict_repr = str(self.offset_dict).replace("'", '"')
-
-        from erlab.accessors.kspace import MomentumAccessor
 
         out_lines.extend(
             (

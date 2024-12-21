@@ -109,7 +109,10 @@ class MERLINLoader(LoaderBase):
 
     @property
     def file_dialog_methods(self):
-        return {"ALS BL4.0.3 Raw Data (*.pxt *.ibw)": (self.load, {})}
+        return {
+            "ALS BL4.0.3 Data (*.pxt *.ibw)": (self.load, {}),
+            "ALS BL4.0.3 Single File (*.pxt)": (self.load, {"single": True}),
+        }
 
     def load_single(
         self, file_path: str | os.PathLike, without_values: bool = False

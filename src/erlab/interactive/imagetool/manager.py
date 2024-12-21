@@ -54,8 +54,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
-from erlab.interactive.imagetool import ImageTool, _parse_input
-from erlab.interactive.imagetool.core import SlicerLinkProxy
+from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
 from erlab.interactive.utils import (
     IconActionButton,
     KeyboardEventFilter,
@@ -1059,27 +1059,31 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__()
         self.setSelectionMode(self.SelectionMode.ExtendedSelection)
+
+        # Enable drag & drop for reordering items
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(self.DragDropMode.InternalMove)
+
         self.setEditTriggers(
             self.EditTrigger.SelectedClicked | self.EditTrigger.EditKeyPressed
-        )
-        self.setWordWrap(True)
+        )  # Enable editing of item names
+
+        self.setWordWrap(True)  # Ellide text when width is too small
+        self.setMouseTracking(True)  # Enable hover detection
 
         self._model = _ImageToolWrapperListModel(manager, self)
         self.setModel(self._model)
-
         self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
-
         self._selection_model = cast(QtCore.QItemSelectionModel, self.selectionModel())
 
-        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_menu)
-
+        # Show tool on double-click
         self.doubleClicked.connect(self._model.manager.show_selected)
 
+        # Right-click context menu
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction(manager.concat_action)
         self._menu.addSeparator()
@@ -1100,7 +1104,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
     @property
     def selected_tool_indices(self) -> list[int]:
-        """Currently selected tools."""
+        """Currently selected tools.
+
+        The tools are ordered by their position in the list view.
+        """
         return [
             self._model.manager._displayed_indices[index.row()]
             for index in self.selectedIndexes()
@@ -1117,6 +1124,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
     @QtCore.Slot()
     @QtCore.Slot(int)
     def refresh(self, idx: int | None = None) -> None:
+        """Trigger a refresh of the contents."""
         if idx is None:
             self._model.dataChanged.emit(
                 self._model.index(0), self._model.index(self._model.rowCount() - 1)
@@ -1128,6 +1136,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
                 )
 
     def tool_added(self, index: int) -> None:
+        """Update the list view when a new tool is added to the manager.
+
+        This must be called after a tool is added to the manager.
+        """
         n_rows = self._model.rowCount()
         self._model.insertRows(n_rows, 1)
         self._model.setData(
@@ -1137,6 +1149,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         )
 
     def tool_removed(self, index: int) -> None:
+        """Update the list view when removing a tool from the manager.
+
+        This must be called before the tool is removed from the manager.
+        """
         for i, tool_idx in enumerate(self._model.manager._displayed_indices):
             if tool_idx == index:
                 self._model.removeRows(i, 1)
@@ -1395,6 +1411,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
         self._linkers: list[SlicerLinkProxy] = []
+
+        # Stores additional analysis tools opened from child ImageTool windows
+        self._additional_windows: dict[str, QtWidgets.QWidget] = {}
 
         # Initialize actions
         self.show_action = QtWidgets.QAction("Show", self)
@@ -2143,6 +2162,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             of path objects as its only argument.
 
         """
+        loaded, canceled, failed = (
+            list(dict.fromkeys(loaded)),
+            list(dict.fromkeys(canceled)),
+            list(dict.fromkeys(failed)),
+        )  # Remove duplicate entries
+
         n_done, n_fail = len(loaded), len(failed)
         if n_fail == 0:
             return
@@ -2255,7 +2280,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for p in list(queued):
             queued.remove(p)
             try:
-                data = func(p, **kwargs)
+                data_list = _parse_input(func(p, **kwargs))
             except Exception as e:
                 failed.append(p)
 
@@ -2277,19 +2302,42 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     case QtWidgets.QMessageBox.StandardButton.Abort:
                         break
             else:
-                try:
-                    tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
-                    tool._recent_name_filter = self._recent_name_filter
-                    tool._recent_directory = self._recent_directory
-                    tool.slicer_area.set_data(data, file_path=p)
-                except Exception as e:
-                    failed.append(p)
-                    self._error_creating_tool(e)
-                else:
-                    loaded.append(p)
-                    self.add_tool(tool, activate=True)
+                for data in data_list:
+                    try:
+                        tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
+                        tool._recent_name_filter = self._recent_name_filter
+                        tool._recent_directory = self._recent_directory
+                        tool.slicer_area.set_data(data, file_path=p)
+                    except Exception as e:
+                        failed.append(p)
+                        self._error_creating_tool(e)
+                    else:
+                        loaded.append(p)
+                        self.add_tool(tool, activate=True)
 
         self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
+
+    def add_widget(self, widget: QtWidgets.QWidget) -> None:
+        """Save a reference to an additional window widget.
+
+        This is mainly used for handling tool windows such as goldtool and dtool opened
+        from child ImageTool windows. This way, they can stay open even when the
+        ImageTool that opened them is archived or removed.
+
+        All additional windows are closed when the manager is closed.
+
+        Only pass widgets that are not associated with a parent widget.
+
+        Parameters
+        ----------
+        widget
+            The widget to add.
+        """
+        uid = str(uuid.uuid4())
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._additional_windows[uid] = widget  # Store reference to prevent gc
+        widget.destroyed.connect(lambda: self._additional_windows.pop(uid))
+        widget.show()
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
@@ -2338,6 +2386,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
             for tool in list(self._tool_wrappers.keys()):
                 self.remove_tool(tool)
+
+        for widget in dict(self._additional_windows).values():
+            widget.close()
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()
@@ -2392,7 +2443,8 @@ def show_in_manager(
     data: Collection[xarray.DataArray | npt.NDArray]
     | xarray.DataArray
     | npt.NDArray
-    | xarray.Dataset,
+    | xarray.Dataset
+    | xarray.DataTree,
     **kwargs,
 ) -> None:
     """Create and display ImageTool windows in the ImageToolManager.

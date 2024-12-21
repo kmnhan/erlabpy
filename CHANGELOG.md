@@ -1,3 +1,49 @@
+## Unreleased
+
+### ✨ Features
+
+- **dtool:** add boxcar filter and 1D curvature, along with internal improvements ([0bd2b17](https://github.com/kmnhan/erlabpy/commit/0bd2b17af300bea63420b3c6cd92ba4da20f472d))
+
+- **analysis.image:** add `diffn` function for nth derivative calculation ([a70812f](https://github.com/kmnhan/erlabpy/commit/a70812f87e8ce766bea60cb1b82a42b855963f1a))
+
+  Adds a function that calculates accurate n-th order partial derivatives of DataArrays using [findiff](https://github.com/maroba/findiff).
+
+  Also, functions that use derivatives including `curvature` and `scaled_laplace` now uses properly scaled derivatives from [findiff](https://github.com/maroba/findiff). As a consequence, the output of these functions may be slightly different.
+
+- **analysis.image:** add boxcar filter ([7475266](https://github.com/kmnhan/erlabpy/commit/74752663d065104db9d01e5407c490e7153aab97))
+
+- **analysis.image:** add 1D curvature ([522d554](https://github.com/kmnhan/erlabpy/commit/522d5540ebb8c5831421ceec039884d0896ff8fc))
+
+- **io.plugins.erpes:** add data loader for our homelab system! ([48dcbb4](https://github.com/kmnhan/erlabpy/commit/48dcbb47691f1250ade2f93968521471e61e08f6))
+
+- **io.plugins.merlin:** allow loading BL4 single file in `ImageTool` file menu ([079914e](https://github.com/kmnhan/erlabpy/commit/079914e7d8e5c49fbb234bb1c50482559512f9af))
+
+- **io.dataloader:** automatically load in parallel with per-loader threshold ([33a8c63](https://github.com/kmnhan/erlabpy/commit/33a8c63abed6bd8cf0db20aac8ea1cb0c6610232))
+
+- **imagetool:** add support for DataTree objects ([c4c03e3](https://github.com/kmnhan/erlabpy/commit/c4c03e363f850551b59f6f683983f5ee48b0aa3c))
+
+### 🐞 Bug Fixes
+
+- **imagetool.manager:** bind associated tools to the manager ([a38cf7f](https://github.com/kmnhan/erlabpy/commit/a38cf7f582bb775e1a070c21c897b4fd1cd258ee))
+
+  With this change, closing an ImageTool window no longer affects tools such as ktool and dtool opened in that ImageTool.
+
+- **imagetool:** make dimension order in exported image data from image plot consistent with the GUI ([0ee225b](https://github.com/kmnhan/erlabpy/commit/0ee225b50139ef2181a4df020432b1704b226f9b))
+
+- **imagetool:** fix issue with selection with multiple binned dimensions ([121c968](https://github.com/kmnhan/erlabpy/commit/121c968a68da82bd53fa95d596d1486aa21e3715))
+
+- **io.dataloader:** adjust condition to handle single file loading ([d98c71f](https://github.com/kmnhan/erlabpy/commit/d98c71f2e900884c8649741f3fe7c57c5838a3de))
+
+- **io.plugins.da30:** update `DA30Loader` to handle multiple regions in one `.pxt` file ([1ff8b93](https://github.com/kmnhan/erlabpy/commit/1ff8b93590d78db041409a1e914fdf9c7d5d799b))
+
+### ♻️ Code Refactor
+
+- **interactive.utils:** improve code generation ([2b24e08](https://github.com/kmnhan/erlabpy/commit/2b24e086c56108ae1220dfb3a4c8af7a253dc221))
+
+- replace direct imports with module references ([b3ca55c](https://github.com/kmnhan/erlabpy/commit/b3ca55c241197f878e11b819663545d6cfcf2d52))
+
+- **io.nexusutils:** defer error message until actually trying to load nexus files ([8eec5aa](https://github.com/kmnhan/erlabpy/commit/8eec5aabd40a75f6f26e113cc0bdd9c0d35759ec))
+
 ## v3.2.3 (2024-12-19)
 
 ### 🐞 Bug Fixes

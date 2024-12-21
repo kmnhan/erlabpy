@@ -40,6 +40,7 @@ from typing import (
 )
 
 import numpy as np
+import numpy.typing as npt
 import pandas
 import xarray as xr
 
@@ -238,6 +239,15 @@ class LoaderBase(metaclass=_Loader):
     scan. This is useful for setups where each scan is always stored in a single file.
     """
 
+    parallel_threshold: int = 30
+    """
+    Minimum number of files in a scan to use parallel loading. If the number of files is
+    less than this threshold, files are loaded sequentially.
+
+    Only used when :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`
+    is `False`.
+    """
+
     skip_validate: bool = False
     """
     If `True`, validation checks will be skipped. If `False`, data will be checked with
@@ -430,7 +440,7 @@ class LoaderBase(metaclass=_Loader):
         *,
         single: bool = False,
         combine: bool = True,
-        parallel: bool = False,
+        parallel: bool | None = None,
         load_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> (
@@ -486,7 +496,9 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel using the `joblib` library.
+            Whether to load multiple files in parallel using the `joblib` library. For
+            possible values, see :meth:`load_multiple_parallel
+            <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
 
             This argument is only used when `single` is `False`.
         load_kwargs
@@ -534,6 +546,7 @@ class LoaderBase(metaclass=_Loader):
             import erlab
 
             erlab.io.set_data_dir("data")
+
             erlab.io.load("example.txt")
 
           However, if ``./data/example.txt`` also exists, the same code will load that
@@ -558,7 +571,7 @@ class LoaderBase(metaclass=_Loader):
             )  # Return type enforced by metaclass, cast to avoid mypy error
             # file_paths: list of file paths with at least one element
 
-            if len(coord_dict) == 0:
+            if len(file_paths) == 1 and len(coord_dict) == 0:
                 # Single file resolved
                 data: xr.DataArray | xr.Dataset | xr.DataTree = self.load_single(
                     file_paths[0], **load_kwargs
@@ -599,16 +612,12 @@ class LoaderBase(metaclass=_Loader):
                     new_dir: str = os.path.dirname(identifier)
 
                     new_kwargs = kwargs | additional_kwargs
+                    new_kwargs.setdefault("single", single)
+                    new_kwargs.setdefault("combine", combine)
+                    new_kwargs.setdefault("parallel", parallel)
+                    new_kwargs.setdefault("load_kwargs", load_kwargs)
                     try:
-                        return self.load(
-                            new_identifier,
-                            new_dir,
-                            single=single,
-                            combine=combine,
-                            parallel=parallel,
-                            load_kwargs=load_kwargs,
-                            **new_kwargs,
-                        )
+                        return self.load(new_identifier, new_dir, **new_kwargs)
                     except Exception as e:
                         warning_message = (
                             f"Loading {basename_no_ext} with inferred index "
@@ -1204,7 +1213,12 @@ class LoaderBase(metaclass=_Loader):
 
     def identify(
         self, num: int, data_dir: str | os.PathLike
-    ) -> tuple[list[pathlib.Path] | list[str], dict] | None:
+    ) -> (
+        tuple[
+            list[pathlib.Path] | list[str], dict[str, Sequence] | dict[str, npt.NDArray]
+        ]
+        | None
+    ):
         r"""Identify the files and coordinates for a given scan number.
 
         This method takes a scan index and transforms it into a list of file paths and
@@ -1291,7 +1305,7 @@ class LoaderBase(metaclass=_Loader):
         ----
         For loaders with :attr:`always_single
         <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
-        not used.
+        unused.
 
         """
         raise NotImplementedError("method must be implemented in the subclass")
@@ -1377,8 +1391,10 @@ class LoaderBase(metaclass=_Loader):
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         if _is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
-                "Combining DataTrees into a single tree "
-                "will be supported in a future release"
+                "Combining DataTrees into a single tree will be supported "
+                "in a future release of ERLabPy. In the meantime, consider supplying "
+                "`combine=False` to get a list of the data in each file, or "
+                "`single=True` to load only one file."
             )
 
         if len(coord_dict) == 0:
@@ -1690,7 +1706,7 @@ class LoaderBase(metaclass=_Loader):
     def load_multiple_parallel(
         self,
         file_paths: list[str],
-        parallel: bool = False,
+        parallel: bool | None = None,
         post_process: bool = False,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
@@ -1701,7 +1717,15 @@ class LoaderBase(metaclass=_Loader):
         file_paths
             A list of file paths to load.
         parallel
-            If `True`, data loading will be performed in parallel using `dask.delayed`.
+            Whether to load data in parallel using `joblib`.
+
+            - If `None`, parallel loading is enabled only if the number of files is
+              greater than the loader's :attr:`parallel_threshold
+              <erlab.io.dataloader.LoaderBase.parallel_threshold>`.
+
+            - If `True`, data loading will always be performed in parallel.
+
+            - If `False`, data will be loaded sequentially.
         post_process
             Whether to post-process each data object after loading.
         **kwargs
@@ -1712,6 +1736,9 @@ class LoaderBase(metaclass=_Loader):
         -------
         A list of the loaded data.
         """
+        if parallel is None:
+            parallel = len(file_paths) > self.parallel_threshold
+
         if post_process:
 
             def _load_func(filename):

@@ -7,6 +7,7 @@ import contextlib
 import copy
 import functools
 import inspect
+import itertools
 import os
 import pathlib
 import time
@@ -32,7 +33,7 @@ from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_cros
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Collection, Iterable, Sequence
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
 
@@ -62,6 +63,39 @@ class ImageSlicerState(TypedDict):
 
 suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
+
+
+def _supported_shape(data: xr.DataArray) -> bool:
+    shape_squeezed = tuple(s for s in data.shape if s != 1)
+    return len(shape_squeezed) in (2, 3, 4)
+
+
+def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
+    return tuple(d for d in data.data_vars.values() if _supported_shape(d))
+
+
+def _parse_input(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+) -> list[xr.DataArray]:
+    input_cls: str = data.__class__.__name__
+    if isinstance(data, np.ndarray | xr.DataArray):
+        data = (data,)
+    elif isinstance(data, xr.Dataset):
+        data = _parse_dataset(data)
+    elif isinstance(data, xr.DataTree):
+        data = tuple(
+            itertools.chain.from_iterable(
+                _parse_dataset(leaf.dataset) for leaf in data.leaves
+            )
+        )
+    if len(data) == 0:
+        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
+
+    return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
 
 def _link_splitters(
@@ -429,7 +463,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def __init__(
         self,
         parent: QtWidgets.QWidget,
-        data: xr.DataArray | npt.ArrayLike,
+        data: xr.DataArray | npt.NDArray,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
         zero_centered: bool = False,
@@ -858,7 +892,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def set_data(
         self,
-        data: xr.DataArray | npt.ArrayLike,
+        data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
     ) -> None:
@@ -891,14 +925,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         else:
             n_cursors_old = 1
 
-        if not isinstance(data, xr.DataArray):
-            if isinstance(data, xr.Dataset):
-                try:
-                    data = cast(xr.DataArray, data[next(iter(data.data_vars.keys()))])
-                except StopIteration as e:
-                    raise ValueError("No data variables found in Dataset") from e
-            else:
-                data = xr.DataArray(np.asarray(data))
+        darr_list: list[xr.DataArray] = _parse_input(data)
+        if len(darr_list) > 1:
+            raise ValueError(
+                "This object cannot be opened in a single window. "
+                "Use the manager instead."
+            )
+
+        data = darr_list[0]
         if hasattr(data.data, "flags") and not data.data.flags["WRITEABLE"]:
             data = data.copy()
 
@@ -1242,23 +1276,36 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
-    def add_tool_window(self, tool: QtWidgets.QWidget) -> None:
-        """Add and show a tool window to this slicer.
+    def add_tool_window(self, widget: QtWidgets.QWidget) -> None:
+        """Save a reference to an additional window widget.
 
-        The tool window is automatically cleared from memory when it is closed. Be sure
-        to not pass a widget that is already associated with another parent.
+        This is mainly used for handling tool windows such as goldtool and dtool.
+
+        The tool window is cleared from memory immediately when it is closed. Closing
+        the main window will close all associated tool windows.
+
+        Only pass widgets that are not associated with a parent widget.
+
+        If the parent ImageTool is in the manager, the widget is transferred to the
+        manager instead.
 
         Parameters
         ----------
-        tool
-            The tool window widget to add.
+        widget
+            The widget to add.
         """
-        uid: str = str(uuid.uuid4())
-        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._associated_tools[uid] = tool
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        tool.destroyed.connect(lambda: self._associated_tools.pop(uid))
-        tool.show()
+        if self._in_manager:
+            manager = erlab.interactive.imagetool.manager._manager_instance
+            if manager:
+                manager.add_widget(widget)
+                return
+
+        uid: str = str(uuid.uuid4())
+        self._associated_tools[uid] = widget  # Store reference to prevent gc
+        widget.destroyed.connect(lambda: self._associated_tools.pop(uid))
+        widget.show()
 
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
@@ -1756,17 +1803,31 @@ class ItoolPlotItem(pg.PlotItem):
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
 
-    @property
-    def axis_dims(self) -> list[str | None]:
-        dim_list: list[str | None] = [
+    def _get_axis_dims(self, uniform: bool) -> tuple[str | None, ...]:
+        dim_list: list[str] = [
             str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
         ]
+
+        if uniform and self.array_slicer._nonuniform_axes:
+            for i, ax in enumerate(self.display_axis):
+                if ax in self.array_slicer._nonuniform_axes:
+                    dim_list[i] = dim_list[i].removesuffix("_idx")
+
+        dims: tuple[str | None, ...] = tuple(dim_list)
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
-                dim_list = [None, *dim_list]
+                dims = (None, *dims)
             else:
-                dim_list = [*dim_list, None]
-        return dim_list
+                dims = (*dims, None)
+        return dims
+
+    @property
+    def axis_dims(self) -> tuple[str | None, ...]:
+        return self._get_axis_dims(uniform=False)
+
+    @property
+    def axis_dims_uniform(self) -> tuple[str | None, ...]:
+        return self._get_axis_dims(uniform=True)
 
     @property
     def is_independent(self) -> bool:
@@ -1774,7 +1835,10 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def current_data(self) -> xr.DataArray:
-        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        if self.is_image:
+            return data.transpose(*self.axis_dims_uniform)
+        return data
 
     @property
     def selection_code(self) -> str:

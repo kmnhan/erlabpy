@@ -6,10 +6,10 @@ import pytest
 import xarray as xr
 from numpy.testing import assert_allclose
 
-import erlab.lattice
+import erlab
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
-from erlab.interactive.derivative import dtool
+from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import goldtool
 from erlab.interactive.kspace import ktool
 
@@ -38,39 +38,47 @@ def test_goldtool(qtbot, gold) -> None:
     )
 
 
-def test_dtool(qtbot) -> None:
+@pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("interpmode", ["interp", "nointerp"])
+@pytest.mark.parametrize(
+    ("smoothmode", "nsmooth"),
+    [
+        ("none", 1),
+        ("gaussian", 1),
+        ("gaussian", 3),
+        ("boxcar", 1),
+        ("boxcar", 3),
+    ],
+)
+def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]).astype(
         np.float64
     )
-    win = dtool(data, execute=False)
+    win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
     with qtbot.waitExposed(win):
         win.show()
         win.activateWindow()
 
-    win.tab_widget.setCurrentIndex(0)
-    win.interp_group.setChecked(False)
-    win.smooth_group.setChecked(True)
-    assert (
-        win.copy_code()
-        == """_processed = data.copy()
-for _ in range(1):
-\t_processed = era.image.gaussian_filter(_processed, sigma={\"y\": 1.0, \"x\": 1.0})
-result = _processed.differentiate('y').differentiate('y')"""
-    )
+    def check_generated_code(w: DerivativeTool) -> None:
+        namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
+        exec(w.copy_code(), {"__builtins__": {"range": range}}, namespace)  # noqa: S102
+        xr.testing.assert_identical(w.result, namespace["result"])
 
-    win.smooth_group.setChecked(False)
-    assert win.copy_code() == "result = data.differentiate('y').differentiate('y')"
+    win.interp_group.setChecked(interpmode == "interp")
+    win.smooth_group.setChecked(smoothmode != "none")
+    win.sn_spin.setValue(nsmooth)
 
-    win.tab_widget.setCurrentIndex(1)
-    assert win.copy_code() == "result = era.image.scaled_laplace(data, factor=1.0)"
+    match smoothmode:
+        case "gaussian":
+            win.smooth_combo.setCurrentIndex(0)
+        case "boxcar":
+            win.smooth_combo.setCurrentIndex(1)
 
-    win.tab_widget.setCurrentIndex(2)
-    assert win.copy_code() == "result = era.image.curvature(data, a0=1.0, factor=1.0)"
-
-    win.tab_widget.setCurrentIndex(3)
-    assert win.copy_code() == "result = era.image.minimum_gradient(data)"
+    win.tab_widget.setCurrentIndex(method_idx)
+    check_generated_code(win)
+    win.close()
 
 
 def test_ktool_compatible(anglemap) -> None:

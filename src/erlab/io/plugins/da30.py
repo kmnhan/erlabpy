@@ -47,21 +47,22 @@ class DA30Loader(LoaderBase):
 
     def load_single(
         self, file_path: str | os.PathLike, without_values: bool = False
-    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    ) -> xr.DataArray | xr.DataTree:
         file_path = pathlib.Path(file_path)
 
         match file_path.suffix:
             case ".ibw":
-                data: xr.DataArray | xr.Dataset | xr.DataTree = xr.load_dataarray(
+                data: xr.DataArray | xr.DataTree = xr.load_dataarray(
                     file_path, engine="erlab-igor"
                 )
 
             case ".pxt":
-                data = xr.load_dataset(file_path, engine="erlab-igor")
+                data = xr.open_datatree(file_path, engine="erlab-igor")
 
-                if len(data.data_vars) == 1:
+                if len(data.children) == 1:
                     # Get DataArray if single region
-                    data = data[next(iter(data.data_vars))]
+                    data = next(iter(next(iter(data.children.values())).values()))
+                    data.load()  # Ensure repr shows data
 
             case ".zip":
                 data = load_zip(file_path, without_values)
@@ -108,13 +109,11 @@ class DA30Loader(LoaderBase):
 
 def load_zip(
     filename: str | os.PathLike, without_values: bool = False
-) -> xr.DataArray | xr.Dataset | xr.DataTree:
+) -> xr.DataArray | xr.DataTree:
     """Load data from a ``.zip`` file from a Scienta Omicron DA30 analyzer.
 
-    If the file contains a single region, a DataArray is returned. If the file contains
-    multiple regions that can be merged without conflicts, a Dataset is returned. If the
-    regions cannot be merged without conflicts, a DataTree containing all regions is
-    returned.
+    If the file contains a single region, a DataArray is returned. Otherwise, a DataTree
+    containing all regions is returned.
     """
     with zipfile.ZipFile(filename) as z:
         regions: list[str] = [
@@ -164,14 +163,9 @@ def load_zip(
     if len(out) == 1:
         return out[0]
 
-    try:
-        # Try to merge the data without conflicts
-        return xr.merge(out, join="exact")
-    except:  # noqa: E722
-        # On failure, combine into DataTree
-        return xr.DataTree.from_dict(
-            {str(da.name): da.to_dataset(promote_attrs=True) for da in out}
-        )
+    return xr.DataTree.from_dict(
+        {str(da.name): da.to_dataset(promote_attrs=True) for da in out}
+    )
 
 
 def _parse_value(value):
