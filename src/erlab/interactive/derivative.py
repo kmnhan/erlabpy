@@ -5,7 +5,8 @@ __all__ = ["dtool"]
 import functools
 import os
 import sys
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Callable, Hashable
+from typing import Any, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -13,15 +14,13 @@ import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
 
+import erlab
 from erlab.interactive.utils import (
     copy_to_clipboard,
     generate_code,
     parse_data,
     xImageItem,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Hashable
 
 
 class DerivativeTool(
@@ -36,19 +35,6 @@ class DerivativeTool(
                 )
             except varname.VarnameRetrievingError:
                 data_name = "data"
-
-        # Delayed import for performance
-        from erlab.analysis.image import (
-            curvature,
-            gaussian_filter,
-            minimum_gradient,
-            scaled_laplace,
-        )
-
-        self.curvature = curvature
-        self.gaussian_filter = gaussian_filter
-        self.minimum_gradient = minimum_gradient
-        self.scaled_laplace = scaled_laplace
 
         self.data_name: str = data_name
 
@@ -74,15 +60,6 @@ class DerivativeTool(
 
         self.xdim: Hashable = self.data.dims[1]
         self.ydim: Hashable = self.data.dims[0]
-
-        self.xinc: float = abs(float(self.data[self.xdim][1] - self.data[self.xdim][0]))
-        self.yinc: float = abs(float(self.data[self.ydim][1] - self.data[self.ydim][0]))
-
-        self.sx_spin.setRange(0.1 * self.xinc, 50 * self.xinc)
-        self.sy_spin.setRange(0.1 * self.yinc, 50 * self.yinc)
-
-        self.sx_spin.setSingleStep(self.xinc / 2)
-        self.sy_spin.setSingleStep(self.yinc / 2)
 
         self.reset_smooth()
         self.reset_interp()
@@ -112,6 +89,7 @@ class DerivativeTool(
 
         self.interp_rst_btn.clicked.connect(self.reset_interp)
         self.smooth_rst_btn.clicked.connect(self.reset_smooth)
+        self.smooth_combo.currentIndexChanged.connect(self.refresh_smooth_mode)
 
         self.interp_group.toggled.connect(self.update_preprocess)
         self.smooth_group.toggled.connect(self.update_preprocess)
@@ -128,6 +106,9 @@ class DerivativeTool(
         self.x_radio.clicked.connect(self.update_result)
         self.y_radio.clicked.connect(self.update_result)
         self.lapl_factor_spin.valueChanged.connect(self.update_result)
+        self.curv1d_a0_spin.valueChanged.connect(self.update_result)
+        self.x_radio_curv1d.clicked.connect(self.update_result)
+        self.y_radio_curv1d.clicked.connect(self.update_result)
         self.curv_a0_spin.valueChanged.connect(self.update_result)
         self.curv_factor_spin.valueChanged.connect(self.update_result)
 
@@ -137,13 +118,56 @@ class DerivativeTool(
 
     @QtCore.Slot()
     def reset_smooth(self) -> None:
-        self.sx_spin.setValue(self.xinc)
-        self.sy_spin.setValue(self.yinc)
+        self.sx_spin.setValue(1.0)
+        self.sy_spin.setValue(1.0)
 
     @QtCore.Slot()
     def reset_interp(self) -> None:
         self.nx_spin.setValue(self.data.sizes[self.xdim])
         self.ny_spin.setValue(self.data.sizes[self.ydim])
+
+    @QtCore.Slot()
+    def refresh_smooth_mode(self) -> None:
+        match self.smooth_combo.currentIndex():
+            case 0:
+                self.sx_spin.setDecimals(4)
+                self.sy_spin.setDecimals(4)
+            case 1:
+                self.sx_spin.setDecimals(0)
+                self.sy_spin.setDecimals(0)
+        self.update_preprocess()
+
+    @property
+    def smooth_args(self) -> dict[Hashable, float]:
+        sx_value = np.round(self.sx_spin.value(), self.sx_spin.decimals())
+        sy_value = np.round(self.sy_spin.value(), self.sy_spin.decimals())
+        match self.smooth_combo.currentIndex():
+            case 0:
+                xcoords, ycoords = (
+                    self.data[self.xdim].values,
+                    self.data[self.ydim].values,
+                )
+                xinc, yinc = (
+                    np.abs(xcoords[1] - xcoords[0]),
+                    np.abs(ycoords[1] - ycoords[0]),
+                )
+                xdigits, ydigits = (
+                    int(np.clip(np.ceil(-np.log10(xinc) + 1), a_min=0, a_max=None)),
+                    int(np.clip(np.ceil(-np.log10(yinc) + 1), a_min=0, a_max=None)),
+                )
+                sx_value, sy_value = (
+                    round(sx_value * xinc, xdigits),
+                    round(sy_value * yinc, ydigits),
+                )
+            case _:
+                sx_value, sy_value = int(sx_value), int(sy_value)
+
+        out = {}
+        if sx_value > 0:
+            out[self.xdim] = sx_value
+        if sy_value > 0:
+            out[self.ydim] = sy_value
+        return out
 
     @property
     def result(self) -> xr.DataArray:
@@ -169,18 +193,18 @@ class DerivativeTool(
                 }
             )
         if self.smooth_group.isChecked():
-            for _ in range(self.sn_spin.value()):
-                out = self.gaussian_filter(
-                    out,
-                    sigma={
-                        self.xdim: np.round(
-                            self.sx_spin.value(), self.sx_spin.decimals()
-                        ),
-                        self.ydim: np.round(
-                            self.sy_spin.value(), self.sy_spin.decimals()
-                        ),
-                    },
-                )
+            match self.smooth_combo.currentIndex():
+                case 0:
+                    for _ in range(self.sn_spin.value()):
+                        out = erlab.analysis.image.gaussian_filter(
+                            out, sigma=self.smooth_args
+                        )
+                case 1:
+                    for _ in range(self.sn_spin.value()):
+                        out = erlab.analysis.image.boxcar_filter(
+                            out, size=cast(dict[Hashable, int], self.smooth_args)
+                        )
+
         self.images[0].setDataArray(out)
         return out
 
@@ -207,31 +231,58 @@ class DerivativeTool(
         self.__dict__.pop("processed_data", None)
         self.update_result()
 
-    @QtCore.Slot()
-    def update_result(self) -> None:
+    @property
+    def process_func(self) -> Callable:
         match self.tab_widget.currentIndex():
             case 0:
-                dim = self.xdim if self.x_radio.isChecked() else self.ydim
-                self.result = self.processed_data.differentiate(dim).differentiate(dim)
+                return erlab.analysis.image.diffn
             case 1:
-                self.result = self.scaled_laplace(
-                    self.processed_data,
-                    factor=np.round(
-                        self.lapl_factor_spin.value(), self.lapl_factor_spin.decimals()
-                    ),
-                )
+                return erlab.analysis.image.scaled_laplace
             case 2:
-                self.result = self.curvature(
-                    self.processed_data,
-                    a0=np.round(
+                return erlab.analysis.image.curvature1d
+            case 3:
+                return erlab.analysis.image.curvature
+            case _:
+                return erlab.analysis.image.minimum_gradient
+
+    @property
+    def process_kwargs(self) -> dict[str, Any]:
+        match self.tab_widget.currentIndex():
+            case 0:
+                return {
+                    "coord": self.xdim if self.x_radio.isChecked() else self.ydim,
+                    "order": 2,
+                }
+            case 1:
+                return {
+                    "factor": np.round(
+                        self.lapl_factor_spin.value(), self.lapl_factor_spin.decimals()
+                    )
+                }
+            case 2:
+                return {
+                    "along": self.xdim
+                    if self.x_radio_curv1d.isChecked()
+                    else self.ydim,
+                    "a0": np.round(
+                        self.curv1d_a0_spin.value(), self.curv1d_a0_spin.decimals()
+                    ),
+                }
+            case 3:
+                return {
+                    "a0": np.round(
                         self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
                     ),
-                    factor=np.round(
+                    "factor": np.round(
                         self.curv_factor_spin.value(), self.curv_factor_spin.decimals()
                     ),
-                )
-            case 3:
-                self.result = self.minimum_gradient(self.processed_data)
+                }
+            case _:
+                return {}
+
+    @QtCore.Slot()
+    def update_result(self) -> None:
+        self.result = self.process_func(self.processed_data, **self.process_kwargs)
 
     def copy_code(self) -> str:
         lines: list[str] = []
@@ -241,102 +292,64 @@ class DerivativeTool(
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
         if self.interp_group.isChecked():
             arg_dict: dict[str, Any] = {
-                str(dim): f"|np.linspace(*{data_name}['{dim}'][[0, -1]], {n})|"
+                str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"
                 for dim, n in zip(
                     [self.xdim, self.ydim],
                     [self.nx_spin.value(), self.ny_spin.value()],
                     strict=True,
                 )
             }
-
             lines.append(
                 generate_code(
                     xr.DataArray.interp,
-                    [],
-                    arg_dict,
+                    args=[],
+                    kwargs=arg_dict,
                     module=data_name,
                     assign="_processed",
                 )
             )
+
             data_name = "_processed"
 
         if self.smooth_group.isChecked():
-            arg_dict = {
-                "sigma": dict(
-                    zip(
-                        (self.xdim, self.ydim),
-                        [
-                            float(np.round(s.value(), s.decimals()))
-                            for s in (self.sx_spin, self.sy_spin)
-                        ],
-                        strict=True,
-                    )
-                )
-            }
-            lines.append(f"_processed = {data_name}.copy()")
-            data_name = "_processed"
-            lines.extend(
-                (
-                    f"for _ in range({self.sn_spin.value()}):",
-                    "\t"
-                    + generate_code(
-                        self.gaussian_filter,
-                        [f"|{data_name}|"],
-                        arg_dict,
-                        module="era.image",
-                        assign="_processed",
-                    ),
-                )
-            )
+            match self.smooth_combo.currentIndex():
+                case 0:
+                    smooth_func: Callable = erlab.analysis.image.gaussian_filter
+                    smooth_kwargs: dict[str, Any] = {"sigma": self.smooth_args}
 
-            data_name = "_processed"
+                case _:
+                    smooth_func = erlab.analysis.image.boxcar_filter
+                    smooth_kwargs = {"size": self.smooth_args}
 
-        if self.tab_widget.currentIndex() == 0:
-            dim = self.xdim if self.x_radio.isChecked() else self.ydim
-            lines.append(
-                f"result = {data_name}.differentiate('{dim}').differentiate('{dim}')"
-            )
-        else:
-            match self.tab_widget.currentIndex():
-                case 1:
-                    func = self.scaled_laplace
-                    arg_dict = {
-                        "factor": float(
-                            np.round(
-                                self.lapl_factor_spin.value(),
-                                self.lapl_factor_spin.decimals(),
-                            )
-                        )
-                    }
-                case 2:
-                    func = self.curvature
-                    arg_dict = {
-                        "a0": float(
-                            np.round(
-                                self.curv_a0_spin.value(), self.curv_a0_spin.decimals()
-                            )
-                        ),
-                        "factor": float(
-                            np.round(
-                                self.curv_factor_spin.value(),
-                                self.curv_factor_spin.decimals(),
-                            )
-                        ),
-                    }
-                case 3:
-                    func = self.minimum_gradient
-                    arg_dict = {}
+            n_repeat = self.sn_spin.value()
 
-            lines.append(
-                generate_code(
-                    func,
-                    [f"|{data_name}|"],
-                    arg_dict,
-                    module="era.image",
-                    assign="result",
-                    remove_defaults=False,
-                )
+            if n_repeat > 1:
+                lines.append(f"_processed = {data_name}.copy()")
+                data_name = "_processed"
+
+            smooth_func_code: str = generate_code(
+                smooth_func,
+                [f"|{data_name}|"],
+                smooth_kwargs,
+                module="era.image",
+                assign=data_name if (n_repeat > 1) else None,
             )
+            if n_repeat == 1:
+                data_name = smooth_func_code.replace(" = ", "=")
+            else:
+                lines.append(f"for _ in range({self.sn_spin.value()}):")
+                lines.append("\t" + smooth_func_code)
+
+        lines.append(
+            generate_code(
+                self.process_func,
+                [f"|{data_name}|"],
+                self.process_kwargs,
+                module="era.image",
+                assign="result",
+                remove_defaults=False,
+            )
+        )
 
         return copy_to_clipboard(lines)
 

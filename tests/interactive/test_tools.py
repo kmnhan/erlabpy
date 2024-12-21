@@ -6,10 +6,10 @@ import pytest
 import xarray as xr
 from numpy.testing import assert_allclose
 
-import erlab.lattice
+import erlab
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
-from erlab.interactive.derivative import dtool
+from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import goldtool
 from erlab.interactive.kspace import ktool
 
@@ -49,28 +49,35 @@ def test_dtool(qtbot) -> None:
         win.show()
         win.activateWindow()
 
+    def check_generated_code(w: DerivativeTool) -> None:
+        xr.testing.assert_identical(
+            w.result,
+            eval(  # noqa: S307
+                w.copy_code().removeprefix("result = "),
+                {"__builtins__": None},
+                {"era": erlab.analysis, "data": data},
+            ),
+        )
+
     win.tab_widget.setCurrentIndex(0)
     win.interp_group.setChecked(False)
     win.smooth_group.setChecked(True)
-    assert (
-        win.copy_code()
-        == """_processed = data.copy()
-for _ in range(1):
-\t_processed = era.image.gaussian_filter(_processed, sigma={\"y\": 1.0, \"x\": 1.0})
-result = _processed.differentiate('y').differentiate('y')"""
-    )
+    check_generated_code(win)
 
     win.smooth_group.setChecked(False)
-    assert win.copy_code() == "result = data.differentiate('y').differentiate('y')"
+    check_generated_code(win)
 
     win.tab_widget.setCurrentIndex(1)
-    assert win.copy_code() == "result = era.image.scaled_laplace(data, factor=1.0)"
+    check_generated_code(win)
 
     win.tab_widget.setCurrentIndex(2)
-    assert win.copy_code() == "result = era.image.curvature(data, a0=1.0, factor=1.0)"
+    check_generated_code(win)
 
     win.tab_widget.setCurrentIndex(3)
-    assert win.copy_code() == "result = era.image.minimum_gradient(data)"
+    check_generated_code(win)
+
+    win.tab_widget.setCurrentIndex(4)
+    check_generated_code(win)
 
 
 def test_ktool_compatible(anglemap) -> None:

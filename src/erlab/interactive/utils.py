@@ -158,7 +158,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     """
     if isinstance(content, list):
         content = "\n".join(content)
-    pyperclip.copy(content)
+    pyperclip.copy(str(content))
     return content
 
 
