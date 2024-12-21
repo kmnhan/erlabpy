@@ -15,6 +15,7 @@ Notes
 
 __all__ = [
     "curvature",
+    "curvature1d",
     "gaussian_filter",
     "gaussian_laplace",
     "gradient_magnitude",
@@ -811,3 +812,32 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     ) / (c0 + weight * dfdx**2 + dfdy**2) ** 1.5
 
     return darr.copy(data=curv)
+
+
+def curvature1d(darr: xr.DataArray, along: Hashable, a0: float = 1.0) -> xr.DataArray:
+    """1D curvature method for detecting dispersive features.
+
+    The curvature is calculated as defined by :cite:t:`zhang2011curvature`.
+
+    Parameters
+    ----------
+    darr
+        The DataArray for which to calculate the curvature.
+    along
+        The dimension along which to calculate the curvature.
+    a0
+        The regularization constant. Reasonable values range from 0.001 to 10. Default
+        is 1.0.
+
+    Returns
+    -------
+    curvature : xarray.DataArray
+        The 2D curvature of the input DataArray. Has the same shape as :code:`input`.
+
+    Raises
+    ------
+    ValueError
+        If the input DataArray is not 2D.
+    """
+    df = darr.differentiate(along)
+    return df.differentiate(along) / (a0 + df**2 / (np.abs(df).max() ** 2)) ** 1.5

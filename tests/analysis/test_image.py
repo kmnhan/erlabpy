@@ -193,3 +193,38 @@ def test_curvature() -> None:
 
     # Check if the result matches the expected output
     assert np.allclose(result, expected_output)
+
+
+def test_curvature1d() -> None:
+    darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"]) ** 2
+
+    expected_x = xr.DataArray(
+        np.array(
+            [
+                [98.00562, 96.1526, 93.77119, 90.929756, 87.70485],
+                [138.605, 134.04039, 128.96048, 123.48621, 117.73539],
+                [149.09091, 141.11177, 133.15814, 125.32661, 117.69529],
+                [82.74362, 77.44496, 72.39856, 67.618515, 63.111576],
+                [46.649776, 43.553825, 40.640636, 37.909084, 35.35534],
+            ]
+        ),
+        dims=["x", "y"],
+    )
+    expected_y = xr.DataArray(
+        np.array(
+            [
+                [3.9972854, 5.98374, 7.913863, 5.8562593, 3.8705053],
+                [3.692493, 5.4577284, 7.042242, 5.090019, 3.3263268],
+                [3.044281, 4.457489, 5.651266, 4.0200005, 2.6078095],
+                [2.3268301, 3.3887246, 4.2550626, 3.0020146, 1.940408],
+                [1.7117059, 2.4875224, 3.1124096, 2.1901085, 1.4142135],
+            ]
+        ),
+        dims=["x", "y"],
+    )
+
+    result_x = era.image.curvature1d(darr, "x").astype(np.float32)
+    assert np.allclose(result_x, expected_x)
+
+    result_y = era.image.curvature1d(darr, "y").astype(np.float32)
+    assert np.allclose(result_y, expected_y)
