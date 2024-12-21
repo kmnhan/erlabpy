@@ -56,7 +56,6 @@ extensions = [
     "myst_parser",
     "notfound.extension",
 ]
-sd_fontawesome_latex = True
 
 notfound_context = {
     "title": "Page not found",
@@ -247,6 +246,7 @@ intersphinx_mapping = {
     "panel": ("https://panel.holoviz.org", None),
     "hvplot": ("https://hvplot.holoviz.org", None),
     "nexusformat": ("https://nexpy.github.io/nexpy", None),
+    "findiff": ("https://findiff.readthedocs.io/en/stable", None),
 }
 
 

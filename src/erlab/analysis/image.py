@@ -17,6 +17,7 @@ __all__ = [
     "boxcar_filter",
     "curvature",
     "curvature1d",
+    "diffn",
     "gaussian_filter",
     "gaussian_laplace",
     "gradient_magnitude",
@@ -28,8 +29,9 @@ __all__ = [
 
 import itertools
 import math
-from collections.abc import Collection, Hashable, Mapping, Sequence
-from typing import Literal
+import warnings
+from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -44,6 +46,14 @@ from erlab.utils.array import (
     check_arg_uniform_dims,
     is_uniform_spaced,
 )
+
+if TYPE_CHECKING:
+    import findiff
+
+else:
+    import lazy_loader as _lazy
+
+    findiff = _lazy.load("findiff")
 
 
 def _parse_dict_arg(
@@ -699,6 +709,59 @@ def laplace(
     return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
+@overload
+def diffn(
+    darr: xr.DataArray, coord: Hashable, order: Iterable[int] = ..., **kwargs
+) -> tuple[xr.DataArray, ...]: ...
+
+
+@overload
+def diffn(
+    darr: xr.DataArray, coord: Hashable, order: int = 1, **kwargs
+) -> xr.DataArray: ...
+
+
+def diffn(
+    darr: xr.DataArray,
+    coord: Hashable,
+    order: int | Iterable[int] = 1,
+    **kwargs,
+) -> xr.DataArray | tuple[xr.DataArray, ...]:
+    """Calculate the nth derivative of a DataArray along a given dimension.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    coord
+        The coordinate along which to calculate the derivative.
+    order
+        The order of the derivative. If given as a tuple, a tuple of derivatives for
+        each order is returned. Default is 1.
+    **kwargs
+        Additional keyword arguments to :class:`findiff.Diff`.
+
+    Returns
+    -------
+    DataArray or tuple of DataArray
+        The differentiated array or a tuple of differentiated arrays corresponding to
+        the provided order.
+    """
+    xvals = darr[coord].values.astype(np.float64)
+    grid = (xvals[1] - xvals[0]) if is_uniform_spaced(xvals) else xvals
+    d_dx = findiff.Diff(darr.get_axis_num(coord), grid=grid, **kwargs)
+
+    if not isinstance(order, int) and isinstance(order, Iterable):
+        return tuple(_apply_diffn(darr, d_dx, o) for o in order)
+    return _apply_diffn(darr, d_dx, order)
+
+
+def _apply_diffn(
+    darr: xr.DataArray, operator: findiff.Diff, order: int
+) -> xr.DataArray:
+    return darr.copy(data=(operator**order)(darr.values.astype(np.float64)))
+
+
 @check_arg_2d_darr
 @check_arg_uniform_dims
 @check_arg_has_no_nans
@@ -752,12 +815,7 @@ def minimum_gradient(
 @check_arg_2d_darr
 @check_arg_uniform_dims
 @check_arg_has_no_nans
-def scaled_laplace(
-    darr,
-    factor: float = 1.0,
-    mode: str | Sequence[str] | dict[str, str] = "nearest",
-    cval: float = 0.0,
-) -> xr.DataArray:
+def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     r"""Calculate the Laplacian of a 2D DataArray with different scaling for each axis.
 
     This function calculates the Laplacian of the given array using approximate second
@@ -777,35 +835,28 @@ def scaled_laplace(
     factor
         The factor by which to scale the x-axis derivative. Negative values will scale
         the y-axis derivative instead. Default is 1.0.
-    mode
-        The mode parameter determines how the input array is extended beyond its
-        boundaries. If a dictionary, the keys should be dimension names and the values
-        should be the corresponding modes, and every dimension in the DataArray must be
-        present. Otherwise, it retains the same behavior as in
-        `scipy.ndimage.generic_laplace`. Default is 'nearest'.
-    cval
-        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+    **kwargs
+        Additional keyword arguments to :class:`findiff.Diff`.
 
     Returns
     -------
     scaled_laplace : xarray.DataArray
         The filtered array with the same shape as the input DataArray.
 
-    Raises
-    ------
-    ValueError
-        If the input DataArray is not 2D.
-
-    See Also
-    --------
-    :func:`scipy.ndimage.generic_laplace` : The underlying function used to apply the
-        filter.
     """
-    xvals = darr[darr.dims[1]].values
-    yvals = darr[darr.dims[0]].values
+    for _deprecated_kw in ("mode", "cval"):
+        if _deprecated_kw in kwargs:
+            warnings.warn(
+                f"Keyword argument '{_deprecated_kw}' for scaled_laplace is not used, "
+                "and will be removed in a future version.",
+                FutureWarning,
+                stacklevel=1,
+            )
+            kwargs.pop(_deprecated_kw)
+    xvals = darr[darr.dims[1]].values.astype(np.float64)
+    yvals = darr[darr.dims[0]].values.astype(np.float64)
 
-    dx = xvals[1] - xvals[0]
-    dy = yvals[1] - yvals[0]
+    dx, dy = xvals[1] - xvals[0], yvals[1] - yvals[0]
     weight = (dx / dy) ** 2
 
     if factor > 0:
@@ -813,24 +864,17 @@ def scaled_laplace(
     elif factor < 0:
         weight /= abs(factor)
 
-    if isinstance(mode, Mapping):
-        mode = tuple(mode[d] for d in darr.dims)
-
-    def d2_scaled(arr, axis, output, mode, cval):
-        out = scipy.ndimage.correlate1d(arr, [1, -2, 1], axis, output, mode, cval, 0)
-        if axis == 1:
-            out *= weight
-        return out
-
-    return darr.copy(
-        data=scipy.ndimage.generic_laplace(darr.values, d2_scaled, mode=mode, cval=cval)
-    )
+    d_dx, d_dy = findiff.Diff(1, dx, **kwargs), findiff.Diff(0, dy, **kwargs)
+    scaled_lapl_operator = weight * d_dx**2 + d_dy**2
+    return darr.copy(data=scaled_lapl_operator(darr.values.astype(np.float64)))
 
 
 @check_arg_2d_darr
 @check_arg_uniform_dims
 @check_arg_has_no_nans
-def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.DataArray:
+def curvature(
+    darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0, **kwargs
+) -> xr.DataArray:
     """2D curvature method for detecting dispersive features.
 
     The curvature is calculated as defined by :cite:t:`zhang2011curvature`.
@@ -840,11 +884,13 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     darr
         The 2D DataArray for which to calculate the curvature.
     a0
-        The regularization constant. Reasonable values range from 0.001 to 10. Default
-        is 1.0.
+        The regularization constant. Reasonable values range from 0.001 to 10, but
+        different values may be needed depending on the data. Default is 1.0.
     factor
         The factor by which to scale the x-axis curvature. Negative values will scale
         the y-axis curvature instead. Default is 1.0.
+    **kwargs
+        Additional keyword arguments to :class:`findiff.Diff`.
 
     Returns
     -------
@@ -856,11 +902,10 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     ValueError
         If the input DataArray is not 2D.
     """
-    xvals = darr[darr.dims[1]].values
-    yvals = darr[darr.dims[0]].values
+    xvals = darr[darr.dims[1]].values.astype(np.float64)
+    yvals = darr[darr.dims[0]].values.astype(np.float64)
 
-    dx = xvals[1] - xvals[0]
-    dy = yvals[1] - yvals[0]
+    dx, dy = xvals[1] - xvals[0], yvals[1] - yvals[0]
     weight = (dx / dy) ** 2
 
     if factor > 0:
@@ -868,12 +913,18 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     elif factor < 0:
         weight /= abs(factor)
 
-    dfdx, dfdy = np.gradient(darr.values, axis=(1, 0))
-    d2fdx2, d2fdydx = np.gradient(dfdx, axis=(1, 0))
-    d2fdy2 = np.gradient(dfdy, axis=0)
+    d_dx, d_dy = findiff.Diff(1, dx, **kwargs), findiff.Diff(0, dy, **kwargs)
 
-    max_abs_dfdx_sq: float = np.max(np.abs(dfdx)) ** 2
-    max_abs_dfdy_sq: float = np.max(np.abs(dfdy)) ** 2
+    values = darr.values.astype(np.float64)
+    dfdx = d_dx(values)
+    dfdy = d_dy(values)
+    d2fdx2 = (d_dx**2)(values)
+    d2fdydx = (d_dy * d_dx)(values)
+    d2fdy2 = (d_dy**2)(values)
+    del values
+
+    max_abs_dfdx_sq = np.max(np.abs(dfdx)) ** 2
+    max_abs_dfdy_sq = np.max(np.abs(dfdy)) ** 2
 
     c0 = a0 * max(max_abs_dfdy_sq, weight * max_abs_dfdx_sq)
 
@@ -886,7 +937,9 @@ def curvature(darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0) -> xr.Da
     return darr.copy(data=curv)
 
 
-def curvature1d(darr: xr.DataArray, along: Hashable, a0: float = 1.0) -> xr.DataArray:
+def curvature1d(
+    darr: xr.DataArray, along: Hashable, a0: float = 1.0, **kwargs
+) -> xr.DataArray:
     """1D curvature method for detecting dispersive features.
 
     The curvature is calculated as defined by :cite:t:`zhang2011curvature`.
@@ -898,8 +951,10 @@ def curvature1d(darr: xr.DataArray, along: Hashable, a0: float = 1.0) -> xr.Data
     along
         The dimension along which to calculate the curvature.
     a0
-        The regularization constant. Reasonable values range from 0.001 to 10. Default
-        is 1.0.
+        The regularization constant. Reasonable values range from 0.001 to 10, but
+        different values may be needed depending on the data. Default is 1.0.
+    **kwargs
+        Additional keyword arguments to :class:`findiff.Diff`.
 
     Returns
     -------
@@ -911,5 +966,6 @@ def curvature1d(darr: xr.DataArray, along: Hashable, a0: float = 1.0) -> xr.Data
     ValueError
         If the input DataArray is not 2D.
     """
-    df = darr.differentiate(along)
-    return df.differentiate(along) / (a0 + df**2 / (np.abs(df).max() ** 2)) ** 1.5
+    dfdx, d2fdx2 = diffn(darr, along, order=(1, 2), **kwargs)
+    curv = d2fdx2 / (a0 + dfdx**2 / (np.abs(dfdx).max() ** 2)) ** 1.5
+    return darr.copy(data=curv)

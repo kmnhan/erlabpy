@@ -2,6 +2,7 @@ name: erlab
 channels:
   - conda-forge
 dependencies:
+  - findiff>=0.12.0
   - h5netcdf>=1.2.0
   - igor2>=0.5.9
   - ipykernel
