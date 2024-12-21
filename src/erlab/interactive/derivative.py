@@ -118,8 +118,13 @@ class DerivativeTool(
 
     @QtCore.Slot()
     def reset_smooth(self) -> None:
+        self.sx_spin.blockSignals(True)
+        self.sy_spin.blockSignals(True)
         self.sx_spin.setValue(1.0)
         self.sy_spin.setValue(1.0)
+        self.sx_spin.blockSignals(False)
+        self.sy_spin.blockSignals(False)
+        self.sn_spin.setValue(1)
 
     @QtCore.Slot()
     def reset_interp(self) -> None:

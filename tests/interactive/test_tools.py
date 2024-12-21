@@ -38,11 +38,23 @@ def test_goldtool(qtbot, gold) -> None:
     )
 
 
-def test_dtool(qtbot) -> None:
+@pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("interpmode", ["interp", "nointerp"])
+@pytest.mark.parametrize(
+    ("smoothmode", "nsmooth"),
+    [
+        ("none", 1),
+        ("gaussian", 1),
+        ("gaussian", 3),
+        ("boxcar", 1),
+        ("boxcar", 3),
+    ],
+)
+def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]).astype(
         np.float64
     )
-    win = dtool(data, execute=False)
+    win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
     with qtbot.waitExposed(win):
@@ -50,34 +62,23 @@ def test_dtool(qtbot) -> None:
         win.activateWindow()
 
     def check_generated_code(w: DerivativeTool) -> None:
-        xr.testing.assert_identical(
-            w.result,
-            eval(  # noqa: S307
-                w.copy_code().removeprefix("result = "),
-                {"__builtins__": None},
-                {"era": erlab.analysis, "data": data},
-            ),
-        )
+        namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
+        exec(w.copy_code(), {"__builtins__": {"range": range}}, namespace)  # noqa: S102
+        xr.testing.assert_identical(w.result, namespace["result"])
 
-    win.tab_widget.setCurrentIndex(0)
-    win.interp_group.setChecked(False)
-    win.smooth_group.setChecked(True)
-    check_generated_code(win)
+    win.interp_group.setChecked(interpmode == "interp")
+    win.smooth_group.setChecked(smoothmode != "none")
+    win.sn_spin.setValue(nsmooth)
 
-    win.smooth_group.setChecked(False)
-    check_generated_code(win)
+    match smoothmode:
+        case "gaussian":
+            win.smooth_combo.setCurrentIndex(0)
+        case "boxcar":
+            win.smooth_combo.setCurrentIndex(1)
 
-    win.tab_widget.setCurrentIndex(1)
+    win.tab_widget.setCurrentIndex(method_idx)
     check_generated_code(win)
-
-    win.tab_widget.setCurrentIndex(2)
-    check_generated_code(win)
-
-    win.tab_widget.setCurrentIndex(3)
-    check_generated_code(win)
-
-    win.tab_widget.setCurrentIndex(4)
-    check_generated_code(win)
+    win.close()
 
 
 def test_ktool_compatible(anglemap) -> None:
