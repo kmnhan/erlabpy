@@ -1412,6 +1412,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._displayed_indices: list[int] = []
         self._linkers: list[SlicerLinkProxy] = []
 
+        # Stores additional analysis tools opened from child ImageTool windows
+        self._additional_windows: dict[str, QtWidgets.QWidget] = {}
+
         # Initialize actions
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
@@ -2314,6 +2317,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
 
+    def add_widget(self, widget: QtWidgets.QWidget) -> None:
+        """Save a reference to an additional window widget.
+
+        This is mainly used for handling tool windows such as goldtool and dtool opened
+        from child ImageTool windows. This way, they can stay open even when the
+        ImageTool that opened them is archived or removed.
+
+        All additional windows are closed when the manager is closed.
+
+        Only pass widgets that are not associated with a parent widget.
+
+        Parameters
+        ----------
+        widget
+            The widget to add.
+        """
+        uid = str(uuid.uuid4())
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._additional_windows[uid] = widget  # Store reference to prevent gc
+        widget.destroyed.connect(lambda: self._additional_windows.pop(uid))
+        widget.show()
+
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
@@ -2361,6 +2386,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
             for tool in list(self._tool_wrappers.keys()):
                 self.remove_tool(tool)
+
+        for widget in dict(self._additional_windows).values():
+            widget.close()
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()

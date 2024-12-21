@@ -9,6 +9,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager
+from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -20,11 +21,11 @@ from erlab.interactive.imagetool.manager import (
 
 
 @pytest.fixture
-def data():
+def test_data():
     return xr.DataArray(
         np.arange(25).reshape((5, 5)),
-        dims=["x", "y"],
-        coords={"x": np.arange(5), "y": np.arange(5)},
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5), "eV": np.arange(5)},
     )
 
 
@@ -56,7 +57,7 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
 
 
 @pytest.mark.parametrize("use_socket", [True, False])
-def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
+def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = use_socket
 
     erlab.interactive.imagetool.manager.main(execute=False)
@@ -68,7 +69,7 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
         manager.show()
         manager.activateWindow()
 
-    data.qshow()
+    test_data.qshow()
 
     t0 = time.perf_counter()
     while True:
@@ -80,7 +81,7 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
-    itool([data, data], link=False)
+    itool([test_data, test_data], link=False)
     while True:
         if manager.ntools == 3:
             break
@@ -159,9 +160,6 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     manager.archive_action.trigger()
     manager._tool_wrappers[1].unarchive()
 
-    # GC action
-    manager.gc_action.trigger()
-
     # Show and hide windows including archived ones
     select_tools(manager, [1])
     manager.archive_action.trigger()
@@ -191,10 +189,20 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
         ),
     )
 
+    # Show goldtool
+    manager.get_tool(3).slicer_area.images[2].open_in_goldtool()
+    assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
+
     # Remove all selected
     select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
     qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+
+    # Run garbage collection
+    manager.gc_action.trigger()
+
+    # Check goldtool still open
+    assert next(iter(manager._additional_windows.values())).isVisible()
 
     # Show about dialog
     accept_dialog(manager.about)
@@ -204,7 +212,7 @@ def test_manager(qtbot, accept_dialog, data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = False
 
 
-def test_manager_sync(qtbot, move_and_compare_values, data) -> None:
+def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -213,7 +221,7 @@ def test_manager_sync(qtbot, move_and_compare_values, data) -> None:
         manager.show()
         manager.activateWindow()
 
-    itool([data, data], link=True, link_colors=True, use_manager=True)
+    itool([test_data, test_data], link=True, link_colors=True, use_manager=True)
 
     t0 = time.perf_counter()
     while True:
@@ -307,7 +315,7 @@ def test_can_drop_mime_data(qtbot) -> None:
     manager.close()
 
 
-def test_listview(qtbot, accept_dialog, data) -> None:
+def test_listview(qtbot, accept_dialog, test_data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -316,8 +324,8 @@ def test_listview(qtbot, accept_dialog, data) -> None:
         manager.show()
         manager.activateWindow()
 
-    data.qshow()
-    data.qshow()
+    test_data.qshow()
+    test_data.qshow()
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
 
     manager.raise_()
@@ -349,10 +357,10 @@ def test_listview(qtbot, accept_dialog, data) -> None:
     accept_dialog(manager.close)
 
 
-def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
+def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
-    data.to_netcdf(filename, engine="h5netcdf")
+    test_data.to_netcdf(filename, engine="h5netcdf")
 
     manager = ImageToolManager()
     qtbot.addWidget(manager)
@@ -374,7 +382,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
     # Simulate drag and drop
     accept_dialog(lambda: manager.dropEvent(evt))
     qtbot.waitUntil(lambda: manager.ntools == 1, timeout=2000)
-    xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, data)
+    xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, test_data)
 
     # Simulate drag and drop with wrong filter, retry with correct filter
     # Dialogs created are:
@@ -392,7 +400,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
         chained_dialogs=4,
     )
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
-    xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, data)
+    xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, test_data)
 
     # Cleanup
     manager.remove_tool(0)
@@ -400,8 +408,13 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, data) -> None:
     tmp_dir.cleanup()
 
 
-def test_manager_console(qtbot, accept_dialog, data) -> None:
+def test_manager_console(qtbot, accept_dialog) -> None:
     manager = ImageToolManager()
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
 
     qtbot.addWidget(manager)
 

@@ -1276,23 +1276,36 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
-    def add_tool_window(self, tool: QtWidgets.QWidget) -> None:
-        """Add and show a tool window to this slicer.
+    def add_tool_window(self, widget: QtWidgets.QWidget) -> None:
+        """Save a reference to an additional window widget.
 
-        The tool window is automatically cleared from memory when it is closed. Be sure
-        to not pass a widget that is already associated with another parent.
+        This is mainly used for handling tool windows such as goldtool and dtool.
+
+        The tool window is cleared from memory immediately when it is closed. Closing
+        the main window will close all associated tool windows.
+
+        Only pass widgets that are not associated with a parent widget.
+
+        If the parent ImageTool is in the manager, the widget is transferred to the
+        manager instead.
 
         Parameters
         ----------
-        tool
-            The tool window widget to add.
+        widget
+            The widget to add.
         """
-        uid: str = str(uuid.uuid4())
-        tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._associated_tools[uid] = tool
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        tool.destroyed.connect(lambda: self._associated_tools.pop(uid))
-        tool.show()
+        if self._in_manager:
+            manager = erlab.interactive.imagetool.manager._manager_instance
+            if manager:
+                manager.add_widget(widget)
+                return
+
+        uid: str = str(uuid.uuid4())
+        self._associated_tools[uid] = widget  # Store reference to prevent gc
+        widget.destroyed.connect(lambda: self._associated_tools.pop(uid))
+        widget.show()
 
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
