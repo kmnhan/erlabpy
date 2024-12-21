@@ -10,17 +10,18 @@ from typing import Any
 import numpy as np
 
 
-def _convert_to_native(obj: list[Any]) -> list[Any]:
+def _convert_to_native(obj: Any) -> Any:
+    """Convert numpy objects to native types."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_convert_to_native(item) for item in obj]
+    return obj
+
+
+def _convert_list_to_native(obj: list[Any]) -> list[Any]:
     """Convert a nested list of numpy objects to native types."""
-
-    def _convert(obj: Any) -> Any:
-        if isinstance(obj, np.generic):
-            return obj.item()
-        if isinstance(obj, list):
-            return [_convert(item) for item in obj]
-        return obj
-
-    return _convert(obj)
+    return _convert_to_native(obj)
 
 
 def _find_stack_level() -> int:

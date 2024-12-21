@@ -1790,17 +1790,31 @@ class ItoolPlotItem(pg.PlotItem):
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
 
-    @property
-    def axis_dims(self) -> list[str | None]:
-        dim_list: list[str | None] = [
+    def _get_axis_dims(self, uniform: bool) -> tuple[str | None, ...]:
+        dim_list: list[str] = [
             str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
         ]
+
+        if uniform and self.array_slicer._nonuniform_axes:
+            for i, ax in enumerate(self.display_axis):
+                if ax in self.array_slicer._nonuniform_axes:
+                    dim_list[i] = dim_list[i].removesuffix("_idx")
+
+        dims: tuple[str | None, ...] = tuple(dim_list)
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
-                dim_list = [None, *dim_list]
+                dims = (None, *dims)
             else:
-                dim_list = [*dim_list, None]
-        return dim_list
+                dims = (*dims, None)
+        return dims
+
+    @property
+    def axis_dims(self) -> tuple[str | None, ...]:
+        return self._get_axis_dims(uniform=False)
+
+    @property
+    def axis_dims_uniform(self) -> tuple[str | None, ...]:
+        return self._get_axis_dims(uniform=True)
 
     @property
     def is_independent(self) -> bool:
@@ -1810,7 +1824,7 @@ class ItoolPlotItem(pg.PlotItem):
     def current_data(self) -> xr.DataArray:
         data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
         if self.is_image:
-            return data.transpose(*self.axis_dims)
+            return data.transpose(*self.axis_dims_uniform)
         return data
 
     @property

@@ -52,7 +52,7 @@ from erlab.interactive.utils import (
     file_loaders,
     wait_dialog,
 )
-from erlab.utils.misc import _convert_to_native
+from erlab.utils.misc import _convert_list_to_native
 
 if TYPE_CHECKING:
     import pathlib
@@ -855,11 +855,11 @@ class ItoolMenuBar(DictMenuBar):
     @QtCore.Slot()
     def _copy_cursor_val(self) -> None:
         copy_to_clipboard(
-            str(_convert_to_native(self.slicer_area.array_slicer._values))
+            str(_convert_list_to_native(self.slicer_area.array_slicer._values))
         )
 
     @QtCore.Slot()
     def _copy_cursor_idx(self) -> None:
         copy_to_clipboard(
-            str(_convert_to_native(self.slicer_area.array_slicer._indices))
+            str(_convert_list_to_native(self.slicer_area.array_slicer._indices))
         )

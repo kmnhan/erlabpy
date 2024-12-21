@@ -31,6 +31,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
+from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     import os
@@ -180,14 +181,26 @@ def format_kwargs(d: dict[str, Any]) -> str:
 
 
 def _parse_single_arg(arg):
+    arg = _convert_to_native(arg)
+
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
         # Otherwise, quote the string
-        arg = arg[1:-1] if arg.startswith("|") and arg.endswith("|") else f'"{arg}"'
+        if arg.startswith("|") and arg.endswith("|"):
+            arg = arg[1:-1]
+        elif '"' in arg:
+            arg = f"'{arg}'"
+        else:
+            arg = f'"{arg}"'
 
     elif isinstance(arg, dict):
-        # If the argument is a dict, convert to string with double quotes
-        arg = str(arg).replace("'", '"')
+        # If the argument is a dict, convert to string
+        arg = {k: _convert_to_native(v) for k, v in arg.items()}
+        arg = (
+            "{"
+            + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
+            + "}"
+        )
 
     return arg
 
@@ -257,7 +270,7 @@ def file_loaders(
 def generate_code(
     func: Callable,
     args: Collection[Any],
-    kwargs: Mapping[str, Any],
+    kwargs: dict[str, Any],
     module: str | None = None,
     name: str | None = None,
     assign: str | None = None,
@@ -315,6 +328,8 @@ def generate_code(
     if remove_defaults:
         kwargs = _remove_default_kwargs(func, dict(kwargs))
 
+    args, kwargs = _handle_xarray_dict_or_kwargs(func, args, kwargs)
+
     module = "" if module is None else f"{module.strip(' .')}."
 
     if name is None:
@@ -331,6 +346,48 @@ def generate_code(
     if copy:
         return copy_to_clipboard(code_str)
     return code_str
+
+
+def _handle_xarray_dict_or_kwargs(
+    func: Callable, args: Collection[Any], kwargs: dict[str, Any]
+):
+    """Handle compatibility with xarray methods that accept either kwargs or a dict.
+
+    Many xarray methods accept either keyword arguments or a dictionary as the first
+    positional argument.
+
+    Where no positional arguments are given for such functions and the keyword argument
+    dictionary contains at least one key that contains spaces, a conversion of kwargs to
+    the first positional argument is attempted.
+    """
+    if len(args) != 0 or all(k.isidentifier() for k in kwargs):
+        return args, kwargs
+
+    params = inspect.signature(func).parameters
+
+    param_order = list(params.keys())
+    if param_order[0] == "self":
+        param_order = param_order[1:]
+
+    # Name of first positional argument
+    arg_name = param_order[0]
+    kwarg_name = param_order[0] + "_kwargs"
+
+    if (
+        (kwarg_name not in params)
+        or (params[kwarg_name].kind != inspect.Parameter.VAR_KEYWORD)
+        or (params[arg_name].default is not None)
+        or (params[arg_name].kind != inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ):
+        return args, kwargs
+
+    pos_arg = {}
+    for k in list(kwargs.keys()):
+        if k not in param_order:
+            pos_arg[k] = f"|{_parse_single_arg(kwargs.pop(k))}|"
+            # pos_arg[k] = _parse_single_arg(kwargs.pop(k))
+
+    return [pos_arg], kwargs
 
 
 def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
