@@ -337,7 +337,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
             cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[i + 1])
 
-    def _transpose_axes(self, idx) -> None:
+    def _transpose_axes(self, idx: int) -> None:
         if self.data.ndim == 4:
             if idx == 3:
                 self.slicer_area.swap_axes(0, 2)

@@ -11,6 +11,7 @@ import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
+import erlab
 from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.utils import (
     AnalysisWindow,
@@ -81,11 +82,9 @@ class EdgeFitter(QtCore.QThread):
 
     @_coverage_resolve_trace
     def run(self) -> None:
-        from erlab.analysis.gold import edge
-
         self.sigIterated.emit(0)
         with joblib_progress_qt(self.sigIterated) as _:
-            self.edge_center, self.edge_stderr = edge(
+            self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
                 gold=self.data,
                 angle_range=self.x_range,
                 eV_range=self.y_range,
@@ -462,10 +461,8 @@ class GoldTool(AnalysisWindow):
         self.aw.hists[2].setVisible(params["Corrected"])
 
     def _perform_poly_fit(self):
-        from erlab.analysis.gold import correct_with_edge, poly_from_edge
-
         params = self.params_poly.values
-        self.result = poly_from_edge(
+        self.result = erlab.analysis.gold.poly_from_edge(
             center=self.edge_center,
             weights=1 / self.edge_stderr,
             degree=params["Degree"],
@@ -473,25 +470,23 @@ class GoldTool(AnalysisWindow):
             scale_covar=params["Scale cov"],
         )
         target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = correct_with_edge(
+        self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
         return lambda x: self.result.eval(self.result.params, x=x)
 
     def _perform_spline_fit(self):
-        from erlab.analysis.gold import correct_with_edge, spline_from_edge
-
         params = self.params_spl.values
         if params["Auto"]:
             params["lambda"] = None
-        self.result = spline_from_edge(
+        self.result = erlab.analysis.gold.spline_from_edge(
             center=self.edge_center,
             weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
         )
 
         target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = correct_with_edge(
+        self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
         return self.result
@@ -501,8 +496,6 @@ class GoldTool(AnalysisWindow):
         self.itool.show()
 
     def gen_code(self, mode: str) -> None:
-        from erlab.analysis.gold import correct_with_edge, poly, spline
-
         p0 = self.params_edge.values
         match mode:
             case "poly":
@@ -521,10 +514,10 @@ class GoldTool(AnalysisWindow):
 
         match mode:
             case "poly":
-                func: Callable = poly
+                func: Callable = erlab.analysis.gold.poly
                 arg_dict["degree"] = p1["Degree"]
             case "spl":
-                func = spline
+                func = erlab.analysis.gold.spline
                 if p1["Auto"]:
                     arg_dict["lam"] = None
                 else:
@@ -551,7 +544,7 @@ class GoldTool(AnalysisWindow):
         )
         if self.data_corr is not None:
             code_str += "\n" + generate_code(
-                correct_with_edge,
+                erlab.analysis.gold.correct_with_edge,
                 [f"|{self._argnames['data_corr']}|", "|modelresult|"],
                 {"shift_coords": p1["Shift coords"]},
                 module="era.gold",
