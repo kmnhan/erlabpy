@@ -13,7 +13,7 @@ from qtpy import QtCore
 
 from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
 from erlab.interactive.utils import format_kwargs
-from erlab.utils.misc import _convert_list_to_native
+from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -388,7 +388,7 @@ class ArraySlicer(QtCore.QObject):
             "dims": copy.deepcopy(self._obj.dims),
             "bins": copy.deepcopy(self._bins),
             "indices": copy.deepcopy(self._indices),
-            "values": _convert_list_to_native(self._values),
+            "values": _convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
         }
 

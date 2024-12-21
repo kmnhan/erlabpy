@@ -58,43 +58,44 @@ else:
 
 def _parse_dict_arg(
     dims: Sequence[Hashable],
-    sigma: float | Collection[float] | Mapping[Hashable, float],
+    arg_value: float | Collection[float] | Mapping[Hashable, float],
     arg_name: str,
     reference_name: str,
     allow_subset: bool = False,
 ) -> dict[Hashable, float]:
-    if isinstance(sigma, Mapping):
-        sigma_dict = dict(sigma)
+    """Parse the input argument to a dictionary with dimensions as keys."""
+    if isinstance(arg_value, Mapping):
+        arg_dict = dict(arg_value)
 
-    elif np.isscalar(sigma):
-        sigma_dict = dict.fromkeys(dims, sigma)
+    elif np.isscalar(arg_value):
+        arg_dict = dict.fromkeys(dims, arg_value)
 
-    elif isinstance(sigma, Collection):
-        if len(sigma) != len(dims):
+    elif isinstance(arg_value, Collection):
+        if len(arg_value) != len(dims):
             raise ValueError(
                 f"`{arg_name}` does not match dimensions of {reference_name}"
             )
 
-        sigma_dict = dict(zip(dims, sigma, strict=True))
+        arg_dict = dict(zip(dims, arg_value, strict=True))
 
     else:
         raise TypeError(f"`{arg_name}` must be a scalar, sequence, or mapping")
 
-    if not allow_subset and len(sigma_dict) != len(dims):
-        required_dims = set(dims) - set(sigma_dict.keys())
+    if not allow_subset and len(arg_dict) != len(dims):
+        required_dims = set(dims) - set(arg_dict.keys())
         raise ValueError(
             f"`{arg_name}` missing for the following dimension"
             f"{'' if len(required_dims) == 1 else 's'}: {required_dims}"
         )
 
-    for d in sigma_dict:
+    for d in arg_dict:
         if d not in dims:
             raise ValueError(
                 f"Dimension `{d}` in {arg_name} not found in {reference_name}"
             )
 
     # Make sure that sigma_dict is ordered in temrs of data dims
-    return {d: sigma_dict[d] for d in dims if d in sigma_dict}
+    return {d: arg_dict[d] for d in dims if d in arg_dict}
 
 
 def gaussian_filter(

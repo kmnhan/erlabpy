@@ -5,23 +5,26 @@ import pathlib
 import sys
 import warnings
 from types import ModuleType
-from typing import Any
+from typing import Any, overload
 
 import numpy as np
 
+_NestedGeneric = np.generic | list["_NestedGeneric"] | Any
 
-def _convert_to_native(obj: Any) -> Any:
+
+@overload
+def _convert_to_native(obj: np.generic) -> Any: ...
+@overload
+def _convert_to_native(obj: list[_NestedGeneric]) -> list[Any]: ...
+@overload
+def _convert_to_native(obj: Any) -> Any: ...
+def _convert_to_native(obj: _NestedGeneric) -> Any:
     """Convert numpy objects to native types."""
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, list):
         return [_convert_to_native(item) for item in obj]
     return obj
-
-
-def _convert_list_to_native(obj: list[Any]) -> list[Any]:
-    """Convert a nested list of numpy objects to native types."""
-    return _convert_to_native(obj)
 
 
 def _find_stack_level() -> int:
