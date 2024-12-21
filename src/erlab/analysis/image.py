@@ -14,6 +14,7 @@ Notes
 """
 
 __all__ = [
+    "boxcar_filter",
     "curvature",
     "curvature1d",
     "gaussian_filter",
@@ -220,6 +221,77 @@ def gaussian_filter(
             radius=radius_pix,
             axes=axes,
         )
+    )
+
+
+@cfunc(
+    types.intc(
+        types.CPointer(types.float64),
+        types.intp,
+        types.CPointer(types.float64),
+        types.voidptr,
+    )
+)
+def _boxcar_kernel_nb(values_ptr, len_values, result, data) -> int:
+    values = carray(values_ptr, (len_values,), dtype=types.float64)
+    result[0] = np.mean(values)
+    return 1
+
+
+# https://github.com/jni/llc-tools/issues/3#issuecomment-757134814
+_boxcar_func = scipy.LowLevelCallable(
+    _boxcar_kernel_nb.ctypes, signature="int (double *, npy_intp, double *, void *)"
+)
+
+
+def boxcar_filter(
+    darr: xr.DataArray,
+    size: int | Collection[int] | Mapping[Hashable, int],
+    mode: str = "nearest",
+    cval: float = 0.0,
+) -> xr.DataArray:
+    """Coordinate-aware wrapper around `scipy.ndimage.gaussian_filter`.
+
+    Parameters
+    ----------
+    darr : DataArray
+        The input DataArray.
+    size : int or Sequence of ints or dict
+        The size of the boxcar filter in pixels.
+    mode : str
+        The boundary mode used for the filter. Defaults to 'nearest'.
+    cval
+        Value to fill past edges of input if mode is 'constant'. Defaults to 0.0.
+
+    Returns
+    -------
+    boxcar_filter : xarray.DataArray
+        The filtered array with the same shape as the input DataArray.
+
+    """
+    size_dict: dict[Hashable, float] = _parse_dict_arg(
+        darr.dims,
+        size,
+        arg_name="size",
+        reference_name="DataArray",
+        allow_subset=True,
+    )
+
+    size_pix: list[int] = []
+    for d in darr.dims:
+        if d in size_dict:
+            size_pix.append(int(size_dict[d]))
+        else:
+            size_pix.append(1)
+
+    return darr.copy(
+        data=scipy.ndimage.generic_filter(
+            darr.values.astype(np.float64),
+            _boxcar_func,
+            size=tuple(size_pix),
+            mode=mode,
+            cval=cval,
+        ).astype(darr.dtype)
     )
 
 

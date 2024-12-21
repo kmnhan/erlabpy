@@ -27,7 +27,7 @@ def test_gaussian_filter() -> None:
     result = era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
 
     # Check if the result matches the expected output
-    assert np.allclose(result, expected_output)
+    xr.testing.assert_identical(result, expected_output)
 
 
 def test_gaussian_laplace() -> None:
@@ -73,7 +73,31 @@ def test_gaussian_laplace() -> None:
     result2 = era.image.gaussian_laplace(darr, sigma=2.0)
 
     # Check if the result matches the expected output
-    assert np.allclose(result2, expected_output2)
+    xr.testing.assert_identical(result2, expected_output2)
+
+
+def test_boxcar_filter() -> None:
+    # Create a test input DataArray
+    darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
+
+    # Define the expected output
+    expected_output = xr.DataArray(
+        np.array(
+            [
+                [4, 5, 7, 9, 10],
+                [10, 12, 14, 16, 17],
+                [20, 22, 24, 26, 27],
+                [30, 32, 34, 36, 37],
+                [37, 38, 40, 42, 44],
+            ]
+        ),
+        dims=["x", "y"],
+    )
+
+    # Apply the gaussian_filter function
+    result = era.image.boxcar_filter(darr, size={"x": 3, "y": 3})
+
+    xr.testing.assert_identical(result, expected_output)
 
 
 def test_laplace() -> None:
@@ -98,7 +122,7 @@ def test_laplace() -> None:
     result = era.image.laplace(darr)
 
     # Check if the result matches the expected output
-    assert np.allclose(result, expected_output)
+    xr.testing.assert_identical(result, expected_output)
 
 
 def test_minimum_gradient() -> None:
@@ -114,7 +138,8 @@ def test_minimum_gradient() -> None:
                 [0.02062807, 0.02247164, 0.02451452, 0.02655739, 0.0288793],
                 [0.03094211, 0.03268602, 0.0347289, 0.03677177, 0.03919334],
                 [0.06077708, 0.05953621, 0.06237127, 0.06520633, 0.06622662],
-            ]
+            ],
+            dtype=np.float32,
         ),
         dims=["x", "y"],
     )
@@ -123,7 +148,7 @@ def test_minimum_gradient() -> None:
     result = era.image.minimum_gradient(darr).astype(np.float32)
 
     # Check if the result matches the expected output
-    assert np.allclose(result, expected_output)
+    xr.testing.assert_allclose(result, expected_output)
 
     # Test decorators that check for input validity
     darr = xr.DataArray(np.arange(5), dims=["x"])
@@ -167,7 +192,7 @@ def test_scaled_laplace() -> None:
     result = era.image.scaled_laplace(darr)
 
     # Check if the result matches the expected output
-    assert np.allclose(result, expected_output)
+    xr.testing.assert_identical(result, expected_output)
 
 
 def test_curvature() -> None:
@@ -192,7 +217,7 @@ def test_curvature() -> None:
     result = era.image.curvature(darr).astype(np.float32)
 
     # Check if the result matches the expected output
-    assert np.allclose(result, expected_output)
+    xr.testing.assert_allclose(result, expected_output)
 
 
 def test_curvature1d() -> None:
@@ -224,7 +249,7 @@ def test_curvature1d() -> None:
     )
 
     result_x = era.image.curvature1d(darr, "x").astype(np.float32)
-    assert np.allclose(result_x, expected_x)
+    xr.testing.assert_allclose(result_x, expected_x)
 
     result_y = era.image.curvature1d(darr, "y").astype(np.float32)
-    assert np.allclose(result_y, expected_y)
+    xr.testing.assert_allclose(result_y, expected_y)
