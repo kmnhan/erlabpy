@@ -85,6 +85,10 @@ Tips
     :class:`PowerNorm <matplotlib.colors.PowerNorm>` and  :class:`InversePowerNorm
     <erlab.plotting.colors.InversePowerNorm>`.
 
+  - You can choose different colormaps from the colormap dropdown menu. Only a subset of
+    colormaps is loaded by default. To load all available colormaps, right-click on the
+    colormap dropdown menu and select "Load All Colormaps".
+
 - Binning controls
 
   - :material-regular:`settings_backup_restore`: reset all bin widths to 1.

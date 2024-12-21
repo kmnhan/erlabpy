@@ -1059,27 +1059,31 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__()
         self.setSelectionMode(self.SelectionMode.ExtendedSelection)
+
+        # Enable drag & drop for reordering items
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(self.DragDropMode.InternalMove)
+
         self.setEditTriggers(
             self.EditTrigger.SelectedClicked | self.EditTrigger.EditKeyPressed
-        )
-        self.setWordWrap(True)
+        )  # Enable editing of item names
+
+        self.setWordWrap(True)  # Ellide text when width is too small
+        self.setMouseTracking(True)  # Enable hover detection
 
         self._model = _ImageToolWrapperListModel(manager, self)
         self.setModel(self._model)
-
         self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
-
         self._selection_model = cast(QtCore.QItemSelectionModel, self.selectionModel())
 
-        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_menu)
-
+        # Show tool on double-click
         self.doubleClicked.connect(self._model.manager.show_selected)
 
+        # Right-click context menu
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction(manager.concat_action)
         self._menu.addSeparator()
@@ -1100,7 +1104,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
     @property
     def selected_tool_indices(self) -> list[int]:
-        """Currently selected tools."""
+        """Currently selected tools.
+
+        The tools are ordered by their position in the list view.
+        """
         return [
             self._model.manager._displayed_indices[index.row()]
             for index in self.selectedIndexes()
@@ -1117,6 +1124,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
     @QtCore.Slot()
     @QtCore.Slot(int)
     def refresh(self, idx: int | None = None) -> None:
+        """Trigger a refresh of the contents."""
         if idx is None:
             self._model.dataChanged.emit(
                 self._model.index(0), self._model.index(self._model.rowCount() - 1)
@@ -1128,6 +1136,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
                 )
 
     def tool_added(self, index: int) -> None:
+        """Update the list view when a new tool is added to the manager.
+
+        This must be called after a tool is added to the manager.
+        """
         n_rows = self._model.rowCount()
         self._model.insertRows(n_rows, 1)
         self._model.setData(
@@ -1137,6 +1149,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         )
 
     def tool_removed(self, index: int) -> None:
+        """Update the list view when removing a tool from the manager.
+
+        This must be called before the tool is removed from the manager.
+        """
         for i, tool_idx in enumerate(self._model.manager._displayed_indices):
             if tool_idx == index:
                 self._model.removeRows(i, 1)
