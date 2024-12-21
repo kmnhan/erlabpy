@@ -1808,7 +1808,10 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def current_data(self) -> xr.DataArray:
-        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        if self.is_image:
+            return data.transpose(*self.axis_dims)
+        return data
 
     @property
     def selection_code(self) -> str:
