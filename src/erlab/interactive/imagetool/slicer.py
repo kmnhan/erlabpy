@@ -872,16 +872,19 @@ class ArraySlicer(QtCore.QObject):
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
         isel_kw = self.isel_args(cursor, disp, int_if_one=False, uniform=True)
-        binned_coord_average: dict[str, xr.DataArray] = {
-            str(k): self._obj[k][isel_kw[str(k)]].mean()
+        binned_dims: list[Hashable] = [
+            k
             for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
-            if v
+            if (v and (k in isel_kw))
+        ]  # Select only relevant binned dimensions
+        binned_coords_averaged: dict[str, xr.DataArray] = {
+            str(k): self._obj[k][isel_kw[str(k)]].mean() for k in binned_dims
         }
         sliced = (
             self._obj.isel(isel_kw)
-            .squeeze()
-            .mean(binned_coord_average.keys())
-            .assign_coords(binned_coord_average)
+            .mean(binned_dims)
+            .assign_coords(binned_coords_averaged)
+            .squeeze()  # is squeeze needed here?
         )
         if self._nonuniform_axes:
             return restore_nonuniform_dims(sliced)
