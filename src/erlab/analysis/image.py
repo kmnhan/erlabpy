@@ -261,7 +261,7 @@ def boxcar_filter(
     mode: str = "nearest",
     cval: float = 0.0,
 ) -> xr.DataArray:
-    """Coordinate-aware wrapper around `scipy.ndimage.gaussian_filter`.
+    """Coordinate-aware boxcar filter.
 
     Parameters
     ----------
@@ -960,7 +960,7 @@ def curvature1d(
     Returns
     -------
     curvature : xarray.DataArray
-        The 2D curvature of the input DataArray. Has the same shape as :code:`input`.
+        The 1D curvature of the input DataArray. Has the same shape as :code:`input`.
 
     Raises
     ------
