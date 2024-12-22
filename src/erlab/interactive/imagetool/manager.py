@@ -1353,9 +1353,6 @@ class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
             # Shutdown kernel when application quits
             qapp.aboutToQuit.connect(self._console_widget.shutdown_kernel)
 
-            # Trigger color update
-            qapp.sendEvent(self, QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
-
         self.setWidget(self._console_widget)
         manager.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self)
         self.setFloating(False)
@@ -1374,6 +1371,7 @@ class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
             and event.type() == QtCore.QEvent.Type.Show
         ):
             self._console_widget.initialize_kernel()
+            self._console_widget._update_colors()
         return super().eventFilter(obj, event)
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
@@ -2103,6 +2101,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.console.show()
             self.console.activateWindow()
             self.console.raise_()
+            self.console._console_widget._control.setFocus()
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
         """Handle drag-and-drop operations entering the window."""
