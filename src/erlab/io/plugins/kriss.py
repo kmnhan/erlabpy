@@ -7,6 +7,7 @@ from erlab.io.plugins.da30 import DA30Loader
 
 class KRISSLoader(DA30Loader):
     name = "kriss"
+    description = "KRISS ARPES-MBE"
     aliases = ("KRISS",)
     coordinate_attrs = ("beta", "chi", "xi", "hv", "x", "y", "z")
     additional_attrs: ClassVar[dict] = {"configuration": 4}

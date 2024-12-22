@@ -34,6 +34,8 @@ def _get_start_time(data: xr.DataArray) -> datetime.datetime:
 
 class ERPESLoader(DA30Loader):
     name = "erpes"
+    description = "KAIST homelab setup"
+
     name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],

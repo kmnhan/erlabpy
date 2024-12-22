@@ -73,6 +73,7 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
 
 class MAESTROMicroLoader(LoaderBase):
     name = "maestro"
+    description = "ALS Beamline 7.0.2.1 MAESTRO"
 
     aliases = ("ALS_BL7", "als_bl7", "BL702", "bl702")
 

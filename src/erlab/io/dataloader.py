@@ -140,6 +140,12 @@ class LoaderBase(metaclass=_Loader):
     - Loaders with the name prefixed with an underscore are not registered.
     """
 
+    description: str
+    """A short description of the loader shown to users.
+
+    .. versionadded:: 3.3.0
+    """
+
     aliases: Iterable[str] | None = None
     """Alternative names for the loader.
 
