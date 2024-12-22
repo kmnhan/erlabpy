@@ -264,7 +264,7 @@ def test_loader(qtbot) -> None:
         erlab.io.loaders.set_data_dir("some_nonexistent_dir")
 
     # Test if the reprs are working
-    assert repr(erlab.io.loaders).startswith("Registered data loaders")
+    assert repr(erlab.io.loaders).startswith("Name")
     assert erlab.io.loaders._repr_html_().startswith("<div><style>")
 
     # Set loader

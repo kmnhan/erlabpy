@@ -2088,32 +2088,58 @@ class LoaderRegistry(_RegistryBase):
         return self.current_loader, self.current_data_dir
 
     def __repr__(self) -> str:
-        out = "Registered data loaders\n=======================\n\n"
-        out += "Loaders\n-------\n" + "\n".join(
-            [f"{k}: {v}" for k, v in self._loaders.items()]
+        # Store string variables used when calculating the max len
+        descriptions = [
+            v.description if hasattr(v, "description") else "No description"
+            for v in self._loaders.values()
+        ]
+        class_names = [
+            f"{type(v).__module__}.{type(v).__qualname__}"
+            if isinstance(v, LoaderBase)
+            else f"{v.__module__}.{v.__qualname__}"
+            for v in self._loaders.values()
+        ]
+
+        # Calculate the maximum width for each column
+        max_name_len = max(len(k) for k in self._loaders)
+        max_desc_len = max(len(desc) for desc in descriptions)
+        max_cls_len = max(len(cls_name) for cls_name in class_names)
+
+        # Create the header row with dynamic padding
+        header = (
+            f"{'Name':<{max_name_len}} | "
+            f"{'Description':<{max_desc_len}} | "
+            f"{'Loader class':<{max_cls_len}}"
         )
-        out += "\n\n"
-        out += "Aliases\n-------\n" + "\n".join(
-            [
-                f"{k}: {tuple(v.aliases)}"
-                for k, v in self._loaders.items()
-                if v.aliases is not None
-            ]
-        )
-        return out
+
+        # Create the separator row
+        separator = "-" * (max_name_len + max_desc_len + max_cls_len + 6)
+
+        # Create the rows with dynamic padding
+        rows = [header, separator]
+        for k, desc, cls_name in zip(
+            self._loaders.keys(), descriptions, class_names, strict=True
+        ):
+            rows.append(
+                f"{k:<{max_name_len}} | "
+                f"{desc:<{max_desc_len}} | "
+                f"{cls_name:<{max_cls_len}}"
+            )
+
+        return "\n".join(rows)
 
     def _repr_html_(self) -> str:
-        rows: list[tuple[str, str, str]] = [("Name", "Aliases", "Loader class")]
+        rows: list[tuple[str, str, str]] = [("Name", "Description", "Loader class")]
 
         for k, v in self._loaders.items():
-            aliases = ", ".join(v.aliases) if v.aliases is not None else ""
+            desc: str = v.description if hasattr(v, "description") else ""
 
             # May be either a class or an instance
             if isinstance(v, LoaderBase):
                 v = type(v)
 
             cls_name = f"{v.__module__}.{v.__qualname__}"
-            rows.append((k, aliases, cls_name))
+            rows.append((k, desc, cls_name))
 
         return format_html_table(rows, header_rows=1)
 
