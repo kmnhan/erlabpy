@@ -33,8 +33,10 @@ def _parse_value(value):
 
 
 class SSRL52Loader(LoaderBase):
-    name = "ssrl"
-    aliases = ("ssrl52", "bl5-2")
+    name = "ssrl52"
+    description = "SSRL Beamline 5-2"
+
+    aliases = ("ssrl", "bl5-2")
 
     name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy", "Binding Energy"],
