@@ -115,8 +115,6 @@ def test_loader(qtbot) -> None:
     class ExampleLoader(LoaderBase):
         name = "example"
 
-        aliases = ("Ex",)
-
         name_map: ClassVar[dict] = {
             "eV": "BindingEnergy",
             "alpha": "ThetaX",

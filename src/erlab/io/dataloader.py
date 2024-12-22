@@ -141,7 +141,14 @@ class LoaderBase(metaclass=_Loader):
     """
 
     aliases: Iterable[str] | None = None
-    """Alternative names for the loader."""
+    """Alternative names for the loader.
+
+    .. deprecated:: 3.3.0
+
+       Accessing loaders with aliases is deprecated and will be removed in a future
+       version. Use the loader name instead.
+
+    """
 
     name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
     """
@@ -1845,6 +1852,13 @@ class LoaderRegistry(_RegistryBase):
         # Add aliases to mapping
         self._alias_mapping[loader_class.name] = loader_class.name
         if loader_class.aliases is not None:
+            if not loader_class.__module__.startswith("erlab.io.plugins"):
+                warnings.warn(
+                    "Loader aliases are deprecated. Users are encouraged to use the "
+                    "name of the loader instead.",
+                    FutureWarning,
+                    stacklevel=1,
+                )
             for alias in loader_class.aliases:
                 self._alias_mapping[alias] = loader_class.name
 
@@ -1861,6 +1875,12 @@ class LoaderRegistry(_RegistryBase):
             raise LoaderNotFoundError(key)
 
         loader = self._loaders.get(loader_name)
+        if key != loader_name:
+            emit_user_level_warning(
+                "Loader aliases are deprecated. Access the loader with the loader name "
+                f"'{loader_name}' instead.",
+                FutureWarning,
+            )
 
         if loader is None:
             raise LoaderNotFoundError(key)
