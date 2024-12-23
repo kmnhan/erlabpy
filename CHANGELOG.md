@@ -2,6 +2,10 @@
 
 ### ✨ Features
 
+- **io:** improve loader registry repr with descriptions and dynamic formatting ([3f43405](https://github.com/kmnhan/erlabpy/commit/3f434050030b903750330ec5d927173a583e035f))
+
+- **io:** add descriptions to loaders for better user guidance ([7087c04](https://github.com/kmnhan/erlabpy/commit/7087c04bfebafb6bf645948e2953dc254dbfb767))
+
 - **dtool:** add boxcar filter and 1D curvature, along with internal improvements ([0bd2b17](https://github.com/kmnhan/erlabpy/commit/0bd2b17af300bea63420b3c6cd92ba4da20f472d))
 
 - **analysis.image:** add `diffn` function for nth derivative calculation ([a70812f](https://github.com/kmnhan/erlabpy/commit/a70812f87e8ce766bea60cb1b82a42b855963f1a))
@@ -24,6 +28,8 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool.manager:** fix dark mode handling and focus management in console ([ed81f70](https://github.com/kmnhan/erlabpy/commit/ed81f70a5a309756b4f333e7aa8c9b9b52e6fb25))
+
 - **imagetool.manager:** bind associated tools to the manager ([a38cf7f](https://github.com/kmnhan/erlabpy/commit/a38cf7f582bb775e1a070c21c897b4fd1cd258ee))
 
   With this change, closing an ImageTool window no longer affects tools such as ktool and dtool opened in that ImageTool.
@@ -37,6 +43,8 @@
 - **io.plugins.da30:** update `DA30Loader` to handle multiple regions in one `.pxt` file ([1ff8b93](https://github.com/kmnhan/erlabpy/commit/1ff8b93590d78db041409a1e914fdf9c7d5d799b))
 
 ### ♻️ Code Refactor
+
+- **io:** deprecate choosing loaders with their aliases, closes [#76](https://github.com/kmnhan/erlabpy/issues/76) ([464ee45](https://github.com/kmnhan/erlabpy/commit/464ee455d0e843e93827b0a8cc28f2e94bbbd23b))
 
 - **interactive.utils:** improve code generation ([2b24e08](https://github.com/kmnhan/erlabpy/commit/2b24e086c56108ae1220dfb3a4c8af7a253dc221))
 

@@ -18,6 +18,7 @@ def _get_data(group):
 
 class LOREALoader(LoaderBase):
     name = "lorea"
+    description = "ALBA Beamline 20 LOREA"
 
     aliases = ("alba_bl20",)
 
