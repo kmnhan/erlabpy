@@ -193,6 +193,27 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     manager.get_tool(3).slicer_area.images[2].open_in_goldtool()
     assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
 
+    # Bring manager to top
+
+    with qtbot.waitExposed(manager):
+        manager.preview_action.setChecked(True)
+        manager.activateWindow()
+        manager.raise_()
+
+    # Test mouse hover over list view
+    first_index = manager.list_view.model().index(0)
+    first_rect_center = manager.list_view.visualRect(first_index).center()
+    qtbot.mouseMove(manager.list_view.viewport())
+    qtbot.mouseMove(manager.list_view.viewport(), first_rect_center)
+    qtbot.mouseMove(
+        manager.list_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
+    )
+    qtbot.wait(10)
+    assert delegate.preview_popup.isVisible()
+    qtbot.mouseMove(manager.list_view.viewport())  # move to blank should hide popup
+    qtbot.wait(10)
+    assert not delegate.preview_popup.isVisible()
+
     # Remove all selected
     select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
