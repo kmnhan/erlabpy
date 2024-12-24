@@ -1187,10 +1187,8 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
         The tools are ordered by their position in the list view.
         """
-        return [
-            self._model.manager._displayed_indices[index.row()]
-            for index in self.selectedIndexes()
-        ]
+        row_indices = sorted(index.row() for index in self.selectedIndexes())
+        return [self._model.manager._displayed_indices[i] for i in row_indices]
 
     @QtCore.Slot()
     def select_all(self) -> None:
