@@ -6,12 +6,10 @@ import copy
 import functools
 from typing import TYPE_CHECKING, TypedDict
 
-import numba
 import numpy as np
 import numpy.typing as npt
 from qtpy import QtCore
 
-from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
 from erlab.interactive.utils import format_kwargs
 from erlab.utils.misc import _convert_to_native
 
@@ -29,101 +27,6 @@ class ArraySlicerState(TypedDict):
     indices: list[list[int]]
     values: list[list[float]]
     snap_to_data: bool
-
-
-VALID_NDIM = (2, 3, 4)
-
-_signature_array_rect = [
-    numba.types.UniTuple(ftype, 4)(
-        numba.int64,
-        numba.int64,
-        numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
-        numba.types.UniTuple(ftype, i),
-    )
-    for ftype in (numba.float32, numba.float64)
-    for i in VALID_NDIM
-]
-_signature_index_of_value = [
-    numba.int64(
-        numba.int64,
-        ftype,
-        numba.types.UniTuple(numba.types.UniTuple(ftype, 2), i),
-        numba.types.UniTuple(ftype, i),
-        numba.types.UniTuple(numba.int64, i),
-    )
-    for ftype in (numba.float32, numba.float64)
-    for i in VALID_NDIM
-]
-
-
-@numba.njit(_signature_array_rect, cache=True, fastmath=True)
-def _array_rect(
-    i: int,
-    j: int,
-    lims: tuple[tuple[np.floating, np.floating], ...],
-    incs: tuple[np.floating, ...],
-) -> tuple[np.floating, np.floating, np.floating, np.floating]:
-    x = lims[i][0] - incs[i]
-    y = lims[j][0] - incs[j]
-    w = lims[i][-1] - x
-    h = lims[j][-1] - y
-    x += 0.5 * incs[i]
-    y += 0.5 * incs[j]
-    return x, y, w, h
-
-
-@numba.njit(_signature_index_of_value, cache=True)
-def _index_of_value(
-    axis: int,
-    val: np.floating,
-    lims: tuple[tuple[np.floating, np.floating], ...],
-    incs: tuple[np.floating, ...],
-    shape: tuple[int],
-) -> int:
-    ind = min(
-        round((val - lims[axis][0]) / incs[axis]),
-        shape[axis] - 1,
-    )
-    if ind < 0:
-        return 0
-    return ind
-
-
-@numba.njit(cache=True)
-def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-    if arr.ndim == 2:
-        return arr.T
-    if arr.ndim == 3:
-        return arr.transpose(1, 2, 0)
-    return arr.transpose(1, 2, 3, 0)
-
-
-@numba.njit(numba.boolean(numba.float64[::1]), cache=True)
-def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
-    dif = np.diff(arr)
-    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
-
-
-@numba.njit(
-    [
-        numba.int64(numba.float32[::1], numba.float32),
-        numba.int64(numba.float64[::1], numba.float64),
-    ],
-    cache=True,
-)
-def _index_of_value_nonuniform(
-    arr: npt.NDArray[np.floating], val: np.floating
-) -> np.int_:
-    return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
-
-
-@numba.njit(
-    [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])],
-    cache=True,
-)
-def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> np.floating:
-    diff = np.diff(arr)
-    return np.mean(diff[diff != 0])
 
 
 def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
@@ -145,6 +48,8 @@ def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
     DataArray
         A new DataArray with all dimensions made uniform.
     """
+    from erlab.interactive.imagetool._fastslicing import _is_uniform
+
     nonuniform_dims: list[str] = [
         str(d) for d in darr.dims if not _is_uniform(darr[d].values.astype(np.float64))
     ]
@@ -310,6 +215,8 @@ class ArraySlicer(QtCore.QObject):
         will return the absolute average of all non-zero step sizes.
         """
         if self._nonuniform_axes:
+            from erlab.interactive.imagetool._fastslicing import _avg_nonzero_abs_diff
+
             return tuple(
                 (
                     _avg_nonzero_abs_diff(coord)
@@ -356,6 +263,8 @@ class ArraySlicer(QtCore.QObject):
 
         This property is used for fast slicing and binning operations.
         """
+        from erlab.interactive.imagetool._fastslicing import _transposed
+
         return _transposed(self._obj.values)
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
@@ -755,6 +664,8 @@ class ArraySlicer(QtCore.QObject):
             i = 0
         if j is None:
             return self.coords_uniform[i]
+        from erlab.interactive.imagetool._fastslicing import _array_rect
+
         return _array_rect(i, j, self.lims_uniform, self.incs_uniform)
 
     def value_of_index(
@@ -795,9 +706,14 @@ class ArraySlicer(QtCore.QObject):
 
         """
         if uniform or (axis not in self._nonuniform_axes):
+            from erlab.interactive.imagetool._fastslicing import _index_of_value
+
             return _index_of_value(
                 axis, value, self.lims_uniform, self.incs_uniform, self._obj.shape
             )
+
+        from erlab.interactive.imagetool._fastslicing import _index_of_value_nonuniform
+
         return _index_of_value_nonuniform(self.coords[axis], value)
 
     def isel_args(
@@ -937,6 +853,8 @@ class ArraySlicer(QtCore.QObject):
             return self.data_vals_T[
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
             ].squeeze(axis=axis_val)
+        from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
+
         return fast_nanmean_skipcheck(
             self.data_vals_T[
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
@@ -959,5 +877,7 @@ class ArraySlicer(QtCore.QObject):
             )
         ]
         if any(self.get_binned(cursor)):
+            from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
+
             return fast_nanmean_skipcheck(selected, axis=axis)
         return selected
