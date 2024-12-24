@@ -368,7 +368,7 @@ class _RenameDialog(QtWidgets.QDialog):
         )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        self._layout.addWidget(button_box)
+        self._layout.addWidget(button_box, len(original_names), 0, 1, 3)
 
     def new_names(self) -> list[str]:
         return [w.text() for w in self._new_name_lines]
@@ -380,6 +380,57 @@ class _RenameDialog(QtWidgets.QDialog):
                 manager.list_view.selected_tool_indices, self.new_names(), strict=True
             ):
                 manager.rename_tool(index, new_name)
+        super().accept()
+
+
+class _StoreDialog(QtWidgets.QDialog):
+    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
+        super().__init__(manager)
+        self.setWindowTitle("Store with IPython")
+        self._manager = weakref.ref(manager)
+        self._target_indices: list[int] = target_indices
+
+        self._layout = QtWidgets.QFormLayout()
+        self.setLayout(self._layout)
+
+        self._var_name_lines: list[QtWidgets.QLineEdit] = []
+
+        self._layout.addRow("Data to store", QtWidgets.QLabel("Stored name"))
+
+        for tool_idx in target_indices:
+            data = manager.get_tool(tool_idx).slicer_area._data
+            wrapper = manager._tool_wrappers[tool_idx]
+            default_name = data.name
+            if not (isinstance(default_name, str) and default_name.isidentifier()):
+                if wrapper.name.isidentifier():
+                    default_name = wrapper.name
+                else:
+                    default_name = f"data_{tool_idx}"
+
+            line_new = QtWidgets.QLineEdit(default_name)
+            line_new.setPlaceholderText("Enter variable name")
+            self._layout.addRow(wrapper.label_text, line_new)
+            self._var_name_lines.append(line_new)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        self._layout.addRow(button_box)
+
+    def var_name_map(self) -> dict[int, str]:
+        return {
+            idx: w.text()
+            for idx, w in zip(self._target_indices, self._var_name_lines, strict=True)
+        }
+
+    def accept(self) -> None:
+        manager = self._manager()
+        if manager is not None:
+            for idx, var_name in self.var_name_map().items():
+                manager.console._console_widget.store_data_as(idx, var_name)
         super().accept()
 
 
@@ -1181,6 +1232,8 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)
         self._menu.addAction(manager.unlink_action)
+        self._menu.addSeparator()
+        self._menu.addAction(manager.store_action)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
@@ -1393,7 +1446,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             self.kernel_client = self.kernel_manager.client()
             self.kernel_client.start_channels()
 
-            self._execute(r"%load_ext storemagic", hidden=True)
+            self.execute(r"%load_ext storemagic", hidden=True)
 
             if self._namespace is not None:
                 self.kernel_manager.kernel.shell.push(
@@ -1404,6 +1457,16 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                         for name, module in self._namespace.items()
                     }
                 )
+
+    def store_data_as(self, tool_index: int, name: str) -> None:
+        """Store the data in an ImageTool with IPython to reuse in other scripts."""
+        self.initialize_kernel()
+        store_commands = (
+            f"{name} = tools[{tool_index}].data",
+            f"get_ipython().run_line_magic('store', '{name}')",
+            f"del {name}",
+        )
+        self.execute("\n".join(store_commands), hidden=True)
 
     @QtCore.Slot()
     def shutdown_kernel(self) -> None:
@@ -1460,6 +1523,7 @@ elif getattr(VerboseTB, '_tb_highlight_style', None) is not None:
     VerboseTB._tb_highlight_style = '{self.syntax_style}'
 else:
     get_ipython().run_line_magic('colors', '{colors}')
+del VerboseTB
 """,
                 True,
             )  # Adapted from qtconsole.mainwindow.MainWindow.set_syntax_style
@@ -1642,6 +1706,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.triggered.connect(self.about)
 
+        self.store_action = QtWidgets.QAction("Store with IPython", self)
+        self.store_action.triggered.connect(self.store_selected)
+        self.store_action.setToolTip("Store selected data with IPython")
+
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
@@ -1652,6 +1720,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.store_action)
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
         file_menu.addSeparator()
@@ -1926,6 +1996,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.archive_action.setEnabled(something_selected and only_unarchived)
         self.unarchive_action.setEnabled(something_selected and only_archived)
         self.concat_action.setEnabled(multiple_selected)
+        self.store_action.setEnabled(something_selected and only_unarchived)
 
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
@@ -1997,16 +2068,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def remove_selected(self) -> None:
-        """Close selected ImageTool windows."""
+        """Discard selected ImageTool windows."""
         checked_names = self.list_view.selected_tool_indices
 
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setText("Close selected windows?")
+        msg_box.setText("Remove selected windows?")
         msg_box.setInformativeText(
-            "1 selected window will be closed."
+            "1 selected window will be removed."
             if len(checked_names) == 1
-            else f"{len(checked_names)} selected windows will be closed."
+            else f"{len(checked_names)} selected windows will be removed."
         )
         msg_box.setStandardButtons(
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -2093,6 +2164,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
+
+    @QtCore.Slot()
+    def store_selected(self) -> None:
+        dialog = _StoreDialog(self, self.list_view.selected_tool_indices)
+        dialog.exec()
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""

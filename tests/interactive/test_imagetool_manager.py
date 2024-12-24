@@ -469,6 +469,10 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         wrapper.tool.slicer_area._data for wrapper in manager._tool_wrappers.values()
     ]
 
+    # Test storing with ipython
+    accept_dialog(manager.store_action.trigger)
+    manager.console._console_widget.execute(r"%store -d data_0 data_1")
+
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")
     qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)
