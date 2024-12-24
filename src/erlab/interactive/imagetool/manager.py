@@ -473,6 +473,11 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
+        """Get the preview image and box aspect ratio.
+
+        Retrieves the main image pixmap and flips it to match the image displayed in the
+        tool. The box ratio is calculated from the view box size of the main image.
+        """
         if self.tool is not None:
             main_image = self.slicer_area.main_image
             vb_rect = main_image.getViewBox().rect()
@@ -1237,7 +1242,22 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
 
 class ToolNamespace:
-    """A console interface that represents a single ImageTool object."""
+    """A console interface that represents a single ImageTool object.
+
+    In the manager console, this namespace can be accessed with the variable
+    ``tools[idx]``, where ``idx`` is the index of the ImageTool to access.
+
+    Examples
+    --------
+    - Access the underlying DataArray of an ImageTool:
+
+      >>> tools[1].data
+
+    - Setting a new DataArray:
+
+      >>> tools[1].data = new_data
+
+    """
 
     def __init__(self, wrapper: _ImageToolWrapper) -> None:
         self._wrapper_ref = weakref.ref(wrapper)
@@ -1283,7 +1303,21 @@ class ToolNamespace:
 
 
 class ToolsNamespace:
-    """A console interface that represents the ImageToolManager and its tools."""
+    """A console interface that represents the ImageToolManager and its tools.
+
+    In the manager console, this namespace can be accessed with the variable `tools`.
+
+    Examples
+    --------
+    - Print the list of tools:
+
+      >>> tools
+
+    - Access :class:`ToolNamespace` by index:
+
+      >>> tools[1]
+
+    """
 
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager_ref = weakref.ref(manager)
@@ -1322,6 +1356,31 @@ class ToolsNamespace:
 
 
 class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
+    """A Jupyter console widget for ImageToolManager.
+
+    This widget is derived from qtconsole with some modifications such as:
+
+    - Support for dark mode
+
+    - Custom banner text
+
+    - Lazy kernel initialization, including lazily evaluated namespace injection
+
+    - Automated storing of data from ImageTools with the ``%store`` magic command
+
+
+    Parameters
+    ----------
+    parent
+        The parent widget for the console.
+    namespace
+        A dictionary of objects to inject into the console namespace. The keys are the
+        names of the objects in the console, and the values are the objects themselves.
+        If the value is a string, it is imported as a module upon kernel initialization,
+        improving startup time for the ImageToolManager application.
+
+    """
+
     def __init__(self, parent=None, namespace: dict[str, Any] | None = None) -> None:
         super().__init__(parent)
         self.kernel_manager = qtconsole.inprocess.QtInProcessKernelManager()
