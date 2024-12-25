@@ -68,6 +68,7 @@ notfound_context = {
 if os.getenv("READTHEDOCS"):
     extensions.append("sphinxcontrib.googleanalytics")
     googleanalytics_id = "G-DDZYWTBV4S"
+    html_baseurl = os.getenv("READTHEDOCS_CANONICAL_URL")
 
 # templates_path = ["_templates"]
 # exclude_patterns = []

@@ -6,14 +6,14 @@ The ImageTool window
 
 .. image:: ../images/imagetool_light.png
     :align: center
-    :alt: Imagetool
+    :alt: ImageTool window in light mode
     :class: only-light
 
 .. only:: format_html
 
     .. image:: ../images/imagetool_dark.png
         :align: center
-        :alt: Imagetool
+        :alt: ImageTool window in dark mode
         :class: only-dark
 
 Inspired by *Image Tool* for Igor Pro written by the Advanced Light Source at Lawrence
