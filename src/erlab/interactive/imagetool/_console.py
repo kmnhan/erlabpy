@@ -1,3 +1,5 @@
+"""Jupyter console widget for ImageToolManager."""
+
 import importlib
 from typing import Any
 
@@ -135,6 +137,8 @@ del VerboseTB
 
 
 class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
+    """A dock widget containing the Jupyter console."""
+
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
 

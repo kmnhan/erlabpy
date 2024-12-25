@@ -1,3 +1,5 @@
+"""Numba-compiled functions for fast slicing of 2D, 3D, and 4D arrays."""
+
 import numba
 import numpy as np
 import numpy.typing as npt

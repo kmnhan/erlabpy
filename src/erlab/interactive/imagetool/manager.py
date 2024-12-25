@@ -1630,9 +1630,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.text_box.setReadOnly(True)
         right_splitter.addWidget(self.text_box)
 
-        # self.preview_widget = QtWidgets.QLabel(self)
-        # self.preview_widget.setScaledContents(True)
-        # self.preview_widget.setVisible(False)
         self.preview_widget = _SingleImagePreview(self)
         right_splitter.addWidget(self.preview_widget)
 
@@ -2352,6 +2349,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
 
     def _error_creating_tool(self, e: Exception) -> None:
+        logger.exception("Error creating ImageTool window")
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msg_box.setText("An error occurred while creating the ImageTool window.")
