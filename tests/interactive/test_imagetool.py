@@ -127,7 +127,7 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     tmp_dir.cleanup()
 
 
-def test_itool(qtbot, move_and_compare_values) -> None:
+def test_itool_general(qtbot, move_and_compare_values) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
@@ -163,11 +163,12 @@ def test_itool(qtbot, move_and_compare_values) -> None:
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "ColdWarm", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
+        "RdYlBu", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
     win.slicer_area.lock_levels(True)
+    # qtbot.wait_until(lambda: win.slicer_area.levels_locked, timeout=1000)
     win.slicer_area.levels = (1.0, 23.0)
     assert win.slicer_area._colorbar.cb._copy_limits() == str((1.0, 23.0))
 
@@ -204,7 +205,7 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     win.slicer_area.add_cursor()
     expected_state = {
         "color": {
-            "cmap": "ColdWarm",
+            "cmap": "RdYlBu",
             "gamma": 1.5,
             "reverse": True,
             "high_contrast": True,

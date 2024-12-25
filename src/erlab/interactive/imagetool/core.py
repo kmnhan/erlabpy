@@ -477,6 +477,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
 
+        self.initialize_actions()
+
         self._in_manager: bool = _in_manager
 
         self._linking_proxy: SlicerLinkProxy | None = None
@@ -533,18 +535,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap_reversed: bool = False
         if isinstance(cmap, str):
             if cmap.endswith("_r"):
-                cmap = cmap[:-2]
+                cmap = cmap.removesuffix("_r")
                 cmap_reversed = True
             if cmap.startswith("cet_CET"):
-                cmap = cmap[4:]
-        self._colormap_properties: ColorMapState = {
-            "cmap": cmap,
-            "gamma": gamma,
-            "reverse": cmap_reversed,
-            "high_contrast": False,
-            "zero_centered": zero_centered,
-            "levels_locked": False,
-        }
+                cmap = cmap.removeprefix("cet_")
+        self._colormap_properties = {"cmap": cmap, "gamma": gamma}
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str, list[float]] = {}
@@ -566,9 +561,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for i in (5, 2):
             self._splitters[6].addWidget(self._plots[i])
 
-        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
-        self.qapp.aboutToQuit.connect(self.on_close)
-
         self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
@@ -580,12 +572,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if state is not None:
             self.state = state
 
+        self.reverse_act.setChecked(cmap_reversed)
+
+        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
+        self.qapp.aboutToQuit.connect(self.on_close)
+
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
+        prop["reverse"] = self.reverse_act.isChecked()
+        prop["high_contrast"] = self.high_contrast_act.isChecked()
+        prop["zero_centered"] = self.zero_centered_act.isChecked()
+        prop["levels_locked"] = self.levels_locked
+
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
-        return prop
+        return cast(ColorMapState, prop)
 
     @property
     def state(self) -> ImageSlicerState:
@@ -647,11 +649,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def levels_locked(self) -> bool:
-        return self.colormap_properties["levels_locked"]
+        return self.lock_levels_act.isChecked()
 
     @levels_locked.setter
     def levels_locked(self, value: bool) -> None:
-        self.lock_levels(value)
+        self.lock_levels_act.setChecked(value)
 
     @property
     def levels(self) -> tuple[float, float]:
@@ -783,7 +785,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def undo(self) -> None:
         if not self.undoable:
-            raise RuntimeError("Nothing to undo")
+            return
         self._next_states.append(self.state)
         self.state = self._prev_states.pop()
         self.sigHistoryChanged.emit()
@@ -793,10 +795,95 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def redo(self) -> None:
         if not self.redoable:
-            raise RuntimeError("Nothing to redo")
+            return
         self._prev_states.append(self.state)
         self.state = self._next_states.pop()
         self.sigHistoryChanged.emit()
+
+    def initialize_actions(self) -> None:
+        self.view_all_act = QtWidgets.QAction("View &All", self)
+        self.view_all_act.setShortcut("Ctrl+A")
+        self.view_all_act.triggered.connect(self.view_all)
+        self.view_all_act.setToolTip("Reset view limits for all axes")
+
+        self.transpose_act = QtWidgets.QAction("&Transpose Main Image", self)
+        self.transpose_act.setShortcut("T")
+        self.transpose_act.triggered.connect(self.transpose_main_image)
+        self.transpose_act.setToolTip("Transpose the main image")
+
+        self.add_cursor_act = QtWidgets.QAction("&Add Cursor", self)
+        self.add_cursor_act.setShortcut("Shift+A")
+        self.add_cursor_act.triggered.connect(self.add_cursor)
+        self.add_cursor_act.setToolTip("Add a new cursor")
+
+        self.rem_cursor_act = QtWidgets.QAction("&Remove Cursor", self)
+        self.rem_cursor_act.setShortcut("Shift+R")
+        self.rem_cursor_act.setDisabled(True)
+        self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
+        self.rem_cursor_act.setToolTip("Remove the current cursor")
+
+        self.undo_act = QtWidgets.QAction("&Undo", self)
+        self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_act.setDisabled(True)
+        self.undo_act.triggered.connect(self.undo)
+        self.undo_act.setToolTip("Undo the last action")
+
+        self.redo_act = QtWidgets.QAction("&Redo", self)
+        self.redo_act.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_act.setDisabled(True)
+        self.redo_act.triggered.connect(self.redo)
+        self.redo_act.setToolTip("Redo the last undone action")
+
+        self.center_act = QtWidgets.QAction("&Center Current Cursor", self)
+        self.center_act.setShortcut("Shift+C")
+        self.center_act.triggered.connect(self.center_cursor)
+        self.center_act.setToolTip("Center the current cursor")
+
+        self.center_all_act = QtWidgets.QAction("&Center All Cursors", self)
+        self.center_all_act.setShortcut("Alt+Shift+C")
+        self.center_all_act.triggered.connect(self.center_all_cursors)
+        self.center_all_act.setToolTip("Center all cursors")
+
+        self.reverse_act = QtWidgets.QAction("&Reverse Colormap", self)
+        self.reverse_act.setShortcut("R")
+        self.reverse_act.setCheckable(True)
+        self.reverse_act.setToolTip("Reverse the colormap")
+        self.reverse_act.toggled.connect(self.refresh_colormap)
+
+        self.high_contrast_act = QtWidgets.QAction("High Contrast", self)
+        self.high_contrast_act.setCheckable(True)
+        self.high_contrast_act.setToolTip("Change gamma scaling mode")
+        self.high_contrast_act.toggled.connect(self.refresh_colormap)
+
+        self.zero_centered_act = QtWidgets.QAction("Centered Scaling", self)
+        self.zero_centered_act.setCheckable(True)
+        self.zero_centered_act.setToolTip("Apply symmetric scaling from the center")
+        self.zero_centered_act.toggled.connect(self.refresh_colormap)
+
+        self.lock_levels_act = QtWidgets.QAction("Lock Levels", self)
+        self.lock_levels_act.setCheckable(True)
+        self.lock_levels_act.setToolTip("Lock the colormap levels and show a colorbar")
+        self.lock_levels_act.toggled.connect(self.lock_levels)
+
+        self.ktool_act = QtWidgets.QAction("Open ktool", self)
+        self.ktool_act.triggered.connect(self.open_in_ktool)
+        self.ktool_act.setToolTip(
+            "Open data in the interactive momentum conversion tool"
+        )
+
+    @QtCore.Slot()
+    def history_changed(self) -> None:
+        self.undo_act.setEnabled(self.undoable)
+        self.redo_act.setEnabled(self.redoable)
+
+    @QtCore.Slot()
+    def cursor_count_changed(self) -> None:
+        self.rem_cursor_act.setDisabled(self.n_cursors == 1)
+        self.refresh_colormap()
+
+    @QtCore.Slot()
+    def refresh_actions_enabled(self) -> None:
+        self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
 
     def connect_axes_signals(self) -> None:
         for ax in self.axes:
@@ -808,9 +895,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def connect_signals(self) -> None:
         self.connect_axes_signals()
+        self.sigHistoryChanged.connect(self.history_changed)
+        self.sigCursorCountChanged.connect(self.cursor_count_changed)
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
-        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
         self.sigWriteHistory.connect(self.write_state)
 
     def link(self, proxy: SlicerLinkProxy) -> None:
@@ -974,7 +1062,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigDataChanged.emit()
 
         # self.refresh_current()
-        self.set_colormap(update=True)
+        self.refresh_colormap()
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
         self.flush_history()
@@ -1059,6 +1147,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @record_history
     def swap_axes(self, ax1: int, ax2: int) -> None:
         self.array_slicer.swap_axes(ax1, ax2)
+
+    @QtCore.Slot()
+    def transpose_main_image(self) -> None:
+        self.swap_axes(0, 1)
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True)
@@ -1235,33 +1327,39 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if gamma is not None:
             self._colormap_properties["gamma"] = gamma
         if reverse is not None:
-            self._colormap_properties["reverse"] = reverse
+            # Don't block signals here to trigger updates to linked buttons.
+            # Will be called twice, but unnoticable
+            self.reverse_act.setChecked(reverse)
         if high_contrast is not None:
-            self._colormap_properties["high_contrast"] = high_contrast
+            self.high_contrast_act.setChecked(high_contrast)
         if zero_centered is not None:
-            self._colormap_properties["zero_centered"] = zero_centered
+            self.zero_centered_act.setChecked(zero_centered)
         if levels_locked is not None:
             self.levels_locked = levels_locked
         if levels is not None:
             self.levels = levels
 
+        properties = self.colormap_properties
         cmap = pg_colormap_powernorm(
-            self._colormap_properties["cmap"],
-            self._colormap_properties["gamma"],
-            self._colormap_properties["reverse"],
-            high_contrast=self._colormap_properties["high_contrast"],
-            zero_centered=self._colormap_properties["zero_centered"],
+            properties["cmap"],
+            properties["gamma"],
+            properties["reverse"],
+            high_contrast=properties["high_contrast"],
+            zero_centered=properties["zero_centered"],
         )
         for im in self._imageitems:
             im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
+    @QtCore.Slot()
+    def refresh_colormap(self) -> None:
+        self.set_colormap(update=True)
+
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool) -> None:
         if lock != self.levels_locked:
             self.sigWriteHistory.emit()
-
-        self._colormap_properties["levels_locked"] = lock
+            self.levels_locked = lock
 
         if self.levels_locked:
             levels = self.array_slicer.limits
@@ -1448,7 +1546,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         elif value == self.array_slicer.snap_to_data:
             return
         self.array_slicer.snap_to_data = value
-        self.sigViewOptionChanged.emit()
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 import numpy.typing as npt
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 from erlab.interactive.utils import format_kwargs
 from erlab.utils.misc import _convert_to_native
@@ -138,7 +138,21 @@ class ArraySlicer(QtCore.QObject):
 
     def __init__(self, xarray_obj: xr.DataArray) -> None:
         super().__init__()
+        self.snap_act = QtWidgets.QAction("&Snap to Pixels", self)
+        self.snap_act.setShortcut("S")
+        self.snap_act.setCheckable(True)
+        self.snap_act.setChecked(False)
+        self.snap_act.setToolTip("Snap cursors to data points")
+
         self.set_array(xarray_obj, validate=True, reset=True)
+
+    @property
+    def snap_to_data(self) -> bool:
+        return self.snap_act.isChecked()
+
+    @snap_to_data.setter
+    def snap_to_data(self, value: bool) -> None:
+        self.snap_act.setChecked(value)
 
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
@@ -183,7 +197,7 @@ class ArraySlicer(QtCore.QObject):
             self._values: list[list[np.floating]] = [
                 [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
             ]
-            self.snap_to_data: bool = False
+            self.snap_to_data = False
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.floating], ...]:

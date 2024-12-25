@@ -253,7 +253,7 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     win0, win1 = manager.get_tool(0), manager.get_tool(1)
 
-    win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
+    win1.slicer_area.set_colormap("RdYlBu", gamma=1.5)
     assert (
         win0.slicer_area._colormap_properties == win1.slicer_area._colormap_properties
     )
