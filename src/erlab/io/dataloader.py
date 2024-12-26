@@ -1482,8 +1482,7 @@ class LoaderBase(metaclass=_Loader):
                 # Named DataArrays combined into a Dataset, extract the DataArray
                 var_name = next(iter(combined.data_vars))
                 combined = combined[var_name]
-
-                if combined.name is None:
+                if combined.name is None or combined.name == "":
                     combined = combined.rename(var_name)
 
             return combined
@@ -1609,7 +1608,11 @@ class LoaderBase(metaclass=_Loader):
         ordered_coords = ordered_coords | coord_dict
 
         return xr.DataArray(
-            darr.values, coords=ordered_coords, dims=darr.dims, attrs=darr.attrs
+            darr.values,
+            coords=ordered_coords,
+            dims=darr.dims,
+            attrs=darr.attrs,
+            name=darr.name,
         )
 
     @overload
