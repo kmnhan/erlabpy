@@ -21,6 +21,7 @@ from erlab.interactive.utils import (
     parse_data,
     xImageItem,
 )
+from erlab.utils.array import effective_decimals
 
 
 class DerivativeTool(
@@ -156,13 +157,10 @@ class DerivativeTool(
                     np.abs(xcoords[1] - xcoords[0]),
                     np.abs(ycoords[1] - ycoords[0]),
                 )
-                xdigits, ydigits = (
-                    int(np.clip(np.ceil(-np.log10(xinc) + 1), a_min=0, a_max=None)),
-                    int(np.clip(np.ceil(-np.log10(yinc) + 1), a_min=0, a_max=None)),
-                )
+
                 sx_value, sy_value = (
-                    round(sx_value * xinc, xdigits),
-                    round(sy_value * yinc, ydigits),
+                    round(sx_value * xinc, effective_decimals(xinc)),
+                    round(sy_value * yinc, effective_decimals(yinc)),
                 )
             case _:
                 sx_value, sy_value = int(sx_value), int(sy_value)

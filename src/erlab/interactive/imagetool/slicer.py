@@ -11,6 +11,7 @@ import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
 
 from erlab.interactive.utils import format_kwargs
+from erlab.utils.array import effective_decimals
 from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
@@ -472,7 +473,7 @@ class ArraySlicer(QtCore.QObject):
             step = self.incs_uniform[axis]
         else:
             step = self.incs[axis]
-        return int(np.clip(np.ceil(-np.log10(abs(step)) + 1), 0, None))
+        return effective_decimals(step)
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))

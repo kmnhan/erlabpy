@@ -198,3 +198,31 @@ def _trim_na_trailing_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
         darr = darr.isel({dim: slice(None, -1)})
         return _trim_na_trailing_edge(darr, dim)
     return darr
+
+
+def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
+    """Calculate the effective number of decimal places for a given step size.
+
+    This function determines the number of decimal places required to approximately
+    represent a value in a linearly spaced array, given its step size. We assume that
+    rounding to a decimal an order of magnitude smaller than the step size to be a good
+    approximation.
+
+    Parameters
+    ----------
+    step
+        The step size for which to calculate the effective number of decimal places, or
+        a coordinate array in which case the step size is calculated as the difference
+        of the first two elements.
+
+    Returns
+    -------
+    int
+        The effective number of decimal places, calculated as the order of magnitude of
+        ``step`` plus one.
+    """
+    if isinstance(step_or_coord, float | np.floating):
+        step = step_or_coord
+    else:
+        step = np.diff(step_or_coord[:2])[0]
+    return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
