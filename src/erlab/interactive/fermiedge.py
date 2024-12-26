@@ -604,6 +604,7 @@ class ResolutionTool(
 
         self.res_spin.setDecimals(self._x_decimals + 1)
         self.res_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.res_spin.setValue(0.002)
         self.center_spin.setRange(*self._x_range)
         self.center_spin.setDecimals(self._x_decimals + 1)
         self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))

@@ -477,7 +477,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         zero_centered: bool = False,
         rad2deg: bool | Iterable[str] = False,
         *,
-        transpose: bool = True,
+        transpose: bool = False,
         bench: bool = False,
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,

@@ -50,9 +50,13 @@ def test_restool(qtbot) -> None:
         win.activateWindow()
 
     win._guess()
+    win.res_spin.setValue(0.02)
     win.live_check.setChecked(True)
     win.y0_spin.setValue(-12.0)
     win.x0_spin.setValue(-0.3)
+    win.x1_spin.setValue(0.3)
+
+    qtbot.wait_until(lambda: isinstance(win._result_ds, xr.Dataset), timeout=1000)
 
     for k, v in {
         "eV_range": (-0.3, 0.3),

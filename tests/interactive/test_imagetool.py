@@ -222,6 +222,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
         "current_cursor": 1,
         "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
         "splitter_sizes": list(old_state["splitter_sizes"]),
+        "file_path": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
     }
     assert win.slicer_area.state == expected_state
