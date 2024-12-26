@@ -1,3 +1,53 @@
+## Unreleased
+
+### ✨ Features
+
+- introduce `utils.array.sort_coord_order` function ([0e694d2](https://github.com/kmnhan/erlabpy/commit/0e694d241a281663fc21c48bb8a2e0d36ae5aaaf))
+
+  Sorts coordinates order to be prettier! Sorting now applied in various places such as data loaders, ImageTool, and the `qsel` accessor.
+
+- **interactive:** add `restool` ([fd838b1](https://github.com/kmnhan/erlabpy/commit/fd838b1eac9f8b8936008a4f6af86b27955fed45))
+
+  Adds a new interactive tool `restool` for fitting Fermi-Dirac distributions with a linear background to EDCs averaged over angles. The angle and energy range can be adjusted interactively.
+
+- **imagetool.manager:** add integration with IPython ([cf346b9](https://github.com/kmnhan/erlabpy/commit/cf346b95c20b71e638e4cb7227595cc2d8b73eb2))
+
+  Adds a new action that stores data with the [`%store`](https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html) magic command. With this, it is much more easy to import data processed in the manager into jupyter notebook sessions.
+
+- **imagetool.manager:** add preview ([9fdc63d](https://github.com/kmnhan/erlabpy/commit/9fdc63d23253d6ccc783eb61eca406af085d4f9b))
+
+  Adds an image preview panel that shows the main image of the selected data.
+
+  Also, a new hover preview option can be toggled on to show the preview images when hovering over each item.
+
+### 🐞 Bug Fixes
+
+- **io:** fixes loaded data losing their original names ([a19f37a](https://github.com/kmnhan/erlabpy/commit/a19f37a43f5cd3409d6e0c7e186f00d727bb75a2))
+
+- **analysis.fit:** handle NaN values in linear fit guesses ([1aef937](https://github.com/kmnhan/erlabpy/commit/1aef93752a04ae4a4bddb8a302d1a6c0716082b4))
+
+- **imagetool.manager:** fix undefined selection order ([4c486e2](https://github.com/kmnhan/erlabpy/commit/4c486e2c2f27cfb25c52edfbea695bac306b148f))
+
+### ⚡️ Performance
+
+- improve import time ([e2a2542](https://github.com/kmnhan/erlabpy/commit/e2a25429395b11c59e84212490f515d3294fb836))
+
+### ♻️ Code Refactor
+
+- **imagetool:** show all axes by default for 4D data ([b034477](https://github.com/kmnhan/erlabpy/commit/b0344775fd512b40d5fa9d382d84d38d4e1ce64a))
+
+- **imagetool:** add icons to context menu items that opens a new window ([1f548f7](https://github.com/kmnhan/erlabpy/commit/1f548f77a1b698d55637d37f896771f002473b54))
+
+- **imagetool:** streamline window title naming ([0f9dcda](https://github.com/kmnhan/erlabpy/commit/0f9dcdaa0963baa9f20d6bacd330167295017be5))
+
+- replace boilerplate decimal calculation with new `utils.array.effective_decimals` ([7873669](https://github.com/kmnhan/erlabpy/commit/78736690f811a055f8b3d49a7fdebbf77869be7c))
+
+- **imagetool:** initial migration to QAction ([7807174](https://github.com/kmnhan/erlabpy/commit/7807174208c535ee27db244d7cb4811288367149))
+
+  Mostly internal changes that reduces duplicate code and makes keyboard shortcuts robust.
+
+- **imagetool.manager:** refactor console and jitted functions to private modules to improve startup time ([280bfd8](https://github.com/kmnhan/erlabpy/commit/280bfd8cca7d146d0013103d8c45363804118137))
+
 ## v3.3.0 (2024-12-23)
 
 ### ✨ Features
