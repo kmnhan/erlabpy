@@ -1552,7 +1552,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
         ]
         if self.data.ndim == 4:
-            sizes[3] = (0, 0, (r0 + r1 - d))
+            full = r0 + r1 - d
+            sizes[3] = (full / 4, full / 4, full / 2)
         for split, sz in zip(self._splitters, sizes, strict=True):
             split.setSizes(tuple(round(s * scale) for s in sz))
 
