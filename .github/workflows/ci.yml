@@ -47,23 +47,23 @@ jobs:
           export QT_API=${{ matrix.qt-api }}
 
       - name: Test with pytest
-        if: matrix.python-version != '3.12' || matrix.qt-api != 'pyqt6'
+        if: matrix.python-version != '3.12' || matrix.qt-api != 'pyside6'
         run: |
           python -u -m pytest -v
 
       - name: Test with pytest with coverage
-        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'
+        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
         run: |
           python -u -m pytest -v --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6'
+        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
-        if: ${{ matrix.python-version == '3.12' && matrix.qt-api == 'pyqt6' && !cancelled() }}
+        if: ${{ matrix.python-version == '3.12' && matrix.qt-api == 'pyside6' && !cancelled() }}
         uses: codecov/test-results-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

@@ -274,7 +274,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
             win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
     # Open goldtool from main image
-
     if not test_data_type.endswith("nonuniform"):
         main_image.open_in_goldtool()
         assert isinstance(
@@ -283,7 +282,7 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
 
         # Close associated windows
         win.slicer_area.close_associated_windows()
-        qtbot.waitUntil(
+        qtbot.wait_until(
             lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
         )
 
@@ -294,7 +293,7 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
 
         # Close associated windows
         win.slicer_area.close_associated_windows()
-        qtbot.waitUntil(
+        qtbot.wait_until(
             lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
         )
 
@@ -483,7 +482,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
 
     # Transpose should remove guidelines
     win.slicer_area.swap_axes(0, 1)
-    qtbot.waitUntil(
+    qtbot.wait_until(
         lambda: not win.slicer_area.main_image.is_guidelines_visible, timeout=1000
     )
 

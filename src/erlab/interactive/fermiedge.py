@@ -566,12 +566,7 @@ class ResolutionTool(
 ):
     _sigTriggerFit = QtCore.Signal()
 
-    def __init__(
-        self,
-        data: xr.DataArray,
-        *,
-        data_name: str | None = None,
-    ) -> None:
+    def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
         super().__init__()
