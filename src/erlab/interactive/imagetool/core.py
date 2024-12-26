@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
+import qtawesome as qta
 import xarray as xr
 from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
@@ -1840,6 +1841,7 @@ class ItoolPlotItem(pg.PlotItem):
     """
 
     _sigDragged = QtCore.Signal(object, object)  # :meta private:
+    _sigPaletteChanged = QtCore.Signal()  # :meta private:
 
     def __init__(
         self,
@@ -1874,17 +1876,30 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb.menu.addSeparator()
 
         if image:
-            itool_action = self.vb.menu.addAction("Open in new window")
+            itool_action = self.vb.menu.addAction("New Window")
             itool_action.triggered.connect(self.open_in_new_window)
 
-            goldtool_action = self.vb.menu.addAction("Open in goldtool")
+            goldtool_action = self.vb.menu.addAction("goldtool")
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
-            restool_action = self.vb.menu.addAction("Open in restool")
+            restool_action = self.vb.menu.addAction("restool")
             restool_action.triggered.connect(self.open_in_restool)
 
-            dtool_action = self.vb.menu.addAction("Open in dtool")
+            dtool_action = self.vb.menu.addAction("dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
+
+            def _set_icons():
+                for act in (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                ):
+                    act.setIcon(qta.icon("mdi6.export"))
+                    act.setIconVisibleInMenu(True)
+
+            self._sigPaletteChanged.connect(_set_icons)
+            _set_icons()
 
             self.vb.menu.addSeparator()
 
@@ -2508,6 +2523,11 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
+
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            self._sigPaletteChanged.emit()
+        super().changeEvent(evt)
 
 
 class ItoolColorBarItem(BetterColorBarItem):
