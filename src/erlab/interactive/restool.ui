@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>980</width>
+    <width>957</width>
     <height>743</height>
    </rect>
   </property>
@@ -42,33 +42,7 @@
           <string>Range</string>
          </property>
          <layout class="QGridLayout" name="gridLayout">
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_3">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>x range</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="label_4">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>y range</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
+          <item row="2" column="1">
            <widget class="QDoubleSpinBox" name="y0_spin">
             <property name="keyboardTracking">
              <bool>false</bool>
@@ -81,33 +55,17 @@
             </property>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QDoubleSpinBox" name="x0_spin">
-            <property name="keyboardTracking">
-             <bool>false</bool>
+          <item row="3" column="0" colspan="3">
+           <widget class="QCheckBox" name="live_check">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, changing the selection range will update the fit result continuously. &lt;/p&gt;&lt;p&gt;This will be automatically unchecked if a fit fails to converge within the given timeout.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
-            <property name="decimals">
-             <number>4</number>
-            </property>
-            <property name="value">
-             <double>1.000000000000000</double>
+            <property name="text">
+             <string>Update fit on changing range</string>
             </property>
            </widget>
           </item>
-          <item row="0" column="2">
-           <widget class="QDoubleSpinBox" name="x1_spin">
-            <property name="keyboardTracking">
-             <bool>false</bool>
-            </property>
-            <property name="decimals">
-             <number>4</number>
-            </property>
-            <property name="value">
-             <double>1.000000000000000</double>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="2">
+          <item row="2" column="2">
            <widget class="QDoubleSpinBox" name="y1_spin">
             <property name="keyboardTracking">
              <bool>false</bool>
@@ -120,13 +78,55 @@
             </property>
            </widget>
           </item>
-          <item row="2" column="0" colspan="3">
-           <widget class="QCheckBox" name="live_check">
-            <property name="toolTip">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;If checked, changing the selection range will update the fit result continuously. &lt;/p&gt;&lt;p&gt;This will be automatically unchecked if a fit fails to converge within the given timeout and max_nfev.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          <item row="2" column="0">
+           <widget class="QLabel" name="label_4">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
             </property>
             <property name="text">
-             <string>Update fit on changing range</string>
+             <string>y range</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="2">
+           <widget class="QDoubleSpinBox" name="x1_spin">
+            <property name="keyboardTracking">
+             <bool>false</bool>
+            </property>
+            <property name="decimals">
+             <number>4</number>
+            </property>
+            <property name="value">
+             <double>1.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="x0_spin">
+            <property name="keyboardTracking">
+             <bool>false</bool>
+            </property>
+            <property name="decimals">
+             <number>4</number>
+            </property>
+            <property name="value">
+             <double>1.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="label_3">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>x range</string>
             </property>
            </widget>
           </item>
@@ -145,7 +145,7 @@
              <bool>false</bool>
             </property>
             <property name="decimals">
-             <number>4</number>
+             <number>5</number>
             </property>
             <property name="maximum">
              <double>998.000000000000000</double>
@@ -313,7 +313,7 @@
              <double>10.000000000000000</double>
             </property>
             <property name="singleStep">
-             <double>0.010000000000000</double>
+             <double>0.002000000000000</double>
             </property>
            </widget>
           </item>
@@ -578,7 +578,7 @@ p, li { white-space: pre-wrap; }
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>980</width>
+     <width>957</width>
      <height>24</height>
     </rect>
    </property>

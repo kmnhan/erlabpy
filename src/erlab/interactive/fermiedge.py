@@ -617,11 +617,6 @@ class ResolutionTool(
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
-            if self.data.name is not None:
-                self.setWindowTitle(self.data.name)
-        else:
-            self.setWindowTitle(data_name)
-
         self.data_name: str = data_name
 
         self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
@@ -654,7 +649,8 @@ class ResolutionTool(
         self.y_region.sigRegionChanged.connect(self._y_region_changed)
         self.plot0.addItem(self.y_region)
 
-        initial_x_range = (self._x_range.mean(), self._x_range[-1])
+        x_width = self._x_range[-1] - self._x_range[0]
+        initial_x_range = (self._x_range.mean(), self._x_range[-1] - x_width * 0.04)
         self.x_region = pg.LinearRegionItem(
             values=initial_x_range,
             orientation="vertical",
@@ -665,7 +661,6 @@ class ResolutionTool(
         self.plot1.addItem(self.x_region)
 
         self.connect_signals()
-        self._guess()
         self.graphics_layout.setFocus()
 
         self.resize(800, 600)
@@ -708,7 +703,6 @@ class ResolutionTool(
         )
         self.temp_spin.setValue(guessed_params["temp"].value)
         self.center_spin.setValue(guessed_params["center"].value)
-        self.res_spin.setValue(guessed_params["resolution"].value)
 
     @property
     def fit_params(self) -> dict[str, Any]:
@@ -725,9 +719,7 @@ class ResolutionTool(
             "bkg_slope": self.slope_check.isChecked(),
         }
 
-    def _disable_further_auto_fit(self, info_text: str) -> None:
-        """Disable further automatic fitting and update the overview label."""
-        self.live_check.setChecked(False)
+    def _fit_failed(self, info_text: str) -> None:
         self.overview_label.setText(
             '<span style="font-weight:600; color:#ff5555;">' f"{info_text}" "</span>"
         )
@@ -747,9 +739,8 @@ class ResolutionTool(
             self._result_ds = future.result(timeout=self.timeout_spin.value())
         except TimeoutError:
             future.cancel()
-            self._disable_further_auto_fit(
-                f"Fit timed out in {time.perf_counter() - t0:.2f} seconds"
-            )
+            self.live_check.setChecked(False)
+            self._fit_failed(f"Fit timed out in {time.perf_counter() - t0:.2f} seconds")
             self.edc_fit.setData(x=[], y=[])
             return
         fit_time: float = time.perf_counter() - t0
@@ -762,7 +753,7 @@ class ResolutionTool(
         # Update overview
         modelresult = self._result_ds.modelfit_results.item()
         if not modelresult.success:
-            self._disable_further_auto_fit(
+            self._fit_failed(
                 f"Fit failed in {fit_time:.2f} s (nfev = {modelresult.nfev})"
             )
         else:

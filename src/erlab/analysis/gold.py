@@ -566,7 +566,11 @@ def quick_fit(
     bkg_slope: bool = True,
     **kwargs,
 ) -> xr.Dataset:
-    """Perform a quick Fermi edge fit on an EDC.
+    """Perform a Fermi edge fit on an EDC.
+
+    This function is a convenient wrapper around :meth:`modelfit
+    <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge
+    to the given data.
 
     If data with 2 or more dimensions is provided, the data is averaged over all
     dimensions except the energy prior to fitting.

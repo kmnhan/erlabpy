@@ -802,6 +802,11 @@ class ArraySlicer(QtCore.QObject):
         return ""
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
+        if not any(
+            a in self._nonuniform_axes for a in set(range(self._obj.ndim)) - set(disp)
+        ):
+            return self._obj.qsel(self.qsel_args(cursor, disp))
+
         isel_kw = self.isel_args(cursor, disp, int_if_one=False, uniform=True)
         binned_dims: list[Hashable] = [
             k
@@ -811,6 +816,7 @@ class ArraySlicer(QtCore.QObject):
         binned_coords_averaged: dict[str, xr.DataArray] = {
             str(k): self._obj[k][isel_kw[str(k)]].mean() for k in binned_dims
         }
+        # !TODO: we may lose some coords here, like dims that depend on the binned dims
         sliced = (
             self._obj.isel(isel_kw)
             .mean(binned_dims)

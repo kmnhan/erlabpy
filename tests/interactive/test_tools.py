@@ -49,6 +49,7 @@ def test_restool(qtbot) -> None:
         win.show()
         win.activateWindow()
 
+    win._guess()
     win.live_check.setChecked(True)
     win.y0_spin.setValue(-12.0)
     win.x0_spin.setValue(-0.3)
