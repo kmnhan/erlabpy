@@ -10,8 +10,9 @@ import erlab
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.fermiedge import goldtool
+from erlab.interactive.fermiedge import ResolutionTool, goldtool, restool
 from erlab.interactive.kspace import ktool
+from erlab.io.exampledata import generate_gold_edge
 
 
 def test_goldtool(qtbot, gold) -> None:
@@ -36,6 +37,43 @@ def test_goldtool(qtbot, gold) -> None:
     fast=True,
 )"""
     )
+
+
+def test_restool(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.live_check.setChecked(True)
+    win.y0_spin.setValue(-12.0)
+    win.x0_spin.setValue(-0.3)
+
+    for k, v in {
+        "eV_range": (-0.3, 0.3),
+        "temp": 100.0,
+        "resolution": 0.02,
+        "center": -0.01572,
+        "bkg_slope": False,
+    }.items():
+        assert win.fit_params[k] == v
+
+    def check_generated_code(w: ResolutionTool) -> None:
+        namespace = {"era": erlab.analysis, "gold": gold, "result": None}
+        code = "result = " + w.copy_code().replace("quick_resolution", "quick_fit")
+        exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
+
+        xr.testing.assert_identical(
+            w._result_ds.drop_vars("modelfit_results"),
+            namespace["result"].drop_vars("modelfit_results"),
+        )
+
+    check_generated_code(win)
+    win.close()
 
 
 @pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])

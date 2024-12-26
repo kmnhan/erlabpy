@@ -1,15 +1,16 @@
-__all__ = ["goldtool"]
+__all__ = ["goldtool", "restool"]
 
+import concurrent.futures
 import os
+import sys
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-import joblib
 import numpy as np
 import pyqtgraph as pg
 import varname
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.interactive.imagetool import ImageTool
@@ -22,13 +23,20 @@ from erlab.interactive.utils import (
     generate_code,
     xImageItem,
 )
+from erlab.utils.array import effective_decimals
 from erlab.utils.parallel import joblib_progress_qt
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    import joblib
     import lmfit
     import scipy.interpolate
+else:
+    import lazy_loader as _lazy
+
+    joblib = _lazy.load("joblib")
+
 
 LMFIT_METHODS = [
     "leastsq",
@@ -553,6 +561,325 @@ class GoldTool(AnalysisWindow):
         copy_to_clipboard(code_str)
 
 
+class ResolutionTool(
+    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "restool.ui"))  # type: ignore[misc]
+):
+    _sigTriggerFit = QtCore.Signal()
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        *,
+        data_name: str | None = None,
+    ) -> None:
+        if (data.ndim != 2) or ("eV" not in data.dims):
+            raise ValueError("Data must be 2D and have an 'eV' dimension.")
+        super().__init__()
+        self.setupUi(self)
+        self.setWindowTitle("")
+
+        if data.dims.index("eV") != 1:
+            data = data.T
+        self.data = data
+
+        self.y_dim: str = str(data.dims[0])
+        self._x_range = data["eV"].values[[0, -1]]
+        self._y_range = data[self.y_dim].values[[0, -1]]
+
+        self._x_decimals = effective_decimals(data["eV"].values)
+        self._y_decimals = effective_decimals(data[self.y_dim].values)
+
+        self.x0_spin.setRange(*self._x_range)
+        self.x1_spin.setRange(*self._x_range)
+        self.y0_spin.setRange(*self._y_range)
+        self.y1_spin.setRange(*self._y_range)
+        self.x0_spin.setDecimals(self._x_decimals)
+        self.x1_spin.setDecimals(self._x_decimals)
+        self.y0_spin.setDecimals(self._y_decimals)
+        self.y1_spin.setDecimals(self._y_decimals)
+        self.x0_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.x1_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.y0_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+        self.y1_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+
+        self.res_spin.setDecimals(self._x_decimals + 1)
+        self.res_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.center_spin.setRange(*self._x_range)
+        self.center_spin.setDecimals(self._x_decimals + 1)
+        self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+
+        if data_name is None:
+            try:
+                data_name = cast(
+                    str,
+                    varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
+                )
+            except varname.VarnameRetrievingError:
+                data_name = "data"
+
+            if self.data.name is not None:
+                self.setWindowTitle(self.data.name)
+        else:
+            self.setWindowTitle(data_name)
+
+        self.data_name: str = data_name
+
+        self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
+        self.plot1 = self.graphics_layout.addPlot(row=1, col=0)
+        self.plot1.setXLink(self.plot0)
+
+        self.image = xImageItem(axisOrder="row-major")
+        self.image.setDataArray(self.data)
+        self.plot0.addItem(self.image)
+
+        self.edc_curve = pg.ScatterPlotItem(
+            size=3,
+            pen=pg.mkPen(None),
+            brush=pg.mkBrush(255, 255, 255, 200),
+            pxMode=True,
+        )
+        self.plot1.addItem(self.edc_curve)
+
+        self.edc_fit = pg.PlotDataItem(pen=pg.mkPen("r"))
+        self.plot1.addItem(self.edc_fit)
+
+        y_offset = self._y_range.mean()
+        initial_y_range = (self._y_range - y_offset) * 0.75 + y_offset
+        self.y_region = pg.LinearRegionItem(
+            values=initial_y_range,
+            orientation="horizontal",
+            swapMode="block",
+            bounds=self._y_range,
+        )
+        self.y_region.sigRegionChanged.connect(self._y_region_changed)
+        self.plot0.addItem(self.y_region)
+
+        initial_x_range = (self._x_range.mean(), self._x_range[-1])
+        self.x_region = pg.LinearRegionItem(
+            values=initial_x_range,
+            orientation="vertical",
+            swapMode="block",
+            bounds=self._x_range,
+        )
+        self.x_region.sigRegionChanged.connect(self._x_region_changed)
+        self.plot1.addItem(self.x_region)
+
+        self.connect_signals()
+        self._guess()
+        self.graphics_layout.setFocus()
+
+        self.resize(800, 600)
+
+        self._result_ds: xr.Dataset | None = None
+
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    @property
+    def x_range(self) -> tuple[float, float]:
+        """Currently selected x range (eV) for the fit."""
+        x0 = round(self.x0_spin.value(), self._x_decimals)
+        x1 = round(self.x1_spin.value(), self._x_decimals)
+        return x0, x1
+
+    @property
+    def y_range(self) -> tuple[float, float]:
+        """Currently selected y range to average EDCs."""
+        y0 = round(self.y0_spin.value(), self._y_decimals)
+        y1 = round(self.y1_spin.value(), self._y_decimals)
+        return y0, y1
+
+    def _update_edc(self) -> None:
+        """Calculate averaged EDC and update the plot."""
+        with xr.set_options(keep_attrs=True):
+            self.averaged_edc = self.data.sel({self.y_dim: slice(*self.y_range)}).mean(
+                self.y_dim
+            )
+        self.edc_curve.setData(
+            x=self.averaged_edc["eV"].values, y=self.averaged_edc.values
+        )
+        self.edc_fit.setData(x=[], y=[])
+
+    @QtCore.Slot()
+    def _guess(self) -> None:
+        with xr.set_options(keep_attrs=True):
+            target = self.averaged_edc.sel(eV=slice(*self.x_range))
+        guessed_params = erlab.analysis.fit.models.FermiEdgeModel().guess(
+            target, target.eV.values
+        )
+        self.temp_spin.setValue(guessed_params["temp"].value)
+        self.center_spin.setValue(guessed_params["center"].value)
+        self.res_spin.setValue(guessed_params["resolution"].value)
+
+    @property
+    def fit_params(self) -> dict[str, Any]:
+        """Current arguments for :func:`erlab.analysis.gold.quick_fit`."""
+        return {
+            "eV_range": self.x_range,
+            "method": self.method_combo.currentText(),
+            "temp": self.temp_spin.value(),
+            "resolution": self.res_spin.value(),
+            "center": self.center_spin.value(),
+            "fix_temp": self.fix_temp_check.isChecked(),
+            "fix_center": self.fix_center_check.isChecked(),
+            "fix_resolution": self.fix_res_check.isChecked(),
+            "bkg_slope": self.slope_check.isChecked(),
+        }
+
+    def _disable_further_auto_fit(self, info_text: str) -> None:
+        """Disable further automatic fitting and update the overview label."""
+        self.live_check.setChecked(False)
+        self.overview_label.setText(
+            '<span style="font-weight:600; color:#ff5555;">' f"{info_text}" "</span>"
+        )
+
+    @QtCore.Slot()
+    def do_fit(self) -> None:
+        """Perform a fit on the averaged EDC and update results."""
+        t0 = time.perf_counter()
+
+        # Execute in threadpool
+        future = self._executor.submit(
+            erlab.analysis.gold.quick_fit,
+            self.averaged_edc,
+            **(self.fit_params | {"max_nfev": self.nfev_spin.value()}),
+        )
+        try:
+            self._result_ds = future.result(timeout=self.timeout_spin.value())
+        except TimeoutError:
+            future.cancel()
+            self._disable_further_auto_fit(
+                f"Fit timed out in {time.perf_counter() - t0:.2f} seconds"
+            )
+            self.edc_fit.setData(x=[], y=[])
+            return
+        fit_time: float = time.perf_counter() - t0
+
+        # Update plot
+        self.edc_fit.setData(
+            x=self._result_ds["eV"].values, y=self._result_ds.modelfit_best_fit.values
+        )
+
+        # Update overview
+        modelresult = self._result_ds.modelfit_results.item()
+        if not modelresult.success:
+            self._disable_further_auto_fit(
+                f"Fit failed in {fit_time:.2f} s (nfev = {modelresult.nfev})"
+            )
+        else:
+            self.overview_label.setText(
+                '<span style="font-weight:600; color:#32cd32;">'
+                f"Fit converged (nfev = {modelresult.nfev})"
+                "</span>"
+            )
+
+        def _get_param_text(param: str) -> str:
+            """Get the string representation of a parameter value."""
+            factor = (
+                1e3 if (param == "resolution" and self.mev_check.isChecked()) else 1
+            )
+            if hasattr(modelresult, "uvars") and modelresult.uvars is not None:
+                return f"{modelresult.uvars[param]*factor:P}"
+            return f"{modelresult.params[param].value*factor:.4f}"
+
+        for param, textedit in zip(
+            ("temp", "center", "resolution"),
+            (self.temp_val, self.center_val, self.res_val),
+            strict=True,
+        ):
+            textedit.setText(_get_param_text(param))
+
+        self.redchi_val.setText(f"{modelresult.redchi:.4f}")
+
+    def connect_signals(self) -> None:
+        self.x0_spin.valueChanged.connect(self._update_region)
+        self.x1_spin.valueChanged.connect(self._update_region)
+        self.y0_spin.valueChanged.connect(self._update_region)
+        self.y1_spin.valueChanged.connect(self._update_region)
+        self._x_region_changed()
+        self._y_region_changed()  # Set spinbox initial values
+
+        self.go_btn.clicked.connect(self.do_fit)
+        self._sigTriggerFit.connect(self.do_fit)
+        self.guess_btn.clicked.connect(self._guess)
+        self.copy_btn.clicked.connect(self.copy_code)
+
+    @QtCore.Slot()
+    def copy_code(self) -> str:
+        """Copy the code for the current fit to the clipboard."""
+        data_name = generate_code(
+            xr.DataArray.sel,
+            args=[],
+            kwargs={self.y_dim: slice(*self.y_range)},
+            module=self.data_name,
+        )
+        code = generate_code(
+            erlab.analysis.gold.quick_fit,
+            args=[f"|{data_name}|"],
+            kwargs=self.fit_params,
+            module="era.gold",
+        ).replace("quick_fit", "quick_resolution")
+        return copy_to_clipboard(code)
+
+    @QtCore.Slot()
+    def _update_region(self) -> None:
+        """Update the region items when the spinboxes are changed."""
+        if self.x_range != self.x_region.getRegion():
+            self.x_region.setRegion(self.x_range)
+        if self.y_range != self.y_region.getRegion():
+            self.y_region.setRegion(self.y_range)
+
+    @QtCore.Slot()
+    def _x_region_changed(self) -> None:
+        """Update the x0 and x1 spinboxes when the region is changed.
+
+        If live fitting is enabled, trigger a fit.
+        """
+        self.x0_spin.blockSignals(True)
+        self.x1_spin.blockSignals(True)
+
+        x0, x1 = self.x_region.getRegion()
+        self.x0_spin.setValue(x0)
+        self.x1_spin.setValue(x1)
+
+        self.x0_spin.blockSignals(False)
+        self.x1_spin.blockSignals(False)
+
+        self.x0_spin.setMaximum(self.x1_spin.value())
+        self.x1_spin.setMinimum(self.x0_spin.value())
+
+        self.edc_fit.setData(x=[], y=[])
+        if self.live_check.isChecked():
+            self._sigTriggerFit.emit()
+
+    @QtCore.Slot()
+    def _y_region_changed(self) -> None:
+        """Update the y0 and y1 spinboxes when the region is changed.
+
+        Also updates the averaged EDC plot.
+        If live fitting is enabled, trigger a fit.
+        """
+        self.y0_spin.blockSignals(True)
+        self.y1_spin.blockSignals(True)
+
+        y0, y1 = self.y_region.getRegion()
+        self.y0_spin.setValue(y0)
+        self.y1_spin.setValue(y1)
+
+        self.y0_spin.blockSignals(False)
+        self.y1_spin.blockSignals(False)
+
+        self.y0_spin.setMaximum(self.y1_spin.value())
+        self.y1_spin.setMinimum(self.y0_spin.value())
+
+        self._update_edc()
+        if self.live_check.isChecked():
+            self._sigTriggerFit.emit()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        return super().closeEvent(event)
+
+
 def goldtool(
     data: xr.DataArray,
     data_corr: xr.DataArray | None = None,
@@ -560,7 +887,7 @@ def goldtool(
     data_name: str | None = None,
     **kwargs,
 ) -> GoldTool:
-    """Interactive gold edge fitting.
+    """Interactive tool for correcting curved Fermi edges.
 
     Parameters
     ----------
@@ -580,3 +907,53 @@ def goldtool(
         except varname.VarnameRetrievingError:
             data_name = "data"
     return GoldTool(data, data_corr, data_name=data_name, **kwargs)
+
+
+def restool(
+    data: xr.DataArray,
+    *,
+    data_name: str | None = None,
+    execute: bool | None = None,
+) -> ResolutionTool:
+    """Interactive tool for precise resolution fitting of EDCs.
+
+    Parameters
+    ----------
+    data
+        Data to visualize. Must be a 2D DataArray with an 'eV' dimension.
+    data_name
+        Name of the data variable in the generated code. If not provided, the name is
+        automatically determined.
+    """
+    if data_name is None:
+        try:
+            data_name = str(varname.argname("data", func=restool, vars_only=False))
+        except varname.VarnameRetrievingError:
+            data_name = "data"
+
+    qapp = QtWidgets.QApplication.instance()
+    if not qapp:
+        qapp = QtWidgets.QApplication(sys.argv)
+
+    if isinstance(qapp, QtWidgets.QApplication):  # to appease mypy
+        qapp.setStyle("Fusion")
+
+    win = ResolutionTool(data, data_name=data_name)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+
+    if execute is None:
+        execute = True
+        try:
+            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
+            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+                execute = False
+                from IPython.lib.guisupport import start_event_loop_qt4
+
+                start_event_loop_qt4(qapp)
+        except NameError:
+            pass
+    if execute:
+        qapp.exec()
+    return win

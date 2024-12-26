@@ -1826,6 +1826,9 @@ class ItoolPlotItem(pg.PlotItem):
             goldtool_action = self.vb.menu.addAction("Open in goldtool")
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
+            restool_action = self.vb.menu.addAction("Open in restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
             dtool_action = self.vb.menu.addAction("Open in dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
 
@@ -1976,12 +1979,31 @@ class ItoolPlotItem(pg.PlotItem):
                     None,
                     "Error",
                     "Data must have 'alpha' and 'eV' dimensions"
-                    "to be opened in GoldTool.",
+                    "to be opened in goldtool.",
                 )
                 return
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.goldtool(
+                    data, data_name="data" + self.selection_code, execute=False
+                )
+            )
+
+    @QtCore.Slot()
+    def open_in_restool(self) -> None:
+        if self.is_image:
+            data = self.current_data
+
+            if "eV" not in data.dims:
+                QtWidgets.QMessageBox.critical(
+                    None,
+                    "Error",
+                    "Data must have an 'eV' dimension to be opened in restool.",
+                )
+                return
+
+            self.slicer_area.add_tool_window(
+                erlab.interactive.restool(
                     data, data_name="data" + self.selection_code, execute=False
                 )
             )

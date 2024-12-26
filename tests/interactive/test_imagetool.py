@@ -12,7 +12,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import (
@@ -278,6 +278,17 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
         main_image.open_in_goldtool()
         assert isinstance(
             next(iter(win.slicer_area._associated_tools.values())), GoldTool
+        )
+
+        # Close associated windows
+        win.slicer_area.close_associated_windows()
+        qtbot.waitUntil(
+            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+        )
+
+        main_image.open_in_restool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), ResolutionTool
         )
 
         # Close associated windows

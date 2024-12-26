@@ -1,6 +1,6 @@
-__all__ = ["dtool", "goldtool", "itool", "ktool"]
+__all__ = ["dtool", "goldtool", "itool", "ktool", "restool"]
 
 from .derivative import dtool
-from .fermiedge import goldtool
+from .fermiedge import goldtool, restool
 from .imagetool import itool
 from .kspace import ktool

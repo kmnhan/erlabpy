@@ -221,8 +221,8 @@ def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
         The effective number of decimal places, calculated as the order of magnitude of
         ``step`` plus one.
     """
-    if isinstance(step_or_coord, float | np.floating):
-        step = step_or_coord
+    if isinstance(step_or_coord, np.ndarray):
+        step = step_or_coord[1] - step_or_coord[0]
     else:
-        step = np.diff(step_or_coord[:2])[0]
+        step = step_or_coord
     return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
