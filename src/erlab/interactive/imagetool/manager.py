@@ -26,7 +26,6 @@ import contextlib
 import datetime
 import enum
 import gc
-import importlib
 import logging
 import os
 import pathlib
@@ -45,9 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph
-import pyqtgraph.console
 import qtawesome as qta
-import qtconsole.inprocess
 import qtpy
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
@@ -368,7 +365,7 @@ class _RenameDialog(QtWidgets.QDialog):
         )
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
-        self._layout.addWidget(button_box)
+        self._layout.addWidget(button_box, len(original_names), 0, 1, 3)
 
     def new_names(self) -> list[str]:
         return [w.text() for w in self._new_name_lines]
@@ -380,6 +377,57 @@ class _RenameDialog(QtWidgets.QDialog):
                 manager.list_view.selected_tool_indices, self.new_names(), strict=True
             ):
                 manager.rename_tool(index, new_name)
+        super().accept()
+
+
+class _StoreDialog(QtWidgets.QDialog):
+    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
+        super().__init__(manager)
+        self.setWindowTitle("Store with IPython")
+        self._manager = weakref.ref(manager)
+        self._target_indices: list[int] = target_indices
+
+        self._layout = QtWidgets.QFormLayout()
+        self.setLayout(self._layout)
+
+        self._var_name_lines: list[QtWidgets.QLineEdit] = []
+
+        self._layout.addRow("Data to store", QtWidgets.QLabel("Stored name"))
+
+        for tool_idx in target_indices:
+            data = manager.get_tool(tool_idx).slicer_area._data
+            wrapper = manager._tool_wrappers[tool_idx]
+            default_name = data.name
+            if not (isinstance(default_name, str) and default_name.isidentifier()):
+                if wrapper.name.isidentifier():
+                    default_name = wrapper.name
+                else:
+                    default_name = f"data_{tool_idx}"
+
+            line_new = QtWidgets.QLineEdit(default_name)
+            line_new.setPlaceholderText("Enter variable name")
+            self._layout.addRow(wrapper.label_text, line_new)
+            self._var_name_lines.append(line_new)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        self._layout.addRow(button_box)
+
+    def var_name_map(self) -> dict[int, str]:
+        return {
+            idx: w.text()
+            for idx, w in zip(self._target_indices, self._var_name_lines, strict=True)
+        }
+
+    def accept(self) -> None:
+        manager = self._manager()
+        if manager is not None:
+            for idx, var_name in self.var_name_map().items():
+                manager.console._console_widget.store_data_as(idx, var_name)
         super().accept()
 
 
@@ -436,6 +484,9 @@ class _ImageToolWrapper(QtCore.QObject):
 
         self._info_text_archived: str = ""
 
+        self._box_ratio_archived: float = float("NaN")
+        self._pixmap_archived: QtGui.QPixmap = QtGui.QPixmap()
+
         self.tool = tool
 
     @property
@@ -467,6 +518,27 @@ class _ImageToolWrapper(QtCore.QObject):
             accent_color = QtWidgets.QApplication.palette().accent().color().name()
 
         return text.replace(_ACCENT_PLACEHOLDER, accent_color)
+
+    @property
+    def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
+        """Get the preview image and box aspect ratio.
+
+        Retrieves the main image pixmap and flips it to match the image displayed in the
+        tool. The box ratio is calculated from the view box size of the main image.
+        """
+        if self.tool is not None:
+            main_image = self.slicer_area.main_image
+            vb_rect = main_image.getViewBox().rect()
+
+            pixmap: QtGui.QPixmap = (
+                self.slicer_area.main_image.slicer_data_items[0]
+                .getPixmap()
+                .transformed(QtGui.QTransform().scale(1.0, -1.0))
+            )
+            box_ratio: float = vb_rect.height() / vb_rect.width()
+
+            return box_ratio, pixmap
+        return self._box_ratio_archived, self._pixmap_archived
 
     @property
     def tool(self) -> ImageTool | None:
@@ -613,6 +685,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self._info_text_archived = _format_info_html(
                 self.slicer_area._data, self._created_time
             )
+            self._box_ratio_archived, self._pixmap_archived = self._preview_image
             self.dispose()
 
     @QtCore.Slot()
@@ -626,8 +699,10 @@ class _ImageToolWrapper(QtCore.QObject):
         if self.archived:
             self.tool = ImageTool.from_file(cast(str, self._archived_fname))
             self.tool.show()
-            self.manager._sigReloadLinkers.emit()
             self._info_text_archived = ""
+            self._box_ratio_archived = float("NaN")
+            self._pixmap_archived = QtGui.QPixmap()
+            self.manager._sigReloadLinkers.emit()
 
 
 class _ResizingLineEdit(QtWidgets.QLineEdit):
@@ -695,6 +770,17 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         self._current_editor: weakref.ref[QtWidgets.QLineEdit | _Placeholder] = (
             weakref.ref(_Placeholder())
         )
+
+        # Initialize popup preview
+        self.preview_popup = QtWidgets.QLabel(parent)
+        self.preview_popup.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
+        self.preview_popup.setScaledContents(True)
+        self.preview_popup.hide()
+
+        # Handle preview closing
+        viewport = parent.viewport()
+        if viewport is not None:
+            viewport.installEventFilter(self)
 
     @property
     def manager(self) -> ImageToolManager:
@@ -774,10 +860,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         # Draw text only if not editing
         view = cast(_ImageToolWrapperListView, self.parent())
-        if not (
+        is_editing: bool = (
             view.state() == QtWidgets.QAbstractItemView.State.EditingState
             and view.currentIndex() == index
-        ):
+        )
+        if not is_editing:
             # Grey text for archived tools
             painter.setPen(index.data(role=QtCore.Qt.ItemDataRole.ForegroundRole))
 
@@ -802,10 +889,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 elided_text,
             )
 
-        # Draw icon for linked tools
         tool_wrapper: _ImageToolWrapper = self.manager._tool_wrappers[
             index.data(role=_WrapperItemDataRole.ToolIndexRole)
         ]
+
+        # Draw icon for linked tools
         if not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked:
             icon_x = option.rect.right() - self.icon_width - self.icon_right_pad
             icon_y = option.rect.center().y() - self.icon_height // 2
@@ -836,7 +924,51 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignVCenter,
             )
 
+        # Show preview on hover
+        if (
+            not tool_wrapper.archived
+            and not is_editing
+            and self.manager.preview_action.isChecked()
+            and QtWidgets.QStyle.StateFlag.State_MouseOver in option.state
+        ):
+            box_ratio, pixmap = tool_wrapper._preview_image
+            popup_height = 150
+
+            self.preview_popup.setFixedSize(
+                round(popup_height / box_ratio), popup_height
+            )
+            self.preview_popup.setPixmap(pixmap)
+
+            rect = QtCore.QRect(option.rect)
+            rect.setTop(rect.center().y() + rect.height())
+            self.preview_popup.move(
+                option.widget.mapToGlobal(rect.center())
+                - QtCore.QPoint(int(self.preview_popup.width() / 2), 0)
+            )
+
+            self.preview_popup.show()
+
         painter.restore()
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        if event is not None:
+            match event.type():
+                case (
+                    QtCore.QEvent.Type.Resize
+                    | QtCore.QEvent.Type.Leave
+                    | QtCore.QEvent.Type.WindowStateChange
+                ):
+                    self.preview_popup.hide()
+                case QtCore.QEvent.Type.MouseMove:
+                    index = cast(_ImageToolWrapperListView, self.parent()).indexAt(
+                        cast(QtGui.QMouseEvent, event).pos()
+                    )
+                    if not index.isValid():
+                        self.preview_popup.hide()
+
+        return super().eventFilter(obj, event)
 
 
 class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
@@ -1097,6 +1229,8 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)
         self._menu.addAction(manager.unlink_action)
+        self._menu.addSeparator()
+        self._menu.addAction(manager.store_action)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
@@ -1108,10 +1242,8 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
         The tools are ordered by their position in the list view.
         """
-        return [
-            self._model.manager._displayed_indices[index.row()]
-            for index in self.selectedIndexes()
-        ]
+        row_indices = sorted(index.row() for index in self.selectedIndexes())
+        return [self._model.manager._displayed_indices[i] for i in row_indices]
 
     @QtCore.Slot()
     def select_all(self) -> None:
@@ -1160,7 +1292,22 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
 
 class ToolNamespace:
-    """A console interface that represents a single ImageTool object."""
+    """A console interface that represents a single ImageTool object.
+
+    In the manager console, this namespace can be accessed with the variable
+    ``tools[idx]``, where ``idx`` is the index of the ImageTool to access.
+
+    Examples
+    --------
+    - Access the underlying DataArray of an ImageTool:
+
+      >>> tools[1].data
+
+    - Setting a new DataArray:
+
+      >>> tools[1].data = new_data
+
+    """
 
     def __init__(self, wrapper: _ImageToolWrapper) -> None:
         self._wrapper_ref = weakref.ref(wrapper)
@@ -1206,7 +1353,21 @@ class ToolNamespace:
 
 
 class ToolsNamespace:
-    """A console interface that represents the ImageToolManager and its tools."""
+    """A console interface that represents the ImageToolManager and its tools.
+
+    In the manager console, this namespace can be accessed with the variable `tools`.
+
+    Examples
+    --------
+    - Print the list of tools:
+
+      >>> tools
+
+    - Access :class:`ToolNamespace` by index:
+
+      >>> tools[1]
+
+    """
 
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager_ref = weakref.ref(manager)
@@ -1244,141 +1405,27 @@ class ToolsNamespace:
         return "\n".join(output)
 
 
-class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
-    def __init__(self, parent=None, namespace: dict[str, Any] | None = None) -> None:
+class _SingleImagePreview(QtWidgets.QGraphicsView):
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.kernel_manager = qtconsole.inprocess.QtInProcessKernelManager()
-        self._namespace = namespace
-        self._kernel_banner_default: str = ""
+        self.setScene(QtWidgets.QGraphicsScene(self))
 
-    def initialize_kernel(self) -> None:
-        if not self.kernel_manager.kernel:
-            self.kernel_manager.start_kernel()
-            self.kernel_client = self.kernel_manager.client()
-            self.kernel_client.start_channels()
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-            if self._namespace is not None:
-                self.kernel_manager.kernel.shell.push(
-                    {
-                        name: importlib.import_module(module)
-                        if isinstance(module, str)
-                        else module
-                        for name, module in self._namespace.items()
-                    }
-                )
-
-    @QtCore.Slot()
-    def shutdown_kernel(self) -> None:
-        if self.kernel_manager.kernel:
-            self.kernel_client.stop_channels()
-            self.kernel_manager.shutdown_kernel()
-
-    def _banner_default(self) -> str:
-        banner = super()._banner_default()
-        return banner.strip() + f" | ERLabPy {erlab.__version__}\n"
-
-    @property
-    def kernel_banner(self) -> str:
-        def _command_ansi(title: str, command_list: list[str]):
-            out = f"\033[1m* {title}\033[0m"
-            for command in command_list:
-                out += f"\n  {command}"
-            return out
-
-        info_str = (
-            _command_ansi("Access data", ["tools[<index>].data", "tools.selected_data"])
-            + "\n"
-            + _command_ansi("Change data", ["tools[<index>].data = <value>"])
-            + "\n"
-            + _command_ansi(
-                "Control window visibility",
-                ["tools[<index>].show(), .close(), .dispose()"],
-            )
-            + "\n"
+        self._pixmapitem = cast(
+            QtWidgets.QGraphicsPixmapItem,
+            cast(QtWidgets.QGraphicsScene, self.scene()).addPixmap(QtGui.QPixmap()),
         )
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        return f"{self._kernel_banner_default}{info_str}"
+    def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
+        self._pixmapitem.setPixmap(pixmap)
+        self.fitInView(self._pixmapitem)
 
-    @kernel_banner.setter
-    def kernel_banner(self, value: str) -> None:
-        self._kernel_banner_default = value
-
-    def _update_colors(self) -> None:
-        """Detect dark mode and update the console colors accordingly."""
-        if self.kernel_manager.kernel:
-            is_dark: bool = (
-                self.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
-            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
-            colors = "linux" if is_dark else "lightbg"
-            self.set_default_style(colors)
-            self._syntax_style_changed()
-            self._style_sheet_changed()
-            self._execute(
-                f"""
-from IPython.core.ultratb import VerboseTB
-if getattr(VerboseTB, 'tb_highlight_style', None) is not None:
-    VerboseTB.tb_highlight_style = '{self.syntax_style}'
-elif getattr(VerboseTB, '_tb_highlight_style', None) is not None:
-    VerboseTB._tb_highlight_style = '{self.syntax_style}'
-else:
-    get_ipython().run_line_magic('colors', '{colors}')
-""",
-                True,
-            )  # Adapted from qtconsole.mainwindow.MainWindow.set_syntax_style
-
-    def sizeHint(self) -> QtCore.QSize:
-        return QtCore.QSize(300, 186)
-
-
-class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
-    def __init__(self, manager: ImageToolManager) -> None:
-        super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
-
-        self._console_widget = _JupyterConsoleWidget(
-            parent=self,
-            namespace={
-                "np": np,
-                "xr": xr,
-                "erlab": erlab,
-                "eri": erlab.interactive,
-                "tools": ToolsNamespace(manager),
-                "era": "erlab.analysis",
-                "eplt": "erlab.plotting",
-                "plt": "matplotlib.pyplot",
-            },
-        )
-        qapp = QtWidgets.QApplication.instance()
-
-        if qapp:
-            # Shutdown kernel when application quits
-            qapp.aboutToQuit.connect(self._console_widget.shutdown_kernel)
-
-        self.setWidget(self._console_widget)
-        manager.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self)
-        self.setFloating(False)
-        self.hide()
-
-        # Start kernel when console is shown
-        self._console_widget.installEventFilter(self)
-
-    def eventFilter(
-        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
-    ) -> bool:
-        if (
-            hasattr(self, "_console_widget")
-            and obj == self._console_widget
-            and event is not None
-            and event.type() == QtCore.QEvent.Type.Show
-        ):
-            self._console_widget.initialize_kernel()
-            self._console_widget._update_colors()
-        return super().eventFilter(obj, event)
-
-    def changeEvent(self, evt: QtCore.QEvent | None) -> None:
-        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
-            self._console_widget._update_colors()
-
-        super().changeEvent(evt)
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self.fitInView(self._pixmapitem)
 
 
 class ImageToolManager(QtWidgets.QMainWindow):
@@ -1469,29 +1516,34 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.console_action = QtWidgets.QAction("Console", self)
         self.console_action.triggered.connect(self.toggle_console)
-        console_shortcut = "Meta+`"
-        if sys.platform != "darwin":
-            console_shortcut = console_shortcut.replace("Meta", "Ctrl")
-        self.console_action.setShortcut(QtGui.QKeySequence(console_shortcut))
+        self.console_action.setShortcut(
+            QtGui.QKeySequence("Meta+`" if sys.platform == "darwin" else "Ctrl+`")
+        )
         self.console_action.setToolTip("Toggle console window")
+
+        self.preview_action = QtWidgets.QAction("Preview on Hover", self)
+        self.preview_action.setCheckable(True)
+        self.preview_action.setToolTip("Show preview on hover")
 
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.triggered.connect(self.about)
+
+        self.store_action = QtWidgets.QAction("Store with IPython", self)
+        self.store_action.triggered.connect(self.store_selected)
+        self.store_action.setToolTip("Store selected data with IPython")
 
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
-        # Construct GUI
-        titlebar = QtWidgets.QWidget()
-        titlebar_layout = QtWidgets.QVBoxLayout()
-        titlebar.setLayout(titlebar_layout)
-
+        # Populate menu bar
         file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
         file_menu.addAction(self.open_action)
         file_menu.addSeparator()
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.store_action)
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
         file_menu.addSeparator()
@@ -1513,7 +1565,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&View"))
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
+        view_menu.addAction(self.preview_action)
+        view_menu.addSeparator()
 
+        # Initialize sidebar buttons linked to actions
         self.open_button = IconActionButton(
             self.open_action,
             "mdi6.folder-open-outline",
@@ -1534,37 +1589,53 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.unlink_action,
             "mdi6.link-variant-off",
         )
+        self.preview_button = IconActionButton(
+            self.preview_action, on="mdi6.eye", off="mdi6.eye-off"
+        )
 
+        # Initialize GUI
+        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.setCentralWidget(main_splitter)
+
+        # Construct left side of splitter
+        left_container = QtWidgets.QWidget()
+        left_layout = QtWidgets.QHBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        left_container.setLayout(left_layout)
+        main_splitter.addWidget(left_container)
+
+        titlebar = QtWidgets.QWidget()
+        titlebar_layout = QtWidgets.QVBoxLayout()
+        titlebar.setLayout(titlebar_layout)
         titlebar_layout.addWidget(self.open_button)
         titlebar_layout.addWidget(self.remove_button)
         titlebar_layout.addWidget(self.rename_button)
         titlebar_layout.addWidget(self.link_button)
         titlebar_layout.addWidget(self.unlink_button)
         titlebar_layout.addStretch()
-
-        container = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        container.setLayout(layout)
-
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        left_layout.addWidget(titlebar)
 
         self.list_view = _ImageToolWrapperListView(self)
         self.list_view._selection_model.selectionChanged.connect(self._update_actions)
         self.list_view._selection_model.selectionChanged.connect(self._update_info)
         self.list_view._model.dataChanged.connect(self._update_info)
+        left_layout.addWidget(self.list_view)
 
-        self.text_box = QtWidgets.QTextEdit()
+        # Construct right side of splitter
+        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        main_splitter.addWidget(right_splitter)
+
+        self.text_box = QtWidgets.QTextEdit(self)
         self.text_box.setReadOnly(True)
+        right_splitter.addWidget(self.text_box)
 
-        self.setCentralWidget(splitter)
-        layout.addWidget(titlebar)
-        layout.addWidget(self.list_view)
-        # layout.addWidget(splitter)
-        splitter.addWidget(container)
-        splitter.addWidget(self.text_box)
-        splitter.setSizes([100, 150])
+        self.preview_widget = _SingleImagePreview(self)
+        right_splitter.addWidget(self.preview_widget)
+
+        # Set initial splitter sizes
+        right_splitter.setSizes([300, 100])
+        main_splitter.setSizes([100, 150])
 
         # Temporary directory for storing archived data
         self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
@@ -1591,9 +1662,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.setMinimumWidth(301)
         self.setMinimumHeight(487)
 
-        self.console = _ImageToolManagerJupyterConsole(self)
-
-        # Event filters
+        # Install event filter for keyboard shortcuts
         self._kb_filter = KeyboardEventFilter(self)
         self.text_box.installEventFilter(self._kb_filter)
 
@@ -1709,12 +1778,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
         match len(selection):
             case 0:
                 self.text_box.setPlainText("Select a window to view its information.")
-                return
+                self.preview_widget.setVisible(False)
             case 1:
-                self.text_box.setHtml(self._tool_wrappers[selection[0]].info_text)
-                return
+                wrapper = self._tool_wrappers[selection[0]]
+                self.text_box.setHtml(wrapper.info_text)
+                self.preview_widget.setPixmap(wrapper._preview_image[1])
+                self.preview_widget.setVisible(True)
             case _:
                 self.text_box.setPlainText(f"{len(selection)} selected")
+                self.preview_widget.setVisible(False)
 
     @QtCore.Slot()
     def _update_actions(self) -> None:
@@ -1741,6 +1813,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.archive_action.setEnabled(something_selected and only_unarchived)
         self.unarchive_action.setEnabled(something_selected and only_archived)
         self.concat_action.setEnabled(multiple_selected)
+        self.store_action.setEnabled(something_selected and only_unarchived)
 
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
@@ -1812,16 +1885,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def remove_selected(self) -> None:
-        """Close selected ImageTool windows."""
+        """Discard selected ImageTool windows."""
         checked_names = self.list_view.selected_tool_indices
 
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setText("Close selected windows?")
+        msg_box.setText("Remove selected windows?")
         msg_box.setInformativeText(
-            "1 selected window will be closed."
+            "1 selected window will be removed."
             if len(checked_names) == 1
-            else f"{len(checked_names)} selected windows will be closed."
+            else f"{len(checked_names)} selected windows will be removed."
         )
         msg_box.setStandardButtons(
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -1908,6 +1981,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
+
+    @QtCore.Slot()
+    def store_selected(self) -> None:
+        self.ensure_console_initialized()
+        dialog = _StoreDialog(self, self.list_view.selected_tool_indices)
+        dialog.exec()
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
@@ -2092,9 +2171,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if link:
             self.link_tools(*indices, link_colors=link_colors)
 
+    def ensure_console_initialized(self) -> None:
+        """Ensure that the console window is initialized."""
+        if not hasattr(self, "console"):
+            from erlab.interactive.imagetool._console import (
+                _ImageToolManagerJupyterConsole,
+            )
+
+            self.console = _ImageToolManagerJupyterConsole(self)
+
     @QtCore.Slot()
     def toggle_console(self) -> None:
         """Toggle the console window."""
+        self.ensure_console_initialized()
         if self.console.isVisible():
             self.console.hide()
         else:
@@ -2260,6 +2349,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
 
     def _error_creating_tool(self, e: Exception) -> None:
+        logger.exception("Error creating ImageTool window")
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msg_box.setText("An error occurred while creating the ImageTool window.")
@@ -2303,10 +2393,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 for data in data_list:
                     try:
-                        tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
+                        tool = ImageTool(data, file_path=p, _in_manager=True)
                         tool._recent_name_filter = self._recent_name_filter
                         tool._recent_directory = self._recent_directory
-                        tool.slicer_area.set_data(data, file_path=p)
                     except Exception as e:
                         failed.append(p)
                         self._error_creating_tool(e)

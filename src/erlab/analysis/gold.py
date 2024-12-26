@@ -13,9 +13,8 @@ __all__ = [
 ]
 
 from collections.abc import Callable
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import joblib
 import lmfit
 import lmfit.model
 import matplotlib
@@ -26,19 +25,21 @@ import matplotlib.transforms
 import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
-import tqdm.auto
 import xarray as xr
 
 import erlab
-from erlab.analysis.fit.models import (
-    FermiEdge2dModel,
-    FermiEdgeModel,
-    PolynomialModel,
-    StepEdgeModel,
-)
-from erlab.plotting.colors import proportional_colorbar
-from erlab.plotting.general import autoscale_to, figwh, plot_array
 from erlab.utils.parallel import joblib_progress
+
+if TYPE_CHECKING:
+    import joblib
+    import tqdm.auto as tqdm
+else:
+    import lazy_loader as _lazy
+
+    from erlab.utils.misc import LazyImport
+
+    joblib = _lazy.load("joblib")
+    tqdm = LazyImport("tqdm.auto")
 
 
 def correct_with_edge(
@@ -82,7 +83,7 @@ def correct_with_edge(
         plot_kw = {}
 
     if isinstance(modelresult, lmfit.model.ModelResult):
-        if isinstance(modelresult.model, FermiEdge2dModel):
+        if isinstance(modelresult.model, erlab.analysis.fit.models.FermiEdge2dModel):
             edge_quad = np.polynomial.polynomial.polyval(
                 darr.alpha,
                 np.array(
@@ -133,15 +134,15 @@ def correct_with_edge(
             avg_dims = list(darr.dims)[:]
             avg_dims.remove("alpha")
             avg_dims.remove("eV")
-            plot_array(darr.mean(avg_dims), ax=axes[0], **plot_kw)
-            plot_array(corrected.mean(avg_dims), ax=axes[1], **plot_kw)
+            erlab.plotting.plot_array(darr.mean(avg_dims), ax=axes[0], **plot_kw)
+            erlab.plotting.plot_array(corrected.mean(avg_dims), ax=axes[1], **plot_kw)
         else:
-            plot_array(darr, ax=axes[0], **plot_kw)
-            plot_array(corrected, ax=axes[1], **plot_kw)
+            erlab.plotting.plot_array(darr, ax=axes[0], **plot_kw)
+            erlab.plotting.plot_array(corrected, ax=axes[1], **plot_kw)
         edge_quad.plot(ax=axes[0], ls="--", color="0.35")
 
-        proportional_colorbar(ax=axes[0])
-        proportional_colorbar(ax=axes[1])
+        erlab.plotting.proportional_colorbar(ax=axes[0])
+        erlab.plotting.proportional_colorbar(ax=axes[1])
         axes[0].set_title("Data")
         axes[1].set_title("Edge Corrected")
 
@@ -220,7 +221,7 @@ def edge(
     """
     if fast:
         params = lmfit.create_params()
-        model_cls: lmfit.Model = StepEdgeModel
+        model_cls: lmfit.Model = erlab.analysis.fit.models.StepEdgeModel
     else:
         if temp is None:
             temp = gold.qinfo.get_value("sample_temp")
@@ -230,7 +231,7 @@ def edge(
                 )
 
         params = lmfit.create_params(temp={"value": float(temp), "vary": vary_temp})
-        model_cls = FermiEdgeModel
+        model_cls = erlab.analysis.fit.models.FermiEdgeModel
 
     model = model_cls()
 
@@ -284,7 +285,7 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
-        fitresults = tqdm.auto.tqdm(  # type: ignore[call-overload]
+        fitresults = tqdm.tqdm(  # type: ignore[call-overload]
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
@@ -329,7 +330,7 @@ def edge(
 def poly_from_edge(
     center, weights=None, degree=4, method="leastsq", scale_covar=True
 ) -> lmfit.model.ModelResult:
-    model = PolynomialModel(degree=degree)
+    model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
     pars = model.guess(center.values, x=center[center.dims[0]].values)
     return model.fit(
         center,
@@ -363,7 +364,7 @@ def _plot_gold_fit(
         raise TypeError("res must be a callable or a lmfit.model.ModelResult")
 
     if not isinstance(fig, plt.Figure):
-        fig = plt.figure(figsize=figwh(0.75, wscale=1.75))
+        fig = plt.figure(figsize=erlab.plotting.figwh(0.75, wscale=1.75))
 
     gs = fig.add_gridspec(2, 2, height_ratios=[1, 3])
     ax0 = fig.add_subplot(gs[:, 0])
@@ -437,8 +438,8 @@ def _plot_gold_fit(
         )
         ax2.plot(x_eval, res(x_eval), "-", label="best fit", **fit_kws)
         ax2.legend()
-        ax1.set_ylim(autoscale_to(residuals))
-        ax2.set_ylim(autoscale_to(center_arr.values))
+        ax1.set_ylim(erlab.plotting.autoscale_to(residuals))
+        ax2.set_ylim(erlab.plotting.autoscale_to(center_arr.values))
     else:
         res.plot_residuals(
             ax=ax1,
@@ -451,8 +452,8 @@ def _plot_gold_fit(
             fit_kws=fit_kws,
             numpoints=3 * len(center_arr.alpha),
         )
-        ax1.set_ylim(autoscale_to(res.eval() - res.data))
-        ax2.set_ylim(autoscale_to(res.data))
+        ax1.set_ylim(erlab.plotting.autoscale_to(res.eval() - res.data))
+        ax2.set_ylim(erlab.plotting.autoscale_to(res.data))
 
     ax1.set_title("")
     ax2.set_title("")
@@ -553,17 +554,23 @@ def spline(
 
 def quick_fit(
     darr: xr.DataArray,
+    *,
     eV_range: tuple[float, float] | None = None,
     method: str = "leastsq",
     temp: float | None = None,
     resolution: float | None = None,
+    center: float | None = None,
     fix_temp: bool = True,
     fix_center: bool = False,
     fix_resolution: bool = False,
     bkg_slope: bool = True,
     **kwargs,
 ) -> xr.Dataset:
-    """Perform a quick Fermi edge fit on an EDC.
+    """Perform a Fermi edge fit on an EDC.
+
+    This function is a convenient wrapper around :meth:`modelfit
+    <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge
+    to the given data.
 
     If data with 2 or more dimensions is provided, the data is averaged over all
     dimensions except the energy prior to fitting.
@@ -584,6 +591,10 @@ def quick_fit(
     resolution
         The initial resolution value to use for fitting. If `None`, the resolution is
         set to 0.02, or to the ``'TotalResolution'`` attribute if present.
+    center
+        The initial center value to use for fitting. If `None`, the center is
+        automatically guessed if `fix_center` is `False`. Otherwise, the center is fixed
+        to 0.
     fix_temp
         Whether to fix the temperature value during fitting. Defaults to `True`.
     fix_center
@@ -629,12 +640,21 @@ def quick_fit(
     if not bkg_slope:
         params["back1"] = {"value": 0, "vary": False}
 
+    if center is not None:
+        params["center"] = {"value": center}
+
     if fix_center:
-        params["center"] = {"value": 0, "vary": False}
+        if center is None:
+            params["center"] = {"value": 0.0}
+        params["center"]["vary"] = False
 
     kwargs.setdefault("guess", True)
     return data_fit.modelfit(
-        "eV", model=FermiEdgeModel(), method=method, params=params, **kwargs
+        "eV",
+        model=erlab.analysis.fit.models.FermiEdgeModel(),
+        method=method,
+        params=params,
+        **kwargs,
     )
 
 
@@ -773,9 +793,9 @@ def resolution(
         temp={"value": gold_roi.attrs["sample_temp"], "vary": False},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
-    model = FermiEdgeModel()
+    model = erlab.analysis.fit.models.FermiEdgeModel()
     params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
-    fit = FermiEdgeModel().fit(
+    fit = erlab.analysis.fit.models.FermiEdgeModel().fit(
         edc_avg, x=edc_avg["eV"], params=params, method=method, scale_covar=scale_covar
     )
     if plot:
@@ -826,7 +846,7 @@ def resolution_roi(
         temp={"value": gold_roi.attrs["sample_temp"], "vary": not fix_temperature},
         resolution={"value": 0.1, "vary": True, "min": 0},
     )
-    model = FermiEdgeModel()
+    model = erlab.analysis.fit.models.FermiEdgeModel()
     params = model.guess(edc_avg, x=edc_avg["eV"]).update(params)
     fit = model.fit(
         edc_avg,

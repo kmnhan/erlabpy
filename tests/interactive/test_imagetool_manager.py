@@ -193,6 +193,27 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     manager.get_tool(3).slicer_area.images[2].open_in_goldtool()
     assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
 
+    # Bring manager to top
+
+    with qtbot.waitExposed(manager):
+        manager.preview_action.setChecked(True)
+        manager.activateWindow()
+        manager.raise_()
+
+    # Test mouse hover over list view
+    first_index = manager.list_view.model().index(0)
+    first_rect_center = manager.list_view.visualRect(first_index).center()
+    qtbot.mouseMove(manager.list_view.viewport())
+    qtbot.mouseMove(manager.list_view.viewport(), first_rect_center)
+    qtbot.mouseMove(
+        manager.list_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
+    )
+    qtbot.wait(10)
+    assert delegate.preview_popup.isVisible()
+    qtbot.mouseMove(manager.list_view.viewport())  # move to blank should hide popup
+    qtbot.wait(10)
+    assert not delegate.preview_popup.isVisible()
+
     # Remove all selected
     select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
@@ -232,7 +253,7 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     win0, win1 = manager.get_tool(0), manager.get_tool(1)
 
-    win1.slicer_area.set_colormap("ColdWarm", gamma=1.5)
+    win1.slicer_area.set_colormap("RdYlBu", gamma=1.5)
     assert (
         win0.slicer_area._colormap_properties == win1.slicer_area._colormap_properties
     )
@@ -447,6 +468,10 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     assert _get_last_output_contents() == [
         wrapper.tool.slicer_area._data for wrapper in manager._tool_wrappers.values()
     ]
+
+    # Test storing with ipython
+    accept_dialog(manager.store_action.trigger)
+    manager.console._console_widget.execute(r"%store -d data_0 data_1")
 
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")

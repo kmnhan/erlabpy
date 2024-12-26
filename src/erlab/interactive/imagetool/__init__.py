@@ -24,7 +24,7 @@ __all__ = ["BaseImageTool", "ImageTool", "itool"]
 import json
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -55,7 +55,6 @@ from erlab.interactive.utils import (
 from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
-    import pathlib
     from collections.abc import Callable, Collection
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -442,11 +441,26 @@ class ImageTool(BaseImageTool):
         super().__init__(data, **kwargs)
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
+
+        self.initialize_actions()
         self.setMenuBar(ItoolMenuBar(self))
 
         self.slicer_area.sigDataChanged.connect(self._update_title)
         self._update_title()
         self.slicer_area.installEventFilter(self)
+
+    def initialize_actions(self) -> None:
+        self.open_act = QtWidgets.QAction("&Open...", self)
+        self.open_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        self.open_act.triggered.connect(self._open_file)
+
+        self.save_act = QtWidgets.QAction("&Save As...", self)
+        self.save_act.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
+        self.save_act.triggered.connect(self._export_file)
+
+        self.close_act = QtWidgets.QAction("&Close", self)
+        self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self.close_act.triggered.connect(self.close)
 
     @property
     def mnb(self) -> ItoolMenuBar:
@@ -454,19 +468,7 @@ class ImageTool(BaseImageTool):
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
-            name: str | None = cast(str | None, self.slicer_area._data.name)
-            path: pathlib.Path | None = self.slicer_area._file_path
-
-            if name is not None and name.strip() == "":
-                # Name contains only whitespace
-                name = None
-
-            if name is None:
-                title = "" if path is None else path.stem
-            elif path is None or name == path.stem:
-                title = f"{name}"
-            else:
-                title = f"{name} ({path.stem})"
+            title = self.slicer_area.display_name
             self.setWindowTitle(title)
             self.sigTitleChanged.emit(title)
 
@@ -561,10 +563,6 @@ class ItoolMenuBar(DictMenuBar):
     def __init__(self, tool: ImageTool) -> None:
         super().__init__(tool)
         self.createMenus()
-        self.refreshMenus()
-        self.refreshEditMenus()
-        self.slicer_area.sigViewOptionChanged.connect(self.refreshMenus)
-        self.slicer_area.sigHistoryChanged.connect(self.refreshEditMenus)
 
     @property
     def image_tool(self) -> ImageTool:
@@ -578,91 +576,37 @@ class ItoolMenuBar(DictMenuBar):
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
 
-    @property
-    def colorAct(self):
-        return tuple(
-            self.action_dict[k]
-            for k in ("colorInvertAct", "highContrastAct", "zeroCenterAct")
-        )
-
     def _generate_menu_kwargs(self) -> dict:
         _guideline_actions = self.slicer_area.main_image._guideline_actions
         menu_kwargs: dict[str, Any] = {
             "fileMenu": {
                 "title": "&File",
                 "actions": {
-                    "&Open...": {
-                        "shortcut": QtGui.QKeySequence.StandardKey.Open,
-                        "triggered": self.image_tool._open_file,
-                    },
-                    "&Save As...": {
-                        "shortcut": QtGui.QKeySequence.StandardKey.SaveAs,
-                        "triggered": self.image_tool._export_file,
-                    },
-                    "&Close": {
-                        "shortcut": QtGui.QKeySequence.StandardKey.Close,
-                        "triggered": self.image_tool.close,
-                        "sep_before": True,
-                    },
+                    "openAct": self.image_tool.open_act,
+                    "saveAsAct": self.image_tool.save_act,
+                    "sep": {"separator": True},
+                    "closeAct": self.image_tool.close_act,
                 },
             },
             "viewMenu": {
                 "title": "&View",
                 "actions": {
-                    "viewAllAct": {
-                        "text": "View &All",
-                        "shortcut": "Ctrl+A",
-                        "triggered": self.slicer_area.view_all,
-                    },
-                    "transposeAct": {
-                        "text": "&Transpose Main Image",
-                        "shortcut": "T",
-                        "triggered": lambda: self.slicer_area.swap_axes(0, 1),
-                        "sep_after": True,
-                    },
-                    "addCursorAct": {
-                        "text": "&Add New Cursor",
-                        "shortcut": "Shift+A",
-                        "triggered": self.slicer_area.add_cursor,
-                    },
-                    "remCursorAct": {
-                        "text": "&Remove Current Cursor",
-                        "shortcut": "Shift+R",
-                        "triggered": self.slicer_area.remove_current_cursor,
-                    },
-                    "snapCursorAct": {
-                        "text": "&Snap to Pixels",
-                        "shortcut": "S",
-                        "triggered": self.slicer_area.toggle_snap,
-                        "checkable": True,
-                    },
+                    "viewAllAct": self.slicer_area.view_all_act,
+                    "transposeAct": self.slicer_area.transpose_act,
+                    "sep0": {"separator": True},
+                    "addCursorAct": self.slicer_area.add_cursor_act,
+                    "remCursorAct": self.slicer_area.rem_cursor_act,
+                    "snapCursorAct": self.array_slicer.snap_act,
                     "cursorMoveMenu": {
                         "title": "Cursor Control",
                         "actions": {},
                     },
-                    "colorInvertAct": {
-                        "text": "Invert",
-                        "shortcut": "R",
-                        "checkable": True,
-                        "toggled": self._set_colormap_options,
-                        "sep_before": True,
-                    },
-                    "highContrastAct": {
-                        "text": "High Contrast",
-                        "checkable": True,
-                        "toggled": self._set_colormap_options,
-                    },
-                    "zeroCenterAct": {
-                        "text": "Center At Zero",
-                        "checkable": True,
-                        "toggled": self._set_colormap_options,
-                        "sep_after": True,
-                    },
-                    "ktoolAct": {
-                        "text": "Open ktool",
-                        "triggered": self.slicer_area.open_in_ktool,
-                        "sep_after": True,
-                    },
+                    "sep1": {"separator": True},
+                    "colorInvertAct": self.slicer_area.reverse_act,
+                    "highContrastAct": self.slicer_area.high_contrast_act,
+                    "zeroCenterAct": self.slicer_area.zero_centered_act,
+                    "ktoolAct": self.slicer_area.ktool_act,
+                    "sep2": {"separator": True},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
                         "text": "Reset",
@@ -674,17 +618,9 @@ class ItoolMenuBar(DictMenuBar):
             "editMenu": {
                 "title": "&Edit",
                 "actions": {
-                    "undoAct": {
-                        "text": "Undo",
-                        "shortcut": QtGui.QKeySequence.StandardKey.Undo,
-                        "triggered": self.slicer_area.undo,
-                    },
-                    "redoAct": {
-                        "text": "Redo",
-                        "shortcut": QtGui.QKeySequence.StandardKey.Redo,
-                        "triggered": self.slicer_area.redo,
-                        "sep_after": True,
-                    },
+                    "undoAct": self.slicer_area.undo_act,
+                    "redoAct": self.slicer_area.redo_act,
+                    "sep": {"separator": True},
                     "&Copy Cursor Values": {
                         "shortcut": "Ctrl+C",
                         "triggered": self._copy_cursor_val,
@@ -718,11 +654,7 @@ class ItoolMenuBar(DictMenuBar):
 
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerCursorAct"
-        ] = {
-            "text": "&Center Current Cursor",
-            "shortcut": "Shift+C",
-            "triggered": self.slicer_area.center_cursor,
-        }
+        ] = self.slicer_area.center_act
         for i, ((t, s), axis, amount) in enumerate(
             zip(
                 (
@@ -751,12 +683,7 @@ class ItoolMenuBar(DictMenuBar):
             }
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
-        ] = {
-            "text": "&Center All Cursors",
-            "shortcut": "Alt+Shift+C",
-            "triggered": self.slicer_area.center_all_cursors,
-            "sep_before": True,
-        }
+        ] = self.slicer_area.center_all_act
         for i, ((t, s), axis, amount) in enumerate(
             zip(
                 (
@@ -794,35 +721,10 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _view_menu_visibility(self) -> None:
-        self.action_dict["remCursorAct"].setDisabled(self.slicer_area.n_cursors == 1)
-        self.action_dict["ktoolAct"].setEnabled(
-            self.slicer_area.data.kspace._interactive_compatible
-        )
+        self.slicer_area.refresh_actions_enabled()
         self.action_dict["resetAct"].setEnabled(
             self.slicer_area._applied_func is not None
         )
-
-    @QtCore.Slot()
-    def refreshMenus(self) -> None:
-        self.action_dict["snapCursorAct"].blockSignals(True)
-        self.action_dict["snapCursorAct"].setChecked(self.array_slicer.snap_to_data)
-        self.action_dict["snapCursorAct"].blockSignals(False)
-
-        cmap_props = self.slicer_area.colormap_properties
-        for ca, k in zip(
-            self.colorAct, ["reverse", "high_contrast", "zero_centered"], strict=True
-        ):
-            k = cast(
-                Literal["reverse", "high_contrast", "zero_centered"], k
-            )  # for mypy
-            ca.blockSignals(True)
-            ca.setChecked(cmap_props[k])
-            ca.blockSignals(False)
-
-    @QtCore.Slot()
-    def refreshEditMenus(self) -> None:
-        self.action_dict["undoAct"].setEnabled(self.slicer_area.undoable)
-        self.action_dict["redoAct"].setEnabled(self.slicer_area.redoable)
 
     def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
         dialog = dialog_cls(self.slicer_area)
@@ -843,14 +745,6 @@ class ItoolMenuBar(DictMenuBar):
     @QtCore.Slot()
     def _reset_filters(self) -> None:
         self.slicer_area.apply_func(None)
-
-    @QtCore.Slot()
-    def _set_colormap_options(self) -> None:
-        self.slicer_area.set_colormap(
-            reverse=self.colorAct[0].isChecked(),
-            high_contrast=self.colorAct[1].isChecked(),
-            zero_centered=self.colorAct[2].isChecked(),
-        )
 
     @QtCore.Slot()
     def _copy_cursor_val(self) -> None:

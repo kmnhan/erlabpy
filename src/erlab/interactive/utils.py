@@ -1977,6 +1977,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
         triggered = actopts.pop("triggered", None)
         toggled = actopts.pop("toggled", None)
         changed = actopts.pop("changed", None)
+        separator = actopts.pop("separator", None)
 
         if shortcut is not None:
             shortcut = QtGui.QKeySequence(shortcut)
@@ -2000,6 +2001,8 @@ class DictMenuBar(QtWidgets.QMenuBar):
             action.toggled.connect(toggled)
         if changed is not None:
             action.changed.connect(changed)
+        if separator is not None:
+            action.setSeparator(separator)
         return action
 
 

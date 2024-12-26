@@ -22,6 +22,7 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
     either_dict_or_kwargs,
 )
+from erlab.utils.array import sort_coord_order
 from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
@@ -486,7 +487,6 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         DataArray
             The selected and averaged data.
 
-
         Note
         ----
         Unlike :meth:`xarray.DataArray.sel`, this method treats all dimensions without
@@ -505,6 +505,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
         """
         indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
+
+        coord_order = list(self._obj.coords.keys())
 
         # Bin widths for each dimension, zero if width not specified
         bin_widths: dict[Hashable, float] = {}
@@ -554,12 +556,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
         unindexed_dims: list[Hashable] = [
             k for k in slices | scalars if k not in self._obj.indexes
-        ]
+        ]  # Unindexed dimensions, i.e. dimensions without coordinates
 
         if len(unindexed_dims) >= 1:
             out = self._obj.assign_coords(
                 {k: np.arange(self._obj.sizes[k]) for k in unindexed_dims}
-            )
+            )  # Assign temporary coordinates
         else:
             out = self._obj
 
@@ -594,7 +596,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
             print(out_str)
 
-        return out.drop_vars(unindexed_dims, errors="ignore")
+        out = out.drop_vars(unindexed_dims, errors="ignore")
+
+        return sort_coord_order(out, keys=coord_order, dims_first=True)
 
     def around(
         self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw

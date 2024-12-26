@@ -2,6 +2,7 @@
 
 import functools
 from collections.abc import Callable, Hashable, Iterable
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -198,3 +199,93 @@ def _trim_na_trailing_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
         darr = darr.isel({dim: slice(None, -1)})
         return _trim_na_trailing_edge(darr, dim)
     return darr
+
+
+def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
+    """Calculate the effective number of decimal places for a given step size.
+
+    This function determines the number of decimal places required to approximately
+    represent a value in a linearly spaced array, given its step size. We assume that
+    rounding to a decimal an order of magnitude smaller than the step size to be a good
+    approximation.
+
+    Parameters
+    ----------
+    step
+        The step size for which to calculate the effective number of decimal places, or
+        a coordinate array in which case the step size is calculated as the difference
+        of the first two elements.
+
+    Returns
+    -------
+    int
+        The effective number of decimal places, calculated as the order of magnitude of
+        ``step`` plus one.
+    """
+    if isinstance(step_or_coord, np.ndarray):
+        step = step_or_coord[1] - step_or_coord[0]
+    else:
+        step = step_or_coord
+    return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
+
+
+def sort_coord_order(
+    darr: xr.DataArray,
+    keys: Iterable[Hashable] | None = None,
+    *,
+    dims_first: bool = True,
+) -> xr.DataArray:
+    """Sort the coordinates of a DataArray in the given order.
+
+    By default, DataArray represents the coordinates in the order they are given in the
+    constructor. The order may become mixed up after performing operations; This
+    function sorts them so that they are more easily readable.
+
+    This has been raised as an `issue <https://github.com/pydata/xarray/issues/712>`_ in
+    xarray, but it seems like it will not be implemented in the near future.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to sort.
+    keys
+        The order in which to sort the coordinates. If not provided, the coordinates
+        will retain their original order. If ``keys`` is not provided and ``dims_first``
+        is False, this function will return the DataArray as is.
+    dims_first
+        If `True`, the dimensions will come first in the sorted DataArray. The order of
+        the dimensions will not respect the order given in ``keys``, but will be sorted
+        in the order they appear in the DataArray. If `False`, everything will be sorted
+        in the order given in ``keys``.
+
+    Returns
+    -------
+    darr
+        The sorted DataArray.
+    """
+    if keys is None:
+        if not dims_first:
+            return darr
+        keys = []
+
+    ordered_coords: dict[Hashable, Any] = {}
+    coord_dict: dict[Hashable, Any] = dict(darr.coords)
+
+    if dims_first:
+        for d in darr.dims:
+            if d in coord_dict:
+                # Move dimension coords to the front
+                ordered_coords[d] = coord_dict.pop(d)
+
+    for coord_name in keys:
+        if coord_name in coord_dict:
+            ordered_coords[coord_name] = coord_dict.pop(coord_name)
+    ordered_coords = ordered_coords | coord_dict
+
+    return xr.DataArray(
+        darr.values,
+        coords=ordered_coords,
+        dims=darr.dims,
+        name=darr.name,
+        attrs=darr.attrs,
+    )

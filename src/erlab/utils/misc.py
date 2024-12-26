@@ -101,7 +101,7 @@ class LazyImport:
 
     """
 
-    def __init__(self, module_name: str, err_msg: str | None) -> None:
+    def __init__(self, module_name: str, err_msg: str | None = None) -> None:
         self._module_name = module_name
         self._err_msg = err_msg
 

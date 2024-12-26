@@ -45,7 +45,7 @@ import pandas
 import xarray as xr
 
 import erlab
-from erlab.utils.array import is_monotonic
+from erlab.utils.array import is_monotonic, sort_coord_order
 from erlab.utils.formatting import format_html_table, format_value
 from erlab.utils.misc import emit_user_level_warning
 
@@ -1482,8 +1482,7 @@ class LoaderBase(metaclass=_Loader):
                 # Named DataArrays combined into a Dataset, extract the DataArray
                 var_name = next(iter(combined.data_vars))
                 combined = combined[var_name]
-
-                if combined.name is None:
+                if combined.name is None or combined.name == "":
                     combined = combined.rename(var_name)
 
             return combined
@@ -1596,20 +1595,10 @@ class LoaderBase(metaclass=_Loader):
 
     def _reorder_coords(self, darr: xr.DataArray):
         """Sort the coordinates of the given DataArray."""
-        ordered_coords = {}
-        coord_dict = dict(darr.coords)
-        for d in darr.dims:
-            if d in coord_dict:
-                # Move dimension coords to the front
-                ordered_coords[d] = coord_dict.pop(d)
-
-        for d in itertools.chain(self.name_map.keys(), self.additional_coords.keys()):
-            if d in coord_dict:
-                ordered_coords[d] = coord_dict.pop(d)
-        ordered_coords = ordered_coords | coord_dict
-
-        return xr.DataArray(
-            darr.values, coords=ordered_coords, dims=darr.dims, attrs=darr.attrs
+        return sort_coord_order(
+            darr,
+            keys=itertools.chain(self.name_map.keys(), self.additional_coords.keys()),
+            dims_first=True,
         )
 
     @overload

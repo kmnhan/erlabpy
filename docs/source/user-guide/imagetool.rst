@@ -6,14 +6,14 @@ The ImageTool window
 
 .. image:: ../images/imagetool_light.png
     :align: center
-    :alt: Imagetool
+    :alt: ImageTool window in light mode
     :class: only-light
 
 .. only:: format_html
 
     .. image:: ../images/imagetool_dark.png
         :align: center
-        :alt: Imagetool
+        :alt: ImageTool window in dark mode
         :class: only-dark
 
 Inspired by *Image Tool* for Igor Pro written by the Advanced Light Source at Lawrence
@@ -185,4 +185,32 @@ Features
   Toggle the console with :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through
   the ``View`` menu.
 
+- Toggle the ``Preview on Hover`` option in the ``View`` menu to show a preview of the
+  main image when hovering over each tool.
+
 - Explore the menubar for more features!
+
+
+Tips
+~~~~
+
+- Sometimes, you may wish to send data from the manager to a jupyter notebook for
+  further analysis. You can do this by using the manager console and the `%store
+  <https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html>`_ magic
+  command.
+
+  For example, if you want to store the data displayed in a tool with index 0, run the
+  following in the manager console:
+
+  .. code-block:: python
+
+      my_data = tools[0].data
+      %store my_data
+
+  In the notebook, you can retrieve the data by running:
+
+  .. code-block:: python
+
+      %store -r my_data
+
+  after which the data will be available as ``my_data`` in the notebook.

@@ -12,7 +12,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, _parse_input, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import (
@@ -127,7 +127,7 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     tmp_dir.cleanup()
 
 
-def test_itool(qtbot, move_and_compare_values) -> None:
+def test_itool_general(qtbot, move_and_compare_values) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
@@ -163,11 +163,12 @@ def test_itool(qtbot, move_and_compare_values) -> None:
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "ColdWarm", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
+        "RdYlBu", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
     win.slicer_area.lock_levels(True)
+    # qtbot.wait_until(lambda: win.slicer_area.levels_locked, timeout=1000)
     win.slicer_area.levels = (1.0, 23.0)
     assert win.slicer_area._colorbar.cb._copy_limits() == str((1.0, 23.0))
 
@@ -204,7 +205,7 @@ def test_itool(qtbot, move_and_compare_values) -> None:
     win.slicer_area.add_cursor()
     expected_state = {
         "color": {
-            "cmap": "ColdWarm",
+            "cmap": "RdYlBu",
             "gamma": 1.5,
             "reverse": True,
             "high_contrast": True,
@@ -221,6 +222,7 @@ def test_itool(qtbot, move_and_compare_values) -> None:
         "current_cursor": 1,
         "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
         "splitter_sizes": list(old_state["splitter_sizes"]),
+        "file_path": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
     }
     assert win.slicer_area.state == expected_state
@@ -272,7 +274,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
             win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
     # Open goldtool from main image
-
     if not test_data_type.endswith("nonuniform"):
         main_image.open_in_goldtool()
         assert isinstance(
@@ -281,7 +282,18 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
 
         # Close associated windows
         win.slicer_area.close_associated_windows()
-        qtbot.waitUntil(
+        qtbot.wait_until(
+            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+        )
+
+        main_image.open_in_restool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), ResolutionTool
+        )
+
+        # Close associated windows
+        win.slicer_area.close_associated_windows()
+        qtbot.wait_until(
             lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
         )
 
@@ -470,7 +482,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
 
     # Transpose should remove guidelines
     win.slicer_area.swap_axes(0, 1)
-    qtbot.waitUntil(
+    qtbot.wait_until(
         lambda: not win.slicer_area.main_image.is_guidelines_visible, timeout=1000
     )
 

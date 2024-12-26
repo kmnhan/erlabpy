@@ -10,7 +10,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
-from erlab.interactive.utils import BetterSpinBox, IconButton
+from erlab.interactive.utils import BetterSpinBox, IconActionButton, IconButton
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -225,12 +225,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
             lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         )
 
-        self.btn_snap = IconButton(
+        self.btn_snap = IconActionButton(
+            self.array_slicer.snap_act,
             on=_ICON_ALIASES["snap"],
             off=_ICON_ALIASES["snap_off"],
-            toolTip="Snap cursor to data points",
         )
-        self.btn_snap.toggled.connect(self.slicer_area.toggle_snap)
 
         # multicursor combobox
         self.cb_cursors = QtWidgets.QComboBox()
@@ -352,7 +351,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigShapeChanged.connect(self.update_content)
         self.slicer_area.sigCurrentCursorChanged.connect(self.cursorChangeEvent)
         self.slicer_area.sigCursorCountChanged.connect(self.update_cursor_count)
-        self.slicer_area.sigViewOptionChanged.connect(self.update_options)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
 
@@ -361,7 +359,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigDataChanged.disconnect(self.update_content)
         self.slicer_area.sigShapeChanged.disconnect(self.update_content)
         self.slicer_area.sigCurrentCursorChanged.disconnect(self.cursorChangeEvent)
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update_options)
         self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
@@ -434,13 +431,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.array_slicer.point_value(self.current_cursor, binned=True)
         )
 
-    @QtCore.Slot()
-    def update_options(self) -> None:
-        self.btn_snap.blockSignals(True)
-        self.btn_snap.setChecked(self.array_slicer.snap_to_data)
-        # self.btn_snap.refresh_icons()
-        self.btn_snap.blockSignals(False)
-
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
         if count == self.cb_cursors.count():
@@ -488,71 +478,30 @@ class ItoolColorControls(ItoolControlsBase):
         super().__init__(*args, **kwargs)
 
     def initialize_widgets(self) -> None:
-        self.btn_reverse = IconButton(
+        self.btn_reverse = IconActionButton(
+            self.slicer_area.reverse_act,
             on=_ICON_ALIASES["invert"],
             off=_ICON_ALIASES["invert_off"],
-            checkable=True,
-            toolTip="Invert colormap",
         )
-        self.btn_contrast = IconButton(
+        self.btn_contrast = IconActionButton(
+            self.slicer_area.high_contrast_act,
             on=_ICON_ALIASES["contrast"],
-            checkable=True,
-            toolTip="High contrast mode",
         )
-        self.btn_zero = IconButton(
+        self.btn_zero = IconActionButton(
+            self.slicer_area.zero_centered_act,
             on=_ICON_ALIASES["zero_center"],
-            checkable=True,
-            toolTip="Keep center color fixed",
         )
-        self.btn_lock = IconButton(
+        self.btn_lock = IconActionButton(
+            self.slicer_area.lock_levels_act,
             on=_ICON_ALIASES["bright_auto"],
             off=_ICON_ALIASES["bright_percent"],
-            checkable=True,
-            toolTip="Lock color limits",
         )
-        self.btn_reverse.toggled.connect(self.update_colormap)
-        self.btn_contrast.toggled.connect(self.update_colormap)
-        self.btn_zero.toggled.connect(self.update_colormap)
 
         layout = cast(QtWidgets.QLayout, self.layout())
         layout.addWidget(self.btn_reverse)
         layout.addWidget(self.btn_contrast)
         layout.addWidget(self.btn_zero)
         layout.addWidget(self.btn_lock)
-
-    def update_content(self) -> None:
-        self.btn_reverse.blockSignals(True)
-        self.btn_contrast.blockSignals(True)
-        self.btn_zero.blockSignals(True)
-        self.btn_lock.blockSignals(True)
-
-        props = self.slicer_area.colormap_properties
-        self.btn_reverse.setChecked(props["reverse"])
-        self.btn_contrast.setChecked(props["high_contrast"])
-        self.btn_zero.setChecked(props["zero_centered"])
-        self.btn_lock.setChecked(props["levels_locked"])
-
-        self.btn_reverse.blockSignals(False)
-        self.btn_contrast.blockSignals(False)
-        self.btn_zero.blockSignals(False)
-        self.btn_lock.blockSignals(False)
-
-    def update_colormap(self) -> None:
-        self.slicer_area.set_colormap(
-            reverse=self.btn_reverse.isChecked(),
-            high_contrast=self.btn_contrast.isChecked(),
-            zero_centered=self.btn_zero.isChecked(),
-        )
-
-    def connect_signals(self) -> None:
-        super().connect_signals()
-        self.btn_lock.toggled.connect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.connect(self.update_content)
-
-    def disconnect_signals(self) -> None:
-        super().disconnect_signals()
-        self.btn_lock.toggled.disconnect(self.slicer_area.lock_levels)
-        self.slicer_area.sigViewOptionChanged.disconnect(self.update_content)
 
 
 class ItoolColormapControls(ItoolControlsBase):
