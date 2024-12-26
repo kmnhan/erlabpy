@@ -58,6 +58,7 @@ class ImageSlicerState(TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
+    file_path: NotRequired[str | None]
     splitter_sizes: NotRequired[list[list[int]]]
 
 
@@ -390,16 +391,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
     gamma
         Default power law normalization of the colormap.
     zero_centered
-        If `True`, the normalization is applied symmetrically from the midpoint of
-        the colormap.
+        If `True`, the normalization is applied symmetrically from the midpoint of the
+        colormap.
     rad2deg
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
         correspond to the given strings are converted.
+    transpose
+        If `True`, the main image is transposed before being displayed.
     bench
         Prints the fps on Ctrl + drag for debugging purposes.
     state
         Initial state containing the settings and cursor position.
+    file_path
+        If the data has been loaded from a file, the path to the file. This is used to
+        set the window title.
 
     Signals
     -------
@@ -469,8 +475,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         zero_centered: bool = False,
         rad2deg: bool | Iterable[str] = False,
         *,
+        transpose: bool = True,
         bench: bool = False,
         state: ImageSlicerState | None = None,
+        file_path: str | os.PathLike | None = None,
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
@@ -564,7 +572,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
-        self.set_data(data, rad2deg=rad2deg)
+        self.set_data(data, rad2deg=rad2deg, file_path=file_path)
 
         if self.bench:
             print("\n")
@@ -573,9 +581,43 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.state = state
 
         self.reverse_act.setChecked(cmap_reversed)
+        self.zero_centered_act.setChecked(zero_centered)
+
+        if transpose:
+            self.transpose_main_image()
 
         self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
         self.qapp.aboutToQuit.connect(self.on_close)
+
+    @property
+    def parent_title(self) -> str:
+        parent = self.parent()
+        if isinstance(parent, QtWidgets.QWidget):
+            return parent.windowTitle()
+        return ""
+
+    @property
+    def display_name(self) -> str:
+        """Generate a display name for the slicer.
+
+        Depending on the source of the data and the 'name' attribute of the underlying
+        DataArray, the display name is generated differently.
+
+        If nothing can be inferred, an empty string is returned.
+        """
+        name: str | None = cast(str | None, self._data.name)
+        path: pathlib.Path | None = self._file_path
+        if name is not None and name.strip() == "":
+            # Name contains only whitespace
+            name = None
+
+        if name is None:
+            disp_name = "" if path is None else path.stem
+        elif path is None or name == path.stem:
+            disp_name = f"{name}"
+        else:
+            disp_name = f"{name} ({path.stem})"
+        return disp_name
 
     @property
     def colormap_properties(self) -> ColorMapState:
@@ -597,6 +639,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "current_cursor": int(self.current_cursor),
             "manual_limits": copy.deepcopy(self.manual_limits),
             "splitter_sizes": self.splitter_sizes,
+            "file_path": str(self._file_path) if self._file_path is not None else None,
             "cursor_colors": [c.name() for c in self.cursor_colors],
         }
 
@@ -616,6 +659,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.manual_limits = state.get("manual_limits", {})
         self.sigShapeChanged.emit()  # to trigger manual limits update
+
+        file_path = state.get("file_path", None)
+        if file_path is not None:
+            self._file_path = pathlib.Path(file_path)
+            self.sigDataChanged.emit()
 
         # Restore colormap settings
         try:
@@ -1392,6 +1440,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget
             The widget to add.
         """
+        old_title = widget.windowTitle().strip()
+        new_title = self.parent_title.strip()
+        if new_title != "" and old_title != "":
+            new_title += f" - {old_title}"
+        widget.setWindowTitle(new_title)
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         if self._in_manager:
@@ -1962,9 +2015,15 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_new_window(self) -> None:
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
+            data = self.current_data
             tool = cast(
                 QtWidgets.QWidget | None,
-                erlab.interactive.itool(self.current_data, execute=False),
+                erlab.interactive.itool(
+                    data,
+                    transpose=(data.dims != self.axis_dims_uniform),
+                    file_path=self.slicer_area._file_path,
+                    execute=False,
+                ),
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
@@ -1972,7 +2031,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
         if self.is_image:
-            data = self.current_data.T
+            data = self.current_data
 
             if set(data.dims) != {"alpha", "eV"}:
                 QtWidgets.QMessageBox.critical(

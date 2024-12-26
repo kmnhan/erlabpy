@@ -158,7 +158,9 @@ class DataTransformDialog(_DataManipulationDialog):
             ).rename(new_name)
 
             if self.new_window_check.isChecked():
-                erlab.interactive.itool(processed, execute=False)
+                erlab.interactive.itool(
+                    processed, file_path=self.slicer_area._file_path, execute=False
+                )
             else:
                 self.slicer_area.set_data(processed)
 

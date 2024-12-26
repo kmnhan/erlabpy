@@ -2393,10 +2393,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 for data in data_list:
                     try:
-                        tool = ImageTool(np.zeros((2, 2)), _in_manager=True)
+                        tool = ImageTool(data, file_path=p, _in_manager=True)
                         tool._recent_name_filter = self._recent_name_filter
                         tool._recent_directory = self._recent_directory
-                        tool.slicer_area.set_data(data, file_path=p)
                     except Exception as e:
                         failed.append(p)
                         self._error_creating_tool(e)

@@ -55,7 +55,6 @@ from erlab.interactive.utils import (
 from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
-    import pathlib
     from collections.abc import Callable, Collection
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -469,19 +468,7 @@ class ImageTool(BaseImageTool):
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
-            name: str | None = cast(str | None, self.slicer_area._data.name)
-            path: pathlib.Path | None = self.slicer_area._file_path
-
-            if name is not None and name.strip() == "":
-                # Name contains only whitespace
-                name = None
-
-            if name is None:
-                title = "" if path is None else path.stem
-            elif path is None or name == path.stem:
-                title = f"{name}"
-            else:
-                title = f"{name} ({path.stem})"
+            title = self.slicer_area.display_name
             self.setWindowTitle(title)
             self.sigTitleChanged.emit(title)
 
