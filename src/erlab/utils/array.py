@@ -2,6 +2,7 @@
 
 import functools
 from collections.abc import Callable, Hashable, Iterable
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -226,3 +227,65 @@ def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
     else:
         step = step_or_coord
     return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
+
+
+def sort_coord_order(
+    darr: xr.DataArray,
+    keys: Iterable[Hashable] | None = None,
+    *,
+    dims_first: bool = True,
+) -> xr.DataArray:
+    """Sort the coordinates of a DataArray in the given order.
+
+    By default, DataArray represents the coordinates in the order they are given in the
+    constructor. The order may become mixed up after performing operations; This
+    function sorts them so that they are more easily readable.
+
+    This has been raised as an `issue <https://github.com/pydata/xarray/issues/712>`_ in
+    xarray, but it seems like it will not be implemented in the near future.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to sort.
+    keys
+        The order in which to sort the coordinates. If not provided, the coordinates
+        will retain their original order. If ``keys`` is not provided and ``dims_first``
+        is False, this function will return the DataArray as is.
+    dims_first
+        If `True`, the dimensions will come first in the sorted DataArray. The order of
+        the dimensions will not respect the order given in ``keys``, but will be sorted
+        in the order they appear in the DataArray. If `False`, everything will be sorted
+        in the order given in ``keys``.
+
+    Returns
+    -------
+    darr
+        The sorted DataArray.
+    """
+    if keys is None:
+        if not dims_first:
+            return darr
+        keys = []
+
+    ordered_coords: dict[Hashable, Any] = {}
+    coord_dict: dict[Hashable, Any] = dict(darr.coords)
+
+    if dims_first:
+        for d in darr.dims:
+            if d in coord_dict:
+                # Move dimension coords to the front
+                ordered_coords[d] = coord_dict.pop(d)
+
+    for coord_name in keys:
+        if coord_name in coord_dict:
+            ordered_coords[coord_name] = coord_dict.pop(coord_name)
+    ordered_coords = ordered_coords | coord_dict
+
+    return xr.DataArray(
+        darr.values,
+        coords=ordered_coords,
+        dims=darr.dims,
+        name=darr.name,
+        attrs=darr.attrs,
+    )

@@ -30,6 +30,7 @@ from erlab.interactive.colors import (
 )
 from erlab.interactive.imagetool.slicer import ArraySlicer
 from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
+from erlab.utils.array import sort_coord_order
 from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
@@ -1989,9 +1990,7 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def current_data(self) -> xr.DataArray:
         data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
-        if self.is_image:
-            return data.transpose(*self.axis_dims_uniform)
-        return data
+        return sort_coord_order(data, self.slicer_area._data.coords.keys())
 
     @property
     def selection_code(self) -> str:
