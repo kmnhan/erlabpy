@@ -32,6 +32,13 @@ def _get_start_time(data: xr.DataArray) -> datetime.datetime:
     return datetime.datetime.fromisoformat(f"{data.attrs['Date']} {data.attrs['Time']}")
 
 
+def _emit_ambiguous_file_warning(num, file_to_use):
+    emit_user_level_warning(
+        f"Multiple files found for scan {num}, using {file_to_use}. "
+        "Try providing the `prefix` argument to specify."
+    )
+
+
 class ERPESLoader(DA30Loader):
     name = "erpes"
     description = "KAIST homelab setup"
@@ -158,26 +165,33 @@ class ERPESLoader(DA30Loader):
             for i, dim in enumerate(header[1:]):
                 coord_dict[dim] = coord_arr[: len(files), i + 1].astype(np.float64)
 
-        if len(files) == 0:
+        if (
+            len(files) == 0 or prefix is None
+        ):  # If prefix not given, need to check for ambiguity
             pattern_singlefile = re.compile(
                 prefix_pattern + str(num).zfill(4) + r".(pxt|zip)"
             )
             # Look for single file scan
-            files.extend(
+            files_single = [
                 f
                 for f in all_files
                 if pattern_singlefile.match(f.name)
                 and not self._PATTERN_MULTIFILE.match(f.name)
-            )
-            files.sort()
+            ]
+            files_single.sort()
 
-            if len(files) == 2 and files[0].stem == files[1].stem:
-                # Both DA maps and cuts within single region
-                pass
-            elif len(files) > 1:
-                emit_user_level_warning(
-                    f"Multiple files found for scan {num}, using {files[0]}"
-                )
+            if len(files) != 0:
+                if len(files_single) != 0:
+                    _emit_ambiguous_file_warning(num, files[0])
+                return files, coord_dict
+
+            files = files_single
+
+            single_scan_ambiguous: bool = (len(files) > 1) and not (
+                len(files) == 2 and files[0].stem == files[1].stem
+            )  # Latter: DA maps and cuts within single region
+            if single_scan_ambiguous:
+                _emit_ambiguous_file_warning(num, files[0])
                 files = files[:1]
 
         if len(files) == 0:
