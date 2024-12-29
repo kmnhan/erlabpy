@@ -28,16 +28,7 @@ import os
 import pathlib
 import warnings
 from collections.abc import Sequence
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    ClassVar,
-    Self,
-    TypeGuard,
-    TypeVar,
-    cast,
-    overload,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -47,7 +38,7 @@ import xarray as xr
 import erlab
 from erlab.utils.array import is_monotonic, sort_coord_order
 from erlab.utils.formatting import format_html_table, format_value
-from erlab.utils.misc import emit_user_level_warning
+from erlab.utils.misc import emit_user_level_warning, is_sequence_of
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -58,13 +49,6 @@ if TYPE_CHECKING:
         KeysView,
         Mapping,
     )
-
-
-_T = TypeVar("_T")
-
-
-def _is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
-    return all(isinstance(x, element_type) for x in val) and isinstance(val, Sequence)
 
 
 class ValidationWarning(UserWarning):
@@ -1402,7 +1386,7 @@ class LoaderBase(metaclass=_Loader):
         data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
-        if _is_sequence_of(data_list, xr.DataTree):
+        if is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
                 "Combining DataTrees into a single tree will be supported "
                 "in a future release of ERLabPy. In the meantime, consider supplying "
@@ -1414,7 +1398,7 @@ class LoaderBase(metaclass=_Loader):
             # No coordinates to combine given
             # Multiregion scans over multiple files may be provided like this
 
-            if _is_sequence_of(data_list, xr.DataTree):
+            if is_sequence_of(data_list, xr.DataTree):
                 pass
             else:
                 try:
@@ -1429,7 +1413,7 @@ class LoaderBase(metaclass=_Loader):
                         "`combine=False` to `erlab.io.load`"
                     ) from e
 
-        if _is_sequence_of(data_list, xr.DataArray) or _is_sequence_of(
+        if is_sequence_of(data_list, xr.DataArray) or is_sequence_of(
             data_list, xr.Dataset
         ):
             # If all coordinates are monotonic, all points are unique; in this case,
