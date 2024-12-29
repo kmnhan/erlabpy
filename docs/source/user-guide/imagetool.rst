@@ -193,15 +193,18 @@ Tips
   <https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html>`_ magic
   command.
 
-  For example, if you want to store the data displayed in a tool with index 0, run the
-  following in the manager console:
+  Suppose you want to store the data displayed in a tool with index 0. First select the tool in the manager. Then, trigger the ``Store with IPython`` action from the right-click context menu or the ``File`` menu. This will open a dialog to enter a variable name. Enter a variable name (e.g., ``my_data``) and click OK.
 
-  .. code-block:: python
+  .. note::
 
-      my_data = tools[0].data
-      %store my_data
+     This is equivalent to running the following code in the manager console:
 
-  In the notebook, you can retrieve the data by running:
+     .. code-block:: python
+
+         my_data = tools[0].data
+         %store my_data
+
+  Now, in any notebook, you can retrieve the data by running:
 
   .. code-block:: python
 
