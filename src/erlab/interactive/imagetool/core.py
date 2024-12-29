@@ -1,4 +1,9 @@
-"""Provides core functionality of ImageTool."""
+"""Provides core functionality of ImageTool.
+
+This module contains :class:`ImageSlicerArea` which handles the core functionality of
+ImageTool, including the slicing and plotting of data.
+
+"""
 
 from __future__ import annotations
 

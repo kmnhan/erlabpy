@@ -51,8 +51,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
-from erlab.interactive.imagetool import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
+from erlab.interactive.imagetool.mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.utils import (
     IconActionButton,
     KeyboardEventFilter,

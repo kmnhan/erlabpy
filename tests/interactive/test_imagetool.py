@@ -13,8 +13,9 @@ from qtpy import QtCore, QtWidgets
 import erlab
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import ImageTool, _parse_input, itool
+from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
+from erlab.interactive.imagetool.core import _parse_input
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
