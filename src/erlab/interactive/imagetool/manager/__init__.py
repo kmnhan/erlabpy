@@ -2647,7 +2647,3 @@ def main(execute: bool = True) -> None:
         if execute:
             qapp.exec()
             _manager_instance = None
-
-
-if __name__ == "__main__":
-    main()
