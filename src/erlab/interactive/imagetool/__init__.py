@@ -52,7 +52,7 @@ from erlab.interactive.utils import (
     file_loaders,
     wait_dialog,
 )
-from erlab.utils.misc import _convert_to_native
+from erlab.utils.misc import _convert_to_native, emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -72,7 +72,7 @@ def itool(
     *,
     link: bool = False,
     link_colors: bool = True,
-    use_manager: bool = True,
+    use_manager: bool = False,
     execute: bool | None = None,
     **kwargs,
 ) -> ImageTool | list[ImageTool] | None:
@@ -112,8 +112,7 @@ def itool(
         default `True`. This argument has no effect if `link` is set to `False`.
     use_manager
         Whether to open the ImageTool window(s) using the :class:`ImageToolManager
-        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running, by
-        default `True`.
+        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running.
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
         If `None`, the execution is determined based on the current IPython shell. This
@@ -151,6 +150,9 @@ def itool(
 
         if not is_running():
             use_manager = False
+            emit_user_level_warning(
+                "The manager is not running. Opening the ImageTool window(s) directly."
+            )
 
     if use_manager:
         from erlab.interactive.imagetool.manager import show_in_manager
@@ -337,6 +339,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
+
+    @QtCore.Slot()
+    def move_to_manager(self) -> None:
+        from erlab.interactive.imagetool.manager import show_in_manager
+
+        show_in_manager(self.to_dataset())
+        self.close()
 
     def _sync_dock_float(self, floating: bool, index: int) -> None:
         """Synchronize the floating state of the dock widgets.
@@ -584,8 +593,14 @@ class ItoolMenuBar(DictMenuBar):
                 "actions": {
                     "openAct": self.image_tool.open_act,
                     "saveAsAct": self.image_tool.save_act,
-                    "sep": {"separator": True},
+                    "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
+                    "sep1": {"separator": True},
+                    "moveToManagerAct": {
+                        "text": "Move to Manager",
+                        "triggered": self.image_tool.move_to_manager,
+                        "shortcut": "Ctrl+Shift+M",
+                    },
                 },
             },
             "viewMenu": {
@@ -717,7 +732,19 @@ class ItoolMenuBar(DictMenuBar):
         self.add_items(**menu_kwargs)
 
         # Disable/Enable menus based on context
+        self.menu_dict["fileMenu"].aboutToShow.connect(self._file_menu_visibility)
         self.menu_dict["viewMenu"].aboutToShow.connect(self._view_menu_visibility)
+
+    @QtCore.Slot()
+    def _file_menu_visibility(self) -> None:
+        if self.slicer_area._in_manager:
+            visible: bool = False
+        else:
+            from erlab.interactive.imagetool.manager import is_running
+
+            visible = is_running()
+
+        self.action_dict["moveToManagerAct"].setVisible(visible)
 
     @QtCore.Slot()
     def _view_menu_visibility(self) -> None:

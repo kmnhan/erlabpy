@@ -51,7 +51,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
-from erlab.interactive.imagetool import ImageTool
+from erlab.interactive.imagetool import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
 from erlab.interactive.utils import (
     IconActionButton,
@@ -62,12 +62,12 @@ from erlab.interactive.utils import (
 )
 from erlab.utils.array import is_monotonic, is_uniform_spaced
 from erlab.utils.formatting import format_html_table, format_value
+from erlab.utils.misc import is_sequence_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     import numpy.typing as npt
-    import xarray
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
 
@@ -1651,7 +1651,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._update_info()
 
         self.server: _ManagerServer = _ManagerServer()
-        self.server.sigReceived.connect(self.data_recv)
+        self.server.sigReceived.connect(self._data_recv)
         self.server.start()
 
         # Shared memory for detecting multiple instances
@@ -1752,6 +1752,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ImageTool object to be added.
         activate
             Whether to focus on the window after adding, by default `False`.
+
+        Returns
+        -------
+        int
+            Index of the added ImageTool window.
         """
         index = int(self.next_idx)
         wrapper = _ImageToolWrapper(self, index, tool)
@@ -2142,7 +2147,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             )
 
     @QtCore.Slot(list, dict)
-    def data_recv(self, data: list[xarray.DataArray], kwargs: dict[str, Any]) -> None:
+    def _data_recv(
+        self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, Any]
+    ) -> None:
         """Slot function to receive data from the server.
 
         DataArrays passed to this function are displayed in new ImageTool windows which
@@ -2151,11 +2158,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
         Parameters
         ----------
         data
-            A list of xarray.DataArray objects received from the server.
+            A list of xarray.DataArray objects representing the data.
+
+            Also accepts a list of xarray.Dataset objects created with
+            ``ImageTool.to_dataset()``, in which case `kwargs` is ignored.
         kwargs
-            Additional keyword arguments received from the server.
+            Additional keyword arguments.
 
         """
+        if is_sequence_of(data, xr.Dataset):
+            for ds in data:
+                self.add_tool(
+                    ImageTool.from_dataset(ds, _in_manager=True), activate=True
+                )
+            return
+
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
         indices: list[int] = []
@@ -2528,11 +2545,11 @@ def is_running() -> bool:
 
 
 def show_in_manager(
-    data: Collection[xarray.DataArray | npt.NDArray]
-    | xarray.DataArray
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
     | npt.NDArray
-    | xarray.Dataset
-    | xarray.DataTree,
+    | xr.Dataset
+    | xr.DataTree,
     **kwargs,
 ) -> None:
     """Create and display ImageTool windows in the ImageToolManager.
@@ -2542,9 +2559,6 @@ def show_in_manager(
     data
         The data to be displayed in the ImageTool window. See :func:`itool
         <erlab.interactive.imagetool.itool>` for more information.
-    data
-        Array-like object or a sequence of such object with 2 to 4 dimensions. See
-        notes.
     link
         Whether to enable linking between multiple ImageTool windows, by default
         `False`.
@@ -2563,11 +2577,16 @@ def show_in_manager(
         )
 
     logger.debug("Parsing input data into DataArrays")
-    darr_list: list[xarray.DataArray] = _parse_input(data)
+
+    if isinstance(data, xr.Dataset) and _ITOOL_DATA_NAME in data:
+        # Dataset created with ImageTool.to_dataset()
+        input_data: list[xr.DataArray] | list[xr.Dataset] = [data]
+    else:
+        input_data = _parse_input(data)
 
     if _manager_instance is not None and not _always_use_socket:
         # If the manager is running in the same process, directly pass the data
-        _manager_instance.data_recv(darr_list, kwargs)
+        _manager_instance._data_recv(input_data, kwargs)
         return
 
     # Save the data to a temporary file
@@ -2576,10 +2595,10 @@ def show_in_manager(
 
     files: list[str] = []
 
-    for darr in darr_list:
+    for dat in input_data:
         fname = str(uuid.uuid4())
         fname = os.path.join(tmp_dir, fname)
-        _save_pickle(darr, fname)
+        _save_pickle(dat, fname)
         files.append(fname)
 
     kwargs["__filename"] = files

@@ -69,7 +69,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow()
+    test_data.qshow(use_manager=True)
 
     t0 = time.perf_counter()
     while True:
@@ -81,7 +81,9 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
-    itool([test_data, test_data], link=False)
+    for tool in itool([test_data, test_data], link=False, execute=False):
+        tool.move_to_manager()
+
     while True:
         if manager.ntools == 3:
             break
@@ -291,7 +293,7 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
     # Add two tools
     t0 = time.perf_counter()
-    itool([data, data], link=False)
+    itool([data, data], link=False, use_manager=True)
     while True:
         if manager.ntools == 2:
             break
@@ -345,8 +347,8 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow()
-    test_data.qshow()
+    test_data.qshow(use_manager=True)
+    test_data.qshow(use_manager=True)
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
 
     manager.raise_()
