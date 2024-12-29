@@ -2191,7 +2191,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
         if not hasattr(self, "console"):
-            from erlab.interactive.imagetool._console import (
+            from erlab.interactive.imagetool.manager._console import (
                 _ImageToolManagerJupyterConsole,
             )
 
