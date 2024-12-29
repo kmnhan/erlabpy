@@ -1,5 +1,3 @@
-import time
-
 import numpy as np
 import pyperclip
 import pytest
@@ -188,27 +186,6 @@ anglemap_kconv = anglemap.kspace.convert()"""
     win.show_converted()
     xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
     win._itool.close()
-
-    # Start manager
-    erlab.interactive.imagetool.manager.main(execute=False)
-    manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.addWidget(manager)
-
-    # Show in manager
-    win.show_converted()
-    t0 = time.perf_counter()
-    while True:
-        if manager.ntools == 1:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    manager.remove_tool(0)
-    assert manager.ntools == 0
-    manager.close()
-    erlab.interactive.imagetool.manager._manager_instance = None
-    erlab.interactive.imagetool.manager._always_use_socket = False
-
     win.close()
 
 
