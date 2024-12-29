@@ -133,11 +133,6 @@ Using the ImageTool manager
 ImageTools can also be used as a standalone application with :class:`ImageToolManager
 <erlab.interactive.imagetool.ImageToolManager>`
 
-When the manager is running, calls to :func:`itool <erlab.interactive.imagetool.itool>`
-and :meth:`DataArray.qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` from any python script
-or notebook will open the ImageTool in the manager program.
-
 The manager shows a list of opened ImageTools and buttons to manage them. Hover over
 buttons for tooltips.
 
@@ -154,20 +149,19 @@ Or run: ::
 
   - Only one manager can run per machine.
 
-  - Sending data to the manager has slight overhead, noticeable for large data. Use
-    `use_manager=False` to :func:`itool <erlab.interactive.imagetool.itool>` and
-    :meth:`DataArray.qshow
-    <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` to open data
-    directly.
+  - Sending data to the manager has slight overhead, noticeable for large data.
 
 Creating ImageTool windows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Open data in the manager by:
+When the manager is running, ImageTools can be added to the manager by:
 
 - Invoking ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` or
-  :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` from any
-  script or notebook.
+  :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` with
+  ``use_manager=True`` from any script or notebook.
+
+- From an ImageTool window, use the ``Move to Manager`` action (:kbd:`Ctrl+Shift+M`) in
+  the ``File`` menu.
 
 - Opening files through the ``File`` menu in the manager.
 
