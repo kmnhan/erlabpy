@@ -12,7 +12,7 @@ import scipy.ndimage
 import scipy.special
 import xarray as xr
 
-from erlab.utils.array import trim_na, uniform_dims
+import erlab
 
 
 def rotate(
@@ -83,7 +83,7 @@ def rotate(
     else:
         centers = list(center)
 
-    if not uniform_dims(darr).issuperset(axes_dims):
+    if not erlab.utils.array.uniform_dims(darr).issuperset(axes_dims):
         raise ValueError("all coordinates along axes must be evenly spaced")
 
     # Sort with respect to axis index
@@ -217,7 +217,7 @@ def rotate(
     darr = darr.copy(data=output)
 
     if reshape:
-        darr = trim_na(darr, axes_dims)
+        darr = erlab.utils.array.trim_na(darr, axes_dims)
 
     return darr
 

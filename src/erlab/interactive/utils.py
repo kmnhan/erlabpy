@@ -28,7 +28,6 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.utils.misc import _convert_to_native, is_interactive
 
 if TYPE_CHECKING:
     import os
@@ -164,7 +163,7 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
 
         if execute is None:
             execute = True
-            is_ipython = is_interactive()
+            is_ipython = erlab.utils.misc.is_interactive()
             if is_ipython:
                 execute = False
         yield execute
@@ -271,7 +270,7 @@ def format_kwargs(d: dict[str, Any]) -> str:
 
 
 def _parse_single_arg(arg):
-    arg = _convert_to_native(arg)
+    arg = erlab.utils.misc._convert_to_native(arg)
 
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
@@ -285,7 +284,7 @@ def _parse_single_arg(arg):
 
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
-        arg = {k: _convert_to_native(v) for k, v in arg.items()}
+        arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
         arg = (
             "{"
             + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])

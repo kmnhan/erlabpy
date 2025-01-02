@@ -11,8 +11,6 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.utils.array import effective_decimals
-from erlab.utils.parallel import joblib_progress_qt
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -81,7 +79,7 @@ class EdgeFitter(QtCore.QThread):
     @erlab.interactive.utils._coverage_resolve_trace
     def run(self) -> None:
         self.sigIterated.emit(0)
-        with joblib_progress_qt(self.sigIterated) as _:
+        with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
                 gold=self.data,
                 angle_range=self.x_range,
@@ -580,8 +578,8 @@ class ResolutionTool(
         self._x_range = data["eV"].values[[0, -1]]
         self._y_range = data[self.y_dim].values[[0, -1]]
 
-        self._x_decimals = effective_decimals(data["eV"].values)
-        self._y_decimals = effective_decimals(data[self.y_dim].values)
+        self._x_decimals = erlab.utils.array.effective_decimals(data["eV"].values)
+        self._y_decimals = erlab.utils.array.effective_decimals(data[self.y_dim].values)
 
         self.x0_spin.setRange(*self._x_range)
         self.x1_spin.setRange(*self._x_range)

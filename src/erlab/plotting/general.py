@@ -31,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
+import erlab
 from erlab.plotting.annotations import fancy_labels, label_subplot_properties
 from erlab.plotting.colors import (
     InversePowerNorm,
@@ -40,8 +41,6 @@ from erlab.plotting.colors import (
     nice_colorbar,
     unify_clim,
 )
-from erlab.utils.array import is_dims_uniform
-from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -155,7 +154,7 @@ def array_extent(
     for dim, coord in zip(darr.dims, data_coords, strict=True):
         dif = np.diff(coord)
         if not np.allclose(dif, dif[0], rtol=rtol, atol=atol):
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 f"Coordinates for {dim} are not evenly spaced, and the plot may not be "
                 "accurate. Use `DataArray.plot`, `xarray.plot.pcolormesh` or "
                 "`matplotlib.pyplot.pcolormesh` for non-evenly spaced data.",
@@ -353,7 +352,7 @@ def plot_array(
     if func is not None:
         arr = func(arr.copy(deep=True), **func_args)
 
-    if is_dims_uniform(arr, rtol=rtol, atol=atol):
+    if erlab.utils.array.is_dims_uniform(arr, rtol=rtol, atol=atol):
         improps.setdefault("interpolation", "none")
         img = ax.imshow(
             arr.values, norm=norm, extent=array_extent(arr, rtol, atol), **improps

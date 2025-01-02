@@ -28,8 +28,6 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.utils.array import sort_coord_order
-from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Sequence
@@ -674,7 +672,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         try:
             self.set_colormap(**state.get("color", {}), update=True)
         except Exception:
-            emit_user_level_warning("Failed to restore colormap settings, skipping")
+            erlab.utils.misc.emit_user_level_warning(
+                "Failed to restore colormap settings, skipping"
+            )
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -2020,7 +2020,9 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def current_data(self) -> xr.DataArray:
         data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
-        return sort_coord_order(data, self.slicer_area._data.coords.keys())
+        return erlab.utils.array.sort_coord_order(
+            data, self.slicer_area._data.coords.keys()
+        )
 
     @property
     def selection_code(self) -> str:

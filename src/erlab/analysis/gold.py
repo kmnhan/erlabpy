@@ -28,7 +28,6 @@ import scipy.interpolate
 import xarray as xr
 
 import erlab
-from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     import joblib
@@ -36,10 +35,8 @@ if TYPE_CHECKING:
 else:
     import lazy_loader as _lazy
 
-    from erlab.utils.misc import LazyImport
-
     joblib = _lazy.load("joblib")
-    tqdm = LazyImport("tqdm.auto")
+    tqdm = erlab.utils.misc.LazyImport("tqdm.auto")
 
 
 def correct_with_edge(
@@ -293,7 +290,7 @@ def edge(
             **tqdm_kw,
         )
     elif progress:
-        with joblib_progress(**tqdm_kw) as _:
+        with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
             fitresults = parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)

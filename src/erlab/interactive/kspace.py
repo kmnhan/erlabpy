@@ -15,7 +15,6 @@ from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.accessors.kspace import MomentumAccessor
-from erlab.utils.array import effective_decimals
 
 if TYPE_CHECKING:
     import matplotlib
@@ -298,7 +297,7 @@ class KspaceTool(KspaceToolGUI):
         if self.data.kspace._has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
             eV_step = self.data.eV.values[1] - self.data.eV.values[0]
-            self.center_spin.setDecimals(effective_decimals(eV_step))
+            self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
             self.center_spin.setSingleStep(eV_step)
             self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.update)

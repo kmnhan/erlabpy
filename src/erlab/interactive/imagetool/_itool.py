@@ -10,7 +10,6 @@ from erlab.interactive.imagetool.core import (
     SlicerLinkProxy,
     _parse_input,
 )
-from erlab.utils.misc import emit_user_level_warning
 
 
 def itool(
@@ -108,7 +107,7 @@ def itool(
     """
     if "use_manager" in kwargs:
         manager = kwargs.pop("use_manager")
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "The `use_manager` argument has been renamed to `manager`."
             "Support for the old argument will be removed in a future release.",
             category=FutureWarning,
@@ -122,7 +121,7 @@ def itool(
         manager = True
 
     if manager and not erlab.interactive.imagetool.manager.is_running():
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "The manager is not running. Opening the ImageTool window(s) directly."
         )
 

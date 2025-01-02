@@ -13,7 +13,6 @@ import xarray as xr
 
 import erlab
 from erlab.io.plugins.da30 import DA30Loader
-from erlab.utils.misc import emit_user_level_warning
 
 
 def _determine_kind(data: xr.DataArray) -> str:
@@ -33,7 +32,7 @@ def _get_start_time(data: xr.DataArray) -> datetime.datetime:
 
 
 def _emit_ambiguous_file_warning(num, file_to_use):
-    emit_user_level_warning(
+    erlab.utils.misc.emit_user_level_warning(
         f"Multiple files found for scan {num}, using {file_to_use}. "
         "Try providing the `prefix` argument to specify."
     )
@@ -136,7 +135,7 @@ class ERPESLoader(DA30Loader):
                         this_prefix = match_prefix.group(1)
                         prefixes.add(this_prefix)
                         if i > 0 and this_prefix not in prefixes:
-                            emit_user_level_warning(
+                            erlab.utils.misc.emit_user_level_warning(
                                 f"Multiple prefixes found for scan {num}, "
                                 f"using {next(iter(prefixes))}. "
                                 "Provide `prefix` argument to specify."

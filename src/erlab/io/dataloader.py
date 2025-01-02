@@ -36,9 +36,6 @@ import pandas
 import xarray as xr
 
 import erlab
-from erlab.utils.array import is_monotonic, sort_coord_order
-from erlab.utils.formatting import format_html_table, format_value
-from erlab.utils.misc import emit_user_level_warning, is_interactive, is_sequence_of
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -93,7 +90,7 @@ class _Loader(type):
                     raise FileNotFoundError(msg)
 
                 if self.always_single and len(result[0]) > 1:
-                    emit_user_level_warning(
+                    erlab.utils.misc.emit_user_level_warning(
                         f"Multiple files found for scan {num}, using {result[0][0]}"
                     )
                     return result[0][:1], result[1]
@@ -400,7 +397,7 @@ class LoaderBase(metaclass=_Loader):
         <erlab.io.dataloader.LoaderBase.formatters>`.
 
         """
-        return format_value(val)
+        return erlab.utils.formatting.format_value(val)
 
     @classmethod
     def get_styler(cls, df: pandas.DataFrame) -> pandas.io.formats.style.Styler:
@@ -625,7 +622,7 @@ class LoaderBase(metaclass=_Loader):
                             "- The file may be corrupted or in an unsupported format.\n"
                             "The data will be loaded as a single file."
                         )
-                        emit_user_level_warning(warning_message)
+                        erlab.utils.misc.emit_user_level_warning(warning_message)
 
                 # On failure, assume single file
                 single = True
@@ -732,7 +729,7 @@ class LoaderBase(metaclass=_Loader):
 
         styled = self.get_styler(df)
 
-        if is_interactive():
+        if erlab.utils.misc.is_interactive():
             import IPython.display
 
             with pandas.option_context(
@@ -883,7 +880,9 @@ class LoaderBase(metaclass=_Loader):
                     f,
                 )
             except Exception as e:
-                emit_user_level_warning(f"Failed to load {f} for summary: {e}")
+                erlab.utils.misc.emit_user_level_warning(
+                    f"Failed to load {f} for summary: {e}"
+                )
 
         sort_by = self.summary_sort if self.summary_sort is not None else "File Name"
 
@@ -1381,7 +1380,7 @@ class LoaderBase(metaclass=_Loader):
         data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
-        if is_sequence_of(data_list, xr.DataTree):
+        if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
             raise NotImplementedError(
                 "Combining DataTrees into a single tree will be supported "
                 "in a future release of ERLabPy. In the meantime, consider supplying "
@@ -1393,7 +1392,7 @@ class LoaderBase(metaclass=_Loader):
             # No coordinates to combine given
             # Multiregion scans over multiple files may be provided like this
 
-            if is_sequence_of(data_list, xr.DataTree):
+            if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
                 pass
             else:
                 try:
@@ -1408,9 +1407,9 @@ class LoaderBase(metaclass=_Loader):
                         "`combine=False` to `erlab.io.load`"
                     ) from e
 
-        if is_sequence_of(data_list, xr.DataArray) or is_sequence_of(
-            data_list, xr.Dataset
-        ):
+        if erlab.utils.misc.is_sequence_of(
+            data_list, xr.DataArray
+        ) or erlab.utils.misc.is_sequence_of(data_list, xr.Dataset):
             # If all coordinates are monotonic, all points are unique; in this case,
             # indexing along only the first dimension will not discard any data. For
             # example, hv-dependent cuts with coords 'hv' and 'beta' should be combined
@@ -1422,7 +1421,7 @@ class LoaderBase(metaclass=_Loader):
                 len(coord_dict) > 1
                 and len(data_list) > 1
                 and all(
-                    is_monotonic(np.asarray(v), strict=True)
+                    erlab.utils.array.is_monotonic(np.asarray(v), strict=True)
                     for v in coord_dict.values()
                 )
             ):
@@ -1574,7 +1573,7 @@ class LoaderBase(metaclass=_Loader):
 
     def _reorder_coords(self, darr: xr.DataArray):
         """Sort the coordinates of the given DataArray."""
-        return sort_coord_order(
+        return erlab.utils.array.sort_coord_order(
             darr,
             keys=itertools.chain(self.name_map.keys(), self.additional_coords.keys()),
             dims_first=True,
@@ -1743,7 +1742,7 @@ class LoaderBase(metaclass=_Loader):
     def _raise_or_warn(cls, msg: str) -> None:
         if cls.strict_validation:
             raise ValidationError(msg)
-        emit_user_level_warning(msg, ValidationWarning)
+        erlab.utils.misc.emit_user_level_warning(msg, ValidationWarning)
 
 
 class _RegistryBase:
@@ -1850,7 +1849,7 @@ class LoaderRegistry(_RegistryBase):
 
         loader = self._loaders.get(loader_name)
         if key != loader_name:
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 "Loader aliases are deprecated. Access the loader with the loader name "
                 f"'{loader_name}' instead.",
                 FutureWarning,
@@ -2007,7 +2006,7 @@ class LoaderRegistry(_RegistryBase):
             default_file = (default_dir / identifier).resolve()
 
             if default_file.exists() and abs_file != default_file:
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     f"Found {identifier!s} in the default directory "
                     f"{default_dir!s}, but conflicting file {abs_file!s} was found. "
                     "The first file will be loaded. "
@@ -2109,7 +2108,7 @@ class LoaderRegistry(_RegistryBase):
             cls_name = f"{v.__module__}.{v.__qualname__}"
             rows.append((k, desc, cls_name))
 
-        return format_html_table(rows, header_rows=1)
+        return erlab.utils.formatting.format_html_table(rows, header_rows=1)
 
     load.__doc__ = LoaderBase.load.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__

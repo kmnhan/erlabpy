@@ -13,7 +13,6 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
 
 import erlab
-from erlab.utils.array import effective_decimals
 
 if TYPE_CHECKING:
     import varname
@@ -160,8 +159,8 @@ class DerivativeTool(
                 )
 
                 sx_value, sy_value = (
-                    round(sx_value * xinc, effective_decimals(xinc)),
-                    round(sy_value * yinc, effective_decimals(yinc)),
+                    round(sx_value * xinc, erlab.utils.array.effective_decimals(xinc)),
+                    round(sy_value * yinc, erlab.utils.array.effective_decimals(yinc)),
                 )
             case _:
                 sx_value, sy_value = int(sx_value), int(sy_value)

@@ -18,9 +18,8 @@ import numpy as np
 import xarray as xr
 from xarray.core.dataarray import _THIS_ARRAY
 
+import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
-from erlab.utils.misc import emit_user_level_warning
-from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
@@ -421,7 +420,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                             initial_params
                         )
                     except NotImplementedError:
-                        emit_user_level_warning(
+                        erlab.utils.misc.emit_user_level_warning(
                             f"`guess` is not implemented for {model}, "
                             "using supplied initial parameters"
                         )
@@ -546,7 +545,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
         if parallel:
             if is_dask:
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     "The input Dataset is chunked. Parallel fitting will not offer any "
                     "performance benefits."
                 )
@@ -569,7 +568,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                     **tqdm_kw,
                 )
             else:
-                with joblib_progress(**tqdm_kw) as _:
+                with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
                     out_dicts = parallel_obj(
                         itertools.starmap(
                             joblib.delayed(_output_wrapper), self._obj.data_vars.items()

@@ -13,8 +13,6 @@ import xarray as xr
 import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.constants import AxesConfiguration
-from erlab.utils.formatting import format_html_table
-from erlab.utils.misc import emit_user_level_warning
 
 
 class IncompleteDataError(ValueError):
@@ -146,7 +144,9 @@ class OffsetView:
         return dict(self).__repr__()
 
     def _repr_html_(self) -> str:
-        return format_html_table([(k, str(v)) for k, v in self.items()], header_cols=1)
+        return erlab.utils.formatting.format_html_table(
+            [(k, str(v)) for k, v in self.items()], header_cols=1
+        )
 
     def update(
         self,
@@ -225,7 +225,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "Inner potential not found in data attributes, assuming 10 eV",
         )
         return 10.0
@@ -255,7 +255,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "Work function not found in data attributes, assuming 4.5 eV"
         )
         return 4.5
@@ -289,7 +289,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         try:
             return float(self._obj.attrs["angle_resolution"])
         except KeyError:
-            # emit_user_level_warning(
+            # erlab.utils.misc.emit_user_level_warning(
             #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
             # )
             return 0.1
@@ -402,7 +402,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if self._is_energy_kinetic:
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 "The energy axis seems to be in terms of kinetic energy, "
                 "attempting conversion to binding energy."
             )
@@ -843,7 +843,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             if k in self.momentum_axes:
                 momentum_coords[k] = v
             else:
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     f"Skipping unknown momentum axis '{k}', valid "
                     f"axes are {self.momentum_axes}"
                 )

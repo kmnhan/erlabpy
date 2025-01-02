@@ -18,24 +18,7 @@ import numpy.typing as npt
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
-from erlab.interactive.imagetool.controls import (
-    ItoolBinningControls,
-    ItoolColormapControls,
-    ItoolCrosshairControls,
-)
-from erlab.interactive.imagetool.core import ImageSlicerArea
-from erlab.interactive.imagetool.dialogs import (
-    CropDialog,
-    NormalizeDialog,
-    RotationDialog,
-)
-from erlab.interactive.utils import (
-    DictMenuBar,
-    copy_to_clipboard,
-    file_loaders,
-    wait_dialog,
-)
-from erlab.utils.misc import _convert_to_native
+import erlab
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -73,7 +56,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
     ) -> None:
         super().__init__(parent=parent)
-        self._slicer_area = ImageSlicerArea(self, data, **kwargs)
+        self._slicer_area = erlab.interactive.imagetool.core.ImageSlicerArea(
+            self, data, **kwargs
+        )
         self.setCentralWidget(self.slicer_area)
 
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
@@ -87,22 +72,32 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
         self.docks[0].setWidget(
             self.widget_box(
-                ItoolCrosshairControls(
+                erlab.interactive.imagetool.controls.ItoolCrosshairControls(
                     self.slicer_area, orientation=QtCore.Qt.Orientation.Vertical
                 )
             )
         )
         self.docks[1].setWidget(
-            self.widget_box(ItoolColormapControls(self.slicer_area))
+            self.widget_box(
+                erlab.interactive.imagetool.controls.ItoolColormapControls(
+                    self.slicer_area
+                )
+            )
         )
-        self.docks[2].setWidget(self.widget_box(ItoolBinningControls(self.slicer_area)))
+        self.docks[2].setWidget(
+            self.widget_box(
+                erlab.interactive.imagetool.controls.ItoolBinningControls(
+                    self.slicer_area
+                )
+            )
+        )
 
         for d in self.docks:
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
     @property
-    def slicer_area(self) -> ImageSlicerArea:
+    def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
         """
         The underlying :class:`ImageSlicerArea
         <erlab.interactive.imagetool.core.ImageSlicerArea>`.
@@ -332,7 +327,9 @@ class ImageTool(BaseImageTool):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders()
+        valid_loaders: dict[str, tuple[Callable, dict]] = (
+            erlab.interactive.utils.file_loaders()
+        )
         dialog.setNameFilters(valid_loaders.keys())
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
@@ -350,7 +347,7 @@ class ImageTool(BaseImageTool):
             fn, kargs = valid_loaders[self._recent_name_filter]
 
             try:
-                with wait_dialog(self, "Loading..."):
+                with erlab.interactive.utils.wait_dialog(self, "Loading..."):
                     self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
@@ -406,11 +403,11 @@ class ImageTool(BaseImageTool):
         if dialog.exec():
             files = dialog.selectedFiles()
             fn, kargs = valid_savers[dialog.selectedNameFilter()]
-            with wait_dialog(self, "Saving..."):
+            with erlab.interactive.utils.wait_dialog(self, "Saving..."):
                 fn(self.slicer_area._data, files[0], **kargs)
 
 
-class ItoolMenuBar(DictMenuBar):
+class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     def __init__(self, tool: ImageTool) -> None:
         super().__init__(tool)
         self.createMenus()
@@ -420,7 +417,7 @@ class ItoolMenuBar(DictMenuBar):
         return cast(ImageTool, self.parent())
 
     @property
-    def slicer_area(self) -> ImageSlicerArea:
+    def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
         return self.image_tool.slicer_area
 
     @property
@@ -601,15 +598,15 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _rotate(self) -> None:
-        self.execute_dialog(RotationDialog)
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.RotationDialog)
 
     @QtCore.Slot()
     def _crop(self) -> None:
-        self.execute_dialog(CropDialog)
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.CropDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:
-        self.execute_dialog(NormalizeDialog)
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.NormalizeDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
@@ -617,12 +614,20 @@ class ItoolMenuBar(DictMenuBar):
 
     @QtCore.Slot()
     def _copy_cursor_val(self) -> None:
-        copy_to_clipboard(
-            str(_convert_to_native(self.slicer_area.array_slicer._values))
+        erlab.interactive.utils.copy_to_clipboard(
+            str(
+                erlab.utils.misc._convert_to_native(
+                    self.slicer_area.array_slicer._values
+                )
+            )
         )
 
     @QtCore.Slot()
     def _copy_cursor_idx(self) -> None:
-        copy_to_clipboard(
-            str(_convert_to_native(self.slicer_area.array_slicer._indices))
+        erlab.interactive.utils.copy_to_clipboard(
+            str(
+                erlab.utils.misc._convert_to_native(
+                    self.slicer_area.array_slicer._indices
+                )
+            )
         )

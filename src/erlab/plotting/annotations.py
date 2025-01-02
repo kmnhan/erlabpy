@@ -35,14 +35,18 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import matplotlib.transforms as mtransforms
 import numpy as np
-import pyperclip
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from erlab.accessors.utils import either_dict_or_kwargs
 from erlab.plotting.colors import axes_textcolor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    import pyperclip
+else:
+    import lazy_loader as _lazy
+
+    pyperclip = _lazy.load("pyperclip")
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",
@@ -1141,6 +1145,8 @@ def sizebar(
         `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
 
     """
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+
     size = value / resolution
     unit = get_si_str(si) + unit
     value = np.around(value / 10**si, decimals=decimals)

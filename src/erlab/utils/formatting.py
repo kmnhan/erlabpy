@@ -8,7 +8,7 @@ from typing import cast
 
 import numpy as np
 
-from erlab.utils.array import is_monotonic, is_uniform_spaced
+import erlab
 
 STYLE_SHEET = """
 .erlab-table td,
@@ -156,7 +156,7 @@ def format_value(
                 if len(val) == 2:
                     return f"[{_format(val[0])}, {_format(val[1])}]"
 
-                if is_uniform_spaced(val):
+                if erlab.utils.array.is_uniform_spaced(val):
                     if val[0] == val[-1]:
                         return _format(val[0])
                     start, end, step = tuple(
@@ -167,7 +167,7 @@ def format_value(
                         return formatted.replace("-", "−")
                     return formatted
 
-                if is_monotonic(val):
+                if erlab.utils.array.is_monotonic(val):
                     if val[0] == val[-1]:
                         return _format(val[0])
 

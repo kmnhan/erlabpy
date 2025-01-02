@@ -49,7 +49,6 @@ from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
-from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
 from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _RenameDialog,
@@ -60,15 +59,6 @@ from erlab.interactive.imagetool.manager._server import (
     _ManagerServer,
     _save_pickle,
 )
-from erlab.interactive.utils import (
-    IconActionButton,
-    KeyboardEventFilter,
-    file_loaders,
-    wait_dialog,
-)
-from erlab.utils.array import is_monotonic, is_uniform_spaced
-from erlab.utils.formatting import format_html_table, format_value
-from erlab.utils.misc import is_sequence_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -152,30 +142,39 @@ def _format_coord_dims(coord: xr.DataArray) -> str:
 
 def _format_array_values(val: npt.NDArray) -> str:
     if val.size == 1:
-        return format_value(val.item())
+        return erlab.utils.formatting.format_value(val.item())
 
     val = val.squeeze()
 
     if val.ndim == 1:
         if len(val) == 2:
-            return f"[{format_value(val[0])}, {format_value(val[1])}]"
+            return (
+                f"[{erlab.utils.formatting.format_value(val[0])}, "
+                f"{erlab.utils.formatting.format_value(val[1])}]"
+            )
 
-        if is_uniform_spaced(val):
+        if erlab.utils.array.is_uniform_spaced(val):
             if val[0] == val[-1]:
-                return format_value(val[0])
+                return erlab.utils.formatting.format_value(val[0])
 
             start, end, step = tuple(
-                format_value(v) for v in (val[0], val[-1], val[1] - val[0])
+                erlab.utils.formatting.format_value(v)
+                for v in (val[0], val[-1], val[1] - val[0])
             )
             return f"{start} : {step} : {end}"
 
-        if is_monotonic(val):
+        if erlab.utils.array.is_monotonic(val):
             if val[0] == val[-1]:
-                return format_value(val[0])
+                return erlab.utils.formatting.format_value(val[0])
 
-            return f"{format_value(val[0])} to {format_value(val[-1])}"
+            return (
+                f"{erlab.utils.formatting.format_value(val[0])} to "
+                f"{erlab.utils.formatting.format_value(val[-1])}"
+            )
 
-    mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
+    mn, mx = tuple(
+        erlab.utils.formatting.format_value(v) for v in (np.nanmin(val), np.nanmax(val))
+    )
     return f"min {mn} max {mx}"
 
 
@@ -213,13 +212,15 @@ def _format_info_html(darr: xr.DataArray, created_time: datetime.datetime) -> st
                 _format_array_values(coord.values),
             ]
         )
-    out += format_html_table(coord_rows)
+    out += erlab.utils.formatting.format_html_table(coord_rows)
 
     out += r"<br>Attributes:"
     attr_rows: list[list[str]] = []
     for key, attr in darr.attrs.items():
-        attr_rows.append([_format_attr_key(key), format_value(attr)])
-    out += format_html_table(attr_rows)
+        attr_rows.append(
+            [_format_attr_key(key), erlab.utils.formatting.format_value(attr)]
+        )
+    out += erlab.utils.formatting.format_html_table(attr_rows)
 
     return out
 
@@ -686,7 +687,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             icon = qta.icon(
                 "mdi6.link-variant",
                 color=self.manager.color_for_linker(
-                    cast(SlicerLinkProxy, tool_wrapper.slicer_area._linking_proxy)
+                    cast(
+                        erlab.interactive.imagetool.core.SlicerLinkProxy,
+                        tool_wrapper.slicer_area._linking_proxy,
+                    )
                 ),
             )
             _fill_rounded_rect(
@@ -1128,7 +1132,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
-        self._linkers: list[SlicerLinkProxy] = []
+        self._linkers: list[erlab.interactive.imagetool.core.SlicerLinkProxy] = []
 
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
@@ -1242,27 +1246,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addSeparator()
 
         # Initialize sidebar buttons linked to actions
-        self.open_button = IconActionButton(
+        self.open_button = erlab.interactive.utils.IconActionButton(
             self.open_action,
             "mdi6.folder-open-outline",
         )
-        self.remove_button = IconActionButton(
+        self.remove_button = erlab.interactive.utils.IconActionButton(
             self.remove_action,
             "mdi6.window-close",
         )
-        self.rename_button = IconActionButton(
+        self.rename_button = erlab.interactive.utils.IconActionButton(
             self.rename_action,
             "mdi6.rename",
         )
-        self.link_button = IconActionButton(
+        self.link_button = erlab.interactive.utils.IconActionButton(
             self.link_action,
             "mdi6.link-variant",
         )
-        self.unlink_button = IconActionButton(
+        self.unlink_button = erlab.interactive.utils.IconActionButton(
             self.unlink_action,
             "mdi6.link-variant-off",
         )
-        self.preview_button = IconActionButton(
+        self.preview_button = erlab.interactive.utils.IconActionButton(
             self.preview_action, on="mdi6.eye", off="mdi6.eye-off"
         )
 
@@ -1336,7 +1340,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.setMinimumHeight(487)
 
         # Install event filter for keyboard shortcuts
-        self._kb_filter = KeyboardEventFilter(self)
+        self._kb_filter = erlab.interactive.utils.KeyboardEventFilter(self)
         self.text_box.installEventFilter(self._kb_filter)
 
     @property
@@ -1411,7 +1415,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 raise KeyError(f"Tool of index '{index}' is archived")
         return cast(ImageTool, wrapper.tool)
 
-    def color_for_linker(self, linker: SlicerLinkProxy) -> QtGui.QColor:
+    def color_for_linker(
+        self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
+    ) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
         idx = self._linkers.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
@@ -1617,14 +1623,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def archive_selected(self) -> None:
         """Archive selected ImageTool windows."""
-        with wait_dialog(self, "Archiving..."):
+        with erlab.interactive.utils.wait_dialog(self, "Archiving..."):
             for index in self.list_view.selected_tool_indices:
                 self._tool_wrappers[index].archive()
 
     @QtCore.Slot()
     def unarchive_selected(self) -> None:
         """Unarchive selected ImageTool windows."""
-        with wait_dialog(self, "Unarchiving..."):
+        with erlab.interactive.utils.wait_dialog(self, "Unarchiving..."):
             for index in self.list_view.selected_tool_indices:
                 self._tool_wrappers[index].unarchive()
 
@@ -1672,7 +1678,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
-        linker = SlicerLinkProxy(
+        linker = erlab.interactive.imagetool.core.SlicerLinkProxy(
             *[self.get_tool(t).slicer_area for t in indices], link_colors=link_colors
         )
         self._linkers.append(linker)
@@ -1742,7 +1748,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
-            with wait_dialog(self, "Saving workspace..."):
+            with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
                 self._to_datatree().to_netcdf(
                     fname, engine="h5netcdf", invalid_netcdf=True
                 )
@@ -1770,7 +1776,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
-                with wait_dialog(self, "Loading workspace..."):
+                with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
                     self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
@@ -1795,7 +1801,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
-        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders()
+        valid_loaders: dict[str, tuple[Callable, dict]] = (
+            erlab.interactive.utils.file_loaders()
+        )
         dialog.setNameFilters(valid_loaders.keys())
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
@@ -1839,7 +1847,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             Additional keyword arguments.
 
         """
-        if is_sequence_of(data, xr.Dataset):
+        if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 self.add_tool(
                     ImageTool.from_dataset(ds, _in_manager=True), activate=True
@@ -1911,7 +1919,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     return
 
                 msg = f"Loading {'file' if len(file_paths) == 1 else 'files'}..."
-                with wait_dialog(self, msg):
+                with erlab.interactive.utils.wait_dialog(self, msg):
                     self.open_multiple_files(
                         file_paths, try_workspace=extensions == {".h5"}
                     )
@@ -2007,7 +2015,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
 
         # Get loaders applicable to input files
-        valid_loaders: dict[str, tuple[Callable, dict]] = file_loaders(queued)
+        valid_loaders: dict[str, tuple[Callable, dict]] = (
+            erlab.interactive.utils.file_loaders(queued)
+        )
 
         if len(valid_loaders) == 0:
             QtWidgets.QMessageBox.critical(
@@ -2059,7 +2069,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for p in list(queued):
             queued.remove(p)
             try:
-                data_list = _parse_input(func(p, **kwargs))
+                data_list = erlab.interactive.imagetool.core._parse_input(
+                    func(p, **kwargs)
+                )
             except Exception as e:
                 failed.append(p)
 
@@ -2255,7 +2267,7 @@ def show_in_manager(
         # Dataset created with ImageTool.to_dataset()
         input_data: list[xr.DataArray] | list[xr.Dataset] = [data]
     else:
-        input_data = _parse_input(data)
+        input_data = erlab.interactive.imagetool.core._parse_input(data)
 
     if _manager_instance is not None and not _always_use_socket:
         # If the manager is running in the same process, directly pass the data

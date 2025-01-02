@@ -11,8 +11,6 @@ import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.utils.array import effective_decimals
-from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -310,7 +308,7 @@ class ArraySlicer(QtCore.QObject):
             "dims": copy.deepcopy(self._obj.dims),
             "bins": copy.deepcopy(self._bins),
             "indices": copy.deepcopy(self._indices),
-            "values": _convert_to_native(self._values),
+            "values": erlab.utils.misc._convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
         }
 
@@ -471,7 +469,7 @@ class ArraySlicer(QtCore.QObject):
             step = self.incs_uniform[axis]
         else:
             step = self.incs[axis]
-        return effective_decimals(step)
+        return erlab.utils.array.effective_decimals(step)
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))

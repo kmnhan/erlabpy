@@ -20,12 +20,11 @@ if TYPE_CHECKING:
 else:
     import lazy_loader as _lazy
 
+    import erlab
+
     h5py = _lazy.load("h5py")
 
-    from erlab.utils.misc import LazyImport
-
-    # lazy-loader does not support importing from a submodule
-    nexus = LazyImport(
+    nexus = erlab.utils.misc.LazyImport(
         "nexusformat.nexus",
         err_msg="The `nexusformat` package is required to read NeXus files",
     )
