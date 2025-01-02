@@ -2,6 +2,7 @@ import pytest
 import xarray
 import xarray.testing
 
+from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles
 
@@ -151,3 +152,30 @@ def test_kconv(
 
     assert isinstance(kconv, xarray.DataArray)
     assert not kconv.isnull().all()
+
+
+@pytest.mark.parametrize("missing_coord", ["alpha", "beta", "chi", "xi", "eV", "hv"])
+def test_kconv_missing_coord(missing_coord, anglemap):
+    data = anglemap.copy().assign_coords(chi=0.0)
+    data.kspace.configuration = 4
+
+    data = data.drop_vars(missing_coord)
+
+    with pytest.raises(
+        IncompleteDataError,
+        match=IncompleteDataError._make_message("coord", missing_coord),
+    ):
+        data.kspace.convert(silent=True)
+
+
+@pytest.mark.parametrize("missing_attr", ["configuration"])
+def test_kconv_missing_attr(missing_attr, anglemap):
+    data = anglemap.copy().assign_coords(chi=0.0)
+    data.kspace.configuration = 4
+    data.attrs.pop(missing_attr)
+
+    with pytest.raises(
+        IncompleteDataError,
+        match=IncompleteDataError._make_message("attr", missing_attr),
+    ):
+        data.kspace.convert(silent=True)

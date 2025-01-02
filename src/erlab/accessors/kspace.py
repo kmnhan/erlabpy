@@ -17,6 +17,22 @@ from erlab.utils.formatting import format_html_table
 from erlab.utils.misc import emit_user_level_warning
 
 
+class IncompleteDataError(ValueError):
+    """Raised when the data is not in the expected format for momentum conversion.
+
+    See :ref:`conventions <data-conventions>` for required data attributes and
+    coordinates.
+    """
+
+    def __init__(self, kind: Literal["attr", "coord"], name: str) -> None:
+        super().__init__(self._make_message(kind, name))
+
+    @staticmethod
+    def _make_message(kind: Literal["attr", "coord"], name: str) -> str:
+        kind_str = "Attribute" if kind == "attr" else "Coordinate"
+        return f"{kind_str} '{name}' is required for momentum conversion."
+
+
 def _only_angles(method):
     """Decorate methods that require data to be in angle space.
 
@@ -180,10 +196,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         See :class:`erlab.constants.AxesConfiguration` for possible configurations.
         """
         if "configuration" not in self._obj.attrs:
-            raise ValueError(
-                "Configuration not found in data attributes! "
-                "Data attributes may have been discarded since initial import."
-            )
+            raise IncompleteDataError("attr", "configuration")
 
         return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
@@ -337,6 +350,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     def angle_params(self) -> dict[str, float]:
         """Parameters passed to :func:`erlab.analysis.kspace.get_kconv_func`."""
+        if "xi" not in self._obj.coords:
+            raise IncompleteDataError("coord", "xi")
+
         params = {
             "delta": self.offsets["delta"],
             "xi": float(self._obj["xi"].values),
@@ -346,22 +362,31 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             case AxesConfiguration.Type1 | AxesConfiguration.Type2:
                 params["beta0"] = self.offsets["beta"]
             case _:
+                if "chi" not in self._obj.coords:
+                    raise IncompleteDataError("coord", "chi")
                 params["chi"] = float(self._obj["chi"].values)
                 params["chi0"] = self.offsets["chi"]
+
         return params
 
     @property
     @_only_angles
     def _alpha(self) -> xr.DataArray:
+        if "alpha" not in self._obj.coords:
+            raise IncompleteDataError("coord", "alpha")
         return self._obj.alpha
 
     @property
     @_only_angles
     def _beta(self) -> xr.DataArray:
+        if "beta" not in self._obj.coords:
+            raise IncompleteDataError("coord", "beta")
         return self._obj.beta
 
     @property
     def _hv(self) -> xr.DataArray:
+        if "hv" not in self._obj.coords:
+            raise IncompleteDataError("coord", "hv")
         return self._obj.hv
 
     @property
@@ -372,6 +397,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def _binding_energy(self) -> xr.DataArray:
+        if "eV" not in self._obj.coords:
+            raise IncompleteDataError("coord", "eV")
         if self._is_energy_kinetic:
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
@@ -395,7 +422,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @_only_angles
     def _has_hv(self) -> bool:
         """Return `True` for photon energy dependent data."""
-        return self._obj["hv"].size > 1
+        return self._hv.size > 1
 
     @property
     @_only_angles
@@ -816,7 +843,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             if k in self.momentum_axes:
                 momentum_coords[k] = v
             else:
-                raise ValueError(f"Dimension `{k}` is not a momentum axis")
+                emit_user_level_warning(
+                    f"Skipping unknown momentum axis '{k}', valid "
+                    f"axes are {self.momentum_axes}"
+                )
 
         if not silent:
             print("Calculating destination coordinates")
