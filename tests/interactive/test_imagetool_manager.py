@@ -69,7 +69,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow(use_manager=True)
+    test_data.qshow(manager=True)
 
     t0 = time.perf_counter()
     while True:
@@ -81,7 +81,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
-    for tool in itool([test_data, test_data], link=False, execute=False):
+    for tool in itool([test_data, test_data], link=False, execute=False, manager=False):
         tool.move_to_manager()
 
     while True:
@@ -196,7 +196,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
 
     # Bring manager to top
-
     with qtbot.waitExposed(manager):
         manager.preview_action.setChecked(True)
         manager.activateWindow()
@@ -240,11 +239,7 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     qtbot.addWidget(manager)
 
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
-
-    itool([test_data, test_data], link=True, link_colors=True, use_manager=True)
+    itool([test_data, test_data], link=True, link_colors=True, manager=True)
 
     t0 = time.perf_counter()
     while True:
@@ -285,15 +280,11 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
     qtbot.addWidget(manager)
 
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
-
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
     # Add two tools
     t0 = time.perf_counter()
-    itool([data, data], link=False, use_manager=True)
+    itool([data, data], link=False, manager=True)
     while True:
         if manager.ntools == 2:
             break
@@ -347,8 +338,8 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow(use_manager=True)
-    test_data.qshow(use_manager=True)
+    test_data.qshow(manager=True)
+    test_data.qshow(manager=True)
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
 
     manager.raise_()
@@ -445,7 +436,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         manager.show()
         manager.activateWindow()
 
-    itool([data, data], link=True, link_colors=True, use_manager=True)
+    itool([data, data], link=True, link_colors=True, manager=True)
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
 
     # Open console

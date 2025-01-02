@@ -158,7 +158,7 @@ When the manager is running, ImageTools can be added to the manager by:
 
 - Invoking ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` or
   :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` with
-  ``use_manager=True`` from any script or notebook.
+  ``manager=True`` from any script or notebook.
 
 - From an ImageTool window, use the ``Move to Manager`` action (:kbd:`Ctrl+Shift+M`) in
   the ``File`` menu.

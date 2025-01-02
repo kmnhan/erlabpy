@@ -551,7 +551,7 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         dialog.opts[option].setChecked(True)
 
         # Preview
-        dialog.preview_button.click()
+        dialog._preview()
 
     accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
 

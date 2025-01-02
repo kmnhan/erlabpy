@@ -64,7 +64,7 @@ def itool(
     *,
     link: bool = False,
     link_colors: bool = True,
-    use_manager: bool = False,
+    manager: bool | None = None,
     execute: bool | None = None,
     **kwargs,
 ) -> (
@@ -106,15 +106,22 @@ def itool(
     link_colors
         Whether to link the color maps between multiple linked ImageTool windows, by
         default `True`. This argument has no effect if `link` is set to `False`.
-    use_manager
+    manager
         Whether to open the ImageTool window(s) using the :class:`ImageToolManager
-        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running.
+        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running. If not
+        provided, the manager will only be used if it is in the same process as the
+        caller.
+
+        .. versionchanged:: 3.4.0
+
+            Argument renamed from `use_manager` to `manager`.
+
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
-        If `None`, the execution is determined based on the current IPython shell. This
-        argument has no effect if the :class:`ImageToolManager
-        <erlab.interactive.imagetool.manager.ImageToolManager>` is running and
-        `use_manager` is set to `True`. In most cases, the default value should be used.
+        For more information, see :func:`erlab.interactive.utils.setup_qapp`.
+
+        This argument has no effect when the ImageTool window(s) are opened in the
+        manager.
     **kwargs
         Additional keyword arguments to be passed onto the underlying slicer area. For a
         full list of supported arguments, see the
@@ -141,20 +148,27 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool([data1, data2], link=True)
     """
-    manager_running: bool = erlab.interactive.imagetool.manager.is_running()
+    if "use_manager" in kwargs:
+        manager = kwargs.pop("use_manager")
+        emit_user_level_warning(
+            "The `use_manager` argument has been renamed to `manager`."
+            "Support for the old argument will be removed in a future release.",
+            category=FutureWarning,
+        )
+
     if (
-        manager_running
+        manager is None
+        and erlab.interactive.imagetool.manager.is_running()
         and erlab.interactive.imagetool.manager._manager_instance is not None
     ):
-        use_manager = True
+        manager = True
 
-    if use_manager and not manager_running:
-        use_manager = False
+    if manager and not erlab.interactive.imagetool.manager.is_running():
         emit_user_level_warning(
             "The manager is not running. Opening the ImageTool window(s) directly."
         )
 
-    if use_manager:
+    if manager:
         erlab.interactive.imagetool.manager.show_in_manager(
             data, link=link, link_colors=link_colors, **kwargs
         )
