@@ -22,6 +22,10 @@
 
 ### 🐞 Bug Fixes
 
+- **kspace:** properly handle maps with energy given as kinetic ([02bce90](https://github.com/kmnhan/erlabpy/commit/02bce9032c93087f549b59aa9d4594071e187b11))
+
+- **io.plugins.erpes:** show warning when loading with index is ambiguous ([95a88b6](https://github.com/kmnhan/erlabpy/commit/95a88b6e77264f6e0c8ceca8e364bba12471ba6e))
+
 - **io:** fixes loaded data losing their original names ([a19f37a](https://github.com/kmnhan/erlabpy/commit/a19f37a43f5cd3409d6e0c7e186f00d727bb75a2))
 
 - **analysis.fit:** handle NaN values in linear fit guesses ([1aef937](https://github.com/kmnhan/erlabpy/commit/1aef93752a04ae4a4bddb8a302d1a6c0716082b4))
@@ -33,6 +37,28 @@
 - improve import time ([e2a2542](https://github.com/kmnhan/erlabpy/commit/e2a25429395b11c59e84212490f515d3294fb836))
 
 ### ♻️ Code Refactor
+
+- reorganize interactive module structure ([87a6e89](https://github.com/kmnhan/erlabpy/commit/87a6e89f756a45213166dd166e60cfe45a624014))
+
+- **imagetool:** add `update` parameter to `apply_func` ([fd0238d](https://github.com/kmnhan/erlabpy/commit/fd0238dcdbd5fe6e50c875c2b84f017780b82ce7))
+
+- **accessors.kspace:** make errors during momentum conversion due to missing coords or attrs more explicit ([eb3d01c](https://github.com/kmnhan/erlabpy/commit/eb3d01cc7fc92687a7075a308abd9f52ccff2e1d))
+
+- **imagetool:** change argument `use_manager` to `manager` in `itool()` ([0929e5c](https://github.com/kmnhan/erlabpy/commit/0929e5c9926f0e7cc68b37d71492cc2f0d143fda))
+
+- **imagetool:** move main window setup from `__init__.py` to `mainwindow.py` ([0997149](https://github.com/kmnhan/erlabpy/commit/099714954de07ce6af50fa6dcd5a47ea3cf9c156))
+
+  This refactor enhances maintainability and readability by clearly separating the main window setup logic from the package initialization.
+
+- **imagetool:** disable manager by default ([34e943f](https://github.com/kmnhan/erlabpy/commit/34e943fcbca2741e020a36093420311acef78a99))
+
+  This update modifies `itool` and `qshow` so that tools are opened in the manager only when `use_manager=True` is explicitly specified.
+
+  To address the inconvenience, a new `Move to Manager` action with keyboard shortcut `Ctrl+Shift+M` has been added to the `File` menu of ImageTool windows opened outside the manager when the manager is running.
+
+- make sequence type checking function public and move to `utils` module ([0475cfd](https://github.com/kmnhan/erlabpy/commit/0475cfd2fc5d3b861ef96c355862598828d7f0e5))
+
+  Adds `utils.misc.is_sequence_of`, which checks if an object is a sequence of elements of the specified type.
 
 - **imagetool:** show all axes by default for 4D data ([b034477](https://github.com/kmnhan/erlabpy/commit/b0344775fd512b40d5fa9d382d84d38d4e1ce64a))
 
