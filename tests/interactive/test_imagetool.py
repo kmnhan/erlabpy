@@ -71,9 +71,6 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -97,11 +94,7 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 def test_itool_save(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)
-
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -236,10 +229,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     main_image = win.slicer_area.images[0]
 
     # Test code generation
@@ -347,10 +336,6 @@ def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
     )
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     win.slicer_area.set_data(
         xr.DataArray(np.arange(125).reshape((5, 5, 5)), dims=["x", "y", "z"])
     )
@@ -375,10 +360,6 @@ def test_value_update(qtbot) -> None:
     )
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
@@ -389,10 +370,6 @@ def test_value_update(qtbot) -> None:
 def test_value_update_errors(qtbot) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
