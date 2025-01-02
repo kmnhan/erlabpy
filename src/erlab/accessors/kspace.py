@@ -360,9 +360,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._obj.hv
 
     @property
-    def _binding_energy(self) -> xr.DataArray:
+    def _is_energy_kinetic(self) -> bool:
+        """Check if the energy axis is in binding energy."""
         # If scalar, may be a constant energy contour above EF
-        if self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0):
+        return self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0)
+
+    @property
+    def _binding_energy(self) -> xr.DataArray:
+        if self._is_energy_kinetic:
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
             emit_user_level_warning(
@@ -500,7 +505,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         min_Ek = np.amin(self._kinetic_energy.values)
         max_angle = max(np.abs(self._alpha.values))
-        return (
+        return float(
             erlab.constants.rel_kconv
             * np.sqrt(min_Ek)
             * np.cos(np.deg2rad(max_angle))
