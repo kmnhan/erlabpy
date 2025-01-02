@@ -1172,7 +1172,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # This will update colorbar limits if visible
             self.lock_levels(self.levels_locked)
 
-    def apply_func(self, func: Callable[[xr.DataArray], xr.DataArray] | None) -> None:
+    def apply_func(
+        self, func: Callable[[xr.DataArray], xr.DataArray] | None, update: bool = True
+    ) -> None:
         """Apply a function to the data.
 
         The function must accept the data as the first argument and return a new
@@ -1186,6 +1188,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ----------
         func
             The function to apply to the data. if None, the data is restored.
+        update
+            If `True`, the plots are updated after setting the new values.
 
         """
         # self._data is original data passed to `set_data`
@@ -1193,9 +1197,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = func
 
         if self._applied_func is None:
-            self.update_values(self._data)
+            self.update_values(self._data, update=update)
         else:
-            self.update_values(self._applied_func(self._data))
+            self.update_values(self._applied_func(self._data), update=update)
 
     @QtCore.Slot(int, int)
     @link_slicer
