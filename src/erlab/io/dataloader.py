@@ -38,7 +38,7 @@ import xarray as xr
 import erlab
 from erlab.utils.array import is_monotonic, sort_coord_order
 from erlab.utils.formatting import format_html_table, format_value
-from erlab.utils.misc import emit_user_level_warning, is_sequence_of
+from erlab.utils.misc import emit_user_level_warning, is_interactive, is_sequence_of
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -733,8 +733,7 @@ class LoaderBase(metaclass=_Loader):
         styled = self.get_styler(df)
 
         try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+            if is_interactive():
                 import IPython.display
 
                 with pandas.option_context(

@@ -140,3 +140,21 @@ def is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
         `element_type`, `False` otherwise.
     """
     return isinstance(val, Sequence) and all(isinstance(x, element_type) for x in val)
+
+
+def is_interactive() -> bool:
+    """Check if the code is running in an interactive environment.
+
+    Returns
+    -------
+    bool
+        `True` if the code is running in an interactive environment (IPython), `False`
+        otherwise.
+    """
+    try:
+        shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
+        if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+            return True
+    except NameError:
+        pass
+    return False
