@@ -141,7 +141,14 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool([data1, data2], link=True)
     """
-    if use_manager and not erlab.interactive.imagetool.manager.is_running():
+    manager_running: bool = erlab.interactive.imagetool.manager.is_running()
+    if (
+        manager_running
+        and erlab.interactive.imagetool.manager._manager_instance is not None
+    ):
+        use_manager = True
+
+    if use_manager and not manager_running:
         use_manager = False
         emit_user_level_warning(
             "The manager is not running. Opening the ImageTool window(s) directly."

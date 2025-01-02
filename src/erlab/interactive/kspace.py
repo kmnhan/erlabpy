@@ -287,6 +287,8 @@ class KspaceTool(KspaceToolGUI):
 
         self._argnames = {}
 
+        self._itool: QtWidgets.QWidget | None = None
+
         if data_name is None:
             try:
                 self._argnames["data"] = varname.argname(
@@ -439,7 +441,11 @@ class KspaceTool(KspaceToolGUI):
 
         tool = erlab.interactive.itool(data_kconv, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
+            if self._itool is not None:
+                self._itool.close()
+
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            tool.destroyed.connect(lambda: setattr(self, "_itool", None))
             self._itool = tool
             self._itool.show()
 
