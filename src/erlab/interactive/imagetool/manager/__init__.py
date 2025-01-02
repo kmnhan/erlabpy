@@ -1090,6 +1090,8 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         )
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
+        self.setToolTip("Main image preview")
+
     def setPixmap(self, pixmap: QtGui.QPixmap) -> None:
         self._pixmapitem.setPixmap(pixmap)
         self.fitInView(self._pixmapitem)
