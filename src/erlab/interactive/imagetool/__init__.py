@@ -32,7 +32,7 @@ from erlab.interactive.imagetool.core import (
 )
 from erlab.utils.misc import emit_user_level_warning
 
-__getattr__, __dir__, __all_lazy__ = _lazy.attach(
+__getattr__, __dir_lazy__, __all_lazy__ = _lazy.attach(
     __name__,
     submodules=["manager"],
     submod_attrs={
@@ -41,6 +41,11 @@ __getattr__, __dir__, __all_lazy__ = _lazy.attach(
 )
 
 __all__ = [*__all_lazy__, "itool"]
+
+
+def __dir__() -> list[str]:
+    return [*__dir_lazy__(), "itool"]
+
 
 if TYPE_CHECKING:
     from erlab.interactive.imagetool import manager  # noqa: F401
