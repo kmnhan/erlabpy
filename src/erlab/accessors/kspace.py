@@ -171,8 +171,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def configuration(self) -> AxesConfiguration:
         """Experimental configuration.
 
-        For a properly implemented data loader, the configuration attribute must be set
-        on data import. See :class:`erlab.constants.AxesConfiguration` for details.
+        For data loaded with a properly implemented data loader plugin, the
+        configuration attribute is automatically set upon loading. If the configuration
+        is missing, the attributes of the data may have been lost since loading due to
+        averaging or other operations. In such cases, try to reload the data after
+        setting ``xr.set_options(keep_attrs='True')``.
+
+        See :class:`erlab.constants.AxesConfiguration` for possible configurations.
         """
         if "configuration" not in self._obj.attrs:
             raise ValueError(
