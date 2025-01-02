@@ -14,7 +14,6 @@ import xarray as xr
 
 import erlab
 from erlab.io.dataloader import LoaderBase
-from erlab.utils.misc import emit_user_level_warning
 
 
 def _format_polarization(val) -> str:
@@ -173,7 +172,7 @@ class MERLINLoader(LoaderBase):
 
             # If there is more than one file found, this indicates a conflict
             if len(files) > 1:
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     f"Multiple files found for scan {num}, using {files[0]}"
                 )
                 files = files[:1]

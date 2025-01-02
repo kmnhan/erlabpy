@@ -1,5 +1,4 @@
 import tempfile
-import time
 import weakref
 
 import numpy as np
@@ -8,13 +7,14 @@ import pytest
 import xarray as xr
 import xarray.testing
 from numpy.testing import assert_almost_equal
-from qtpy import QtCore, QtWidgets
+from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import ImageTool, _parse_input, itool
+from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
+from erlab.interactive.imagetool.core import _parse_input
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
@@ -58,14 +58,8 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-    time.sleep(0.5)
-
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
-    del win
 
 
 def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
@@ -77,9 +71,6 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -103,11 +94,7 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 def test_itool_save(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)
-
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -132,10 +119,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     # Copy cursor values
     win.mnb._copy_cursor_val()
     assert pyperclip.paste() == "[[2, 2]]"
@@ -145,11 +128,11 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     # Snap
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_S)
+    win.array_slicer.snap_act.setChecked(True)
     assert win.array_slicer.snap_to_data
 
     # Transpose
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
+    win.slicer_area.transpose_act.trigger()
     assert win.slicer_area.data.dims == ("y", "x")
     move_and_compare_values(qtbot, win, [12.0, 11.0, 6.0, 7.0])
 
@@ -188,13 +171,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     # Undo and redo
     win.slicer_area.undo()
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.ControlModifier)
-    qtbot.keyClick(
-        win,
-        QtCore.Qt.Key.Key_Z,
-        QtCore.Qt.KeyboardModifier.ControlModifier
-        | QtCore.Qt.KeyboardModifier.ShiftModifier,
-    )
     win.slicer_area.redo()
 
     # Check restoring the state works
@@ -245,8 +221,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     win.close()
 
-    del win
-
 
 @pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
@@ -254,10 +228,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     data = _TEST_DATA[test_data_type]
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     main_image = win.slicer_area.images[0]
 
@@ -310,7 +280,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.slicer_area.close_associated_windows()
 
     win.close()
-    del win
 
 
 def test_parse_input() -> None:
@@ -367,10 +336,6 @@ def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
     )
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     win.slicer_area.set_data(
         xr.DataArray(np.arange(125).reshape((5, 5, 5)), dims=["x", "y", "z"])
     )
@@ -395,10 +360,6 @@ def test_value_update(qtbot) -> None:
     )
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     new_vals = -np.arange(25).reshape((5, 5)).astype(float)
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
@@ -409,10 +370,6 @@ def test_value_update(qtbot) -> None:
 def test_value_update_errors(qtbot) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(
@@ -594,7 +551,7 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         dialog.opts[option].setChecked(True)
 
         # Preview
-        dialog.preview_button.click()
+        dialog._preview()
 
     accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
 

@@ -10,9 +10,7 @@ import numpy as np
 import numpy.typing as npt
 from qtpy import QtCore, QtWidgets
 
-from erlab.interactive.utils import format_kwargs
-from erlab.utils.array import effective_decimals
-from erlab.utils.misc import _convert_to_native
+import erlab
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -49,10 +47,12 @@ def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
     DataArray
         A new DataArray with all dimensions made uniform.
     """
-    from erlab.interactive.imagetool._fastslicing import _is_uniform
-
     nonuniform_dims: list[str] = [
-        str(d) for d in darr.dims if not _is_uniform(darr[d].values.astype(np.float64))
+        str(d)
+        for d in darr.dims
+        if not erlab.interactive.imagetool.fastslicing._is_uniform(
+            darr[d].values.astype(np.float64)
+        )
     ]
     for d in nonuniform_dims:
         darr = darr.assign_coords(
@@ -230,11 +230,9 @@ class ArraySlicer(QtCore.QObject):
         will return the absolute average of all non-zero step sizes.
         """
         if self._nonuniform_axes:
-            from erlab.interactive.imagetool._fastslicing import _avg_nonzero_abs_diff
-
             return tuple(
                 (
-                    _avg_nonzero_abs_diff(coord)
+                    erlab.interactive.imagetool.fastslicing._avg_nonzero_abs_diff(coord)
                     if i in self._nonuniform_axes
                     else coord[1] - coord[0]
                 )
@@ -278,9 +276,7 @@ class ArraySlicer(QtCore.QObject):
 
         This property is used for fast slicing and binning operations.
         """
-        from erlab.interactive.imagetool._fastslicing import _transposed
-
-        return _transposed(self._obj.values)
+        return erlab.interactive.imagetool.fastslicing._transposed(self._obj.values)
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
     # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
@@ -312,7 +308,7 @@ class ArraySlicer(QtCore.QObject):
             "dims": copy.deepcopy(self._obj.dims),
             "bins": copy.deepcopy(self._bins),
             "indices": copy.deepcopy(self._indices),
-            "values": _convert_to_native(self._values),
+            "values": erlab.utils.misc._convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
         }
 
@@ -473,7 +469,7 @@ class ArraySlicer(QtCore.QObject):
             step = self.incs_uniform[axis]
         else:
             step = self.incs[axis]
-        return effective_decimals(step)
+        return erlab.utils.array.effective_decimals(step)
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
@@ -679,9 +675,9 @@ class ArraySlicer(QtCore.QObject):
             i = 0
         if j is None:
             return self.coords_uniform[i]
-        from erlab.interactive.imagetool._fastslicing import _array_rect
-
-        return _array_rect(i, j, self.lims_uniform, self.incs_uniform)
+        return erlab.interactive.imagetool.fastslicing._array_rect(
+            i, j, self.lims_uniform, self.incs_uniform
+        )
 
     def value_of_index(
         self, axis: int, value: int, uniform: bool = False
@@ -721,15 +717,13 @@ class ArraySlicer(QtCore.QObject):
 
         """
         if uniform or (axis not in self._nonuniform_axes):
-            from erlab.interactive.imagetool._fastslicing import _index_of_value
-
-            return _index_of_value(
+            return erlab.interactive.imagetool.fastslicing._index_of_value(
                 axis, value, self.lims_uniform, self.incs_uniform, self._obj.shape
             )
 
-        from erlab.interactive.imagetool._fastslicing import _index_of_value_nonuniform
-
-        return _index_of_value_nonuniform(self.coords[axis], value)
+        return erlab.interactive.imagetool.fastslicing._index_of_value_nonuniform(
+            self.coords[axis], value
+        )
 
     def isel_args(
         self,
@@ -790,13 +784,15 @@ class ArraySlicer(QtCore.QObject):
             qsel_kw = self.qsel_args(cursor, disp)
         except ValueError:
             return self.isel_code(cursor, disp)
-        kwargs_str = format_kwargs(qsel_kw)
+        kwargs_str = erlab.interactive.utils.format_kwargs(qsel_kw)
         if kwargs_str:
             return f".qsel({kwargs_str})"
         return ""
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        kwargs_str = format_kwargs(self.isel_args(cursor, disp, int_if_one=True))
+        kwargs_str = erlab.interactive.utils.format_kwargs(
+            self.isel_args(cursor, disp, int_if_one=True)
+        )
         if kwargs_str:
             return f".isel({kwargs_str})"
         return ""
@@ -874,9 +870,7 @@ class ArraySlicer(QtCore.QObject):
             return self.data_vals_T[
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
             ].squeeze(axis=axis_val)
-        from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
-
-        return fast_nanmean_skipcheck(
+        return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
             self.data_vals_T[
                 (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
             ],
@@ -898,7 +892,7 @@ class ArraySlicer(QtCore.QObject):
             )
         ]
         if any(self.get_binned(cursor)):
-            from erlab.interactive.imagetool.fastbinning import fast_nanmean_skipcheck
-
-            return fast_nanmean_skipcheck(selected, axis=axis)
+            return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
+                selected, axis=axis
+            )
         return selected

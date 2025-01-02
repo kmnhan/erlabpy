@@ -22,9 +22,6 @@ from erlab.accessors.utils import (
     ERLabDatasetAccessor,
     either_dict_or_kwargs,
 )
-from erlab.utils.array import sort_coord_order
-from erlab.utils.formatting import format_html_table
-from erlab.utils.misc import emit_user_level_warning
 
 
 def _check_hvplot():
@@ -328,7 +325,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
         part_params = hvplot.bind(get_slice_params, *sliders).interactive()
 
         if f"{prefix}modelfit_results" not in self._obj.data_vars:
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 "`modelfit_results` not included in Dataset. "
                 "Components will not be plotted"
             )
@@ -568,7 +565,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if len(scalars) >= 1:
             for k, v in scalars.items():
                 if v < out[k].min() or v > out[k].max():
-                    emit_user_level_warning(
+                    erlab.utils.misc.emit_user_level_warning(
                         f"Selected value {v} for `{k}` is outside coordinate bounds"
                     )
             out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
@@ -598,7 +595,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
         out = out.drop_vars(unindexed_dims, errors="ignore")
 
-        return sort_coord_order(out, keys=coord_order, dims_first=True)
+        return erlab.utils.array.sort_coord_order(
+            out, keys=coord_order, dims_first=True
+        )
 
     def around(
         self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw
@@ -687,7 +686,7 @@ class InfoDataArrayAccessor(ERLabDataArrayAccessor):
         return out
 
     def _repr_html_(self) -> str:
-        return format_html_table(
+        return erlab.utils.formatting.format_html_table(
             [("Name", "Value", "Key"), *self._summary_table],
             header_cols=1,
             header_rows=1,

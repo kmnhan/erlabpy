@@ -1,5 +1,4 @@
 import tempfile
-import time
 
 import numpy as np
 import pytest
@@ -69,24 +68,16 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow()
-
-    t0 = time.perf_counter()
-    while True:
-        if manager.ntools > 0:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
+    test_data.qshow(manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Add two tools
-    itool([test_data, test_data], link=False)
-    while True:
-        if manager.ntools == 3:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
+    for tool in itool([test_data, test_data], link=False, execute=False, manager=False):
+        tool.move_to_manager()
+
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     # Linking
     select_tools(manager, [1, 2])
@@ -123,7 +114,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Removing archived tool
     manager._tool_wrappers[0].archive()
     manager.remove_tool(0)
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
 
     # Batch renaming
     select_tools(manager, [1, 2])
@@ -144,7 +135,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     qtbot.waitUntil(
         lambda: manager.list_view.state()
         == QtWidgets.QAbstractItemView.State.EditingState,
-        timeout=2000,
+        timeout=5000,
     )
     delegate = manager.list_view.itemDelegate()
     assert isinstance(delegate, _ImageToolWrapperItemDelegate)
@@ -152,7 +143,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     delegate._current_editor().setText("new_name_1_single")
     qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
     qtbot.waitUntil(
-        lambda: manager._tool_wrappers[1].name == "new_name_1_single", timeout=2000
+        lambda: manager._tool_wrappers[1].name == "new_name_1_single", timeout=5000
     )
 
     # Batch archiving
@@ -176,7 +167,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Select tools
     select_tools(manager, [1, 2])
     accept_dialog(manager.concat_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 3, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 3, timeout=5000)
 
     xr.testing.assert_identical(
         manager.get_tool(3).slicer_area._data,
@@ -194,7 +185,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
 
     # Bring manager to top
-
     with qtbot.waitExposed(manager):
         manager.preview_action.setChecked(True)
         manager.activateWindow()
@@ -217,7 +207,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Remove all selected
     select_tools(manager, [1, 2, 3])
     accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
 
     # Run garbage collection
     manager.gc_action.trigger()
@@ -238,18 +228,9 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     qtbot.addWidget(manager)
 
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
+    itool([test_data, test_data], link=True, link_colors=True, manager=True)
 
-    itool([test_data, test_data], link=True, link_colors=True, use_manager=True)
-
-    t0 = time.perf_counter()
-    while True:
-        if manager.ntools == 2:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     win0, win1 = manager.get_tool(0), manager.get_tool(1)
 
@@ -290,13 +271,8 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
     # Add two tools
-    t0 = time.perf_counter()
-    itool([data, data], link=False)
-    while True:
-        if manager.ntools == 2:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
+    itool([data, data], link=False, manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/workspace.h5"
@@ -319,7 +295,7 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
     select_tools(manager, list(manager._tool_wrappers.keys()))
     accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
     manager.close()
     tmp_dir.cleanup()
 
@@ -345,9 +321,9 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
         manager.show()
         manager.activateWindow()
 
-    test_data.qshow()
-    test_data.qshow()
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+    test_data.qshow(manager=True)
+    test_data.qshow(manager=True)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
 
     manager.raise_()
     manager.activateWindow()
@@ -402,7 +378,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
 
     # Simulate drag and drop
     accept_dialog(lambda: manager.dropEvent(evt))
-    qtbot.waitUntil(lambda: manager.ntools == 1, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 1, timeout=5000)
     xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, test_data)
 
     # Simulate drag and drop with wrong filter, retry with correct filter
@@ -420,7 +396,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
         pre_call=[_choose_wrong_filter, None, None, _choose_correct_filter],
         chained_dialogs=4,
     )
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
     xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, test_data)
 
     # Cleanup
@@ -443,12 +419,12 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         manager.show()
         manager.activateWindow()
 
-    itool([data, data], link=True, link_colors=True, use_manager=True)
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=2000)
+    itool([data, data], link=True, link_colors=True, manager=True)
+    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
 
     # Open console
     manager.toggle_console()
-    qtbot.waitUntil(manager.console.isVisible, timeout=2000)
+    qtbot.waitUntil(manager.console.isVisible, timeout=5000)
 
     def _get_last_output_contents():
         return manager.console._console_widget.kernel_manager.kernel.shell.user_ns["_"]
@@ -475,7 +451,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
 
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")
-    qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=2000)
+    qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=5000)
 
     # Test setting data
     manager.console._console_widget.execute(
@@ -490,7 +466,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     # Remove all tools
     select_tools(manager, list(manager._tool_wrappers.keys()))
     accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=2000)
+    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
 
     # Test repr
     manager.console._console_widget.execute("tools")

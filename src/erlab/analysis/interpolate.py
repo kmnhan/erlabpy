@@ -14,8 +14,8 @@ import scipy.interpolate
 import xarray as xr
 import xarray.core.missing
 
+import erlab
 from erlab.accessors.utils import either_dict_or_kwargs
-from erlab.utils.misc import emit_user_level_warning
 
 
 class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
@@ -117,7 +117,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
             xi_shapes = [x.shape for x in xi_tuple]
             if not all(s == xi_shapes[0] for s in xi_shapes):
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     "Not all coordinate arrays have the same shape, "
                     "falling back to scipy.",
                     RuntimeWarning,
@@ -133,7 +133,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
                 )
 
         if (len(self.uneven_dims) != 0) and is_linear:
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 f"Dimension(s) {self.uneven_dims} are not uniform, "
                 "falling back to scipy.",
                 RuntimeWarning,

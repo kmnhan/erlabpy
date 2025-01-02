@@ -2,29 +2,15 @@ __all__ = ["goldtool", "restool"]
 
 import concurrent.futures
 import os
-import sys
 import time
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph as pg
-import varname
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
-from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.utils import (
-    AnalysisWindow,
-    ParameterGroup,
-    ROIControls,
-    _coverage_resolve_trace,
-    copy_to_clipboard,
-    generate_code,
-    xImageItem,
-)
-from erlab.utils.array import effective_decimals
-from erlab.utils.parallel import joblib_progress_qt
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,10 +18,12 @@ if TYPE_CHECKING:
     import joblib
     import lmfit
     import scipy.interpolate
+    import varname
 else:
     import lazy_loader as _lazy
 
     joblib = _lazy.load("joblib")
+    varname = _lazy.load("varname")
 
 
 LMFIT_METHODS = [
@@ -88,10 +76,10 @@ class EdgeFitter(QtCore.QThread):
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
 
-    @_coverage_resolve_trace
+    @erlab.interactive.utils._coverage_resolve_trace
     def run(self) -> None:
         self.sigIterated.emit(0)
-        with joblib_progress_qt(self.sigIterated) as _:
+        with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
                 gold=self.data,
                 angle_range=self.x_range,
@@ -108,7 +96,7 @@ class EdgeFitter(QtCore.QThread):
         self.sigFinished.emit()
 
 
-class GoldTool(AnalysisWindow):
+class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """Interactive gold edge fitting.
 
     Parameters
@@ -188,7 +176,7 @@ class GoldTool(AnalysisWindow):
         self.data_corr = data_corr
         self.hists: pg.HistogramLUTItem
         self.axes: list[pg.PlotItem]
-        self.images: list[xImageItem]
+        self.images: list[erlab.interactive.utils.xImageItem]
 
         self.axes[1].setVisible(False)
         self.hists[1].setVisible(False)
@@ -200,8 +188,8 @@ class GoldTool(AnalysisWindow):
             temp = 30.0
         temp = float(temp)
 
-        self.params_roi = ROIControls(self.aw.add_roi(0))
-        self.params_edge = ParameterGroup(
+        self.params_roi = erlab.interactive.utils.ROIControls(self.aw.add_roi(0))
+        self.params_edge = erlab.interactive.utils.ParameterGroup(
             {
                 "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
                 "Fix T": {"qwtype": "chkbox", "checked": True},
@@ -229,7 +217,7 @@ class GoldTool(AnalysisWindow):
             QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
         ).stateChanged.connect(self._toggle_fast)
 
-        self.params_poly = ParameterGroup(
+        self.params_poly = erlab.interactive.utils.ParameterGroup(
             {
                 "Degree": {"qwtype": "spin", "value": 4, "range": (1, 20)},
                 "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
@@ -254,7 +242,7 @@ class GoldTool(AnalysisWindow):
             }
         )
 
-        self.params_spl = ParameterGroup(
+        self.params_spl = erlab.interactive.utils.ParameterGroup(
             {
                 "Auto": {"qwtype": "chkbox", "checked": True},
                 "lambda": {
@@ -369,6 +357,9 @@ class GoldTool(AnalysisWindow):
         y0 = y1 - eV_span * 0.3
         self.params_roi.modify_roi(x0, y0, x1, y1)
 
+        # Initialize imagetool variable
+        self._itool: QtWidgets.QWidget | None = None
+
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | lmfit.model.ModelResult | None = None
 
@@ -382,24 +373,25 @@ class GoldTool(AnalysisWindow):
             bool(self.params_edge.values["Fast"])
         )
 
+    @QtCore.Slot(int)
     def iterated(self, n: int) -> None:
-        self.step_times.append(time.perf_counter() - self.start_time)
+        if n == 0:
+            self.progress.setLabelText("")
+        elif n == 1:
+            self.step_times = []
+            self.start_time = time.perf_counter()
+        elif n > 1:
+            now = time.perf_counter()
+            self.step_times.append(now - self.start_time)
+            self.start_time = now
+            timeleft = (self.progress.maximum() - (n - 1)) * np.mean(self.step_times)
+            self.progress.setLabelText(f"{round(timeleft)} seconds left...")
+
         self.progress.setValue(n)
-
-        deltas = np.diff(self.step_times)
-        timeleft = (self.progress.maximum() - (n - 1)) * np.mean(deltas)
-
-        # timeleft: str = humanize.precisedelta(datetime.timedelta(seconds=timeleft))
-        # steptime: str = humanize.precisedelta(datetime.timedelta(seconds=steptime))
-
-        self.progress.setLabelText(f"{round(timeleft)} seconds left...")
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
-        self.start_time = time.perf_counter()
-        self.step_times = [0.0]
-
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
@@ -416,9 +408,6 @@ class GoldTool(AnalysisWindow):
     @QtCore.Slot()
     def abort_fit(self) -> None:
         self.sigAbortFitting.emit()
-
-    def closeEvent(self, event) -> None:
-        super().closeEvent(event)
 
     @QtCore.Slot()
     def post_fit(self) -> None:
@@ -499,9 +488,17 @@ class GoldTool(AnalysisWindow):
         )
         return self.result
 
+    @QtCore.Slot()
     def open_itool(self) -> None:
-        self.itool = ImageTool(self.corrected)
-        self.itool.show()
+        tool = erlab.interactive.itool(self.corrected, execute=False)
+        if isinstance(tool, QtWidgets.QWidget):
+            if self._itool is not None:
+                self._itool.close()
+
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            tool.destroyed.connect(lambda: setattr(self, "_itool", None))
+            self._itool = tool
+            self._itool.show()
 
     def gen_code(self, mode: str) -> None:
         p0 = self.params_edge.values
@@ -543,7 +540,7 @@ class GoldTool(AnalysisWindow):
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
 
-        code_str = generate_code(
+        code_str = erlab.interactive.utils.generate_code(
             func,
             [f"|{self._argnames['data']}|"],
             arg_dict,
@@ -551,14 +548,14 @@ class GoldTool(AnalysisWindow):
             assign="modelresult",
         )
         if self.data_corr is not None:
-            code_str += "\n" + generate_code(
+            code_str += "\n" + erlab.interactive.utils.generate_code(
                 erlab.analysis.gold.correct_with_edge,
                 [f"|{self._argnames['data_corr']}|", "|modelresult|"],
                 {"shift_coords": p1["Shift coords"]},
                 module="era.gold",
                 assign="corrected",
             )
-        copy_to_clipboard(code_str)
+        erlab.interactive.utils.copy_to_clipboard(code_str)
 
 
 class ResolutionTool(
@@ -581,8 +578,8 @@ class ResolutionTool(
         self._x_range = data["eV"].values[[0, -1]]
         self._y_range = data[self.y_dim].values[[0, -1]]
 
-        self._x_decimals = effective_decimals(data["eV"].values)
-        self._y_decimals = effective_decimals(data[self.y_dim].values)
+        self._x_decimals = erlab.utils.array.effective_decimals(data["eV"].values)
+        self._y_decimals = erlab.utils.array.effective_decimals(data[self.y_dim].values)
 
         self.x0_spin.setRange(*self._x_range)
         self.x1_spin.setRange(*self._x_range)
@@ -619,7 +616,7 @@ class ResolutionTool(
         self.plot1 = self.graphics_layout.addPlot(row=1, col=0)
         self.plot1.setXLink(self.plot0)
 
-        self.image = xImageItem(axisOrder="row-major")
+        self.image = erlab.interactive.utils.xImageItem(axisOrder="row-major")
         self.image.setDataArray(self.data)
         self.plot0.addItem(self.image)
 
@@ -793,19 +790,19 @@ class ResolutionTool(
     @QtCore.Slot()
     def copy_code(self) -> str:
         """Copy the code for the current fit to the clipboard."""
-        data_name = generate_code(
+        data_name = erlab.interactive.utils.generate_code(
             xr.DataArray.sel,
             args=[],
             kwargs={self.y_dim: slice(*self.y_range)},
             module=self.data_name,
         )
-        code = generate_code(
+        code = erlab.interactive.utils.generate_code(
             erlab.analysis.gold.quick_fit,
             args=[f"|{data_name}|"],
             kwargs=self.fit_params,
             module="era.gold",
         ).replace("quick_fit", "quick_resolution")
-        return copy_to_clipboard(code)
+        return erlab.interactive.utils.copy_to_clipboard(code)
 
     @QtCore.Slot()
     def _update_region(self) -> None:
@@ -918,29 +915,10 @@ def restool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
+    with erlab.interactive.utils.setup_qapp(execute):
+        win = ResolutionTool(data, data_name=data_name)
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
-    if isinstance(qapp, QtWidgets.QApplication):  # to appease mypy
-        qapp.setStyle("Fusion")
-
-    win = ResolutionTool(data, data_name=data_name)
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
-
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
     return win

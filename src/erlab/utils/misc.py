@@ -4,8 +4,9 @@ import inspect
 import pathlib
 import sys
 import warnings
+from collections.abc import Sequence
 from types import ModuleType
-from typing import Any, overload
+from typing import Any, TypeGuard, TypeVar, overload
 
 import numpy as np
 
@@ -116,3 +117,44 @@ class LazyImport:
             raise ImportError(self._err_msg)
 
         return importlib.import_module(self._module_name)
+
+
+_T = TypeVar("_T")
+
+
+def is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
+    """
+    Check if the given object is a sequence of elements of the specified type.
+
+    Parameters
+    ----------
+    val
+        The object to check.
+    element_type
+        The type of elements that the sequence should contain.
+
+    Returns
+    -------
+    bool
+        `True` if `val` is a sequence and all elements in the sequence are of type
+        `element_type`, `False` otherwise.
+    """
+    return isinstance(val, Sequence) and all(isinstance(x, element_type) for x in val)
+
+
+def is_interactive() -> bool:
+    """Check if the code is running in an interactive environment.
+
+    Returns
+    -------
+    bool
+        `True` if the code is running in an interactive environment (IPython), `False`
+        otherwise.
+    """
+    try:
+        shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
+        if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
+            return True
+    except NameError:
+        pass
+    return False

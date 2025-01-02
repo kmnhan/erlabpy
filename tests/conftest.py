@@ -258,8 +258,11 @@ def accept_dialog():
 def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
     if target_win is None:
         target_win = win
-    target_win.activateWindow()
-    target_win.setFocus()
+    with qtbot.waitExposed(win):
+        target_win.show()
+        target_win.activateWindow()
+        target_win.setFocus()
+
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
     x_ax = win.slicer_area.main_image.display_axis[0]

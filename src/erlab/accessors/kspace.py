@@ -13,8 +13,22 @@ import xarray as xr
 import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor
 from erlab.constants import AxesConfiguration
-from erlab.utils.formatting import format_html_table
-from erlab.utils.misc import emit_user_level_warning
+
+
+class IncompleteDataError(ValueError):
+    """Raised when the data is not in the expected format for momentum conversion.
+
+    See :ref:`conventions <data-conventions>` for required data attributes and
+    coordinates.
+    """
+
+    def __init__(self, kind: Literal["attr", "coord"], name: str) -> None:
+        super().__init__(self._make_message(kind, name))
+
+    @staticmethod
+    def _make_message(kind: Literal["attr", "coord"], name: str) -> str:
+        kind_str = "Attribute" if kind == "attr" else "Coordinate"
+        return f"{kind_str} '{name}' is required for momentum conversion."
 
 
 def _only_angles(method):
@@ -130,7 +144,9 @@ class OffsetView:
         return dict(self).__repr__()
 
     def _repr_html_(self) -> str:
-        return format_html_table([(k, str(v)) for k, v in self.items()], header_cols=1)
+        return erlab.utils.formatting.format_html_table(
+            [(k, str(v)) for k, v in self.items()], header_cols=1
+        )
 
     def update(
         self,
@@ -171,14 +187,16 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def configuration(self) -> AxesConfiguration:
         """Experimental configuration.
 
-        For a properly implemented data loader, the configuration attribute must be set
-        on data import. See :class:`erlab.constants.AxesConfiguration` for details.
+        For data loaded with a properly implemented data loader plugin, the
+        configuration attribute is automatically set upon loading. If the configuration
+        is missing, the attributes of the data may have been lost since loading due to
+        averaging or other operations. In such cases, try to reload the data after
+        setting ``xr.set_options(keep_attrs='True')``.
+
+        See :class:`erlab.constants.AxesConfiguration` for possible configurations.
         """
         if "configuration" not in self._obj.attrs:
-            raise ValueError(
-                "Configuration not found in data attributes! "
-                "Data attributes may have been discarded since initial import."
-            )
+            raise IncompleteDataError("attr", "configuration")
 
         return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
 
@@ -207,7 +225,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "Inner potential not found in data attributes, assuming 10 eV",
         )
         return 10.0
@@ -237,7 +255,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         if "sample_workfunction" in self._obj.attrs:
             return float(self._obj.attrs["sample_workfunction"])
-        emit_user_level_warning(
+        erlab.utils.misc.emit_user_level_warning(
             "Work function not found in data attributes, assuming 4.5 eV"
         )
         return 4.5
@@ -271,7 +289,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         try:
             return float(self._obj.attrs["angle_resolution"])
         except KeyError:
-            # emit_user_level_warning(
+            # erlab.utils.misc.emit_user_level_warning(
             #     "Angle resolution not found in data attributes, assuming 0.1 degrees"
             # )
             return 0.1
@@ -332,6 +350,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     def angle_params(self) -> dict[str, float]:
         """Parameters passed to :func:`erlab.analysis.kspace.get_kconv_func`."""
+        if "xi" not in self._obj.coords:
+            raise IncompleteDataError("coord", "xi")
+
         params = {
             "delta": self.offsets["delta"],
             "xi": float(self._obj["xi"].values),
@@ -341,31 +362,47 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             case AxesConfiguration.Type1 | AxesConfiguration.Type2:
                 params["beta0"] = self.offsets["beta"]
             case _:
+                if "chi" not in self._obj.coords:
+                    raise IncompleteDataError("coord", "chi")
                 params["chi"] = float(self._obj["chi"].values)
                 params["chi0"] = self.offsets["chi"]
+
         return params
 
     @property
     @_only_angles
     def _alpha(self) -> xr.DataArray:
+        if "alpha" not in self._obj.coords:
+            raise IncompleteDataError("coord", "alpha")
         return self._obj.alpha
 
     @property
     @_only_angles
     def _beta(self) -> xr.DataArray:
+        if "beta" not in self._obj.coords:
+            raise IncompleteDataError("coord", "beta")
         return self._obj.beta
 
     @property
     def _hv(self) -> xr.DataArray:
+        if "hv" not in self._obj.coords:
+            raise IncompleteDataError("coord", "hv")
         return self._obj.hv
 
     @property
-    def _binding_energy(self) -> xr.DataArray:
+    def _is_energy_kinetic(self) -> bool:
+        """Check if the energy axis is in binding energy."""
         # If scalar, may be a constant energy contour above EF
-        if self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0):
+        return self._obj.eV.values.size > 1 and (self._obj.eV.values.min() > 0)
+
+    @property
+    def _binding_energy(self) -> xr.DataArray:
+        if "eV" not in self._obj.coords:
+            raise IncompleteDataError("coord", "eV")
+        if self._is_energy_kinetic:
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
-            emit_user_level_warning(
+            erlab.utils.misc.emit_user_level_warning(
                 "The energy axis seems to be in terms of kinetic energy, "
                 "attempting conversion to binding energy."
             )
@@ -385,7 +422,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @_only_angles
     def _has_hv(self) -> bool:
         """Return `True` for photon energy dependent data."""
-        return self._obj["hv"].size > 1
+        return self._hv.size > 1
 
     @property
     @_only_angles
@@ -500,7 +537,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         min_Ek = np.amin(self._kinetic_energy.values)
         max_angle = max(np.abs(self._alpha.values))
-        return (
+        return float(
             erlab.constants.rel_kconv
             * np.sqrt(min_Ek)
             * np.cos(np.deg2rad(max_angle))
@@ -806,7 +843,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             if k in self.momentum_axes:
                 momentum_coords[k] = v
             else:
-                raise ValueError(f"Dimension `{k}` is not a momentum axis")
+                erlab.utils.misc.emit_user_level_warning(
+                    f"Skipping unknown momentum axis '{k}', valid "
+                    f"axes are {self.momentum_axes}"
+                )
 
         if not silent:
             print("Calculating destination coordinates")

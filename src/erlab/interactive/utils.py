@@ -21,25 +21,25 @@ import weakref
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
-import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
-import pyperclip
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
-from erlab.utils.misc import _convert_to_native
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Collection, Iterator, Mapping
 
+    import pyperclip
     import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 else:
+    import lazy_loader as _lazy
+
+    pyperclip = _lazy.load("pyperclip")
     qtawesome = _lazy.load("qtawesome")
 
 __all__ = [
@@ -89,6 +89,95 @@ def parse_data(data) -> xr.DataArray:
     return data  # .astype(float, order="C")
 
 
+@contextlib.contextmanager
+def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
+    """Set up a Qt application instance and manage its execution.
+
+    This function initializes a Qt application instance if one does not already exist.
+    It sets the application style to "Fusion" and determines whether to execute the
+    application based on the environment (interactive or not). The function yields a
+    boolean indicating whether the application is executed.
+
+    Generally, a Qt application in a python script is executed like this:
+
+    .. code-block:: python
+
+        qapp = QtWidgets.QApplication.instance()
+
+        if not qapp:
+            qapp = QtWidgets.QApplication(sys.argv)
+
+        win = MyMainWindow()
+
+        win.show()
+
+        qapp.exec()
+
+    In an interactive environment like IPython and jupyter, the event loop is handled by
+    IPython, so ``qapp.exec()`` changes to:
+
+    .. code-block:: python
+
+        from IPython.lib.guisupport import start_event_loop_qt4
+
+        start_event_loop_qt4(qapp)
+
+    This function combines the two approaches and determines whether to execute the
+    event loop based on the environment. The resulting code is:
+
+    .. code-block:: python
+
+        with setup_qapp():
+            win = MyMainWindow() win.show()
+
+    Parameters
+    ----------
+    execute : bool or None, optional
+        If True, the application will be executed. If False, it will not be executed. If
+        None, the function will determine the value based on the environment. See notes.
+        Default is None.
+
+    Yields
+    ------
+    bool
+        A boolean indicating whether the application should be executed. If ``execute``
+        is provided, the value will be the same as the input. Otherwise, the
+        automatically determined value will be returned.
+
+    Notes
+    -----
+    If the environment is interactive (e.g., IPython), the application will not be
+    executed, and the event loop will be handled by IPython. If the environment is not
+    interactive, the application will be executed unless `execute` is explicitly set to
+    False.
+
+    """
+    try:
+        qapp = QtWidgets.QApplication.instance()
+        if not qapp:
+            qapp = QtWidgets.QApplication(sys.argv)
+        if isinstance(qapp, QtWidgets.QApplication):
+            qapp.setStyle("Fusion")
+
+        is_ipython: bool = False
+
+        if execute is None:
+            execute = True
+            is_ipython = erlab.utils.misc.is_interactive()
+            if is_ipython:
+                execute = False
+        yield execute
+
+    finally:
+        if is_ipython:
+            from IPython.lib.guisupport import start_event_loop_qt4
+
+            start_event_loop_qt4(qapp)
+
+        elif execute and (qapp is not None):
+            qapp.exec()
+
+
 class _WaitDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, message: str) -> None:
         super().__init__(parent)
@@ -104,7 +193,7 @@ class _WaitDialog(QtWidgets.QDialog):
 
 
 @contextlib.contextmanager
-def wait_dialog(parent: QtWidgets.QWidget, message: str):
+def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -181,7 +270,7 @@ def format_kwargs(d: dict[str, Any]) -> str:
 
 
 def _parse_single_arg(arg):
-    arg = _convert_to_native(arg)
+    arg = erlab.utils.misc._convert_to_native(arg)
 
     if isinstance(arg, str):
         # If the string is surrounded by vertical bars, remove them
@@ -195,7 +284,7 @@ def _parse_single_arg(arg):
 
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
-        arg = {k: _convert_to_native(v) for k, v in arg.items()}
+        arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
         arg = (
             "{"
             + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
@@ -1033,7 +1122,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         return {self.prefix() + self.param_name: param_info}
 
 
-class xImageItem(BetterImageItem):
+class xImageItem(erlab.interactive.colors.BetterImageItem):
     """:class:`pyqtgraph.ImageItem` with additional functionality.
 
     This class provides :class:`xarray.DataArray` support and auto limits based on
@@ -1685,20 +1774,10 @@ class AnalysisWindow(QtWidgets.QMainWindow):
             self.aw.set_input(data)
 
     def __post_init__(self, execute=None):
-        self.show()
-        self.activateWindow()
-        self.raise_()
-
-        if execute is None:
-            execute = True
-            try:
-                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
-                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                    execute = False
-            except NameError:
-                pass
-        if execute:
-            self.qapp.exec()
+        with setup_qapp(execute) as execute:
+            self.show()
+            self.activateWindow()
+            self.raise_()
 
     def addParameterGroup(self, *args, **kwargs):
         group = ParameterGroup(*args, **kwargs)
@@ -1761,7 +1840,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         self.images: list[xImageItem] = [
             xImageItem(axisOrder="row-major") for _ in range(nax)
         ]
-        cmap = pg_colormap_powernorm("terrain", 1.0, N=6)
+        cmap = erlab.interactive.colors.pg_colormap_powernorm("terrain", 1.0, N=6)
         for i in range(nax):
             self.addItem(self.axes[i], *self.get_axis_pos(i))
             self.addItem(self.hists[i], *self.get_hist_pos(i))

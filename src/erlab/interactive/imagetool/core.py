@@ -1,4 +1,9 @@
-"""Provides core functionality of ImageTool."""
+"""Provides core functionality of ImageTool.
+
+This module contains :class:`ImageSlicerArea` which handles the core functionality of
+ImageTool, including the slicing and plotting of data.
+
+"""
 
 from __future__ import annotations
 
@@ -18,26 +23,22 @@ from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import qtawesome as qta
 import xarray as xr
 from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.colors import (
-    BetterColorBarItem,
-    BetterImageItem,
-    pg_colormap_powernorm,
-)
-from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
-from erlab.utils.array import sort_coord_order
-from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Sequence
 
+    import qtawesome
+
     from erlab.interactive.imagetool.slicer import ArraySlicerState
+else:
+    import lazy_loader as _lazy
+
+    qtawesome = _lazy.load("qtawesome")
 
 
 class ColorMapState(TypedDict):
@@ -671,7 +672,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         try:
             self.set_colormap(**state.get("color", {}), update=True)
         except Exception:
-            emit_user_level_warning("Failed to restore colormap settings, skipping")
+            erlab.utils.misc.emit_user_level_warning(
+                "Failed to restore colormap settings, skipping"
+            )
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -756,7 +759,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(im for ax in self.images for im in ax.slicer_data_items)
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self._array_slicer
 
     @property
@@ -1091,7 +1094,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if hasattr(self, "_array_slicer"):
                 self._array_slicer.set_array(self._data, reset=True)
             else:
-                self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+                self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
+                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
+                )
         except Exception as e:
             if self._in_manager:
                 # Let the manager handle the exception
@@ -1167,7 +1172,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # This will update colorbar limits if visible
             self.lock_levels(self.levels_locked)
 
-    def apply_func(self, func: Callable[[xr.DataArray], xr.DataArray] | None) -> None:
+    def apply_func(
+        self, func: Callable[[xr.DataArray], xr.DataArray] | None, update: bool = True
+    ) -> None:
         """Apply a function to the data.
 
         The function must accept the data as the first argument and return a new
@@ -1181,6 +1188,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ----------
         func
             The function to apply to the data. if None, the data is restored.
+        update
+            If `True`, the plots are updated after setting the new values.
 
         """
         # self._data is original data passed to `set_data`
@@ -1188,9 +1197,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = func
 
         if self._applied_func is None:
-            self.update_values(self._data)
+            self.update_values(self._data, update=update)
         else:
-            self.update_values(self._applied_func(self._data))
+            self.update_values(self._applied_func(self._data), update=update)
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -1390,7 +1399,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = levels
 
         properties = self.colormap_properties
-        cmap = pg_colormap_powernorm(
+        cmap = erlab.interactive.colors.pg_colormap_powernorm(
             properties["cmap"],
             properties["gamma"],
             properties["reverse"],
@@ -1712,7 +1721,7 @@ class ItoolDisplayObject:
     """Parent class for sliced data.
 
     Stores the axes and cursor index for the object, and retrieves the sliced data from
-    `ArraySlicer` when needed.
+    :class:`erlab.interactive.imagetool.slicer.ArraySlicer` when needed.
     """
 
     def __init__(self, axes, cursor: int | None = None) -> None:
@@ -1731,7 +1740,7 @@ class ItoolDisplayObject:
         return self.axes.slicer_area
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self.axes.array_slicer
 
     @property
@@ -1786,7 +1795,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
             self.setData(coord, vals)
 
 
-class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
+class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageItem):
     """Display a 2D slice of data as an image."""
 
     def __init__(
@@ -1795,7 +1804,9 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         cursor: int | None = None,
         **kargs,
     ) -> None:
-        BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
+        erlab.interactive.colors.BetterImageItem.__init__(
+            self, axes=axes, cursor=cursor, **kargs
+        )
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
@@ -1854,7 +1865,10 @@ class ItoolPlotItem(pg.PlotItem):
         **item_kw,
     ) -> None:
         super().__init__(
-            axisItems={a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")}
+            axisItems={
+                a: erlab.interactive.utils.BetterAxisItem(a)
+                for a in ("left", "right", "top", "bottom")
+            }
         )
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
@@ -1896,7 +1910,7 @@ class ItoolPlotItem(pg.PlotItem):
                     restool_action,
                     dtool_action,
                 ):
-                    act.setIcon(qta.icon("mdi6.export"))
+                    act.setIcon(qtawesome.icon("mdi6.export"))
                     act.setIconVisibleInMenu(True)
 
             self._sigPaletteChanged.connect(_set_icons)
@@ -2006,7 +2020,9 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def current_data(self) -> xr.DataArray:
         data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
-        return sort_coord_order(data, self.slicer_area._data.coords.keys())
+        return erlab.utils.array.sort_coord_order(
+            data, self.slicer_area._data.coords.keys()
+        )
 
     @property
     def selection_code(self) -> str:
@@ -2359,7 +2375,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
             self._remove_guidelines()
 
-        for w in make_crosshairs(n):
+        for w in erlab.interactive.utils.make_crosshairs(n):
             self.addItem(w)
             self._guidelines_items.append(w)
 
@@ -2500,7 +2516,7 @@ class ItoolPlotItem(pg.PlotItem):
                 self, "Error", "Selection code is undefined for main image of 2D data."
             )
             return
-        copy_to_clipboard(self.selection_code)
+        erlab.interactive.utils.copy_to_clipboard(self.selection_code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:
@@ -2522,7 +2538,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area = weakref.ref(value)
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self.slicer_area.array_slicer
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
@@ -2531,12 +2547,15 @@ class ItoolPlotItem(pg.PlotItem):
         super().changeEvent(evt)
 
 
-class ItoolColorBarItem(BetterColorBarItem):
+class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
     def __init__(self, slicer_area: ImageSlicerArea, **kwargs) -> None:
         self.slicer_area = slicer_area
         kwargs.setdefault(
             "axisItems",
-            {a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")},
+            {
+                a: erlab.interactive.utils.BetterAxisItem(a)
+                for a in ("left", "right", "top", "bottom")
+            },
         )
         super().__init__(**kwargs)
 
@@ -2564,7 +2583,7 @@ class ItoolColorBarItem(BetterColorBarItem):
 
     @QtCore.Slot()
     def _copy_limits(self) -> str:
-        return copy_to_clipboard(str(self.slicer_area.levels))
+        return erlab.interactive.utils.copy_to_clipboard(str(self.slicer_area.levels))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)

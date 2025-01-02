@@ -58,7 +58,7 @@
          </widget>
         </item>
         <item>
-         <widget class="QGroupBox" name="bounds_group">
+         <widget class="QGroupBox" name="bounds_supergroup">
           <property name="sizePolicy">
            <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
             <horstretch>0</horstretch>
@@ -74,7 +74,23 @@
           <property name="checked">
            <bool>false</bool>
           </property>
-          <layout class="QFormLayout" name="formLayout_2"/>
+          <layout class="QVBoxLayout" name="verticalLayout_6">
+           <item>
+            <widget class="QWidget" name="bounds_group" native="true">
+             <layout class="QFormLayout" name="formLayout_2"/>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="bounds_btn">
+             <property name="toolTip">
+              <string>Estimate momentum resolution from the data.</string>
+             </property>
+             <property name="text">
+              <string>Estimate</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
          </widget>
         </item>
         <item>
