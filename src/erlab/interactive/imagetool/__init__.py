@@ -114,7 +114,7 @@ def itool(
 
         .. versionchanged:: 3.4.0
 
-            Argument renamed from `use_manager` to `manager`.
+            Argument renamed from ``use_manager`` to ``manager``.
 
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
