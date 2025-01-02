@@ -60,7 +60,6 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
 
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
-    del win
 
 
 def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
@@ -72,6 +71,9 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -97,6 +99,9 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     win = itool(data, execute=False)
 
     qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -223,8 +228,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     win.close()
 
-    del win
-
 
 @pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
@@ -288,7 +291,6 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.slicer_area.close_associated_windows()
 
     win.close()
-    del win
 
 
 def test_parse_input() -> None:
