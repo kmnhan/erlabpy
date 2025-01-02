@@ -6,14 +6,14 @@ The ImageTool window
 
 .. image:: ../images/imagetool_light.png
     :align: center
-    :alt: Imagetool
+    :alt: ImageTool window in light mode
     :class: only-light
 
 .. only:: format_html
 
     .. image:: ../images/imagetool_dark.png
         :align: center
-        :alt: Imagetool
+        :alt: ImageTool window in dark mode
         :class: only-dark
 
 Inspired by *Image Tool* for Igor Pro written by the Advanced Light Source at Lawrence
@@ -133,11 +133,6 @@ Using the ImageTool manager
 ImageTools can also be used as a standalone application with :class:`ImageToolManager
 <erlab.interactive.imagetool.ImageToolManager>`
 
-When the manager is running, calls to :func:`itool <erlab.interactive.imagetool.itool>`
-and :meth:`DataArray.qshow
-<erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` from any python script
-or notebook will open the ImageTool in the manager program.
-
 The manager shows a list of opened ImageTools and buttons to manage them. Hover over
 buttons for tooltips.
 
@@ -154,20 +149,19 @@ Or run: ::
 
   - Only one manager can run per machine.
 
-  - Sending data to the manager has slight overhead, noticeable for large data. Use
-    `use_manager=False` to :func:`itool <erlab.interactive.imagetool.itool>` and
-    :meth:`DataArray.qshow
-    <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` to open data
-    directly.
+  - Sending data to the manager has slight overhead, noticeable for large data.
 
 Creating ImageTool windows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Open data in the manager by:
+When the manager is running, ImageTools can be added to the manager by:
 
 - Invoking ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` or
-  :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` from any
-  script or notebook.
+  :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` with
+  ``manager=True`` from any script or notebook.
+
+- From an ImageTool window, use the ``Move to Manager`` action (:kbd:`Ctrl+Shift+M`) in
+  the ``File`` menu.
 
 - Opening files through the ``File`` menu in the manager.
 
@@ -185,4 +179,35 @@ Features
   Toggle the console with :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through
   the ``View`` menu.
 
+- Toggle the ``Preview on Hover`` option in the ``View`` menu to show a preview of the
+  main image when hovering over each tool.
+
 - Explore the menubar for more features!
+
+
+Tips
+~~~~
+
+- Sometimes, you may wish to send data from the manager to a jupyter notebook for
+  further analysis. You can do this by using the manager console and the `%store
+  <https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html>`_ magic
+  command.
+
+  Suppose you want to store the data displayed in a tool with index 0. First select the tool in the manager. Then, trigger the ``Store with IPython`` action from the right-click context menu or the ``File`` menu. This will open a dialog to enter a variable name. Enter a variable name (e.g., ``my_data``) and click OK.
+
+  .. note::
+
+     This is equivalent to running the following code in the manager console:
+
+     .. code-block:: python
+
+         my_data = tools[0].data
+         %store my_data
+
+  Now, in any notebook, you can retrieve the data by running:
+
+  .. code-block:: python
+
+      %store -r my_data
+
+  after which the data will be available as ``my_data`` in the notebook.

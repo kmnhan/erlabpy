@@ -68,6 +68,7 @@ notfound_context = {
 if os.getenv("READTHEDOCS"):
     extensions.append("sphinxcontrib.googleanalytics")
     googleanalytics_id = "G-DDZYWTBV4S"
+    html_baseurl = "https://erlabpy.readthedocs.io/en/stable/"  # Canonical URL
 
 # templates_path = ["_templates"]
 # exclude_patterns = []

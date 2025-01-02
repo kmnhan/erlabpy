@@ -14,23 +14,26 @@ import itertools
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-import lazy_loader as _lazy
 import numpy as np
-import tqdm.auto
 import xarray as xr
 from xarray.core.dataarray import _THIS_ARRAY
 
+import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
-from erlab.utils.misc import emit_user_level_warning
-from erlab.utils.parallel import joblib_progress
 
 if TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
     import joblib
     import lmfit
+    import tqdm.auto as tqdm
 else:
+    import lazy_loader as _lazy
+
+    from erlab.utils.misc import LazyImport
+
     lmfit = _lazy.load("lmfit")
     joblib = _lazy.load("joblib")
+    tqdm = LazyImport("tqdm.auto")
 
 
 def _nested_dict_vals(d):
@@ -417,7 +420,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                             initial_params
                         )
                     except NotImplementedError:
-                        emit_user_level_warning(
+                        erlab.utils.misc.emit_user_level_warning(
                             f"`guess` is not implemented for {model}, "
                             "using supplied initial parameters"
                         )
@@ -542,7 +545,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
         if parallel:
             if is_dask:
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     "The input Dataset is chunked. Parallel fitting will not offer any "
                     "performance benefits."
                 )
@@ -556,7 +559,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             parallel_obj = joblib.Parallel(**parallel_kw)
 
             if parallel_obj.return_generator:
-                out_dicts = tqdm.auto.tqdm(  # type: ignore[call-overload]
+                out_dicts = tqdm.tqdm(  # type: ignore[call-overload]
                     parallel_obj(
                         itertools.starmap(
                             joblib.delayed(_output_wrapper), self._obj.data_vars.items()
@@ -565,7 +568,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
                     **tqdm_kw,
                 )
             else:
-                with joblib_progress(**tqdm_kw) as _:
+                with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
                     out_dicts = parallel_obj(
                         itertools.starmap(
                             joblib.delayed(_output_wrapper), self._obj.data_vars.items()
@@ -578,7 +581,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
         else:
             result = type(self._obj)()
-            for name, da in tqdm.auto.tqdm(self._obj.data_vars.items(), **tqdm_kw):  # type: ignore[call-overload]
+            for name, da in tqdm.tqdm(self._obj.data_vars.items(), **tqdm_kw):  # type: ignore[call-overload]
                 _output_wrapper(name, da, result)
 
         result = result.assign_coords(

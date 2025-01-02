@@ -10,12 +10,6 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool.slicer import restore_nonuniform_dims
-from erlab.interactive.utils import (
-    ExclusiveComboGroup,
-    copy_to_clipboard,
-    generate_code,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
@@ -90,7 +84,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     def _copy(self) -> None:
         code = self.make_code()
         if code:
-            copy_to_clipboard(code)
+            erlab.interactive.utils.copy_to_clipboard(code)
         else:
             QtWidgets.QMessageBox.warning(
                 self, "Nothing to Copy", "Generated code is empty."
@@ -153,12 +147,14 @@ class DataTransformDialog(_DataManipulationDialog):
                 applied_func = self.slicer_area._applied_func
                 self.slicer_area.apply_func(None)
 
-            processed = restore_nonuniform_dims(
+            processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
                 self.process_data(self.slicer_area.data)
             ).rename(new_name)
 
             if self.new_window_check.isChecked():
-                erlab.interactive.itool(processed, execute=False)
+                erlab.interactive.itool(
+                    processed, file_path=self.slicer_area._file_path, execute=False
+                )
             else:
                 self.slicer_area.set_data(processed)
 
@@ -303,7 +299,7 @@ class RotationDialog(DataTransformDialog):
             else:
                 params[k] = str(v)
 
-        return generate_code(
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.rotate,
             [f"|{placeholder}|"],
             self._rotate_params,
@@ -372,7 +368,7 @@ class CropDialog(DataTransformDialog):
         if self.slicer_area.n_cursors == 1:
             return
 
-        self._cursors_group = ExclusiveComboGroup(self)
+        self._cursors_group = erlab.interactive.utils.ExclusiveComboGroup(self)
 
         self.cursor_combos: list[QtWidgets.QComboBox] = []
 
@@ -423,7 +419,7 @@ class CropDialog(DataTransformDialog):
 
         if kwargs:
             if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
-                out = generate_code(
+                out = erlab.interactive.utils.generate_code(
                     xr.DataArray.sel,
                     [],
                     kwargs=cast(dict[str, slice], kwargs),
@@ -434,7 +430,9 @@ class CropDialog(DataTransformDialog):
 
         if isel_kwargs:
             if all(k.isidentifier() for k in isel_kwargs):
-                out = generate_code(xr.DataArray.isel, [], isel_kwargs, module=out)
+                out = erlab.interactive.utils.generate_code(
+                    xr.DataArray.isel, [], isel_kwargs, module=out
+                )
             else:
                 out += f".isel({isel_kwargs})"
 

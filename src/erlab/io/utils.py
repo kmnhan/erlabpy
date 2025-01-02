@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
-from erlab.utils.misc import emit_user_level_warning
+import erlab
 
 
 def showfitsinfo(path: str | os.PathLike) -> None:
@@ -129,14 +129,14 @@ def fix_attr_format(da: xr.DataArray):
         if not isValid:
             try:
                 da = da.assign_attrs({key: str(da.attrs[key])})
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     f"The attribute {key} with invalid type {dt}"
                     " will be converted to string",
                 )
             except TypeError:
                 # this is VERY unprobable...
                 da = da.assign_attrs({key: ""})
-                emit_user_level_warning(
+                erlab.utils.misc.emit_user_level_warning(
                     f"The attribute {key} with invalid type {dt} will be removed",
                 )
     return da

@@ -1,4 +1,9 @@
-"""Provides core functionality of ImageTool."""
+"""Provides core functionality of ImageTool.
+
+This module contains :class:`ImageSlicerArea` which handles the core functionality of
+ImageTool, including the slicing and plotting of data.
+
+"""
 
 from __future__ import annotations
 
@@ -23,19 +28,17 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.colors import (
-    BetterColorBarItem,
-    BetterImageItem,
-    pg_colormap_powernorm,
-)
-from erlab.interactive.imagetool.slicer import ArraySlicer
-from erlab.interactive.utils import BetterAxisItem, copy_to_clipboard, make_crosshairs
-from erlab.utils.misc import emit_user_level_warning
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Sequence
 
+    import qtawesome
+
     from erlab.interactive.imagetool.slicer import ArraySlicerState
+else:
+    import lazy_loader as _lazy
+
+    qtawesome = _lazy.load("qtawesome")
 
 
 class ColorMapState(TypedDict):
@@ -58,6 +61,7 @@ class ImageSlicerState(TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
+    file_path: NotRequired[str | None]
     splitter_sizes: NotRequired[list[list[int]]]
 
 
@@ -390,16 +394,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
     gamma
         Default power law normalization of the colormap.
     zero_centered
-        If `True`, the normalization is applied symmetrically from the midpoint of
-        the colormap.
+        If `True`, the normalization is applied symmetrically from the midpoint of the
+        colormap.
     rad2deg
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
         correspond to the given strings are converted.
+    transpose
+        If `True`, the main image is transposed before being displayed.
     bench
         Prints the fps on Ctrl + drag for debugging purposes.
     state
         Initial state containing the settings and cursor position.
+    file_path
+        If the data has been loaded from a file, the path to the file. This is used to
+        set the window title.
 
     Signals
     -------
@@ -469,13 +478,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         zero_centered: bool = False,
         rad2deg: bool | Iterable[str] = False,
         *,
+        transpose: bool = False,
         bench: bool = False,
         state: ImageSlicerState | None = None,
+        file_path: str | os.PathLike | None = None,
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
     ) -> None:
         super().__init__(parent)
+
+        self.initialize_actions()
 
         self._in_manager: bool = _in_manager
 
@@ -533,18 +546,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cmap_reversed: bool = False
         if isinstance(cmap, str):
             if cmap.endswith("_r"):
-                cmap = cmap[:-2]
+                cmap = cmap.removesuffix("_r")
                 cmap_reversed = True
             if cmap.startswith("cet_CET"):
-                cmap = cmap[4:]
-        self._colormap_properties: ColorMapState = {
-            "cmap": cmap,
-            "gamma": gamma,
-            "reverse": cmap_reversed,
-            "high_contrast": False,
-            "zero_centered": zero_centered,
-            "levels_locked": False,
-        }
+                cmap = cmap.removeprefix("cet_")
+        self._colormap_properties = {"cmap": cmap, "gamma": gamma}
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str, list[float]] = {}
@@ -566,13 +572,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for i in (5, 2):
             self._splitters[6].addWidget(self._plots[i])
 
-        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
-        self.qapp.aboutToQuit.connect(self.on_close)
-
         self._file_path: pathlib.Path | None = None
         self.current_cursor: int = 0
 
-        self.set_data(data, rad2deg=rad2deg)
+        self.set_data(data, rad2deg=rad2deg, file_path=file_path)
 
         if self.bench:
             print("\n")
@@ -580,12 +583,56 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if state is not None:
             self.state = state
 
+        self.reverse_act.setChecked(cmap_reversed)
+        self.zero_centered_act.setChecked(zero_centered)
+
+        if transpose:
+            self.transpose_main_image()
+
+        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
+        self.qapp.aboutToQuit.connect(self.on_close)
+
+    @property
+    def parent_title(self) -> str:
+        parent = self.parent()
+        if isinstance(parent, QtWidgets.QWidget):
+            return parent.windowTitle()
+        return ""
+
+    @property
+    def display_name(self) -> str:
+        """Generate a display name for the slicer.
+
+        Depending on the source of the data and the 'name' attribute of the underlying
+        DataArray, the display name is generated differently.
+
+        If nothing can be inferred, an empty string is returned.
+        """
+        name: str | None = cast(str | None, self._data.name)
+        path: pathlib.Path | None = self._file_path
+        if name is not None and name.strip() == "":
+            # Name contains only whitespace
+            name = None
+
+        if name is None:
+            disp_name = "" if path is None else path.stem
+        elif path is None or name == path.stem:
+            disp_name = f"{name}"
+        else:
+            disp_name = f"{name} ({path.stem})"
+        return disp_name
+
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
+        prop["reverse"] = self.reverse_act.isChecked()
+        prop["high_contrast"] = self.high_contrast_act.isChecked()
+        prop["zero_centered"] = self.zero_centered_act.isChecked()
+        prop["levels_locked"] = self.levels_locked
+
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
-        return prop
+        return cast(ColorMapState, prop)
 
     @property
     def state(self) -> ImageSlicerState:
@@ -595,6 +642,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "current_cursor": int(self.current_cursor),
             "manual_limits": copy.deepcopy(self.manual_limits),
             "splitter_sizes": self.splitter_sizes,
+            "file_path": str(self._file_path) if self._file_path is not None else None,
             "cursor_colors": [c.name() for c in self.cursor_colors],
         }
 
@@ -615,11 +663,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.manual_limits = state.get("manual_limits", {})
         self.sigShapeChanged.emit()  # to trigger manual limits update
 
+        file_path = state.get("file_path", None)
+        if file_path is not None:
+            self._file_path = pathlib.Path(file_path)
+            self.sigDataChanged.emit()
+
         # Restore colormap settings
         try:
             self.set_colormap(**state.get("color", {}), update=True)
         except Exception:
-            emit_user_level_warning("Failed to restore colormap settings, skipping")
+            erlab.utils.misc.emit_user_level_warning(
+                "Failed to restore colormap settings, skipping"
+            )
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -647,11 +702,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def levels_locked(self) -> bool:
-        return self.colormap_properties["levels_locked"]
+        return self.lock_levels_act.isChecked()
 
     @levels_locked.setter
     def levels_locked(self, value: bool) -> None:
-        self.lock_levels(value)
+        self.lock_levels_act.setChecked(value)
 
     @property
     def levels(self) -> tuple[float, float]:
@@ -704,7 +759,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return tuple(im for ax in self.images for im in ax.slicer_data_items)
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self._array_slicer
 
     @property
@@ -783,7 +838,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def undo(self) -> None:
         if not self.undoable:
-            raise RuntimeError("Nothing to undo")
+            return
         self._next_states.append(self.state)
         self.state = self._prev_states.pop()
         self.sigHistoryChanged.emit()
@@ -793,10 +848,95 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def redo(self) -> None:
         if not self.redoable:
-            raise RuntimeError("Nothing to redo")
+            return
         self._prev_states.append(self.state)
         self.state = self._next_states.pop()
         self.sigHistoryChanged.emit()
+
+    def initialize_actions(self) -> None:
+        self.view_all_act = QtWidgets.QAction("View &All", self)
+        self.view_all_act.setShortcut("Ctrl+A")
+        self.view_all_act.triggered.connect(self.view_all)
+        self.view_all_act.setToolTip("Reset view limits for all axes")
+
+        self.transpose_act = QtWidgets.QAction("&Transpose Main Image", self)
+        self.transpose_act.setShortcut("T")
+        self.transpose_act.triggered.connect(self.transpose_main_image)
+        self.transpose_act.setToolTip("Transpose the main image")
+
+        self.add_cursor_act = QtWidgets.QAction("&Add Cursor", self)
+        self.add_cursor_act.setShortcut("Shift+A")
+        self.add_cursor_act.triggered.connect(self.add_cursor)
+        self.add_cursor_act.setToolTip("Add a new cursor")
+
+        self.rem_cursor_act = QtWidgets.QAction("&Remove Cursor", self)
+        self.rem_cursor_act.setShortcut("Shift+R")
+        self.rem_cursor_act.setDisabled(True)
+        self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
+        self.rem_cursor_act.setToolTip("Remove the current cursor")
+
+        self.undo_act = QtWidgets.QAction("&Undo", self)
+        self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
+        self.undo_act.setDisabled(True)
+        self.undo_act.triggered.connect(self.undo)
+        self.undo_act.setToolTip("Undo the last action")
+
+        self.redo_act = QtWidgets.QAction("&Redo", self)
+        self.redo_act.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
+        self.redo_act.setDisabled(True)
+        self.redo_act.triggered.connect(self.redo)
+        self.redo_act.setToolTip("Redo the last undone action")
+
+        self.center_act = QtWidgets.QAction("&Center Current Cursor", self)
+        self.center_act.setShortcut("Shift+C")
+        self.center_act.triggered.connect(self.center_cursor)
+        self.center_act.setToolTip("Center the current cursor")
+
+        self.center_all_act = QtWidgets.QAction("&Center All Cursors", self)
+        self.center_all_act.setShortcut("Alt+Shift+C")
+        self.center_all_act.triggered.connect(self.center_all_cursors)
+        self.center_all_act.setToolTip("Center all cursors")
+
+        self.reverse_act = QtWidgets.QAction("&Reverse Colormap", self)
+        self.reverse_act.setShortcut("R")
+        self.reverse_act.setCheckable(True)
+        self.reverse_act.setToolTip("Reverse the colormap")
+        self.reverse_act.toggled.connect(self.refresh_colormap)
+
+        self.high_contrast_act = QtWidgets.QAction("High Contrast", self)
+        self.high_contrast_act.setCheckable(True)
+        self.high_contrast_act.setToolTip("Change gamma scaling mode")
+        self.high_contrast_act.toggled.connect(self.refresh_colormap)
+
+        self.zero_centered_act = QtWidgets.QAction("Centered Scaling", self)
+        self.zero_centered_act.setCheckable(True)
+        self.zero_centered_act.setToolTip("Apply symmetric scaling from the center")
+        self.zero_centered_act.toggled.connect(self.refresh_colormap)
+
+        self.lock_levels_act = QtWidgets.QAction("Lock Levels", self)
+        self.lock_levels_act.setCheckable(True)
+        self.lock_levels_act.setToolTip("Lock the colormap levels and show a colorbar")
+        self.lock_levels_act.toggled.connect(self.lock_levels)
+
+        self.ktool_act = QtWidgets.QAction("Open ktool", self)
+        self.ktool_act.triggered.connect(self.open_in_ktool)
+        self.ktool_act.setToolTip(
+            "Open data in the interactive momentum conversion tool"
+        )
+
+    @QtCore.Slot()
+    def history_changed(self) -> None:
+        self.undo_act.setEnabled(self.undoable)
+        self.redo_act.setEnabled(self.redoable)
+
+    @QtCore.Slot()
+    def cursor_count_changed(self) -> None:
+        self.rem_cursor_act.setDisabled(self.n_cursors == 1)
+        self.refresh_colormap()
+
+    @QtCore.Slot()
+    def refresh_actions_enabled(self) -> None:
+        self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
 
     def connect_axes_signals(self) -> None:
         for ax in self.axes:
@@ -808,9 +948,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def connect_signals(self) -> None:
         self.connect_axes_signals()
+        self.sigHistoryChanged.connect(self.history_changed)
+        self.sigCursorCountChanged.connect(self.cursor_count_changed)
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
-        self.sigCursorCountChanged.connect(lambda: self.set_colormap(update=True))
         self.sigWriteHistory.connect(self.write_state)
 
     def link(self, proxy: SlicerLinkProxy) -> None:
@@ -953,7 +1094,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if hasattr(self, "_array_slicer"):
                 self._array_slicer.set_array(self._data, reset=True)
             else:
-                self._array_slicer: ArraySlicer = ArraySlicer(self._data)
+                self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
+                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
+                )
         except Exception as e:
             if self._in_manager:
                 # Let the manager handle the exception
@@ -974,7 +1117,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigDataChanged.emit()
 
         # self.refresh_current()
-        self.set_colormap(update=True)
+        self.refresh_colormap()
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
         self.flush_history()
@@ -1029,7 +1172,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # This will update colorbar limits if visible
             self.lock_levels(self.levels_locked)
 
-    def apply_func(self, func: Callable[[xr.DataArray], xr.DataArray] | None) -> None:
+    def apply_func(
+        self, func: Callable[[xr.DataArray], xr.DataArray] | None, update: bool = True
+    ) -> None:
         """Apply a function to the data.
 
         The function must accept the data as the first argument and return a new
@@ -1043,6 +1188,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ----------
         func
             The function to apply to the data. if None, the data is restored.
+        update
+            If `True`, the plots are updated after setting the new values.
 
         """
         # self._data is original data passed to `set_data`
@@ -1050,15 +1197,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = func
 
         if self._applied_func is None:
-            self.update_values(self._data)
+            self.update_values(self._data, update=update)
         else:
-            self.update_values(self._applied_func(self._data))
+            self.update_values(self._applied_func(self._data), update=update)
 
     @QtCore.Slot(int, int)
     @link_slicer
     @record_history
     def swap_axes(self, ax1: int, ax2: int) -> None:
         self.array_slicer.swap_axes(ax1, ax2)
+
+    @QtCore.Slot()
+    def transpose_main_image(self) -> None:
+        self.swap_axes(0, 1)
 
     @QtCore.Slot(int, int, bool)
     @link_slicer(indices=True)
@@ -1235,33 +1386,39 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if gamma is not None:
             self._colormap_properties["gamma"] = gamma
         if reverse is not None:
-            self._colormap_properties["reverse"] = reverse
+            # Don't block signals here to trigger updates to linked buttons.
+            # Will be called twice, but unnoticable
+            self.reverse_act.setChecked(reverse)
         if high_contrast is not None:
-            self._colormap_properties["high_contrast"] = high_contrast
+            self.high_contrast_act.setChecked(high_contrast)
         if zero_centered is not None:
-            self._colormap_properties["zero_centered"] = zero_centered
+            self.zero_centered_act.setChecked(zero_centered)
         if levels_locked is not None:
             self.levels_locked = levels_locked
         if levels is not None:
             self.levels = levels
 
-        cmap = pg_colormap_powernorm(
-            self._colormap_properties["cmap"],
-            self._colormap_properties["gamma"],
-            self._colormap_properties["reverse"],
-            high_contrast=self._colormap_properties["high_contrast"],
-            zero_centered=self._colormap_properties["zero_centered"],
+        properties = self.colormap_properties
+        cmap = erlab.interactive.colors.pg_colormap_powernorm(
+            properties["cmap"],
+            properties["gamma"],
+            properties["reverse"],
+            high_contrast=properties["high_contrast"],
+            zero_centered=properties["zero_centered"],
         )
         for im in self._imageitems:
             im.set_pg_colormap(cmap, update=update)
         self.sigViewOptionChanged.emit()
 
+    @QtCore.Slot()
+    def refresh_colormap(self) -> None:
+        self.set_colormap(update=True)
+
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool) -> None:
         if lock != self.levels_locked:
             self.sigWriteHistory.emit()
-
-        self._colormap_properties["levels_locked"] = lock
+            self.levels_locked = lock
 
         if self.levels_locked:
             levels = self.array_slicer.limits
@@ -1294,6 +1451,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget
             The widget to add.
         """
+        old_title = widget.windowTitle().strip()
+        new_title = self.parent_title.strip()
+        if new_title != "" and old_title != "":
+            new_title += f" - {old_title}"
+        widget.setWindowTitle(new_title)
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         if self._in_manager:
@@ -1399,7 +1561,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             ((r3 * (r0 + r1) - d) / r01, (r3 * (r0 + r1) - d) * r01),
         ]
         if self.data.ndim == 4:
-            sizes[3] = (0, 0, (r0 + r1 - d))
+            full = r0 + r1 - d
+            sizes[3] = (full / 4, full / 4, full / 2)
         for split, sz in zip(self._splitters, sizes, strict=True):
             split.setSizes(tuple(round(s * scale) for s in sz))
 
@@ -1448,7 +1611,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         elif value == self.array_slicer.snap_to_data:
             return
         self.array_slicer.snap_to_data = value
-        self.sigViewOptionChanged.emit()
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
@@ -1559,7 +1721,7 @@ class ItoolDisplayObject:
     """Parent class for sliced data.
 
     Stores the axes and cursor index for the object, and retrieves the sliced data from
-    `ArraySlicer` when needed.
+    :class:`erlab.interactive.imagetool.slicer.ArraySlicer` when needed.
     """
 
     def __init__(self, axes, cursor: int | None = None) -> None:
@@ -1578,7 +1740,7 @@ class ItoolDisplayObject:
         return self.axes.slicer_area
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self.axes.array_slicer
 
     @property
@@ -1633,7 +1795,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
             self.setData(coord, vals)
 
 
-class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
+class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageItem):
     """Display a 2D slice of data as an image."""
 
     def __init__(
@@ -1642,7 +1804,9 @@ class ItoolImageItem(ItoolDisplayObject, BetterImageItem):
         cursor: int | None = None,
         **kargs,
     ) -> None:
-        BetterImageItem.__init__(self, axes=axes, cursor=cursor, **kargs)
+        erlab.interactive.colors.BetterImageItem.__init__(
+            self, axes=axes, cursor=cursor, **kargs
+        )
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
@@ -1689,6 +1853,7 @@ class ItoolPlotItem(pg.PlotItem):
     """
 
     _sigDragged = QtCore.Signal(object, object)  # :meta private:
+    _sigPaletteChanged = QtCore.Signal()  # :meta private:
 
     def __init__(
         self,
@@ -1700,7 +1865,10 @@ class ItoolPlotItem(pg.PlotItem):
         **item_kw,
     ) -> None:
         super().__init__(
-            axisItems={a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")}
+            axisItems={
+                a: erlab.interactive.utils.BetterAxisItem(a)
+                for a in ("left", "right", "top", "bottom")
+            }
         )
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
@@ -1723,14 +1891,30 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb.menu.addSeparator()
 
         if image:
-            itool_action = self.vb.menu.addAction("Open in new window")
+            itool_action = self.vb.menu.addAction("New Window")
             itool_action.triggered.connect(self.open_in_new_window)
 
-            goldtool_action = self.vb.menu.addAction("Open in goldtool")
+            goldtool_action = self.vb.menu.addAction("goldtool")
             goldtool_action.triggered.connect(self.open_in_goldtool)
 
-            dtool_action = self.vb.menu.addAction("Open in dtool")
+            restool_action = self.vb.menu.addAction("restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
+            dtool_action = self.vb.menu.addAction("dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
+
+            def _set_icons():
+                for act in (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                ):
+                    act.setIcon(qtawesome.icon("mdi6.export"))
+                    act.setIconVisibleInMenu(True)
+
+            self._sigPaletteChanged.connect(_set_icons)
+            _set_icons()
 
             self.vb.menu.addSeparator()
 
@@ -1836,9 +2020,9 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def current_data(self) -> xr.DataArray:
         data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
-        if self.is_image:
-            return data.transpose(*self.axis_dims_uniform)
-        return data
+        return erlab.utils.array.sort_coord_order(
+            data, self.slicer_area._data.coords.keys()
+        )
 
     @property
     def selection_code(self) -> str:
@@ -1862,9 +2046,15 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_new_window(self) -> None:
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
+            data = self.current_data
             tool = cast(
                 QtWidgets.QWidget | None,
-                erlab.interactive.itool(self.current_data, execute=False),
+                erlab.interactive.itool(
+                    data,
+                    transpose=(data.dims != self.axis_dims_uniform),
+                    file_path=self.slicer_area._file_path,
+                    execute=False,
+                ),
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
@@ -1872,19 +2062,38 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
         if self.is_image:
-            data = self.current_data.T
+            data = self.current_data
 
             if set(data.dims) != {"alpha", "eV"}:
                 QtWidgets.QMessageBox.critical(
                     None,
                     "Error",
                     "Data must have 'alpha' and 'eV' dimensions"
-                    "to be opened in GoldTool.",
+                    "to be opened in goldtool.",
                 )
                 return
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.goldtool(
+                    data, data_name="data" + self.selection_code, execute=False
+                )
+            )
+
+    @QtCore.Slot()
+    def open_in_restool(self) -> None:
+        if self.is_image:
+            data = self.current_data
+
+            if "eV" not in data.dims:
+                QtWidgets.QMessageBox.critical(
+                    None,
+                    "Error",
+                    "Data must have an 'eV' dimension to be opened in restool.",
+                )
+                return
+
+            self.slicer_area.add_tool_window(
+                erlab.interactive.restool(
                     data, data_name="data" + self.selection_code, execute=False
                 )
             )
@@ -2166,7 +2375,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
             self._remove_guidelines()
 
-        for w in make_crosshairs(n):
+        for w in erlab.interactive.utils.make_crosshairs(n):
             self.addItem(w)
             self._guidelines_items.append(w)
 
@@ -2307,7 +2516,7 @@ class ItoolPlotItem(pg.PlotItem):
                 self, "Error", "Selection code is undefined for main image of 2D data."
             )
             return
-        copy_to_clipboard(self.selection_code)
+        erlab.interactive.utils.copy_to_clipboard(self.selection_code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:
@@ -2329,16 +2538,24 @@ class ItoolPlotItem(pg.PlotItem):
         self._slicer_area = weakref.ref(value)
 
     @property
-    def array_slicer(self) -> ArraySlicer:
+    def array_slicer(self) -> erlab.interactive.imagetool.slicer.ArraySlicer:
         return self.slicer_area.array_slicer
 
+    def changeEvent(self, evt: QtCore.QEvent | None) -> None:
+        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+            self._sigPaletteChanged.emit()
+        super().changeEvent(evt)
 
-class ItoolColorBarItem(BetterColorBarItem):
+
+class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
     def __init__(self, slicer_area: ImageSlicerArea, **kwargs) -> None:
         self.slicer_area = slicer_area
         kwargs.setdefault(
             "axisItems",
-            {a: BetterAxisItem(a) for a in ("left", "right", "top", "bottom")},
+            {
+                a: erlab.interactive.utils.BetterAxisItem(a)
+                for a in ("left", "right", "top", "bottom")
+            },
         )
         super().__init__(**kwargs)
 
@@ -2366,7 +2583,7 @@ class ItoolColorBarItem(BetterColorBarItem):
 
     @QtCore.Slot()
     def _copy_limits(self) -> str:
-        return copy_to_clipboard(str(self.slicer_area.levels))
+        return erlab.interactive.utils.copy_to_clipboard(str(self.slicer_area.levels))
 
     def setImageItem(self, *args, **kwargs) -> None:
         self.slicer_area.sigViewOptionChanged.connect(self.limit_changed)

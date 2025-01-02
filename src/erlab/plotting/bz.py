@@ -8,7 +8,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-from matplotlib.patches import RegularPolygon
 
 from erlab.plotting.colors import axes_textcolor
 
@@ -121,6 +120,8 @@ def plot_hex_bz(
     a=3.54, rotate=0.0, offset=(0.0, 0.0), reciprocal=True, ax=None, **kwargs
 ):
     """Plot a 2D hexagonal BZ overlay on the specified axes."""
+    from matplotlib.patches import RegularPolygon
+
     kwargs.setdefault("zorder", 5)
     for k, v in abbrv_kws.items():
         kwargs[k] = kwargs.pop(k, kwargs.pop(*v))

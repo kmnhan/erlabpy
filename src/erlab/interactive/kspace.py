@@ -4,36 +4,27 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
+import functools
 import os
-import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import varname
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.accessors.kspace import MomentumAccessor
-from erlab.interactive.colors import (
-    BetterColorBarItem,  # noqa: F401
-    ColorMapComboBox,  # noqa: F401
-    ColorMapGammaWidget,  # noqa: F401
-)
-from erlab.interactive.utils import (
-    copy_to_clipboard,
-    generate_code,
-    wait_dialog,
-    xImageItem,
-)
 
 if TYPE_CHECKING:
     import matplotlib
+    import varname
     import xarray as xr
 else:
+    import lazy_loader as _lazy
+
     matplotlib = _lazy.load("matplotlib")
+    varname = _lazy.load("varname")
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -148,9 +139,11 @@ class KspaceToolGUI(
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
-        self.images: tuple[xImageItem, xImageItem] = (
-            xImageItem(axisOrder="row-major"),
-            xImageItem(axisOrder="row-major"),
+        self.images: tuple[
+            erlab.interactive.utils.xImageItem, erlab.interactive.utils.xImageItem
+        ] = (
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
         )
 
         for i, plot in enumerate(self.plotitems):
@@ -285,6 +278,8 @@ class KspaceTool(KspaceToolGUI):
 
         self._argnames = {}
 
+        self._itool: QtWidgets.QWidget | None = None
+
         if data_name is None:
             try:
                 self._argnames["data"] = varname.argname(
@@ -301,6 +296,9 @@ class KspaceTool(KspaceToolGUI):
 
         if self.data.kspace._has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
+            eV_step = self.data.eV.values[1] - self.data.eV.values[0]
+            self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
+            self.center_spin.setSingleStep(eV_step)
             self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.update)
             self.width_spin.valueChanged.connect(self.update)
@@ -314,7 +312,7 @@ class KspaceTool(KspaceToolGUI):
 
             self.energy_group.setDisabled(True)
 
-        self.bounds_group.toggled.connect(self.update)
+        self.bounds_supergroup.toggled.connect(self.update)
         self.resolution_supergroup.toggled.connect(self.update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -357,7 +355,7 @@ class KspaceTool(KspaceToolGUI):
                 else:
                     self._bound_spins[name].setRange(-10, 10)
                 self._bound_spins[name].setSingleStep(0.01)
-                self._bound_spins[name].setDecimals(2)
+                self._bound_spins[name].setDecimals(3)
                 self._bound_spins[name].setValue(bounds[k][j])
                 self._bound_spins[name].valueChanged.connect(self.update)
                 self._bound_spins[name].setSuffix(" Å⁻¹")
@@ -366,7 +364,7 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k] = QtWidgets.QDoubleSpinBox()
             self._resolution_spins[k].setRange(0.001, 10)
             self._resolution_spins[k].setSingleStep(0.001)
-            self._resolution_spins[k].setDecimals(4)
+            self._resolution_spins[k].setDecimals(5)
             self._resolution_spins[k].setValue(self.data.kspace.estimate_resolution(k))
             self._resolution_spins[k].valueChanged.connect(self.update)
             self._resolution_spins[k].setSuffix(" Å⁻¹")
@@ -381,6 +379,8 @@ class KspaceTool(KspaceToolGUI):
         # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
         # self._beta_scale_spin.valueChanged.connect(self.update)
 
+        self.bounds_btn.clicked.connect(self.calculate_bounds)
+
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
@@ -393,6 +393,23 @@ class KspaceTool(KspaceToolGUI):
         if avec is not None:
             self.bz_group.setChecked(True)
 
+    @functools.cached_property
+    def _binding_energy(self) -> npt.NDArray:
+        return self.data.kspace._binding_energy.values
+
+    @QtCore.Slot()
+    def calculate_bounds(self) -> None:
+        self.data.kspace.offsets = self.offset_dict
+        bounds = self.data.kspace.estimate_bounds()
+        for k in self.data.kspace.momentum_axes:
+            for j in range(2):
+                name = f"{k}{j}"
+                self._bound_spins[name].blockSignals(True)
+                self._bound_spins[name].setValue(bounds[k][j])
+                self._bound_spins[name].blockSignals(False)
+        self.update()
+
+    @QtCore.Slot()
     def calculate_resolution(self) -> None:
         for k, spin in self._resolution_spins.items():
             spin.setValue(
@@ -401,23 +418,29 @@ class KspaceTool(KspaceToolGUI):
                 )
             )
 
+    @QtCore.Slot()
     def show_converted(self) -> None:
         self.data.kspace.offsets = self.offset_dict
 
         if self.data.kspace._has_hv:
             self.data.kspace.inner_potential = self._offset_spins["V0"].value()
 
-        with wait_dialog(self, "Converting..."):
+        with erlab.interactive.utils.wait_dialog(self, "Converting..."):
             data_kconv = self.data.kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
 
         tool = erlab.interactive.itool(data_kconv, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
+            if self._itool is not None:
+                self._itool.close()
+
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            tool.destroyed.connect(lambda: setattr(self, "_itool", None))
             self._itool = tool
             self._itool.show()
 
+    @QtCore.Slot()
     def copy_code(self) -> str:
         arg_dict: dict[str, Any] = {}
         if self.bounds is not None:
@@ -444,7 +467,7 @@ class KspaceTool(KspaceToolGUI):
         out_lines.extend(
             (
                 f"{input_name}.kspace.offsets = {offset_dict_repr}",
-                generate_code(
+                erlab.interactive.utils.generate_code(
                     MomentumAccessor.convert,
                     [],
                     arg_dict,
@@ -454,15 +477,15 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-        return copy_to_clipboard(out_lines)
+        return erlab.interactive.utils.copy_to_clipboard(out_lines)
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
-        if self.bounds_group.isChecked():
+        if self.bounds_supergroup.isChecked():
             return {
                 k: (
-                    self._bound_spins[f"{k}0"].value(),
-                    self._bound_spins[f"{k}1"].value(),
+                    float(np.round(self._bound_spins[f"{k}0"].value(), 5)),
+                    float(np.round(self._bound_spins[f"{k}1"].value(), 5)),
                 )
                 for k in self.data.kspace.momentum_axes
             }
@@ -472,7 +495,7 @@ class KspaceTool(KspaceToolGUI):
     def resolution(self) -> dict[str, float] | None:
         if self.resolution_supergroup.isChecked():
             return {
-                k: self._resolution_spins[k].value()
+                k: float(np.round(self._resolution_spins[k].value(), 5))
                 for k in self.data.kspace.momentum_axes
             }
         return None
@@ -486,13 +509,20 @@ class KspaceTool(KspaceToolGUI):
 
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
+            data_binding = self.data.copy().assign_coords(eV=self._binding_energy)
+
             center, width = self.center_spin.value(), self.width_spin.value()
             if width == 1:
-                return self.data.sel(eV=center, method="nearest")
+                return data_binding.isel(
+                    eV=np.argmin(np.abs(self.data.eV.values - center))
+                )
+
             arr = self.data.eV.values
             idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
             return (
-                self.data.isel(eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1))
+                data_binding.isel(
+                    eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1)
+                )
                 .mean("eV", skipna=True, keep_attrs=True)
                 .assign_coords(eV=center)
             )
@@ -516,6 +546,7 @@ class KspaceTool(KspaceToolGUI):
         )
         return data_ang, data_k
 
+    @QtCore.Slot()
     def update(self) -> None:
         ang, k = self.get_data()
         self.images[0].setDataArray(ang.T)
@@ -615,36 +646,17 @@ def ktool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-
-    cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
-
-    win = KspaceTool(
-        data,
-        avec=avec,
-        rotate_bz=rotate_bz,
-        cmap=cmap,
-        gamma=gamma,
-        data_name=data_name,
-    )
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
-
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
+    with erlab.interactive.utils.setup_qapp(execute):
+        win = KspaceTool(
+            data,
+            avec=avec,
+            rotate_bz=rotate_bz,
+            cmap=cmap,
+            gamma=gamma,
+            data_name=data_name,
+        )
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     return win

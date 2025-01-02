@@ -16,11 +16,11 @@ from qtpy import QtCore, QtWidgets
 from erlab.interactive.utils import _WaitDialog
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "d62d6ba1fdc3dd44f73ad573ce6acd66e763748e"
+DATA_COMMIT_HASH = "9408f73f3562a5c1e5f6e01dec25bcd16832264e"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "3e9f994dab8d98c6cf08e33f357f113e505e2c7401aa25b3decddb7838c7aade"
-"""The hash of the `.tar.gz` file."""
+DATA_KNOWN_HASH = "75b31cd538ea4847c6eb34017f5d69bed324081329fcc0eece5089677e37df4f"
+"""The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
 
@@ -258,8 +258,11 @@ def accept_dialog():
 def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
     if target_win is None:
         target_win = win
-    target_win.activateWindow()
-    target_win.setFocus()
+    with qtbot.waitExposed(win):
+        target_win.show()
+        target_win.activateWindow()
+        target_win.setFocus()
+
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
     x_ax = win.slicer_area.main_image.display_axis[0]

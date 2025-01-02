@@ -40,12 +40,7 @@ import scipy.ndimage
 import xarray as xr
 from numba import carray, cfunc, types
 
-from erlab.utils.array import (
-    check_arg_2d_darr,
-    check_arg_has_no_nans,
-    check_arg_uniform_dims,
-    is_uniform_spaced,
-)
+import erlab
 
 if TYPE_CHECKING:
     import findiff
@@ -213,7 +208,7 @@ def gaussian_filter(
         radius_pix = None
 
     for d in sigma_dict:
-        if not is_uniform_spaced(darr[d].values):
+        if not erlab.utils.array.is_uniform_spaced(darr[d].values):
             raise ValueError(f"Dimension `{d}` is not uniformly spaced")
 
     # Calculate sigma in pixels
@@ -749,7 +744,9 @@ def diffn(
         the provided order.
     """
     xvals = darr[coord].values.astype(np.float64)
-    grid = (xvals[1] - xvals[0]) if is_uniform_spaced(xvals) else xvals
+    grid = (
+        (xvals[1] - xvals[0]) if erlab.utils.array.is_uniform_spaced(xvals) else xvals
+    )
     d_dx = findiff.Diff(darr.get_axis_num(coord), grid=grid, **kwargs)
 
     if not isinstance(order, int) and isinstance(order, Iterable):
@@ -763,9 +760,9 @@ def _apply_diffn(
     return darr.copy(data=(operator**order)(darr.values.astype(np.float64)))
 
 
-@check_arg_2d_darr
-@check_arg_uniform_dims
-@check_arg_has_no_nans
+@erlab.utils.array.check_arg_2d_darr
+@erlab.utils.array.check_arg_uniform_dims
+@erlab.utils.array.check_arg_has_no_nans
 def minimum_gradient(
     darr: xr.DataArray, mode: str = "nearest", cval: float = 0.0
 ) -> xr.DataArray:
@@ -813,9 +810,9 @@ def minimum_gradient(
     return darr / darr.max(skipna=True) / grad
 
 
-@check_arg_2d_darr
-@check_arg_uniform_dims
-@check_arg_has_no_nans
+@erlab.utils.array.check_arg_2d_darr
+@erlab.utils.array.check_arg_uniform_dims
+@erlab.utils.array.check_arg_has_no_nans
 def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     r"""Calculate the Laplacian of a 2D DataArray with different scaling for each axis.
 
@@ -870,9 +867,9 @@ def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     return darr.copy(data=scaled_lapl_operator(darr.values.astype(np.float64)))
 
 
-@check_arg_2d_darr
-@check_arg_uniform_dims
-@check_arg_has_no_nans
+@erlab.utils.array.check_arg_2d_darr
+@erlab.utils.array.check_arg_uniform_dims
+@erlab.utils.array.check_arg_has_no_nans
 def curvature(
     darr: xr.DataArray, a0: float = 1.0, factor: float = 1.0, **kwargs
 ) -> xr.DataArray:

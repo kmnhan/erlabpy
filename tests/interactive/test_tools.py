@@ -1,5 +1,3 @@
-import time
-
 import numpy as np
 import pyperclip
 import pytest
@@ -10,16 +8,14 @@ import erlab
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.fermiedge import goldtool
+from erlab.interactive.fermiedge import ResolutionTool, goldtool, restool
 from erlab.interactive.kspace import ktool
+from erlab.io.exampledata import generate_gold_edge
 
 
 def test_goldtool(qtbot, gold) -> None:
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
@@ -36,6 +32,45 @@ def test_goldtool(qtbot, gold) -> None:
     fast=True,
 )"""
     )
+
+
+def test_restool(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._guess()
+    win.res_spin.setValue(0.02)
+    win.live_check.setChecked(True)
+    win.y0_spin.setValue(-12.0)
+    win.x0_spin.setValue(-0.3)
+    win.x1_spin.setValue(0.3)
+
+    qtbot.wait_until(lambda: isinstance(win._result_ds, xr.Dataset), timeout=1000)
+
+    for k, v in {
+        "eV_range": (-0.3, 0.3),
+        "temp": 100.0,
+        "resolution": 0.02,
+        "center": -0.01572,
+        "bkg_slope": False,
+    }.items():
+        assert win.fit_params[k] == v
+
+    def check_generated_code(w: ResolutionTool) -> None:
+        namespace = {"era": erlab.analysis, "gold": gold, "result": None}
+        code = "result = " + w.copy_code().replace("quick_resolution", "quick_fit")
+        exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
+
+        xr.testing.assert_identical(
+            w._result_ds.drop_vars("modelfit_results"),
+            namespace["result"].drop_vars("modelfit_results"),
+        )
+
+    check_generated_code(win)
+    win.close()
 
 
 @pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
@@ -56,10 +91,6 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     )
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
-
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     def check_generated_code(w: DerivativeTool) -> None:
         namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
@@ -109,9 +140,6 @@ def test_ktool(qtbot, anglemap, constant_energy) -> None:
     )
 
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     win._offset_spins["delta"].setValue(30.0)
     win._offset_spins["xi"].setValue(20.0)
@@ -145,27 +173,6 @@ anglemap_kconv = anglemap.kspace.convert()"""
     win.show_converted()
     xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
     win._itool.close()
-
-    # Start manager
-    erlab.interactive.imagetool.manager.main(execute=False)
-    manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.addWidget(manager)
-
-    # Show in manager
-    win.show_converted()
-    t0 = time.perf_counter()
-    while True:
-        if manager.ntools == 1:
-            break
-        assert time.perf_counter() - t0 < 20
-        qtbot.wait(10)
-
-    manager.remove_tool(0)
-    assert manager.ntools == 0
-    manager.close()
-    erlab.interactive.imagetool.manager._manager_instance = None
-    erlab.interactive.imagetool.manager._always_use_socket = False
-
     win.close()
 
 
@@ -181,12 +188,6 @@ def test_bzplot(qtbot) -> None:
     win = BZPlotter(execute=False)
     qtbot.addWidget(win)
     qtbot.addWidget(win.controls)
-
-    with qtbot.waitExposed(win):
-        win.show()
-
-    with qtbot.waitExposed(win.controls):
-        win.controls.show()
 
     win.controls.params_latt.set_values(
         a=3.0, b=3.0, c=6.0, alpha=90.0, beta=90.0, gamma=120.0

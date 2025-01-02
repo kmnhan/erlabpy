@@ -1,17 +1,18 @@
 import sys
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-import mpl_toolkits
 import numpy as np
 import numpy.typing as npt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
-import erlab.plotting as eplt
-from erlab.interactive.utils import ParameterGroup
-from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
+import erlab
+
+if TYPE_CHECKING:
+    import mpl_toolkits
+else:
+    import lazy_loader as _lazy
+
+    mpl_toolkits = _lazy.load("mpl_toolkits")
 
 
 class BZPlotter(QtWidgets.QMainWindow):
@@ -61,7 +62,7 @@ class BZPlotter(QtWidgets.QMainWindow):
             if len(params) != 6:
                 raise TypeError("Lattice parameters must be a 6-tuple.")
 
-            bvec = to_reciprocal(abc2avec(*params))
+            bvec = erlab.lattice.to_reciprocal(erlab.lattice.abc2avec(*params))
         else:
             if not isinstance(params, np.ndarray):
                 raise TypeError("Lattice vectors must be a numpy array.")
@@ -69,7 +70,7 @@ class BZPlotter(QtWidgets.QMainWindow):
                 raise TypeError("Lattice vectors must be a 3 by 3 numpy array.")
 
             if param_type == "avec":
-                bvec = to_reciprocal(params)
+                bvec = erlab.lattice.to_reciprocal(params)
             elif param_type == "bvec":
                 bvec = params
 
@@ -79,24 +80,11 @@ class BZPlotter(QtWidgets.QMainWindow):
         self.controls = LatticeWidget(bvec)
         self.controls.sigChanged.connect(self.plot.set_bvec)
 
-        self.__post_init__(execute=execute)
-
-    def __post_init__(self, execute=None):
-        self.show()
-        self.activateWindow()
-        self.raise_()
-        self.controls.show()
-
-        if execute is None:
-            execute = True
-            try:
-                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
-                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                    execute = False
-            except NameError:
-                pass
-        if execute:
-            self.qapp.exec()
+        with erlab.interactive.utils.setup_qapp(execute):
+            self.show()
+            self.activateWindow()
+            self.raise_()
+            self.controls.show()
 
 
 class LatticeWidget(QtWidgets.QTabWidget):
@@ -106,7 +94,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
         super().__init__()
 
         # self.setLayout(QtWidgets.QVBoxLayout(self))
-        self.params_latt = ParameterGroup(
+        self.params_latt = erlab.interactive.utils.ParameterGroup(
             ncols=3,
             a={"qwtype": "btspin", "value": 1, "showlabel": "𝑎", "decimals": 5},
             b={"qwtype": "btspin", "value": 1, "showlabel": "𝑏", "decimals": 5},
@@ -144,7 +132,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
                 "clicked": self.latt_changed,
             },
         )
-        self.params_avec = ParameterGroup(
+        self.params_avec = erlab.interactive.utils.ParameterGroup(
             ncols=4,
             _0={
                 "widget": QtWidgets.QWidget(),
@@ -204,7 +192,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
         )
         for i in range(8):
             self.params_avec.layout().setColumnStretch(i, 1 if i < 2 else 6)
-        self.params_bvec = ParameterGroup(
+        self.params_bvec = erlab.interactive.utils.ParameterGroup(
             ncols=4,
             _0={
                 "widget": QtWidgets.QWidget(),
@@ -282,21 +270,21 @@ class LatticeWidget(QtWidgets.QTabWidget):
 
     def latt_changed(self) -> None:
         self.block_params_signals(True)
-        self.set_avec(abc2avec(*self.latt_vals))
+        self.set_avec(erlab.lattice.abc2avec(*self.latt_vals))
         self.block_params_signals(False)
         self.avec_changed()
 
     def avec_changed(self) -> None:
         self.block_params_signals(True)
-        self.set_latt(*avec2abc(self.avec_val))
+        self.set_latt(*erlab.lattice.avec2abc(self.avec_val))
         self.block_params_signals(False)
-        self.set_bvec(to_reciprocal(self.avec_val))
+        self.set_bvec(erlab.lattice.to_reciprocal(self.avec_val))
         self.bvec_changed()
 
     def bvec_changed(self) -> None:
         self.block_params_signals(True)
-        self.set_avec(to_real(self.bvec_val))
-        self.set_latt(*avec2abc(self.avec_val))
+        self.set_avec(erlab.lattice.to_real(self.bvec_val))
+        self.set_latt(*erlab.lattice.avec2abc(self.avec_val))
         self.block_params_signals(False)
         self.sigChanged.emit(self.bvec_val)
 
@@ -342,6 +330,12 @@ class LatticeWidget(QtWidgets.QTabWidget):
 class BZPlotWidget(QtWidgets.QWidget):
     def __init__(self, bvec) -> None:
         super().__init__()
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qtagg import (
+            NavigationToolbar2QT as NavigationToolbar,
+        )
+        from matplotlib.figure import Figure
+
         layout = QtWidgets.QVBoxLayout(self)
         self.setLayout(layout)
 
@@ -397,7 +391,9 @@ class BZPlotWidget(QtWidgets.QWidget):
 
     def set_bvec(self, bvec, update=True) -> None:
         self.bvec = bvec
-        self.lines, self.vertices = eplt.get_bz_edge(self.bvec, reciprocal=True)
+        self.lines, self.vertices = erlab.plotting.get_bz_edge(
+            self.bvec, reciprocal=True
+        )
         if update:
             self._update_canvas()
 

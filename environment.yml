@@ -13,6 +13,7 @@ dependencies:
   - numba>=0.59.0
   - numbagg>=0.8.1
   - numpy>=1.26.0
+  - pickleshare>=0.7.5
   - pip>=19.3
   - pyperclip>=1.8.2
   - pyqtgraph>=0.13.1

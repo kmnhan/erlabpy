@@ -98,16 +98,11 @@ def fit_edges_linear(x, data, len_fit) -> tuple[float, float, float, float]:
     n1, m1
         The coefficients of the linear fit for the right edge.
     """
-    n0, m0 = fit_poly_jit(
-        np.array(x[:len_fit], dtype=np.float64),
-        np.array(data[:len_fit], dtype=np.float64),
-        deg=1,
-    )
-    n1, m1 = fit_poly_jit(
-        np.array(x[-len_fit:], dtype=np.float64),
-        np.array(data[-len_fit:], dtype=np.float64),
-        deg=1,
-    )
+    na_idx = np.isnan(np.asarray(data))
+    xv = np.array(x[~na_idx], dtype=np.float64)
+    yv = np.array(data[~na_idx], dtype=np.float64)
+    n0, m0 = fit_poly_jit(xv[:len_fit], yv[:len_fit], deg=1)
+    n1, m1 = fit_poly_jit(xv[-len_fit:], yv[-len_fit:], deg=1)
     return n0, m0, n1, m1
 
 
