@@ -21,25 +21,26 @@ import weakref
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
-import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
-import pyperclip
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
 from erlab.utils.misc import _convert_to_native, is_interactive
 
 if TYPE_CHECKING:
     import os
     from collections.abc import Callable, Collection, Iterator, Mapping
 
+    import pyperclip
     import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 else:
+    import lazy_loader as _lazy
+
+    pyperclip = _lazy.load("pyperclip")
     qtawesome = _lazy.load("qtawesome")
 
 __all__ = [
@@ -1122,7 +1123,7 @@ class FittingParameterWidget(QtWidgets.QWidget):
         return {self.prefix() + self.param_name: param_info}
 
 
-class xImageItem(BetterImageItem):
+class xImageItem(erlab.interactive.colors.BetterImageItem):
     """:class:`pyqtgraph.ImageItem` with additional functionality.
 
     This class provides :class:`xarray.DataArray` support and auto limits based on
@@ -1840,7 +1841,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         self.images: list[xImageItem] = [
             xImageItem(axisOrder="row-major") for _ in range(nax)
         ]
-        cmap = pg_colormap_powernorm("terrain", 1.0, N=6)
+        cmap = erlab.interactive.colors.pg_colormap_powernorm("terrain", 1.0, N=6)
         for i in range(nax):
             self.addItem(self.axes[i], *self.get_axis_pos(i))
             self.addItem(self.hists[i], *self.get_hist_pos(i))

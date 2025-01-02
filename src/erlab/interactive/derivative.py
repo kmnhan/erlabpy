@@ -5,23 +5,22 @@ __all__ = ["dtool"]
 import functools
 import os
 from collections.abc import Callable, Hashable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph as pg
-import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
 
 import erlab
-from erlab.interactive.utils import (
-    copy_to_clipboard,
-    generate_code,
-    parse_data,
-    setup_qapp,
-    xImageItem,
-)
 from erlab.utils.array import effective_decimals
+
+if TYPE_CHECKING:
+    import varname
+else:
+    import lazy_loader as _lazy
+
+    varname = _lazy.load("varname")
 
 
 class DerivativeTool(
@@ -56,7 +55,7 @@ class DerivativeTool(
         if data.ndim != 2:
             raise ValueError("Input DataArray must be 2D")
 
-        self.data: xr.DataArray = parse_data(data)
+        self.data: xr.DataArray = erlab.interactive.utils.parse_data(data)
         self._result: xr.DataArray = self.data.copy()
 
         self.xdim: Hashable = self.data.dims[1]
@@ -67,9 +66,11 @@ class DerivativeTool(
 
         self.interp_group.setChecked(False)
 
-        self.images: tuple[xImageItem, xImageItem] = (
-            xImageItem(axisOrder="row-major"),
-            xImageItem(axisOrder="row-major"),
+        self.images: tuple[
+            erlab.interactive.utils.xImageItem, erlab.interactive.utils.xImageItem
+        ] = (
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
         )
         self.hists: tuple[pg.HistogramLUTItem, pg.HistogramLUTItem] = (
             pg.HistogramLUTItem(),
@@ -303,7 +304,7 @@ class DerivativeTool(
                 )
             }
             lines.append(
-                generate_code(
+                erlab.interactive.utils.generate_code(
                     xr.DataArray.interp,
                     args=[],
                     kwargs=arg_dict,
@@ -330,7 +331,7 @@ class DerivativeTool(
                 lines.append(f"_processed = {data_name}.copy()")
                 data_name = "_processed"
 
-            smooth_func_code: str = generate_code(
+            smooth_func_code: str = erlab.interactive.utils.generate_code(
                 smooth_func,
                 [f"|{data_name}|"],
                 smooth_kwargs,
@@ -344,7 +345,7 @@ class DerivativeTool(
                 lines.append("\t" + smooth_func_code)
 
         lines.append(
-            generate_code(
+            erlab.interactive.utils.generate_code(
                 self.process_func,
                 [f"|{data_name}|"],
                 self.process_kwargs,
@@ -354,7 +355,7 @@ class DerivativeTool(
             )
         )
 
-        return copy_to_clipboard(lines)
+        return erlab.interactive.utils.copy_to_clipboard(lines)
 
 
 def dtool(
@@ -376,7 +377,7 @@ def dtool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    with setup_qapp(execute):
+    with erlab.interactive.utils.setup_qapp(execute):
         win = DerivativeTool(data, data_name=data_name)
         win.show()
         win.raise_()

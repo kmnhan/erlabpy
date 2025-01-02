@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
-from erlab.interactive.colors import ColorMapComboBox, ColorMapGammaWidget
-from erlab.interactive.utils import BetterSpinBox, IconActionButton, IconButton
+import erlab
 
 if TYPE_CHECKING:
     import xarray as xr
@@ -217,15 +216,19 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
             s.setSpacing(3)
         # buttons for multicursor control
-        self.btn_add = IconButton(_ICON_ALIASES["plus"], toolTip="Add cursor")
+        self.btn_add = erlab.interactive.utils.IconButton(
+            _ICON_ALIASES["plus"], toolTip="Add cursor"
+        )
         self.btn_add.clicked.connect(self.slicer_area.add_cursor)
 
-        self.btn_rem = IconButton(_ICON_ALIASES["minus"], toolTip="Remove cursor")
+        self.btn_rem = erlab.interactive.utils.IconButton(
+            _ICON_ALIASES["minus"], toolTip="Remove cursor"
+        )
         self.btn_rem.clicked.connect(
             lambda: self.slicer_area.remove_cursor(self.cb_cursors.currentIndex())
         )
 
-        self.btn_snap = IconActionButton(
+        self.btn_snap = erlab.interactive.utils.IconActionButton(
             self.array_slicer.snap_act,
             on=_ICON_ALIASES["snap"],
             off=_ICON_ALIASES["snap_off"],
@@ -248,7 +251,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.btn_rem.setDisabled(True)
 
         # current value widget
-        self.spin_dat = BetterSpinBox(
+        self.spin_dat = erlab.interactive.utils.BetterSpinBox(
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
         try:
@@ -282,7 +285,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             lab.setCheckable(True)
 
         self.spin_idx = tuple(
-            BetterSpinBox(
+            erlab.interactive.utils.BetterSpinBox(
                 grp,
                 integer=True,
                 singleStep=1,
@@ -293,7 +296,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             for grp in self.values_groups[1:]
         )
         self.spin_val = tuple(
-            BetterSpinBox(
+            erlab.interactive.utils.BetterSpinBox(
                 grp,
                 discrete=True,
                 decimals=3,
@@ -308,7 +311,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
             icons = [_ICON_ALIASES[f"transpose_{i}"] for i in range(self.data.ndim)]
         else:
             icons = [_ICON_ALIASES[f"transpose_{i}"] for i in (0, 1, 3, 2)]
-        self.btn_transpose = tuple(IconButton(on=icon) for icon in icons)
+        self.btn_transpose = tuple(
+            erlab.interactive.utils.IconButton(on=icon) for icon in icons
+        )
 
         # add and connect info widgets
         for i in range(self.data.ndim):
@@ -478,20 +483,20 @@ class ItoolColorControls(ItoolControlsBase):
         super().__init__(*args, **kwargs)
 
     def initialize_widgets(self) -> None:
-        self.btn_reverse = IconActionButton(
+        self.btn_reverse = erlab.interactive.utils.IconActionButton(
             self.slicer_area.reverse_act,
             on=_ICON_ALIASES["invert"],
             off=_ICON_ALIASES["invert_off"],
         )
-        self.btn_contrast = IconActionButton(
+        self.btn_contrast = erlab.interactive.utils.IconActionButton(
             self.slicer_area.high_contrast_act,
             on=_ICON_ALIASES["contrast"],
         )
-        self.btn_zero = IconActionButton(
+        self.btn_zero = erlab.interactive.utils.IconActionButton(
             self.slicer_area.zero_centered_act,
             on=_ICON_ALIASES["zero_center"],
         )
-        self.btn_lock = IconActionButton(
+        self.btn_lock = erlab.interactive.utils.IconActionButton(
             self.slicer_area.lock_levels_act,
             on=_ICON_ALIASES["bright_auto"],
             off=_ICON_ALIASES["bright_percent"],
@@ -528,10 +533,14 @@ class ItoolColormapControls(ItoolControlsBase):
 
     def initialize_widgets(self) -> None:
         super().initialize_widgets()
-        self.cb_colormap = ColorMapComboBox(self, maximumWidth=175)
+        self.cb_colormap = erlab.interactive.colors.ColorMapComboBox(
+            self, maximumWidth=175
+        )
         self.cb_colormap.textActivated.connect(self.slicer_area.set_colormap)
 
-        self.gamma_widget = ColorMapGammaWidget(spin_cls=BetterSpinBox)
+        self.gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
+            spin_cls=erlab.interactive.utils.BetterSpinBox
+        )
         self.gamma_widget.valueChanged.connect(
             lambda g: self.slicer_area.set_colormap(gamma=g)
         )
@@ -590,7 +599,7 @@ class ItoolBinningControls(ItoolControlsBase):
         self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
-            BetterSpinBox(
+            erlab.interactive.utils.BetterSpinBox(
                 self,
                 integer=True,
                 singleStep=2,
@@ -605,10 +614,12 @@ class ItoolBinningControls(ItoolControlsBase):
         for i, spin in enumerate(self.spins):
             spin.valueChanged.connect(lambda n, axis=i: self._update_bin(axis, n))
 
-        self.reset_btn = IconButton(_ICON_ALIASES["reset"], toolTip="Reset bins")
+        self.reset_btn = erlab.interactive.utils.IconButton(
+            _ICON_ALIASES["reset"], toolTip="Reset bins"
+        )
         self.reset_btn.clicked.connect(self.reset)
 
-        self.all_btn = IconButton(
+        self.all_btn = erlab.interactive.utils.IconButton(
             on=_ICON_ALIASES["all_cursors"],
             checkable=True,
             toolTip="When checked, apply bins to all cursors upon change",

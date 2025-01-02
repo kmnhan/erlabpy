@@ -8,34 +8,24 @@ import functools
 import os
 from typing import TYPE_CHECKING, Any
 
-import lazy_loader as _lazy
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import varname
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.accessors.kspace import MomentumAccessor
-from erlab.interactive.colors import (
-    BetterColorBarItem,  # noqa: F401
-    ColorMapComboBox,  # noqa: F401
-    ColorMapGammaWidget,  # noqa: F401
-)
-from erlab.interactive.utils import (
-    copy_to_clipboard,
-    generate_code,
-    setup_qapp,
-    wait_dialog,
-    xImageItem,
-)
 from erlab.utils.array import effective_decimals
 
 if TYPE_CHECKING:
     import matplotlib
+    import varname
     import xarray as xr
 else:
+    import lazy_loader as _lazy
+
     matplotlib = _lazy.load("matplotlib")
+    varname = _lazy.load("varname")
 
 
 class _CircleROIControlWidget(QtWidgets.QWidget):
@@ -150,9 +140,11 @@ class KspaceToolGUI(
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
-        self.images: tuple[xImageItem, xImageItem] = (
-            xImageItem(axisOrder="row-major"),
-            xImageItem(axisOrder="row-major"),
+        self.images: tuple[
+            erlab.interactive.utils.xImageItem, erlab.interactive.utils.xImageItem
+        ] = (
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
+            erlab.interactive.utils.xImageItem(axisOrder="row-major"),
         )
 
         for i, plot in enumerate(self.plotitems):
@@ -434,7 +426,7 @@ class KspaceTool(KspaceToolGUI):
         if self.data.kspace._has_hv:
             self.data.kspace.inner_potential = self._offset_spins["V0"].value()
 
-        with wait_dialog(self, "Converting..."):
+        with erlab.interactive.utils.wait_dialog(self, "Converting..."):
             data_kconv = self.data.kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
@@ -476,7 +468,7 @@ class KspaceTool(KspaceToolGUI):
         out_lines.extend(
             (
                 f"{input_name}.kspace.offsets = {offset_dict_repr}",
-                generate_code(
+                erlab.interactive.utils.generate_code(
                     MomentumAccessor.convert,
                     [],
                     arg_dict,
@@ -486,7 +478,7 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-        return copy_to_clipboard(out_lines)
+        return erlab.interactive.utils.copy_to_clipboard(out_lines)
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
@@ -655,7 +647,7 @@ def ktool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    with setup_qapp(execute):
+    with erlab.interactive.utils.setup_qapp(execute):
         win = KspaceTool(
             data,
             avec=avec,
