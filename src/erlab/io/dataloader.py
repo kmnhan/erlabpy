@@ -732,22 +732,18 @@ class LoaderBase(metaclass=_Loader):
 
         styled = self.get_styler(df)
 
-        try:
-            if is_interactive():
-                import IPython.display
+        if is_interactive():
+            import IPython.display
 
-                with pandas.option_context(
-                    "display.max_rows", len(df), "display.max_columns", len(df.columns)
-                ):
-                    IPython.display.display(styled)
+            with pandas.option_context(
+                "display.max_rows", len(df), "display.max_columns", len(df.columns)
+            ):
+                IPython.display.display(styled)
 
-                if importlib.util.find_spec("ipywidgets"):
-                    return self._isummarize(df, rc=rc)
+            if importlib.util.find_spec("ipywidgets"):
+                return self._isummarize(df, rc=rc)
 
-                return None
-
-        except NameError:
-            pass
+            return None
 
         return styled
 
