@@ -98,6 +98,38 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
     application based on the environment (interactive or not). The function yields a
     boolean indicating whether the application is executed.
 
+    Generally, a Qt application in a python script is executed like this:
+
+    .. code-block:: python
+
+        qapp = QtWidgets.QApplication.instance()
+
+        if not qapp:
+            qapp = QtWidgets.QApplication(sys.argv)
+
+        win = MyMainWindow()
+
+        win.show()
+
+        qapp.exec()
+
+    In an interactive environment like IPython and jupyter, the event loop is handled by
+    IPython, so ``qapp.exec()`` changes to:
+
+    .. code-block:: python
+
+        from IPython.lib.guisupport import start_event_loop_qt4
+
+        start_event_loop_qt4(qapp)
+
+    This function combines the two approaches and determines whether to execute the
+    event loop based on the environment. The resulting code is:
+
+    .. code-block:: python
+
+        with setup_qapp():
+            win = MyMainWindow() win.show()
+
     Parameters
     ----------
     execute : bool or None, optional
