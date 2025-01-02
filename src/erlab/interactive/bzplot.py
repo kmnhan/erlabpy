@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
 import erlab.plotting as eplt
-from erlab.interactive.utils import ParameterGroup
+from erlab.interactive.utils import ParameterGroup, setup_qapp
 from erlab.lattice import abc2avec, avec2abc, to_real, to_reciprocal
 
 
@@ -79,24 +79,11 @@ class BZPlotter(QtWidgets.QMainWindow):
         self.controls = LatticeWidget(bvec)
         self.controls.sigChanged.connect(self.plot.set_bvec)
 
-        self.__post_init__(execute=execute)
-
-    def __post_init__(self, execute=None):
-        self.show()
-        self.activateWindow()
-        self.raise_()
-        self.controls.show()
-
-        if execute is None:
-            execute = True
-            try:
-                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
-                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                    execute = False
-            except NameError:
-                pass
-        if execute:
-            self.qapp.exec()
+        with setup_qapp(execute):
+            self.show()
+            self.activateWindow()
+            self.raise_()
+            self.controls.show()
 
 
 class LatticeWidget(QtWidgets.QTabWidget):

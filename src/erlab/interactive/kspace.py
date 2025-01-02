@@ -5,8 +5,7 @@ from __future__ import annotations
 __all__ = ["ktool"]
 
 import os
-import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import lazy_loader as _lazy
 import numpy as np
@@ -25,6 +24,7 @@ from erlab.interactive.colors import (
 from erlab.interactive.utils import (
     copy_to_clipboard,
     generate_code,
+    setup_qapp,
     wait_dialog,
     xImageItem,
 )
@@ -615,36 +615,17 @@ def ktool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-
-    cast(QtWidgets.QApplication, qapp).setStyle("Fusion")
-
-    win = KspaceTool(
-        data,
-        avec=avec,
-        rotate_bz=rotate_bz,
-        cmap=cmap,
-        gamma=gamma,
-        data_name=data_name,
-    )
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
-
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
+    with setup_qapp(execute):
+        win = KspaceTool(
+            data,
+            avec=avec,
+            rotate_bz=rotate_bz,
+            cmap=cmap,
+            gamma=gamma,
+            data_name=data_name,
+        )
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
     return win

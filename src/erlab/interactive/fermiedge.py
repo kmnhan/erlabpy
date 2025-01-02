@@ -2,7 +2,6 @@ __all__ = ["goldtool", "restool"]
 
 import concurrent.futures
 import os
-import sys
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -21,6 +20,7 @@ from erlab.interactive.utils import (
     _coverage_resolve_trace,
     copy_to_clipboard,
     generate_code,
+    setup_qapp,
     xImageItem,
 )
 from erlab.utils.array import effective_decimals
@@ -383,23 +383,23 @@ class GoldTool(AnalysisWindow):
         )
 
     def iterated(self, n: int) -> None:
-        self.step_times.append(time.perf_counter() - self.start_time)
+        if n == 0:
+            self.progress.setLabelText("")
+        elif n == 1:
+            self.step_times = []
+            self.start_time = time.perf_counter()
+        elif n > 1:
+            now = time.perf_counter()
+            self.step_times.append(now - self.start_time)
+            self.start_time = now
+            timeleft = (self.progress.maximum() - (n - 1)) * np.mean(self.step_times)
+            self.progress.setLabelText(f"{round(timeleft)} seconds left...")
+
         self.progress.setValue(n)
-
-        deltas = np.diff(self.step_times)
-        timeleft = (self.progress.maximum() - (n - 1)) * np.mean(deltas)
-
-        # timeleft: str = humanize.precisedelta(datetime.timedelta(seconds=timeleft))
-        # steptime: str = humanize.precisedelta(datetime.timedelta(seconds=steptime))
-
-        self.progress.setLabelText(f"{round(timeleft)} seconds left...")
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
-        self.start_time = time.perf_counter()
-        self.step_times = [0.0]
-
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
@@ -918,29 +918,10 @@ def restool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
+    with setup_qapp(execute):
+        win = ResolutionTool(data, data_name=data_name)
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
-    if isinstance(qapp, QtWidgets.QApplication):  # to appease mypy
-        qapp.setStyle("Fusion")
-
-    win = ResolutionTool(data, data_name=data_name)
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
-
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
     return win

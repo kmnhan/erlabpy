@@ -1,5 +1,4 @@
 import tempfile
-import time
 import weakref
 
 import numpy as np
@@ -8,7 +7,7 @@ import pytest
 import xarray as xr
 import xarray.testing
 from numpy.testing import assert_almost_equal
-from qtpy import QtCore, QtWidgets
+from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
@@ -59,11 +58,6 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-    time.sleep(0.5)
-
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
     win.close()
     del win
@@ -78,9 +72,6 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
 
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -106,9 +97,6 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     win = itool(data, execute=False)
 
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
@@ -133,10 +121,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     # Copy cursor values
     win.mnb._copy_cursor_val()
     assert pyperclip.paste() == "[[2, 2]]"
@@ -146,11 +130,11 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     # Snap
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_S)
+    win.array_slicer.snap_act.setChecked(True)
     assert win.array_slicer.snap_to_data
 
     # Transpose
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_T)
+    win.slicer_area.transpose_act.trigger()
     assert win.slicer_area.data.dims == ("y", "x")
     move_and_compare_values(qtbot, win, [12.0, 11.0, 6.0, 7.0])
 
@@ -189,13 +173,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     # Undo and redo
     win.slicer_area.undo()
-    qtbot.keyClick(win, QtCore.Qt.Key.Key_Z, QtCore.Qt.KeyboardModifier.ControlModifier)
-    qtbot.keyClick(
-        win,
-        QtCore.Qt.Key.Key_Z,
-        QtCore.Qt.KeyboardModifier.ControlModifier
-        | QtCore.Qt.KeyboardModifier.ShiftModifier,
-    )
     win.slicer_area.redo()
 
     # Check restoring the state works

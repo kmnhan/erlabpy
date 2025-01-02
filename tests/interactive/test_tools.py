@@ -16,9 +16,6 @@ from erlab.io.exampledata import generate_gold_edge
 def test_goldtool(qtbot, gold) -> None:
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
@@ -43,9 +40,6 @@ def test_restool(qtbot) -> None:
     )
     win = restool(gold, execute=False)
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     win._guess()
     win.res_spin.setValue(0.02)
@@ -98,10 +92,6 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
-
     def check_generated_code(w: DerivativeTool) -> None:
         namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
         exec(w.copy_code(), {"__builtins__": {"range": range}}, namespace)  # noqa: S102
@@ -150,9 +140,6 @@ def test_ktool(qtbot, anglemap, constant_energy) -> None:
     )
 
     qtbot.addWidget(win)
-    with qtbot.waitExposed(win):
-        win.show()
-        win.activateWindow()
 
     win._offset_spins["delta"].setValue(30.0)
     win._offset_spins["xi"].setValue(20.0)
@@ -201,12 +188,6 @@ def test_bzplot(qtbot) -> None:
     win = BZPlotter(execute=False)
     qtbot.addWidget(win)
     qtbot.addWidget(win.controls)
-
-    with qtbot.waitExposed(win):
-        win.show()
-
-    with qtbot.waitExposed(win.controls):
-        win.controls.show()
 
     win.controls.params_latt.set_values(
         a=3.0, b=3.0, c=6.0, alpha=90.0, beta=90.0, gamma=120.0

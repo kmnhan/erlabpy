@@ -31,11 +31,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.colors import BetterImageItem, pg_colormap_powernorm
-from erlab.utils.misc import _convert_to_native
+from erlab.utils.misc import _convert_to_native, is_interactive
 
 if TYPE_CHECKING:
     import os
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Collection, Iterator, Mapping
 
     import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
@@ -89,6 +89,63 @@ def parse_data(data) -> xr.DataArray:
     return data  # .astype(float, order="C")
 
 
+@contextlib.contextmanager
+def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
+    """Set up a Qt application instance and manage its execution.
+
+    This function initializes a Qt application instance if one does not already exist.
+    It sets the application style to "Fusion" and determines whether to execute the
+    application based on the environment (interactive or not). The function yields a
+    boolean indicating whether the application is executed.
+
+    Parameters
+    ----------
+    execute : bool or None, optional
+        If True, the application will be executed. If False, it will not be executed. If
+        None, the function will determine the value based on the environment. See notes.
+        Default is None.
+
+    Yields
+    ------
+    bool
+        A boolean indicating whether the application should be executed. If ``execute``
+        is provided, the value will be the same as the input. Otherwise, the
+        automatically determined value will be returned.
+
+    Notes
+    -----
+    If the environment is interactive (e.g., IPython), the application will not be
+    executed, and the event loop will be handled by IPython. If the environment is not
+    interactive, the application will be executed unless `execute` is explicitly set to
+    False.
+
+    """
+    try:
+        qapp = QtWidgets.QApplication.instance()
+        if not qapp:
+            qapp = QtWidgets.QApplication(sys.argv)
+        if isinstance(qapp, QtWidgets.QApplication):
+            qapp.setStyle("Fusion")
+
+        is_ipython: bool = False
+
+        if execute is None:
+            execute = True
+            is_ipython = is_interactive()
+            if is_ipython:
+                execute = False
+        yield execute
+
+    finally:
+        if is_ipython:
+            from IPython.lib.guisupport import start_event_loop_qt4
+
+            start_event_loop_qt4(qapp)
+
+        elif execute and (qapp is not None):
+            qapp.exec()
+
+
 class _WaitDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget | None, message: str) -> None:
         super().__init__(parent)
@@ -104,7 +161,7 @@ class _WaitDialog(QtWidgets.QDialog):
 
 
 @contextlib.contextmanager
-def wait_dialog(parent: QtWidgets.QWidget, message: str):
+def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -1685,20 +1742,10 @@ class AnalysisWindow(QtWidgets.QMainWindow):
             self.aw.set_input(data)
 
     def __post_init__(self, execute=None):
-        self.show()
-        self.activateWindow()
-        self.raise_()
-
-        if execute is None:
-            execute = True
-            try:
-                shell = get_ipython().__class__.__name__  # pyright: ignore[reportUndefinedVariable]
-                if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                    execute = False
-            except NameError:
-                pass
-        if execute:
-            self.qapp.exec()
+        with setup_qapp(execute) as execute:
+            self.show()
+            self.activateWindow()
+            self.raise_()
 
     def addParameterGroup(self, *args, **kwargs):
         group = ParameterGroup(*args, **kwargs)

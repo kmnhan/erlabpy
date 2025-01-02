@@ -4,7 +4,6 @@ __all__ = ["dtool"]
 
 import functools
 import os
-import sys
 from collections.abc import Callable, Hashable
 from typing import Any, cast
 
@@ -19,6 +18,7 @@ from erlab.interactive.utils import (
     copy_to_clipboard,
     generate_code,
     parse_data,
+    setup_qapp,
     xImageItem,
 )
 from erlab.utils.array import effective_decimals
@@ -376,29 +376,10 @@ def dtool(
         except varname.VarnameRetrievingError:
             data_name = "data"
 
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
+    with setup_qapp(execute):
+        win = DerivativeTool(data, data_name=data_name)
+        win.show()
+        win.raise_()
+        win.activateWindow()
 
-    if isinstance(qapp, QtWidgets.QApplication):  # to appease mypy
-        qapp.setStyle("Fusion")
-
-    win = DerivativeTool(data, data_name=data_name)
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
-
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
-    if execute:
-        qapp.exec()
     return win

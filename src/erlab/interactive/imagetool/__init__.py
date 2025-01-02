@@ -18,21 +18,36 @@ Modules
 
 """
 
-__all__ = ["BaseImageTool", "ImageTool", "itool"]
-
-import sys
 from collections.abc import Collection
+from typing import TYPE_CHECKING
 
+import lazy_loader as _lazy
 import numpy.typing as npt
 import xarray as xr
-from qtpy import QtWidgets
 
+import erlab
 from erlab.interactive.imagetool.core import (
     SlicerLinkProxy,
     _parse_input,
 )
-from erlab.interactive.imagetool.mainwindow import BaseImageTool, ImageTool
 from erlab.utils.misc import emit_user_level_warning
+
+__getattr__, __dir__, __all_lazy__ = _lazy.attach(
+    __name__,
+    submodules=["manager"],
+    submod_attrs={
+        "mainwindow": ["BaseImageTool", "ImageTool"],
+    },
+)
+
+__all__ = [*__all_lazy__, "itool"]
+
+if TYPE_CHECKING:
+    from erlab.interactive.imagetool import manager  # noqa: F401
+    from erlab.interactive.imagetool.mainwindow import (  # noqa: F401
+        BaseImageTool,
+        ImageTool,
+    )
 
 
 def itool(
@@ -47,7 +62,11 @@ def itool(
     use_manager: bool = False,
     execute: bool | None = None,
     **kwargs,
-) -> ImageTool | list[ImageTool] | None:
+) -> (
+    erlab.interactive.imagetool.ImageTool
+    | list[erlab.interactive.imagetool.ImageTool]
+    | None
+):
     """Create and display ImageTool windows.
 
     Parameters
@@ -117,57 +136,37 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool([data1, data2], link=True)
     """
-    if use_manager:
-        from erlab.interactive.imagetool.manager import is_running
-
-        if not is_running():
-            use_manager = False
-            emit_user_level_warning(
-                "The manager is not running. Opening the ImageTool window(s) directly."
-            )
-
-    if use_manager:
-        from erlab.interactive.imagetool.manager import show_in_manager
-
-        show_in_manager(data, link=link, link_colors=link_colors, **kwargs)
-        return None
-
-    qapp = QtWidgets.QApplication.instance()
-    if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
-
-    if isinstance(qapp, QtWidgets.QApplication):
-        qapp.setStyle("Fusion")
-
-    itool_list = [ImageTool(d, **kwargs) for d in _parse_input(data)]
-
-    for w in itool_list:
-        w.show()
-
-    if link:
-        linker = SlicerLinkProxy(  # noqa: F841
-            *[w.slicer_area for w in itool_list], link_colors=link_colors
+    if use_manager and not erlab.interactive.imagetool.manager.is_running():
+        use_manager = False
+        emit_user_level_warning(
+            "The manager is not running. Opening the ImageTool window(s) directly."
         )
 
-    itool_list[-1].activateWindow()
-    itool_list[-1].raise_()
+    if use_manager:
+        erlab.interactive.imagetool.manager.show_in_manager(
+            data, link=link, link_colors=link_colors, **kwargs
+        )
+        return None
 
-    if execute is None:
-        execute = True
-        try:
-            shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
-            if shell in ["ZMQInteractiveShell", "TerminalInteractiveShell"]:
-                execute = False
-                from IPython.lib.guisupport import start_event_loop_qt4
+    with erlab.interactive.utils.setup_qapp(execute) as execute:
+        itool_list = [
+            erlab.interactive.imagetool.ImageTool(d, **kwargs)
+            for d in _parse_input(data)
+        ]
 
-                start_event_loop_qt4(qapp)
-        except NameError:
-            pass
+        for w in itool_list:
+            w.show()
+
+        if link:
+            linker = SlicerLinkProxy(  # noqa: F841
+                *[w.slicer_area for w in itool_list], link_colors=link_colors
+            )
+            # TODO: make sure this is not garbage collected
+
+        itool_list[-1].activateWindow()
+        itool_list[-1].raise_()
 
     if execute:
-        if isinstance(qapp, QtWidgets.QApplication):
-            qapp.exec()
-
         return None
 
     if len(itool_list) == 1:
