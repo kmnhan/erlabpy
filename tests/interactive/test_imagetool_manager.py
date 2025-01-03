@@ -415,7 +415,6 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     )
 
     qtbot.addWidget(manager)
-
     with qtbot.waitExposed(manager):
         manager.show()
         manager.activateWindow()

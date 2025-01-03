@@ -119,6 +119,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def __init__(self: ImageToolManager) -> None:
         super().__init__()
+
+        # Shared memory for detecting multiple instances
+        self._shm = QtCore.QSharedMemory(_SHM_NAME)
+        self._shm.create(1)  # Create segment so that it can be attached to
+
         self.setWindowTitle("ImageTool Manager")
 
         menu_bar: QtWidgets.QMenuBar = cast(QtWidgets.QMenuBar, self.menuBar())
@@ -323,10 +328,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.start()
-
-        # Shared memory for detecting multiple instances
-        self._shm = QtCore.QSharedMemory(_SHM_NAME)
-        self._shm.create(1)  # Create segment so that it can be attached to
 
         # Golden ratio :)
         self.setMinimumWidth(301)
