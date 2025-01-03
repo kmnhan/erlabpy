@@ -1,13 +1,17 @@
+"""Wrapper for ImageTool windows shown in ImageToolManager."""
+
+from __future__ import annotations
+
+__all__ = ["_ImageToolWrapper"]
+
 import datetime
 import os
 import uuid
 import weakref
-from collections.abc import Hashable
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 from xarray.core.formatting import render_human_readable_nbytes
 
@@ -15,6 +19,10 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable
+
+    import xarray as xr
+
     from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.manager import ImageToolManager
 
@@ -144,9 +152,7 @@ class _ImageToolWrapper(QtCore.QObject):
     manager such as archiving and unarchiving and window geometry tracking.
     """
 
-    def __init__(
-        self, manager: "ImageToolManager", index: int, tool: ImageTool
-    ) -> None:
+    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
         self._index: int = index
@@ -173,7 +179,7 @@ class _ImageToolWrapper(QtCore.QObject):
         return self._index
 
     @property
-    def manager(self) -> "ImageToolManager":
+    def manager(self) -> ImageToolManager:
         _manager = self._manager()
         if _manager:
             return _manager
@@ -242,7 +248,7 @@ class _ImageToolWrapper(QtCore.QObject):
         self._tool = value
 
     @property
-    def slicer_area(self) -> "ImageSlicerArea":
+    def slicer_area(self) -> ImageSlicerArea:
         if self.tool is None:
             raise ValueError("ImageTool is not available")
         return self.tool.slicer_area

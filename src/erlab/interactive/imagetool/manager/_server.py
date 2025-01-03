@@ -1,3 +1,5 @@
+"""Server that listens to incoming data."""
+
 __all__ = ["PORT", "_ManagerServer", "_save_pickle"]
 
 import contextlib

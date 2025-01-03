@@ -1,4 +1,8 @@
+"""Model-view architecture used for displaying the list of ImageTool windows."""
+
 from __future__ import annotations
+
+__all__ = ["_ImageToolWrapperListView"]
 
 import enum
 import weakref

@@ -1,5 +1,7 @@
 """Jupyter console widget for ImageToolManager."""
 
+__all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
+
 import importlib
 import weakref
 from typing import Any, cast
