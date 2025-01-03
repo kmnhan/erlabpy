@@ -1,10 +1,12 @@
 """Jupyter console widget for ImageToolManager."""
 
+from __future__ import annotations
+
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
 import importlib
 import weakref
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import qtconsole.inprocess
@@ -13,7 +15,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool import ImageTool
-from erlab.interactive.imagetool.manager import ImageToolManager, _ImageToolWrapper
+
+if TYPE_CHECKING:
+    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 
 class ToolNamespace:

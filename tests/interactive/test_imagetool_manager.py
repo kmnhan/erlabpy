@@ -7,15 +7,16 @@ import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import (
-    ImageToolManager,
-    _ImageToolWrapperItemDelegate,
-    _ImageToolWrapperListModel,
+from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _RenameDialog,
+)
+from erlab.interactive.imagetool.manager._modelview import (
+    _ImageToolWrapperItemDelegate,
+    _ImageToolWrapperListModel,
 )
 
 
