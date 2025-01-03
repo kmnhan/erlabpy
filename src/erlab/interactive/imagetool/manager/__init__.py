@@ -12,15 +12,7 @@ port number 45555. The port number can be changed by setting the environment var
 
 from __future__ import annotations
 
-__all__ = [
-    "PORT",
-    "ImageToolManager",
-    "ToolNamespace",
-    "ToolsNamespace",
-    "is_running",
-    "main",
-    "show_in_manager",
-]
+__all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
 
 import gc
 import logging
@@ -681,6 +673,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     )
                 )
             except Exception as e:
+                logger.exception("Error while concatenating data")
                 QtWidgets.QMessageBox.critical(
                     self,
                     "Error",
@@ -803,6 +796,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
                     self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
             except Exception as e:
+                logger.exception("Error while loading workspace")
                 QtWidgets.QMessageBox.critical(
                     self,
                     "Error",
@@ -887,7 +881,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             try:
                 indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
             except Exception as e:
-                logger.exception("Error creating tool from received data")
                 self._error_creating_tool(e)
 
         if link:
@@ -1097,8 +1090,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     func(p, **kwargs)
                 )
             except Exception as e:
+                logger.exception("Error loading data from %s", p)
                 failed.append(p)
-
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
                 msg_box.setText(f"Failed to load {p.name}")
