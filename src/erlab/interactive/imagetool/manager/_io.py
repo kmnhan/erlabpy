@@ -30,6 +30,26 @@ class _DataLoaderSignals(QtCore.QObject):
 
 
 class _DataLoader(QtCore.QRunnable):
+    """Load data from a file and emit signals when the loading is complete.
+
+    - If the loading process is successful, the signal ``sigLoaded`` is emitted with the
+      file path and the loaded data.
+
+    - If the loading process fails, the signal ``sigFailed`` is emitted with the file
+      path and the formatted exception message string.
+
+    Parameters
+    ----------
+    file_path
+        Path to the file to be loaded.
+    func
+        The function to be called for loading the file.The function should accept the
+        file path as the first positional argument.
+    kwargs
+        Additional keyword arguments to be passed to ``func``.
+
+    """
+
     def __init__(self, file_path: pathlib.Path, func: Callable, kwargs: dict[str, Any]):
         super().__init__()
         self.signals: _DataLoaderSignals = _DataLoaderSignals()
