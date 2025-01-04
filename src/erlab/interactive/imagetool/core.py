@@ -822,6 +822,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         curr_state.pop("splitter_sizes", None)
 
         if last_state is None or last_state != curr_state:
+            # Only store state if it has changed
             self._prev_states.append(curr_state)
             self._next_states.clear()
             self.sigHistoryChanged.emit()
@@ -829,6 +830,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     @suppress_history
     def flush_history(self) -> None:
+        """Clear the undo and redo history."""
         self._prev_states.clear()
         self._next_states.clear()
         self.sigHistoryChanged.emit()
@@ -837,6 +839,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer
     @suppress_history
     def undo(self) -> None:
+        """Undo the most recent action."""
         if not self.undoable:
             return
         self._next_states.append(self.state)
@@ -847,6 +850,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer
     @suppress_history
     def redo(self) -> None:
+        """Redo the most recently undone action."""
         if not self.redoable:
             return
         self._prev_states.append(self.state)
@@ -854,6 +858,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigHistoryChanged.emit()
 
     def initialize_actions(self) -> None:
+        """Initialize :class:`QtWidgets.QAction` instances."""
         self.view_all_act = QtWidgets.QAction("View &All", self)
         self.view_all_act.setShortcut("Ctrl+A")
         self.view_all_act.triggered.connect(self.view_all)
@@ -925,17 +930,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
     @QtCore.Slot()
-    def history_changed(self) -> None:
+    def _history_changed(self) -> None:
+        """Enable undo and redo actions based on the current history.
+
+        This slot is triggered when the history changes.
+        """
         self.undo_act.setEnabled(self.undoable)
         self.redo_act.setEnabled(self.redoable)
 
     @QtCore.Slot()
-    def cursor_count_changed(self) -> None:
+    def _cursor_count_changed(self) -> None:
+        """Enable or disable the remove cursor action based on the number of cursors.
+
+        This slot is triggered when the number of cursors changes.
+        """
         self.rem_cursor_act.setDisabled(self.n_cursors == 1)
         self.refresh_colormap()
 
     @QtCore.Slot()
     def refresh_actions_enabled(self) -> None:
+        """Refresh the enabled state of miscellaneous actions.
+
+        This slot is triggered from the parent widget when the menubar containing the
+        actions is about to be shown.
+        """
         self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
 
     def connect_axes_signals(self) -> None:
