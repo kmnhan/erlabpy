@@ -826,7 +826,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot(list, dict)
     def _data_recv(
         self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, Any]
-    ) -> None:
+    ) -> list[bool]:
         """Slot function to receive data from the server.
 
         DataArrays passed to this function are displayed in new ImageTool windows which
@@ -842,13 +842,24 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs
             Additional keyword arguments.
 
+        Returns
+        -------
+        flags : list of bool
+            List of flags indicating whether the data was successfully received.
         """
+        flags: list[bool] = []
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
-                self.add_tool(
-                    ImageTool.from_dataset(ds, _in_manager=True), activate=True
-                )
-            return
+                try:
+                    self.add_tool(
+                        ImageTool.from_dataset(ds, _in_manager=True), activate=True
+                    )
+                except Exception as e:
+                    flags.append(False)
+                    self._error_creating_tool(e)
+                else:
+                    flags.append(True)
+            return flags
 
         link = kwargs.pop("link", False)
         link_colors = kwargs.pop("link_colors", True)
@@ -859,10 +870,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
             try:
                 indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
             except Exception as e:
+                flags.append(False)
                 self._error_creating_tool(e)
+            else:
+                flags.append(True)
 
         if link:
             self.link_tools(*indices, link_colors=link_colors)
+
+        return flags
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
@@ -1088,17 +1104,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     case QtWidgets.QMessageBox.StandardButton.Abort:
                         break
             else:
-                for data in data_list:
-                    try:
-                        tool = ImageTool(data, file_path=p, _in_manager=True)
-                        tool._recent_name_filter = self._recent_name_filter
-                        tool._recent_directory = self._recent_directory
-                    except Exception as e:
-                        failed.append(p)
-                        self._error_creating_tool(e)
-                    else:
-                        loaded.append(p)
-                        self.add_tool(tool, activate=True)
+                flags = self._data_recv(data_list, kwargs={"file_path": p})
+                if not all(flags):
+                    failed.append(p)
+                else:
+                    loaded.append(p)
 
         self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
 

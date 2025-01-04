@@ -1466,6 +1466,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
+    @property
+    def _manager_instance(
+        self,
+    ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
+        return erlab.interactive.imagetool.manager._manager_instance
+
     def add_tool_window(self, widget: QtWidgets.QWidget) -> None:
         """Save a reference to an additional window widget.
 
@@ -1492,7 +1498,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         if self._in_manager:
-            manager = erlab.interactive.imagetool.manager._manager_instance
+            manager = self._manager_instance
             if manager:
                 manager.add_widget(widget)
                 return
