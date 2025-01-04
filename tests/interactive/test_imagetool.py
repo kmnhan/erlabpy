@@ -200,6 +200,11 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
+        "plotitem_states": [
+            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
+            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
+            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
+        ],
     }
     assert win.slicer_area.state == expected_state
     win.slicer_area.remove_current_cursor()
