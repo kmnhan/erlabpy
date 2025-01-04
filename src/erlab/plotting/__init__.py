@@ -30,7 +30,7 @@ import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 
-__getattr__, __dir__, __lazy_all__ = _lazy.attach_stub(__name__, __file__)
+__getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
 
 
 def _load_igor_ct(
