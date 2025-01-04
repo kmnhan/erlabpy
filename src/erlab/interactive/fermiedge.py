@@ -76,7 +76,6 @@ class EdgeFitter(QtCore.QThread):
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
 
-    @erlab.interactive.utils._coverage_resolve_trace
     def run(self) -> None:
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:

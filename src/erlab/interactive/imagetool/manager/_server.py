@@ -63,7 +63,6 @@ class _ManagerServer(QtCore.QThread):
         super().__init__()
         self.stopped = threading.Event()
 
-    @erlab.interactive.utils._coverage_resolve_trace
     def run(self) -> None:
         self.stopped.clear()
 
