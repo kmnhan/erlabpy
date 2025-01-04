@@ -419,7 +419,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         manager.show()
         manager.activateWindow()
 
-    itool([data, data], link=True, link_colors=True, manager=True)
+    manager._data_recv([data, data], kwargs={"link": True, "link_colors": True})
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
 
     # Open console
