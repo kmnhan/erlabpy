@@ -1,4 +1,4 @@
-"""Accessor for momentum-space related utilities."""
+"""Defines an accessor for momentum conversion related utilities."""
 
 __all__ = ["MomentumAccessor", "OffsetView"]
 
@@ -236,7 +236,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     def work_function(self) -> float:
-        """Work function of the sample in eV.
+        """Work function of the system in eV.
+
+        Here, the work function here refers to the work function of the entire system in
+        electrical contact with the sample, which determines the Fermi level.
 
         The work function is stored in the ``sample_workfunction`` attribute of the
         data. If not found, a warning is issued and a default value of 4.5 eV is

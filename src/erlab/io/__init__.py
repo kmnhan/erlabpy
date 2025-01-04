@@ -5,21 +5,6 @@
 This module provides functions that enables loading various files such as hdf5 files,
 igor pro files, and ARPES data from different beamlines and laboratories.
 
-Modules
-=======
-
-.. autosummary::
-   :toctree: generated
-
-   plugins
-   dataloader
-   utils
-   igor
-   nexusutils
-   exampledata
-   characterization
-
-
 For a single session, it is very common to use only one type of loader for a single
 folder with all your data. Hence, the module provides a way to set a default loader for
 a session. This is done using the :func:`set_loader` function. The same can be done for
@@ -27,7 +12,6 @@ the data directory using the :func:`set_data_dir` function.
 
 For instructions on how to write a custom loader, see
 :doc:`/generated/erlab.io.dataloader`.
-
 
 Examples
 --------
@@ -44,6 +28,21 @@ Examples
   >>> erlab.io.set_loader("merlin")
 
 Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
+
+
+Modules
+=======
+
+.. autosummary::
+   :toctree: generated
+
+   plugins
+   dataloader
+   utils
+   igor
+   nexusutils
+   exampledata
+   characterization
 
 """
 

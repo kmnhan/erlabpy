@@ -3,8 +3,16 @@ Everything related to plotting.
 
 .. currentmodule:: erlab.plotting
 
+For some examples on how to use the plotting functions, see the :doc:`User Guide
+<user-guide/plotting>`.
+
 Modules
 =======
+
+This module is organized into several submodules, each providing a different set of
+tools for plotting. However, commonly used functions are available directly in the
+``erlab.plotting`` namespace, so users should not need to import the submodules
+directly.
 
 .. autosummary::
    :toctree: generated
@@ -30,7 +38,7 @@ import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 
-__getattr__, __dir__, __lazy_all__ = _lazy.attach_stub(__name__, __file__)
+__getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
 
 
 def _load_igor_ct(

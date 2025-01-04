@@ -362,6 +362,9 @@ def dtool(
 ) -> DerivativeTool:
     """Interactive tool for visualizing dispersive data.
 
+    This tool can also be accessed from the right-click context menu of an image plot in
+    an ImageTool window.
+
     Parameters
     ----------
     data

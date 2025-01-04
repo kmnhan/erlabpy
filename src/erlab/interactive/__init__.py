@@ -1,10 +1,22 @@
-"""
-Interactive plotting based on Qt and pyqtgraph.
+"""Interactive tools based on Qt and pyqtgraph.
 
 .. currentmodule:: erlab.interactive
 
-Interactive tools
-=================
+This module provides interactive tools for plotting and analyzing ARPES data. See the
+sidebar on the right for a list of available tools.
+
+Modules
+=======
+
+Commonly used tools are available directly in the ``erlab.interactive`` namespace, so
+regular users should not need to import the submodules directly.
+
+Documentation of classes and functions in submodules mostly contain implementation
+details for advanced users who want to create new interactive tools. A user guide for
+creating new interactive tools will be available in the future. In the meantime, take a
+look at the source code of :mod:`erlab.interactive.utils` and
+:mod:`erlab.interactive.colors` which provide general utility functions for creating new
+interactive tools.
 
 .. autosummary::
    :toctree: generated

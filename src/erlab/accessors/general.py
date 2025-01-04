@@ -1,4 +1,4 @@
-"""Miscellaneous accessors for general data manipulation and visualization."""
+"""Defines miscellaneous accessors for general data manipulation and visualization."""
 
 __all__ = [
     "InfoDataArrayAccessor",

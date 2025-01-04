@@ -4,12 +4,10 @@ Some `xarray accessors
 data analysis and visualization.
 
 ERLabPy provides a collection of accessors for convenient data analysis and
-visualization. All methods and attributes are documented in the following sections.
+visualization. The source code is divided into several modules, but the accessors can be
+used like methods or attributes of an xarray object. The available modules are:
 
 .. currentmodule:: erlab.accessors
-
-Modules
-=======
 
 .. autosummary::
    :toctree: generated
@@ -18,5 +16,7 @@ Modules
    general
    kspace
    fit
+
+All available accessor methods and attributes defined are documented below.
 
 """  # noqa: D205

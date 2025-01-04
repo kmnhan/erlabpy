@@ -264,6 +264,9 @@ class ImageTool(BaseImageTool):
     <erlab.interactive.imagetool.BaseImageTool>`. Use this class to create an ImageTool
     window.
 
+    Instead of instantiating this class directly, users should use the convenience
+    function :func:`itool <erlab.interactive.imagetool.itool>`.
+
     Parameters
     ----------
     data

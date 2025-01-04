@@ -1,4 +1,4 @@
-## Unreleased
+## v3.5.0 (2025-01-04)
 
 ### ✨ Features
 
@@ -7,6 +7,8 @@
   Data are now loaded in the background.
 
 ### 🐞 Bug Fixes
+
+- **plotting:** properly expose `__all__` ([03cdf89](https://github.com/kmnhan/erlabpy/commit/03cdf898920d072d5d7b9449fd3e4b9d95eabc96))
 
 - **imagetool:** inverted state and aspect ratio of axes are now properly restored ([321c837](https://github.com/kmnhan/erlabpy/commit/321c83711f5a12a0f4becd3510464a24f006127e))
 
