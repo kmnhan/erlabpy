@@ -1,3 +1,5 @@
+"""Utilities that don't fit in any other category."""
+
 import functools
 import importlib
 import inspect
@@ -138,6 +140,14 @@ def is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
     bool
         `True` if `val` is a sequence and all elements in the sequence are of type
         `element_type`, `False` otherwise.
+
+    Examples
+    --------
+    >>> is_sequence_of([1, 2, 3], int)
+    True
+
+    >>> is_sequence_of([1, 2, "3"], int)
+    False
     """
     return isinstance(val, Sequence) and all(isinstance(x, element_type) for x in val)
 

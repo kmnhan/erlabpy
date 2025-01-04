@@ -872,6 +872,9 @@ def goldtool(
 ) -> GoldTool:
     """Interactive tool for correcting curved Fermi edges.
 
+    This tool can also be accessed from the right-click context menu of an image plot in
+    an ImageTool window.
+
     Parameters
     ----------
     data
@@ -899,6 +902,9 @@ def restool(
     execute: bool | None = None,
 ) -> ResolutionTool:
     """Interactive tool for precise resolution fitting of EDCs.
+
+    This tool can also be accessed from the right-click context menu of an image plot in
+    an ImageTool window.
 
     Parameters
     ----------

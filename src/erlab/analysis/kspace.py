@@ -1,7 +1,11 @@
 """Momentum conversion functions.
 
 Typically, the user will not have to call this module directly, but will instead use the
-:func:`erlab.accessors.MomentumAccessor.convert` method.
+accessor method :meth:`DataArray.kspace.convert
+<erlab.accessors.kspace.MomentumAccessor.convert>`.
+
+For more front-end utilities related to momentum conversion, see the documentation of
+the :meth:`DataArray.kspace <erlab.accessors.kspace.MomentumAccessor>` accessor.
 
 Angle conventions and function forms are based on Ref. :cite:p:`ishida2018kconv`.
 
@@ -27,7 +31,7 @@ def _kperp_func(k_tot_sq, kx, ky):
 
 
 def kz_func(kinetic_energy, inner_potential, kx, ky):
-    r"""Calculate the out-of-plane momentum inside the sample.
+    r"""Calculate the out-of-plane momentum inside the sample :math:`k_z`.
 
     :math:`k_z` is computed from the given kinetic energy :math:`E_k`, inner potential
     :math:`V_0`, and in-plane momenta :math:`k_x`, and :math:`k_y` by
@@ -45,10 +49,10 @@ def kz_func(kinetic_energy, inner_potential, kx, ky):
 
 
 def kperp_from_kz(kz, inner_potential):
-    r"""Calculate the out-of-plane momentum outside the sample, given :math:`k_z`.
+    r"""Calculate the out-of-plane momentum outside the sample :math:`k_\perp`.
 
-    :math:`k_\perp` is computed from the given out-of-plane momentum :math:`k_z` and
-    inner potential :math:`V_0` by
+    :math:`k_\perp` is computed from the out-of-plane momentum :math:`k_z` and inner
+    potential :math:`V_0` by
 
     .. math::
 
@@ -60,7 +64,7 @@ def kperp_from_kz(kz, inner_potential):
 
 
 def hv_func(kx, ky, kz, inner_potential, work_function, binding_energy):
-    r"""Calculate the kinetic energy from the out-of-plane momentum.
+    r"""Calculate the photon energy :math:`hν`.
 
     The kinetic energy :math:`E_k` is computed from the given out-of-plane momentum
     :math:`k_z`, inner potential :math:`V_0`, and in-plane momenta :math:`k_x`, and
@@ -75,6 +79,9 @@ def hv_func(kx, ky, kz, inner_potential, work_function, binding_energy):
     .. math::
 
         hν = E_k + \Phi - E_b
+
+    where :math:`\Phi` is the work function of the system and :math:`E_b` is the binding
+    energy.
 
     """
     return (
@@ -92,7 +99,7 @@ def get_kconv_func(
 ) -> tuple[Callable, Callable]:
     r"""Return appropriate momentum conversion functions.
 
-    The appropriate function is created by the given configuration and kinetic energy.
+    The appropriate function is chosen based on the configuration and kinetic energy.
 
     Parameters
     ----------

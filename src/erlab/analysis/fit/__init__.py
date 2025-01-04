@@ -1,5 +1,7 @@
 """Utilities for curve fitting.
 
+For examples, see the :doc:`User Guide <../user-guide/curve-fitting>`.
+
 .. currentmodule:: erlab.analysis.fit
 
 Modules

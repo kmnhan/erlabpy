@@ -3,8 +3,16 @@ Everything related to plotting.
 
 .. currentmodule:: erlab.plotting
 
+For some examples on how to use the plotting functions, see the :doc:`User Guide
+<user-guide/plotting>`.
+
 Modules
 =======
+
+This module is organized into several submodules, each providing a different set of
+tools for plotting. However, commonly used functions are available directly in the
+``erlab.plotting`` namespace, so users should not need to import the submodules
+directly.
 
 .. autosummary::
    :toctree: generated

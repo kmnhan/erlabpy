@@ -1,4 +1,4 @@
-"""Accessors for curve fitting."""
+"""Defines accessors for curve fitting."""
 
 from __future__ import annotations
 

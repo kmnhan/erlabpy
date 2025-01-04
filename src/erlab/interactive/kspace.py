@@ -618,6 +618,10 @@ def ktool(
 ) -> KspaceTool:
     """Interactive momentum conversion tool.
 
+    This tool can also be accessed with :meth:`DataArray.kspace.interactive
+    <erlab.accessors.kspace.MomentumAccessor.interactive>`, or from the ``View`` menu of
+    an ImageTool window.
+
     Parameters
     ----------
     data
