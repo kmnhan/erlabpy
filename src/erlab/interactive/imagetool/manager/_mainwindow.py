@@ -24,6 +24,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _RenameDialog,
     _StoreDialog,
 )
+from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperListView
 from erlab.interactive.imagetool.manager._server import _ManagerServer, show_in_manager
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
@@ -337,6 +338,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._kb_filter = erlab.interactive.utils.KeyboardEventFilter(self)
         self.text_box.installEventFilter(self._kb_filter)
 
+        # File handlers for multithreaded file loading
+        self._file_handlers: set[_MultiFileHandler] = set()
+
+        # Initialize status bar
+        self._status_bar.showMessage("")
+
     @property
     def cache_dir(self) -> str:
         """Name of the cache directory where archived data are stored."""
@@ -351,6 +358,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def next_idx(self) -> int:
         """Index for the next ImageTool window."""
         return max(self._tool_wrappers.keys(), default=-1) + 1
+
+    @property
+    def _status_bar(self) -> QtWidgets.QStatusBar:
+        return cast(QtWidgets.QStatusBar, self.statusBar())
 
     @QtCore.Slot()
     def about(self) -> None:
@@ -709,12 +720,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _from_datatree(self, tree: xr.DataTree) -> None:
         """Restore the state of the manager from a DataTree object."""
-        if not self._is_datatree_workspace(tree):
-            raise ValueError("Not a valid workspace file")
-        for node in cast(ValuesView[xr.DataTree], (tree.values())):
-            self.add_tool(
-                ImageTool.from_dataset(node.to_dataset(inherit=False), _in_manager=True)
-            )
+        with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
+            if not self._is_datatree_workspace(tree):
+                raise ValueError("Not a valid workspace file")
+            for node in cast(ValuesView[xr.DataTree], (tree.values())):
+                self.add_tool(
+                    ImageTool.from_dataset(
+                        node.to_dataset(inherit=False), _in_manager=True
+                    )
+                )
 
     def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
         """Check if the given DataTree object is a valid workspace file."""
@@ -771,8 +785,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
-                with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
-                    self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
+                self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
             except Exception as e:
                 logger.exception("Error while loading workspace")
                 QtWidgets.QMessageBox.critical(
@@ -929,11 +942,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     )
                     return
 
-                msg = f"Loading {'file' if len(file_paths) == 1 else 'files'}..."
-                with erlab.interactive.utils.wait_dialog(self, msg):
-                    self.open_multiple_files(
-                        file_paths, try_workspace=extensions == {".h5"}
-                    )
+                self.open_multiple_files(
+                    file_paths, try_workspace=extensions == {".h5"}
+                )
 
     def _show_loaded_info(
         self,
@@ -966,6 +977,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )  # Remove duplicate entries
 
         n_done, n_fail = len(loaded), len(failed)
+
+        status_msg = f"Loaded {n_done} {'file' if n_done == 1 else 'files'}"
+        self._status_bar.showMessage(status_msg, 5000)
+
         if n_fail == 0:
             return
 
@@ -1077,40 +1092,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs: dict[str, Any],
         retry_callback: Callable,
     ) -> None:
-        for p in list(queued):
-            queued.remove(p)
-            try:
-                data_list = erlab.interactive.imagetool.core._parse_input(
-                    func(p, **kwargs)
-                )
-            except Exception as e:
-                logger.exception("Error loading data from %s", p)
-                failed.append(p)
-                msg_box = QtWidgets.QMessageBox(self)
-                msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-                msg_box.setText(f"Failed to load {p.name}")
-                msg_box.setInformativeText(
-                    "Do you want to skip this file and continue loading?"
-                )
-                msg_box.setStandardButtons(
-                    QtWidgets.QMessageBox.StandardButton.Abort
-                    | QtWidgets.QMessageBox.StandardButton.Yes
-                )
-                msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-                msg_box.setDetailedText(f"{type(e).__name__}: {e}")
-                match msg_box.exec():
-                    case QtWidgets.QMessageBox.StandardButton.Yes:
-                        continue
-                    case QtWidgets.QMessageBox.StandardButton.Abort:
-                        break
-            else:
-                flags = self._data_recv(data_list, kwargs={"file_path": p})
-                if not all(flags):
-                    failed.append(p)
-                else:
-                    loaded.append(p)
+        handler = _MultiFileHandler(self, queued, func, kwargs)
+        self._file_handlers.add(handler)
 
-        self._show_loaded_info(loaded, queued, failed, retry_callback=retry_callback)
+        def _finished_callback() -> None:
+            self._show_loaded_info(
+                loaded + handler.loaded,
+                handler.queued,
+                failed + handler.failed,
+                retry_callback=retry_callback,
+            )
+            self._file_handlers.remove(handler)
+
+        handler.sigFinished.connect(_finished_callback)
+        handler.start()
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         """Save a reference to an additional window widget.
