@@ -1,3 +1,7 @@
+"""Dialogs for the ImageToolManager."""
+
+from __future__ import annotations
+
 import weakref
 from typing import TYPE_CHECKING
 
@@ -8,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class _RenameDialog(QtWidgets.QDialog):
-    def __init__(self, manager: "ImageToolManager", original_names: list[str]) -> None:
+    def __init__(self, manager: ImageToolManager, original_names: list[str]) -> None:
         super().__init__(manager)
         self.setWindowTitle("Rename selected tools")
         self._manager = weakref.ref(manager)
@@ -55,7 +59,7 @@ class _RenameDialog(QtWidgets.QDialog):
 
 
 class _StoreDialog(QtWidgets.QDialog):
-    def __init__(self, manager: "ImageToolManager", target_indices: list[int]) -> None:
+    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
         super().__init__(manager)
         self.setWindowTitle("Store with IPython")
         self._manager = weakref.ref(manager)
@@ -106,9 +110,7 @@ class _StoreDialog(QtWidgets.QDialog):
 
 
 class _NameFilterDialog(QtWidgets.QDialog):
-    def __init__(
-        self, parent: "ImageToolManager", valid_name_filters: list[str]
-    ) -> None:
+    def __init__(self, parent: ImageToolManager, valid_name_filters: list[str]) -> None:
         super().__init__(parent)
         self.setWindowTitle("Select Loader")
 

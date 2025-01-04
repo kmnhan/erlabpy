@@ -53,6 +53,14 @@ class ColorMapState(TypedDict):
     levels: NotRequired[tuple[float, float]]
 
 
+class PlotItemState(TypedDict):
+    """A dictionary containing the state of a `PlotItem` instance."""
+
+    vb_aspect_locked: bool | float
+    vb_x_inverted: bool
+    vb_y_inverted: bool
+
+
 class ImageSlicerState(TypedDict):
     """A dictionary containing the state of an `ImageSlicerArea` instance."""
 
@@ -63,6 +71,7 @@ class ImageSlicerState(TypedDict):
     cursor_colors: list[str]
     file_path: NotRequired[str | None]
     splitter_sizes: NotRequired[list[list[int]]]
+    plotitem_states: NotRequired[list[PlotItemState]]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -644,6 +653,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "splitter_sizes": self.splitter_sizes,
             "file_path": str(self._file_path) if self._file_path is not None else None,
             "cursor_colors": [c.name() for c in self.cursor_colors],
+            "plotitem_states": [p._serializable_state for p in self.axes],
         }
 
     @state.setter
@@ -667,6 +677,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if file_path is not None:
             self._file_path = pathlib.Path(file_path)
             self.sigDataChanged.emit()
+
+        plotitem_states = state.get("plotitem_states", None)
+        if plotitem_states is not None:
+            for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
+                ax._serializable_state = plotitem_state
 
         # Restore colormap settings
         try:
@@ -822,6 +837,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         curr_state.pop("splitter_sizes", None)
 
         if last_state is None or last_state != curr_state:
+            # Only store state if it has changed
             self._prev_states.append(curr_state)
             self._next_states.clear()
             self.sigHistoryChanged.emit()
@@ -829,6 +845,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     @suppress_history
     def flush_history(self) -> None:
+        """Clear the undo and redo history."""
         self._prev_states.clear()
         self._next_states.clear()
         self.sigHistoryChanged.emit()
@@ -837,6 +854,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer
     @suppress_history
     def undo(self) -> None:
+        """Undo the most recent action."""
         if not self.undoable:
             return
         self._next_states.append(self.state)
@@ -847,6 +865,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @link_slicer
     @suppress_history
     def redo(self) -> None:
+        """Redo the most recently undone action."""
         if not self.redoable:
             return
         self._prev_states.append(self.state)
@@ -854,6 +873,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigHistoryChanged.emit()
 
     def initialize_actions(self) -> None:
+        """Initialize :class:`QtWidgets.QAction` instances."""
         self.view_all_act = QtWidgets.QAction("View &All", self)
         self.view_all_act.setShortcut("Ctrl+A")
         self.view_all_act.triggered.connect(self.view_all)
@@ -925,17 +945,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
     @QtCore.Slot()
-    def history_changed(self) -> None:
+    def _history_changed(self) -> None:
+        """Enable undo and redo actions based on the current history.
+
+        This slot is triggered when the history changes.
+        """
         self.undo_act.setEnabled(self.undoable)
         self.redo_act.setEnabled(self.redoable)
 
     @QtCore.Slot()
-    def cursor_count_changed(self) -> None:
+    def _cursor_count_changed(self) -> None:
+        """Enable or disable the remove cursor action based on the number of cursors.
+
+        This slot is triggered when the number of cursors changes.
+        """
         self.rem_cursor_act.setDisabled(self.n_cursors == 1)
         self.refresh_colormap()
 
     @QtCore.Slot()
     def refresh_actions_enabled(self) -> None:
+        """Refresh the enabled state of miscellaneous actions.
+
+        This slot is triggered from the parent widget when the menubar containing the
+        actions is about to be shown.
+        """
         self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
 
     def connect_axes_signals(self) -> None:
@@ -948,8 +981,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def connect_signals(self) -> None:
         self.connect_axes_signals()
-        self.sigHistoryChanged.connect(self.history_changed)
-        self.sigCursorCountChanged.connect(self.cursor_count_changed)
+        self.sigHistoryChanged.connect(self._history_changed)
+        self.sigCursorCountChanged.connect(self._cursor_count_changed)
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigWriteHistory.connect(self.write_state)
@@ -1433,6 +1466,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
 
+    @property
+    def _manager_instance(
+        self,
+    ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
+        return erlab.interactive.imagetool.manager._manager_instance
+
     def add_tool_window(self, widget: QtWidgets.QWidget) -> None:
         """Save a reference to an additional window widget.
 
@@ -1459,7 +1498,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         if self._in_manager:
-            manager = erlab.interactive.imagetool.manager._manager_instance
+            manager = self._manager_instance
             if manager:
                 manager.add_widget(widget)
                 return
@@ -1986,6 +2025,29 @@ class ItoolPlotItem(pg.PlotItem):
             self._guideline_actions[0].setChecked(True)
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
+
+    @property
+    def _serializable_state(self) -> PlotItemState:
+        """Subset of the state of the underlying viewbox that should be restorable."""
+        vb = self.getViewBox()
+        return {
+            "vb_aspect_locked": vb.state["aspectLocked"],
+            "vb_x_inverted": vb.state["xInverted"],
+            "vb_y_inverted": vb.state["yInverted"],
+        }
+
+    @_serializable_state.setter
+    def _serializable_state(self, state: PlotItemState) -> None:
+        vb = self.getViewBox()
+
+        locked = state["vb_aspect_locked"]
+        if isinstance(locked, bool):
+            vb.setAspectLocked(locked)
+        else:
+            vb.setAspectLocked(True, ratio=locked)
+
+        vb.invertX(state["vb_x_inverted"])
+        vb.invertY(state["vb_y_inverted"])
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, ...]:
         dim_list: list[str] = [

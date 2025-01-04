@@ -285,8 +285,8 @@ class ImageTool(BaseImageTool):
 
     def __init__(self, data=None, **kwargs) -> None:
         super().__init__(data, **kwargs)
-        self._recent_name_filter: str | None = None
-        self._recent_directory: str | None = None
+        self.__recent_name_filter: str | None = None
+        self.__recent_directory: str | None = None
 
         self.initialize_actions()
         self.setMenuBar(ItoolMenuBar(self))
@@ -294,6 +294,30 @@ class ImageTool(BaseImageTool):
         self.slicer_area.sigDataChanged.connect(self._update_title)
         self._update_title()
         self.slicer_area.installEventFilter(self)
+
+    @property
+    def _recent_name_filter(self) -> str | None:
+        if self.slicer_area._manager_instance is not None:
+            return self.slicer_area._manager_instance._recent_name_filter
+        return self.__recent_name_filter
+
+    @_recent_name_filter.setter
+    def _recent_name_filter(self, value: str | None) -> None:
+        if self.slicer_area._manager_instance is not None:
+            self.slicer_area._manager_instance._recent_name_filter = value
+        self.__recent_name_filter = value
+
+    @property
+    def _recent_directory(self) -> str | None:
+        if self.slicer_area._manager_instance is not None:
+            return self.slicer_area._manager_instance._recent_directory
+        return self.__recent_directory
+
+    @_recent_directory.setter
+    def _recent_directory(self, value: str | None) -> None:
+        if self.slicer_area._manager_instance is not None:
+            self.slicer_area._manager_instance._recent_directory = value
+        self.__recent_directory = value
 
     def initialize_actions(self) -> None:
         self.open_act = QtWidgets.QAction("&Open...", self)
