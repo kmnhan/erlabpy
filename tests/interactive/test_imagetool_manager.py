@@ -7,15 +7,16 @@ import xarray.testing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import (
-    ImageToolManager,
-    _ImageToolWrapperItemDelegate,
-    _ImageToolWrapperListModel,
+from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _RenameDialog,
+)
+from erlab.interactive.imagetool.manager._modelview import (
+    _ImageToolWrapperItemDelegate,
+    _ImageToolWrapperListModel,
 )
 
 
@@ -414,12 +415,11 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     )
 
     qtbot.addWidget(manager)
-
     with qtbot.waitExposed(manager):
         manager.show()
         manager.activateWindow()
 
-    itool([data, data], link=True, link_colors=True, manager=True)
+    manager._data_recv([data, data], kwargs={"link": True, "link_colors": True})
     qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
 
     # Open console

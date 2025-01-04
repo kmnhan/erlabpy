@@ -355,21 +355,26 @@ def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
 
 
 def test_value_update(qtbot) -> None:
-    win = itool(
-        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
-    )
-    qtbot.addWidget(win)
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    new_vals = -data.values.astype(np.float64)
 
-    new_vals = -np.arange(25).reshape((5, 5)).astype(float)
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
     win.slicer_area.update_values(new_vals)
     assert_almost_equal(win.array_slicer.point_value(0), -12.0)
-
     win.close()
 
 
 def test_value_update_errors(qtbot) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
 
     with pytest.raises(ValueError, match="DataArray dimensions do not match"):
         win.slicer_area.update_values(

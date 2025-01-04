@@ -190,6 +190,10 @@ class _DialogHandler(QtCore.QObject):
     def _timeout(self, index: int) -> None:
         log.debug("timeout %d", index)
         self._timed_out = True
+        if hasattr(self, "_handler") and self._handler.isRunning():
+            self._handler.wait()
+            self._handler = None
+
         pytest.fail(
             f"No dialog for index {index} was created after {self.timeout} seconds."
         )
@@ -215,6 +219,7 @@ class _DialogHandler(QtCore.QObject):
         if index <= self._max_index:
             if hasattr(self, "_handler") and self._handler.isRunning():
                 self._handler.wait()
+                self._handler = None
 
             self._handler = _DialogDetectionThread(
                 index, self._pre_call_list[index], self.timeout
