@@ -53,6 +53,14 @@ class ColorMapState(TypedDict):
     levels: NotRequired[tuple[float, float]]
 
 
+class PlotItemState(TypedDict):
+    """A dictionary containing the state of a `PlotItem` instance."""
+
+    vb_aspect_locked: bool | float
+    vb_x_inverted: bool
+    vb_y_inverted: bool
+
+
 class ImageSlicerState(TypedDict):
     """A dictionary containing the state of an `ImageSlicerArea` instance."""
 
@@ -63,6 +71,7 @@ class ImageSlicerState(TypedDict):
     cursor_colors: list[str]
     file_path: NotRequired[str | None]
     splitter_sizes: NotRequired[list[list[int]]]
+    plotitem_states: NotRequired[list[PlotItemState]]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -644,6 +653,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "splitter_sizes": self.splitter_sizes,
             "file_path": str(self._file_path) if self._file_path is not None else None,
             "cursor_colors": [c.name() for c in self.cursor_colors],
+            "plotitem_states": [p._serializable_state for p in self.axes],
         }
 
     @state.setter
@@ -667,6 +677,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if file_path is not None:
             self._file_path = pathlib.Path(file_path)
             self.sigDataChanged.emit()
+
+        plotitem_states = state.get("plotitem_states", None)
+        if plotitem_states is not None:
+            for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
+                ax._serializable_state = plotitem_state
 
         # Restore colormap settings
         try:
@@ -966,8 +981,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def connect_signals(self) -> None:
         self.connect_axes_signals()
-        self.sigHistoryChanged.connect(self.history_changed)
-        self.sigCursorCountChanged.connect(self.cursor_count_changed)
+        self.sigHistoryChanged.connect(self._history_changed)
+        self.sigCursorCountChanged.connect(self._cursor_count_changed)
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigWriteHistory.connect(self.write_state)
@@ -2004,6 +2019,29 @@ class ItoolPlotItem(pg.PlotItem):
             self._guideline_actions[0].setChecked(True)
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
+
+    @property
+    def _serializable_state(self) -> PlotItemState:
+        """Subset of the state of the underlying viewbox that should be restorable."""
+        vb = self.getViewBox()
+        return {
+            "vb_aspect_locked": vb.state["aspectLocked"],
+            "vb_x_inverted": vb.state["xInverted"],
+            "vb_y_inverted": vb.state["yInverted"],
+        }
+
+    @_serializable_state.setter
+    def _serializable_state(self, state: PlotItemState) -> None:
+        vb = self.getViewBox()
+
+        locked = state["vb_aspect_locked"]
+        if isinstance(locked, bool):
+            vb.setAspectLocked(locked)
+        else:
+            vb.setAspectLocked(True, ratio=locked)
+
+        vb.invertX(state["vb_x_inverted"])
+        vb.invertY(state["vb_y_inverted"])
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, ...]:
         dim_list: list[str] = [
