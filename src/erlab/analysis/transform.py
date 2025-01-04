@@ -345,7 +345,7 @@ def shift(
         arr = out[slices]
         shifts: list[float] = [0.0] * arr.ndim
         shift_val: float = float(shift.isel(dict(zip(shift.dims, idxs, strict=True))))
-        shifts[cast(int, arr.get_axis_num(along))] = shift_val
+        shifts[arr.get_axis_num(along)] = shift_val
 
         # Apply shift
         out[slices] = scipy.ndimage.shift(arr.values, shifts, **shift_kwargs)

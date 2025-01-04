@@ -1,6 +1,8 @@
+import functools
 import logging
 import os
 import pathlib
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -105,11 +107,9 @@ class _DialogDetectionThread(QtCore.QThread):
         time.sleep(0.001)
         start_time = time.perf_counter()
 
-        self._mutex = QtCore.QMutex()
-
         dialog = None
 
-        log.debug("handling dialog %d", self.index)
+        log.debug("looking for dialog %d...", self.index)
         while (
             dialog is None or isinstance(dialog, _WaitDialog)
         ) and time.perf_counter() - start_time < self.timeout:
@@ -130,7 +130,7 @@ class _DialogDetectionThread(QtCore.QThread):
                 time.sleep(0.01)
             log.debug("pre_call %d done", self.index)
 
-        log.debug("emitting trigger for %d", self.index)
+        log.debug("emitting trigger for %d", self.index + 1)
         self.sigTrigger.emit(self.index + 1, dialog)
 
 
@@ -190,6 +190,10 @@ class _DialogHandler(QtCore.QObject):
     def _timeout(self, index: int) -> None:
         log.debug("timeout %d", index)
         self._timed_out = True
+        if hasattr(self, "_handler") and self._handler.isRunning():
+            self._handler.wait()
+            self._handler = None
+
         pytest.fail(
             f"No dialog for index {index} was created after {self.timeout} seconds."
         )
@@ -210,11 +214,12 @@ class _DialogHandler(QtCore.QObject):
             The callable that triggers the dialog creation or a prviously created dialog
             which will create the next dialog upon acceptance.
         """
-        log.debug("trigger index %d", index)
+        log.debug("index %d triggered", index)
 
         if index <= self._max_index:
             if hasattr(self, "_handler") and self._handler.isRunning():
                 self._handler.wait()
+                self._handler = None
 
             self._handler = _DialogDetectionThread(
                 index, self._pre_call_list[index], self.timeout
@@ -301,3 +306,45 @@ def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
 @pytest.fixture
 def move_and_compare_values():
     return _move_and_compare_values
+
+
+@pytest.fixture(autouse=True)
+def cover_qthreads(monkeypatch, qtbot):
+    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2286288111
+    from qtpy.QtCore import QThread
+
+    base_constructor = QThread.__init__
+
+    def run_with_trace(self):  # pragma: no cover
+        if "coverage" in sys.modules:
+            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+            sys.settrace(threading._trace_hook)
+        self._base_run()
+
+    def init_with_trace(self, *args, **kwargs):
+        base_constructor(self, *args, **kwargs)
+        self._base_run = self.run
+        self.run = functools.partial(run_with_trace, self)
+
+    monkeypatch.setattr(QThread, "__init__", init_with_trace)
+
+
+@pytest.fixture(autouse=True)
+def cover_qthreadpool(monkeypatch, qtbot):
+    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2435049275
+    from qtpy.QtCore import QThreadPool
+
+    base_constructor = QThreadPool.globalInstance().start
+
+    def run_with_trace(self):  # pragma: no cover
+        if "coverage" in sys.modules:
+            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
+            sys.settrace(threading._trace_hook)
+        self._base_run()
+
+    def _start(worker, *args, **kwargs):
+        worker._base_run = worker.run
+        worker.run = functools.partial(run_with_trace, worker)
+        return base_constructor(worker, *args, **kwargs)
+
+    monkeypatch.setattr(QThreadPool.globalInstance(), "start", _start)

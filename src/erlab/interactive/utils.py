@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
-import functools
 import inspect
 import itertools
 import pathlib
 import re
 import sys
-import threading
 import types
 import warnings
 import weakref
@@ -63,17 +61,6 @@ __all__ = [
     "wait_dialog",
     "xImageItem",
 ]
-
-
-def _coverage_resolve_trace(fn):
-    # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-    @functools.wraps(fn)
-    def _wrapped_for_coverage(*args, **kwargs) -> None:
-        if threading._trace_hook:  # type: ignore[attr-defined]
-            sys.settrace(threading._trace_hook)  # type: ignore[attr-defined]
-        fn(*args, **kwargs)
-
-    return _wrapped_for_coverage
 
 
 def parse_data(data) -> xr.DataArray:

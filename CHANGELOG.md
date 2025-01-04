@@ -1,3 +1,19 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool.manager:** implement threaded file loading ([feeb06b](https://github.com/kmnhan/erlabpy/commit/feeb06bbd5b7e88e554d9e728d3c005b552abb98))
+
+  Data are now loaded in the background.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** inverted state and aspect ratio of axes are now properly restored ([321c837](https://github.com/kmnhan/erlabpy/commit/321c83711f5a12a0f4becd3510464a24f006127e))
+
+### ♻️ Code Refactor
+
+- **imagetool:** make imagetool respect the most recently used loader and data directory if opened in the manager ([df1d550](https://github.com/kmnhan/erlabpy/commit/df1d5505e2a09b1bb22c99fa224c5288ab0be8a4))
+
 ## v3.4.0 (2025-01-02)
 
 ### ✨ Features
