@@ -276,9 +276,9 @@ grid.alpha: 1.0        # transparency, between 0.0 and 1.0
 # ***************************************************************************
 legend.loc: best
 legend.frameon: True
-legend.framealpha: 1.0
+legend.framealpha: 0.0
 legend.facecolor: inherit
-legend.edgecolor: 1.0
+legend.edgecolor: none
 legend.fancybox: False
 legend.shadow: False
 legend.numpoints: 1
