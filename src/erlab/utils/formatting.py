@@ -1,14 +1,21 @@
 """Utilities related to representing data in a human-readable format."""
 
-__all__ = ["format_html_table", "format_value"]
+from __future__ import annotations
+
+__all__ = ["format_darr_html", "format_html_table", "format_nbytes", "format_value"]
 import datetime
 import itertools
-from collections.abc import Iterable
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import numpy.typing as npt
 
 import erlab
+
+if TYPE_CHECKING:
+    from collections.abc import Hashable, Iterable
+
+    import xarray as xr
 
 STYLE_SHEET = """
 .erlab-table td,
@@ -20,6 +27,9 @@ STYLE_SHEET = """
     font-weight: bold;
 }
 """
+
+_DEFAULT_ACCENT_COLOR: str = "#0078d7"
+"""Accent color in HTML strings."""
 
 
 def format_html_table(
@@ -47,6 +57,41 @@ def format_html_table(
     table += "</table>"
     table += "</div>"
     return table
+
+
+def format_nbytes(value: float | str, fmt: str = "%.1f", sep: str = " ") -> str:
+    """Format the given number of bytes in a human-readable format.
+
+    Parameters
+    ----------
+    value
+        The number of bytes to format.
+    fmt
+        The format string to use when formatting the number of bytes.
+    sep
+        The separator to use between the formatted number of bytes and the unit.
+    """
+    suffixes = ("kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", "RB", "QB")
+
+    base = 1000
+    nbytes = float(value) if isinstance(value, str) else value
+
+    abs_bytes = abs(nbytes)
+
+    if abs_bytes == 1:
+        return f"{nbytes}{sep}Byte"
+
+    if abs_bytes < base:
+        return f"{nbytes}{sep}Bytes"
+
+    for i, s in enumerate(suffixes, 2):
+        unit = base**i
+        if abs_bytes < unit:
+            suffix = s
+            break
+
+    ret: str = (fmt % (base * (nbytes / unit))) + sep + suffix
+    return ret
 
 
 def format_value(
@@ -205,3 +250,134 @@ def format_value(
         return str(val)
 
     return _format(val)
+
+
+def _format_dim_name(s: Hashable) -> str:
+    return f"<b>{s}</b>"
+
+
+def _format_dim_sizes(darr: xr.DataArray, prefix: str) -> str:
+    out = f"<p>{prefix}("
+
+    dims_list = []
+    for d in darr.dims:
+        dim_label = _format_dim_name(d) if d in darr.coords else str(d)
+        dims_list.append(f"{dim_label}: {darr.sizes[d]}")
+
+    out += ", ".join(dims_list)
+    out += r")</p>"
+    return out
+
+
+def _format_coord_dims(coord: xr.DataArray) -> str:
+    dims = tuple(str(d) for d in coord.variable.dims)
+
+    if len(dims) > 1:
+        return f"({', '.join(dims)})&emsp;"
+
+    if len(dims) == 1 and dims[0] != coord.name:
+        return f"({dims[0]})&emsp;"
+
+    return ""
+
+
+def _format_array_values(val: npt.NDArray) -> str:
+    if val.size == 1:
+        return format_value(val.item())
+
+    val = val.squeeze()
+
+    if val.ndim == 1:
+        if len(val) == 2:
+            return f"[{format_value(val[0])}, " f"{format_value(val[1])}]"
+
+        if erlab.utils.array.is_uniform_spaced(val):
+            if val[0] == val[-1]:
+                return format_value(val[0])
+
+            start, end, step = tuple(
+                format_value(v) for v in (val[0], val[-1], val[1] - val[0])
+            )
+            return f"{start} : {step} : {end}"
+
+        if erlab.utils.array.is_monotonic(val):
+            if val[0] == val[-1]:
+                return format_value(val[0])
+
+            return f"{format_value(val[0])} to " f"{format_value(val[-1])}"
+
+    mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
+    return f"min {mn} max {mx}"
+
+
+def _format_coord_key(key: Hashable, is_dim: bool) -> str:
+    style = f"color: {_DEFAULT_ACCENT_COLOR}; "
+    if is_dim:
+        style += "font-weight: bold; "
+    return f"<span style='{style}'>{key}</span>&emsp;"
+
+
+def _format_attr_key(key: Hashable) -> str:
+    style = f"color: {_DEFAULT_ACCENT_COLOR};"
+    return f"<span style='{style}'>{key}</span>&emsp;"
+
+
+def format_darr_html(
+    darr: xr.DataArray,
+    *,
+    show_size: bool = True,
+    additional_info: Iterable[str] | None = None,
+) -> str:
+    """Make a simple HTML representation of a DataArray.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to represent.
+    show_size
+        Whether to include the size of the DataArray in the representation.
+    additional_info
+        Additional information to include in the representation. Each item in the list
+        is added as a separate paragraph.
+
+    Returns
+    -------
+    str
+        The HTML representation of the DataArray.
+    """
+    out = ""
+    if additional_info is None:
+        additional_info = []
+
+    name = ""
+    if darr.name is not None and darr.name != "":
+        name = f"'{darr.name}'&emsp;"
+
+    out += _format_dim_sizes(darr, name)
+
+    if show_size:
+        out += rf"<p>Size {format_nbytes(darr.nbytes)}</p>"
+
+    for info in additional_info:
+        out += rf"<p>{info}</p>"
+
+    out += r"Coordinates:"
+    coord_rows: list[list[str]] = []
+    for key, coord in darr.coords.items():
+        is_dim: bool = key in darr.dims
+        coord_rows.append(
+            [
+                _format_coord_key(key, is_dim),
+                _format_coord_dims(coord),
+                _format_array_values(coord.values),
+            ]
+        )
+    out += format_html_table(coord_rows)
+
+    out += r"<br>Attributes:"
+    attr_rows: list[list[str]] = []
+    for key, attr in darr.attrs.items():
+        attr_rows.append([_format_attr_key(key), format_value(attr)])
+    out += format_html_table(attr_rows)
+
+    return out
