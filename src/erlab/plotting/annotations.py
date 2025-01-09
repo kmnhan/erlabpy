@@ -762,6 +762,7 @@ def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
     axis: Literal["x", "y"] = "x",
+    literal: bool = False,
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
@@ -781,6 +782,8 @@ def mark_points_outside(
     axis
         If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points
         along the vertical axis.
+    literal
+        If `True`, take the input string literally.
     roman
         If ``False``, itallic fonts are used.
     bar
@@ -805,7 +808,10 @@ def mark_points_outside(
             label_ax.set_xlim(ax.get_xlim())
             label_ax.set_xticks(
                 points,
-                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                labels=[
+                    lab if literal else parse_point_labels(lab, roman, bar)
+                    for lab in labels
+                ],
                 **kwargs,
             )
         else:
@@ -813,7 +819,10 @@ def mark_points_outside(
             label_ax.set_ylim(ax.get_ylim())
             label_ax.set_yticks(
                 points,
-                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                labels=[
+                    lab if literal else parse_point_labels(lab, roman, bar)
+                    for lab in labels
+                ],
                 **kwargs,
             )
         label_ax.set_frame_on(False)
