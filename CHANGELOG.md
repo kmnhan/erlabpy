@@ -1,4 +1,4 @@
-## Unreleased
+## v3.5.1 (2025-01-14)
 
 ### 🐞 Bug Fixes
 
