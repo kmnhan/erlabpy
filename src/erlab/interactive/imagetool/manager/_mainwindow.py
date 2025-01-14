@@ -246,24 +246,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
-            self.open_action,
-            "mdi6.folder-open-outline",
+            self.open_action, "mdi6.folder-file"
         )
         self.remove_button = erlab.interactive.utils.IconActionButton(
-            self.remove_action,
-            "mdi6.window-close",
+            self.remove_action, "mdi6.window-close"
         )
         self.rename_button = erlab.interactive.utils.IconActionButton(
-            self.rename_action,
-            "mdi6.rename",
+            self.rename_action, "mdi6.rename"
         )
         self.link_button = erlab.interactive.utils.IconActionButton(
-            self.link_action,
-            "mdi6.link-variant",
+            self.link_action, "mdi6.link-variant"
         )
         self.unlink_button = erlab.interactive.utils.IconActionButton(
-            self.unlink_action,
-            "mdi6.link-variant-off",
+            self.unlink_action, "mdi6.link-variant-off"
         )
         self.preview_button = erlab.interactive.utils.IconActionButton(
             self.preview_action, on="mdi6.eye", off="mdi6.eye-off"
