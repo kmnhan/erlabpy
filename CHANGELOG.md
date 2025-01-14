@@ -8,6 +8,10 @@
 
 ### ♻️ Code Refactor
 
+- **analysis.gold:** add plot capability to `quick_fit` and deprecate quick_resolution ([903450b](https://github.com/kmnhan/erlabpy/commit/903450b6c74a1382a14c4cff05c90871a5d6854d))
+
+  Future code shoule use `quick_fit` with `plot=True` instead of `quick_resolution`.
+
 - **ktool:** add work function spinbox ([31c5ae8](https://github.com/kmnhan/erlabpy/commit/31c5ae874893c99b0b41d50457b4ea82967dedb5))
 
 - **io.dataloader:** adds a `extensions` attribute to data loaders ([a819960](https://github.com/kmnhan/erlabpy/commit/a8199603df8d1a35b0be719fa0c76fa8c29794de))
