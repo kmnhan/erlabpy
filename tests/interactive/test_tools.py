@@ -9,7 +9,7 @@ from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import ResolutionTool, goldtool, restool
-from erlab.interactive.kspace import ktool
+from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_gold_edge
 
 
@@ -127,12 +127,24 @@ def test_ktool_compatible(anglemap) -> None:
             data.kspace.interactive()
 
 
-@pytest.mark.parametrize("constant_energy", [True, False])
-def test_ktool(qtbot, anglemap, constant_energy) -> None:
+@pytest.mark.parametrize("wf", ["wf_auto", "wf_manual"])
+@pytest.mark.parametrize("kind", ["map", "const_energy"])
+@pytest.mark.parametrize("assignment", ["before", "after"])
+def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
+    offset_dict = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
+
     anglemap = anglemap.copy()
 
-    if constant_energy:
+    def assign_attrs():
+        anglemap.kspace.offsets = offset_dict
+        if wf != "wf_auto":
+            anglemap.kspace.work_function = 4.0
+
+    if kind != "map":
         anglemap = anglemap.qsel(eV=-0.1)
+
+    if assignment == "before":
+        assign_attrs()
 
     win = ktool(
         anglemap,
@@ -141,18 +153,32 @@ def test_ktool(qtbot, anglemap, constant_energy) -> None:
         cmap="terrain_r",
         execute=False,
     )
-
     qtbot.addWidget(win)
 
-    win._offset_spins["delta"].setValue(30.0)
-    win._offset_spins["xi"].setValue(20.0)
-    win._offset_spins["beta"].setValue(10.0)
+    for k, v in offset_dict.items():
+        if assignment == "before":
+            assert np.isclose(win._offset_spins[k].value(), v)
+        else:
+            win._offset_spins[k].setValue(v)
 
-    assert (
-        win.copy_code()
-        == """anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
-anglemap_kconv = anglemap.kspace.convert()"""
-    )
+    if wf != "wf_auto":
+        if assignment == "before":
+            assert np.isclose(win._offset_spins["wf"].value(), 4.0)
+        else:
+            win._offset_spins["wf"].setValue(4.0)
+
+    if assignment != "before":
+        assign_attrs()
+    anglemap_kconv = anglemap.kspace.convert()
+
+    def _check_code_kconv(w: KspaceTool):
+        namespace = {"anglemap": anglemap}
+        exec(w.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+        xr.testing.assert_identical(anglemap_kconv, namespace["anglemap_kconv"])
+
+    _check_code_kconv(win)
+
+    # Test ROI
     win.add_circle_btn.click()
     roi = win._roi_list[0]
     roi.getMenu()
@@ -164,13 +190,6 @@ anglemap_kconv = anglemap.kspace.convert()"""
     roi_control_widget.y_spin.setValue(0.2)
     roi_control_widget.r_spin.setValue(0.3)
     assert roi.get_position() == (0.0, 0.2, 0.3)
-
-    anglemap.kspace.offsets = {"delta": 30.0, "xi": 20.0, "beta": 10.0}
-
-    if "eV" in anglemap.dims:
-        anglemap_kconv = anglemap.kspace.convert()
-    else:
-        anglemap_kconv = anglemap.kspace.convert()
 
     # Show imagetool
     win.show_converted()
