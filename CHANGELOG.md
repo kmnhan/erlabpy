@@ -1,5 +1,23 @@
 ## Unreleased
 
+### 🐞 Bug Fixes
+
+- **restool:** improve parameter guessing and copied code formatting ([0b33770](https://github.com/kmnhan/erlabpy/commit/0b33770fd5cf7a828cacaef8e465319183d03a00))
+
+  The temperature and center can now be guessed independently.
+
+### ♻️ Code Refactor
+
+- **ktool:** add work function spinbox ([31c5ae8](https://github.com/kmnhan/erlabpy/commit/31c5ae874893c99b0b41d50457b4ea82967dedb5))
+
+- **io.dataloader:** adds a `extensions` attribute to data loaders ([a819960](https://github.com/kmnhan/erlabpy/commit/a8199603df8d1a35b0be719fa0c76fa8c29794de))
+
+  Data loaders can now choose to implement an `extensions` attribute that returns a set of file extensions supported by the loader. This reduces the possibility of the user trying to load files with a wrong loader and gives informative error messages.
+
+- **io:** expose ``load_krax`` as public API ([3508a0a](https://github.com/kmnhan/erlabpy/commit/3508a0abffe8555317ae5f696717bc33fa609b16))
+
+  Adds a new function ``erlab.io.utils.load_krax`` that can parse MBS deflector maps saved as ``.krx``.
+
 ## v3.5.0 (2025-01-04)
 
 ### ✨ Features
