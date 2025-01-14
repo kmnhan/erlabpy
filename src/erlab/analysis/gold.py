@@ -11,7 +11,7 @@ __all__ = [
     "resolution_roi",
     "spline_from_edge",
 ]
-
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
@@ -561,13 +561,15 @@ def quick_fit(
     fix_center: bool = False,
     fix_resolution: bool = False,
     bkg_slope: bool = True,
+    plot: bool = False,
+    ax: matplotlib.axes.Axes | None = None,
     **kwargs,
 ) -> xr.Dataset:
     """Perform a Fermi edge fit on an EDC.
 
     This function is a convenient wrapper around :meth:`modelfit
-    <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge
-    to the given data.
+    <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge to
+    the given data.
 
     If data with 2 or more dimensions is provided, the data is averaged over all
     dimensions except the energy prior to fitting.
@@ -602,6 +604,11 @@ def quick_fit(
     bkg_slope
         Whether to include a linear background above the Fermi level. If `False`, the
         background above the Fermi level is fit with a constant. Defaults to `True`.
+    plot
+        Whether to plot the result of the fit. Defaults to `False`.
+    ax
+        The axes to plot the result on if ``plot`` is `True`. If `None`, the current
+        axes are used.
     **kwargs
         Additional keyword arguments to :class:`modelfit
         <erlab.accessors.fit.ModelFitDataArrayAccessor>`.
@@ -646,46 +653,29 @@ def quick_fit(
         params["center"]["vary"] = False
 
     kwargs.setdefault("guess", True)
-    return data_fit.modelfit(
+    fit_result = data_fit.modelfit(
         "eV",
         model=erlab.analysis.fit.models.FermiEdgeModel(),
         method=method,
         params=params,
         **kwargs,
     )
+    if plot:
+        if ax is None:
+            ax = plt.gca()
+
+        _plot_resolution_fit(ax, data_fit, fit_result, fix_center)
+
+    return fit_result
 
 
-def quick_resolution(
-    darr: xr.DataArray, ax: matplotlib.axes.Axes | None = None, **kwargs
-) -> xr.Dataset:
-    """Fit a Fermi edge to the given data and plot the results.
-
-    This function is a wrapper around `quick_fit` that plots the data and the obtained
-    resolution. The data is averaged over all dimensions except the energy prior to
-    fitting.
-
-    Parameters
-    ----------
-    darr
-        The input data to be fitted.
-    ax
-        The axis to plot the data and fit on. If `None`, the current axis is used.
-        Defaults to `None`.
-    **kwargs
-        Additional keyword arguments to `quick_fit`.
-
-    Returns
-    -------
-    result : xarray.Dataset
-        The result of the fit.
-
-    """
-    if ax is None:
-        ax = plt.gca()
-
-    result = quick_fit(darr, **kwargs)
-    data = darr.mean([d for d in darr.dims if d != "eV"])
-
+def _plot_resolution_fit(
+    ax: matplotlib.axes.Axes,
+    data: xr.DataArray,
+    result: xr.Dataset,
+    fix_center: bool,
+) -> None:
+    """Plot the results of a single Fermi edge fit."""
     ax.plot(
         data.eV, data, ".", mec="0.5", alpha=1, mfc="none", ms=5, mew=0.4, label="Data"
     )
@@ -731,7 +721,7 @@ def quick_resolution(
         resolution_repr,
     ]
 
-    if kwargs.get("fix_center", False):
+    if fix_center:
         info_list.pop(1)
 
     fig = ax.figure
@@ -751,7 +741,28 @@ def quick_resolution(
     ax.set_title("")
     ax.axvline(coeffs.sel(param="center"), ls="--", c="k", lw=0.4, alpha=0.5)
     ax.axvspan(*center_bounds, color="r", alpha=0.2, label="FWHM")
-    return result
+
+
+def quick_resolution(
+    darr: xr.DataArray, ax: matplotlib.axes.Axes | None = None, **kwargs
+) -> xr.Dataset:
+    """Fit a Fermi edge to the given data and plot the results.
+
+    .. deprecated:: 3.5.1
+
+        Use :func:`quick_fit` with ``plot=True`` instead.
+
+    """
+    warnings.warn(
+        "erlab.analysis.gold.quick_resolution is deprecated, "
+        "use erlab.analysis.gold.quick_fit with plot=True instead",
+        FutureWarning,
+        stacklevel=1,
+    )
+
+    kwargs["plot"] = True
+    kwargs["ax"] = ax
+    return quick_fit(darr, **kwargs)
 
 
 def resolution(
@@ -767,6 +778,20 @@ def resolution(
     parallel_kw: dict | None = None,
     scale_covar: bool = True,
 ) -> lmfit.model.ModelResult:
+    """Fit a Fermi edge and obtain the resolution from the corrected data.
+
+    .. deprecated:: 3.5.1
+
+        Use :func:`poly` and :func:`quick_fit` instead.
+
+    """
+    warnings.warn(
+        "erlab.analysis.gold.resolution is deprecated, "
+        "use erlab.analysis.gold.quick_fit instead",
+        FutureWarning,
+        stacklevel=1,
+    )
+
     pol, gold_corr = poly(
         gold,
         angle_range,
@@ -837,6 +862,20 @@ def resolution_roi(
     plot: bool = True,
     scale_covar: bool = True,
 ) -> lmfit.model.ModelResult:
+    """Fit a Fermi edge to the data and obtain the resolution.
+
+    .. deprecated:: 3.5.1
+
+        Use :func:`quick_fit` instead.
+
+    """
+    warnings.warn(
+        "erlab.analysis.gold.resolution is deprecated, "
+        "use erlab.analysis.gold.quick_fit instead",
+        FutureWarning,
+        stacklevel=1,
+    )
+
     edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
 
     params = lmfit.create_params(

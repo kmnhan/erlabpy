@@ -810,13 +810,15 @@ class ResolutionTool(
             if params[k] == params_guessed[k].value:
                 del params[k]
 
-        code = erlab.interactive.utils.generate_code(
+        params["plot"] = True
+
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.quick_fit,
             args=[f"|{data_name}|"],
             kwargs=params,
             module="era.gold",
-        ).replace("quick_fit", "quick_resolution")
-        return erlab.interactive.utils.copy_to_clipboard(code)
+            copy=True,
+        )
 
     @QtCore.Slot()
     def _update_region(self) -> None:

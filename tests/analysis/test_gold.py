@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from erlab.analysis.gold import correct_with_edge, poly, quick_resolution, spline
+from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 
 
 @pytest.mark.parametrize("parallel_kw", [None, {"n_jobs": 1, "return_as": "list"}])
@@ -59,10 +59,10 @@ def test_spline(gold) -> None:
 @pytest.mark.parametrize("resolution", [None, 1e-2])
 @pytest.mark.parametrize("temp", [None, 100.0])
 @pytest.mark.parametrize("eV_range", [None, (-0.2, 0.2)])
-def test_quick_resolution(
+def test_quick_fit(
     gold, eV_range, temp, resolution, fix_temp, fix_center, fix_resolution, bkg_slope
 ) -> None:
-    ds = quick_resolution(
+    ds = quick_fit(
         gold,
         eV_range=eV_range,
         temp=temp,
@@ -71,6 +71,7 @@ def test_quick_resolution(
         fix_center=fix_center,
         fix_resolution=fix_resolution,
         bkg_slope=bkg_slope,
+        plot=True,
     )
     plt.close()
     assert ds.modelfit_results.item().success
