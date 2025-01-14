@@ -448,7 +448,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._beta.size > 1
 
     @property
-    def _valid_offset_keys(self) -> tuple[str, ...]:
+    def _valid_offset_keys(self) -> tuple[str, str, str]:
         """
         Get valid offset angles based on the experimental configuration.
 
