@@ -8,6 +8,10 @@
 
 ### ♻️ Code Refactor
 
+- **plotting:** add `literal` option for point label formatting in `mark_points_outside`, consistent with `mark_points` ([db723fd](https://github.com/kmnhan/erlabpy/commit/db723fd8c7b926c5de2cabe033171455e9e2a92b))
+
+- generalize fomatting DataArray to raw HTML ([85c735e](https://github.com/kmnhan/erlabpy/commit/85c735e6397747ee8fa32fa0fb5804a07aee27be))
+
 - **analysis.gold:** add plot capability to `quick_fit` and deprecate quick_resolution ([903450b](https://github.com/kmnhan/erlabpy/commit/903450b6c74a1382a14c4cff05c90871a5d6854d))
 
   Future code shoule use `quick_fit` with `plot=True` instead of `quick_resolution`.
