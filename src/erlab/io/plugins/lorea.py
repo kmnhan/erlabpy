@@ -17,6 +17,7 @@ def _get_data(group):
 class LOREALoader(LoaderBase):
     name = "lorea"
     description = "ALBA Beamline 20 LOREA"
+    extensions: ClassVar[set[str]] = {".nxs", ".krx"}
 
     aliases = ("alba_bl20",)
 

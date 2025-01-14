@@ -11,6 +11,7 @@ from erlab.io.dataloader import LoaderBase
 class I05Loader(LoaderBase):
     name = "i05"
     description = "Diamond Beamline I05"
+    extensions: ClassVar[set[str]] = {".nxs"}
 
     aliases = ("diamond_i05",)
 

@@ -34,6 +34,7 @@ def _parse_value(value):
 class SSRL52Loader(LoaderBase):
     name = "ssrl52"
     description = "SSRL Beamline 5-2"
+    extensions: ClassVar[set[str]] = {".h5"}
 
     aliases = ("ssrl", "bl5-2")
 

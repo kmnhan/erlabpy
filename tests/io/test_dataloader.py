@@ -13,7 +13,7 @@ import xarray as xr
 
 import erlab
 from erlab.interactive.imagetool.manager import ImageToolManager
-from erlab.io.dataloader import LoaderBase
+from erlab.io.dataloader import LoaderBase, UnsupportedFileError
 from erlab.io.exampledata import generate_data_angles
 
 
@@ -112,9 +112,14 @@ def test_loader(qtbot) -> None:
         filename = f"{tmp_dir.name}/data_{str(i + 2).zfill(3)}.h5"
         data.to_netcdf(filename, engine="h5netcdf")
 
+    # Save data with wrong file extension
+    wrong_file: str = f"{tmp_dir.name}/data_010.nc"
+    data.to_netcdf(wrong_file, engine="h5netcdf")
+
     class ExampleLoader(LoaderBase):
         name = "example"
         description = "Example loader for testing purposes"
+        extensions: ClassVar[set[str]] = {".h5"}
 
         name_map: ClassVar[dict] = {
             "eV": "BindingEnergy",
@@ -278,6 +283,32 @@ def test_loader(qtbot) -> None:
     erlab.io.loaders.current_loader = "example"
     erlab.io.loaders.current_data_dir = tmp_dir.name
     erlab.io.load(2)
+
+    # Loading nonexistent indices
+    nonexistent_file = "data_099.h5"
+    with pytest.raises(
+        FileNotFoundError,
+        match=re.escape(
+            str(
+                FileNotFoundError(
+                    errno.ENOENT,
+                    os.strerror(errno.ENOENT),
+                    nonexistent_file,
+                ),
+            )
+        ).replace(re.escape(nonexistent_file), f".*{re.escape(nonexistent_file)}"),
+    ):
+        erlab.io.load("data_099.h5")
+
+    with pytest.raises(
+        UnsupportedFileError,
+        match=UnsupportedFileError._make_msg(
+            "example",
+            os.path.splitext(wrong_file)[1],
+            erlab.io.loaders.example.extensions,
+        ),
+    ):
+        erlab.io.load(wrong_file)
 
     # Test if coordinate_attrs are correctly assigned
     mfdata = erlab.io.load(1)

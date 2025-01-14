@@ -40,7 +40,8 @@ def _emit_ambiguous_file_warning(num, file_to_use):
 
 class ERPESLoader(DA30Loader):
     name = "erpes"
-    description = "KAIST homelab setup"
+    description = "KAIST home lab setup"
+    extensions: ClassVar[set[str]] = {".pxt", ".zip"}
 
     name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],

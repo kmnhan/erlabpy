@@ -99,6 +99,11 @@ def linkcode_resolve(domain, info) -> str | None:
     if fullname.endswith(".identify") and not fullname.endswith(".LoaderBase.identify"):
         fullname = fullname.replace(".identify", "._original_identify")
 
+    if fullname.endswith(".load_single") and not fullname.endswith(
+        ".LoaderBase.load_single"
+    ):
+        fullname = fullname.replace(".load_single", "._original_load_single")
+
     submod = sys.modules.get(modname)
     if submod is None:
         return None

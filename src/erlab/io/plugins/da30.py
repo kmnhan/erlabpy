@@ -33,6 +33,8 @@ class DA30Loader(LoaderBase):
 
     aliases: Iterable[str] = ["DA30"]
 
+    extensions: ClassVar[set[str]] = {".ibw", ".pxt", ".zip"}
+
     name_map: ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],

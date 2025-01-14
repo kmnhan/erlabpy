@@ -45,6 +45,7 @@ def _determine_kind(data: xr.DataArray) -> str:
 class MERLINLoader(LoaderBase):
     name = "merlin"
     description = "ALS Beamline 4.0.3 MERLIN"
+    extensions: ClassVar[set[str]] = {".pxt", ".ibw"}
 
     aliases = ("ALS_BL4", "als_bl4", "BL403", "bl403")
 

@@ -63,6 +63,23 @@ class LoaderNotFoundError(Exception):
         super().__init__(f"Loader for name or alias {key} not found in the registry")
 
 
+class UnsupportedFileError(Exception):
+    """Raised when the loader does not support the given file extension."""
+
+    def __init__(self, loader: LoaderBase, ext: str) -> None:
+        extensions = loader.extensions
+        if extensions is not None:
+            super().__init__(self._make_msg(loader.name, ext, extensions))
+
+    @staticmethod
+    def _make_msg(loader_name: str, ext: str, extensions: set[str]) -> str:
+        ext_sorted = sorted(f"'{ext}'" for ext in extensions)
+        return (
+            f"'{ext}' files are not supported by loader '{loader_name}'."
+            f" Supported extensions are: {', '.join(ext_sorted)}"
+        )
+
+
 class _Loader(type):
     """Metaclass for data loaders.
 
@@ -100,8 +117,29 @@ class _Loader(type):
             new_class.identify = wrapped_identify
 
             # For linkcode to work in the documentation
-            # See linkcode_resolve in conf.py
+            # See linkcode_resolve in docs/conf.py
             new_class._original_identify = original_identify
+
+        if "load_single" in dct:
+            original_load_single = dct["load_single"]
+
+            def wrapped_load_single(self, file_path, **kwargs):
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(
+                        errno.ENOENT, os.strerror(errno.ENOENT), file_path
+                    )
+
+                ext = os.path.splitext(file_path)[1]
+                if ext.lower() not in self.extensions:
+                    raise UnsupportedFileError(self, ext)
+                return original_load_single(self, file_path, **kwargs)
+
+            wrapped_load_single.__doc__ = original_load_single.__doc__
+            new_class.load_single = wrapped_load_single
+
+            # For linkcode to work in the documentation
+            # See linkcode_resolve in docs/conf.py
+            new_class._original_load_single = original_load_single
 
         return new_class
 
@@ -135,6 +173,16 @@ class LoaderBase(metaclass=_Loader):
        Accessing loaders with aliases is deprecated and will be removed in a future
        version. Use the loader name instead.
 
+    """
+
+    extensions: ClassVar[set[str] | None] = None
+    """File extensions supported by the loader in lowercase with the leading dot.
+
+    An `UnsupportedFileError` is raised if a file with an unsupported extension is
+    passed to the loader. If `None`, the loader will attempt to load any file passed to
+    it.
+
+    .. versionadded:: 3.5.1
     """
 
     name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
