@@ -139,23 +139,40 @@
           <string>Parameters</string>
          </property>
          <layout class="QGridLayout" name="gridLayout_2">
-          <item row="1" column="1">
-           <widget class="QDoubleSpinBox" name="temp_spin">
-            <property name="keyboardTracking">
-             <bool>false</bool>
+          <item row="5" column="0" colspan="4">
+           <widget class="QCheckBox" name="slope_check">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Whether to consider the spectral weight over &lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;F&lt;/span&gt; as linear instead of constant.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
-            <property name="decimals">
-             <number>5</number>
-            </property>
-            <property name="maximum">
-             <double>998.000000000000000</double>
-            </property>
-            <property name="singleStep">
-             <double>0.100000000000000</double>
+            <property name="text">
+             <string>Linear BG above Fermi level</string>
             </property>
            </widget>
           </item>
-          <item row="2" column="2">
+          <item row="1" column="0">
+           <widget class="QLabel" name="label_8">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;F&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
+            <property name="textFormat">
+             <enum>Qt::RichText</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="6" column="0" colspan="4">
+           <widget class="Line" name="line_3">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="3">
            <widget class="QCheckBox" name="fix_center_check">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
@@ -168,43 +185,51 @@
             </property>
            </widget>
           </item>
-          <item row="10" column="0" colspan="3">
-           <widget class="QPushButton" name="go_btn">
-            <property name="text">
-             <string>Fit</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="2">
-           <widget class="QCheckBox" name="fix_res_check">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Fix</string>
-            </property>
-           </widget>
+          <item row="7" column="0" colspan="4">
+           <layout class="QFormLayout" name="formLayout">
+            <item row="0" column="1">
+             <widget class="QComboBox" name="method_combo">
+              <property name="toolTip">
+               <string>lmfit method to use.</string>
+              </property>
+              <item>
+               <property name="text">
+                <string>leastsq</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>least_squares</string>
+               </property>
+              </item>
+             </widget>
+            </item>
+            <item row="0" column="0">
+             <widget class="QLabel" name="label">
+              <property name="text">
+               <string>method</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
           </item>
           <item row="1" column="2">
-           <widget class="QCheckBox" name="fix_temp_check">
+           <widget class="QPushButton" name="guess_center_btn">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="text">
-             <string>Fix</string>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Estimate &lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;F&lt;/span&gt; from the selected data&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
-            <property name="checked">
-             <bool>true</bool>
+            <property name="text">
+             <string>Guess</string>
             </property>
            </widget>
           </item>
-          <item row="9" column="0" colspan="3">
+          <item row="8" column="0" colspan="4">
            <layout class="QHBoxLayout" name="horizontalLayout">
             <item>
              <widget class="QLabel" name="label_5">
@@ -269,7 +294,23 @@
             </item>
            </layout>
           </item>
-          <item row="1" column="0">
+          <item row="0" column="3">
+           <widget class="QCheckBox" name="fix_temp_check">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>Fix</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
            <widget class="QLabel" name="label_7">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
@@ -285,7 +326,64 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="0">
+          <item row="2" column="3">
+           <widget class="QCheckBox" name="fix_res_check">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="text">
+             <string>Fix</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="res_spin">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Energy broadening (FWHM) in eV.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
+            <property name="keyboardTracking">
+             <bool>false</bool>
+            </property>
+            <property name="decimals">
+             <number>4</number>
+            </property>
+            <property name="maximum">
+             <double>10.000000000000000</double>
+            </property>
+            <property name="singleStep">
+             <double>0.002000000000000</double>
+            </property>
+            <property name="value">
+             <double>0.010000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QDoubleSpinBox" name="temp_spin">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Temperature in K.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
+            <property name="keyboardTracking">
+             <bool>false</bool>
+            </property>
+            <property name="decimals">
+             <number>5</number>
+            </property>
+            <property name="maximum">
+             <double>998.000000000000000</double>
+            </property>
+            <property name="singleStep">
+             <double>0.100000000000000</double>
+            </property>
+            <property name="value">
+             <double>10.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
            <widget class="QLabel" name="label_9">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
@@ -301,82 +399,18 @@
             </property>
            </widget>
           </item>
-          <item row="3" column="1">
-           <widget class="QDoubleSpinBox" name="res_spin">
-            <property name="keyboardTracking">
-             <bool>false</bool>
-            </property>
-            <property name="decimals">
-             <number>4</number>
-            </property>
-            <property name="maximum">
-             <double>10.000000000000000</double>
-            </property>
-            <property name="singleStep">
-             <double>0.002000000000000</double>
-            </property>
-           </widget>
-          </item>
-          <item row="8" column="0" colspan="3">
-           <layout class="QFormLayout" name="formLayout">
-            <item row="0" column="1">
-             <widget class="QComboBox" name="method_combo">
-              <item>
-               <property name="text">
-                <string>leastsq</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>least_squares</string>
-               </property>
-              </item>
-             </widget>
-            </item>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label">
-              <property name="text">
-               <string>method</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item row="6" column="0" colspan="3">
-           <widget class="QCheckBox" name="slope_check">
+          <item row="9" column="0" colspan="4">
+           <widget class="QPushButton" name="go_btn">
             <property name="text">
-             <string>Linear BG above Fermi level</string>
+             <string>Fit</string>
             </property>
            </widget>
           </item>
-          <item row="0" column="0" colspan="3">
-           <widget class="QPushButton" name="guess_btn">
-            <property name="toolTip">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Guess the initial parameters for the fit.&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;T&lt;/span&gt; is estimated from the data coordinates or attributes. If not found, a default value of 30 K is used.&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;F&lt;/span&gt; is estimated from the smoothed derivative of the data.&lt;/p&gt;&lt;p&gt;For Δ&lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;, a default value of 20 meV is used.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-            </property>
-            <property name="text">
-             <string>Guess initial parameters</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="label_8">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;E&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;F&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-            </property>
-            <property name="textFormat">
-             <enum>Qt::RichText</enum>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
+          <item row="1" column="1">
            <widget class="QDoubleSpinBox" name="center_spin">
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Fermi level in eV.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
             <property name="keyboardTracking">
              <bool>false</bool>
             </property>
@@ -388,10 +422,19 @@
             </property>
            </widget>
           </item>
-          <item row="7" column="0" colspan="3">
-           <widget class="Line" name="line_3">
-            <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+          <item row="0" column="2">
+           <widget class="QPushButton" name="guess_temp_btn">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="toolTip">
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Estimate &lt;span style=&quot; font-style:italic;&quot;&gt;T&lt;/span&gt; from the selected data&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            </property>
+            <property name="text">
+             <string>Guess</string>
             </property>
            </widget>
           </item>
@@ -572,7 +615,7 @@
      <x>0</x>
      <y>0</y>
      <width>957</width>
-     <height>37</height>
+     <height>24</height>
     </rect>
    </property>
   </widget>
@@ -591,7 +634,6 @@
   <tabstop>y0_spin</tabstop>
   <tabstop>y1_spin</tabstop>
   <tabstop>live_check</tabstop>
-  <tabstop>guess_btn</tabstop>
   <tabstop>temp_spin</tabstop>
   <tabstop>fix_temp_check</tabstop>
   <tabstop>center_spin</tabstop>

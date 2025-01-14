@@ -41,7 +41,10 @@ def test_restool(qtbot) -> None:
     win = restool(gold, execute=False)
     qtbot.addWidget(win)
 
-    win._guess()
+    win._guess_temp()
+    qtbot.wait_until(lambda: win.fit_params["temp"] == 100.0, timeout=1000)
+
+    win._guess_center()
     win.res_spin.setValue(0.02)
     win.live_check.setChecked(True)
     win.y0_spin.setValue(-12.0)
