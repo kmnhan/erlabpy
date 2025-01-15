@@ -26,9 +26,17 @@ ERLabPy depends on a number of scientific python libraries.
 conda
 -----
 
-The recommended way to install ERLabPy is via conda. If you do not have conda installed,
-follow the :ref:`conda installation instructions <Installing conda>`. Once you have a
-working conda environment, you can install ERLabPy with the conda command line tool: ::
+The recommended way to install ERLabPy is via conda. If you are new to conda, the
+Scikit-HEP project has a `great guide <https://scikit-hep.org/user/installing-conda>`_
+to get you started.
+
+.. hint::
+
+  - `Mamba <https://mamba.readthedocs.io>`_ is a faster alternative to conda with
+    additional features. It is installed alongside conda when you install miniforge.
+
+Once you have a working conda environment, you can install ERLabPy with the conda
+command line tool: ::
 
   conda install -c conda-forge erlab
 
@@ -75,8 +83,8 @@ Optional dependency groups can be installed with the following commands: ::
 See the :ref:`optional dependencies` section for all available groups and their
 contents.
 
-From source
------------
+From source (uv)
+----------------
 
 If you wish to install ERLabPy from source, see the :doc:`contributing`.
 

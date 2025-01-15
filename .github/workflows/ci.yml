@@ -29,32 +29,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - uses: tlambert03/setup-qt-libs@v1
       - name: Setup for Qt testing
         run: |
           /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
 
-      - name: Install pytest and dependencies
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install project with all extras
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -v .[viz,io,perf,misc,dev] ${{ matrix.qt-api }}
-          python -m pip list
+          uv sync --all-extras --dev --group ${{ matrix.qt-api }}
           export QT_API=${{ matrix.qt-api }}
 
       - name: Test with pytest
         if: matrix.python-version != '3.12' || matrix.qt-api != 'pyside6'
-        run: |
-          python -u -m pytest -v
+        run: uv run pytest
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
-        run: |
-          python -u -m pytest -v --cov erlab --junitxml=junit.xml
+        run: uv run pytest -v --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
@@ -73,18 +71,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
+          enable-cache: true
           python-version: "3.12"
 
       - name: Install mypy and dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install .[viz,io,perf,misc,dev] mypy[reports,faster-cache] pyqt6
-          python -m pip list
+        run: uv sync --all-extras --dev --group pyqt6
 
       - name: Run mypy
-        run: mypy --install-types --non-interactive --html-report mypy-report .
+        run: uv run mypy --install-types --non-interactive --html-report mypy-report .
 
       - name: Upload mypy results
         uses: actions/upload-artifact@v4

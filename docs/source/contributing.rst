@@ -29,7 +29,7 @@ report <https://stackoverflow.com/help/mcve>`_, and this `article on minimal bug
 Creating a development environment
 ==================================
 
-First, you will need to install ``git`` and ``conda`` (or ``mamba``).
+First, you will need to install ``git`` if you do not already have it.
 
 Installing git
 --------------
@@ -84,21 +84,15 @@ Cloning the repository
    (main project) *erlabpy* repository.
 
 
-.. _Installing conda:
+.. _Installing uv:
 
-Installing conda
-----------------
+Installing uv
+-------------
 
-Before starting any development, you'll need to create an isolated environment under a
-package manager like conda. If you don't have conda installed, the recommended way is to
-install `miniforge <https://github.com/conda-forge/miniforge>`_. The Scikit-HEP project
-has a `great guide <https://scikit-hep.org/user/installing-conda>`_  for installing
-conda.
-
-.. hint::
-
-  - `Mamba <https://mamba.readthedocs.io>`_ is a faster alternative to conda with
-    additional features. It is installed alongside conda when you install miniforge.
+If you are used to working with virtual environments and package managers, the modern
+way to install the package is with `uv <https://docs.astral.sh/uv/>`_. For installation
+instructions, see the `uv documentation
+<https://docs.astral.sh/uv/getting-started/installation/>`_.
 
 Editable installation from source
 ---------------------------------
@@ -107,70 +101,21 @@ An editable installation allows you to make changes to the code and see the chan
 reflected in the package without having to reinstall it. Before installing:
 
 - Make sure you have `cloned the repository <#cloning-the-repository>`_.
-- Make sure you have :ref:`installed conda or mamba <Installing Conda>`.
-- ``cd`` to the *erlabpy* source directory.
+- Make sure you have :ref:`installed uv <Installing uv>`.
 
-1. Create and activate a mamba (or conda) environment.
+1. Open a terminal and navigate to the root of the *erlabpy* repository.
 
-   .. note::
-
-     Replace :code:`<envname>`  with the environment name you prefer.
-
-   .. hint::
-
-     If using conda, replace :code:`mamba` with :code:`conda`.
+2. Run:
 
    .. code-block:: sh
 
-     mamba env create -f environment.yml -n <envname>
-     mamba activate <envname>
-
-
-2. Build and install the package.
-
-   .. note::
-
-      The ``editable_mode=compat`` setting enables static analysis tools to work with
-      the package. See `this issue <https://github.com/pypa/setuptools/issues/3518>`_
-      for more information.
-
-   .. code-block:: sh
-
-     pip install -e ".[dev]" --config-settings editable_mode=compat
-
-These two steps will create the new environment, and not touch any of your existing
-environments, nor any existing Python installation.
-
-To view your environments::
-
-      mamba env list
-
-To return to your root environment::
-
-      mamba deactivate
+     uv sync --all-extras --dev
 
 Updating the editable installation
 ----------------------------------
 
 * For minor updates with editable installs, it is sufficient to just :ref:`update the
-  main branch <update-main-branch>`.
-
-* When there are changes to the dependencies, you should also update the environment:
-
-  .. hint::
-
-    If using conda, replace :code:`mamba` with :code:`conda`.
-
-  .. code-block:: bash
-
-    mamba env update -f environment.yml -n <envname>
-
-* In case of major changes, it is recommended to rebuild the package.
-
-  .. code-block:: bash
-
-    mamba activate <envname>
-    pip install -e . --force-reinstall --no-deps --config-settings editable_mode=compat
+  main branch <update-main-branch>` and run ``uv sync`` again.
 
 .. _development.workflow:
 
@@ -430,19 +375,19 @@ Some other important things to know about the docs:
 Building the documentation locally
 ----------------------------------
 
-Check whether all documentation dependencies are installed with
+Clone the repository and navigate to the root of the repository. Make sure you have
+:ref:`installed uv <Installing uv>`. Install the documentation dependencies by running:
 
 .. code-block:: sh
 
-    pip install -r docs/requirements.txt
+    uv sync --all-extras --dev --group docs
 
 then build the documentation by running:
 
 .. code-block:: sh
 
-    cd docs/
-    make clean
-    make html
+    cd docs
+    uv run make html
 
 Then you can find the HTML output files in the folder ``erlabpy/docs/build/html/``.
 
@@ -452,7 +397,7 @@ use Google Chrome as your browser, you could enter::
 
     google-chrome build/html/index.html
 
-in the terminal, running from within the ``doc/`` folder. You should now see a new tab
+in the terminal, running from within the ``docs/`` folder. You should now see a new tab
 pop open in your local browser showing the documentation. The different pages of this
 local build of the documentation are linked together, so you can browse the whole
 documentation by following links the same way you would on the hosted website.

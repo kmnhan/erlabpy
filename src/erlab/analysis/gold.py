@@ -282,7 +282,7 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
-        fitresults = tqdm.tqdm(  # type: ignore[call-overload]
+        fitresults = tqdm.tqdm(
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
