@@ -55,10 +55,7 @@ class SSRL52Loader(LoaderBase):
 
     coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
 
-    additional_attrs: ClassVar[dict] = {
-        "configuration": 3,
-        "sample_workfunction": 4.5,
-    }
+    additional_attrs: ClassVar[dict] = {"configuration": 3, "sample_workfunction": 4.5}
 
     formatters: ClassVar[dict[str, Callable]] = {
         "CreationTimeStamp": datetime.datetime.fromtimestamp,
@@ -165,7 +162,7 @@ class SSRL52Loader(LoaderBase):
                                     "Undefined offset for non-energy axis. This was "
                                     "not taken into account while writing the loader "
                                     "code. Please report this issue. Resulting data "
-                                    "may be incorrect",
+                                    "may be incorrect"
                                 )
                                 continue
                             is_hvdep = True
@@ -189,7 +186,7 @@ class SSRL52Loader(LoaderBase):
                                         "Non-uniform delta for hv-dependent scan. This "
                                         "was not taken into account while writing the "
                                         "loader code. Please report this issue. "
-                                        "Resulting data may be incorrect",
+                                        "Resulting data may be incorrect"
                                     )
                                 delta = delta[0]
                             else:
@@ -233,7 +230,7 @@ class SSRL52Loader(LoaderBase):
                         erlab.utils.misc.emit_user_level_warning(
                             f"Ambiguous length for {k}. This was not taken into "
                             "account while writing the loader code. Please report this "
-                            "issue. Resulting data may be incorrect",
+                            "issue. Resulting data may be incorrect"
                         )
                     idx = same_length_indices[-1]
                     coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
@@ -284,12 +281,7 @@ class SSRL52Loader(LoaderBase):
 
         return data
 
-    def identify(
-        self,
-        num: int,
-        data_dir: str | os.PathLike,
-        zap: bool = False,
-    ):
+    def identify(self, num: int, data_dir: str | os.PathLike, zap: bool = False):
         if zap:
             target_files = erlab.io.utils.get_files(data_dir, ".h5", contains="zap")
         else:

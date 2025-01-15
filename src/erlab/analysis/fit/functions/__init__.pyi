@@ -20,11 +20,7 @@ __all__ = [
     "step_linbkg_broad",
 ]
 from . import dynamic, general
-from .dynamic import (
-    FermiEdge2dFunction,
-    MultiPeakFunction,
-    PolynomialFunction,
-)
+from .dynamic import FermiEdge2dFunction, MultiPeakFunction, PolynomialFunction
 from .general import (
     TINY,
     bcs_gap,

@@ -60,7 +60,7 @@ dev = [
     "pytest>=8.3.0",
     "commitizen>=3.29.0",
     "cz-changeup>=1.1.2",
-    "ruff>=0.6.3",
+    "ruff>=0.9.1",
 ]
 docs = [
     "sphinx>=8.0.0",
@@ -204,6 +204,12 @@ exclude = ["*.ipynb"]
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.flake8-builtins]
+builtins-allowed-modules = ["array"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
@@ -211,9 +217,6 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
-
-[tool.isort]
-profile = "black"
 
 [tool.pytest.ini_options]
 addopts = [

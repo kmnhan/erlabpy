@@ -53,10 +53,7 @@ def _index_of_value(
     incs: tuple[np.floating, ...],
     shape: tuple[int],
 ) -> int:
-    ind = min(
-        round((val - lims[axis][0]) / incs[axis]),
-        shape[axis] - 1,
-    )
+    ind = min(round((val - lims[axis][0]) / incs[axis]), shape[axis] - 1)
     if ind < 0:
         return 0
     return ind
@@ -91,8 +88,7 @@ def _index_of_value_nonuniform(
 
 
 @numba.njit(
-    [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])],
-    cache=True,
+    [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])], cache=True
 )
 def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> np.floating:
     diff = np.diff(arr)

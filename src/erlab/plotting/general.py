@@ -157,7 +157,7 @@ def array_extent(
             erlab.utils.misc.emit_user_level_warning(
                 f"Coordinates for {dim} are not evenly spaced, and the plot may not be "
                 "accurate. Use `DataArray.plot`, `xarray.plot.pcolormesh` or "
-                "`matplotlib.pyplot.pcolormesh` for non-evenly spaced data.",
+                "`matplotlib.pyplot.pcolormesh` for non-evenly spaced data."
             )
 
     data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
@@ -193,11 +193,7 @@ def _imshow_nonuniform(
 
     """
     im = matplotlib.image.NonUniformImage(
-        ax,
-        cmap=cmap,
-        norm=norm,
-        interpolation=interpolation,
-        **kwargs,
+        ax, cmap=cmap, norm=norm, interpolation=interpolation, **kwargs
     )
 
     if aspect is None and not (
@@ -1094,9 +1090,7 @@ def fermiline(
 
 
 def clean_labels(
-    axes: Iterable[matplotlib.axes.Axes],
-    remove_inner_ticks: bool = False,
-    **kwargs,
+    axes: Iterable[matplotlib.axes.Axes], remove_inner_ticks: bool = False, **kwargs
 ) -> None:
     """Clean the labels of the given axes.
 

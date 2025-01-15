@@ -295,12 +295,7 @@ def test_parse_input() -> None:
         ValueError, match="No valid data for ImageTool found in Dataset"
     ):
         _parse_input(
-            xr.Dataset(
-                {
-                    "data1d": xr.DataArray(np.arange(5), dims=["x"]),
-                    "data0d": 1,
-                }
-            )
+            xr.Dataset({"data1d": xr.DataArray(np.arange(5), dims=["x"]), "data0d": 1})
         )
 
 

@@ -27,6 +27,5 @@ def test_load(expected_dir, identifier) -> None:
     else:
         loaded = erlab.io.load(identifier)
     xr.testing.assert_identical(
-        loaded,
-        xr.load_dataarray(expected_dir / "Sample0025.h5"),
+        loaded, xr.load_dataarray(expected_dir / "Sample0025.h5")
     )

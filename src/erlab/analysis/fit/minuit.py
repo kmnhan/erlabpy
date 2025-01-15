@@ -48,10 +48,7 @@ class LeastSq(iminuit.cost.LeastSquares):
             ym = self.model(xm, *args)
         else:
             xm, ym = _smart_sampling(
-                lambda x: self.model(x, *args),
-                x[0],
-                x[-1],
-                start=len(x),
+                lambda x: self.model(x, *args), x[0], x[-1], start=len(x)
             )
         plt.plot(xm, ym, "r-", lw=1, zorder=3)
         return (x, y, ye), (xm, ym)

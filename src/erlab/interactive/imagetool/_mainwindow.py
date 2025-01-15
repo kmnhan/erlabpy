@@ -241,8 +241,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             event = cast(QtGui.QKeyEvent, event)
             focused = QtWidgets.QApplication.focusWidget()
             if isinstance(
-                focused,
-                QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit,
+                focused, QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit
             ) and (
                 event.matches(QtGui.QKeySequence.StandardKey.SelectAll)
                 or event.matches(QtGui.QKeySequence.StandardKey.Copy)
@@ -346,11 +345,7 @@ class ImageTool(BaseImageTool):
             self.sigTitleChanged.emit(title)
 
     @QtCore.Slot()
-    def _open_file(
-        self,
-        *,
-        native: bool = True,
-    ) -> None:
+    def _open_file(self, *, native: bool = True) -> None:
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
@@ -478,10 +473,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "addCursorAct": self.slicer_area.add_cursor_act,
                     "remCursorAct": self.slicer_area.rem_cursor_act,
                     "snapCursorAct": self.array_slicer.snap_act,
-                    "cursorMoveMenu": {
-                        "title": "Cursor Control",
-                        "actions": {},
-                    },
+                    "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
                     "sep1": {"separator": True},
                     "colorInvertAct": self.slicer_area.reverse_act,
                     "highContrastAct": self.slicer_area.high_contrast_act,

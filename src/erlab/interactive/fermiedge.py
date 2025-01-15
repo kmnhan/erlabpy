@@ -719,7 +719,7 @@ class ResolutionTool(
 
     def _fit_failed(self, info_text: str) -> None:
         self.overview_label.setText(
-            '<span style="font-weight:600; color:#ff5555;">' f"{info_text}" "</span>"
+            f'<span style="font-weight:600; color:#ff5555;">{info_text}</span>'
         )
 
     @QtCore.Slot()
@@ -767,8 +767,8 @@ class ResolutionTool(
                 1e3 if (param == "resolution" and self.mev_check.isChecked()) else 1
             )
             if hasattr(modelresult, "uvars") and modelresult.uvars is not None:
-                return f"{modelresult.uvars[param]*factor:P}"
-            return f"{modelresult.params[param].value*factor:.4f}"
+                return f"{modelresult.uvars[param] * factor:P}"
+            return f"{modelresult.params[param].value * factor:.4f}"
 
         for param, textedit in zip(
             ("temp", "center", "resolution"),
@@ -913,10 +913,7 @@ def goldtool(
 
 
 def restool(
-    data: xr.DataArray,
-    *,
-    data_name: str | None = None,
-    execute: bool | None = None,
+    data: xr.DataArray, *, data_name: str | None = None, execute: bool | None = None
 ) -> ResolutionTool:
     """Interactive tool for precise resolution fitting of EDCs.
 

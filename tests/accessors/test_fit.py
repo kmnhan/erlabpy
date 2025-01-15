@@ -94,13 +94,11 @@ def test_modelfit_params(use_dask: bool) -> None:
 
     t = np.arange(0, 2, 0.02)
     da = xr.DataArray(
-        np.stack([sine(t, 1.0, 2, 0), sine(t, 1.0, 2, 0)]),
-        coords={"x": [0, 1], "t": t},
+        np.stack([sine(t, 1.0, 2, 0), sine(t, 1.0, 2, 0)]), coords={"x": [0, 1], "t": t}
     )
 
     expected = xr.DataArray(
-        [[1, 2, 0], [-1, 2, 0.5]],
-        coords={"x": [0, 1], "param": ["a", "f", "p"]},
+        [[1, 2, 0], [-1, 2, 0.5]], coords={"x": [0, 1], "param": ["a", "f", "p"]}
     )
 
     # Different initial guesses for different values of x
@@ -117,11 +115,7 @@ def test_modelfit_params(use_dask: bool) -> None:
     ):
         params.append(lmfit.create_params(a=a, p=p, f=f).dumps())
     params = xr.DataArray(params, coords=[da.x])
-    fit = da.modelfit(
-        coords=[da.t],
-        model=lmfit.Model(sine),
-        params=params,
-    )
+    fit = da.modelfit(coords=[da.t], model=lmfit.Model(sine), params=params)
     np.testing.assert_allclose(fit.modelfit_coefficients, expected)
 
     # params as mixed dictionary
@@ -141,16 +135,14 @@ def test_modelfit_params(use_dask: bool) -> None:
 
     t = np.arange(0, 2, 0.02)
     da = xr.DataArray(
-        np.stack([sine(t, 1.0, 2, 0), sine(t, 1.0, 2, 0)]),
-        coords={"x": [0, 1], "t": t},
+        np.stack([sine(t, 1.0, 2, 0), sine(t, 1.0, 2, 0)]), coords={"x": [0, 1], "t": t}
     )
 
     # Fit a sine with different bounds: positive amplitude should result in a fit with
     # phase 0 and negative amplitude should result in phase 0.5 * 2pi.
 
     expected = xr.DataArray(
-        [[1, 2, 0], [-1, 2, 0.5]],
-        coords={"x": [0, 1], "param": ["a", "f", "p"]},
+        [[1, 2, 0], [-1, 2, 0.5]], coords={"x": [0, 1], "param": ["a", "f", "p"]}
     )
 
     if use_dask:

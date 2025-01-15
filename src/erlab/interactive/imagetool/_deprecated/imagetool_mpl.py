@@ -75,23 +75,14 @@ def move_mean_centered(a, window, min_count=None, axis=-1):
     return val[(slice(None),) * (axis % a.ndim) + (slice(w, -1),)]
 
 
-def move_mean_centered_multiaxis(
-    a,
-    window_list,
-    min_count_list=None,
-    axis_list=None,
-):
+def move_mean_centered_multiaxis(a, window_list, min_count_list=None, axis_list=None):
     if axis_list is None:
         axis_list = [-1]
     if not isinstance(axis_list, list):
-        axis_list = [
-            axis_list,
-        ]
+        axis_list = [axis_list]
     w_list = [(window - 1) // 2 for window in window_list]
     pad_width = [(0, 0)] * a.ndim
-    slicer = [
-        slice(None),
-    ] * a.ndim
+    slicer = [slice(None)] * a.ndim
     if min_count_list is None:
         min_count_list = [w + 1 for w in w_list]
     for axis in axis_list:
@@ -341,9 +332,7 @@ class mpl_itool(Widget):
 
         self.ndim = self.data.ndim
         self._assign_vals_T()
-        self.avg_win = [
-            1,
-        ] * self.ndim
+        self.avg_win = [1] * self.ndim
         self.clim_locked = False
         self.clim_list = [()] * self.ndim
         self.dims = self.data.dims
@@ -687,9 +676,7 @@ class mpl_itool(Widget):
         if self.parallel:
             self.pool = Parallel(n_jobs=-1, require="sharedmem", verbose=0)
 
-        self.averaged = [
-            False,
-        ] * self.ndim
+        self.averaged = [False] * self.ndim
         self.visible = True
         self.background = None
         self.needclear = False
@@ -1431,7 +1418,7 @@ def itoolmpl(data, *args, **kwargs) -> None:
     with (
         plt.rc_context(
             {
-                "text.usetex": False,
+                "text.usetex": False
                 # 'font.family':'SF Pro',
                 # 'font.size':8,
                 # 'font.stretch':'condensed',

@@ -56,13 +56,7 @@ def test_do_convolve() -> None:
 
     resolution = 1.0
     expected = np.array(
-        [
-            -6.61744490e-24,
-            5.87148334e00,
-            1.17429667e01,
-            1.76144500e01,
-            2.34859334e01,
-        ]
+        [-6.61744490e-24, 5.87148334e00, 1.17429667e01, 1.76144500e01, 2.34859334e01]
     )
     result = do_convolve(x, testfunc, resolution)
     assert np.allclose(result, expected)
@@ -75,13 +69,7 @@ def test_do_convolve() -> None:
 
     resolution = 0.5
     expected = np.array(
-        [
-            0.00000000e00,
-            2.95132925e00,
-            3.61433592e-16,
-            -2.95132925e00,
-            -7.22867185e-16,
-        ]
+        [0.00000000e00, 2.95132925e00, 3.61433592e-16, -2.95132925e00, -7.22867185e-16]
     )
     result = do_convolve(x, testfunc, resolution)
     assert np.allclose(result, expected)

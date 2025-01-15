@@ -947,8 +947,7 @@ class BetterAxisItem(pg.AxisItem):
                 #     f"(×{1.0 / self.autoSIPrefixScale:.3G})",
                 # )#.replace("-", "−")
                 search = re.search(
-                    r"1E\+?(\-?)0?(\d?\d)",
-                    f"{1.0 / self.autoSIPrefixScale:.3G}",
+                    r"1E\+?(\-?)0?(\d?\d)", f"{1.0 / self.autoSIPrefixScale:.3G}"
                 )
                 if search is not None:
                     units = "".join(search.groups())
@@ -1860,8 +1859,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
         if data is not None:
             self.input = parse_data(data)
             self.images[0].setDataArray(
-                self.input,
-                cut_to_data=self.cut_to_data in ("in", "both"),
+                self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
 
     def add_roi(self, i):
@@ -1918,8 +1916,7 @@ class ComparisonWidget(AnalysisWidgetBase):
                     "Pre-function must return a DataArray when `only_values` is False."
                 )
             self.images[0].setDataArray(
-                self.input,
-                cut_to_data=self.cut_to_data in ("in", "both"),
+                self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
 
     def set_pre_function(self, func, only_values=False, **kwargs) -> None:
@@ -1955,8 +1952,7 @@ class ComparisonWidget(AnalysisWidgetBase):
         else:
             self.output = self.mainfunc(self.input_, **self.mainfunc_kwargs)
             self.images[1].setDataArray(
-                self.output,
-                cut_to_data=self.cut_to_data in ("out", "both"),
+                self.output, cut_to_data=self.cut_to_data in ("out", "both")
             )
 
     def refresh_all(self) -> None:
@@ -2130,12 +2126,7 @@ class IconButton(QtWidgets.QPushButton):
 
     """
 
-    def __init__(
-        self,
-        on: str | None = None,
-        off: str | None = None,
-        **kwargs,
-    ) -> None:
+    def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
 

@@ -15,11 +15,7 @@ def sample_plot(norms, kw0, kw1, cmap):
     num = len(norms)
 
     _, axs = plt.subplots(
-        num,
-        1,
-        layout="constrained",
-        figsize=eplt.figwh(),
-        squeeze=False,
+        num, 1, layout="constrained", figsize=eplt.figwh(), squeeze=False
     )
 
     bar_data = modulatedBarData(384, 256)

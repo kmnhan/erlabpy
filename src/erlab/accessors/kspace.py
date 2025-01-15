@@ -226,7 +226,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
         erlab.utils.misc.emit_user_level_warning(
-            "Inner potential not found in data attributes, assuming 10 eV",
+            "Inner potential not found in data attributes, assuming 10 eV"
         )
         return 10.0
 

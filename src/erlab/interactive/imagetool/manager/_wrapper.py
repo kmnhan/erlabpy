@@ -67,7 +67,7 @@ class _ImageToolWrapper(QtCore.QObject):
         else:
             text = erlab.utils.formatting.format_darr_html(
                 self.slicer_area._data,
-                show_size=False,
+                show_size=True,
                 additional_info=[
                     f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
                 ],

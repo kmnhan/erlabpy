@@ -1204,10 +1204,7 @@ class LoaderBase(metaclass=_Loader):
         )
 
     def load_single(
-        self,
-        file_path: str | os.PathLike,
-        *,
-        without_values: bool = False,
+        self, file_path: str | os.PathLike, *, without_values: bool = False
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         r"""Load a single file and return it as an xarray data structure.
 
@@ -1404,23 +1401,17 @@ class LoaderBase(metaclass=_Loader):
 
     @overload
     def _combine_multiple(
-        self,
-        data_list: list[xr.DataArray],
-        coord_dict: dict[str, Sequence],
+        self, data_list: list[xr.DataArray], coord_dict: dict[str, Sequence]
     ) -> xr.DataArray: ...
 
     @overload
     def _combine_multiple(
-        self,
-        data_list: list[xr.Dataset],
-        coord_dict: dict[str, Sequence],
+        self, data_list: list[xr.Dataset], coord_dict: dict[str, Sequence]
     ) -> xr.Dataset: ...
 
     @overload
     def _combine_multiple(
-        self,
-        data_list: list[xr.DataTree],
-        coord_dict: dict[str, Sequence],
+        self, data_list: list[xr.DataTree], coord_dict: dict[str, Sequence]
     ) -> xr.DataTree: ...
 
     def _combine_multiple(
@@ -2058,7 +2049,7 @@ class LoaderRegistry(_RegistryBase):
                     f"Found {identifier!s} in the default directory "
                     f"{default_dir!s}, but conflicting file {abs_file!s} was found. "
                     "The first file will be loaded. "
-                    "Consider specifying the directory explicitly.",
+                    "Consider specifying the directory explicitly."
                 )
             else:
                 # If the identifier is a path to a file, ignore default_dir

@@ -226,9 +226,7 @@ napoleon_custom_sections = [("Signals", "params_style")]
 
 # -- nbsphinx options --------------------------------------------------------
 
-nbsphinx_execute_arguments = [
-    "--InlineBackend.figure_formats={'svg', 'pdf'}",
-]
+nbsphinx_execute_arguments = ["--InlineBackend.figure_formats={'svg', 'pdf'}"]
 
 # -- Qt documentation & intersphinx ------------------------------------------
 
@@ -363,8 +361,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
                     ],
                     ", ",
                     pybtex.style.template.field(
-                        "pages",
-                        apply_func=pybtex.style.formatting.unsrt.dashify,
+                        "pages", apply_func=pybtex.style.formatting.unsrt.dashify
                     ),
                 ],
             ],
@@ -530,7 +527,7 @@ html_theme_options: dict[str, object] = {
                 </svg>
             """,  # noqa: E501
             "class": "",
-        },
+        }
     ],
     "light_css_variables": {},
     "dark_css_variables": {},

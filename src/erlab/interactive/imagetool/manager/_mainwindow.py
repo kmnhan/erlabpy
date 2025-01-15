@@ -43,8 +43,7 @@ If a shared memory object with this name exists, it means that an instance is ru
 """
 
 _ICON_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "icon.icns" if sys.platform == "darwin" else "icon.png",
+    os.path.dirname(__file__), "icon.icns" if sys.platform == "darwin" else "icon.png"
 )
 """Path to the icon file for the manager window."""
 

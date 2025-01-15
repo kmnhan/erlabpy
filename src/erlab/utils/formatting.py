@@ -289,7 +289,7 @@ def _format_array_values(val: npt.NDArray) -> str:
 
     if val.ndim == 1:
         if len(val) == 2:
-            return f"[{format_value(val[0])}, " f"{format_value(val[1])}]"
+            return f"[{format_value(val[0])}, {format_value(val[1])}]"
 
         if erlab.utils.array.is_uniform_spaced(val):
             if val[0] == val[-1]:
@@ -304,7 +304,7 @@ def _format_array_values(val: npt.NDArray) -> str:
             if val[0] == val[-1]:
                 return format_value(val[0])
 
-            return f"{format_value(val[0])} to " f"{format_value(val[-1])}"
+            return f"{format_value(val[0])} to {format_value(val[-1])}"
 
     mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
     return f"min {mn} max {mx}"

@@ -23,8 +23,7 @@ def _format_polarization(val) -> str:
 
 def _parse_time(darr: xr.DataArray) -> datetime.datetime:
     return datetime.datetime.strptime(
-        f"{darr.attrs['Date']} {darr.attrs['Time']}",
-        "%d/%m/%Y %I:%M:%S %p",
+        f"{darr.attrs['Date']} {darr.attrs['Time']}", "%d/%m/%Y %I:%M:%S %p"
     )
 
 
@@ -207,9 +206,7 @@ class MERLINLoader(LoaderBase):
 
     def load_live(self, identifier, data_dir):
         warnings.warn(
-            "load_live is deprecated, use load instead",
-            FutureWarning,
-            stacklevel=1,
+            "load_live is deprecated, use load instead", FutureWarning, stacklevel=1
         )
         return self.load(identifier, data_dir)
 

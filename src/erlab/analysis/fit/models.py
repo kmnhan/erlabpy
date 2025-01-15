@@ -198,11 +198,7 @@ class StepEdgeModel(lmfit.Model):
         self, independent_vars=("x",), prefix="", missing="raise", **kwargs
     ) -> None:
         kwargs.update(
-            {
-                "prefix": prefix,
-                "missing": missing,
-                "independent_vars": independent_vars,
-            }
+            {"prefix": prefix, "missing": missing, "independent_vars": independent_vars}
         )
         super().__init__(step_linbkg_broad, **kwargs)
         self.set_param_hint("sigma", min=0.0)
@@ -375,10 +371,7 @@ class FermiEdge2dModel(lmfit.Model):
     """ + lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
 
     def __init__(
-        self,
-        degree: int = 2,
-        independent_vars=("eV", "alpha"),
-        **kwargs,
+        self, degree: int = 2, independent_vars=("eV", "alpha"), **kwargs
     ) -> None:
         kwargs.update({"independent_vars": independent_vars})
         super().__init__(FermiEdge2dFunction(degree), **kwargs)

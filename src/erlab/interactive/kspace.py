@@ -595,9 +595,7 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
 
-    def get_bz_lines(
-        self,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    def get_bz_lines(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         from erlab.plotting.bz import get_bz_edge
 
         if self.data.kspace._has_hv:
@@ -634,10 +632,7 @@ class KspaceTool(KspaceToolGUI):
 
             if rot != 0.0:
                 rotmat = np.array(
-                    [
-                        [np.cos(rot), -np.sin(rot)],
-                        [np.sin(rot), np.cos(rot)],
-                    ]
+                    [[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]]
                 )
                 lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
                 vertices = (rotmat @ vertices.T).T

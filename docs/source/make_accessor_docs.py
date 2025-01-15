@@ -106,13 +106,13 @@ content = f"""Accessors (:mod:`erlab.accessors`)
 
 Dataset accessors
 -----------------
-{_make_section(content_ds_methods, 'Methods')}
-{_make_section(content_ds_attributes, 'Attributes')}
+{_make_section(content_ds_methods, "Methods")}
+{_make_section(content_ds_attributes, "Attributes")}
 
 DataArray accessors
 -------------------
-{_make_section(content_da_methods, 'Methods')}
-{_make_section(content_da_attributes, 'Attributes')}
+{_make_section(content_da_methods, "Methods")}
+{_make_section(content_da_attributes, "Attributes")}
 
 """
 

@@ -343,10 +343,7 @@ def spline_from_edge(
     center, weights: npt.ArrayLike | None = None, lam: float | None = None
 ) -> scipy.interpolate.BSpline:
     return scipy.interpolate.make_smoothing_spline(
-        center.alpha.values,
-        center.values,
-        w=np.asarray(weights),
-        lam=lam,
+        center.alpha.values, center.values, w=np.asarray(weights), lam=lam
     )
 
 
@@ -438,11 +435,7 @@ def _plot_gold_fit(
         ax1.set_ylim(erlab.plotting.autoscale_to(residuals))
         ax2.set_ylim(erlab.plotting.autoscale_to(center_arr.values))
     else:
-        res.plot_residuals(
-            ax=ax1,
-            data_kws=data_kws,
-            fit_kws=fit_kws,
-        )
+        res.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
         res.plot_fit(
             ax=ax2,
             data_kws=data_kws,
@@ -670,10 +663,7 @@ def quick_fit(
 
 
 def _plot_resolution_fit(
-    ax: matplotlib.axes.Axes,
-    data: xr.DataArray,
-    result: xr.Dataset,
-    fix_center: bool,
+    ax: matplotlib.axes.Axes, data: xr.DataArray, result: xr.Dataset, fix_center: bool
 ) -> None:
     """Plot the results of a single Fermi edge fit."""
     ax.plot(

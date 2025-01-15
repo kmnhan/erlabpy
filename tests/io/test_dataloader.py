@@ -66,8 +66,7 @@ def _format_polarization(val) -> str:
 
 def _parse_time(darr: xr.DataArray) -> datetime.datetime:
     return datetime.datetime.strptime(
-        f"{darr.attrs['Date']} {darr.attrs['Time']}",
-        r"%d/%m/%Y %I:%M:%S %p",
+        f"{darr.attrs['Date']} {darr.attrs['Time']}", r"%d/%m/%Y %I:%M:%S %p"
     )
 
 
@@ -291,10 +290,8 @@ def test_loader(qtbot) -> None:
         match=re.escape(
             str(
                 FileNotFoundError(
-                    errno.ENOENT,
-                    os.strerror(errno.ENOENT),
-                    nonexistent_file,
-                ),
+                    errno.ENOENT, os.strerror(errno.ENOENT), nonexistent_file
+                )
             )
         ).replace(re.escape(nonexistent_file), f".*{re.escape(nonexistent_file)}"),
     ):
