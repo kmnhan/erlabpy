@@ -37,21 +37,18 @@ jobs:
           changelog_increment_filename: body.md
           extra_requirements: "cz-changeup"
 
-      - name: Build package distributions
-        id: build
+      - name: Install uv
+        if: env.REVISION != env.PREVIOUS_REVISION
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build and publish package distributions to PyPI
         if: env.REVISION != env.PREVIOUS_REVISION
         run: |
-          python -m venv venv
-          source venv/bin/activate
-          python -m pip install --upgrade build
-          python -m build
-
-      - name: Publish package distributions to PyPI
-        id: pypi-publish
-        if: env.REVISION != env.PREVIOUS_REVISION
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          verbose: true
+          uv build
+          uv publish --trusted-publishing always
 
       - name: Publish package distributions to GitHub Releases
         id: github-release

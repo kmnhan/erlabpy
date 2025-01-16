@@ -305,7 +305,7 @@ def test_loader(qtbot) -> None:
             erlab.io.loaders.example.extensions,
         ),
     ):
-        erlab.io.load(wrong_file)
+        erlab.io.load(wrong_file, single=True)
 
     # Test if coordinate_attrs are correctly assigned
     mfdata = erlab.io.load(1)
