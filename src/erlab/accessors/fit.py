@@ -559,7 +559,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
             parallel_obj = joblib.Parallel(**parallel_kw)
 
             if parallel_obj.return_generator:
-                out_dicts = tqdm.tqdm(  # type: ignore[call-overload]
+                out_dicts = tqdm.tqdm(
                     parallel_obj(
                         itertools.starmap(
                             joblib.delayed(_output_wrapper), self._obj.data_vars.items()
@@ -581,7 +581,7 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
 
         else:
             result = type(self._obj)()
-            for name, da in tqdm.tqdm(self._obj.data_vars.items(), **tqdm_kw):  # type: ignore[call-overload]
+            for name, da in tqdm.tqdm(self._obj.data_vars.items(), **tqdm_kw):
                 _output_wrapper(name, da, result)
 
         result = result.assign_coords(
