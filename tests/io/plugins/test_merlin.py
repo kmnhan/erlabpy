@@ -18,27 +18,23 @@ def expected_dir(data_dir):
 
 def test_load_xps(expected_dir) -> None:
     xr.testing.assert_identical(
-        erlab.io.load("core.pxt"),
-        xr.load_dataarray(expected_dir / "core.h5"),
+        erlab.io.load("core.pxt"), xr.load_dataarray(expected_dir / "core.h5")
     )
 
 
 def test_load_multiple(expected_dir) -> None:
     xr.testing.assert_identical(
-        erlab.io.load("f_005_S001.pxt"),
-        xr.load_dataarray(expected_dir / "5.h5"),
+        erlab.io.load("f_005_S001.pxt"), xr.load_dataarray(expected_dir / "5.h5")
     )
     xr.testing.assert_identical(
-        erlab.io.load(5),
-        xr.load_dataarray(expected_dir / "5.h5"),
+        erlab.io.load(5), xr.load_dataarray(expected_dir / "5.h5")
     )
 
 
 def test_load_live(expected_dir) -> None:
     for live in ("lp", "lxy"):
         xr.testing.assert_identical(
-            erlab.io.load(f"{live}.ibw"),
-            xr.load_dataarray(expected_dir / f"{live}.h5"),
+            erlab.io.load(f"{live}.ibw"), xr.load_dataarray(expected_dir / f"{live}.h5")
         )
 
 

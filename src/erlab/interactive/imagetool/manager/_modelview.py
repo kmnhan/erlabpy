@@ -380,8 +380,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
                         QtGui.QPalette.ColorRole.Text,
                     )
                 return palette.color(
-                    QtGui.QPalette.ColorGroup.Active,
-                    QtGui.QPalette.ColorRole.Text,
+                    QtGui.QPalette.ColorGroup.Active, QtGui.QPalette.ColorRole.Text
                 )
 
         return None
@@ -619,9 +618,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         n_rows = self._model.rowCount()
         self._model.insertRows(n_rows, 1)
         self._model.setData(
-            self._model.index(n_rows),
-            index,
-            _WrapperItemDataRole.ToolIndexRole,
+            self._model.index(n_rows), index, _WrapperItemDataRole.ToolIndexRole
         )
 
     def tool_removed(self, index: int) -> None:

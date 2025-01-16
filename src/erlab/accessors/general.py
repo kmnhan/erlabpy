@@ -344,10 +344,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
                 c="k", ylabel="", **plot_kwargs
             )
             components = part_comps.hvplot(
-                y=all_comps,
-                legend="top_right",
-                group_label="Component",
-                **plot_kwargs,
+                y=all_comps, legend="top_right", group_label="Component", **plot_kwargs
             )
             plots = components * data * fit
         else:

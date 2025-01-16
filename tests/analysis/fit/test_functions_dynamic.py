@@ -17,10 +17,7 @@ def test_poly_func_call() -> None:
     x = np.arange(5, dtype=np.float64)
     coeffs = RAND_STATE.randn(3)
     expected_result = np.polyval(np.asarray(list(reversed(coeffs))), x)
-    assert np.allclose(
-        PolynomialFunction(degree=2)(x, *coeffs),
-        expected_result,
-    )
+    assert np.allclose(PolynomialFunction(degree=2)(x, *coeffs), expected_result)
 
     # Test case 2: Evaluate polynomial function with xarray input
     x = xr.DataArray(np.arange(5, dtype=np.float64), dims="x")
@@ -123,11 +120,7 @@ def test_multi_peak_function_call() -> None:
     convolve = False
     degree = 2
 
-    params = {
-        "p0_center": 0.0,
-        "p0_height": 1.0,
-        "p0_width": 0.5,
-    }
+    params = {"p0_center": 0.0, "p0_height": 1.0, "p0_width": 0.5}
 
     for background in ("constant", "linear", "polynomial", "none"):
         expected_result = lorentzian_wh(

@@ -570,9 +570,7 @@ def label_subplots(
                 prop=dict(fontsize=fontsize, **kwargs),
                 bbox_to_anchor=ax.bbox,
                 bbox_transform=matplotlib.transforms.ScaledTranslation(
-                    offset[0] / 72,
-                    offset[1] / 72,
-                    ax.get_figure().dpi_scale_trans,
+                    offset[0] / 72, offset[1] / 72, ax.get_figure().dpi_scale_trans
                 ),
                 clip_on=False,
             )
@@ -762,6 +760,7 @@ def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
     axis: Literal["x", "y"] = "x",
+    literal: bool = False,
     roman: bool = True,
     bar: bool = False,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
@@ -781,6 +780,8 @@ def mark_points_outside(
     axis
         If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points
         along the vertical axis.
+    literal
+        If `True`, take the input string literally.
     roman
         If ``False``, itallic fonts are used.
     bar
@@ -805,7 +806,10 @@ def mark_points_outside(
             label_ax.set_xlim(ax.get_xlim())
             label_ax.set_xticks(
                 points,
-                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                labels=[
+                    lab if literal else parse_point_labels(lab, roman, bar)
+                    for lab in labels
+                ],
                 **kwargs,
             )
         else:
@@ -813,7 +817,10 @@ def mark_points_outside(
             label_ax.set_ylim(ax.get_ylim())
             label_ax.set_yticks(
                 points,
-                labels=[parse_point_labels(lab, roman, bar) for lab in labels],
+                labels=[
+                    lab if literal else parse_point_labels(lab, roman, bar)
+                    for lab in labels
+                ],
                 **kwargs,
             )
         label_ax.set_frame_on(False)
@@ -980,9 +987,7 @@ def scale_units(
             setlabel(label.replace(f"({unit})", f"({get_si_str(si)}{unit})"))
 
 
-def integer_ticks(
-    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
-) -> None:
+def integer_ticks(ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes]) -> None:
     """Set the ticks on the x and y axes to only display integer values.
 
     Parameters

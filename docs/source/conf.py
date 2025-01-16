@@ -99,6 +99,11 @@ def linkcode_resolve(domain, info) -> str | None:
     if fullname.endswith(".identify") and not fullname.endswith(".LoaderBase.identify"):
         fullname = fullname.replace(".identify", "._original_identify")
 
+    if fullname.endswith(".load_single") and not fullname.endswith(
+        ".LoaderBase.load_single"
+    ):
+        fullname = fullname.replace(".load_single", "._original_load_single")
+
     submod = sys.modules.get(modname)
     if submod is None:
         return None
@@ -221,9 +226,7 @@ napoleon_custom_sections = [("Signals", "params_style")]
 
 # -- nbsphinx options --------------------------------------------------------
 
-nbsphinx_execute_arguments = [
-    "--InlineBackend.figure_formats={'svg', 'pdf'}",
-]
+nbsphinx_execute_arguments = ["--InlineBackend.figure_formats={'svg', 'pdf'}"]
 
 # -- Qt documentation & intersphinx ------------------------------------------
 
@@ -358,8 +361,7 @@ class APSStyle(pybtex.style.formatting.unsrt.Style):
                     ],
                     ", ",
                     pybtex.style.template.field(
-                        "pages",
-                        apply_func=pybtex.style.formatting.unsrt.dashify,
+                        "pages", apply_func=pybtex.style.formatting.unsrt.dashify
                     ),
                 ],
             ],
@@ -525,7 +527,7 @@ html_theme_options: dict[str, object] = {
                 </svg>
             """,  # noqa: E501
             "class": "",
-        },
+        }
     ],
     "light_css_variables": {},
     "dark_css_variables": {},

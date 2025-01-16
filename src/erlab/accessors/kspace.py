@@ -226,7 +226,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if "inner_potential" in self._obj.attrs:
             return float(self._obj.attrs["inner_potential"])
         erlab.utils.misc.emit_user_level_warning(
-            "Inner potential not found in data attributes, assuming 10 eV",
+            "Inner potential not found in data attributes, assuming 10 eV"
         )
         return 10.0
 
@@ -448,7 +448,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self._beta.size > 1
 
     @property
-    def _valid_offset_keys(self) -> tuple[str, ...]:
+    def _valid_offset_keys(self) -> tuple[str, str, str]:
         """
         Get valid offset angles based on the experimental configuration.
 

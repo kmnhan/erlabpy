@@ -652,14 +652,7 @@ class mdctool(QtWidgets.QMainWindow):
     def set_params(self, params: dict) -> None:
         params = copy.deepcopy(params)
         self._params_init.set_values(
-            **{
-                k: params[k]
-                for k in (
-                    "lin_bkg",
-                    "const_bkg",
-                    "resolution",
-                )
-            }
+            **{k: params[k] for k in ("lin_bkg", "const_bkg", "resolution")}
         )
         for i in range(self.n_bands):
             self._params_peak.widget(i).set_values(  # type: ignore[union-attr]

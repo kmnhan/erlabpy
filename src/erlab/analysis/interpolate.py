@@ -126,10 +126,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
             elif ndim == len(xi_tuple):
                 interp_func = _get_interp_func(ndim)
                 return interp_func(
-                    *self.grid,
-                    self.values,
-                    *xi_tuple,
-                    fill_value=self.fill_value,
+                    *self.grid, self.values, *xi_tuple, fill_value=self.fill_value
                 )
 
         if (len(self.uneven_dims) != 0) and is_linear:
@@ -221,12 +218,7 @@ def _calc_interp2(values, v0, v1):
     n0, n1 = values.shape[:2]
     j0, j1 = min(i0 + 1, n0 - 1), min(i1 + 1, n1 - 1)
     return _do_interp2(
-        v0 - i0,
-        v1 - i1,
-        values[i0, i1],
-        values[j0, i1],
-        values[i0, j1],
-        values[j0, j1],
+        v0 - i0, v1 - i1, values[i0, i1], values[j0, i1], values[i0, j1], values[j0, j1]
     )
 
 

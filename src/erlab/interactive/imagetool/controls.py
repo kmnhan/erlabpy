@@ -489,12 +489,10 @@ class ItoolColorControls(ItoolControlsBase):
             off=_ICON_ALIASES["invert_off"],
         )
         self.btn_contrast = erlab.interactive.utils.IconActionButton(
-            self.slicer_area.high_contrast_act,
-            on=_ICON_ALIASES["contrast"],
+            self.slicer_area.high_contrast_act, on=_ICON_ALIASES["contrast"]
         )
         self.btn_zero = erlab.interactive.utils.IconActionButton(
-            self.slicer_area.zero_centered_act,
-            on=_ICON_ALIASES["zero_center"],
+            self.slicer_area.zero_centered_act, on=_ICON_ALIASES["zero_center"]
         )
         self.btn_lock = erlab.interactive.utils.IconActionButton(
             self.slicer_area.lock_levels_act,

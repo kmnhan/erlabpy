@@ -10,139 +10,14 @@ import uuid
 import weakref
 from typing import TYPE_CHECKING, cast
 
-import numpy as np
-import numpy.typing as npt
 from qtpy import QtCore, QtGui, QtWidgets
-from xarray.core.formatting import render_human_readable_nbytes
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
-
-    import xarray as xr
-
     from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.manager import ImageToolManager
-
-
-_ACCENT_PLACEHOLDER: str = "<info-accent-color>"
-"""Placeholder for accent color in HTML strings."""
-
-
-def _format_dim_name(s: Hashable) -> str:
-    return f"<b>{s}</b>"
-
-
-def _format_dim_sizes(darr: xr.DataArray, prefix: str) -> str:
-    out = f"<p>{prefix}("
-
-    dims_list = []
-    for d in darr.dims:
-        dim_label = _format_dim_name(d) if d in darr.coords else str(d)
-        dims_list.append(f"{dim_label}: {darr.sizes[d]}")
-
-    out += ", ".join(dims_list)
-    out += r")</p>"
-    return out
-
-
-def _format_coord_dims(coord: xr.DataArray) -> str:
-    dims = tuple(str(d) for d in coord.variable.dims)
-
-    if len(dims) > 1:
-        return f"({', '.join(dims)})&emsp;"
-
-    if len(dims) == 1 and dims[0] != coord.name:
-        return f"({dims[0]})&emsp;"
-
-    return ""
-
-
-def _format_array_values(val: npt.NDArray) -> str:
-    if val.size == 1:
-        return erlab.utils.formatting.format_value(val.item())
-
-    val = val.squeeze()
-
-    if val.ndim == 1:
-        if len(val) == 2:
-            return (
-                f"[{erlab.utils.formatting.format_value(val[0])}, "
-                f"{erlab.utils.formatting.format_value(val[1])}]"
-            )
-
-        if erlab.utils.array.is_uniform_spaced(val):
-            if val[0] == val[-1]:
-                return erlab.utils.formatting.format_value(val[0])
-
-            start, end, step = tuple(
-                erlab.utils.formatting.format_value(v)
-                for v in (val[0], val[-1], val[1] - val[0])
-            )
-            return f"{start} : {step} : {end}"
-
-        if erlab.utils.array.is_monotonic(val):
-            if val[0] == val[-1]:
-                return erlab.utils.formatting.format_value(val[0])
-
-            return (
-                f"{erlab.utils.formatting.format_value(val[0])} to "
-                f"{erlab.utils.formatting.format_value(val[-1])}"
-            )
-
-    mn, mx = tuple(
-        erlab.utils.formatting.format_value(v) for v in (np.nanmin(val), np.nanmax(val))
-    )
-    return f"min {mn} max {mx}"
-
-
-def _format_coord_key(key: Hashable, is_dim: bool) -> str:
-    style = f"color: {_ACCENT_PLACEHOLDER}; "
-    if is_dim:
-        style += "font-weight: bold; "
-    return f"<span style='{style}'>{key}</span>&emsp;"
-
-
-def _format_attr_key(key: Hashable) -> str:
-    style = f"color: {_ACCENT_PLACEHOLDER};"
-    return f"<span style='{style}'>{key}</span>&emsp;"
-
-
-def _format_info_html(darr: xr.DataArray, created_time: datetime.datetime) -> str:
-    out = ""
-
-    name = ""
-    if darr.name is not None and darr.name != "":
-        name = f"'{darr.name}'&emsp;"
-
-    out += _format_dim_sizes(darr, name)
-    out += rf"<p>Size {render_human_readable_nbytes(darr.nbytes)}</p>"
-    out += rf"<p>Added {created_time.isoformat(sep=' ', timespec='seconds')}</p>"
-
-    out += r"Coordinates:"
-    coord_rows: list[list[str]] = []
-    for key, coord in darr.coords.items():
-        is_dim: bool = key in darr.dims
-        coord_rows.append(
-            [
-                _format_coord_key(key, is_dim),
-                _format_coord_dims(coord),
-                _format_array_values(coord.values),
-            ]
-        )
-    out += erlab.utils.formatting.format_html_table(coord_rows)
-
-    out += r"<br>Attributes:"
-    attr_rows: list[list[str]] = []
-    for key, attr in darr.attrs.items():
-        attr_rows.append(
-            [_format_attr_key(key), erlab.utils.formatting.format_value(attr)]
-        )
-    out += erlab.utils.formatting.format_html_table(attr_rows)
-
-    return out
 
 
 class _ImageToolWrapper(QtCore.QObject):
@@ -190,14 +65,22 @@ class _ImageToolWrapper(QtCore.QObject):
         if self.archived:
             text: str = self._info_text_archived
         else:
-            text = _format_info_html(self.slicer_area._data, self._created_time)
+            text = erlab.utils.formatting.format_darr_html(
+                self.slicer_area._data,
+                show_size=True,
+                additional_info=[
+                    f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
+                ],
+            )
 
-        accent_color = "#0078d7"
         if hasattr(QtGui.QPalette.ColorRole, "Accent"):
             # Accent color is available from Qt 6.6
             accent_color = QtWidgets.QApplication.palette().accent().color().name()
+            text = text.replace(
+                erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
+            )
 
-        return text.replace(_ACCENT_PLACEHOLDER, accent_color)
+        return text
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
@@ -362,9 +245,7 @@ class _ImageToolWrapper(QtCore.QObject):
             tool = cast(ImageTool, self.tool)
             tool.to_file(self._archived_fname)
 
-            self._info_text_archived = _format_info_html(
-                self.slicer_area._data, self._created_time
-            )
+            self._info_text_archived = self.info_text
             self._box_ratio_archived, self._pixmap_archived = self._preview_image
             self.dispose()
 

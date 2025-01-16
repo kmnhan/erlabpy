@@ -35,12 +35,7 @@ def test_generate_data() -> None:
 
 def test_generate_data_angles() -> None:
     data = generate_data_angles(
-        (3, 3, 3),
-        hv=50.0,
-        configuration=1,
-        temp=20.0,
-        seed=1,
-        assign_attributes=True,
+        (3, 3, 3), hv=50.0, configuration=1, temp=20.0, seed=1, assign_attributes=True
     )
 
     np.testing.assert_allclose(

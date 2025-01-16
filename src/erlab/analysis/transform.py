@@ -101,11 +101,7 @@ def rotate(
 
     # Rotation center in pixel space before transformation
     in_pixel_center = np.array(
-        [
-            (center_y - ycoords[0]) / dy,
-            (center_x - xcoords[0]) / dx,
-            1.0,
-        ]
+        [(center_y - ycoords[0]) / dy, (center_x - xcoords[0]) / dx, 1.0]
     )
 
     # Build rotation matrix

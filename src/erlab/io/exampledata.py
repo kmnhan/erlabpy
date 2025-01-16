@@ -392,9 +392,7 @@ def generate_data_angles(
 
     if assign_attributes:
         out = out.assign_attrs(
-            configuration=int(configuration),
-            sample_temp=temp,
-            sample_workfunction=4.5,
+            configuration=int(configuration), sample_temp=temp, sample_workfunction=4.5
         )
 
     return out.squeeze()

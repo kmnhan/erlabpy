@@ -230,8 +230,7 @@ class ColorMapGammaWidget(QtWidgets.QWidget):
         self.spin.valueChanged.connect(self.spin_changed)
 
         self.slider.setRange(
-            self.gamma_scale(self.spin.minimum()),
-            self.gamma_scale(self.spin.maximum()),
+            self.gamma_scale(self.spin.minimum()), self.gamma_scale(self.spin.maximum())
         )
         self.slider.valueChanged.connect(self.slider_changed)
 

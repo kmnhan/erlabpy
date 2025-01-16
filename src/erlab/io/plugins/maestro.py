@@ -56,7 +56,7 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
     if len(data.data_vars) > 1:
         erlab.utils.misc.emit_user_level_warning(
             "More than one data variable is present in the data."
-            "Only the first one will be used",
+            "Only the first one will be used"
         )
 
     # Get the first data variable
@@ -73,6 +73,7 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
 class MAESTROMicroLoader(LoaderBase):
     name = "maestro"
     description = "ALS Beamline 7.0.2.1 MAESTRO"
+    extensions: ClassVar[set[str]] = {".h5"}
 
     aliases = ("ALS_BL7", "als_bl7", "BL702", "bl702")
 

@@ -161,7 +161,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         # self.addItem(self.plotItem)
 
         super().__init__(
-            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw),
+            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
         )
         self.viewport().setAttribute(
             QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, False
@@ -250,12 +250,7 @@ def link_slicer(
                 obj = all_args.arguments.pop("self")
                 if obj._linking_proxy is not None:
                     obj._linking_proxy.sync(
-                        obj,
-                        func.__name__,
-                        all_args.arguments,
-                        indices,
-                        steps,
-                        color,
+                        obj, func.__name__, all_args.arguments, indices, steps, color
                     )
             return out
 
@@ -1806,11 +1801,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
     """Display a 1D slice of data in a plot."""
 
     def __init__(
-        self,
-        axes,
-        cursor: int | None = None,
-        is_vertical: bool = False,
-        **kargs,
+        self, axes, cursor: int | None = None, is_vertical: bool = False, **kargs
     ) -> None:
         pg.PlotDataItem.__init__(self, axes=axes, cursor=cursor, **kargs)
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
@@ -1837,12 +1828,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
 class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageItem):
     """Display a 2D slice of data as an image."""
 
-    def __init__(
-        self,
-        axes,
-        cursor: int | None = None,
-        **kargs,
-    ) -> None:
+    def __init__(self, axes, cursor: int | None = None, **kargs) -> None:
         erlab.interactive.colors.BetterImageItem.__init__(
             self, axes=axes, cursor=cursor, **kargs
         )
@@ -1994,10 +1980,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.add_cursor(update=False)
 
         self.proxy = pg.SignalProxy(
-            self._sigDragged,
-            delay=1 / 60,
-            rateLimit=60,
-            slot=self.process_drag,
+            self._sigDragged, delay=1 / 60, rateLimit=60, slot=self.process_drag
         )
         if self.slicer_area.bench:
             self._time_start: float | None = None
@@ -2286,13 +2269,9 @@ class ItoolPlotItem(pg.PlotItem):
         new_cursor = len(self.slicer_data_items)
         line_angles = (90, 0)
 
-        (
-            clr,
-            clr_cursor,
-            clr_cursor_hover,
-            clr_span,
-            clr_span_edge,
-        ) = self.slicer_area.gen_cursor_colors(new_cursor)
+        (clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge) = (
+            self.slicer_area.gen_cursor_colors(new_cursor)
+        )
 
         if self.is_image:
             item = self.image_cls(

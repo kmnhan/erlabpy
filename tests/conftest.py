@@ -83,12 +83,7 @@ class _DialogDetectionThread(QtCore.QThread):
     sigTrigger = QtCore.Signal(int, object)
     sigPreCall = QtCore.Signal(int, object)
 
-    def __init__(
-        self,
-        index: int,
-        pre_call: Callable | None,
-        timeout: float,
-    ) -> None:
+    def __init__(self, index: int, pre_call: Callable | None, timeout: float) -> None:
         super().__init__()
         self.pre_call = pre_call
         self.index = index

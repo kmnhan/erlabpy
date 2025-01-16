@@ -979,12 +979,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
         #                          alpha=1),
         #     animated=False,
         # ))
-        self.image_kw.update(
-            {
-                "autoDownsample": False,
-                "axisOrder": "row-major",
-            }
-        )
+        self.image_kw.update({"autoDownsample": False, "axisOrder": "row-major"})
         self.span_kw.update(
             {
                 "movable": False,
@@ -1060,15 +1055,13 @@ class pg_itool(pg.GraphicsLayoutWidget):
         # )
         for i in range(self.ci.layout.rowCount()):
             self.ci.layout.setRowPreferredHeight(
-                i,
-                self.ci.height() * row_factor[i] / np.sum(row_factor),
+                i, self.ci.height() * row_factor[i] / np.sum(row_factor)
             )
             self.ci.layout.setRowStretchFactor(i, row_factor[i])
         for j in range(self.ci.layout.columnCount()):
             col_index = (-j - 1) % len(col_factor)
             self.ci.layout.setColumnPreferredWidth(
-                j,
-                self.ci.width() * col_factor[col_index] / np.sum(col_factor),
+                j, self.ci.width() * col_factor[col_index] / np.sum(col_factor)
             )
             self.ci.layout.setColumnStretchFactor(j, col_factor[col_index])
         #         self.ci.layout.setColumnMinimumWidth(j, 0)
@@ -1502,24 +1495,14 @@ class pg_itool(pg.GraphicsLayoutWidget):
             self._initialize_plots()
             self.clim_locked = False
             self.clim_list = [()] * self.data_ndim
-            self.avg_win = [
-                1,
-            ] * self.data_ndim
-            self.averaged = [
-                False,
-            ] * self.data_ndim
-            self.axis_locked = [
-                False,
-            ] * self.data_ndim
+            self.avg_win = [1] * self.data_ndim
+            self.averaged = [False] * self.data_ndim
+            self.axis_locked = [False] * self.data_ndim
 
         # Imagetool properties
         if reset_cursor:
-            self.cursor_pos = [
-                None,
-            ] * self.data_ndim
-            self._last_ind = [
-                None,
-            ] * self.data_ndim
+            self.cursor_pos = [None] * self.data_ndim
+            self._last_ind = [None] * self.data_ndim
             self.reset_cursor()
         self.set_labels()
         self._apply_change()
@@ -1944,15 +1927,9 @@ class pg_itool(pg.GraphicsLayoutWidget):
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
                     self.all[i].setLevels([-lim, lim])
         elif i == 1:
-            self.all[i].setData(
-                self.data_coords[0],
-                self._binned_profile([1]),
-            )
+            self.all[i].setData(self.data_coords[0], self._binned_profile([1]))
         elif i == 2:
-            self.all[i].setData(
-                self._binned_profile([0]),
-                self.data_coords[1],
-            )
+            self.all[i].setData(self._binned_profile([0]), self.data_coords[1])
         elif i in [3, 4]:
             for cursor in self.all[i]:
                 cursor.maxRange = self.data_lims[i - 3]
@@ -1970,8 +1947,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 )
             else:
                 self.all[i].setImage(
-                    self._get_binned_data(2),
-                    rect=self._lims_to_rect(0, 1),
+                    self._get_binned_data(2), rect=self._lims_to_rect(0, 1)
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
@@ -2001,27 +1977,17 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 )
             else:
                 self.all[i].setImage(
-                    self._get_binned_data(0),
-                    rect=self._lims_to_rect(2, 1),
+                    self._get_binned_data(0), rect=self._lims_to_rect(2, 1)
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
                     self.all[i].setLevels([-lim, lim])
         elif i == 3:
-            self.hists[0].setData(
-                self.data_coords[0],
-                self._binned_profile((1, 2)),
-            )
+            self.hists[0].setData(self.data_coords[0], self._binned_profile((1, 2)))
         elif i == 4:
-            self.hists[1].setData(
-                self._binned_profile((0, 2)),
-                self.data_coords[1],
-            )
+            self.hists[1].setData(self._binned_profile((0, 2)), self.data_coords[1])
         elif i == 5:
-            self.hists[2].setData(
-                self.data_coords[2],
-                self._binned_profile((0, 1)),
-            )
+            self.hists[2].setData(self.data_coords[2], self._binned_profile((0, 1)))
         elif i in [6, 7, 8]:
             for cursor in self.all[i]:
                 cursor.maxRange = self.data_lims[i - 6]
@@ -2039,8 +2005,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 )
             else:
                 self.all[i].setImage(
-                    self._binned_profile((2, 3)),
-                    rect=self._lims_to_rect(0, 1),
+                    self._binned_profile((2, 3)), rect=self._lims_to_rect(0, 1)
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
@@ -2054,8 +2019,7 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 )
             else:
                 self.all[i].setImage(
-                    self._binned_profile((1, 3)),
-                    rect=self._lims_to_rect(0, 2),
+                    self._binned_profile((1, 3)), rect=self._lims_to_rect(0, 2)
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
@@ -2069,32 +2033,19 @@ class pg_itool(pg.GraphicsLayoutWidget):
                 )
             else:
                 self.all[i].setImage(
-                    self._binned_profile((0, 3)),
-                    rect=self._lims_to_rect(2, 1),
+                    self._binned_profile((0, 3)), rect=self._lims_to_rect(2, 1)
                 )
                 if self.zero_centered:
                     lim = np.amax(np.abs(np.asarray(self.all[i].getLevels())))
                     self.all[i].setLevels([-lim, lim])
         elif i == 3:
-            self.hists[0].setData(
-                self.data_coords[0],
-                self._binned_profile((1, 2, 3)),
-            )
+            self.hists[0].setData(self.data_coords[0], self._binned_profile((1, 2, 3)))
         elif i == 4:
-            self.hists[1].setData(
-                self._binned_profile((0, 2, 3)),
-                self.data_coords[1],
-            )
+            self.hists[1].setData(self._binned_profile((0, 2, 3)), self.data_coords[1])
         elif i == 5:
-            self.hists[2].setData(
-                self.data_coords[2],
-                self._binned_profile((0, 1, 3)),
-            )
+            self.hists[2].setData(self.data_coords[2], self._binned_profile((0, 1, 3)))
         elif i == 6:
-            self.hists[3].setData(
-                self.data_coords[3],
-                self._binned_profile((0, 1, 2)),
-            )
+            self.hists[3].setData(self.data_coords[3], self._binned_profile((0, 1, 2)))
         elif i in [7, 8, 9, 10]:
             for cursor in self.all[i]:
                 cursor.maxRange = self.data_lims[i - 7]

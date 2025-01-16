@@ -74,10 +74,7 @@ def _parse_h5py(obj: "h5py.Group | h5py.Dataset", out: dict) -> None:
 
 
 def _parse_group(
-    group: "nexus.NXgroup",
-    out: dict[str, Any],
-    exclude: Sequence[str],
-    parse: bool,
+    group: "nexus.NXgroup", out: dict[str, Any], exclude: Sequence[str], parse: bool
 ) -> None:
     """Recursively parse a NeXus group and its items into a nested dictionary.
 
@@ -155,9 +152,7 @@ def _get_non_primary_coords(group: "nexus.NXgroup", out: list["nexus.NXfield"]):
             out.append(item)
 
 
-def get_primary_coords(
-    group: "nexus.NXgroup",
-) -> list["nexus.NXfield"]:
+def get_primary_coords(group: "nexus.NXgroup") -> list["nexus.NXfield"]:
     """Get all primary coordinates in a group.
 
     Retrieves all fields with the attribute `primary=1` in the group and its subgroups
@@ -178,9 +173,7 @@ def get_primary_coords(
     return sorted(fields_primary, key=lambda field: int(field.axis))
 
 
-def get_non_primary_coords(
-    group: "nexus.NXgroup",
-) -> list["nexus.NXfield"]:
+def get_non_primary_coords(group: "nexus.NXgroup") -> list["nexus.NXfield"]:
     """Get all non-primary coordinates in a group.
 
     Retrieves all fields with the attribute `axis` in the group and its subgroups

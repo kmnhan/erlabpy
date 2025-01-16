@@ -6,6 +6,7 @@ __all__ = ["ktool"]
 
 import functools
 import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -332,9 +333,11 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
             self._offset_spins["V0"].setDecimals(1)
-            self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
             self._offset_spins["V0"].valueChanged.connect(self.update)
             self._offset_spins["V0"].setSuffix(" eV")
+            self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
+            with warnings.catch_warnings(action="ignore", category=UserWarning):
+                self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
             self.offsets_group.layout().addRow("V₀", self._offset_spins["V0"])
 
             for i in range(8):
@@ -342,6 +345,18 @@ class KspaceTool(KspaceToolGUI):
         else:
             for i in range(8):
                 self.bz_form.setRowVisible(i, i not in (3, 4))
+
+        # Work function spinbox
+        self._offset_spins["wf"] = QtWidgets.QDoubleSpinBox()
+        self._offset_spins["wf"].setRange(0.0, 9.999)
+        self._offset_spins["wf"].setSingleStep(0.01)
+        self._offset_spins["wf"].setDecimals(4)
+        self._offset_spins["wf"].valueChanged.connect(self.update)
+        self._offset_spins["wf"].setSuffix(" eV")
+        self._offset_spins["wf"].setToolTip("Work function of the system.")
+        with warnings.catch_warnings(action="ignore", category=UserWarning):
+            self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self.offsets_group.layout().addRow("𝜙", self._offset_spins["wf"])
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -399,9 +414,10 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
-        self.data.kspace.offsets = self.offset_dict
-        bounds = self.data.kspace.estimate_bounds()
-        for k in self.data.kspace.momentum_axes:
+        data = self.data.copy()
+        data.kspace.offsets = self.offset_dict
+        bounds = data.kspace.estimate_bounds()
+        for k in data.kspace.momentum_axes:
             for j in range(2):
                 name = f"{k}{j}"
                 self._bound_spins[name].blockSignals(True)
@@ -418,15 +434,26 @@ class KspaceTool(KspaceToolGUI):
                 )
             )
 
+    @property
+    def _work_function(self) -> float:
+        return float(
+            np.round(
+                self._offset_spins["wf"].value(), self._offset_spins["wf"].decimals()
+            )
+        )
+
+    @property
+    def _inner_potential(self) -> float:
+        return float(
+            np.round(
+                self._offset_spins["wf"].value(), self._offset_spins["wf"].decimals()
+            )
+        )
+
     @QtCore.Slot()
     def show_converted(self) -> None:
-        self.data.kspace.offsets = self.offset_dict
-
-        if self.data.kspace._has_hv:
-            self.data.kspace.inner_potential = self._offset_spins["V0"].value()
-
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = self.data.kspace.convert(
+            data_kconv = self._assign_params(self.data.copy()).kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
 
@@ -457,10 +484,15 @@ class KspaceTool(KspaceToolGUI):
         out_lines: list[str] = []
 
         if self.data.kspace._has_hv:
-            out_lines.append(
-                f"{input_name}.kspace.inner_potential"
-                f" = {self._offset_spins['V0'].value()}"
-            )
+            v0: float = self._inner_potential
+            with warnings.catch_warnings(action="ignore", category=UserWarning):
+                if not np.isclose(v0, self.data.kspace.inner_potential):
+                    out_lines.append(f"{input_name}.kspace.inner_potential = {v0}")
+
+        wf: float = self._work_function
+        with warnings.catch_warnings(action="ignore", category=UserWarning):
+            if not np.isclose(wf, self.data.kspace.work_function):
+                out_lines.append(f"{input_name}.kspace.work_function = {wf}")
 
         offset_dict_repr = str(self.offset_dict).replace("'", '"')
 
@@ -526,19 +558,30 @@ class KspaceTool(KspaceToolGUI):
                 .mean("eV", skipna=True, keep_attrs=True)
                 .assign_coords(eV=center)
             )
-        return self.data
+        return self.data.copy()
+
+    def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
+        data.kspace.offsets = self.offset_dict
+
+        if self.data.kspace._has_hv:
+            v0: float = self._inner_potential
+            with warnings.catch_warnings(action="ignore", category=UserWarning):
+                if not np.isclose(v0, self.data.kspace.inner_potential):
+                    data.kspace.inner_potential = v0
+
+        wf: float = self._work_function
+        with warnings.catch_warnings(action="ignore", category=UserWarning):
+            if not np.isclose(wf, self.data.kspace.work_function):
+                data.kspace.work_function = wf
+        return data
 
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
-        data_ang = self._angle_data()
+        data_ang = self._assign_params(self._angle_data())
         # if "beta" in data_ang.dims:
         #     data_ang = data_ang.assign_coords(
         #         beta=data_ang.beta * self._beta_scale_spin.value()
         #     )
-        data_ang.kspace.offsets = self.offset_dict
-
-        if self.data.kspace._has_hv:
-            data_ang.kspace.inner_potential = self._offset_spins["V0"].value()
 
         # Convert to kspace
         data_k = data_ang.kspace.convert(
@@ -552,9 +595,7 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
 
-    def get_bz_lines(
-        self,
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    def get_bz_lines(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         from erlab.plotting.bz import get_bz_edge
 
         if self.data.kspace._has_hv:
@@ -591,19 +632,12 @@ class KspaceTool(KspaceToolGUI):
 
             if rot != 0.0:
                 rotmat = np.array(
-                    [
-                        [np.cos(rot), -np.sin(rot)],
-                        [np.sin(rot), np.cos(rot)],
-                    ]
+                    [[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]]
                 )
                 lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
                 vertices = (rotmat @ vertices.T).T
 
         return lines, vertices
-
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        del self.data
-        super().closeEvent(event)
 
 
 def ktool(

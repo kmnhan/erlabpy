@@ -6,10 +6,7 @@ import numpy.typing as npt
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool.core import (
-    SlicerLinkProxy,
-    _parse_input,
-)
+from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
 
 
 def itool(

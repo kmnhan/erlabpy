@@ -99,9 +99,7 @@ def test_trim_na() -> None:
         coords={"x": [1, 2, 3], "y": [1, 2, 3]},
     )
     expected_result = xr.DataArray(
-        np.array([[2, 3], [5, 6]]),
-        dims=("x", "y"),
-        coords={"x": [1, 2], "y": [2, 3]},
+        np.array([[2, 3], [5, 6]]), dims=("x", "y"), coords={"x": [1, 2], "y": [2, 3]}
     )
     xarray.testing.assert_identical(trim_na(darr), expected_result)
 

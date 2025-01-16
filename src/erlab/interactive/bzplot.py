@@ -134,11 +134,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
         )
         self.params_avec = erlab.interactive.utils.ParameterGroup(
             ncols=4,
-            _0={
-                "widget": QtWidgets.QWidget(),
-                "showlabel": False,
-                "notrack": True,
-            },
+            _0={"widget": QtWidgets.QWidget(), "showlabel": False, "notrack": True},
             _1={
                 "widget": QtWidgets.QLabel("𝑥"),
                 "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
@@ -157,27 +153,15 @@ class LatticeWidget(QtWidgets.QTabWidget):
                 "showlabel": False,
                 "notrack": True,
             },
-            a1={
-                "widget": QtWidgets.QLabel("𝑎₁"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            a1={"widget": QtWidgets.QLabel("𝑎₁"), "showlabel": False, "notrack": True},
             a1x={"qwtype": "btspin", "value": 1, "showlabel": False},
             a1y={"qwtype": "btspin", "value": 1, "showlabel": False},
             a1z={"qwtype": "btspin", "value": 1, "showlabel": False},
-            a2={
-                "widget": QtWidgets.QLabel("𝑎₂"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            a2={"widget": QtWidgets.QLabel("𝑎₂"), "showlabel": False, "notrack": True},
             a2x={"qwtype": "btspin", "value": 1, "showlabel": False},
             a2y={"qwtype": "btspin", "value": 1, "showlabel": False},
             a2z={"qwtype": "btspin", "value": 1, "showlabel": False},
-            a3={
-                "widget": QtWidgets.QLabel("𝑎₃"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            a3={"widget": QtWidgets.QLabel("𝑎₃"), "showlabel": False, "notrack": True},
             a3x={"qwtype": "btspin", "value": 1, "showlabel": False},
             a3y={"qwtype": "btspin", "value": 1, "showlabel": False},
             a3z={"qwtype": "btspin", "value": 1, "showlabel": False},
@@ -194,11 +178,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
             self.params_avec.layout().setColumnStretch(i, 1 if i < 2 else 6)
         self.params_bvec = erlab.interactive.utils.ParameterGroup(
             ncols=4,
-            _0={
-                "widget": QtWidgets.QWidget(),
-                "showlabel": False,
-                "notrack": True,
-            },
+            _0={"widget": QtWidgets.QWidget(), "showlabel": False, "notrack": True},
             _1={
                 "widget": QtWidgets.QLabel("𝑥"),
                 "alignment": QtCore.Qt.AlignmentFlag.AlignHCenter,
@@ -217,27 +197,15 @@ class LatticeWidget(QtWidgets.QTabWidget):
                 "showlabel": False,
                 "notrack": True,
             },
-            b1={
-                "widget": QtWidgets.QLabel("𝑏₁"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            b1={"widget": QtWidgets.QLabel("𝑏₁"), "showlabel": False, "notrack": True},
             b1x={"qwtype": "btspin", "value": 1, "showlabel": False},
             b1y={"qwtype": "btspin", "value": 1, "showlabel": False},
             b1z={"qwtype": "btspin", "value": 1, "showlabel": False},
-            b2={
-                "widget": QtWidgets.QLabel("𝑏₂"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            b2={"widget": QtWidgets.QLabel("𝑏₂"), "showlabel": False, "notrack": True},
             b2x={"qwtype": "btspin", "value": 1, "showlabel": False},
             b2y={"qwtype": "btspin", "value": 1, "showlabel": False},
             b2z={"qwtype": "btspin", "value": 1, "showlabel": False},
-            b3={
-                "widget": QtWidgets.QLabel("𝑏₃"),
-                "showlabel": False,
-                "notrack": True,
-            },
+            b3={"widget": QtWidgets.QLabel("𝑏₃"), "showlabel": False, "notrack": True},
             b3x={"qwtype": "btspin", "value": 1, "showlabel": False},
             b3y={"qwtype": "btspin", "value": 1, "showlabel": False},
             b3z={"qwtype": "btspin", "value": 1, "showlabel": False},

@@ -276,11 +276,7 @@ def boxcar_filter(
 
     """
     size_dict: dict[Hashable, float] = _parse_dict_arg(
-        darr.dims,
-        size,
-        arg_name="size",
-        reference_name="DataArray",
-        allow_subset=True,
+        darr.dims, size, arg_name="size", reference_name="DataArray", allow_subset=True
     )
 
     size_pix: list[int] = []
@@ -718,10 +714,7 @@ def diffn(
 
 
 def diffn(
-    darr: xr.DataArray,
-    coord: Hashable,
-    order: int | Iterable[int] = 1,
-    **kwargs,
+    darr: xr.DataArray, coord: Hashable, order: int | Iterable[int] = 1, **kwargs
 ) -> xr.DataArray | tuple[xr.DataArray, ...]:
     """Calculate the nth derivative of a DataArray along a given dimension.
 

@@ -1,5 +1,33 @@
 ## Unreleased
 
+## v3.5.1 (2025-01-14)
+
+### 🐞 Bug Fixes
+
+- **restool:** improve parameter guessing and copied code formatting ([0b33770](https://github.com/kmnhan/erlabpy/commit/0b33770fd5cf7a828cacaef8e465319183d03a00))
+
+  The temperature and center can now be guessed independently.
+
+### ♻️ Code Refactor
+
+- **plotting:** add `literal` option for point label formatting in `mark_points_outside`, consistent with `mark_points` ([db723fd](https://github.com/kmnhan/erlabpy/commit/db723fd8c7b926c5de2cabe033171455e9e2a92b))
+
+- generalize fomatting DataArray to raw HTML ([85c735e](https://github.com/kmnhan/erlabpy/commit/85c735e6397747ee8fa32fa0fb5804a07aee27be))
+
+- **analysis.gold:** add plot capability to `quick_fit` and deprecate quick_resolution ([903450b](https://github.com/kmnhan/erlabpy/commit/903450b6c74a1382a14c4cff05c90871a5d6854d))
+
+  Future code shoule use `quick_fit` with `plot=True` instead of `quick_resolution`.
+
+- **ktool:** add work function spinbox ([31c5ae8](https://github.com/kmnhan/erlabpy/commit/31c5ae874893c99b0b41d50457b4ea82967dedb5))
+
+- **io.dataloader:** adds a `extensions` attribute to data loaders ([a819960](https://github.com/kmnhan/erlabpy/commit/a8199603df8d1a35b0be719fa0c76fa8c29794de))
+
+  Data loaders can now choose to implement an `extensions` attribute that returns a set of file extensions supported by the loader. This reduces the possibility of the user trying to load files with a wrong loader and gives informative error messages.
+
+- **io:** expose ``load_krax`` as public API ([3508a0a](https://github.com/kmnhan/erlabpy/commit/3508a0abffe8555317ae5f696717bc33fa609b16))
+
+  Adds a new function ``erlab.io.utils.load_krax`` that can parse MBS deflector maps saved as ``.krx``.
+
 ## v3.5.0 (2025-01-04)
 
 ### ✨ Features

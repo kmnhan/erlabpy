@@ -686,15 +686,21 @@ class ResolutionTool(
         )
         self.edc_fit.setData(x=[], y=[])
 
-    @QtCore.Slot()
-    def _guess(self) -> None:
+    @property
+    def _guessed_params(self) -> "lmfit.Parameters":
         with xr.set_options(keep_attrs=True):
             target = self.averaged_edc.sel(eV=slice(*self.x_range))
-        guessed_params = erlab.analysis.fit.models.FermiEdgeModel().guess(
+        return erlab.analysis.fit.models.FermiEdgeModel().guess(
             target, target.eV.values
         )
-        self.temp_spin.setValue(guessed_params["temp"].value)
-        self.center_spin.setValue(guessed_params["center"].value)
+
+    @QtCore.Slot()
+    def _guess_temp(self) -> None:
+        self.temp_spin.setValue(self._guessed_params["temp"].value)
+
+    @QtCore.Slot()
+    def _guess_center(self) -> None:
+        self.center_spin.setValue(self._guessed_params["center"].value)
 
     @property
     def fit_params(self) -> dict[str, Any]:
@@ -713,7 +719,7 @@ class ResolutionTool(
 
     def _fit_failed(self, info_text: str) -> None:
         self.overview_label.setText(
-            '<span style="font-weight:600; color:#ff5555;">' f"{info_text}" "</span>"
+            f'<span style="font-weight:600; color:#ff5555;">{info_text}</span>'
         )
 
     @QtCore.Slot()
@@ -761,8 +767,8 @@ class ResolutionTool(
                 1e3 if (param == "resolution" and self.mev_check.isChecked()) else 1
             )
             if hasattr(modelresult, "uvars") and modelresult.uvars is not None:
-                return f"{modelresult.uvars[param]*factor:P}"
-            return f"{modelresult.params[param].value*factor:.4f}"
+                return f"{modelresult.uvars[param] * factor:P}"
+            return f"{modelresult.params[param].value * factor:.4f}"
 
         for param, textedit in zip(
             ("temp", "center", "resolution"),
@@ -783,7 +789,8 @@ class ResolutionTool(
 
         self.go_btn.clicked.connect(self.do_fit)
         self._sigTriggerFit.connect(self.do_fit)
-        self.guess_btn.clicked.connect(self._guess)
+        self.guess_temp_btn.clicked.connect(self._guess_temp)
+        self.guess_center_btn.clicked.connect(self._guess_center)
         self.copy_btn.clicked.connect(self.copy_code)
 
     @QtCore.Slot()
@@ -795,13 +802,23 @@ class ResolutionTool(
             kwargs={self.y_dim: slice(*self.y_range)},
             module=self.data_name,
         )
-        code = erlab.interactive.utils.generate_code(
+
+        # Check if any parameters are the same as the automatically guessed ones
+        params = dict(self.fit_params)
+        params_guessed = self._guessed_params
+        for k in ("temp", "center", "resolution"):
+            if params[k] == params_guessed[k].value:
+                del params[k]
+
+        params["plot"] = True
+
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.quick_fit,
             args=[f"|{data_name}|"],
-            kwargs=self.fit_params,
+            kwargs=params,
             module="era.gold",
-        ).replace("quick_fit", "quick_resolution")
-        return erlab.interactive.utils.copy_to_clipboard(code)
+            copy=True,
+        )
 
     @QtCore.Slot()
     def _update_region(self) -> None:
@@ -896,10 +913,7 @@ def goldtool(
 
 
 def restool(
-    data: xr.DataArray,
-    *,
-    data_name: str | None = None,
-    execute: bool | None = None,
+    data: xr.DataArray, *, data_name: str | None = None, execute: bool | None = None
 ) -> ResolutionTool:
     """Interactive tool for precise resolution fitting of EDCs.
 
