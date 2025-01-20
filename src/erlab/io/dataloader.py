@@ -16,6 +16,7 @@ __all__ = [
     "LoaderBase",
     "LoaderNotFoundError",
     "LoaderRegistry",
+    "UnsupportedFileError",
     "ValidationError",
     "ValidationWarning",
 ]
@@ -66,17 +67,23 @@ class LoaderNotFoundError(Exception):
 class UnsupportedFileError(Exception):
     """Raised when the loader does not support the given file extension."""
 
-    def __init__(self, loader: LoaderBase, ext: str) -> None:
+    def __init__(self, loader: LoaderBase, file_path: pathlib.Path) -> None:
         extensions = loader.extensions
         if extensions is not None:
-            super().__init__(self._make_msg(loader.name, ext, extensions))
+            super().__init__(self._make_msg(loader.name, file_path, extensions))
 
     @staticmethod
-    def _make_msg(loader_name: str, ext: str, extensions: set[str]) -> str:
+    def _make_msg(
+        loader_name: str, file_path: pathlib.Path, extensions: set[str]
+    ) -> str:
+        ext = file_path.suffix.lower()
         ext_sorted = sorted(f"'{ext}'" for ext in extensions)
+
+        file_desc: str = "Directories" if file_path.is_dir() else f"'{ext}' files"
+
         return (
-            f"'{ext}' files are not supported by loader '{loader_name}'."
-            f" Supported extensions are: {', '.join(ext_sorted)}"
+            f"{file_desc} are not supported by loader '{loader_name}'."
+            f" Supported file types are: {', '.join(ext_sorted)}"
         )
 
 
@@ -124,14 +131,15 @@ class _Loader(type):
             original_load_single = dct["load_single"]
 
             def wrapped_load_single(self, file_path, **kwargs):
-                if not os.path.exists(file_path):
+                file_path = pathlib.Path(file_path)
+
+                if not file_path.exists():
                     raise FileNotFoundError(
                         errno.ENOENT, os.strerror(errno.ENOENT), file_path
                     )
 
-                ext = os.path.splitext(file_path)[1]
-                if ext.lower() not in self.extensions:
-                    raise UnsupportedFileError(self, ext)
+                if file_path.suffix.lower() not in self.extensions:
+                    raise UnsupportedFileError(self, file_path)
                 return original_load_single(self, file_path, **kwargs)
 
             wrapped_load_single.__doc__ = original_load_single.__doc__

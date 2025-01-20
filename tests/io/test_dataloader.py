@@ -301,7 +301,7 @@ def test_loader(qtbot) -> None:
         UnsupportedFileError,
         match=UnsupportedFileError._make_msg(
             "example",
-            os.path.splitext(wrong_file)[1],
+            pathlib.Path(wrong_file),
             erlab.io.loaders.example.extensions,
         ),
     ):
