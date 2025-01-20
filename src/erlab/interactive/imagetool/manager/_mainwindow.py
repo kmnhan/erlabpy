@@ -7,9 +7,9 @@ import pathlib
 import platform
 import sys
 import tempfile
+import typing
 import uuid
 from collections.abc import ValuesView
-from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph
@@ -29,7 +29,7 @@ from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperList
 from erlab.interactive.imagetool.manager._server import _ManagerServer, show_in_manager
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
 
@@ -81,9 +81,11 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self._pixmapitem = cast(
+        self._pixmapitem = typing.cast(
             QtWidgets.QGraphicsPixmapItem,
-            cast(QtWidgets.QGraphicsScene, self.scene()).addPixmap(QtGui.QPixmap()),
+            typing.cast(QtWidgets.QGraphicsScene, self.scene()).addPixmap(
+                QtGui.QPixmap()
+            ),
         )
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -126,7 +128,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.setWindowTitle("ImageTool Manager")
 
-        menu_bar: QtWidgets.QMenuBar = cast(QtWidgets.QMenuBar, self.menuBar())
+        menu_bar: QtWidgets.QMenuBar = typing.cast(QtWidgets.QMenuBar, self.menuBar())
 
         self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
@@ -212,7 +214,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
         # Populate menu bar
-        file_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&File"))
+        file_menu: QtWidgets.QMenu = typing.cast(
+            QtWidgets.QMenu, menu_bar.addMenu("&File")
+        )
         file_menu.addAction(self.open_action)
         file_menu.addSeparator()
         file_menu.addAction(self.load_action)
@@ -224,7 +228,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.about_action)
 
-        edit_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&Edit"))
+        edit_menu: QtWidgets.QMenu = typing.cast(
+            QtWidgets.QMenu, menu_bar.addMenu("&Edit")
+        )
         edit_menu.addAction(self.concat_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.show_action)
@@ -237,7 +243,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.link_action)
         edit_menu.addAction(self.unlink_action)
 
-        view_menu: QtWidgets.QMenu = cast(QtWidgets.QMenu, menu_bar.addMenu("&View"))
+        view_menu: QtWidgets.QMenu = typing.cast(
+            QtWidgets.QMenu, menu_bar.addMenu("&View")
+        )
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
@@ -355,7 +363,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @property
     def _status_bar(self) -> QtWidgets.QStatusBar:
-        return cast(QtWidgets.QStatusBar, self.statusBar())
+        return typing.cast(QtWidgets.QStatusBar, self.statusBar())
 
     @QtCore.Slot()
     def about(self) -> None:
@@ -412,7 +420,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 wrapper.unarchive()
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
-        return cast(ImageTool, wrapper.tool)
+        return typing.cast(ImageTool, wrapper.tool)
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
@@ -532,7 +540,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         wrapper = self._tool_wrappers.pop(index)
         if not wrapper.archived:
-            cast(ImageTool, wrapper.tool).removeEventFilter(wrapper)
+            typing.cast(ImageTool, wrapper.tool).removeEventFilter(wrapper)
         wrapper.dispose()
         del wrapper
 
@@ -717,7 +725,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
-            for node in cast(ValuesView[xr.DataTree], (tree.values())):
+            for node in typing.cast(ValuesView[xr.DataTree], (tree.values())):
                 self.add_tool(
                     ImageTool.from_dataset(
                         node.to_dataset(inherit=False), _in_manager=True
@@ -832,7 +840,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot(list, dict)
     def _data_recv(
-        self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, Any]
+        self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, typing.Any]
     ) -> list[bool]:
         """Slot function to receive data from the server.
 
@@ -945,7 +953,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         loaded: list[pathlib.Path],
         canceled: list[pathlib.Path],
         failed: list[pathlib.Path],
-        retry_callback: Callable[[list[pathlib.Path]], Any],
+        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
     ) -> None:
         """Show a message box with information about the loaded files.
 
@@ -1083,7 +1091,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         queued: list[pathlib.Path],
         failed: list[pathlib.Path],
         func: Callable,
-        kwargs: dict[str, Any],
+        kwargs: dict[str, typing.Any],
         retry_callback: Callable,
     ) -> None:
         handler = _MultiFileHandler(self, queued, func, kwargs)
@@ -1138,7 +1146,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             and isinstance(obj, QtWidgets.QWidget)
             and obj.hasFocus()
         ):
-            event = cast(QtGui.QKeyEvent, event)
+            event = typing.cast(QtGui.QKeyEvent, event)
             if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
                 QtGui.QKeySequence.StandardKey.Copy
             ):

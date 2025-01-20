@@ -29,9 +29,9 @@ __all__ = [
 
 import itertools
 import math
+import typing
 import warnings
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -42,7 +42,7 @@ from numba import carray, cfunc, types
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import findiff
 
 else:
@@ -431,9 +431,9 @@ def ndsavgol(
     polyorder: int,
     deriv: int | tuple[int, ...] = 0,
     delta: float | tuple[float, ...] = 1.0,
-    mode: Literal["mirror", "constant", "nearest", "wrap"] = "mirror",
+    mode: typing.Literal["mirror", "constant", "nearest", "wrap"] = "mirror",
     cval: float = 0.0,
-    method: Literal["pinv", "lstsq"] = "pinv",
+    method: typing.Literal["pinv", "lstsq"] = "pinv",
 ):
     """Apply a Savitzky-Golay filter to an N-dimensional array.
 
@@ -701,13 +701,13 @@ def laplace(
     return darr.copy(data=scipy.ndimage.laplace(darr.values, mode=mode, cval=cval))
 
 
-@overload
+@typing.overload
 def diffn(
     darr: xr.DataArray, coord: Hashable, order: Iterable[int] = ..., **kwargs
 ) -> tuple[xr.DataArray, ...]: ...
 
 
-@overload
+@typing.overload
 def diffn(
     darr: xr.DataArray, coord: Hashable, order: int = 1, **kwargs
 ) -> xr.DataArray: ...

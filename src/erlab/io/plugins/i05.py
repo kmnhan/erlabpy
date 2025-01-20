@@ -1,6 +1,8 @@
 """Data loader for beamline I05 at Diamond."""
 
-from typing import ClassVar
+__all__ = ["I05Loader"]
+
+import typing
 
 import xarray as xr
 
@@ -11,11 +13,11 @@ from erlab.io.dataloader import LoaderBase
 class I05Loader(LoaderBase):
     name = "i05"
     description = "Diamond Beamline I05"
-    extensions: ClassVar[set[str]] = {".nxs"}
+    extensions: typing.ClassVar[set[str]] = {".nxs"}
 
     aliases = ("diamond_i05",)
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "eV": "instrument.analyser.energies",
         "alpha": "instrument.analyser.angles",
         "beta": [
@@ -33,7 +35,7 @@ class I05Loader(LoaderBase):
     }
 
     coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
-    additional_attrs: ClassVar[dict] = {"configuration": 3}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 3}
 
     skip_validate: bool = True
     always_single: bool = True

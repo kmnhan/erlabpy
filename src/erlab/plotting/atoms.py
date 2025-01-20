@@ -10,8 +10,8 @@ Some of the projection code was adapted from kwant.
 import contextlib
 import functools
 import itertools
+import typing
 from collections.abc import Callable, Iterable, Mapping
-from typing import Literal, cast
 
 import matplotlib.collections
 import matplotlib.colors
@@ -257,7 +257,8 @@ class CrystalProperty:
         radii: Iterable[float] | None = None,
         colors: Iterable[ColorType] | None = None,
         repeat: tuple[int, int, int] = (1, 1, 1),
-        bounds: Mapping[Literal["x", "y", "z"], tuple[float, float]] | None = None,
+        bounds: Mapping[typing.Literal["x", "y", "z"], tuple[float, float]]
+        | None = None,
         mask: Callable | None = None,
         r_factor: float = 0.4,
     ) -> None:
@@ -317,7 +318,7 @@ class CrystalProperty:
         }
 
         self.repeat: tuple[int, int, int] = repeat
-        self._bounds: Mapping[Literal["x", "y", "z"], tuple[float, float]] = (
+        self._bounds: Mapping[typing.Literal["x", "y", "z"], tuple[float, float]] = (
             {} if bounds is None else bounds
         )
         self.mask: Callable | None = mask
@@ -353,7 +354,9 @@ class CrystalProperty:
         bound_list = []
         for dim in ("x", "y", "z"):
             try:
-                bound_list.append(self._bounds[cast(Literal["x", "y", "z"], dim)])
+                bound_list.append(
+                    self._bounds[typing.cast(typing.Literal["x", "y", "z"], dim)]
+                )
             except KeyError:
                 bound_list.append((-np.inf, np.inf))
         return bound_list
@@ -480,7 +483,7 @@ class CrystalProperty:
         """
         if ax is None:
             ax = plt.gcf().add_subplot(projection="3d")
-        ax = cast(mpl_toolkits.mplot3d.Axes3D, ax)
+        ax = typing.cast(mpl_toolkits.mplot3d.Axes3D, ax)
 
         if clean_axes:
             ax.set_facecolor("none")

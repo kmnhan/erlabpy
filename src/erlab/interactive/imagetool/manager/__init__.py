@@ -17,7 +17,7 @@ __all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
 
 import logging
 import sys
-from typing import cast
+import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -86,7 +86,7 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    qapp = cast(QtWidgets.QApplication | None, QtWidgets.QApplication.instance())
+    qapp = typing.cast(QtWidgets.QApplication | None, QtWidgets.QApplication.instance())
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 

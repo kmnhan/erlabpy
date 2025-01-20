@@ -5,7 +5,7 @@ import os
 import pathlib
 import re
 import tempfile
-from typing import ClassVar
+import typing
 
 import numpy as np
 import pytest
@@ -118,9 +118,9 @@ def test_loader(qtbot) -> None:
     class ExampleLoader(LoaderBase):
         name = "example"
         description = "Example loader for testing purposes"
-        extensions: ClassVar[set[str]] = {".h5"}
+        extensions: typing.ClassVar[set[str]] = {".h5"}
 
-        name_map: ClassVar[dict] = {
+        name_map: typing.ClassVar[dict] = {
             "eV": "BindingEnergy",
             "alpha": "ThetaX",
             "beta": [
@@ -153,17 +153,17 @@ def test_loader(qtbot) -> None:
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
 
-        additional_attrs: ClassVar[dict] = {
+        additional_attrs: typing.ClassVar[dict] = {
             "configuration": 1,  # Experimental geometry required for kspace conversion
             "sample_workfunction": 4.3,
         }  # Any additional metadata you want to add to the data
 
-        formatters: ClassVar[dict] = {
+        formatters: typing.ClassVar[dict] = {
             "polarization": _format_polarization,
             "LensMode": lambda x: x.replace("Angular", "A"),
         }
 
-        summary_attrs: ClassVar[dict] = {
+        summary_attrs: typing.ClassVar[dict] = {
             "Time": _parse_time,
             "Type": _determine_kind,
             "Lens Mode": "LensMode",

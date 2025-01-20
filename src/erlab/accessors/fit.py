@@ -11,8 +11,8 @@ __all__ = [
 import contextlib
 import copy
 import itertools
+import typing
 from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import xarray as xr
@@ -21,7 +21,7 @@ from xarray.core.dataarray import _THIS_ARRAY
 import erlab
 from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
     import joblib
     import lmfit
@@ -44,7 +44,7 @@ def _nested_dict_vals(d):
             yield v
 
 
-def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
+def _broadcast_dict_values(d: dict[str, typing.Any]) -> dict[str, xr.DataArray]:
     to_broadcast = {}
     for k, v in d.items():
         if isinstance(v, xr.DataArray | xr.Dataset):
@@ -55,7 +55,7 @@ def _broadcast_dict_values(d: dict[str, Any]) -> dict[str, xr.DataArray]:
     d = dict(
         zip(to_broadcast.keys(), xr.broadcast(*to_broadcast.values()), strict=True)
     )
-    return cast(dict[str, xr.DataArray], d)
+    return typing.cast(dict[str, xr.DataArray], d)
 
 
 def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArray:
@@ -63,7 +63,7 @@ def _concat_along_keys(d: dict[str, xr.DataArray], dim_name: str) -> xr.DataArra
 
 
 def _parse_params(
-    d: dict[str, Any] | lmfit.Parameters, dask: bool
+    d: dict[str, typing.Any] | lmfit.Parameters, dask: bool
 ) -> xr.DataArray | _ParametersWrapper:
     if isinstance(d, lmfit.Parameters):
         # Input to apply_ufunc cannot be a Mapping, so wrap in a class
@@ -79,7 +79,7 @@ def _parse_params(
     return _ParametersWrapper(lmfit.create_params(**d))
 
 
-def _parse_multiple_params(d: dict[str, Any], as_str: bool) -> xr.DataArray:
+def _parse_multiple_params(d: dict[str, typing.Any], as_str: bool) -> xr.DataArray:
     for k in d:
         if isinstance(d[k], int | float | complex | xr.DataArray):
             d[k] = {"value": d[k]}
@@ -133,15 +133,15 @@ class ModelFitDatasetAccessor(ERLabDatasetAccessor):
         reduce_dims: str | Collection[Hashable] | None = None,
         skipna: bool = True,
         params: lmfit.Parameters
-        | dict[str, float | dict[str, Any]]
+        | dict[str, float | dict[str, typing.Any]]
         | xr.DataArray
         | xr.Dataset
         | _ParametersWrapper
         | None = None,
         guess: bool = False,
-        errors: Literal["raise", "ignore"] = "raise",
+        errors: typing.Literal["raise", "ignore"] = "raise",
         parallel: bool | None = None,
-        parallel_kw: dict[str, Any] | None = None,
+        parallel_kw: dict[str, typing.Any] | None = None,
         progress: bool = False,
         output_result: bool = True,
         **kwargs,

@@ -11,7 +11,7 @@ __all__ = ["BaseImageTool", "ImageTool"]
 
 import json
 import os
-from typing import TYPE_CHECKING, Any, Self, cast
+import typing
 
 import numpy as np
 import numpy.typing as npt
@@ -20,7 +20,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
@@ -142,7 +142,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
-    def from_dataset(cls, ds: xr.Dataset, **kwargs) -> Self:
+    def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
         """Restore a window from a dataset saved using :meth:`to_dataset`.
 
         Parameters
@@ -165,7 +165,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return tool
 
     @classmethod
-    def from_file(cls, filename: str | os.PathLike, **kwargs) -> Self:
+    def from_file(cls, filename: str | os.PathLike, **kwargs) -> typing.Self:
         """Restore a window from a file saved using :meth:`to_file`.
 
         Parameters
@@ -238,7 +238,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         # widgets. The events start at the ItoolGraphicsLayoutWidget and is never passed
         # to menu widgets so we need to intercept them at a higher level.
         if event is not None and event.type() == QtCore.QEvent.Type.ShortcutOverride:
-            event = cast(QtGui.QKeyEvent, event)
+            event = typing.cast(QtGui.QKeyEvent, event)
             focused = QtWidgets.QApplication.focusWidget()
             if isinstance(
                 focused, QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit
@@ -336,7 +336,7 @@ class ImageTool(BaseImageTool):
 
     @property
     def mnb(self) -> ItoolMenuBar:
-        return cast(ItoolMenuBar, self.menuBar())
+        return typing.cast(ItoolMenuBar, self.menuBar())
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
@@ -411,7 +411,7 @@ class ImageTool(BaseImageTool):
         def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
             _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
 
-        valid_savers: dict[str, tuple[Callable, dict[str, Any]]] = {
+        valid_savers: dict[str, tuple[Callable, dict[str, typing.Any]]] = {
             "xarray HDF5 Files (*.h5)": (
                 _to_hdf5,
                 {"engine": "h5netcdf", "invalid_netcdf": True},
@@ -436,7 +436,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @property
     def image_tool(self) -> ImageTool:
-        return cast(ImageTool, self.parent())
+        return typing.cast(ImageTool, self.parent())
 
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
@@ -448,7 +448,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def _generate_menu_kwargs(self) -> dict:
         _guideline_actions = self.slicer_area.main_image._guideline_actions
-        menu_kwargs: dict[str, Any] = {
+        menu_kwargs: dict[str, typing.Any] = {
             "fileMenu": {
                 "title": "&File",
                 "actions": {

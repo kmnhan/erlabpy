@@ -43,7 +43,6 @@ Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
    exampledata
    characterization
 
-
 .. rubric:: Module Attributes
 
 .. attribute:: loaders

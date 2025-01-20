@@ -27,9 +27,9 @@ import importlib
 import itertools
 import os
 import pathlib
+import typing
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -38,7 +38,7 @@ import xarray as xr
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import (
         Callable,
         ItemsView,
@@ -183,7 +183,7 @@ class LoaderBase(metaclass=_Loader):
 
     """
 
-    extensions: ClassVar[set[str] | None] = None
+    extensions: typing.ClassVar[set[str] | None] = None
     """File extensions supported by the loader in lowercase with the leading dot.
 
     An `UnsupportedFileError` is raised if a file with an unsupported extension is
@@ -193,7 +193,7 @@ class LoaderBase(metaclass=_Loader):
     .. versionadded:: 3.5.1
     """
 
-    name_map: ClassVar[dict[str, str | Iterable[str]]] = {}
+    name_map: typing.ClassVar[dict[str, str | Iterable[str]]] = {}
     """
     Dictionary that maps **new** coordinate or attribute names to **original**
     coordinate or attribute names. If there are multiple possible names for a single
@@ -247,7 +247,7 @@ class LoaderBase(metaclass=_Loader):
     :meth:`post_process <erlab.io.dataloader.LoaderBase.post_process>`
     """
 
-    additional_attrs: ClassVar[
+    additional_attrs: typing.ClassVar[
         dict[str, str | float | Callable[[xr.DataArray], str | float]]
     ] = {}
     """Additional attributes to be added to the data after loading.
@@ -267,7 +267,7 @@ class LoaderBase(metaclass=_Loader):
     overridden_attrs: tuple[str, ...] = ()
     """Keys in :attr:`additional_attrs` that should override existing attributes."""
 
-    additional_coords: ClassVar[dict[str, str | int | float]] = {}
+    additional_coords: typing.ClassVar[dict[str, str | int | float]] = {}
     """Additional non-dimension coordinates to be added to the data after loading.
 
     Notes
@@ -311,7 +311,7 @@ class LoaderBase(metaclass=_Loader):
     `skip_validate` is `True`.
     """
 
-    formatters: ClassVar[dict[str, Callable]] = {}
+    formatters: typing.ClassVar[dict[str, Callable]] = {}
     """Optional mapping from attr or coord names (after renaming) to custom formatters.
 
     The formatters are callables that takes the attribute value and returns a value that
@@ -345,7 +345,7 @@ class LoaderBase(metaclass=_Loader):
     """
 
     @property
-    def summary_attrs(self) -> dict[str, str | Callable[[xr.DataArray], Any]]:
+    def summary_attrs(self) -> dict[str, str | Callable[[xr.DataArray], typing.Any]]:
         """Mapping from summary column names to attr or coord names (after renaming).
 
         If the value is a callable, it will be called with the data as the only
@@ -370,7 +370,7 @@ class LoaderBase(metaclass=_Loader):
         return self._reverse_mapping(self.name_map)
 
     @property
-    def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
+    def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, typing.Any]]]:
         """Map from file dialog names to the loader method and its arguments.
 
         Override this property in the subclass to provide support for loading data from
@@ -491,7 +491,7 @@ class LoaderBase(metaclass=_Loader):
         single: bool = False,
         combine: bool = True,
         parallel: bool | None = None,
-        load_kwargs: dict[str, Any] | None = None,
+        load_kwargs: dict[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -615,7 +615,7 @@ class LoaderBase(metaclass=_Loader):
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
-            file_paths, coord_dict = cast(
+            file_paths, coord_dict = typing.cast(
                 tuple[list[str], dict[str, Sequence]],
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
@@ -699,7 +699,7 @@ class LoaderBase(metaclass=_Loader):
         *,
         cache: bool = True,
         display: bool = True,
-        rc: dict[str, Any] | None = None,
+        rc: dict[str, typing.Any] | None = None,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         """Summarize the data in the given directory.
 
@@ -803,8 +803,8 @@ class LoaderBase(metaclass=_Loader):
     def get_formatted_attr_or_coord(
         self,
         data: xr.DataArray,
-        attr_or_coord_name: str | Callable[[xr.DataArray], Any],
-    ) -> Any:
+        attr_or_coord_name: str | Callable[[xr.DataArray], typing.Any],
+    ) -> typing.Any:
         """Return the formatted value of the given attribute or coordinate.
 
         The value is formatted using the function specified in :attr:`formatters
@@ -929,7 +929,7 @@ class LoaderBase(metaclass=_Loader):
         for f in target_files:
             try:
                 _add_content(
-                    cast(
+                    typing.cast(
                         xr.DataArray | xr.Dataset | xr.DataTree,
                         self.load(f, load_kwargs={"without_values": True}),
                     ),
@@ -957,10 +957,10 @@ class LoaderBase(metaclass=_Loader):
     def _isummarize(
         self,
         summary: pandas.DataFrame | None = None,
-        rc: dict[str, Any] | None = None,
+        rc: dict[str, typing.Any] | None = None,
         **kwargs,
     ):
-        rc_dict: dict[str, Any] = {} if rc is None else rc
+        rc_dict: dict[str, typing.Any] = {} if rc is None else rc
 
         if not importlib.util.find_spec("ipywidgets"):
             raise ImportError(
@@ -969,7 +969,7 @@ class LoaderBase(metaclass=_Loader):
 
         if summary is None:
             kwargs["display"] = False
-            df = cast(pandas.DataFrame, self.summarize(**kwargs))
+            df = typing.cast(pandas.DataFrame, self.summarize(**kwargs))
         else:
             df = summary
 
@@ -1172,7 +1172,7 @@ class LoaderBase(metaclass=_Loader):
         if manager_running:
             itool_button.on_click(
                 lambda _: show_in_manager(
-                    cast(
+                    typing.cast(
                         xr.DataArray | xr.Dataset,
                         _update_data(None, full=True, ret=True),
                     )
@@ -1216,7 +1216,7 @@ class LoaderBase(metaclass=_Loader):
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         r"""Load a single file and return it as an xarray data structure.
 
-        Any scan-specific postprocessing should be implemented in this method.
+        All scan-specific postprocessing should be implemented in this method.
 
         This method must be implemented to return the *smallest possible data structure*
         that represents the data in a single file. For instance, if a single file
@@ -1321,7 +1321,7 @@ class LoaderBase(metaclass=_Loader):
             "Try providing a file path instead."
         )
 
-    def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
+    def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         """Infer the index for the given file name.
 
         This method takes a file name with the path and extension stripped, and tries to
@@ -1377,9 +1377,9 @@ class LoaderBase(metaclass=_Loader):
 
     def combine_attrs(
         self,
-        variable_attrs: Sequence[dict[str, Any]],
+        variable_attrs: Sequence[dict[str, typing.Any]],
         context: xr.Context | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, typing.Any]:
         """Combine multiple attributes into a single attribute.
 
         This method is used as the ``combine_attrs`` argument in :func:`xarray.concat`
@@ -1401,23 +1401,23 @@ class LoaderBase(metaclass=_Loader):
 
         Returns
         -------
-        dict[str, Any]
+        dict[str, typing.Any]
             The combined attributes.
 
         """
         return dict(variable_attrs[0])
 
-    @overload
+    @typing.overload
     def _combine_multiple(
         self, data_list: list[xr.DataArray], coord_dict: dict[str, Sequence]
     ) -> xr.DataArray: ...
 
-    @overload
+    @typing.overload
     def _combine_multiple(
         self, data_list: list[xr.Dataset], coord_dict: dict[str, Sequence]
     ) -> xr.Dataset: ...
 
-    @overload
+    @typing.overload
     def _combine_multiple(
         self, data_list: list[xr.DataTree], coord_dict: dict[str, Sequence]
     ) -> xr.DataTree: ...
@@ -1444,7 +1444,9 @@ class LoaderBase(metaclass=_Loader):
             else:
                 try:
                     return xr.combine_by_coords(
-                        cast(Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list),
+                        typing.cast(
+                            Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list
+                        ),
                         combine_attrs=self.combine_attrs,
                         join="exact",
                     )
@@ -1626,13 +1628,13 @@ class LoaderBase(metaclass=_Loader):
             dims_first=True,
         )
 
-    @overload
+    @typing.overload
     def post_process_general(self, data: xr.DataArray) -> xr.DataArray: ...
 
-    @overload
+    @typing.overload
     def post_process_general(self, data: xr.Dataset) -> xr.Dataset: ...
 
-    @overload
+    @typing.overload
     def post_process_general(self, data: xr.DataTree) -> xr.DataTree: ...
 
     def post_process_general(
@@ -1678,7 +1680,9 @@ class LoaderBase(metaclass=_Loader):
             )
 
         if isinstance(data, xr.DataTree):
-            return cast(xr.DataTree, data.map_over_datasets(self.post_process_general))
+            return typing.cast(
+                xr.DataTree, data.map_over_datasets(self.post_process_general)
+            )
 
         raise TypeError(
             "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
@@ -1807,7 +1811,7 @@ class _RegistryBase:
         return cls.__instance
 
     @classmethod
-    def instance(cls) -> Self:
+    def instance(cls) -> typing.Self:
         """Return the registry instance."""
         return cls()
 
@@ -1823,10 +1827,10 @@ class LoaderRegistry(_RegistryBase):
 
     """
 
-    _loaders: ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
+    _loaders: typing.ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
     """Mapping of registered loaders."""
 
-    _alias_mapping: ClassVar[dict[str, str]] = {}
+    _alias_mapping: typing.ClassVar[dict[str, str]] = {}
     """Mapping of aliases to loader names."""
 
     _current_loader: LoaderBase | None = None
@@ -2031,7 +2035,7 @@ class LoaderRegistry(_RegistryBase):
         single: bool = False,
         combine: bool = True,
         parallel: bool = False,
-        load_kwargs: dict[str, Any] | None = None,
+        load_kwargs: dict[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -2083,7 +2087,7 @@ class LoaderRegistry(_RegistryBase):
         *,
         cache: bool = True,
         display: bool = True,
-        rc: dict[str, Any] | None = None,
+        rc: dict[str, typing.Any] | None = None,
     ) -> pandas.DataFrame | pandas.io.formats.style.Styler | None:
         loader, default_dir = self._get_current_defaults()
 
@@ -2161,5 +2165,5 @@ class LoaderRegistry(_RegistryBase):
     summarize.__doc__ = LoaderBase.summarize.__doc__
 
 
-_loaders: LoaderRegistry = LoaderRegistry.instance()
+loaders: LoaderRegistry = LoaderRegistry.instance()
 """Global instance of :class:`LoaderRegistry <erlab.io.dataloader.LoaderRegistry>`."""

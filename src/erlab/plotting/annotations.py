@@ -24,8 +24,8 @@ __all__ = [
 
 import io
 import re
+import typing
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal, cast
 
 import matplotlib
 import matplotlib.figure
@@ -39,7 +39,7 @@ import numpy as np
 from erlab.accessors.utils import either_dict_or_kwargs
 from erlab.plotting.colors import axes_textcolor
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pyperclip
@@ -266,7 +266,9 @@ def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
 def copy_mathtext(
     s: str,
     fontsize: float
-    | Literal["xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"]
+    | typing.Literal[
+        "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
+    ]
     | None = None,
     fontproperties: matplotlib.font_manager.FontProperties | None = None,
     outline: bool = False,
@@ -341,7 +343,7 @@ def property_labels(
     si: int = 0,
     name: str | None = None,
     unit: str | None = None,
-    order: Literal["C", "F", "A", "K"] = "C",
+    order: typing.Literal["C", "F", "A", "K"] = "C",
     **values_kwargs,
 ) -> list[str]:
     """Generate labels from a dictionary of values.
@@ -375,7 +377,7 @@ def property_labels(
 
     """
     values = either_dict_or_kwargs(values, values_kwargs, "property_labels")
-    strlist: Any = []
+    strlist: typing.Any = []
     for k, v in values.items():
         if not isinstance(v, tuple | list | np.ndarray):
             v = [v]
@@ -400,7 +402,7 @@ def label_subplot_properties(
     si: int = 0,
     name: str | None = None,
     unit: str | None = None,
-    order: Literal["C", "F", "A", "K"] = "C",
+    order: typing.Literal["C", "F", "A", "K"] = "C",
     **kwargs,
 ) -> None:
     r"""Labels subplots with automatically generated labels.
@@ -452,8 +454,8 @@ def label_subplots(
     axes: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
     values: Iterable[int | str] | None = None,
     startfrom: int = 1,
-    order: Literal["C", "F", "A", "K"] = "C",
-    loc: Literal[
+    order: typing.Literal["C", "F", "A", "K"] = "C",
+    loc: typing.Literal[
         "upper left",
         "upper center",
         "upper right",
@@ -469,7 +471,7 @@ def label_subplots(
     suffix: str = "",
     numeric: bool = False,
     capital: bool = False,
-    fontweight: Literal[
+    fontweight: typing.Literal[
         "ultralight",
         "light",
         "normal",
@@ -487,7 +489,7 @@ def label_subplots(
     ] = "normal",
     fontsize: (
         float
-        | Literal[
+        | typing.Literal[
             "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
         ]
         | None
@@ -581,13 +583,13 @@ def label_subplots_nature(
     axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
     values: Sequence[int | str] | None = None,
     startfrom: int = 1,
-    order: Literal["C", "F", "A", "K"] = "C",
+    order: typing.Literal["C", "F", "A", "K"] = "C",
     offset: tuple[float, float] = (-20.0, 7.0),
     prefix: str = "",
     suffix: str = "",
     numeric: bool = False,
     capital: bool = False,
-    fontweight: Literal[
+    fontweight: typing.Literal[
         "ultralight",
         "light",
         "normal",
@@ -605,7 +607,7 @@ def label_subplots_nature(
     ] = "black",
     fontsize: (
         float
-        | Literal[
+        | typing.Literal[
             "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
         ]
     ) = "medium",
@@ -730,7 +732,7 @@ def mark_points(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
-        ax = cast(matplotlib.axes.Axes, ax)  # to appease mypy
+        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
         fig = ax.get_figure()
 
         if fig is None:
@@ -759,7 +761,7 @@ def mark_points(
 def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
-    axis: Literal["x", "y"] = "x",
+    axis: typing.Literal["x", "y"] = "x",
     literal: bool = False,
     roman: bool = True,
     bar: bool = False,
@@ -799,7 +801,7 @@ def mark_points_outside(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points_outside(points, labels, axis, roman, bar, a)
     else:
-        ax = cast(matplotlib.axes.Axes, ax)  # to appease mypy
+        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
 
         if axis == "x":
             label_ax = ax.twiny()
@@ -934,7 +936,7 @@ class _SIFormatter(matplotlib.ticker.ScalarFormatter):
 
 def scale_units(
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes],
-    axis: Literal["x", "y", "z"],
+    axis: typing.Literal["x", "y", "z"],
     si: int = 0,
     *,
     prefix: bool = True,
@@ -1100,7 +1102,7 @@ def sizebar(
     resolution: float = 1.0,
     decimals: int = 0,
     label: str | None = None,
-    loc: Literal[
+    loc: typing.Literal[
         "upper left",
         "upper center",
         "upper right",

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import typing
 import weakref
-from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import xarray as xr
@@ -11,7 +11,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
@@ -232,11 +232,13 @@ class RotationDialog(DataTransformDialog):
     enable_copy = True
 
     @property
-    def _rotate_params(self) -> dict[str, Any]:
+    def _rotate_params(self) -> dict[str, typing.Any]:
         return {
             "angle": self.angle_spin.value(),
-            "axes": cast(tuple[str, str], tuple(self.slicer_area.main_image.axis_dims)),
-            "center": cast(
+            "axes": typing.cast(
+                tuple[str, str], tuple(self.slicer_area.main_image.axis_dims)
+            ),
+            "center": typing.cast(
                 tuple[float, float], tuple(spin.value() for spin in self.center_spins)
             ),
             "reshape": self.reshape_check.isChecked(),
@@ -317,7 +319,7 @@ class CropDialog(DataTransformDialog):
 
     @property
     def _cursor_indices(self) -> tuple[int, int]:
-        return cast(
+        return typing.cast(
             tuple[int, int], tuple(combo.currentIndex() for combo in self.cursor_combos)
         )
 
@@ -420,7 +422,7 @@ class CropDialog(DataTransformDialog):
                 out = erlab.interactive.utils.generate_code(
                     xr.DataArray.sel,
                     [],
-                    kwargs=cast(dict[str, slice], kwargs),
+                    kwargs=typing.cast(dict[str, slice], kwargs),
                     module=out,
                 )
             else:

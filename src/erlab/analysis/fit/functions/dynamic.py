@@ -13,8 +13,8 @@ __all__ = [
 ]
 import functools
 import inspect
+import typing
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar, Literal, TypedDict, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -31,12 +31,12 @@ from erlab.analysis.fit.functions.general import (
 from erlab.constants import kb_eV
 
 
-class PeakArgs(TypedDict):
+class PeakArgs(typing.TypedDict):
     args: list[str]
-    kwargs: dict[str, Any]
+    kwargs: dict[str, typing.Any]
 
 
-def get_args_kwargs(func: Callable) -> tuple[list[str], dict[str, Any]]:
+def get_args_kwargs(func: Callable) -> tuple[list[str], dict[str, typing.Any]]:
     """Get all argument names and default values from a function signature.
 
     Parameters
@@ -102,7 +102,7 @@ class DynamicFunction:
     def kwargs(self) -> list[tuple[str, float]]:
         return []
 
-    @no_type_check
+    @typing.no_type_check
     def __call__(self, **kwargs):
         raise NotImplementedError("Must be overloaded in child classes")
 
@@ -174,7 +174,7 @@ class MultiPeakFunction(DynamicFunction):
 
     """
 
-    PEAK_SHAPES: ClassVar[dict[Callable, list[str]]] = {
+    PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {
         lorentzian_wh: ["lorentzian", "lor", "l"],
         gaussian_wh: ["gaussian", "gauss", "g"],
     }
@@ -187,7 +187,9 @@ class MultiPeakFunction(DynamicFunction):
         peak_shapes: list[str] | str | None = None,
         *,
         fd: bool = True,
-        background: Literal["constant", "linear", "polynomial", "none"] = "linear",
+        background: typing.Literal[
+            "constant", "linear", "polynomial", "none"
+        ] = "linear",
         degree: int = 2,
         convolve: bool = True,
     ) -> None:

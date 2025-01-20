@@ -1,8 +1,8 @@
 """Utility functions for working with numpy and xarray."""
 
 import functools
+import typing
 from collections.abc import Callable, Hashable, Iterable
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -268,8 +268,8 @@ def sort_coord_order(
             return darr
         keys = []
 
-    ordered_coords: dict[Hashable, Any] = {}
-    coord_dict: dict[Hashable, Any] = dict(darr.coords)
+    ordered_coords: dict[Hashable, typing.Any] = {}
+    coord_dict: dict[Hashable, typing.Any] = dict(darr.coords)
 
     if dims_first:
         for d in darr.dims:

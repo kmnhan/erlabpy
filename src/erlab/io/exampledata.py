@@ -2,8 +2,8 @@
 
 __all__ = ["generate_data", "generate_data_angles", "generate_gold_edge"]
 
+import typing
 from collections.abc import Hashable, Sequence
-from typing import cast
 
 import numpy as np
 import scipy.ndimage
@@ -483,7 +483,7 @@ def generate_gold_edge(
         data[:] = rng.poisson(data).astype(float)
 
     data = erlab.analysis.image.gaussian_filter(
-        data, sigma=cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
+        data, sigma=typing.cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
     )
 
     if noise:

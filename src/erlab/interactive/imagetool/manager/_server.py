@@ -13,8 +13,8 @@ import struct
 import tempfile
 import threading
 import time
+import typing
 import uuid
-from typing import TYPE_CHECKING, Any
 
 import xarray as xr
 from qtpy import QtCore
@@ -22,7 +22,7 @@ from qtpy import QtCore
 import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Collection
 
     import numpy.typing as npt
@@ -38,12 +38,12 @@ The default port number 45555 can be overridden by setting the environment varia
 """
 
 
-def _save_pickle(obj: Any, filename: str) -> None:
+def _save_pickle(obj: typing.Any, filename: str) -> None:
     with open(filename, "wb") as file:
         pickle.dump(obj, file, protocol=-1)
 
 
-def _load_pickle(filename: str) -> Any:
+def _load_pickle(filename: str) -> typing.Any:
     with open(filename, "rb") as file:
         return pickle.load(file)
 

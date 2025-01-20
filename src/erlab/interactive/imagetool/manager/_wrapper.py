@@ -6,16 +6,16 @@ __all__ = ["_ImageToolWrapper"]
 
 import datetime
 import os
+import typing
 import uuid
 import weakref
-from typing import TYPE_CHECKING, cast
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.manager import ImageToolManager
 
@@ -147,7 +147,7 @@ class _ImageToolWrapper(QtCore.QObject):
     @name.setter
     def name(self, name: str) -> None:
         self._name = name
-        cast(ImageTool, self.tool).setWindowTitle(self.label_text)
+        typing.cast(ImageTool, self.tool).setWindowTitle(self.label_text)
         self.manager.list_view.refresh(self.index)
 
     @property
@@ -184,12 +184,12 @@ class _ImageToolWrapper(QtCore.QObject):
     def update_title(self, title: str | None = None) -> None:
         if not self.archived:
             if title is None:
-                title = cast(ImageTool, self.tool).windowTitle()
+                title = typing.cast(ImageTool, self.tool).windowTitle()
             self.name = title
 
     @QtCore.Slot()
     def visibility_changed(self) -> None:
-        tool = cast(ImageTool, self.tool)
+        tool = typing.cast(ImageTool, self.tool)
         self._recent_geometry = tool.geometry()
 
     @QtCore.Slot()
@@ -242,7 +242,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            tool = cast(ImageTool, self.tool)
+            tool = typing.cast(ImageTool, self.tool)
             tool.to_file(self._archived_fname)
 
             self._info_text_archived = self.info_text
@@ -258,7 +258,7 @@ class _ImageToolWrapper(QtCore.QObject):
         :meth:`ImageToolManager.unarchive_selected` which displays a wait dialog.
         """
         if self.archived:
-            self.tool = ImageTool.from_file(cast(str, self._archived_fname))
+            self.tool = ImageTool.from_file(typing.cast(str, self._archived_fname))
             self.tool.show()
             self._info_text_archived = ""
             self._box_ratio_archived = float("NaN")

@@ -3,9 +3,9 @@
 __all__ = ["rotate", "rotateinplane", "rotatestackinplane", "shift"]
 
 import itertools
+import typing
 import warnings
 from collections.abc import Hashable, Iterable, Mapping
-from typing import cast
 
 import numpy as np
 import scipy.ndimage
@@ -71,7 +71,9 @@ def rotate(
         raise ValueError("input array should be at least 2D")
 
     if isinstance(axes[0], int):
-        axes_dims: list[Hashable] = [darr.dims[a] for a in cast(tuple[int, int], axes)]
+        axes_dims: list[Hashable] = [
+            darr.dims[a] for a in typing.cast(tuple[int, int], axes)
+        ]
     else:
         axes_dims = list(axes)
     axes = list(darr.get_axis_num(axes_dims))
@@ -160,7 +162,7 @@ def rotate(
             ]
         )
 
-        for coordinates in cast(Iterable[tuple[slice | int, ...]], planes_coord):
+        for coordinates in typing.cast(Iterable[tuple[slice | int, ...]], planes_coord):
             ia = input_arr[coordinates]
             oa = output[coordinates]
             scipy.ndimage.affine_transform(

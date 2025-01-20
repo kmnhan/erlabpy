@@ -1,11 +1,13 @@
 """Data loader for our homelab system."""
 
+__all__ = ["ERPESLoader"]
+
 import datetime
 import os
 import pathlib
 import re
+import typing
 from collections.abc import Callable
-from typing import Any, ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -41,9 +43,9 @@ def _emit_ambiguous_file_warning(num, file_to_use):
 class ERPESLoader(DA30Loader):
     name = "erpes"
     description = "KAIST home lab setup"
-    extensions: ClassVar[set[str]] = {".pxt", ".zip"}
+    extensions: typing.ClassVar[set[str]] = {".pxt", ".zip"}
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],
         "beta": ["Thetay [deg]", "ThetaY"],
@@ -64,13 +66,15 @@ class ERPESLoader(DA30Loader):
         "sample_temp",
     )
 
-    additional_attrs: ClassVar[
+    additional_attrs: typing.ClassVar[
         dict[str, str | float | Callable[[xr.DataArray], str | float]]
     ] = {"configuration": 4}
 
-    additional_coords: ClassVar[dict[str, str | int | float]] = {"hv": 6.0187}
+    additional_coords: typing.ClassVar[dict[str, str | int | float]] = {"hv": 6.0187}
 
-    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+    summary_attrs: typing.ClassVar[
+        dict[str, str | Callable[[xr.DataArray], typing.Any]]
+    ] = {
         "time": _get_start_time,
         "type": _determine_kind,
         "lens mode": "Lens Mode",
@@ -97,7 +101,7 @@ class ERPESLoader(DA30Loader):
     _PATTERN_PREFIX_FILENO = re.compile(r"(.*?)(\d{4})(?:_S\d{5})?")
 
     @property
-    def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, Any]]]:
+    def file_dialog_methods(self) -> dict[str, tuple[Callable, dict[str, typing.Any]]]:
         return {
             "1KARPES Data (*.pxt *.zip)": (self.load, {}),
             "1KARPES Single File (*.pxt *.zip)": (self.load, {"single": True}),
@@ -199,7 +203,7 @@ class ERPESLoader(DA30Loader):
 
         return files, coord_dict
 
-    def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
+    def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         try:
             match_scan = self._PATTERN_PREFIX_FILENO.match(name)
             if match_scan is None:
