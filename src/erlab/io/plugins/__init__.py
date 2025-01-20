@@ -9,8 +9,7 @@ loader.
 
 .. currentmodule:: erlab.io.plugins
 
-Modules
-=======
+.. rubric:: Modules
 
 .. autosummary::
    :toctree:

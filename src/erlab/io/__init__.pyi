@@ -16,12 +16,6 @@ __all__ = [
 ]
 
 from . import dataloader, igor, nexusutils, utils
-from .dataloader import (
-    load,
-    loader_context,
-    loaders,
-    set_data_dir,
-    set_loader,
-    summarize,
-)
+from ._namespace import load, loader_context, set_data_dir, set_loader, summarize
+from .dataloader import _loaders as loaders
 from .utils import load_hdf5, open_hdf5, save_as_hdf5, save_as_netcdf
