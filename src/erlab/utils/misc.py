@@ -3,7 +3,9 @@
 import functools
 import importlib
 import inspect
+import os
 import pathlib
+import subprocess
 import sys
 import warnings
 from collections.abc import Sequence
@@ -168,3 +170,18 @@ def is_interactive() -> bool:
     except NameError:
         pass
     return False
+
+
+def open_in_file_manager(path: str | os.PathLike):
+    """Open a directory in the system's file manager.
+
+    Parameters
+    ----------
+    path
+        Path to the folder.
+    """
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    else:
+        open_cmd = "open" if os.name == "posix" else "xdg-open"
+        subprocess.call([open_cmd, path])
