@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISPLAY: ":99.0"
-      NUMBA_JIT_COVERAGE: 1
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +52,10 @@ jobs:
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
-        run: uv run pytest -v --cov erlab --junitxml=junit.xml
+        run: |
+          source .venv/bin/activate
+          export NUMBA_JIT_COVERAGE=1
+          uv run pytest -v --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
