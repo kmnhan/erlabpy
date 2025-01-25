@@ -7,6 +7,8 @@ Some of the projection code was adapted from kwant.
 
 """
 
+__all__ = ["Atom3DCollection", "Bond3DCollection", "CrystalProperty"]
+
 import contextlib
 import functools
 import itertools
@@ -22,8 +24,6 @@ import mpl_toolkits.mplot3d.proj3d
 import numpy as np
 import numpy.typing as npt
 from matplotlib.typing import ColorType
-
-__all__ = ["Atom3DCollection", "Bond3DCollection", "CrystalProperty"]
 
 
 def sunflower_sphere(n: int = 100) -> npt.NDArray[np.float64]:
