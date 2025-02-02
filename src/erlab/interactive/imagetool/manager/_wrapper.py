@@ -44,6 +44,22 @@ class _ImageToolWrapper(QtCore.QObject):
 
         self.tool = tool
 
+        self.touch_timer = QtCore.QTimer(self)
+        self.touch_timer.setInterval(12 * 60 * 60 * 1000)  # 12 hours
+        self.touch_timer.timeout.connect(self.touch_archive)
+
+    @QtCore.Slot()
+    def touch_archive(self) -> None:
+        """Touch the archived file to update the modified time.
+
+        This is required to keep the archived file from being deleted by the system. For
+        instance on macOS, the system deletes files in the cache directory if they are
+        not accessed for a long time.
+        """
+        if self._archived_fname is not None and os.path.exists(self._archived_fname):
+            with open(self._archived_fname, "a"):
+                os.utime(self._archived_fname)
+
     @property
     def index(self) -> int:
         """Index of the ImageTool in the manager.
@@ -244,6 +260,7 @@ class _ImageToolWrapper(QtCore.QObject):
             )
             tool = typing.cast(ImageTool, self.tool)
             tool.to_file(self._archived_fname)
+            self.touch_timer.start()
 
             self._info_text_archived = self.info_text
             self._box_ratio_archived, self._pixmap_archived = self._preview_image
@@ -258,6 +275,7 @@ class _ImageToolWrapper(QtCore.QObject):
         :meth:`ImageToolManager.unarchive_selected` which displays a wait dialog.
         """
         if self.archived:
+            self.touch_timer.stop()
             self.tool = ImageTool.from_file(typing.cast(str, self._archived_fname))
             self.tool.show()
             self._info_text_archived = ""

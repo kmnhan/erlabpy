@@ -101,6 +101,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     # Archiving and unarchiving
     manager._tool_wrappers[1].archive()
+    manager._tool_wrappers[1].touch_archive()
     assert manager._tool_wrappers[1].archived
     manager._tool_wrappers[1].unarchive()
     assert not manager._tool_wrappers[1].archived
