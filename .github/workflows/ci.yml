@@ -43,7 +43,7 @@ jobs:
 
       - name: Install project with all extras
         run: |
-          uv sync --all-extras --dev --group ${{ matrix.qt-api }}
+          uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
           export QT_API=${{ matrix.qt-api }}
 
       - name: Test with pytest
