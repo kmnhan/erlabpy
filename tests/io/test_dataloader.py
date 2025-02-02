@@ -406,6 +406,12 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     #!TODO: flaky in CI only for pyside6...
     select_files([1])
+
+    # Show single in manager
+    explorer.to_manager()
+    qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+    # Wait until summary is displayed
     qtbot.wait_until(lambda: explorer._up_to_date, timeout=1000)
 
     # Check if summary is correctly displayed
