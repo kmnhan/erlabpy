@@ -2,6 +2,8 @@
 
 ### ✨ Features
 
+- add support for Python 3.13, closes [#58](https://github.com/kmnhan/erlabpy/issues/58) ([df4f479](https://github.com/kmnhan/erlabpy/commit/df4f479b5a388d111f397e1d999ae8a4f995d427))
+
 - **explorer:** add a new interactive tool for browsing file systems ([a70b222](https://github.com/kmnhan/erlabpy/commit/a70b222b4113b97697b30c376095295056bd928f))
 
   Adds a `explorer` GUI window that provides a view of the file system with a summary of selected ARPES data files.
