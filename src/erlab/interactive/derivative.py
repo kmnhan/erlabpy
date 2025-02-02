@@ -4,8 +4,8 @@ __all__ = ["dtool"]
 
 import functools
 import os
+import typing
 from collections.abc import Callable, Hashable
-from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -14,7 +14,7 @@ from qtpy import QtCore, QtWidgets, uic
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import varname
 else:
     import lazy_loader as _lazy
@@ -28,7 +28,7 @@ class DerivativeTool(
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
             try:
-                data_name = cast(
+                data_name = typing.cast(
                     str,
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
@@ -205,7 +205,7 @@ class DerivativeTool(
                 case 1:
                     for _ in range(self.sn_spin.value()):
                         out = erlab.analysis.image.boxcar_filter(
-                            out, size=cast(dict[Hashable, int], self.smooth_args)
+                            out, size=typing.cast(dict[Hashable, int], self.smooth_args)
                         )
 
         self.images[0].setDataArray(out)
@@ -249,7 +249,7 @@ class DerivativeTool(
                 return erlab.analysis.image.minimum_gradient
 
     @property
-    def process_kwargs(self) -> dict[str, Any]:
+    def process_kwargs(self) -> dict[str, typing.Any]:
         match self.tab_widget.currentIndex():
             case 0:
                 return {
@@ -294,7 +294,7 @@ class DerivativeTool(
             self.data_name
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
         if self.interp_group.isChecked():
-            arg_dict: dict[str, Any] = {
+            arg_dict: dict[str, typing.Any] = {
                 str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"
                 for dim, n in zip(
                     [self.xdim, self.ydim],
@@ -318,7 +318,7 @@ class DerivativeTool(
             match self.smooth_combo.currentIndex():
                 case 0:
                     smooth_func: Callable = erlab.analysis.image.gaussian_filter
-                    smooth_kwargs: dict[str, Any] = {"sigma": self.smooth_args}
+                    smooth_kwargs: dict[str, typing.Any] = {"sigma": self.smooth_args}
 
                 case _:
                     smooth_func = erlab.analysis.image.boxcar_filter

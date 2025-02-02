@@ -1,12 +1,14 @@
 """Data loader for beamline 4.0.3 at ALS."""
 
+__all__ = ["MERLINLoader"]
+
 import datetime
 import os
 import pathlib
 import re
+import typing
 import warnings
 from collections.abc import Callable
-from typing import Any, ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -44,11 +46,11 @@ def _determine_kind(data: xr.DataArray) -> str:
 class MERLINLoader(LoaderBase):
     name = "merlin"
     description = "ALS Beamline 4.0.3 MERLIN"
-    extensions: ClassVar[set[str]] = {".pxt", ".ibw"}
+    extensions: typing.ClassVar[set[str]] = {".pxt", ".ibw"}
 
     aliases = ("ALS_BL4", "als_bl4", "BL403", "bl403")
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "alpha": "deg",
         "beta": ["Polar", "Polar Compens"],
         "delta": "Azimuth",
@@ -73,9 +75,9 @@ class MERLINLoader(LoaderBase):
         "mesh_current",
         "sample_temp",
     )
-    additional_attrs: ClassVar[dict] = {"configuration": 1}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 1}
 
-    formatters: ClassVar[dict[str, Callable]] = {
+    formatters: typing.ClassVar[dict[str, Callable]] = {
         "polarization": _format_polarization,
         "Lens Mode": lambda x: x.replace("Angular", "A"),
         "Entrance Slit": round,
@@ -83,7 +85,9 @@ class MERLINLoader(LoaderBase):
         "Slit Plate": round,
     }
 
-    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+    summary_attrs: typing.ClassVar[
+        dict[str, str | Callable[[xr.DataArray], typing.Any]]
+    ] = {
         "time": _parse_time,
         "type": _determine_kind,
         "lens mode": "Lens Mode",
@@ -182,7 +186,7 @@ class MERLINLoader(LoaderBase):
 
         return files, coord_dict
 
-    def infer_index(self, name: str) -> tuple[int | None, dict[str, Any]]:
+    def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         try:
             match_scan = re.match(r".*?(\d{3})(?:_S\d{3})", name)
             if match_scan is None:

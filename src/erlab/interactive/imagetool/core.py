@@ -16,9 +16,9 @@ import itertools
 import os
 import pathlib
 import time
+import typing
 import uuid
 import weakref
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -29,7 +29,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Sequence
 
     import qtawesome
@@ -41,7 +41,7 @@ else:
     qtawesome = _lazy.load("qtawesome")
 
 
-class ColorMapState(TypedDict):
+class ColorMapState(typing.TypedDict):
     """A dictionary containing the colormap state of an `ImageSlicerArea` instance."""
 
     cmap: str | pg.ColorMap
@@ -50,10 +50,10 @@ class ColorMapState(TypedDict):
     high_contrast: bool
     zero_centered: bool
     levels_locked: bool
-    levels: NotRequired[tuple[float, float]]
+    levels: typing.NotRequired[tuple[float, float]]
 
 
-class PlotItemState(TypedDict):
+class PlotItemState(typing.TypedDict):
     """A dictionary containing the state of a `PlotItem` instance."""
 
     vb_aspect_locked: bool | float
@@ -61,7 +61,7 @@ class PlotItemState(TypedDict):
     vb_y_inverted: bool
 
 
-class ImageSlicerState(TypedDict):
+class ImageSlicerState(typing.TypedDict):
     """A dictionary containing the state of an `ImageSlicerArea` instance."""
 
     color: ColorMapState
@@ -69,9 +69,9 @@ class ImageSlicerState(TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
-    file_path: NotRequired[str | None]
-    splitter_sizes: NotRequired[list[list[int]]]
-    plotitem_states: NotRequired[list[PlotItemState]]
+    file_path: typing.NotRequired[str | None]
+    splitter_sizes: typing.NotRequired[list[list[int]]]
+    plotitem_states: typing.NotRequired[list[PlotItemState]]
 
 
 suppressnanwarning = np.testing.suppress_warnings()
@@ -309,7 +309,7 @@ class SlicerLinkProxy:
         self,
         source: ImageSlicerArea,
         funcname: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, typing.Any],
         indices: bool,
         steps: bool,
         color: bool,
@@ -342,7 +342,7 @@ class SlicerLinkProxy:
         self,
         source: ImageSlicerArea,
         target: ImageSlicerArea,
-        args: dict[str, Any],
+        args: dict[str, typing.Any],
         indices: bool,
         steps: bool,
     ):
@@ -593,7 +593,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transpose:
             self.transpose_main_image()
 
-        self.qapp = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance())
+        self.qapp = typing.cast(
+            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+        )
         self.qapp.aboutToQuit.connect(self.on_close)
 
     @property
@@ -612,7 +614,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         If nothing can be inferred, an empty string is returned.
         """
-        name: str | None = cast(str | None, self._data.name)
+        name: str | None = typing.cast(str | None, self._data.name)
         path: pathlib.Path | None = self._file_path
         if name is not None and name.strip() == "":
             # Name contains only whitespace
@@ -636,7 +638,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
-        return cast(ColorMapState, prop)
+        return typing.cast(ColorMapState, prop)
 
     @property
     def state(self) -> ImageSlicerState:
@@ -987,7 +989,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def unlink(self) -> None:
         if self.is_linked:
-            cast(SlicerLinkProxy, self._linking_proxy).remove(self)
+            typing.cast(SlicerLinkProxy, self._linking_proxy).remove(self)
 
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
@@ -1561,7 +1563,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         font = QtGui.QFont()
         font.setPointSizeF(float(font_size))
 
-        valid_axis: tuple[tuple[Literal[0, 1], ...], ...] = (
+        valid_axis: tuple[tuple[typing.Literal[0, 1], ...], ...] = (
             (1, 0, 0, 1),
             (1, 1, 0, 0),
             (0, 0, 1, 1),
@@ -2092,7 +2094,7 @@ class ItoolPlotItem(pg.PlotItem):
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
             data = self.current_data
-            tool = cast(
+            tool = typing.cast(
                 QtWidgets.QWidget | None,
                 erlab.interactive.itool(
                     data,
@@ -2389,7 +2391,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
 
     @QtCore.Slot(int)
-    def set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+    def set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:
         """Show rotating crosshairs for alignment."""
         if not self.is_image:
             return
@@ -2401,7 +2403,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.set_guidelines(0)
 
     @QtCore.Slot(int)
-    def _set_guidelines(self, n: Literal[0, 1, 2, 3]) -> None:
+    def _set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:
         if not self.is_image:
             return
         if n == 0:

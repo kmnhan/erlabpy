@@ -5,16 +5,20 @@ import os
 import pathlib
 import re
 import tempfile
-from typing import ClassVar
+import typing
 
 import numpy as np
 import pytest
 import xarray as xr
+from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.io.dataloader import LoaderBase, UnsupportedFileError
 from erlab.io.exampledata import generate_data_angles
+
+if typing.TYPE_CHECKING:
+    from erlab.interactive.explorer import _DataExplorer
 
 
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
@@ -84,7 +88,7 @@ def _determine_kind(darr: xr.DataArray) -> str:
     return data_type
 
 
-def test_loader(qtbot) -> None:
+def test_loader(qtbot, accept_dialog) -> None:
     # Create a temporary directory
     tmp_dir = tempfile.TemporaryDirectory()
 
@@ -118,9 +122,9 @@ def test_loader(qtbot) -> None:
     class ExampleLoader(LoaderBase):
         name = "example"
         description = "Example loader for testing purposes"
-        extensions: ClassVar[set[str]] = {".h5"}
+        extensions: typing.ClassVar[set[str]] = {".h5"}
 
-        name_map: ClassVar[dict] = {
+        name_map: typing.ClassVar[dict] = {
             "eV": "BindingEnergy",
             "alpha": "ThetaX",
             "beta": [
@@ -153,17 +157,17 @@ def test_loader(qtbot) -> None:
         # Attributes to be used as coordinates. Place all attributes that we don't want
         # to lose when merging multiple file scans here.
 
-        additional_attrs: ClassVar[dict] = {
+        additional_attrs: typing.ClassVar[dict] = {
             "configuration": 1,  # Experimental geometry required for kspace conversion
             "sample_workfunction": 4.3,
         }  # Any additional metadata you want to add to the data
 
-        formatters: ClassVar[dict] = {
+        formatters: typing.ClassVar[dict] = {
             "polarization": _format_polarization,
             "LensMode": lambda x: x.replace("Angular", "A"),
         }
 
-        summary_attrs: ClassVar[dict] = {
+        summary_attrs: typing.ClassVar[dict] = {
             "Time": _parse_time,
             "Type": _determine_kind,
             "Lens Mode": "LensMode",
@@ -252,6 +256,10 @@ def test_loader(qtbot) -> None:
         def files_for_summary(self, data_dir):
             return erlab.io.utils.get_files(data_dir, extensions=[".h5"])
 
+        @property
+        def file_dialog_methods(self):
+            return {"Example Raw Data (*.h5)": (self.load, {})}
+
     with erlab.io.loader_context("example", tmp_dir.name):
         erlab.io.load(1)
 
@@ -301,7 +309,7 @@ def test_loader(qtbot) -> None:
         UnsupportedFileError,
         match=UnsupportedFileError._make_msg(
             "example",
-            os.path.splitext(wrong_file)[1],
+            pathlib.Path(wrong_file),
             erlab.io.loaders.example.extensions,
         ),
     ):
@@ -325,7 +333,85 @@ def test_loader(qtbot) -> None:
     qtbot.addWidget(manager)
 
     erlab.io.loaders.current_loader._isummarize(df)
-    manager.close()
+
+    # Test data explorer
+
+    # Initialize data explorer
+    manager.ensure_explorer_initialized()
+    assert hasattr(manager, "explorer")
+    explorer: _DataExplorer = manager.explorer
+
+    # Set the recent directory and name filter
+    manager._recent_directory = tmp_dir.name
+    manager._recent_name_filter = next(
+        iter(erlab.io.loaders["example"].file_dialog_methods.keys())
+    )
+
+    # Show data explorer
+    manager.show_explorer()
+    qtbot.wait_exposed(explorer)
+
+    assert explorer.loader_name == "example"
+    assert explorer._fs_model.file_system.path == pathlib.Path(tmp_dir.name)
+
+    # Reload folder
+    explorer._reload_act.trigger()
+
+    # Set show hidden files
+    explorer._tree_view.model().set_show_hidden(False)
+
+    # Sort by name
+    explorer._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.DescendingOrder)
+
+    def select_files(indices: list[int], deselect: bool = False) -> None:
+        selection_model = explorer._tree_view.selectionModel()
+
+        for index in indices:
+            qmodelindex = explorer._tree_view.model().index(index, 0)
+            selection_model.select(
+                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelectionModel.SelectionFlag.Deselect
+                if deselect
+                else QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+    assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
+
+    select_files([1])
+
+    # Check if summary is correctly displayed
+    text_edit = QtWidgets.QTextEdit()
+    text_edit.setHtml(
+        explorer._parse_file_info(
+            erlab.utils.formatting.format_darr_html(
+                erlab.io.load(5), additional_info=[]
+            )
+        )
+    )
+    info_html_ref = str(text_edit.toHtml())
+    qtbot.wait_until(
+        lambda: explorer._text_edit.toHtml() == info_html_ref, timeout=2000
+    )
+
+    # Multiple selection
+    select_files([1, 2, 3])
+    qtbot.wait_until(
+        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_MULTIPLE_SELECTED
+    )
+
+    # Show multiple in manager
+    explorer.to_manager()
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+    # Test sorting by different columns
+    for i in range(4):
+        explorer._tree_view.sortByColumn(i, QtCore.Qt.SortOrder.AscendingOrder)
+
+    # # Trigger open in file explorer
+    # explorer._finder_act.trigger()
+
+    # Close imagetool manager
+    _handler = accept_dialog(manager.close)
 
     # Cleanup the temporary directory
     tmp_dir.cleanup()

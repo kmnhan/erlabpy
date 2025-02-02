@@ -5,7 +5,7 @@ from __future__ import annotations
 __all__ = ["IgorBackendEntrypoint", "load_experiment", "load_igor_hdf5", "load_wave"]
 
 import os
-from typing import TYPE_CHECKING, Any
+import typing
 
 import h5netcdf
 import igor2.binarywave
@@ -15,7 +15,7 @@ import numpy as np
 import xarray as xr
 from xarray.backends import BackendEntrypoint
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
 
@@ -76,7 +76,7 @@ class IgorBackendEntrypoint(BackendEntrypoint):
 
 
 def _open_igor_ds(
-    filename: str | os.PathLike[Any],
+    filename: str | os.PathLike[typing.Any],
     drop_variables: str | Iterable[str] | None = None,
     recursive: bool = False,
 ) -> xr.Dataset:

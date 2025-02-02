@@ -16,16 +16,16 @@ __all__ = [
 
 import contextlib
 import importlib.util
+import typing
 import weakref
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from matplotlib.typing import ColorType
 
 EXCLUDED_CMAPS: tuple[str, ...] = (
@@ -701,7 +701,8 @@ def color_to_QColor(c: ColorType, alpha: float | None = None) -> QtGui.QColor:
 
 
 def pg_colormap_names(
-    source: Literal["local", "all", "matplotlib"] = "all", exclude_local: bool = False
+    source: typing.Literal["local", "all", "matplotlib"] = "all",
+    exclude_local: bool = False,
 ) -> list[str]:
     """Get all valid :obj:`pyqtgraph` colormap names.
 

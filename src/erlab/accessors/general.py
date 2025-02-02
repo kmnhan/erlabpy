@@ -10,8 +10,8 @@ __all__ = [
 
 import functools
 import importlib
+import typing
 from collections.abc import Hashable, Mapping
-from typing import Any
 
 import numpy as np
 import xarray as xr
@@ -648,7 +648,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 class InfoDataArrayAccessor(ERLabDataArrayAccessor):
     """`xarray.Dataset.qinfo` accessor for displaying information about the data."""
 
-    def get_value(self, attr_or_coord_name: str) -> Any:
+    def get_value(self, attr_or_coord_name: str) -> typing.Any:
         """Get the value of the specified attribute or coordinate.
 
         If the attribute or coordinate is not found, `None` is returned.

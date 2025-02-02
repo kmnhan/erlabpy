@@ -5,15 +5,15 @@ from __future__ import annotations
 __all__ = ["_ImageToolWrapperListView"]
 
 import enum
+import typing
 import weakref
-from typing import TYPE_CHECKING, Any, cast
 
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -200,7 +200,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             painter.fillRect(option.rect, option.palette.base())
 
         # Draw text only if not editing
-        view = cast(_ImageToolWrapperListView, self.parent())
+        view = typing.cast(_ImageToolWrapperListView, self.parent())
         is_editing: bool = (
             view.state() == QtWidgets.QAbstractItemView.State.EditingState
             and view.currentIndex() == index
@@ -242,7 +242,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             icon = qta.icon(
                 "mdi6.link-variant",
                 color=self.manager.color_for_linker(
-                    cast(
+                    typing.cast(
                         erlab.interactive.imagetool.core.SlicerLinkProxy,
                         tool_wrapper.slicer_area._linking_proxy,
                     )
@@ -306,9 +306,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 ):
                     self.preview_popup.hide()
                 case QtCore.QEvent.Type.MouseMove:
-                    index = cast(_ImageToolWrapperListView, self.parent()).indexAt(
-                        cast(QtGui.QMouseEvent, event).pos()
-                    )
+                    index = typing.cast(
+                        _ImageToolWrapperListView, self.parent()
+                    ).indexAt(typing.cast(QtGui.QMouseEvent, event).pos())
                     if not index.isValid():
                         self.preview_popup.hide()
 
@@ -348,7 +348,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
 
     def data(
         self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole
-    ) -> Any:
+    ) -> typing.Any:
         if not index.isValid():
             return None
 
@@ -409,7 +409,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
     def setData(
         self,
         index: QtCore.QModelIndex,
-        value: Any,
+        value: typing.Any,
         role: int = QtCore.Qt.ItemDataRole.EditRole,
     ) -> bool:
         if not index.isValid():
@@ -551,7 +551,9 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._model = _ImageToolWrapperListModel(manager, self)
         self.setModel(self._model)
         self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
-        self._selection_model = cast(QtCore.QItemSelectionModel, self.selectionModel())
+        self._selection_model = typing.cast(
+            QtCore.QItemSelectionModel, self.selectionModel()
+        )
 
         # Show tool on double-click
         self.doubleClicked.connect(self._model.manager.show_selected)

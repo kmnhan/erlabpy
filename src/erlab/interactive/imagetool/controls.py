@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import typing
 import weakref
-from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.core import ImageSlicerArea
@@ -275,7 +275,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_layouts[0].addWidget(self.btn_snap, 0, 3, 1, 1)
             self.values_layouts[0].addWidget(self.cb_cursors, 0, 0, 1, 1)
             self.values_layouts[0].addWidget(self.spin_dat, 0, 4, 1, 1)
-        cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[0])
+        typing.cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[0])
 
         # info widgets
         self.label_dim = tuple(
@@ -339,7 +339,9 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.values_layouts[i + 1].addWidget(self.spin_idx[i], 0, 2, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.spin_val[i], 0, 3, 1, 1)
 
-            cast(QtWidgets.QLayout, self.layout()).addWidget(self.values_groups[i + 1])
+            typing.cast(QtWidgets.QLayout, self.layout()).addWidget(
+                self.values_groups[i + 1]
+            )
 
     def _transpose_axes(self, idx: int) -> None:
         if self.data.ndim == 4:
@@ -500,7 +502,7 @@ class ItoolColorControls(ItoolControlsBase):
             off=_ICON_ALIASES["bright_percent"],
         )
 
-        layout = cast(QtWidgets.QLayout, self.layout())
+        layout = typing.cast(QtWidgets.QLayout, self.layout())
         layout.addWidget(self.btn_reverse)
         layout.addWidget(self.btn_contrast)
         layout.addWidget(self.btn_zero)
@@ -525,7 +527,7 @@ class ItoolColormapControls(ItoolControlsBase):
         else:
             self.setLayout(QtWidgets.QHBoxLayout(self))
 
-        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout = typing.cast(QtWidgets.QBoxLayout, self.layout())
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
 
@@ -554,7 +556,7 @@ class ItoolColormapControls(ItoolControlsBase):
 
         self.misc_controls = self.add_control(ItoolColorControls(self))
 
-        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout = typing.cast(QtWidgets.QBoxLayout, self.layout())
         layout.addWidget(self.cb_colormap)
         layout.addWidget(self.gamma_widget)
         layout.addWidget(self.misc_controls)
@@ -590,7 +592,7 @@ class ItoolBinningControls(ItoolControlsBase):
         self.buttonslayout.setContentsMargins(0, 0, 0, 0)
         self.buttonslayout.setSpacing(3)
 
-        layout = cast(QtWidgets.QBoxLayout, self.layout())
+        layout = typing.cast(QtWidgets.QBoxLayout, self.layout())
         layout.addLayout(self.gridlayout)
         layout.addLayout(self.buttonslayout)
 

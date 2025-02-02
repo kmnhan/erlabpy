@@ -30,8 +30,7 @@ Examples
 Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
 
 
-Modules
-=======
+.. rubric:: Modules
 
 .. autosummary::
    :toctree: generated
@@ -44,14 +43,34 @@ Modules
    exampledata
    characterization
 
+.. rubric:: Module Attributes
+
+.. attribute:: loaders
+
+   A global registry of all loaders registered in the session. The keys are the names of
+   the loaders and the values are the loader objects.
+
+   .. seealso::
+
+      :func:`set_loader`, :func:`set_data_dir`, :func:`loader_context`
+
+.. rubric:: Functions
+
+.. autosummary::
+
+   load
+   loader_context
+   set_data_dir
+   set_loader
+   summarize
+
 """
 
 import warnings
 
-# Import plugins last
-# isort: off
-import erlab.io.plugins  # noqa: F401
 import lazy_loader as _lazy
+
+import erlab.io.plugins  # noqa: F401
 
 __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
 

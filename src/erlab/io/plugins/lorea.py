@@ -1,8 +1,10 @@
 """Data loader for beamline 20 LOREA at ALBA."""
 
+__all__ = ["LOREALoader"]
+
 import pathlib
 import re
-from typing import ClassVar
+import typing
 
 import xarray as xr
 
@@ -17,11 +19,11 @@ def _get_data(group):
 class LOREALoader(LoaderBase):
     name = "lorea"
     description = "ALBA Beamline 20 LOREA"
-    extensions: ClassVar[set[str]] = {".nxs", ".krx"}
+    extensions: typing.ClassVar[set[str]] = {".nxs", ".krx"}
 
     aliases = ("alba_bl20",)
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "eV": ["instrument.analyser.energies", "energies"],
         "alpha": ["instrument.analyser.angles", "angles"],
         "beta": ["instrument.analyser.defl_angles", "defl_angles"],
@@ -36,7 +38,7 @@ class LOREALoader(LoaderBase):
     }
 
     coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
-    additional_attrs: ClassVar[dict] = {"configuration": 3}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 3}
 
     skip_validate: bool = True
     always_single: bool = True

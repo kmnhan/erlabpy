@@ -1,11 +1,11 @@
 """Defines an accessor for momentum conversion related utilities."""
 
-__all__ = ["MomentumAccessor", "OffsetView"]
+__all__ = ["IncompleteDataError", "MomentumAccessor", "OffsetView"]
 
 import functools
 import time
+import typing
 from collections.abc import Hashable, ItemsView, Iterable, Iterator, Mapping
-from typing import Literal, Self, cast
 
 import numpy as np
 import xarray as xr
@@ -22,11 +22,11 @@ class IncompleteDataError(ValueError):
     coordinates.
     """
 
-    def __init__(self, kind: Literal["attr", "coord"], name: str) -> None:
+    def __init__(self, kind: typing.Literal["attr", "coord"], name: str) -> None:
         super().__init__(self._make_message(kind, name))
 
     @staticmethod
-    def _make_message(kind: Literal["attr", "coord"], name: str) -> str:
+    def _make_message(kind: typing.Literal["attr", "coord"], name: str) -> str:
         kind_str = "Attribute" if kind == "attr" else "Coordinate"
         return f"{kind_str} '{name}' is required for momentum conversion."
 
@@ -152,7 +152,7 @@ class OffsetView:
         self,
         other: Mapping[str, float] | Iterable[tuple[str, float]] | None = None,
         **kwargs,
-    ) -> Self:
+    ) -> typing.Self:
         """Update the offset view with the provided key-value pairs."""
         if other is not None:
             for k, v in other.items() if isinstance(other, Mapping) else other:
@@ -165,7 +165,7 @@ class OffsetView:
         """Return a view of the offset view as a list of (key, value) pairs."""
         return dict(self).items()
 
-    def reset(self) -> Self:
+    def reset(self) -> typing.Self:
         """Reset all angle offsets to zero."""
         for k in self._obj.kspace._valid_offset_keys:
             self[k] = 0.0
@@ -302,7 +302,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._obj.attrs["angle_resolution"] = float(value)
 
     @property
-    def slit_axis(self) -> Literal["kx", "ky"]:
+    def slit_axis(self) -> typing.Literal["kx", "ky"]:
         """Momentum axis parallel to the analyzer slit.
 
         Returns
@@ -317,7 +317,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 return "ky"
 
     @property
-    def other_axis(self) -> Literal["kx", "ky"]:
+    def other_axis(self) -> typing.Literal["kx", "ky"]:
         """Momentum axis perpendicular to the analyzer slit.
 
         Returns
@@ -333,7 +333,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
     @property
     @_only_angles
-    def momentum_axes(self) -> tuple[Literal["kx", "ky", "kz"], ...]:
+    def momentum_axes(self) -> tuple[typing.Literal["kx", "ky", "kz"], ...]:
         """Momentum axes of the data after conversion.
 
         Returns
@@ -576,7 +576,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         return False
 
-    def _get_transformed_coords(self) -> dict[Literal["kx", "ky", "kz"], xr.DataArray]:
+    def _get_transformed_coords(
+        self,
+    ) -> dict[typing.Literal["kx", "ky", "kz"], xr.DataArray]:
         kx, ky = self._forward_func(self._alpha, self._beta)
         if "hv" in kx.dims:
             kz = erlab.analysis.kspace.kz_func(
@@ -585,7 +587,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             return {"kx": kx, "ky": ky, "kz": kz}
         return {"kx": kx, "ky": ky}
 
-    def estimate_bounds(self) -> dict[Literal["kx", "ky", "kz"], tuple[float, float]]:
+    def estimate_bounds(
+        self,
+    ) -> dict[typing.Literal["kx", "ky", "kz"], tuple[float, float]]:
         """Estimate the bounds of the data in momentum space.
 
         Returns
@@ -604,7 +608,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @_only_angles
     def estimate_resolution(
         self,
-        axis: Literal["kx", "ky", "kz"],
+        axis: typing.Literal["kx", "ky", "kz"],
         lims: tuple[float, float] | None = None,
         from_numpoints: bool = False,
     ) -> float:
@@ -693,11 +697,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
                 self._binding_energy,
             )
 
-        return cast(
+        return typing.cast(
             dict[str, xr.DataArray],
             dict(
                 zip(
-                    cast(list[str], out_dict.keys()),
+                    typing.cast(list[str], out_dict.keys()),
                     xr.broadcast(*out_dict.values()),
                     strict=True,
                 )
@@ -904,7 +908,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])
         input_core_dims.extend(
-            [cast(tuple[str, ...], target_dict[d].dims) for d in input_dims]
+            [typing.cast(tuple[str, ...], target_dict[d].dims) for d in input_dims]
         )
 
         out = xr.apply_ufunc(

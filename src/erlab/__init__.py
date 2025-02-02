@@ -1,5 +1,5 @@
+import typing
 from importlib.metadata import version as _version
-from typing import TYPE_CHECKING
 
 import lazy_loader as _lazy
 
@@ -28,7 +28,7 @@ except Exception:
     __version__ = "0.0.0"
 
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from erlab import (  # noqa: F401
         analysis,
         constants,

@@ -3,7 +3,7 @@
 __all__ = ["get_bz_edge", "plot_hex_bz"]
 
 import itertools
-from typing import Any
+import typing
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,7 +11,7 @@ import numpy.typing as npt
 
 from erlab.plotting.colors import axes_textcolor
 
-abbrv_kws: dict[str, tuple[str, Any]] = {
+abbrv_kws: dict[str, tuple[str, typing.Any]] = {
     "facecolor": ("fc", "none"),
     "linestyle": ("ls", "--"),
     "linewidth": ("lw", 0.5),

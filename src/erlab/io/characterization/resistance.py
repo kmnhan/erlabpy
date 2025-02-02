@@ -7,9 +7,9 @@ physics lab III equipment.
 
 import os
 import re
+import typing
 from io import StringIO
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ __all__ = ["load_resistance_physlab"]
 
 def load_resistance_physlab(
     path: str,
-    get: Literal["full", "cool", "heat"] = "full",
+    get: typing.Literal["full", "cool", "heat"] = "full",
     as_temperature: bool = False,
     **kwargs,
 ) -> xr.Dataset:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import copy
 import functools
-from typing import TYPE_CHECKING, TypedDict
+import importlib
+import typing
 
 import numpy as np
 import numpy.typing as npt
@@ -12,13 +13,13 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
     import xarray as xr
 
 
-class ArraySlicerState(TypedDict):
+class ArraySlicerState(typing.TypedDict):
     """A dictionary containing the state of cursors in an :class:`ArraySlicer`."""
 
     dims: tuple[Hashable, ...]
@@ -146,6 +147,9 @@ class ArraySlicer(QtCore.QObject):
         self.snap_act.setToolTip("Snap cursors to data points")
 
         self.set_array(xarray_obj, validate=True, reset=True)
+
+        # Preload to prevent hanging on initial bin
+        importlib.import_module("erlab.interactive.imagetool.fastbinning")
 
     @property
     def snap_to_data(self) -> bool:

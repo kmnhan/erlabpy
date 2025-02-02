@@ -1,6 +1,8 @@
 """Data loader for beamline ID21 ESM at NSLS-II."""
 
-from typing import ClassVar
+__all__ = ["ESMLoader"]
+
+import typing
 
 from erlab.io.plugins.da30 import DA30Loader
 
@@ -13,4 +15,4 @@ class ESMLoader(DA30Loader):
 
     coordinate_attrs = ("beta", "hv")
 
-    additional_attrs: ClassVar[dict] = {"configuration": 3}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 3}

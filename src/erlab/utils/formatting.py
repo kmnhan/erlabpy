@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 __all__ = ["format_darr_html", "format_html_table", "format_nbytes", "format_value"]
+
 import datetime
 import itertools
-from typing import TYPE_CHECKING, cast
+import typing
 
 import numpy as np
 import numpy.typing as npt
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable
 
     import xarray as xr
@@ -227,7 +228,7 @@ def format_value(
             )
 
         if np.issubdtype(type(val), np.floating):
-            val = cast(np.floating, val)
+            val = typing.cast(np.floating, val)
             if val.is_integer():
                 return _format(np.int64(val))
             formatted = np.format_float_positional(val, precision=precision, trim="-")

@@ -17,8 +17,8 @@ __all__ = [
 
 import contextlib
 import copy
+import typing
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any, Literal, Union, cast
 
 import matplotlib
 import matplotlib.colorbar
@@ -42,7 +42,7 @@ from erlab.plotting.colors import (
     unify_clim,
 )
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
     from matplotlib.typing import ColorType
@@ -88,7 +88,7 @@ def place_inset(
     width: float | str,
     height: float | str,
     pad: float | tuple[float, float] = 0.1,
-    loc: Literal[
+    loc: typing.Literal[
         "upper left",
         "upper center",
         "upper right",
@@ -535,8 +535,11 @@ def plot_array_2d(
             cax = cb.ax
             cax.clear()
 
-        lmin, lmax = cast(float, lnorm.vmin), cast(float, lnorm.vmax)  # to appease mypy
-        cmin, cmax = cast(float, cnorm.vmin), cast(float, cnorm.vmax)
+        lmin, lmax = (
+            typing.cast(float, lnorm.vmin),
+            typing.cast(float, lnorm.vmax),
+        )  # to appease mypy
+        cmin, cmax = typing.cast(float, cnorm.vmin), typing.cast(float, cnorm.vmax)
 
         cax.imshow(
             cmap_img.transpose(1, 0, 2),
@@ -653,12 +656,12 @@ def plot_slices(
     xlim: float | tuple[float, float] | None = None,
     ylim: float | tuple[float, float] | None = None,
     crop: bool = True,
-    same_limits: bool | Literal["row", "col", "all"] = False,
-    axis: Literal[
+    same_limits: bool | typing.Literal["row", "col", "all"] = False,
+    axis: typing.Literal[
         "on", "off", "equal", "scaled", "tight", "auto", "image", "square"
     ] = "auto",
     show_all_labels: bool = False,
-    colorbar: Literal["none", "right", "rightspan", "all"] = "none",
+    colorbar: typing.Literal["none", "right", "rightspan", "all"] = "none",
     hide_colorbar_ticks: bool = True,
     annotate: bool = True,
     cmap: str
@@ -670,9 +673,9 @@ def plot_slices(
     norm: matplotlib.colors.Normalize
     | Iterable[matplotlib.colors.Normalize | Iterable[matplotlib.colors.Normalize]]
     | None = None,
-    order: Literal["C", "F"] = "C",
-    cmap_order: Literal["C", "F"] = "C",
-    norm_order: Literal["C", "F"] | None = None,
+    order: typing.Literal["C", "F"] = "C",
+    cmap_order: typing.Literal["C", "F"] = "C",
+    norm_order: typing.Literal["C", "F"] | None = None,
     gradient: bool = False,
     gradient_kw: dict | None = None,
     subplot_kw: dict | None = None,
@@ -843,7 +846,7 @@ def plot_slices(
             if slice_dim is not None:
                 raise ValueError("Only one slice dimension is allowed")
             slice_dim = k
-            slice_levels = list(cast(Iterable[float], qsel_kw.pop(k)))
+            slice_levels = list(typing.cast(Iterable[float], qsel_kw.pop(k)))
             slice_width = values.pop(f"{k}_width", None)
         elif f"{k}_width" in values:
             qsel_kw[f"{k}_width"] = values.pop(f"{k}_width")
@@ -880,7 +883,7 @@ def plot_slices(
 
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-        axes = cast(npt.NDArray[Any], axes)
+        axes = typing.cast(npt.NDArray[typing.Any], axes)
     else:
         if not isinstance(axes, np.ndarray):
             if not isinstance(axes, Iterable):
@@ -932,7 +935,7 @@ def plot_slices(
                         cmap = cmap_name[i]
                     else:
                         cmap = list(
-                            cast(
+                            typing.cast(
                                 Iterable[str | matplotlib.colors.Colormap], cmap_name[i]
                             )
                         )[j]
@@ -941,7 +944,7 @@ def plot_slices(
                         cmap = cmap_name[j]
                     else:
                         cmap = list(
-                            cast(
+                            typing.cast(
                                 Iterable[str | matplotlib.colors.Colormap], cmap_name[j]
                             )
                         )[i]
@@ -983,19 +986,27 @@ def plot_slices(
                     cmap_norm = list(cmap_norm)
                     if norm_order == "F":
                         try:
-                            norm = list(cast(Iterable[plt.Normalize], cmap_norm[i]))[j]
+                            norm = list(
+                                typing.cast(Iterable[plt.Normalize], cmap_norm[i])
+                            )[j]
                         except TypeError:
                             norm = cmap_norm[i]
 
                     elif norm_order == "C":
                         try:
-                            norm = list(cast(Iterable[plt.Normalize], cmap_norm[j]))[i]
+                            norm = list(
+                                typing.cast(Iterable[plt.Normalize], cmap_norm[j])
+                            )[i]
                         except TypeError:
                             norm = cmap_norm[j]
                 else:
                     norm = copy.deepcopy(cmap_norm)
                 plot_array(
-                    dat_sel, ax=ax, norm=cast(plt.Normalize, norm), cmap=cmap, **kwargs
+                    dat_sel,
+                    ax=ax,
+                    norm=typing.cast(plt.Normalize, norm),
+                    cmap=cmap,
+                    **kwargs,
                 )
 
     if len(plot_dims) == 2:
@@ -1010,7 +1021,7 @@ def plot_slices(
                 for col in axes.T:
                     unify_clim(col)
             case "all":
-                unify_clim(cast(Sequence[matplotlib.axes.Axes], axes))
+                unify_clim(typing.cast(Sequence[matplotlib.axes.Axes], axes))
 
     for ax in axes.flat:
         if not show_all_labels:
@@ -1045,13 +1056,13 @@ def plot_slices(
     return fig, axes
 
 
-MultipleLine2D = list[Union[matplotlib.lines.Line2D, "MultipleLine2D"]]
+MultipleLine2D = list[typing.Union[matplotlib.lines.Line2D, "MultipleLine2D"]]
 
 
 def fermiline(
     ax: matplotlib.axes.Axes | None = None,
     value: float = 0.0,
-    orientation: Literal["h", "v"] = "h",
+    orientation: typing.Literal["h", "v"] = "h",
     **kwargs,
 ) -> matplotlib.lines.Line2D | MultipleLine2D:
     """Plot a constant energy line to denote the Fermi level.

@@ -139,11 +139,7 @@ buttons for tooltips.
 Starting the manager
 ~~~~~~~~~~~~~~~~~~~~
 
-Run ``itool-manager`` in a terminal to start the manager.
-
-Or run: ::
-
-    python -m erlab.interactive.imagetool.manager
+Run ``itool-manager`` in a terminal or command prompt window with ERLabPy installed.
 
 .. note::
 
@@ -154,18 +150,28 @@ Or run: ::
 Creating ImageTool windows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When the manager is running, ImageTools can be added to the manager by:
+When the manager is running, new data can be opened in the manager by:
 
 - Invoking ImageTool from :func:`itool <erlab.interactive.imagetool.itool>` or
   :meth:`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` with
   ``manager=True`` from any script or notebook.
 
-- From an ImageTool window, use the ``Move to Manager`` action (:kbd:`Ctrl+Shift+M`) in
-  the ``File`` menu.
+  .. code-block:: python
+
+      darr.qshow(manager=True)
+
+- The ``Move to Manager`` (:kbd:`Ctrl+Shift+M`) action in the ``File`` menu from an
+  ImageTool window. This action moves the active ImageTool to the manager.
 
 - Opening files through the ``File`` menu in the manager.
 
 - Dragging and dropping supported ARPES data into the manager window.
+
+  In the dialog that appears, you can choose the plugin to use for loading the data.
+
+  For scans that are recorded across multiple files, drag and dropping any file in the
+  scan will automatically load and concatenate the entire scan. If you want to load only
+  the file you dropped, choose the plugin suffixed with "Single File".
 
 Features
 ~~~~~~~~
