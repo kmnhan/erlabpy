@@ -388,10 +388,10 @@ def test_loader(qtbot, accept_dialog) -> None:
             )
         )
     )
-    info_html_ref = str(text_edit.toHtml())
-    qtbot.wait_until(
-        lambda: explorer._text_edit.toHtml() == info_html_ref, timeout=2000
-    )
+    info_text_ref = str(text_edit.toPlainText())
+
+    qtbot.wait_until(lambda: explorer._up_to_date)
+    assert explorer._text_edit.toPlainText() == info_text_ref
 
     # Multiple selection
     select_files([1, 2, 3])

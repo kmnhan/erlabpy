@@ -217,3 +217,7 @@ Tips
       %store -r my_data
 
   after which the data will be available as ``my_data`` in the notebook.
+
+- When browsing files, :mod:`erlab.interactive.explorer` can be used to preview the data
+  coordinates and attributes before opening them in ImageTool. It can be invoked from
+  the ``File`` menu in the manager.
