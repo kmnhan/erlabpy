@@ -248,6 +248,8 @@ concurrency = ["multiprocessing", "thread"]
 
 [tool.coverage.report]
 exclude_also = [
+    "@numba.njit",
+    "@cfunc",
     "get_ipython()",
     "from IPython",
     "def mouseDragEvent",
