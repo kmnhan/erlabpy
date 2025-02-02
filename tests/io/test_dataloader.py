@@ -377,9 +377,14 @@ def test_loader(qtbot, accept_dialog) -> None:
                 if deselect
                 else QtCore.QItemSelectionModel.SelectionFlag.Select,
             )
-            qtbot.wait_until(
-                lambda idx=idx_end: idx in explorer._tree_view.selectedIndexes()
-            )
+            if deselect:
+                qtbot.wait_until(
+                    lambda idx=idx_end: idx not in explorer._tree_view.selectedIndexes()
+                )
+            else:
+                qtbot.wait_until(
+                    lambda idx=idx_end: idx in explorer._tree_view.selectedIndexes()
+                )
 
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
