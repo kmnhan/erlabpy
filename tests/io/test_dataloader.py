@@ -381,6 +381,16 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
+    # Multiple selection
+    select_files([1, 2, 3])
+    qtbot.wait_until(
+        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_MULTIPLE_SELECTED
+    )
+
+    # Show multiple in manager
+    explorer.to_manager()
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
     #!TODO: flaky in CI only for pyside6...
     select_files([1])
     qtbot.wait_until(lambda: explorer._up_to_date, timeout=1000)
@@ -396,16 +406,6 @@ def test_loader(qtbot, accept_dialog) -> None:
     )
     info_text_ref = str(text_edit.toPlainText())
     assert explorer._text_edit.toPlainText() == info_text_ref
-
-    # Multiple selection
-    select_files([1, 2, 3])
-    qtbot.wait_until(
-        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_MULTIPLE_SELECTED
-    )
-
-    # Show multiple in manager
-    explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     # Test sorting by different columns
     for i in range(4):
