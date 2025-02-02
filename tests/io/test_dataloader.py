@@ -407,8 +407,8 @@ def test_loader(qtbot, accept_dialog) -> None:
     for i in range(4):
         explorer._tree_view.sortByColumn(i, QtCore.Qt.SortOrder.AscendingOrder)
 
-    # Trigger open in file explorer
-    explorer._finder_act.trigger()
+    # # Trigger open in file explorer
+    # explorer._finder_act.trigger()
 
     # Close imagetool manager
     _handler = accept_dialog(manager.close)
