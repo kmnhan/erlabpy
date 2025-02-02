@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import typing
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING
 
 if not importlib.util.find_spec("iminuit"):
     raise ImportError("`erlab.analysis.fit.minuit` requires `iminuit` to be installed.")
@@ -17,7 +17,7 @@ from iminuit.util import _detect_log_spacing, _smart_sampling
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import lmfit
 
 

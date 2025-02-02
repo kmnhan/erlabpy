@@ -14,10 +14,10 @@ import pathlib
 import re
 import sys
 import types
+import typing
 import warnings
 import weakref
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal, Self, cast, no_type_check
 
 import numpy as np
 import numpy.typing as npt
@@ -27,7 +27,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import os
     from collections.abc import Callable, Collection, Iterator, Mapping
 
@@ -238,7 +238,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
-def format_kwargs(d: dict[str, Any]) -> str:
+def format_kwargs(d: dict[str, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -345,8 +345,8 @@ def file_loaders(
 
 def generate_code(
     func: Callable,
-    args: Collection[Any],
-    kwargs: dict[str, Any],
+    args: Collection[typing.Any],
+    kwargs: dict[str, typing.Any],
     module: str | None = None,
     name: str | None = None,
     assign: str | None = None,
@@ -425,7 +425,7 @@ def generate_code(
 
 
 def _handle_xarray_dict_or_kwargs(
-    func: Callable, args: Collection[Any], kwargs: dict[str, Any]
+    func: Callable, args: Collection[typing.Any], kwargs: dict[str, typing.Any]
 ):
     """Handle compatibility with xarray methods that accept either kwargs or a dict.
 
@@ -466,7 +466,9 @@ def _handle_xarray_dict_or_kwargs(
     return [pos_arg], kwargs
 
 
-def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
+def _remove_default_kwargs(
+    func: Callable, kwargs: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
     """Clean up keyword arguments for a function.
 
     Given a function and a dictionary of keyword arguments, remove any keys that already
@@ -496,8 +498,8 @@ def _remove_default_kwargs(func: Callable, kwargs: dict[str, Any]) -> dict[str, 
 
 def _gen_single_function_code(
     funcname: str,
-    args: Collection[Any],
-    kwargs: Mapping[str, Any],
+    args: Collection[typing.Any],
+    kwargs: Mapping[str, typing.Any],
     *,
     line_length: int = 88,
 ) -> str:
@@ -577,7 +579,7 @@ class KeyboardEventFilter(QtCore.QObject):
             and isinstance(obj, QtWidgets.QWidget)
             and obj.hasFocus()
         ):
-            event = cast(QtGui.QKeyEvent, event)
+            event = typing.cast(QtGui.QKeyEvent, event)
             if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
                 QtGui.QKeySequence.StandardKey.Copy
             ):
@@ -1196,7 +1198,7 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
         return self.menu
 
     def getPlotItem(self) -> pg.PlotItem | None:
-        p: Self | None = self
+        p: typing.Self | None = self
         while True:
             try:
                 if p is not None:
@@ -1326,12 +1328,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.global_connect()
 
     def layout(self) -> QtWidgets.QGridLayout:
-        return cast(QtWidgets.QGridLayout, super().layout())
+        return typing.cast(QtWidgets.QGridLayout, super().layout())
 
     @staticmethod
     def getParameterWidget(
         qwtype: (
-            Literal[
+            typing.Literal[
                 "spin",
                 "dblspin",
                 "btspin",
@@ -1579,7 +1581,7 @@ class ROIControls(ParameterGroup):
             },
             **kwargs,
         )
-        self.draw_button = cast(QtWidgets.QPushButton, self.widgets["drawbtn"])
+        self.draw_button = typing.cast(QtWidgets.QPushButton, self.widgets["drawbtn"])
         self.roi_spin = [self.widgets[i] for i in ["x0", "y0", "x1", "y1"]]
         self.roi.sigRegionChanged.connect(self.update_pos)
 
@@ -1590,7 +1592,7 @@ class ROIControls(ParameterGroup):
         x1, y1 = x0 + w, y0 + h
         return x0, y0, x1, y1
 
-    @no_type_check
+    @typing.no_type_check
     def update_pos(self) -> None:
         self.widgets["x0"].setMaximum(self.widgets["x1"].value())
         self.widgets["y0"].setMaximum(self.widgets["y1"].value())
@@ -1700,7 +1702,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         *args,
         **kwargs,
     ) -> None:
-        self.qapp = cast(
+        self.qapp = typing.cast(
             QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
         )
         if not self.qapp:
@@ -1771,7 +1773,9 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         return group
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        cb = cast(QtWidgets.QApplication, QtWidgets.QApplication.instance()).clipboard()
+        cb = typing.cast(
+            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+        ).clipboard()
         if event is not None and cb is not None and cb.text(cb.Mode.Clipboard) != "":
             pyperclip.copy(cb.text(cb.Mode.Clipboard))
         return super().closeEvent(event)
@@ -1795,10 +1799,10 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
 
     def __init__(
         self,
-        orientation: Literal["vertical", "horizontal"] = "vertical",
+        orientation: typing.Literal["vertical", "horizontal"] = "vertical",
         num_ax: int = 2,
-        link: Literal["x", "y", "both", "none"] = "both",
-        cut_to_data: Literal["in", "out", "both", "none"] = "none",
+        link: typing.Literal["x", "y", "both", "none"] = "both",
+        cut_to_data: typing.Literal["in", "out", "both", "none"] = "none",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -1888,8 +1892,8 @@ class ComparisonWidget(AnalysisWidgetBase):
         self.mainfunc = lambda x: x
         self.prefunc_only_values = False
         self.mainfunc_only_values = False
-        self.prefunc_kwargs: dict[str, Any] = {}
-        self.mainfunc_kwargs: dict[str, Any] = {}
+        self.prefunc_kwargs: dict[str, typing.Any] = {}
+        self.mainfunc_kwargs: dict[str, typing.Any] = {}
 
     def call_prefunc(self, x):
         xval = np.asarray(x) if self.prefunc_only_values else x
@@ -1969,12 +1973,12 @@ class DictMenuBar(QtWidgets.QMenuBar):
 
         self.add_items(**kwargs)
 
-    def __getattribute__(self, __name: str, /) -> Any:
+    def __getattribute__(self, __name: str, /) -> typing.Any:
         try:
             return super().__getattribute__(__name)
         except AttributeError:
             try:
-                out: Any = self.menu_dict[__name]
+                out: typing.Any = self.menu_dict[__name]
             except KeyError:
                 out = self.action_dict[__name]
             warnings.warn(
@@ -2039,7 +2043,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
         triggered = actopts.pop("triggered", None)
         toggled = actopts.pop("toggled", None)
         changed = actopts.pop("changed", None)
-        separator = actopts.pop("separator", None)
+        separator = actopts.pop("separator", False)
 
         if shortcut is not None:
             shortcut = QtGui.QKeySequence(shortcut)
@@ -2049,6 +2053,10 @@ class DictMenuBar(QtWidgets.QMenuBar):
             parent = self
 
         action = QtGui.QAction(parent)
+        if separator:
+            action.setSeparator(separator)
+            return action
+
         if text is not None:
             action.setText(text)
         if checkable is not None:
@@ -2063,8 +2071,6 @@ class DictMenuBar(QtWidgets.QMenuBar):
             action.toggled.connect(toggled)
         if changed is not None:
             action.changed.connect(changed)
-        if separator is not None:
-            action.setSeparator(separator)
         return action
 
 
@@ -2266,7 +2272,7 @@ class RotatableLine(pg.InfiniteLine):
         """The angle of the line relative to the initial angle."""
         return np.round(self.angle - self.offset - 90.0, 2)
 
-    def link(self, other: Self) -> None:
+    def link(self, other: typing.Self) -> None:
         """Link with another :class:`RotatableLine`.
 
         Providing another :class:`RotatableLine` will link the angles of both lines.
@@ -2332,7 +2338,9 @@ class RotatableLine(pg.InfiniteLine):
         return super()._computeBoundingRect()
 
 
-def make_crosshairs(n: Literal[1, 2, 3] = 1) -> list[pg.TargetItem | RotatableLine]:
+def make_crosshairs(
+    n: typing.Literal[1, 2, 3] = 1,
+) -> list[pg.TargetItem | RotatableLine]:
     r"""Create a :class:`pyqtgraph.TargetItem` and associated `RotatableLine`\ s.
 
     Parameters

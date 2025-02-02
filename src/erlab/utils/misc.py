@@ -1,27 +1,37 @@
 """Utilities that don't fit in any other category."""
 
+__all__ = [
+    "LazyImport",
+    "emit_user_level_warning",
+    "is_interactive",
+    "is_sequence_of",
+    "open_in_file_manager",
+]
+
 import functools
 import importlib
 import inspect
+import os
 import pathlib
+import subprocess
 import sys
+import typing
 import warnings
 from collections.abc import Sequence
 from types import ModuleType
-from typing import Any, TypeGuard, TypeVar, overload
 
 import numpy as np
 
-_NestedGeneric = np.generic | list["_NestedGeneric"] | Any
+_NestedGeneric = np.generic | list["_NestedGeneric"] | typing.Any
 
 
-@overload
-def _convert_to_native(obj: np.generic) -> Any: ...
-@overload
-def _convert_to_native(obj: list[_NestedGeneric]) -> list[Any]: ...
-@overload
-def _convert_to_native(obj: Any) -> Any: ...
-def _convert_to_native(obj: _NestedGeneric) -> Any:
+@typing.overload
+def _convert_to_native(obj: np.generic) -> typing.Any: ...
+@typing.overload
+def _convert_to_native(obj: list[_NestedGeneric]) -> list[typing.Any]: ...
+@typing.overload
+def _convert_to_native(obj: typing.Any) -> typing.Any: ...
+def _convert_to_native(obj: _NestedGeneric) -> typing.Any:
     """Convert numpy objects to native types."""
     if isinstance(obj, np.generic):
         return obj.item()
@@ -108,7 +118,7 @@ class LazyImport:
         self._module_name = module_name
         self._err_msg = err_msg
 
-    def __getattr__(self, item: str) -> Any:
+    def __getattr__(self, item: str) -> typing.Any:
         return getattr(self._module, item)
 
     @functools.cached_property
@@ -121,10 +131,12 @@ class LazyImport:
         return importlib.import_module(self._module_name)
 
 
-_T = TypeVar("_T")
+_T = typing.TypeVar("_T")
 
 
-def is_sequence_of(val: Any, element_type: type[_T]) -> TypeGuard[Sequence[_T]]:
+def is_sequence_of(
+    val: typing.Any, element_type: type[_T]
+) -> typing.TypeGuard[Sequence[_T]]:
     """
     Check if the given object is a sequence of elements of the specified type.
 
@@ -168,3 +180,18 @@ def is_interactive() -> bool:
     except NameError:
         pass
     return False
+
+
+def open_in_file_manager(path: str | os.PathLike):
+    """Open a directory in the system's file manager.
+
+    Parameters
+    ----------
+    path
+        Path to the folder.
+    """
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    else:
+        open_cmd = "open" if os.name == "posix" else "xdg-open"
+        subprocess.call([open_cmd, path])

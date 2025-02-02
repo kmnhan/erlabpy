@@ -3,7 +3,7 @@ __all__ = ["goldtool", "restool"]
 import concurrent.futures
 import os
 import time
-from typing import TYPE_CHECKING, Any, cast
+import typing
 
 import numpy as np
 import pyqtgraph as pg
@@ -12,7 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets, uic
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
     import joblib
@@ -212,7 +212,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             }
         )
 
-        cast(
+        typing.cast(
             QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
         ).stateChanged.connect(self._toggle_fast)
 
@@ -270,7 +270,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 },
             }
         )
-        _auto_check = cast(QtWidgets.QCheckBox, self.params_spl.widgets["Auto"])
+        _auto_check = typing.cast(QtWidgets.QCheckBox, self.params_spl.widgets["Auto"])
         self.params_spl.widgets["lambda"].setDisabled(
             _auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
@@ -412,8 +412,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def post_fit(self) -> None:
         self.progress.reset()
         self.edge_center, self.edge_stderr = (
-            cast(xr.DataArray, self.fitter.edge_center),
-            cast(xr.DataArray, self.fitter.edge_stderr),
+            typing.cast(xr.DataArray, self.fitter.edge_center),
+            typing.cast(xr.DataArray, self.fitter.edge_stderr),
         )
 
         xval = self.edge_center.alpha.values
@@ -508,7 +508,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 p1 = self.params_spl.values
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
 
-        arg_dict: dict[str, Any] = {
+        arg_dict: dict[str, typing.Any] = {
             "angle_range": (x0, x1),
             "eV_range": (y0, y1),
             "bin_size": (p0["Bin x"], p0["Bin y"]),
@@ -602,7 +602,7 @@ class ResolutionTool(
 
         if data_name is None:
             try:
-                data_name = cast(
+                data_name = typing.cast(
                     str,
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
@@ -703,7 +703,7 @@ class ResolutionTool(
         self.center_spin.setValue(self._guessed_params["center"].value)
 
     @property
-    def fit_params(self) -> dict[str, Any]:
+    def fit_params(self) -> dict[str, typing.Any]:
         """Current arguments for :func:`erlab.analysis.gold.quick_fit`."""
         return {
             "eV_range": self.x_range,

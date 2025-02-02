@@ -5,8 +5,8 @@ from __future__ import annotations
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
 import importlib
+import typing
 import weakref
-from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import qtconsole.inprocess
@@ -16,7 +16,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool import ImageTool
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return cast(ImageTool, self._wrapper.tool)
+        return typing.cast(ImageTool, self._wrapper.tool)
 
     @property
     def data(self) -> xr.DataArray:
@@ -161,7 +161,9 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
 
     """
 
-    def __init__(self, parent=None, namespace: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, parent=None, namespace: dict[str, typing.Any] | None = None
+    ) -> None:
         super().__init__(parent)
         self.kernel_manager = qtconsole.inprocess.QtInProcessKernelManager()
         self._namespace = namespace

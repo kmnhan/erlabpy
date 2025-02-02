@@ -8,7 +8,7 @@ The implementation has been adapted from the `CGAL C++ library
 from __future__ import annotations
 
 import enum
-from typing import Annotated, Literal
+import typing
 
 import numba
 import numpy as np
@@ -56,7 +56,9 @@ def _get_argmax_all(arr):
 
 
 @numba.njit(nogil=True, cache=True)
-def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> int:
+def left_vertex(
+    points: typing.Annotated[npt.NDArray[np.float64], typing.Literal[1, 2]],
+) -> int:
     """Return the index of the leftmost point of a polygon.
 
     In case of a tie, the point with the smallest y-coordinate is taken.
@@ -76,7 +78,9 @@ def left_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]) -> in
 
 
 @numba.njit(nogil=True, cache=True)
-def right_vertex(points: Annotated[npt.NDArray[np.float64], Literal[1, 2]]):
+def right_vertex(
+    points: typing.Annotated[npt.NDArray[np.float64], typing.Literal[1, 2]],
+):
     """Return the index of the rightmost point of a polygon.
 
     In case of a tie, the point with the largest y-coordinate is taken.

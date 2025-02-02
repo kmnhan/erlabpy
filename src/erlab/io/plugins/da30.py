@@ -4,14 +4,16 @@ Provides a base class for implementing loaders that can load data acquired with 
 Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual loading.
 """
 
+__all__ = ["CasePreservingConfigParser", "DA30Loader", "load_zip", "parse_ini"]
+
 import configparser
 import os
 import pathlib
 import re
 import tempfile
+import typing
 import zipfile
 from collections.abc import Iterable
-from typing import ClassVar
 
 import numpy as np
 import xarray as xr
@@ -33,15 +35,15 @@ class DA30Loader(LoaderBase):
 
     aliases: Iterable[str] = ["DA30"]
 
-    extensions: ClassVar[set[str]] = {".ibw", ".pxt", ".zip"}
+    extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip"}
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],
         "beta": ["Thetay [deg]"],
         "hv": ["BL Energy", "Excitation Energy"],
     }
-    additional_attrs: ClassVar[dict] = {}
+    additional_attrs: typing.ClassVar[dict] = {}
     always_single = True
     skip_validate = True
 

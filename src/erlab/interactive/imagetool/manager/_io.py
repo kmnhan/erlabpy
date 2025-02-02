@@ -7,8 +7,8 @@ __all__ = ["_MultiFileHandler"]
 import collections
 import logging
 import pathlib
+import typing
 import weakref
-from typing import TYPE_CHECKING, Any, cast
 
 from qtpy import QtCore, QtWidgets
 
@@ -16,7 +16,7 @@ import erlab
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
     import xarray as xr
@@ -50,7 +50,9 @@ class _DataLoader(QtCore.QRunnable):
 
     """
 
-    def __init__(self, file_path: pathlib.Path, func: Callable, kwargs: dict[str, Any]):
+    def __init__(
+        self, file_path: pathlib.Path, func: Callable, kwargs: dict[str, typing.Any]
+    ):
         super().__init__()
         self.signals: _DataLoaderSignals = _DataLoaderSignals()
 
@@ -109,7 +111,7 @@ class _MultiFileHandler(QtCore.QObject):
         manager: ImageToolManager,
         file_list: list[pathlib.Path],
         func: Callable,
-        kwargs: dict[str, Any],
+        kwargs: dict[str, typing.Any],
     ):
         super().__init__(manager)
 
@@ -123,7 +125,7 @@ class _MultiFileHandler(QtCore.QObject):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return cast(QtCore.QThreadPool, QtCore.QThreadPool.globalInstance())
+        return typing.cast(QtCore.QThreadPool, QtCore.QThreadPool.globalInstance())
 
     @property
     def manager(self) -> ImageToolManager:
@@ -167,6 +169,7 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._status_bar.showMessage("")
         self.manager._data_recv(data_list, kwargs={"file_path": file_path})
         self.loaded.append(file_path)
+        self.manager._recent_directory = str(file_path.parent)
         self._load_next()
 
     @QtCore.Slot(pathlib.Path, str)

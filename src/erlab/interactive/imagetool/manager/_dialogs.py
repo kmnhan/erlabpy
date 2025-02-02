@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import typing
 import weakref
-from typing import TYPE_CHECKING
 
 from qtpy import QtWidgets
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 

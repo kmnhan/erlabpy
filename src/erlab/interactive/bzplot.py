@@ -1,5 +1,5 @@
 import sys
-from typing import TYPE_CHECKING, Literal, cast
+import typing
 
 import numpy as np
 import numpy.typing as npt
@@ -7,7 +7,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import mpl_toolkits
 else:
     import lazy_loader as _lazy
@@ -37,10 +37,10 @@ class BZPlotter(QtWidgets.QMainWindow):
     def __init__(
         self,
         params: tuple[float, ...] | npt.NDArray[np.float64] | None = None,
-        param_type: Literal["lattice", "avec", "bvec"] | None = None,
+        param_type: typing.Literal["lattice", "avec", "bvec"] | None = None,
         execute: bool = True,
     ) -> None:
-        self.qapp = cast(
+        self.qapp = typing.cast(
             QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
         )
         if not self.qapp:
@@ -313,7 +313,7 @@ class BZPlotWidget(QtWidgets.QWidget):
         layout.addWidget(NavigationToolbar(self._canvas, self))
         layout.addWidget(self._canvas)
 
-        self.ax = cast(
+        self.ax = typing.cast(
             mpl_toolkits.mplot3d.axes3d.Axes3D,
             self._canvas.figure.add_subplot(projection="3d"),
         )

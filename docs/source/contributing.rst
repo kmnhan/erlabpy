@@ -222,14 +222,15 @@ way of getting some preliminary code review.
 Writing tests for data loader plugins
 -------------------------------------
 
-When contributing a new data loader plugin, it is important to write tests to ensure
-that the plugin always returns the expected data for newer package versions.
+When contributing a new data loader plugin, it is recommended to write tests to ensure
+that the plugin always returns the expected data for future package versions.
 
 Since ARPES data required for testing take up a lot of space, we have a separate
 repository for test data: `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_.
 
-Suppose you are contributing a new plugin, ``src/erlab/io/plugins/<plugin_name>.py``. To
-add tests, follow these steps:
+Suppose you are contributing a new plugin, ``<plugin_name>.py``. The plugin should be
+placed in the ``src/erlab/io/plugins/`` directory. To write tests for the plugin, follow
+these steps:
 
 1. Fork `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ and clone it to your
    local machine.
@@ -251,10 +252,16 @@ add tests, follow these steps:
    ``tests/io/plugins/test_<plugin_name>.py``. You can use the ``test_data_dir`` fixture
    to access the test data directory. See other modules in the folder for examples.
 
-6. Run the tests using `pytest <https://docs.pytest.org/>`_ and make sure they pass.
+6. Run the tests on your local machine with `pytest <https://docs.pytest.org/>`_ and
+   make sure they pass:
 
-7. Now, it's time to apply your changes. First, push your changes to `erlabpy-data
-   <https://github.com/kmnhan/erlabpy-data>`_ and create a pull request.
+   .. code-block:: sh
+
+       uv run pytest tests/io/plugins/test_<plugin_name>.py
+
+7. Now, it's time to apply your changes. First, push your changes to your fork of
+   `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ and create a pull request to
+   the main repository.
 
 8. Once your pull request to `erlabpy-data <https://github.com/kmnhan/erlabpy-data>`_ is
    merged, update the ``DATA_COMMIT_HASH`` and ``DATA_KNOWN_HASH`` attributes in
@@ -278,6 +285,10 @@ add tests, follow these steps:
      <https://github.com/kmnhan/erlabpy-data/actions/workflows/checksum.yml>`_ for each
      push to main. It can be copied from the workflow summary corresponding to the
      commit you wish to refer to.
+
+9. Following the :ref:`development workflow <development.workflow>`, push your changes
+   including the new plugin, test files, and updated ``tests/conftest.py`` to your
+   development branch, and create a pull request.
 
 .. _development.code-standards:
 
@@ -369,7 +380,7 @@ Some other important things to know about the docs:
 
   - ``~``, for subsections
 
-  - ``**`` text ``**``, for **bold** text
+  - ``**bold**``, for **bold** text
 
 
 Building the documentation locally
@@ -386,18 +397,17 @@ then build the documentation by running:
 
 .. code-block:: sh
 
-    cd docs
-    uv run make html
+    uv run make html --directory docs
 
-Then you can find the HTML output files in the folder ``erlabpy/docs/build/html/``.
+Then you can find the HTML output files in the ``docs/build/html/``.
 
 To see what the documentation now looks like with your changes, you can view the HTML
 build locally by opening the files in your local browser. For example, if you normally
 use Google Chrome as your browser, you could enter::
 
-    google-chrome build/html/index.html
+    google-chrome docs/build/html/index.html
 
-in the terminal, running from within the ``docs/`` folder. You should now see a new tab
-pop open in your local browser showing the documentation. The different pages of this
-local build of the documentation are linked together, so you can browse the whole
-documentation by following links the same way you would on the hosted website.
+in the terminal. You should now see a new tab pop open in your local browser showing the
+documentation. The different pages of this local build of the documentation are linked
+together, so you can browse the whole documentation by following links the same way you
+would on the hosted website.

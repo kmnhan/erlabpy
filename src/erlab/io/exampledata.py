@@ -2,8 +2,8 @@
 
 __all__ = ["generate_data", "generate_data_angles", "generate_gold_edge"]
 
+import typing
 from collections.abc import Hashable, Sequence
-from typing import cast
 
 import numpy as np
 import scipy.ndimage
@@ -35,12 +35,13 @@ def _calc_graphene_mat_el(alpha, beta, polarization, factor_f, factor_g):
         ).T,
         polarization,
     )
+
     d_channel = -factor_f * (
-        np.sqrt(3 / 10) * eps_m * scipy.special.sph_harm(1, 2, alpha, beta)
-        - np.sqrt(2 / 5) * eps_0 * scipy.special.sph_harm(0, 2, alpha, beta)
-        + np.sqrt(3 / 10) * eps_p * scipy.special.sph_harm(-1, 2, alpha, beta)
+        np.sqrt(3 / 10) * eps_m * scipy.special.sph_harm_y(2, 1, beta, alpha)
+        - np.sqrt(2 / 5) * eps_0 * scipy.special.sph_harm_y(2, 0, beta, alpha)
+        + np.sqrt(3 / 10) * eps_p * scipy.special.sph_harm_y(2, -1, beta, alpha)
     )
-    s_channel = factor_g * eps_0 * scipy.special.sph_harm(0, 0, alpha, beta)
+    s_channel = factor_g * eps_0 * scipy.special.sph_harm_y(0, 0, beta, alpha)
     return d_channel + s_channel
 
 
@@ -340,16 +341,17 @@ def generate_data_angles(
             1j * kx * pol[0] + 1j * ky * pol[1] + (1j * k_perp - (1 / imfp)) * pol[2]
         )
         terms = terms * (1 / (1j * (kz - k_perp) + 1 / imfp))
+
+        # Recast into numpy array
+        terms = terms.isel(hv=0).transpose("alpha", "beta", "eV").values
+
         terms = terms * _calc_graphene_mat_el(
-            np.deg2rad(dummy_data.beta),
-            np.deg2rad(dummy_data.alpha),
+            np.deg2rad(dummy_data.beta.values)[None, :, None],
+            np.deg2rad(dummy_data.alpha.values)[:, None, None],
             polarization=pol,
             factor_f=0.0,
             factor_g=1.0,
         )
-
-        # Recast into numpy array
-        terms = terms.isel(hv=0).transpose("alpha", "beta", "eV").values
 
         mat_el_p = mat_el_p.astype(np.complex128) * terms
         mat_el_m = mat_el_m.astype(np.complex128) * terms
@@ -483,7 +485,7 @@ def generate_gold_edge(
         data[:] = rng.poisson(data).astype(float)
 
     data = erlab.analysis.image.gaussian_filter(
-        data, sigma=cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
+        data, sigma=typing.cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
     )
 
     if noise:

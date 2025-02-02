@@ -10,7 +10,7 @@ __all__ = [
     "StepEdgeModel",
 ]
 
-from typing import Literal
+import typing
 
 import lmfit
 import numba
@@ -259,7 +259,9 @@ class MultiPeakModel(lmfit.Model):
         peak_shapes: list[str] | str | None = None,
         *,
         fd: bool = True,
-        background: Literal["none", "constant", "linear", "polynomial"] = "linear",
+        background: typing.Literal[
+            "none", "constant", "linear", "polynomial"
+        ] = "linear",
         degree: int = 2,
         convolve: bool = True,
         **kwargs,

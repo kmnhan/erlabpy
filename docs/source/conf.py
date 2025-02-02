@@ -165,6 +165,8 @@ def setup(app) -> None:
 
 autosummary_generate = True
 autosummary_generate_overwrite = True
+autosummary_imported_members = True
+autosummary_ignore_module_all = False
 
 autodoc_class_signature = "mixed"
 autodoc_member_order = "bysource"

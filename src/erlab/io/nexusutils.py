@@ -7,13 +7,13 @@ installed.
 """
 
 import os
+import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import xarray as xr
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import h5py
     from nexusformat import nexus
 
@@ -55,8 +55,8 @@ def _parse_field(field):
     return field.nxdata
 
 
-def _remove_axis_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
+def _remove_axis_attrs(attrs: Mapping[str, typing.Any]) -> dict[str, typing.Any]:
+    out: dict[str, typing.Any] = {}
     for k, v in attrs.items():
         if k in ("axis", "primary", "target"):
             continue
@@ -74,7 +74,10 @@ def _parse_h5py(obj: "h5py.Group | h5py.Dataset", out: dict) -> None:
 
 
 def _parse_group(
-    group: "nexus.NXgroup", out: dict[str, Any], exclude: Sequence[str], parse: bool
+    group: "nexus.NXgroup",
+    out: dict[str, typing.Any],
+    exclude: Sequence[str],
+    parse: bool,
 ) -> None:
     """Recursively parse a NeXus group and its items into a nested dictionary.
 
@@ -311,7 +314,7 @@ def nexus_group_to_dict(
     relative: bool = True,
     replace_slash: bool = True,
     parse: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, typing.Any]:
     """Convert a NeXus group to a dictionary.
 
     This function takes a NeXus group and converts it into a dictionary where the keys
@@ -338,7 +341,7 @@ def nexus_group_to_dict(
         exclude = []
 
     prefix: str = group.nxpath
-    out: dict[str, Any] = {}
+    out: dict[str, typing.Any] = {}
     _parse_group(group, out, exclude, parse)
 
     if relative:

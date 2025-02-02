@@ -11,9 +11,9 @@ __all__ = [
     "resolution_roi",
     "spline_from_edge",
 ]
+import typing
 import warnings
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
 
 import lmfit
 import lmfit.model
@@ -29,7 +29,7 @@ import xarray as xr
 
 import erlab
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import joblib
     import tqdm.auto as tqdm
 else:
@@ -120,7 +120,7 @@ def correct_with_edge(
     )
 
     if plot is True:
-        axes = cast(
+        axes = typing.cast(
             npt.NDArray, plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
         )
 

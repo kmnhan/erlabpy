@@ -5,9 +5,6 @@
 This module provides interactive tools for plotting and analyzing ARPES data. See the
 sidebar on the right for a list of available tools.
 
-Modules
-=======
-
 Commonly used tools are available directly in the ``erlab.interactive`` namespace, so
 regular users should not need to import the submodules directly.
 
@@ -18,6 +15,8 @@ look at the source code of :mod:`erlab.interactive.utils` and
 :mod:`erlab.interactive.colors` which provide general utility functions for creating new
 interactive tools.
 
+.. rubric:: Modules
+
 .. autosummary::
    :toctree: generated
 
@@ -25,9 +24,10 @@ interactive tools.
    bzplot
    colors
    curvefittingtool
+   derivative
+   explorer
    fermiedge
    kspace
-   derivative
    utils
 
 """

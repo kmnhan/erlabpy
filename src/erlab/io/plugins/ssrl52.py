@@ -1,10 +1,12 @@
 """Data loader for beamline 5-2 at SSRL."""
 
+__all__ = ["SSRL52Loader"]
+
 import datetime
 import os
 import re
+import typing
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import xarray as xr
@@ -12,7 +14,7 @@ import xarray as xr
 import erlab
 from erlab.io.dataloader import LoaderBase
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import h5netcdf
 else:
     import lazy_loader as _lazy
@@ -34,11 +36,11 @@ def _parse_value(value):
 class SSRL52Loader(LoaderBase):
     name = "ssrl52"
     description = "SSRL Beamline 5-2"
-    extensions: ClassVar[set[str]] = {".h5"}
+    extensions: typing.ClassVar[set[str]] = {".h5"}
 
     aliases = ("ssrl", "bl5-2")
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy", "Binding Energy"],
         "alpha": "ThetaX",
         "beta": ["ThetaY", "YDeflection", "DeflectionY"],
@@ -55,15 +57,20 @@ class SSRL52Loader(LoaderBase):
 
     coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
 
-    additional_attrs: ClassVar[dict] = {"configuration": 3, "sample_workfunction": 4.5}
+    additional_attrs: typing.ClassVar[dict] = {
+        "configuration": 3,
+        "sample_workfunction": 4.5,
+    }
 
-    formatters: ClassVar[dict[str, Callable]] = {
+    formatters: typing.ClassVar[dict[str, Callable]] = {
         "CreationTimeStamp": datetime.datetime.fromtimestamp,
         "PassEnergy": round,
         "polarization": _format_polarization,
     }
 
-    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+    summary_attrs: typing.ClassVar[
+        dict[str, str | Callable[[xr.DataArray], typing.Any]]
+    ] = {
         "time": "CreationTimeStamp",
         "type": "Description",
         "lens mode": "LensModeName",

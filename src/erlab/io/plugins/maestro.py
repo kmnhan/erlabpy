@@ -8,12 +8,14 @@
 
 """
 
+__all__ = ["MAESTROMicroLoader"]
+
 import datetime
 import os
 import re
+import typing
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import xarray as xr
@@ -21,7 +23,7 @@ import xarray as xr
 import erlab
 from erlab.io.dataloader import LoaderBase
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
 
@@ -73,11 +75,11 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
 class MAESTROMicroLoader(LoaderBase):
     name = "maestro"
     description = "ALS Beamline 7.0.2.1 MAESTRO"
-    extensions: ClassVar[set[str]] = {".h5"}
+    extensions: typing.ClassVar[set[str]] = {".h5"}
 
     aliases = ("ALS_BL7", "als_bl7", "BL702", "bl702")
 
-    name_map: ClassVar[dict] = {
+    name_map: typing.ClassVar[dict] = {
         "x": "Motors_Logical.X",
         "y": "Motors_Logical.Y",
         "z": "Motors_Logical.Z",
@@ -99,18 +101,20 @@ class MAESTROMicroLoader(LoaderBase):
         "y",
         "z",
     )
-    additional_attrs: ClassVar[dict] = {}
+    additional_attrs: typing.ClassVar[dict] = {}
 
     skip_validate: bool = True
     always_single: bool = True
 
-    formatters: ClassVar[dict[str, Callable]] = {
+    formatters: typing.ClassVar[dict[str, Callable]] = {
         "Main.START_T": lambda x: datetime.datetime.strptime(x, "%m/%d/%Y %I:%M:%S %p"),
         "scan_type": lambda x: "" if x == "None" else x,
         "DAQ_Swept.lens mode name": lambda x: x.replace("Angular", "A"),
     }
 
-    summary_attrs: ClassVar[dict[str, str | Callable[[xr.DataArray], Any]]] = {
+    summary_attrs: typing.ClassVar[
+        dict[str, str | Callable[[xr.DataArray], typing.Any]]
+    ] = {
         "time": "Main.START_T",
         "type": "scan_type",
         "pre": "pre_scan",

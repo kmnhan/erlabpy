@@ -78,7 +78,7 @@ Optional dependency groups can be installed with the following commands: ::
   python -m pip install erlab[io]        # Install optional dependencies for file I/O
   python -m pip install erlab[perf]      # Install optional dependencies for performance
   python -m pip install erlab[misc]      # Install miscellaneous optional dependencies
-  python -m pip install erlab[complete]  # Install all optional dependencies except development dependencies
+  python -m pip install erlab[complete]  # Install all optional dependencies
 
 See the :ref:`optional dependencies` section for all available groups and their
 contents.
@@ -100,7 +100,8 @@ The following import conventions are recommended for ERLabPy modules: ::
   import erlab.interactive as eri
   import erlab.plotting as eplt
 
-Along with frequently used modules, your import statements may look like this: ::
+Along with frequently used modules and configurations, your import statements may look
+like this: ::
 
   import erlab
   import erlab.analysis as era
@@ -169,7 +170,7 @@ For a full list of dependencies and optional dependencies, take a look at the
 .. literalinclude:: ../../pyproject.toml
    :language: toml
    :start-at: dependencies = [
-   :end-before: [project.scripts]
+   :end-before: [dependency-groups]
 
 Notes on compatibility
 ----------------------

@@ -101,6 +101,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     # Archiving and unarchiving
     manager._tool_wrappers[1].archive()
+    manager._tool_wrappers[1].touch_archive()
     assert manager._tool_wrappers[1].archived
     manager._tool_wrappers[1].unarchive()
     assert not manager._tool_wrappers[1].archived
@@ -115,7 +116,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Removing archived tool
     manager._tool_wrappers[0].archive()
     manager.remove_tool(0)
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     # Batch renaming
     select_tools(manager, [1, 2])
@@ -133,7 +134,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     select_tools(manager, [1])
     manager.rename_action.trigger()
 
-    qtbot.waitUntil(
+    qtbot.wait_until(
         lambda: manager.list_view.state()
         == QtWidgets.QAbstractItemView.State.EditingState,
         timeout=5000,
@@ -143,7 +144,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
     delegate._current_editor().setText("new_name_1_single")
     qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
-    qtbot.waitUntil(
+    qtbot.wait_until(
         lambda: manager._tool_wrappers[1].name == "new_name_1_single", timeout=5000
     )
 
@@ -168,7 +169,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Select tools
     select_tools(manager, [1, 2])
     _handler = accept_dialog(manager.concat_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 3, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     xr.testing.assert_identical(
         manager.get_tool(3).slicer_area._data,
@@ -208,7 +209,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Remove all selected
     select_tools(manager, [1, 2, 3])
     _handler = accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
     # Run garbage collection
     manager.gc_action.trigger()
@@ -296,7 +297,7 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
     select_tools(manager, list(manager._tool_wrappers.keys()))
     _handler = accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
     manager.close()
     tmp_dir.cleanup()
 
@@ -324,7 +325,7 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
 
     test_data.qshow(manager=True)
     test_data.qshow(manager=True)
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     manager.raise_()
     manager.activateWindow()
@@ -379,7 +380,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
 
     # Simulate drag and drop
     _handler = accept_dialog(lambda: manager.dropEvent(evt))
-    qtbot.waitUntil(lambda: manager.ntools == 1, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
     xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, test_data)
 
     # Simulate drag and drop with wrong filter, retry with correct filter
@@ -397,7 +398,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
         pre_call=[_choose_wrong_filter, None, None, _choose_correct_filter],
         chained_dialogs=4,
     )
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
     xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, test_data)
 
     # Cleanup
@@ -420,11 +421,11 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         manager.activateWindow()
 
     manager._data_recv([data, data], kwargs={"link": True, "link_colors": True})
-    qtbot.waitUntil(lambda: manager.ntools == 2, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     # Open console
     manager.toggle_console()
-    qtbot.waitUntil(manager.console.isVisible, timeout=5000)
+    qtbot.wait_until(manager.console.isVisible, timeout=5000)
 
     def _get_last_output_contents():
         return manager.console._console_widget.kernel_manager.kernel.shell.user_ns["_"]
@@ -451,7 +452,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
 
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")
-    qtbot.waitUntil(lambda: manager._tool_wrappers[0].archived, timeout=5000)
+    qtbot.wait_until(lambda: manager._tool_wrappers[0].archived, timeout=5000)
 
     # Test setting data
     manager.console._console_widget.execute(
@@ -466,7 +467,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     # Remove all tools
     select_tools(manager, list(manager._tool_wrappers.keys()))
     _handler = accept_dialog(manager.remove_action.trigger)
-    qtbot.waitUntil(lambda: manager.ntools == 0, timeout=5000)
+    qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
     # Test repr
     manager.console._console_widget.execute("tools")

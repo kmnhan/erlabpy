@@ -6,8 +6,8 @@ __all__ = ["ktool"]
 
 import functools
 import os
+import typing
 import warnings
-from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -17,7 +17,7 @@ from qtpy import QtCore, QtGui, QtWidgets, uic
 import erlab
 from erlab.accessors.kspace import MomentumAccessor
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import matplotlib
     import varname
     import xarray as xr
@@ -469,7 +469,7 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def copy_code(self) -> str:
-        arg_dict: dict[str, Any] = {}
+        arg_dict: dict[str, typing.Any] = {}
         if self.bounds is not None:
             arg_dict["bounds"] = self.bounds
         if self.resolution is not None:

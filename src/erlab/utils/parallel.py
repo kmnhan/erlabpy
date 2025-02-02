@@ -4,9 +4,9 @@ __all__ = ["joblib_progress", "joblib_progress_qt"]
 
 import contextlib
 import sys
-from typing import TYPE_CHECKING
+import typing
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     import joblib
     import tqdm.auto as tqdm
 else:

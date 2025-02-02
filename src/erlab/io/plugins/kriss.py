@@ -1,6 +1,8 @@
 """Data loader for KRISS."""
 
-from typing import ClassVar
+__all__ = ["KRISSLoader"]
+
+import typing
 
 from erlab.io.plugins.da30 import DA30Loader
 
@@ -10,7 +12,7 @@ class KRISSLoader(DA30Loader):
     description = "KRISS ARPES-MBE"
     aliases = ("KRISS",)
     coordinate_attrs = ("beta", "chi", "xi", "hv", "x", "y", "z")
-    additional_attrs: ClassVar[dict] = {"configuration": 4}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 4}
 
     @property
     def name_map(self):
