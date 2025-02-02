@@ -263,8 +263,7 @@ exclude_also = [
     "qapp.exec()",
     'if __name__ == "__main__:"',
     "except varname.VarnameRetrievingError:",
-    "if TYPE_CHECKING:",
-    "def _wrapped_for_coverage",
+    "if typing.TYPE_CHECKING:",
     "raise LookupError",
 ]
 

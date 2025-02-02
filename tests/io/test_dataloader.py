@@ -378,6 +378,7 @@ def test_loader(qtbot, accept_dialog) -> None:
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
     select_files([1])
+    qtbot.wait_until(lambda: explorer._up_to_date, timeout=10000)
 
     # Check if summary is correctly displayed
     text_edit = QtWidgets.QTextEdit()
@@ -389,8 +390,6 @@ def test_loader(qtbot, accept_dialog) -> None:
         )
     )
     info_text_ref = str(text_edit.toPlainText())
-
-    qtbot.wait_until(lambda: explorer._up_to_date)
     assert explorer._text_edit.toPlainText() == info_text_ref
 
     # Multiple selection
