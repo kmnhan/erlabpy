@@ -363,7 +363,7 @@ def test_loader(qtbot, accept_dialog) -> None:
     # Sort by name
     explorer._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.DescendingOrder)
 
-    def select_files(indices: list[int]) -> None:
+    def select_files(indices: list[int], deselect: bool = False) -> None:
         selection_model = explorer._tree_view.selectionModel()
 
         for index in indices:
@@ -373,7 +373,9 @@ def test_loader(qtbot, accept_dialog) -> None:
             )
             selection_model.select(
                 QtCore.QItemSelection(idx_start, idx_end),
-                QtCore.QItemSelectionModel.SelectionFlag.Select,
+                QtCore.QItemSelectionModel.SelectionFlag.Deselect
+                if deselect
+                else QtCore.QItemSelectionModel.SelectionFlag.Select,
             )
             qtbot.wait_until(
                 lambda idx=idx_end: idx in explorer._tree_view.selectedIndexes()
@@ -390,6 +392,12 @@ def test_loader(qtbot, accept_dialog) -> None:
     # Show multiple in manager
     explorer.to_manager()
     qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+    # Clear selection
+    select_files([1, 2, 3], deselect=True)
+    qtbot.wait_until(
+        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
+    )
 
     #!TODO: flaky in CI only for pyside6...
     select_files([1])
