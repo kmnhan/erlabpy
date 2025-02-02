@@ -1,4 +1,4 @@
-"""Interactive data browser.
+"""Interactive visualization tool for multidimensional image-like data.
 
 .. currentmodule:: erlab.interactive.imagetool
 

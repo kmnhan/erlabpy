@@ -169,6 +169,7 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._status_bar.showMessage("")
         self.manager._data_recv(data_list, kwargs={"file_path": file_path})
         self.loaded.append(file_path)
+        self.manager._recent_directory = str(file_path.parent)
         self._load_next()
 
     @QtCore.Slot(pathlib.Path, str)

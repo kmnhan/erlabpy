@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-__all__ = ["PORT", "_ManagerServer", "_save_pickle", "show_in_manager"]
+__all__ = ["PORT", "load_in_manager", "show_in_manager"]
 
 import contextlib
+import errno
 import logging
 import os
+import pathlib
 import pickle
 import socket
 import struct
@@ -58,6 +60,7 @@ def _recv_all(conn, size):
 
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
+    sigLoadRequested = QtCore.Signal(list, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -88,22 +91,30 @@ class _ManagerServer(QtCore.QThread):
 
             # Receive the data
             kwargs = _recv_all(conn, data_size)
+
+            # "__filename" contains the list of paths to pickled data
+            # If "__loader_name" key is present, "__filename" will be a list of paths to
+            # raw data files instead
             try:
                 kwargs = pickle.loads(kwargs)
                 logger.debug("Received data: %s", kwargs)
 
                 files = kwargs.pop("__filename")
-                self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
-                logger.debug("Emitted loaded data")
-
-                # Clean up temporary files
-                for f in files:
-                    os.remove(f)
-                    dirname = os.path.dirname(f)
-                    if os.path.isdir(dirname):
-                        with contextlib.suppress(OSError):
-                            os.rmdir(dirname)
-                logger.debug("Cleaned up temporary files")
+                loader_name = kwargs.pop("__loader_name", None)
+                if loader_name is not None:
+                    self.sigLoadRequested.emit(files, loader_name)
+                    logger.debug("Emitted file and loader info")
+                else:
+                    self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+                    logger.debug("Emitted loaded data")
+                    # Clean up temporary files
+                    for f in files:
+                        os.remove(f)
+                        dirname = os.path.dirname(f)
+                        if os.path.isdir(dirname):
+                            with contextlib.suppress(OSError):
+                                os.rmdir(dirname)
+                    logger.debug("Cleaned up temporary files")
 
             except (
                 pickle.UnpicklingError,
@@ -118,6 +129,64 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Connection closed")
 
         soc.close()
+
+
+def _send_dict(contents: dict[str, typing.Any]) -> None:
+    contents = pickle.dumps(contents, protocol=-1)
+
+    logger.debug("Connecting to server")
+    client_socket = socket.socket()
+    client_socket.connect(("localhost", PORT))
+
+    logger.debug("Sending data")
+    # Send the size of the data first
+    client_socket.sendall(struct.pack(">L", len(contents)))
+    client_socket.sendall(contents)
+    client_socket.close()
+
+    logger.debug("Data sent successfully")
+
+
+def load_in_manager(paths: typing.Iterable[str | os.PathLike], loader_name: str):
+    """Load and display data in the ImageToolManager.
+
+    Parameters
+    ----------
+    paths
+        List of paths containing the data to be displayed in the ImageTool window.
+    loader_name
+        Name of the loader to use to load the data. The loader must be registered in
+        :attr:`erlab.io.loaders`.
+
+    """
+    if not erlab.interactive.imagetool.manager.is_running():
+        raise RuntimeError(
+            "ImageToolManager is not running. Please start the ImageToolManager "
+            "application before using this function"
+        )
+
+    path_list: list[str] = []
+    for p in paths:
+        path = pathlib.Path(p)
+        if not path.exists():
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+        path_list.append(str(path))
+
+    loader: str = erlab.io.loaders[
+        loader_name
+    ].name  # Trigger exception if loader_name is not registered
+
+    if (
+        erlab.interactive.imagetool.manager._manager_instance is not None
+        and not erlab.interactive.imagetool.manager._always_use_socket
+    ):
+        # If the manager is running in the same process, directly pass the data
+        erlab.interactive.imagetool.manager._manager_instance._data_load(
+            path_list, loader
+        )
+        return
+
+    _send_dict({"__filename": path_list, "__loader_name": loader})
 
 
 def show_in_manager(
@@ -184,17 +253,4 @@ def show_in_manager(
 
     kwargs["__filename"] = files
 
-    # Serialize kwargs dict into a byte stream
-    kwargs = pickle.dumps(kwargs, protocol=-1)
-
-    logger.debug("Connecting to server")
-    client_socket = socket.socket()
-    client_socket.connect(("localhost", PORT))
-
-    logger.debug("Sending data")
-    # Send the size of the data first
-    client_socket.sendall(struct.pack(">L", len(kwargs)))
-    client_socket.sendall(kwargs)
-    client_socket.close()
-
-    logger.debug("Data sent successfully")
+    _send_dict(kwargs)

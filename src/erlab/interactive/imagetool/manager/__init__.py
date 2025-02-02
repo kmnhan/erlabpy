@@ -12,7 +12,14 @@ port number 45555. The port number can be changed by setting the environment var
 
 from __future__ import annotations
 
-__all__ = ["PORT", "ImageToolManager", "is_running", "main", "show_in_manager"]
+__all__ = [
+    "PORT",
+    "ImageToolManager",
+    "is_running",
+    "load_in_manager",
+    "main",
+    "show_in_manager",
+]
 
 
 import logging
@@ -27,7 +34,11 @@ from erlab.interactive.imagetool.manager._mainwindow import (
     _SHM_NAME,
     ImageToolManager,
 )
-from erlab.interactive.imagetool.manager._server import PORT, show_in_manager
+from erlab.interactive.imagetool.manager._server import (
+    PORT,
+    load_in_manager,
+    show_in_manager,
+)
 
 logger = logging.getLogger(__name__)
 
