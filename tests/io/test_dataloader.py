@@ -10,7 +10,7 @@ import typing
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager import ImageToolManager
@@ -363,36 +363,39 @@ def test_loader(qtbot, accept_dialog) -> None:
     # Sort by name
     explorer._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.DescendingOrder)
 
-    def select_files(indices: list[int], deselect: bool = False) -> None:
+    def select_files(indices: list[int]) -> None:
         selection_model = explorer._tree_view.selectionModel()
 
         for index in indices:
-            qmodelindex = explorer._tree_view.model().index(index, 0)
+            idx_start = explorer._tree_view.model().index(index, 0)
+            idx_end = explorer._tree_view.model().index(
+                index, explorer._tree_view.model().columnCount() - 1
+            )
             selection_model.select(
-                QtCore.QItemSelection(qmodelindex, qmodelindex),
-                QtCore.QItemSelectionModel.SelectionFlag.Deselect
-                if deselect
-                else QtCore.QItemSelectionModel.SelectionFlag.Select,
+                QtCore.QItemSelection(idx_start, idx_end),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+            qtbot.wait_until(
+                lambda idx=idx_end: idx in explorer._tree_view.selectedIndexes()
             )
 
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
+    #!TODO: flaky in CI only for pyside6...
     select_files([1])
-
-    #!TODO: following line failes sometimes in pyside6... resolve later
-    # qtbot.wait_until(lambda: explorer._up_to_date, timeout=10000)
+    qtbot.wait_until(lambda: explorer._up_to_date, timeout=1000)
 
     # Check if summary is correctly displayed
-    # text_edit = QtWidgets.QTextEdit()
-    # text_edit.setHtml(
-    #     explorer._parse_file_info(
-    #         erlab.utils.formatting.format_darr_html(
-    #             erlab.io.load(5), additional_info=[]
-    #         )
-    #     )
-    # )
-    # info_text_ref = str(text_edit.toPlainText())
-    # assert explorer._text_edit.toPlainText() == info_text_ref
+    text_edit = QtWidgets.QTextEdit()
+    text_edit.setHtml(
+        explorer._parse_file_info(
+            erlab.utils.formatting.format_darr_html(
+                erlab.io.load(5), additional_info=[]
+            )
+        )
+    )
+    info_text_ref = str(text_edit.toPlainText())
+    assert explorer._text_edit.toPlainText() == info_text_ref
 
     # Multiple selection
     select_files([1, 2, 3])
