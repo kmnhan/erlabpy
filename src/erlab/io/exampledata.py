@@ -36,11 +36,11 @@ def _calc_graphene_mat_el(alpha, beta, polarization, factor_f, factor_g):
         polarization,
     )
     d_channel = -factor_f * (
-        np.sqrt(3 / 10) * eps_m * scipy.special.sph_harm(1, 2, alpha, beta)
-        - np.sqrt(2 / 5) * eps_0 * scipy.special.sph_harm(0, 2, alpha, beta)
-        + np.sqrt(3 / 10) * eps_p * scipy.special.sph_harm(-1, 2, alpha, beta)
+        np.sqrt(3 / 10) * eps_m * scipy.special.sph_harm_y(1, 2, alpha, beta)
+        - np.sqrt(2 / 5) * eps_0 * scipy.special.sph_harm_y(0, 2, alpha, beta)
+        + np.sqrt(3 / 10) * eps_p * scipy.special.sph_harm_y(-1, 2, alpha, beta)
     )
-    s_channel = factor_g * eps_0 * scipy.special.sph_harm(0, 0, alpha, beta)
+    s_channel = factor_g * eps_0 * scipy.special.sph_harm_y(0, 0, alpha, beta)
     return d_channel + s_channel
 
 
