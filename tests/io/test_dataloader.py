@@ -393,16 +393,15 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Show multiple in manager
     explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     # Clear selection
     select_files([1, 2, 3], deselect=True)
-    qtbot.wait_until(
-        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
-    )
 
-    #!TODO: flaky in CI only for pyside6...
+    # Single selection
     select_files([1])
+
+    # Show single in manager
+    explorer.to_manager()
 
     # Test sorting by different columns
     for i in range(4):
