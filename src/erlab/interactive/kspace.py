@@ -1,4 +1,17 @@
-"""Interactive momentum conversion tool."""
+"""Interactive momentum conversion tool.
+
+.. image:: ../images/ktool_1_light.png
+    :align: center
+    :alt: Momentum conversion tool screenshot
+    :class: only-light
+
+.. only:: format_html
+
+    .. image:: ../images/ktool_1_dark.png
+        :align: center
+        :alt: Momentum conversion tool screenshot
+        :class: only-dark
+"""
 
 from __future__ import annotations
 

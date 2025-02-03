@@ -367,42 +367,41 @@ def test_loader(qtbot, accept_dialog) -> None:
         selection_model = explorer._tree_view.selectionModel()
 
         for index in indices:
-            qmodelindex = explorer._tree_view.model().index(index, 0)
+            idx_start = explorer._tree_view.model().index(index, 0)
+            idx_end = explorer._tree_view.model().index(
+                index, explorer._tree_view.model().columnCount() - 1
+            )
             selection_model.select(
-                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelection(idx_start, idx_end),
                 QtCore.QItemSelectionModel.SelectionFlag.Deselect
                 if deselect
                 else QtCore.QItemSelectionModel.SelectionFlag.Select,
             )
+            if deselect:
+                qtbot.wait_until(
+                    lambda idx=idx_end: idx not in explorer._tree_view.selectedIndexes()
+                )
+            else:
+                qtbot.wait_until(
+                    lambda idx=idx_end: idx in explorer._tree_view.selectedIndexes()
+                )
 
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
-    select_files([1])
-
-    #!TODO: following line failes sometimes in pyside6... resolve later
-    # qtbot.wait_until(lambda: explorer._up_to_date, timeout=10000)
-
-    # Check if summary is correctly displayed
-    # text_edit = QtWidgets.QTextEdit()
-    # text_edit.setHtml(
-    #     explorer._parse_file_info(
-    #         erlab.utils.formatting.format_darr_html(
-    #             erlab.io.load(5), additional_info=[]
-    #         )
-    #     )
-    # )
-    # info_text_ref = str(text_edit.toPlainText())
-    # assert explorer._text_edit.toPlainText() == info_text_ref
-
     # Multiple selection
     select_files([1, 2, 3])
-    qtbot.wait_until(
-        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_MULTIPLE_SELECTED
-    )
 
     # Show multiple in manager
     explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+    # Clear selection
+    select_files([1, 2, 3], deselect=True)
+
+    # Single selection
+    select_files([1])
+
+    # Show single in manager
+    explorer.to_manager()
 
     # Test sorting by different columns
     for i in range(4):

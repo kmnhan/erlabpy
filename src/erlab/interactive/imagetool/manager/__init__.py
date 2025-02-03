@@ -1,5 +1,19 @@
 """Manager for multiple ImageTool windows.
 
+.. image:: ../images/manager_light.png
+    :align: center
+    :alt: ImageToolManager window screenshot
+    :class: only-light
+    :width: 600px
+
+.. only:: format_html
+
+    .. image:: ../images/manager_dark.png
+        :align: center
+        :alt: ImageToolManager window screenshot
+        :class: only-dark
+        :width: 600px
+
 This module provides a GUI application for managing multiple ImageTool windows. The
 application can be started by running the script `itool-manager` from the command line
 in the environment where the package is installed.

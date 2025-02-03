@@ -1,4 +1,17 @@
-"""Interactive tool for visualizing dispersive data."""
+"""Interactive tool for visualizing dispersive data.
+
+.. image:: ../images/dtool_light.png
+    :align: center
+    :alt: Derivative tool screenshot
+    :class: only-light
+
+.. only:: format_html
+
+    .. image:: ../images/dtool_dark.png
+        :align: center
+        :alt: Derivative tool screenshot
+        :class: only-dark
+"""
 
 __all__ = ["dtool"]
 

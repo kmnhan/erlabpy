@@ -131,7 +131,21 @@ Using the ImageTool manager
 ---------------------------
 
 ImageTools can also be used as a standalone application with :class:`ImageToolManager
-<erlab.interactive.imagetool.ImageToolManager>`
+<erlab.interactive.imagetool.manager.ImageToolManager>`.
+
+.. image:: ../images/manager_light.png
+    :align: center
+    :alt: ImageToolManager window screenshot
+    :class: only-light
+    :width: 600px
+
+.. only:: format_html
+
+    .. image:: ../images/manager_dark.png
+        :align: center
+        :alt: ImageToolManager window screenshot
+        :class: only-dark
+        :width: 600px
 
 The manager shows a list of opened ImageTools and buttons to manage them. Hover over
 buttons for tooltips.
