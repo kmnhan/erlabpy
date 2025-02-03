@@ -1,4 +1,17 @@
-"""Quickly browse and load ARPES data files with a file manager-like interface."""
+"""Quickly browse and load ARPES data files with a file manager-like interface.
+
+.. image:: ../images/explorer_light.png
+    :align: center
+    :alt: Data explorer window in light mode
+    :class: only-light
+
+.. only:: format_html
+
+    .. image:: ../images/explorer_dark.png
+        :align: center
+        :alt: Data explorer window in dark mode
+        :class: only-dark
+"""
 
 from __future__ import annotations
 
