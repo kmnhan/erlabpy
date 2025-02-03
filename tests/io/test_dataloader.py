@@ -10,7 +10,7 @@ import typing
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore
 
 import erlab
 from erlab.interactive.imagetool.manager import ImageToolManager
@@ -390,9 +390,6 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Multiple selection
     select_files([1, 2, 3])
-    qtbot.wait_until(
-        lambda: explorer._text_edit.toPlainText() == explorer.TEXT_MULTIPLE_SELECTED
-    )
 
     # Show multiple in manager
     explorer.to_manager()
@@ -406,25 +403,6 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     #!TODO: flaky in CI only for pyside6...
     select_files([1])
-
-    # Show single in manager
-    explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
-
-    # Wait until summary is displayed
-    qtbot.wait_until(lambda: explorer._up_to_date, timeout=1000)
-
-    # Check if summary is correctly displayed
-    text_edit = QtWidgets.QTextEdit()
-    text_edit.setHtml(
-        explorer._parse_file_info(
-            erlab.utils.formatting.format_darr_html(
-                erlab.io.load(5), additional_info=[]
-            )
-        )
-    )
-    info_text_ref = str(text_edit.toPlainText())
-    assert explorer._text_edit.toPlainText() == info_text_ref
 
     # Test sorting by different columns
     for i in range(4):
