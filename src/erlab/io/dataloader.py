@@ -190,6 +190,8 @@ class LoaderBase(metaclass=_Loader):
     passed to the loader. If `None`, the loader will attempt to load any file passed to
     it.
 
+    If the loader supports directories, the extension should be an empty string.
+
     .. versionadded:: 3.5.1
     """
 
