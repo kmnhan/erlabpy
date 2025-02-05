@@ -346,11 +346,11 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
             self._offset_spins["V0"].setDecimals(1)
-            self._offset_spins["V0"].valueChanged.connect(self.update)
             self._offset_spins["V0"].setSuffix(" eV")
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
             with warnings.catch_warnings(action="ignore", category=UserWarning):
                 self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
+            self._offset_spins["V0"].valueChanged.connect(self.update)
             self.offsets_group.layout().addRow("V₀", self._offset_spins["V0"])
 
             for i in range(8):
@@ -364,11 +364,12 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setRange(0.0, 9.999)
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
-        self._offset_spins["wf"].valueChanged.connect(self.update)
         self._offset_spins["wf"].setSuffix(" eV")
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self._offset_spins["wf"].valueChanged.connect(self.update)
+
         self.offsets_group.layout().addRow("𝜙", self._offset_spins["wf"])
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -459,7 +460,7 @@ class KspaceTool(KspaceToolGUI):
     def _inner_potential(self) -> float:
         return float(
             np.round(
-                self._offset_spins["wf"].value(), self._offset_spins["wf"].decimals()
+                self._offset_spins["V0"].value(), self._offset_spins["V0"].decimals()
             )
         )
 
