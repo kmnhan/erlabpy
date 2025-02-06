@@ -1,5 +1,9 @@
 ## Unreleased
 
+### ♻️ Code Refactor
+
+- **io.plugins.da30:** support loading unzipped DA30 scans (#89) ([eadc676](https://github.com/kmnhan/erlabpy/commit/eadc6760bbf6ddad635bcac10b829c234662b59e))
+
 ## v3.6.0 (2025-02-03)
 
 ### ✨ Features
