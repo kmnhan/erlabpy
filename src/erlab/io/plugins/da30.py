@@ -35,7 +35,7 @@ class DA30Loader(LoaderBase):
 
     aliases: Iterable[str] = ["DA30"]
 
-    extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip"}
+    extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip", ""}
 
     name_map: typing.ClassVar[dict] = {
         "eV": ["Kinetic Energy [eV]", "Energy [eV]"],
@@ -70,7 +70,7 @@ class DA30Loader(LoaderBase):
                     data = next(iter(next(iter(data.children.values())).values()))
                     data.load()  # Ensure repr shows data
 
-            case ".zip":
+            case ".zip" | "":
                 data = load_zip(file_path, without_values)
 
             case _:
@@ -120,51 +120,67 @@ def load_zip(
 
     If the file contains a single region, a DataArray is returned. Otherwise, a DataTree
     containing all regions is returned.
+
+    Parameters
+    ----------
+    filename : str or os.PathLike
+        The path to the ``.zip`` file or the directory containing the unzipped files.
+    without_values : bool, optional
+        If True, the values are not loaded, only the coordinates and attributes.
     """
-    with zipfile.ZipFile(filename) as z:
-        regions: list[str] = [
-            fn[9:-4]
-            for fn in z.namelist()
-            if fn.startswith("Spectrum_") and fn.endswith(".bin")
-        ]
-        out: list[xr.DataArray] = []
-        for region in regions:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                z.extract(f"Spectrum_{region}.ini", tmp_dir)
-                z.extract(f"{region}.ini", tmp_dir)
+    zipped: bool = not os.path.isdir(filename)
 
+    if zipped:
+        zf = zipfile.ZipFile(filename, mode="r", allowZip64=False)
+
+    regions: list[str] = [
+        fn[9:-4]
+        for fn in (os.listdir(filename) if not zipped else zf.namelist())
+        if fn.startswith("Spectrum_") and fn.endswith(".bin")
+    ]
+    out: list[xr.DataArray] = []
+
+    for region in regions:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            if zipped:
+                zf.extract(f"Spectrum_{region}.ini", tmp_dir)
+                zf.extract(f"{region}.ini", tmp_dir)
                 unzipped = pathlib.Path(tmp_dir)
+            else:
+                unzipped = pathlib.Path(filename)
 
-                region_info = parse_ini(unzipped / f"Spectrum_{region}.ini")["spectrum"]
-                attrs = {}
-                for d in parse_ini(unzipped / f"{region}.ini").values():
-                    attrs.update(d)
-
-                if not without_values:
-                    z.extract(f"Spectrum_{region}.bin", tmp_dir)
-                    arr = np.fromfile(
-                        unzipped / f"Spectrum_{region}.bin", dtype=np.float32
-                    )
-
-            shape = []
-            coords = {}
-            for d in ("depth", "height", "width"):
-                n = int(region_info[d])
-                offset = float(region_info[f"{d}offset"])
-                delta = float(region_info[f"{d}delta"])
-                shape.append(n)
-                coords[region_info[f"{d}label"]] = np.linspace(
-                    offset, offset + (n - 1) * delta, n
-                )
+            region_info = parse_ini(unzipped / f"Spectrum_{region}.ini")["spectrum"]
+            attrs = {}
+            for d in parse_ini(unzipped / f"{region}.ini").values():
+                attrs.update(d)
 
             if not without_values:
-                arr = arr.reshape(shape)
-            else:
-                arr = np.zeros(shape, dtype=np.float32)
+                if zipped:
+                    zf.extract(f"Spectrum_{region}.bin", tmp_dir)
+                arr = np.fromfile(unzipped / f"Spectrum_{region}.bin", dtype=np.float32)
 
-            out.append(
-                xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
+        shape = []
+        coords = {}
+        for d in ("depth", "height", "width"):
+            n = int(region_info[d])
+            offset = float(region_info[f"{d}offset"])
+            delta = float(region_info[f"{d}delta"])
+            shape.append(n)
+            coords[region_info[f"{d}label"]] = np.linspace(
+                offset, offset + (n - 1) * delta, n
             )
+
+        if not without_values:
+            arr = arr.reshape(shape)
+        else:
+            arr = np.zeros(shape, dtype=np.float32)
+
+        out.append(
+            xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
+        )
+
+    if zipped:
+        zf.close()
 
     if len(out) == 1:
         return out[0]
