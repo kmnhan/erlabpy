@@ -1,5 +1,9 @@
 ## Unreleased
 
+### 🐞 Bug Fixes
+
+- **ktool:** resolve incompatibility with hv-dependent data (#88) ([472e98e](https://github.com/kmnhan/erlabpy/commit/472e98ee35a062a524cff0ec774d704007a594b8))
+
 ### ♻️ Code Refactor
 
 - **io.plugins.da30:** support loading unzipped DA30 scans (#89) ([eadc676](https://github.com/kmnhan/erlabpy/commit/eadc6760bbf6ddad635bcac10b829c234662b59e))
