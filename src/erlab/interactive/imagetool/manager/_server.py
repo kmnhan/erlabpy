@@ -248,7 +248,7 @@ def show_in_manager(
     for dat in input_data:
         fname = str(uuid.uuid4())
         fname = os.path.join(tmp_dir, fname)
-        _save_pickle(dat, fname)
+        _save_pickle(dat.load(), fname)
         files.append(fname)
 
     kwargs["__filename"] = files
