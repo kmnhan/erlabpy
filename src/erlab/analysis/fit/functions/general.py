@@ -94,13 +94,10 @@ def _gen_kernel(
     x_pad = n_pad * delta_x
 
     extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
-    gauss = (
-        delta_x
-        * np.exp(
-            -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / max(TINY, 2 * sigma**2)
-        )
-        / max(TINY, S2PI * sigma)
+    gauss = np.exp(
+        -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / max(TINY, 2 * sigma**2)
     )
+    gauss /= gauss.sum()
     return extended, gauss
 
 
