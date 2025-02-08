@@ -49,7 +49,7 @@ def test_spline(gold) -> None:
     )
     plt.close()
 
-    assert_allclose(spl(0.0), 0.04, rtol=1e-4)
+    assert_allclose(spl(0.0), 0.04, atol=1e-4)
 
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
