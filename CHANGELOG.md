@@ -2,9 +2,21 @@
 
 ### 🐞 Bug Fixes
 
+- **analysis.gold:** fix incorrect normalization for Fermi edge fits and add resolution parameter ([1fe773d](https://github.com/kmnhan/erlabpy/commit/1fe773d685b3422225df9b39f1ebac34edda33bd))
+
+- **analysis.fit.functions.general:** properly normalize convolution kernel for small sigma ([390769e](https://github.com/kmnhan/erlabpy/commit/390769e031e10b343da2f38438f84350007cafc4))
+
 - **ktool:** resolve incompatibility with hv-dependent data (#88) ([472e98e](https://github.com/kmnhan/erlabpy/commit/472e98ee35a062a524cff0ec774d704007a594b8))
 
+### ⚡️ Performance
+
+- **analysis.fit.models.FermiEdgeModel:** micro-optimizations related to EF guessing ([afc5c90](https://github.com/kmnhan/erlabpy/commit/afc5c9026b0a72c488f11a32d30e8c5ce3cfbe24))
+
 ### ♻️ Code Refactor
+
+- **goldtool:** add initial resolution spinbox ([9d8dd8d](https://github.com/kmnhan/erlabpy/commit/9d8dd8d4269371a561dffe3f9c6cb369af57f03e))
+
+- **analysis.gold.quick_fit:** enable resolution plot customization through keyword arguments ([a3058e6](https://github.com/kmnhan/erlabpy/commit/a3058e65248f0f28a680af97e075930dac79fc1a))
 
 - **io.plugins.da30:** support loading unzipped DA30 scans (#89) ([eadc676](https://github.com/kmnhan/erlabpy/commit/eadc6760bbf6ddad635bcac10b829c234662b59e))
 
