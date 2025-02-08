@@ -150,7 +150,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
     def __init__(
         self,
         slicer_area: ImageSlicerArea,
-        display_axis: tuple[int, ...],
+        display_axis: tuple[int] | tuple[int, int],
         image: bool = False,
         **item_kw,
     ) -> None:
@@ -1885,7 +1885,7 @@ class ItoolPlotItem(pg.PlotItem):
     def __init__(
         self,
         slicer_area: ImageSlicerArea,
-        display_axis: tuple[int, ...],
+        display_axis: tuple[int] | tuple[int, int],
         image: bool = False,
         image_cls=None,
         plotdata_cls=None,
@@ -2034,7 +2034,7 @@ class ItoolPlotItem(pg.PlotItem):
         vb.invertX(state["vb_x_inverted"])
         vb.invertY(state["vb_y_inverted"])
 
-    def _get_axis_dims(self, uniform: bool) -> tuple[str | None, ...]:
+    def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
         dim_list: list[str] = [
             str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
         ]
@@ -2044,20 +2044,20 @@ class ItoolPlotItem(pg.PlotItem):
                 if ax in self.array_slicer._nonuniform_axes:
                     dim_list[i] = dim_list[i].removesuffix("_idx")
 
-        dims: tuple[str | None, ...] = tuple(dim_list)
+        dims = typing.cast(tuple[str] | tuple[str, str], tuple(dim_list))
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
                 dims = (None, *dims)
             else:
                 dims = (*dims, None)
-        return dims
+        return typing.cast(tuple[str | None, str | None], dims)
 
     @property
-    def axis_dims(self) -> tuple[str | None, ...]:
+    def axis_dims(self) -> tuple[str | None, str | None]:
         return self._get_axis_dims(uniform=False)
 
     @property
-    def axis_dims_uniform(self) -> tuple[str | None, ...]:
+    def axis_dims_uniform(self) -> tuple[str | None, str | None]:
         return self._get_axis_dims(uniform=True)
 
     @property
