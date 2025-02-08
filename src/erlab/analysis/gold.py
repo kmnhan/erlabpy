@@ -556,11 +556,15 @@ def quick_fit(
     bkg_slope: bool = True,
     plot: bool = False,
     ax: matplotlib.axes.Axes | None = None,
+    plot_fit_kwargs: dict[str, typing.Any] | None = None,
+    plot_data_kwargs: dict[str, typing.Any] | None = None,
+    plot_line_kwargs: dict[str, typing.Any] | None = None,
+    plot_span_kwargs: dict[str, typing.Any] | None = None,
     **kwargs,
 ) -> xr.Dataset:
     """Perform a Fermi edge fit on an EDC.
 
-    This function is a convenient wrapper around :meth:`modelfit
+    This function is a convenient wrapper around :meth:`DataArray.modelfit
     <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge to
     the given data.
 
@@ -602,9 +606,21 @@ def quick_fit(
     ax
         The axes to plot the result on if ``plot`` is `True`. If `None`, the current
         axes are used.
+    plot_fit_kwargs
+        Additional keyword arguments for the fit plot, passed to
+        :meth:`matplotlib.axes.Axes.plot`. Defaults to `None`.
+    plot_data_kwargs
+        Additional keyword arguments for the data plot, passed to
+        :meth:`matplotlib.axes.Axes.plot`. Defaults to `None`.
+    plot_line_kwargs
+        Additional keyword arguments for the plot line that indicates the fitted center,
+        passed to :meth:`matplotlib.axes.Axes.axvline`. Defaults to `None`.
+    plot_span_kwargs
+        Additional keyword arguments for the plot span that indicates the fitted FWHM,
+        passed to :meth:`matplotlib.axes.Axes.axvspan`. Defaults to `None`.
     **kwargs
-        Additional keyword arguments to :class:`modelfit
-        <erlab.accessors.fit.ModelFitDataArrayAccessor>`.
+        Additional keyword arguments to :meth:`DataArray.modelfit
+        <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>`.
 
     Returns
     -------
@@ -657,20 +673,60 @@ def quick_fit(
         if ax is None:
             ax = plt.gca()
 
-        _plot_resolution_fit(ax, data_fit, fit_result, fix_center)
+        _plot_resolution_fit(
+            ax=ax,
+            data=data_fit,
+            result=fit_result,
+            fix_center=fix_center,
+            plot_fit_kwargs=plot_fit_kwargs,
+            plot_data_kwargs=plot_data_kwargs,
+            plot_line_kwargs=plot_line_kwargs,
+            plot_span_kwargs=plot_span_kwargs,
+        )
 
     return fit_result
 
 
 def _plot_resolution_fit(
-    ax: matplotlib.axes.Axes, data: xr.DataArray, result: xr.Dataset, fix_center: bool
+    ax: matplotlib.axes.Axes,
+    data: xr.DataArray,
+    result: xr.Dataset,
+    fix_center: bool,
+    plot_fit_kwargs: dict[str, typing.Any] | None = None,
+    plot_data_kwargs: dict[str, typing.Any] | None = None,
+    plot_line_kwargs: dict[str, typing.Any] | None = None,
+    plot_span_kwargs: dict[str, typing.Any] | None = None,
 ) -> None:
     """Plot the results of a single Fermi edge fit."""
-    ax.plot(
-        data.eV, data, ".", mec="0.5", alpha=1, mfc="none", ms=5, mew=0.4, label="Data"
-    )
+    plot_data_kwargs = {} if plot_data_kwargs is None else plot_data_kwargs
+    plot_fit_kwargs = {} if plot_fit_kwargs is None else plot_fit_kwargs
+    plot_line_kwargs = {} if plot_line_kwargs is None else plot_line_kwargs
+    plot_span_kwargs = {} if plot_span_kwargs is None else plot_span_kwargs
 
-    result.modelfit_best_fit.qplot(ax=ax, c="r", label="Fit")
+    plot_data_kwargs["ls"] = plot_data_kwargs.pop(
+        "ls", plot_data_kwargs.pop("linestyle", "none")
+    )
+    plot_data_kwargs["ms"] = plot_data_kwargs.pop(
+        "ms", plot_data_kwargs.pop("markersize", 5)
+    )
+    plot_data_kwargs["mew"] = plot_data_kwargs.pop(
+        "mew", plot_data_kwargs.pop("markeredgewidth", 0.4)
+    )
+    plot_data_kwargs["mec"] = plot_data_kwargs.pop(
+        "mec", plot_data_kwargs.pop("markeredgecolor", "0.5")
+    )
+    plot_data_kwargs["mfc"] = plot_data_kwargs.pop(
+        "mfc", plot_data_kwargs.pop("markerfacecolor", "none")
+    )
+    plot_data_kwargs.setdefault("marker", ".")
+    plot_data_kwargs.setdefault("label", "Data")
+    ax.plot(data.eV, data, **plot_data_kwargs)
+
+    plot_fit_kwargs["c"] = plot_fit_kwargs.pop(
+        "c", plot_fit_kwargs.pop("color", "tab:red")
+    )
+    plot_fit_kwargs.setdefault("label", "Fit")
+    ax.plot(result.modelfit_best_fit.eV, result.modelfit_best_fit, **plot_fit_kwargs)
 
     ax.set_ylabel("Intensity (arb. units)")
     if (data.eV[0] * data.eV[-1]) < 0:
@@ -729,8 +785,30 @@ def _plot_resolution_fit(
         )
     ax.set_xlim(data.eV[[0, -1]])
     ax.set_title("")
-    ax.axvline(coeffs.sel(param="center"), ls="--", c="k", lw=0.4, alpha=0.5)
-    ax.axvspan(*center_bounds, color="r", alpha=0.2, label="FWHM")
+
+    plot_line_kwargs["c"] = plot_line_kwargs.pop(
+        "c", plot_line_kwargs.pop("color", "k")
+    )
+    plot_line_kwargs["ls"] = plot_line_kwargs.pop(
+        "ls", plot_line_kwargs.pop("linestyle", "--")
+    )
+    plot_line_kwargs["lw"] = plot_line_kwargs.pop(
+        "lw", plot_line_kwargs.pop("linewidth", 0.4)
+    )
+    plot_line_kwargs.setdefault("alpha", 0.5)
+    ax.axvline(coeffs.sel(param="center"), **plot_line_kwargs)
+
+    plot_span_kwargs["fc"] = plot_span_kwargs.pop(
+        "fc", plot_span_kwargs.pop("facecolor", "tab:red")
+    )
+    plot_span_kwargs["ec"] = plot_span_kwargs.pop(
+        "ec", plot_span_kwargs.pop("edgecolor", "none")
+    )
+    plot_span_kwargs.setdefault("label", "FWHM")
+    plot_span_kwargs.setdefault("alpha", 0.2)
+    plot_span_kwargs.setdefault("ymin", -0.01)
+    plot_span_kwargs.setdefault("ymax", 1.01)
+    ax.axvspan(*center_bounds, **plot_span_kwargs)
 
 
 def quick_resolution(
