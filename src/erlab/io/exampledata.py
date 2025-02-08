@@ -276,9 +276,6 @@ def generate_data_angles(
         alpha = np.linspace(-angrange, angrange, shape[0])
         beta = np.linspace(-angrange, angrange, shape[1])
 
-    if not isinstance(configuration, erlab.constants.AxesConfiguration):
-        configuration = erlab.constants.AxesConfiguration(configuration)
-
     eV = np.linspace(*Erange, shape[2])
 
     # Pad energy range for gaussian kernel
@@ -323,7 +320,7 @@ def generate_data_angles(
         )
         kx, ky = forward_func(dummy_data.alpha, dummy_data.beta)
 
-        c1, c2 = 641.0, 0.096
+        c1, c2 = 143.0, 0.054
         imfp = (c1 / (Ekin**2) + c2 * np.sqrt(Ekin)) * 10
 
         # Initial out-of-plane momentum
@@ -335,15 +332,13 @@ def generate_data_angles(
         k_perp = erlab.analysis.kspace._kperp_func(k_tot**2, kx, ky)
 
         # Photon polarization
-        pol = np.array([0.0, 0.0, 1.0])
+        pol = np.array(polarization)
 
-        terms = (
-            1j * kx * pol[0] + 1j * ky * pol[1] + (1j * k_perp - (1 / imfp)) * pol[2]
-        )
-        terms = terms * (1 / (1j * (kz - k_perp) + 1 / imfp))
+        terms = 1j * kx * pol[0] + 1j * ky * pol[1] + (1j * kz - (1 / imfp)) * pol[2]
+        terms = terms * (1 / (1j * (k_perp - kz + 0.0) + 1 / imfp))
 
         # Recast into numpy array
-        terms = terms.isel(hv=0).transpose("alpha", "beta", "eV").values
+        terms = terms.squeeze("hv").transpose("alpha", "beta", "eV").values
 
         terms = terms * _calc_graphene_mat_el(
             np.deg2rad(dummy_data.beta.values)[None, :, None],
@@ -485,7 +480,14 @@ def generate_gold_edge(
         data[:] = rng.poisson(data).astype(float)
 
     data = erlab.analysis.image.gaussian_filter(
-        data, sigma=typing.cast(dict[Hashable, float], {"eV": Eres, "alpha": angres})
+        data,
+        sigma=typing.cast(
+            dict[Hashable, float],
+            {
+                "eV": Eres / np.sqrt(8 * np.log(2)),
+                "alpha": angres / np.sqrt(8 * np.log(2)),
+            },
+        ),
     )
 
     if noise:
