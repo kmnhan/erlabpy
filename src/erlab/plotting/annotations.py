@@ -114,7 +114,7 @@ PRETTY_NAMES: dict[str, tuple[str, str]] = {
     "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
     "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
     "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
-    "kp": (r"\ensuremath{k_{\parallel}}", r"$k_\parallel$"),
+    "kp": (r"\ensuremath{k_{||}}", r"$k_{||}$"),
     "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
 }
 """Pretty names for labeling plots.
@@ -1128,11 +1128,12 @@ def sizebar(
     value
         Length of the size bar in terms of `unit`.
     unit
-        An SI unit string without prefixes.
+        An SI unit string without prefixes. For example, 'm' for meters.
     si
         Exponents that have a corresponding SI prefix
     resolution
-        Value to scale the data coordinates in terms of `unit`.
+        Scale of the current axes coordinates. For example, if the plot axes values are
+        given in μm, the resolution should be 1e-6.
     decimals
         Number of decimals on the size bar label.
     label
@@ -1150,6 +1151,11 @@ def sizebar(
     **kwargs
         Keyword arguments forwarded to
         `mpl_toolkits.axes_grid1.anchored_artists.AnchoredSizeBar`.
+
+    Example
+    -------
+    Plotting a size bar with a length of 200 μm on an axes given in mm:
+    >>> eplt.sizebar(ax, value=2e-6, unit="m", si=-6, resolution=1e-3)
 
     """
     from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
