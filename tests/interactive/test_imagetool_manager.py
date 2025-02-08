@@ -256,6 +256,14 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     move_and_compare_values(qtbot, win0, [9.0, 8.0, 3.0, 4.0], target_win=win1)
 
+    # Change limits
+    win0.slicer_area.main_image.getViewBox().setRange(xRange=[2, 3], yRange=[1, 2])
+    # Trigger manual range propagation
+    win0.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win0.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+    assert win1.slicer_area.main_image.getViewBox().viewRange() == [[2, 3], [1, 2]]
+
     manager.remove_tool(0)
     manager.remove_tool(1)
     manager.close()
