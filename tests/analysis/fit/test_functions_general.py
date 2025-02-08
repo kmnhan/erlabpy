@@ -48,15 +48,15 @@ def test_gen_kernel() -> None:
 
 
 def test_do_convolve() -> None:
-    # Test case 1: Convolve a linear function with a Gaussian kernel
-    x = np.linspace(0, 10, 5)
+    # Test case 1: Convolve a quadratic function with a Gaussian kernel
+    x = np.linspace(1, 10, 5)
 
     def testfunc(x):
-        return x
+        return x**2
 
-    resolution = 1.0
+    resolution = 3.0
     expected = np.array(
-        [-6.61744490e-24, 5.87148334e00, 1.17429667e01, 1.76144500e01, 2.34859334e01]
+        [2.54995914, 12.11245914, 31.79995914, 61.61245914, 101.54995914]
     )
     result = do_convolve(x, testfunc, resolution)
     assert np.allclose(result, expected)
@@ -67,9 +67,15 @@ def test_do_convolve() -> None:
     def testfunc(x):
         return np.sin(x)
 
-    resolution = 0.5
+    resolution = 5
     expected = np.array(
-        [0.00000000e00, 2.95132925e00, 3.61433592e-16, -2.95132925e00, -7.22867185e-16]
+        [
+            -2.60089778e-16,
+            1.04956310e-01,
+            1.85198936e-16,
+            -1.04956310e-01,
+            -2.01286051e-16,
+        ]
     )
     result = do_convolve(x, testfunc, resolution)
     assert np.allclose(result, expected)
