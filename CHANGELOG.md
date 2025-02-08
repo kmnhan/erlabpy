@@ -2,11 +2,19 @@
 
 ### ✨ Features
 
+- **imagetool:** reimplement axis linking logic ([8f8648c](https://github.com/kmnhan/erlabpy/commit/8f8648c6e9bc409dc936032b0d5a27a9eefc806f))
+
+  Limits for all axes that correspond to the same dimension are now shared.
+
+  Furthermore, view limits are now also shared across linked tools.
+
 - **io.dataloader:** display progress bar when loading data from multiple files (#91) ([4d3a704](https://github.com/kmnhan/erlabpy/commit/4d3a70445b4cfa460ad63a8966309349f393fe7b))
 
   A progress bar is now displayed by default when loading data that spans multiple files. The visibility of the progress bar can be controlled with the newly added `progress` argument to `erlab.io.load`.
 
 ### 🐞 Bug Fixes
+
+- **imagetool.manager:** ensure compatibility with lazy-loaded data ([6d57e13](https://github.com/kmnhan/erlabpy/commit/6d57e13e66339161935c47d524e1822bd65c20b8))
 
 - **analysis.gold:** fix incorrect normalization for Fermi edge fits and add resolution parameter ([1fe773d](https://github.com/kmnhan/erlabpy/commit/1fe773d685b3422225df9b39f1ebac34edda33bd))
 
