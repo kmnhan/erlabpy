@@ -86,6 +86,7 @@ class EdgeFitter(QtCore.QThread):
                 bin_size=(self.params["Bin x"], self.params["Bin y"]),
                 temp=self.params["T (K)"],
                 vary_temp=not self.params["Fix T"],
+                resolution=self.params["Resolution"],
                 fast=self.params["Fast"],
                 method=self.params["Method"],
                 scale_covar=self.params["Scale cov"],
@@ -194,6 +195,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 "Fix T": {"qwtype": "chkbox", "checked": True},
                 "Bin x": {"qwtype": "spin", "value": 1, "minimum": 1},
                 "Bin y": {"qwtype": "spin", "value": 1, "minimum": 1},
+                "Resolution": {
+                    "qwtype": "dblspin",
+                    "value": 0.02,
+                    "range": (0.0, 99.9),
+                    "singleStep": 0.001,
+                    "decimals": 5,
+                },
                 "Fast": {"qwtype": "chkbox", "checked": False},
                 "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
@@ -211,6 +219,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 },
             }
         )
+
+        typing.cast(
+            QtWidgets.QComboBox, self.params_edge.widgets["Method"]
+        ).setCurrentIndex(1)
 
         typing.cast(
             QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
@@ -514,6 +526,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             "bin_size": (p0["Bin x"], p0["Bin y"]),
             "temp": p0["T (K)"],
             "method": p0["Method"],
+            "resolution": p0["Resolution"],
         }
 
         match mode:
