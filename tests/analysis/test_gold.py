@@ -6,8 +6,12 @@ from numpy.testing import assert_allclose
 from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 
 
-@pytest.mark.parametrize("parallel_kw", [None, {"n_jobs": 1, "return_as": "list"}])
-@pytest.mark.parametrize("fast", [True, False])
+@pytest.mark.parametrize(
+    "parallel_kw",
+    [None, {"n_jobs": 1, "return_as": "list"}],
+    ids=["parallel_generator", "serial_list"],
+)
+@pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
 def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
     res = poly(
         gold,
@@ -52,13 +56,13 @@ def test_spline(gold) -> None:
     plt.close()
 
 
-@pytest.mark.parametrize("bkg_slope", [True, False])
-@pytest.mark.parametrize("fix_resolution", [False, True])
-@pytest.mark.parametrize("fix_center", [False, True])
-@pytest.mark.parametrize("fix_temp", [True, False])
-@pytest.mark.parametrize("resolution", [None, 1e-2])
-@pytest.mark.parametrize("temp", [None, 100.0])
-@pytest.mark.parametrize("eV_range", [None, (-0.2, 0.2)])
+@pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])
+@pytest.mark.parametrize("fix_resolution", [False, True], ids=["fix_res", "vary_res"])
+@pytest.mark.parametrize("fix_center", [False, True], ids=["fix_center", "vary_center"])
+@pytest.mark.parametrize("fix_temp", [True, False], ids=["fix_temp", "vary_temp"])
+@pytest.mark.parametrize("resolution", [None, 1e-2], ids=["res_None", "res_1e-2"])
+@pytest.mark.parametrize("temp", [None, 100.0], ids=["temp_None", "temp_100"])
+@pytest.mark.parametrize("eV_range", [None, (-0.2, 0.2)], ids=["eV_full", "eV_range"])
 def test_quick_fit(
     gold, eV_range, temp, resolution, fix_temp, fix_center, fix_resolution, bkg_slope
 ) -> None:
