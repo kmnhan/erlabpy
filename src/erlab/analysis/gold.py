@@ -148,13 +148,15 @@ def correct_with_edge(
 
 def edge(
     gold: xr.DataArray,
+    *,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    resolution: float = 0.02,
     fast: bool = False,
-    method: str = "leastsq",
+    method: str = "least_squares",
     scale_covar: bool = True,
     normalize: bool = True,
     fixed_center: float | None = None,
@@ -166,6 +168,8 @@ def edge(
 ) -> tuple[xr.DataArray, xr.DataArray] | list[lmfit.model.ModelResult]:
     """
     Fit a Fermi edge to the given gold data.
+
+    Only successful fits with valid error estimates are returned.
 
     Parameters
     ----------
@@ -182,11 +186,13 @@ def edge(
         attributes, by default `None`
     vary_temp
         Whether to fit the temperature value during fitting, by default `False`.
+    resolution
+        The initial resolution value to use for fitting, by default `0.02`.
     fast
         Whether to use the Gaussian-broadeded step function to fit the edge, by default
         `False`.
     method
-        The fitting method to use, by default ``"leastsq"``.
+        The fitting method to use, by default ``"least_squares"``.
     scale_covar
         Whether to scale the covariance matrix, by default `True`.
     fixed_center
@@ -216,18 +222,40 @@ def edge(
         `True`.
 
     """
-    if fast:
-        params = lmfit.create_params()
-        model_cls: lmfit.Model = erlab.analysis.fit.models.StepEdgeModel
-    else:
+    if any(b != 1 for b in bin_size):
+        gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
+        gold = gold_binned.mean()  # type: ignore[attr-defined]
+
+    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+
+    if normalize:
+        # Normalize energy coordinates
+        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
+        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
+
+    if temp is None:
+        temp = gold.qinfo.get_value("sample_temp")
         if temp is None:
-            temp = gold.qinfo.get_value("sample_temp")
-            if temp is None:
+            if fast:
+                temp = 10.0
+            else:
                 raise ValueError(
                     "Temperature not found in data attributes, please provide manually"
                 )
 
-        params = lmfit.create_params(temp={"value": float(temp), "vary": vary_temp})
+    if normalize and temp is not None:
+        temp = float(temp / stdx)
+
+    if fast:
+        params = lmfit.create_params(
+            sigma=(resolution + 3.53 * erlab.constants.kb_eV * temp)
+            / np.sqrt(8 * np.log(2))
+        )
+        model_cls: lmfit.Model = erlab.analysis.fit.models.StepEdgeModel
+    else:
+        params = lmfit.create_params(
+            temp={"value": float(temp), "vary": vary_temp}, resolution=resolution
+        )
         model_cls = erlab.analysis.fit.models.FermiEdgeModel
 
     model = model_cls()
@@ -237,12 +265,6 @@ def edge(
 
     if fixed_center is not None:
         params["center"].set(value=fixed_center, vary=False)
-
-    if any(b != 1 for b in bin_size):
-        gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
-        gold = gold_binned.mean()  # type: ignore[attr-defined]
-
-    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
 
     # Assuming Poisson noise, the weights are the square root of the counts.
     weights = 1 / np.sqrt(np.asarray(gold_sel.sum("eV").values))
@@ -260,11 +282,6 @@ def edge(
         parallel_kw.setdefault("pre_dispatch", "n_jobs")
 
         parallel_obj = joblib.Parallel(**parallel_kw)
-
-    if normalize:
-        # Normalize energy coordinates
-        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
-        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
 
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
@@ -318,6 +335,12 @@ def edge(
                 xval.append(gold_sel.alpha.values[i])
                 res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
 
+    if len(res_vals) == 0:
+        erlab.utils.misc.emit_user_level_warning(
+            "No valid fits found, returning empty arrays"
+        )
+        return xr.DataArray([], dims=["alpha"]), xr.DataArray([], dims=["alpha"])
+
     coords = {"alpha": np.asarray(xval)}
     yval, yerr = np.asarray(res_vals).T
 
@@ -325,7 +348,7 @@ def edge(
 
 
 def poly_from_edge(
-    center, weights=None, degree=4, method="leastsq", scale_covar=True
+    center, weights=None, degree=4, method="least_squares", scale_covar=True
 ) -> lmfit.model.ModelResult:
     model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
     pars = model.guess(center.values, x=center[center.dims[0]].values)
@@ -451,13 +474,15 @@ def _plot_gold_fit(
 
 def poly(
     gold: xr.DataArray,
+    *,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    resolution: float = 0.02,
     fast: bool = False,
-    method: str = "leastsq",
+    method: str = "least_squares",
     normalize: bool = True,
     degree: int = 4,
     correct: bool = False,
@@ -470,11 +495,12 @@ def poly(
 ) -> lmfit.model.ModelResult | tuple[lmfit.model.ModelResult, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
-        angle_range,
-        eV_range,
+        angle_range=angle_range,
+        eV_range=eV_range,
         bin_size=bin_size,
         temp=temp,
         vary_temp=vary_temp,
+        resolution=resolution,
         fast=fast,
         method=method,
         normalize=normalize,
@@ -503,13 +529,15 @@ def poly(
 
 def spline(
     gold: xr.DataArray,
+    *,
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    resolution: float = 0.02,
     fast: bool = False,
-    method: str = "leastsq",
+    method: str = "least_squares",
     lam: float | None = None,
     correct: bool = False,
     crop_correct: bool = False,
@@ -520,11 +548,12 @@ def spline(
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
     center_arr, center_stderr = edge(
         gold,
-        angle_range,
-        eV_range,
+        angle_range=angle_range,
+        eV_range=eV_range,
         bin_size=bin_size,
         temp=temp,
         vary_temp=vary_temp,
+        resolution=resolution,
         fast=fast,
         method=method,
         parallel_kw=parallel_kw,
@@ -862,8 +891,8 @@ def resolution(
 
     pol, gold_corr = poly(
         gold,
-        angle_range,
-        eV_range_edge,
+        angle_range=angle_range,
+        eV_range=eV_range_edge,
         bin_size=bin_size,
         degree=degree,
         correct=True,
