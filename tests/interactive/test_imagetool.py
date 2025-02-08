@@ -198,7 +198,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
             "snap_to_data": True,
         },
         "current_cursor": 1,
-        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
+        "manual_limits": {},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
         "cursor_colors": ["#cccccc", "#ffff00"],

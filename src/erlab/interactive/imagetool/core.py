@@ -556,8 +556,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 cmap = cmap.removeprefix("cet_")
         self._colormap_properties = {"cmap": cmap, "gamma": gamma}
 
-        pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self.manual_limits: dict[str, list[float]] = {}
+        # Dictionary of current axes limits for each data dimension to ensure all plots
+        # show the same range for a given dimension. The keys are the dimension names.
+
+        pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
             ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
             ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
@@ -1031,6 +1034,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigIndexChanged.emit(cursor, axes)
 
     @QtCore.Slot()
+    @link_slicer
     def view_all(self) -> None:
         for ax in reversed(self.axes):
             # Updating linked axes before the main image to prevent fixed limits
@@ -1230,6 +1234,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.update_values(self._data, update=update)
         else:
             self.update_values(self._applied_func(self._data), update=update)
+
+    def set_manual_limits(self, manual_limits: dict[str, list[float]]) -> None:
+        """Set manual limits for the axes.
+
+        Replaces the current manual limits with the given limits dictionary and updates
+        all child axes accordingly.
+        """
+        self.manual_limits = copy.deepcopy(manual_limits)
+        for ax in self.axes:
+            ax.update_manual_range()
+
+    def propagate_limit_change(self, axes: ItoolPlotItem) -> None:
+        """Propagate manual limits changes to all linked slicers.
+
+        Called when the limits of a child axes are changed by the user.
+
+        This method first propagates the limits to all linked slicers (if any), and then
+        triggers the update of the manual limits for all other axes. This ensures that
+        all plots share the same limits for a given dimension.
+        """
+        # Apply current manual limits to all linked slicers
+        if self._linking_proxy is not None:
+            for target in self._linking_proxy.children.difference({self}):
+                target.set_manual_limits(self.manual_limits)
+
+        # Set manual limits for all other axes
+        for ax in self.axes:
+            if ax is not axes:
+                ax.update_manual_range()
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -1614,10 +1647,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     autoExpandTextSpace=True, autoReduceTextSpace=True
                 )
             axes.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
-            if i in (1, 4):
-                axes.setXLink(self.get_axes(0))
-            elif i in (2, 5):
-                axes.setYLink(self.get_axes(0))
 
         # reserve space, only hide plotItem
         self.get_axes(3).setVisible(self.data.ndim != 2)
@@ -1640,6 +1669,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         painter.end()
         return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
 
+    @link_slicer
     @record_history
     def toggle_snap(self, value: bool | None = None) -> None:
         if value is None:
@@ -2156,9 +2186,25 @@ class ItoolPlotItem(pg.PlotItem):
                 )
             )
 
+    @QtCore.Slot()
+    def range_changed_manually(self) -> None:
+        """Propagate manual range changes to other plots.
+
+        This slot propagates the limit change to related other plots in the same slicer
+        area, and to other linked slicer areas.
+        """
+        self.slicer_area.propagate_limit_change(self)
+
+    @QtCore.Slot()
     def refresh_manual_range(self) -> None:
-        if self.is_independent:
-            return
+        """Store manual limit changes in the parent slicer area.
+
+        This slot ensures that the manual limits stored in the parent slicer area are
+        always up to date with the current view range.
+
+        When a user manually changes the view range, this slot is called before
+        `range_changed_manually` is called.
+        """
         for dim, auto, rng in zip(
             self.axis_dims,
             self.vb.state["autoRange"],
@@ -2166,14 +2212,16 @@ class ItoolPlotItem(pg.PlotItem):
             strict=True,
         ):
             if dim is not None:
+                # dim is None for intensity axis of line plots (not related to any dim)
                 if auto:
+                    # Clear manual limits if auto range is enabled
                     self.slicer_area.manual_limits.pop(dim, None)
                 else:
+                    # Store manual limits
                     self.slicer_area.manual_limits[dim] = rng
 
     def update_manual_range(self) -> None:
-        if self.is_independent:
-            return
+        """Update view range from values stored in the parent slicer area."""
         self.set_range_from(self.slicer_area.manual_limits)
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs) -> None:
@@ -2182,7 +2230,7 @@ class ItoolPlotItem(pg.PlotItem):
                 with contextlib.suppress(KeyError):
                     kwargs[key] = limits[dim]
         if len(kwargs) != 0:
-            self.setRange(**kwargs)
+            self.getViewBox().setRange(**kwargs)
 
     @QtCore.Slot()
     def toggle_aspect_equal(self) -> None:
@@ -2467,14 +2515,16 @@ class ItoolPlotItem(pg.PlotItem):
         self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self.slicer_area.sigShapeChanged.connect(self.update_manual_range)
         self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
-        self.vb.sigRangeChanged.connect(self.refresh_manual_range)
+        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
+        self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
 
     def disconnect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
         self.slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
         self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
-        self.vb.sigRangeChanged.disconnect(self.refresh_manual_range)
+        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
+        self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
 
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
