@@ -1,5 +1,11 @@
 ## Unreleased
 
+### ✨ Features
+
+- **io.dataloader:** display progress bar when loading data from multiple files (#91) ([4d3a704](https://github.com/kmnhan/erlabpy/commit/4d3a70445b4cfa460ad63a8966309349f393fe7b))
+
+  A progress bar is now displayed by default when loading data that spans multiple files. The visibility of the progress bar can be controlled with the newly added `progress` argument to `erlab.io.load`.
+
 ### 🐞 Bug Fixes
 
 - **analysis.gold:** fix incorrect normalization for Fermi edge fits and add resolution parameter ([1fe773d](https://github.com/kmnhan/erlabpy/commit/1fe773d685b3422225df9b39f1ebac34edda33bd))
