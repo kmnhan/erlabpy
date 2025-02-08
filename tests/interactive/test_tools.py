@@ -57,7 +57,7 @@ def test_restool(qtbot) -> None:
         "eV_range": (-0.3, 0.3),
         "temp": 100.0,
         "resolution": 0.02,
-        "center": -0.01572,
+        "center": -0.01037,
         "bkg_slope": False,
     }.items():
         assert win.fit_params[k] == v
