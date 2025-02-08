@@ -48,6 +48,16 @@ if typing.TYPE_CHECKING:
         Mapping,
     )
 
+    import joblib
+    import tqdm.auto as tqdm
+else:
+    import lazy_loader as _lazy
+
+    from erlab.utils.misc import LazyImport
+
+    joblib = _lazy.load("joblib")
+    tqdm = LazyImport("tqdm.auto")
+
 
 class ValidationWarning(UserWarning):
     """Issued when the loaded data fails validation checks."""
@@ -493,6 +503,7 @@ class LoaderBase(metaclass=_Loader):
         single: bool = False,
         combine: bool = True,
         parallel: bool | None = None,
+        progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
@@ -551,6 +562,10 @@ class LoaderBase(metaclass=_Loader):
             Whether to load multiple files in parallel using the `joblib` library. For
             possible values, see :meth:`load_multiple_parallel
             <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
+
+            This argument is only used when `single` is `False`.
+        progress
+            Whether to show a progress bar when loading multiple files.
 
             This argument is only used when `single` is `False`.
         load_kwargs
@@ -633,13 +648,20 @@ class LoaderBase(metaclass=_Loader):
                 if combine:
                     data = self._combine_multiple(
                         self.load_multiple_parallel(
-                            file_paths, parallel=parallel, **load_kwargs
+                            file_paths,
+                            parallel=parallel,
+                            progress=progress,
+                            **load_kwargs,
                         ),
                         coord_dict,
                     )
                 else:
                     return self.load_multiple_parallel(
-                        file_paths, parallel=parallel, post_process=True, **load_kwargs
+                        file_paths,
+                        parallel=parallel,
+                        progress=progress,
+                        post_process=True,
+                        **load_kwargs,
                     )
 
         else:
@@ -1739,7 +1761,9 @@ class LoaderBase(metaclass=_Loader):
     def load_multiple_parallel(
         self,
         file_paths: list[str],
+        *,
         parallel: bool | None = None,
+        progress: bool = True,
         post_process: bool = False,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
@@ -1759,6 +1783,8 @@ class LoaderBase(metaclass=_Loader):
             - If `True`, data loading will always be performed in parallel.
 
             - If `False`, data will be loaded sequentially.
+        progress
+            Whether to show a progress bar.
         post_process
             Whether to post-process each data object after loading.
         **kwargs
@@ -1782,14 +1808,19 @@ class LoaderBase(metaclass=_Loader):
             def _load_func(filename):
                 return self.load_single(filename, **kwargs)
 
+        tqdm_kw = {
+            "desc": "Loading",
+            "total": len(file_paths),
+            "disable": not progress,
+        }
+
         if parallel:
-            import joblib
+            with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
+                return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
+                    joblib.delayed(_load_func)(f) for f in file_paths
+                )
 
-            return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
-                joblib.delayed(_load_func)(f) for f in file_paths
-            )
-
-        return [_load_func(f) for f in file_paths]
+        return [_load_func(f) for f in tqdm.tqdm(file_paths, **tqdm_kw)]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
