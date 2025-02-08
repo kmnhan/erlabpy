@@ -168,15 +168,17 @@ class FermiEdgeModel(lmfit.Model):
 
         len_fit = max(round(len(x) * 0.05), 10)
         dos0, dos1, back0, back1 = fit_edges_linear(x, data, len_fit)
-        efermi = np.asarray(x)[
-            np.argmin(np.gradient(scipy.ndimage.gaussian_filter1d(data, 0.2 * len(x))))
-        ]
 
         temp = None
         if isinstance(data, xr.DataArray):
             temp = data.qinfo.get_value("sample_temp")
         if temp is None:
             temp = 30.0
+
+        smoothed_deriv = scipy.ndimage.gaussian_filter1d(
+            data, 0.2 * len(x), mode="nearest", order=1
+        )
+        efermi = float(x[np.argmin(smoothed_deriv)])
 
         pars[f"{self.prefix}center"].set(
             value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()
