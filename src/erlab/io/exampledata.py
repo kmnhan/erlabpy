@@ -1,6 +1,11 @@
 """Generates simple simulated ARPES data for testing and demonstration."""
 
-__all__ = ["generate_data", "generate_data_angles", "generate_gold_edge"]
+__all__ = [
+    "generate_data",
+    "generate_data_angles",
+    "generate_gold_edge",
+    "generate_hvdep_cuts",
+]
 
 import typing
 from collections.abc import Hashable, Sequence
@@ -393,6 +398,79 @@ def generate_data_angles(
         )
 
     return out.squeeze()
+
+
+def generate_hvdep_cuts(
+    shape: tuple[int, int, int] = (50, 250, 300),
+    *,
+    angrange: tuple[float, float] = (-15.0, 15.0),
+    Erange: tuple[float, float] = (-0.45, 0.12),
+    hvrange: tuple[float, float] = (20.0, 69.0),
+    configuration: (
+        erlab.constants.AxesConfiguration | int
+    ) = erlab.constants.AxesConfiguration.Type1,
+    temp: float = 20.0,
+    a: float = 6.97,
+    t: float = 0.43,
+    **kwargs,
+):
+    """
+    Generate simulated hv-dependent cuts.
+
+    Parameters
+    ----------
+    shape
+        The shape of the generated data, by default (250, 250, 300)
+    hvrange
+        Photon energy range in eV.
+    angrange
+        Angle range in degrees.
+    Erange
+        Binding energy range in electronvolts.
+    configuration
+        The experimental configuration, by default Type1DA
+    temp
+        The temperature in Kelvins for the Fermi-Dirac cutoff. If 0, no cutoff is
+        applied, by default 20.0
+    a
+        Tight binding parameter :math:`a`, by default 6.97
+    t
+        Tight binding parameter :math:`t`, by default 0.43
+    **kwargs
+        Additional keyword arguments to pass to `generate_data_angles`.
+
+    """
+    hv = np.linspace(*hvrange, shape[0])
+
+    Ekin = hv - 4.5 + 0.0  # Kinetic energy at the Fermi level
+
+    _, inverse_func = erlab.analysis.kspace.get_kconv_func(
+        Ekin, configuration=configuration, angle_params={}
+    )
+    beta = inverse_func(-2 * np.pi / (a * np.sqrt(3)), 2 * np.pi / (a * 3))[1]
+
+    kwargs.setdefault("assign_attributes", True)
+    kwargs.setdefault("extended", True)
+
+    out_list = []
+    for hv_i, beta_i in zip(hv, beta, strict=True):
+        out_list.append(
+            generate_data_angles(
+                (shape[1], 1, shape[2]),
+                angrange={"alpha": angrange, "beta": (beta_i, beta_i)},
+                Erange=Erange,
+                hv=hv_i,
+                configuration=configuration,
+                temp=temp,
+                a=a,
+                t=t,
+                **kwargs,
+            )
+            .expand_dims("hv")
+            .assign_coords(beta=("hv", [beta_i]))
+        )
+
+    return xr.combine_by_coords(out_list).transpose("alpha", "eV", "hv")
 
 
 def generate_gold_edge(
