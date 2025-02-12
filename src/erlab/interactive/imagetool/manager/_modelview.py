@@ -450,10 +450,9 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
             QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
         )
 
-        if not self._is_archived(index):
-            default_flags |= QtCore.Qt.ItemFlag.ItemIsEditable
-
         if index.isValid():
+            if not self._is_archived(index):
+                default_flags |= QtCore.Qt.ItemFlag.ItemIsEditable
             return (
                 QtCore.Qt.ItemFlag.ItemIsDragEnabled
                 | QtCore.Qt.ItemFlag.ItemIsDropEnabled
