@@ -403,6 +403,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if "eV" not in self._obj.coords:
             raise IncompleteDataError("coord", "eV")
         if self._is_energy_kinetic:
+            if self._has_hv:
+                raise ValueError(
+                    "Energy axis of photon energy dependent data must be in "
+                    "binding energy."
+                )
             # eV values are kinetic, transform to binding energy
             binding = self._obj.eV - self._hv + self.work_function
             erlab.utils.misc.emit_user_level_warning(

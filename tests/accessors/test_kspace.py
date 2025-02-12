@@ -4,7 +4,12 @@ import xarray.testing
 
 from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
-from erlab.io.exampledata import generate_data_angles
+from erlab.io.exampledata import generate_data_angles, generate_hvdep_cuts
+
+
+@pytest.fixture
+def hvdep():
+    return generate_hvdep_cuts((50, 250, 300), seed=1)
 
 
 @pytest.fixture
@@ -72,6 +77,34 @@ def config_4_cut(cut):
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
+@pytest.fixture
+def config_1_hvdep(hvdep):
+    data = hvdep.copy(deep=True)
+    data.kspace.configuration = 1
+    return data.kspace.convert(silent=True)
+
+
+@pytest.fixture
+def config_2_hvdep(hvdep):
+    data = hvdep.copy(deep=True)
+    data.kspace.configuration = 2
+    return data.kspace.convert(silent=True)
+
+
+@pytest.fixture
+def config_3_hvdep(hvdep):
+    data = hvdep.copy(deep=True)
+    data.kspace.configuration = 3
+    return data.assign_coords(chi=0.0).kspace.convert(silent=True)
+
+
+@pytest.fixture
+def config_4_hvdep(hvdep):
+    data = hvdep.copy(deep=True)
+    data.kspace.configuration = 4
+    return data.assign_coords(chi=0.0).kspace.convert(silent=True)
+
+
 @pytest.mark.parametrize("data_type", ["anglemap", "cut"])
 def test_offsets(data_type, request) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
@@ -82,11 +115,13 @@ def test_offsets(data_type, request) -> None:
     assert dict(data.kspace.offsets) == answer
 
 
-@pytest.mark.parametrize("use_dask", [True, False])
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no-dask"])
 @pytest.mark.parametrize("energy_axis", ["kinetic", "binding"])
-@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
-@pytest.mark.parametrize("configuration", AxesConfiguration)
-@pytest.mark.parametrize("extra_dims", [0, 1, 2])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut", "hvdep"])
+@pytest.mark.parametrize(
+    "configuration", AxesConfiguration, ids=[c.name for c in AxesConfiguration]
+)
+@pytest.mark.parametrize("extra_dims", [0, 1, 2], ids=["extra0", "extra1", "extra2"])
 def test_kconv(
     use_dask: bool,
     energy_axis: str,
@@ -115,7 +150,19 @@ def test_kconv(
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
             data = data.assign_coords(chi=0.0)
 
+    if data_type == "hvdep":
+        data.kspace.inner_potential = 10.0
+
     if energy_axis == "kinetic":
+        if data_type == "hvdep":
+            with pytest.raises(
+                ValueError,
+                match="Energy axis of photon energy dependent data must be in "
+                "binding energy.",
+            ):
+                kconv = data.kspace.convert(silent=True)
+            return
+
         with pytest.warns(
             UserWarning,
             match="The energy axis seems to be in terms of kinetic energy, "
@@ -143,12 +190,19 @@ def test_kconv(
         else:
             assert set(kconv.shape) == {10, 310, 2}
 
-    else:
+    elif data_type == "cut":
         assert len(kconv.shape) == 2 + extra_dims
         if extra_dims == 0:
             assert set(kconv.shape) == {310, 500}
         else:
             assert set(kconv.shape) == {310, 500, 2}
+
+    elif data_type == "hvdep":
+        assert len(kconv.shape) == 3 + extra_dims
+        if extra_dims == 0:
+            assert set(kconv.shape) == {637, 63, 300}
+        else:
+            assert set(kconv.shape) == {637, 63, 300, 2}
 
     assert isinstance(kconv, xarray.DataArray)
     assert not kconv.isnull().all()
