@@ -1036,10 +1036,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     @link_slicer
     def view_all(self) -> None:
-        for ax in reversed(self.axes):
-            # Updating linked axes before the main image to prevent fixed limits
-            ax.vb.enableAutoRange()
-            ax.vb.updateAutoRange()
+        self.manual_limits = {}
+        for ax in self.axes:
+            ax.update_manual_range()
 
     @QtCore.Slot()
     @link_slicer
@@ -2214,8 +2213,11 @@ class ItoolPlotItem(pg.PlotItem):
             if dim is not None:
                 # dim is None for intensity axis of line plots (not related to any dim)
                 if auto:
-                    # Clear manual limits if auto range is enabled
-                    self.slicer_area.manual_limits.pop(dim, None)
+                    if dim in self.slicer_area.manual_limits:
+                        # Clear manual limits if auto range is enabled
+                        # Also trigger update
+                        del self.slicer_area.manual_limits[dim]
+                        self.range_changed_manually()
                 else:
                     # Store manual limits
                     self.slicer_area.manual_limits[dim] = rng
@@ -2225,10 +2227,24 @@ class ItoolPlotItem(pg.PlotItem):
         self.set_range_from(self.slicer_area.manual_limits)
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs) -> None:
-        for dim, key in zip(self.axis_dims, ("xRange", "yRange"), strict=True):
-            if dim is not None:
-                with contextlib.suppress(KeyError):
-                    kwargs[key] = limits[dim]
+        for i, (dim, key) in enumerate(
+            zip(self.axis_dims, ("xRange", "yRange"), strict=True)
+        ):
+            if dim in limits:
+                kwargs[key] = limits[dim]
+            else:
+                if not self.getViewBox().state["autoRange"][i]:
+                    # If manual limits are not set and auto range is disabled, set to
+                    # bounding rect. Internally, vb.autoRange() just calls setRange(...)
+                    # so calling setRange only once with the full bounds prevents
+                    # recursive calls. Pyqtgraph will handle the rest.
+                    full_bounds = self.getViewBox().childrenBoundingRect()
+                    kwargs[key] = (
+                        [full_bounds.left(), full_bounds.right()]
+                        if i == 0
+                        else [full_bounds.bottom(), full_bounds.top()]
+                    )
+
         if len(kwargs) != 0:
             self.getViewBox().setRange(**kwargs)
 
