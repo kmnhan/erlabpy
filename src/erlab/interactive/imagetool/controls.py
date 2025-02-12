@@ -679,7 +679,7 @@ class ItoolBinningControls(ItoolControlsBase):
         for i in range(self.data.ndim):
             self.spins[i].blockSignals(True)
             self.labels[i].setText(str(self.data.dims[i]))
-            self.spins[i].setRange(1, self.data.shape[i] - 1)
+            self.spins[i].setRange(1, self.data.shape[i])
             self.spins[i].setValue(bin_numbers[i])
             if bin_values[i] is None:
                 self.val_labels[i].setText("")
