@@ -22,6 +22,13 @@ import erlab
 from erlab.io.dataloader import LoaderBase
 
 
+class InvalidDA30ZipError(Exception):
+    """Raised when the file is not a valid DA30 zip file."""
+
+    def __init__(self, filename: str | os.PathLike):
+        super().__init__(f"{filename} does not appear to be a valid DA30 zip file.")
+
+
 class CasePreservingConfigParser(configparser.ConfigParser):
     """ConfigParser that preserves the case of the keys."""
 
@@ -138,6 +145,10 @@ def load_zip(
         for fn in (os.listdir(filename) if not zipped else zf.namelist())
         if fn.startswith("Spectrum_") and fn.endswith(".bin")
     ]
+
+    if len(regions) == 0:
+        raise InvalidDA30ZipError(filename)
+
     out: list[xr.DataArray] = []
 
     for region in regions:
