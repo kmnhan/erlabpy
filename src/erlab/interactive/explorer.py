@@ -545,12 +545,13 @@ class _LoaderWidget(QtWidgets.QComboBox):
         )
 
 
-class _DataExplorer(QtWidgets.QWidget):
+class _DataExplorer(QtWidgets.QMainWindow):
     TEXT_NONE_SELECTED: str = (
         "Select a folder or drag and drop a folder into the window "
         "to browse its contents."
     )
     TEXT_MULTIPLE_SELECTED: str = "Multiple files selected"
+    TEXT_LOADING: str = "Loading..."
 
     def __init__(
         self,
@@ -567,7 +568,11 @@ class _DataExplorer(QtWidgets.QWidget):
             lambda: QtCore.QTimer.singleShot(1, self._dir_loaded)
         )
 
-        self.menu_bar = QtWidgets.QMenuBar(self)
+        self.menu_bar: QtWidgets.QMenuBar = typing.cast(
+            QtWidgets.QMenuBar, self.menuBar()
+        )
+
+        self._slider_value: int | None = None
 
         self._setup_actions()
         self._setup_ui()
@@ -632,8 +637,11 @@ class _DataExplorer(QtWidgets.QWidget):
         file_menu.addAction(self._climb_up_act)
 
     def _setup_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
-        self.setLayout(layout)
+        main_widget = QtWidgets.QWidget(self)
+        self.setCentralWidget(main_widget)
+
+        layout = QtWidgets.QVBoxLayout(main_widget)
+        main_widget.setLayout(layout)
 
         top_widget = QtWidgets.QWidget(self)
         top_layout = QtWidgets.QHBoxLayout(top_widget)
@@ -674,23 +682,15 @@ class _DataExplorer(QtWidgets.QWidget):
 
         top_layout.addWidget(QtWidgets.QLabel("Loader"))
         self._loader_combo = _LoaderWidget()
-        # self._loader_combo = QtWidgets.QComboBox()
-        # self._loader_combo.addItems(erlab.io.loaders.keys())
-        # for i, k in enumerate(erlab.io.loaders.keys()):
-        #     loader = erlab.io.loaders[k]
-        #     if hasattr(loader, "description"):
-        #         self._loader_combo.setItemData(
-        #             i, loader.description, QtCore.Qt.ItemDataRole.ToolTipRole
-        #         )
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
 
         top_layout.addWidget(self._loader_combo)
 
-        splitter = QtWidgets.QSplitter(self)
+        splitter = QtWidgets.QSplitter(main_widget)
         splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self._tree_view = _DataExplorerTreeView(self)
+        self._tree_view = _DataExplorerTreeView(main_widget)
         self._tree_view.setModel(self._fs_model)
         self._tree_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
@@ -701,6 +701,12 @@ class _DataExplorer(QtWidgets.QWidget):
         self._text_edit = QtWidgets.QTextEdit()
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
         self._text_edit.setReadOnly(True)
+
+        scroll_bar = self._text_edit.verticalScrollBar()
+        typing.cast(QtWidgets.QScrollBar, scroll_bar).valueChanged.connect(
+            self._save_slider_pos
+        )
+
         splitter.addWidget(self._text_edit)
 
         self.setMinimumWidth(487)
@@ -708,9 +714,28 @@ class _DataExplorer(QtWidgets.QWidget):
         self.resize(974, 602)
 
     @QtCore.Slot()
-    def _dir_loaded(self):
+    def _dir_loaded(self) -> None:
         """Slot to be called when a directory is loaded."""
         self._tree_view.resizeColumnToContents(0)
+
+    @QtCore.Slot()
+    def _save_slider_pos(self) -> None:
+        scroll_bar = self._text_edit.verticalScrollBar()
+
+        if (
+            scroll_bar is not None  # appease mypy
+            and scroll_bar.isVisible()  # short text like "Loading..."
+            and self._text_edit.toPlainText() != ""
+        ):
+            self._slider_value = scroll_bar.value()
+
+    @QtCore.Slot()
+    def _load_slider_pos(self) -> None:
+        scroll_bar = self._text_edit.verticalScrollBar()
+        if scroll_bar is not None and self._slider_value is not None:
+            scroll_bar.blockSignals(True)
+            scroll_bar.setValue(self._slider_value)
+            scroll_bar.blockSignals(False)
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
@@ -759,14 +784,20 @@ class _DataExplorer(QtWidgets.QWidget):
     @QtCore.Slot()
     def _show_loading_text_if_needed(self) -> None:
         if not self._up_to_date:
-            self._text_edit.setText("Loading...")
+            self._text_edit.setText(self.TEXT_LOADING)
 
     @QtCore.Slot(str, str)
     def _show_file_info(self, file_path: str, text: str) -> None:
         selected_files: list[pathlib.Path] = self._current_selection
         if len(selected_files) == 1 and selected_files[0] == pathlib.Path(file_path):
+            scroll_bar = typing.cast(
+                QtWidgets.QScrollBar, self._text_edit.verticalScrollBar()
+            )
+            scroll_bar.blockSignals(True)
             self._text_edit.setHtml(self._parse_file_info(text))
             self._displayed_selection = selected_files
+            self._load_slider_pos()
+            scroll_bar.blockSignals(False)
 
     @staticmethod
     def _parse_file_info(text: str) -> str:
@@ -780,6 +811,10 @@ class _DataExplorer(QtWidgets.QWidget):
     @QtCore.Slot()
     def to_manager(self) -> None:
         """Open the selected files in ImageTool Manager."""
+        if len(self._current_selection) == 1 and self._current_selection[0].is_dir():
+            self._fs_model.set_root_path(self._current_selection[0])
+            return
+
         if not erlab.interactive.imagetool.manager.is_running():
             QtWidgets.QMessageBox.critical(
                 self,
