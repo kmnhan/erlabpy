@@ -119,7 +119,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     sigLinkersChanged = QtCore.Signal()  #: :meta private:
     _sigReloadLinkers = QtCore.Signal()  #: Emitted when linker state needs refreshing
 
-    def __init__(self: ImageToolManager) -> None:
+    def __init__(self) -> None:
         super().__init__()
 
         # Shared memory for detecting multiple instances
