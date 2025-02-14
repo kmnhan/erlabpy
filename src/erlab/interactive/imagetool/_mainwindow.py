@@ -511,6 +511,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "sep_after": True,
                     },
                     "Crop": {"triggered": self._crop},
+                    "Crop to View": {
+                        "triggered": self._crop_to_view,
+                        "tooltip": "Crop to the current axes view range",
+                    },
                 },
             },
             "helpMenu": {
@@ -622,6 +626,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _crop(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropDialog)
+
+    @QtCore.Slot()
+    def _crop_to_view(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.CropToViewDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:

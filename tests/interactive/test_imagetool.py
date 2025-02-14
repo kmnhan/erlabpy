@@ -453,6 +453,36 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_crop_view(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
+    # Test 2D crop
+    def _set_dialog_params(dialog: CropDialog) -> None:
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
+    )
+    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+
+    win.close()
+
+
 def test_itool_crop(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
