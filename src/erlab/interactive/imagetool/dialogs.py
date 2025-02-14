@@ -24,6 +24,9 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     In practice, use child classes `DataTransformDialog` and `DataFilterDialog`.
     """
 
+    whatsthis: str | None = None
+    """The whatsthis text for the dialog window."""
+
     title: str | None = None
     """The title of the dialog window."""
 
@@ -44,7 +47,11 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         self._layout = QtWidgets.QFormLayout()
         self.setLayout(self._layout)
 
-        self.setup_widgets()
+        if self.whatsthis is not None:
+            self.setWhatsThis(self.whatsthis)
+            self.setWindowFlags(
+                self.windowFlags() | QtCore.Qt.WindowType.WindowContextHelpButtonHint
+            )
 
         self.buttonBox = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -56,6 +63,8 @@ class _DataManipulationDialog(QtWidgets.QDialog):
             self.buttonBox.addButton(
                 self.copy_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
             )
+
+        self.setup_widgets()
 
         self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
@@ -309,9 +318,87 @@ class RotationDialog(DataTransformDialog):
         )
 
 
-class CropDialog(DataTransformDialog):
+class BaseCropDialog(DataTransformDialog):
     suffix = " Cropped"
     enable_copy = True
+
+    @property
+    def _slice_kwargs(self) -> dict[Hashable, slice]:
+        raise NotImplementedError
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return data.sel(self._slice_kwargs)
+
+    def make_code(self) -> str:
+        kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+
+        isel_kwargs: dict[str, slice] = {}
+        for k in list(kwargs.keys()):
+            if str(k).endswith("_idx"):
+                isel_kwargs[str(k).removesuffix("_idx")] = kwargs.pop(k)
+
+        out: str = ""
+
+        if kwargs:
+            if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
+                out = erlab.interactive.utils.generate_code(
+                    xr.DataArray.sel,
+                    [],
+                    kwargs=typing.cast(dict[str, slice], kwargs),
+                    module=out,
+                )
+            else:
+                out += f".sel({kwargs})"
+
+        if isel_kwargs:
+            if all(k.isidentifier() for k in isel_kwargs):
+                out = erlab.interactive.utils.generate_code(
+                    xr.DataArray.isel, [], isel_kwargs, module=out
+                )
+            else:
+                out += f".isel({isel_kwargs})"
+
+        return out.replace(", None)", ")")
+
+
+class CropToViewDialog(BaseCropDialog):
+    title = "Crop to View"
+    whatsthis = "Crop the data to the currently visible area."
+
+    @property
+    def _slice_kwargs(self) -> dict[Hashable, slice]:
+        slice_dict: dict[Hashable, slice] = {}
+        for k, v in self.slicer_area.manual_limits.items():
+            ax_idx = self.slicer_area.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+            slice_dict[k] = slice(
+                *sorted(float(np.round(val, sig_digits)) for val in v)
+            )
+
+        return slice_dict
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self._slice_kwargs == {}:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "You need to select at least one dimension.",
+            )
+            return
+        super().accept()
+
+    def exec(self) -> int:
+        if len(self.slicer_area.manual_limits) == 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Nothing to Crop", "Manually zoom in to define the crop area."
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super().exec()
+
+
+class CropDialog(BaseCropDialog):
+    title = "Crop Between Cursors"
 
     @property
     def _enabled_dims(self) -> list[Hashable]:
@@ -327,7 +414,7 @@ class CropDialog(DataTransformDialog):
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         c0, c1 = self._cursor_indices
 
-        slice_dict = {}
+        slice_dict: dict[Hashable, slice] = {}
 
         for k in self._enabled_dims:
             ax_idx = self.slicer_area.data.dims.index(k)
@@ -403,40 +490,6 @@ class CropDialog(DataTransformDialog):
             dim_layout.addWidget(self.dim_checks[d])
 
         self.layout_.addRow(dim_group)
-
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return data.sel(self._slice_kwargs)
-
-    def make_code(self) -> str:
-        kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
-
-        isel_kwargs: dict[str, slice] = {}
-        for k in list(kwargs.keys()):
-            if str(k).endswith("_idx"):
-                isel_kwargs[str(k).removesuffix("_idx")] = kwargs.pop(k)
-
-        out: str = ""
-
-        if kwargs:
-            if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.sel,
-                    [],
-                    kwargs=typing.cast(dict[str, slice], kwargs),
-                    module=out,
-                )
-            else:
-                out += f".sel({kwargs})"
-
-        if isel_kwargs:
-            if all(k.isidentifier() for k in isel_kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.isel, [], isel_kwargs, module=out
-                )
-            else:
-                out += f".isel({isel_kwargs})"
-
-        return out.replace(", None)", ")")
 
 
 class NormalizeDialog(DataFilterDialog):
