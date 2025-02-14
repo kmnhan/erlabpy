@@ -2,6 +2,12 @@
 
 ### ✨ Features
 
+- **imagetool:** add 'Crop to View' functionality ([ab6976b](https://github.com/kmnhan/erlabpy/commit/ab6976bd3f74ed648547a8aee72d41b8d3e1d9eb))
+
+  Adds new menu option that crops the data to the currently visible axes limits.
+
+- **explorer:** remember scroll location when selecting a different file ([ae58268](https://github.com/kmnhan/erlabpy/commit/ae5826872c3d13f96ef628dc5aadc37c31715d40))
+
 - **imagetool:** reimplement axis linking logic ([8f8648c](https://github.com/kmnhan/erlabpy/commit/8f8648c6e9bc409dc936032b0d5a27a9eefc806f))
 
   Limits for all axes that correspond to the same dimension are now shared.
@@ -13,6 +19,12 @@
   A progress bar is now displayed by default when loading data that spans multiple files. The visibility of the progress bar can be controlled with the newly added `progress` argument to `erlab.io.load`.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** improve manual range handling and auto range behavior ([4864129](https://github.com/kmnhan/erlabpy/commit/4864129e42f01313a4be60a136bae223ece83097))
+
+- **imagetool:** adjust bin spinbox range to include maximum data shape ([701e189](https://github.com/kmnhan/erlabpy/commit/701e18949ca9acd0cb832745c49812b86bafde14))
+
+- **imagetool.manager:** resolve exceptions that sometimes appear on initialization ([04c23ba](https://github.com/kmnhan/erlabpy/commit/04c23ba0c1fdc460a37a096465a8505bf3d42a3e))
 
 - **imagetool.manager:** ensure compatibility with lazy-loaded data ([6d57e13](https://github.com/kmnhan/erlabpy/commit/6d57e13e66339161935c47d524e1822bd65c20b8))
 
@@ -27,6 +39,8 @@
 - **analysis.fit.models.FermiEdgeModel:** micro-optimizations related to EF guessing ([afc5c90](https://github.com/kmnhan/erlabpy/commit/afc5c9026b0a72c488f11a32d30e8c5ce3cfbe24))
 
 ### ♻️ Code Refactor
+
+- **io.plugins.da30:** show error for invalid zip files ([4c348e6](https://github.com/kmnhan/erlabpy/commit/4c348e6671306cb3d3608ddfc5ebfbf629371884))
 
 - **goldtool:** add initial resolution spinbox ([9d8dd8d](https://github.com/kmnhan/erlabpy/commit/9d8dd8d4269371a561dffe3f9c6cb369af57f03e))
 
