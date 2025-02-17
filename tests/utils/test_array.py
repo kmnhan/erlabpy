@@ -32,7 +32,7 @@ def test_broadcast_args() -> None:
     expected = xr.DataArray(expected_vals, coords={"x": x_val, "y": y_val})
 
     xr.testing.assert_identical(
-        testfunc(
+        testfunc_(
             xr.DataArray(x_val, coords={"x": x_val}),
             xr.DataArray(y_val, coords={"y": y_val}),
         ),
