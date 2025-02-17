@@ -1,5 +1,19 @@
 """Utility functions for working with numpy and xarray."""
 
+__all__ = [
+    "broadcast_args",
+    "check_arg_2d_darr",
+    "check_arg_has_no_nans",
+    "check_arg_uniform_dims",
+    "effective_decimals",
+    "is_dims_uniform",
+    "is_monotonic",
+    "is_uniform_spaced",
+    "sort_coord_order",
+    "trim_na",
+    "uniform_dims",
+]
+
 import functools
 import typing
 from collections.abc import Callable, Hashable, Iterable
@@ -7,6 +21,73 @@ from collections.abc import Callable, Hashable, Iterable
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
+
+
+def broadcast_args(func: Callable) -> Callable:
+    """Decorate a function to broadcast all DataArray arguments.
+
+    This decorator automatically broadcasts all DataArray args and kwargs to the same
+    shape, and only passes pure NumPy arrays to the decorated function.
+
+    If the decorated function returns a NumPy array with the same shape as the
+    broadcasted DataArray arguments, a new DataArray will be created with the same
+    coordinates and dimensions as the broadcasted DataArray. In this case, the
+    attributes will be taken from the first DataArray that appears in the arguments.
+
+    This is useful when working with functions that only accept pure NumPy arrays, or
+    always returns a NumPy array, such as numba jit-compiled functions.
+
+    Note
+    ----
+    - When used on numba functions in nopython mode, the decorated function will no
+      longer be able to be called from another function compiled in nopython mode.
+    - The decorated function will not be able to accept DataArray arguments.
+    """
+
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs) -> typing.Any:
+        # Find all DataArray arguments
+        broadcast_params: dict[int | str, xr.DataArray] = {
+            **{i: arg for i, arg in enumerate(args) if isinstance(arg, xr.DataArray)},
+            **{k: v for k, v in kwargs.items() if isinstance(v, xr.DataArray)},
+        }
+
+        if len(broadcast_params) == 0:
+            return func(*args, **kwargs)
+
+        # Broadcast all DataArray arguments
+        broadcast_params = dict(
+            zip(
+                broadcast_params.keys(),
+                xr.broadcast(*broadcast_params.values()),
+                strict=False,
+            )
+        )
+
+        # Reference DataArray to use for creating the output DataArray
+        broadcast_ref: xr.DataArray = next(iter(broadcast_params.values()))
+
+        # Replace DataArray arguments with their values
+        npy_args, npy_kwargs = list(args), dict(kwargs)
+        for k, v in broadcast_params.items():
+            if isinstance(k, int):
+                npy_args[k] = v.values
+            else:
+                npy_kwargs[k] = v.values
+
+        result = func(*npy_args, **npy_kwargs)
+
+        if isinstance(result, np.ndarray) and result.shape == broadcast_ref.shape:
+            result = xr.DataArray(
+                result,
+                coords=broadcast_ref.coords,
+                dims=broadcast_ref.dims,
+                attrs=broadcast_ref.attrs,
+            )
+
+        return result
+
+    return _wrapper
 
 
 def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:

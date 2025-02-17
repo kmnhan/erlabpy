@@ -4,6 +4,7 @@ import xarray as xr
 import xarray.testing
 
 from erlab.utils.array import (
+    broadcast_args,
     check_arg_has_no_nans,
     is_dims_uniform,
     is_monotonic,
@@ -11,6 +12,32 @@ from erlab.utils.array import (
     trim_na,
     uniform_dims,
 )
+
+
+def test_broadcast_args() -> None:
+    def testfunc(x, y):
+        return x * y
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    y_val = np.linspace(2, 3, 10)
+
+    expected_vals = testfunc(x_val[:, np.newaxis], y_val[np.newaxis, :])
+
+    np.testing.assert_array_equal(
+        testfunc_(x_val[:, np.newaxis], y_val[np.newaxis, :]), expected_vals
+    )
+
+    expected = xr.DataArray(expected_vals, coords={"x": x_val, "y": y_val})
+
+    xr.testing.assert_identical(
+        testfunc(
+            xr.DataArray(x_val, coords={"x": x_val}),
+            xr.DataArray(y_val, coords={"y": y_val}),
+        ),
+        expected,
+    )
 
 
 def test_is_uniform_spaced() -> None:
