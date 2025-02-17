@@ -3,7 +3,7 @@ import pytest
 import xarray as xr
 import xarray.testing
 
-from erlab.analysis.transform import rotate, shift
+from erlab.analysis.transform import rotate, shift, symmetrize
 
 
 def test_rotate() -> None:
@@ -139,4 +139,54 @@ def test_shift() -> None:
     )
 
     # Check if the shifted array matches the expected result
+
     assert np.allclose(shifted, expected, equal_nan=True)
+
+
+def test_symmetrize_both() -> None:
+    # Test symmetrize returns full (both) symmetrized DataArray.
+    da = xr.DataArray(
+        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(-2, 2, 6)},
+    )
+    sym_da = symmetrize(da, "x", center=0.0, part="both")
+    expected = np.array([2, 4, 6, 6, 4, 2], dtype=float)
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
+def test_symmetrize_below() -> None:
+    # Test symmetrize returns only the lower half.
+    da = xr.DataArray(
+        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(-2, 2, 6)},
+    )
+    sym_da = symmetrize(da, "x", center=0.0, part="below")
+    expected = np.array([2, 4, 6], dtype=float)
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
+def test_symmetrize_above() -> None:
+    # Test symmetrize returns only the upper half (reflected).
+    da = xr.DataArray(
+        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(-2, 2, 6)},
+    )
+    sym_da = symmetrize(da, "x", center=0.0, part="above")
+    expected = np.array([6, 4, 2], dtype=float)
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
+def test_symmetrize_non_uniform() -> None:
+    # Test that symmetrize raises an error when the coordinate is non-uniform.
+    da = xr.DataArray(
+        np.array([1, 2, 3, 4], dtype=float),
+        dims="x",
+        coords={"x": np.array([0.0, 1.0, 3.0, 6.0])},  # non-evenly spaced
+    )
+    with pytest.raises(
+        ValueError, match="Coordinate along dimension x must be uniformly spaced"
+    ):
+        symmetrize(da, "x", center=0.0)
