@@ -113,7 +113,7 @@ def do_convolve(
     Parameters
     ----------
     x
-        A evenly spaced 1D array specifying where to evaluate the convolution.
+        An evenly spaced 1D array specifying where to evaluate the convolution.
     func
         Function to convolve.
     resolution
@@ -191,6 +191,14 @@ def gaussian_wh(
 def gaussian(
     x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
 ) -> npt.NDArray[np.float64]:
+    r"""
+    Gaussian parametrized with standard deviation and amplitude.
+
+    .. math::
+
+        \frac{A}{\sqrt{2\pi\sigma^2}} \exp\left[-\frac{(x-x_0)^2}{2\sigma^2}\right]
+
+    """
     return (amplitude / (max(TINY, S2PI * sigma))) * np.exp(
         -((1.0 * x - center) ** 2) / max(TINY, (2 * sigma**2))
     )
@@ -214,6 +222,14 @@ def lorentzian_wh(
 def lorentzian(
     x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
 ) -> npt.NDArray[np.float64]:
+    r"""
+    Lorentzian parametrized with HWHM and amplitude.
+
+    .. math::
+
+        \frac{A}{\pi\sigma\left[1 + \left(\frac{x-x_0}{\sigma}\right)^2\right]}
+
+    """
     return (amplitude / (1 + ((1.0 * x - center) / max(TINY, sigma)) ** 2)) / max(
         TINY, (np.pi * sigma)
     )
@@ -223,7 +239,22 @@ def lorentzian(
 def fermi_dirac(
     x: npt.NDArray[np.float64], center: float, temp: float
 ) -> npt.NDArray[np.float64]:
-    """Fermi-dirac edge in terms of temperature."""
+    r"""Fermi-dirac distribution.
+
+    .. math::
+
+        \frac{1}{1 + e^{(x-x_0)/k_B T}}
+
+    Parameters
+    ----------
+    x
+        Energy values at which to calculate the Fermi edge.
+    center
+        The Fermi level.
+    temp
+        The temperature in K.
+
+    """
     return 1 / (1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV)))
 
 
@@ -240,12 +271,29 @@ def fermi_dirac_linbkg(
 ) -> npt.NDArray[np.float64]:
     """Fermi-dirac edge with linear backgrounds above and below the fermi level.
 
+    Parameters
+    ----------
+    x
+        The energy values at which to calculate the Fermi edge.
+    center
+        The Fermi level.
+    temp
+        The temperature in K.
+    back0
+        The constant background above the Fermi level.
+    back1
+        The slope of the background above the Fermi level.
+    dos0
+        The constant background below the Fermi level.
+    dos1
+        The slope of the background below the Fermi level.
+
     Note
     ----
     `back0` and `back1` corresponds to the linear background above and below EF (due to
     non-homogeneous detector efficiency or residual intensity on the phosphor screen
-    during sweep mode), while `dos0` and `dos1` corresponds to the linear density of
-    states below EF including the linear background.
+    during swept measurements), while `dos0` and `dos1` corresponds to the linear
+    density of states below EF including the linear background.
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (
         1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV))
@@ -282,7 +330,28 @@ def step_broad(
     sigma: float = 1.0,
     amplitude: float = 1.0,
 ):
-    """Step function convolved with a Gaussian."""
+    r"""Step function convolved with a Gaussian.
+
+    The broadened step function is calculated as:
+
+    .. math::
+
+        \frac{A}{2}\cdot\text{erfc}\left(\frac{x - x_0}{\sqrt{2\sigma^2}}\right)
+
+    where :math:`\text{erfc}` is the complementary error function.
+
+    Parameters
+    ----------
+    x
+        The input array of x values.
+    center
+        The center of the step function.
+    sigma
+        The standard deviation of the Gaussian.
+    amplitude
+        The amplitude of the step.
+
+    """
     return (
         amplitude
         * 0.5
@@ -309,7 +378,7 @@ def step_linbkg_broad(
 def bcs_gap(
     x, a: float = 1.76, b: float = 1.74, tc: float = 100.0
 ) -> npt.NDArray[np.float64]:
-    r"""Interpolation formula for a temperature dependent BCS-like gap.
+    r"""Interpolation formula for temperature dependent BCS-like gap magnitude.
 
     .. math::
 
@@ -344,7 +413,7 @@ def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
 
     .. math::
 
-        f(x) = N_0  \text{Re}\left[\frac{|x| + i \Gamma}{\sqrt{(|x| + i \Gamma)^2 -
+        N_0  \text{Re}\left[\frac{|x| + i \Gamma}{\sqrt{(|x| + i \Gamma)^2 -
         \Delta^2}}\right]
 
     where :math:`x` is the binding energy, :math:`N_0` is the normal-state density of
