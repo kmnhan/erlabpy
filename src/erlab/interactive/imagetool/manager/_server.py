@@ -71,64 +71,69 @@ class _ManagerServer(QtCore.QThread):
 
         logger.debug("Starting server...")
         soc = socket.socket()
-        soc.bind(("127.0.0.1", PORT))
-        soc.setblocking(False)
-        soc.listen()
+        try:
+            soc.bind(("127.0.0.1", PORT))
+            soc.setblocking(False)
+            soc.listen()
+            logger.info("Server is listening...")
 
-        logger.info("Server is listening...")
+            while not self.stopped.is_set():
+                try:
+                    conn, _ = soc.accept()
+                except BlockingIOError:
+                    time.sleep(0.01)
+                    continue
 
-        while not self.stopped.is_set():
-            try:
-                conn, _ = soc.accept()
-            except BlockingIOError:
-                time.sleep(0.01)
-                continue
+                with conn:
+                    conn.setblocking(True)
+                    logger.debug("Connection accepted")
+                    # Receive the size of the data first
+                    data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
 
-            conn.setblocking(True)
-            logger.debug("Connection accepted")
-            # Receive the size of the data first
-            data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
+                    # Receive the data
+                    kwargs = _recv_all(conn, data_size)
 
-            # Receive the data
-            kwargs = _recv_all(conn, data_size)
+                    # "__filename" contains the list of paths to pickled data
 
-            # "__filename" contains the list of paths to pickled data
-            # If "__loader_name" key is present, "__filename" will be a list of paths to
-            # raw data files instead
-            try:
-                kwargs = pickle.loads(kwargs)
-                logger.debug("Received data: %s", kwargs)
+                    # If "__loader_name" key is present, "__filename" will be a list of
+                    # paths to raw data files instead
+                    try:
+                        kwargs = pickle.loads(kwargs)
+                        logger.debug("Received data: %s", kwargs)
 
-                files = kwargs.pop("__filename")
-                loader_name = kwargs.pop("__loader_name", None)
-                if loader_name is not None:
-                    self.sigLoadRequested.emit(files, loader_name)
-                    logger.debug("Emitted file and loader info")
-                else:
-                    self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
-                    logger.debug("Emitted loaded data")
-                    # Clean up temporary files
-                    for f in files:
-                        os.remove(f)
-                        dirname = os.path.dirname(f)
-                        if os.path.isdir(dirname):
-                            with contextlib.suppress(OSError):
-                                os.rmdir(dirname)
-                    logger.debug("Cleaned up temporary files")
+                        files = kwargs.pop("__filename")
+                        loader_name = kwargs.pop("__loader_name", None)
+                        if loader_name is not None:
+                            self.sigLoadRequested.emit(files, loader_name)
+                            logger.debug("Emitted file and loader info")
+                        else:
+                            self.sigReceived.emit(
+                                [_load_pickle(f) for f in files], kwargs
+                            )
+                            logger.debug("Emitted loaded data")
+                            # Clean up temporary files
+                            for f in files:
+                                os.remove(f)
+                                dirname = os.path.dirname(f)
+                                if os.path.isdir(dirname):
+                                    with contextlib.suppress(OSError):
+                                        os.rmdir(dirname)
+                            logger.debug("Cleaned up temporary files")
 
-            except (
-                pickle.UnpicklingError,
-                AttributeError,
-                EOFError,
-                ImportError,
-                IndexError,
-            ):
-                logger.exception("Failed to unpickle received data")
+                    except (
+                        pickle.UnpicklingError,
+                        AttributeError,
+                        EOFError,
+                        ImportError,
+                        IndexError,
+                    ):
+                        logger.exception("Failed to unpickle received data")
 
-            conn.close()
-            logger.debug("Connection closed")
-
-        soc.close()
+        except Exception:
+            logger.exception("Server encountered an error")
+        finally:
+            soc.close()
+            logger.debug("Socket closed")
 
 
 def _send_dict(contents: dict[str, typing.Any]) -> None:

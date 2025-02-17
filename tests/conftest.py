@@ -18,10 +18,10 @@ from qtpy import QtCore, QtWidgets
 from erlab.interactive.utils import _WaitDialog
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "9408f73f3562a5c1e5f6e01dec25bcd16832264e"
+DATA_COMMIT_HASH = "26535e727236f220a4424538ba00b4b7a2b9666a"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "75b31cd538ea4847c6eb34017f5d69bed324081329fcc0eece5089677e37df4f"
+DATA_KNOWN_HASH = "f8d0a245747f6f899dc417db86f6ab64cf2c2dc7784aade8416c1c5d5c6c8ca4"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
