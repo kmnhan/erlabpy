@@ -2,9 +2,23 @@
 
 ### ✨ Features
 
+- add accessor method for averaging over dimensions while retaining coordinates ([90d28fb](https://github.com/kmnhan/erlabpy/commit/90d28fbe27114e6191b2b777c3d8fefc96e607cb))
+
+  Adds `DataArray.qsel.average`, which takes dimension names and calls `DataArray.qsel` with the bin widths set to infinity. Unlike `DataArray.mean`, the new method retains coordinates associated with the averaged dimension.
+
+- **analysis.fit.functions:** make several fitting functions xarray-aware ([53b3688](https://github.com/kmnhan/erlabpy/commit/53b368813f570cef2c84a9517c618428310a4a2e))
+
+- **utils.array:** add `broadcast_args` decorator for DataArray broadcasting ([76149b9](https://github.com/kmnhan/erlabpy/commit/76149b97c1c380b0f67482d668359715b86251b2))
+
+  Adds a new decorator that enables passing DataArrays to functions that only accepts numpy arrays or always returns numpy arrays, like numba-accelerated functions and some scipy functions.
+
 - **analysis.transform:** add `symmetrize` (#97) ([aefb966](https://github.com/kmnhan/erlabpy/commit/aefb966db44f940a795857b56e6f5d550f53549c))
 
   Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
+
+### ♻️ Code Refactor
+
+- **utils.array:** simplify decorators for 2D array checks ([7275e2e](https://github.com/kmnhan/erlabpy/commit/7275e2e0b276a401f377fb68df195891e61cac0e))
 
 ## v3.7.0 (2025-02-14)
 
