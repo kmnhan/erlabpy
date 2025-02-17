@@ -1,3 +1,11 @@
+## Unreleased
+
+### ✨ Features
+
+- **analysis.transform:** add `symmetrize` (#97) ([aefb966](https://github.com/kmnhan/erlabpy/commit/aefb966db44f940a795857b56e6f5d550f53549c))
+
+  Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
+
 ## v3.7.0 (2025-02-14)
 
 ### ✨ Features
