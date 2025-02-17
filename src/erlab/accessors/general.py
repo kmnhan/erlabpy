@@ -11,7 +11,7 @@ __all__ = [
 import functools
 import importlib
 import typing
-from collections.abc import Hashable, Mapping
+from collections.abc import Hashable, Iterable, Mapping
 
 import numpy as np
 import xarray as xr
@@ -571,7 +571,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel(slices)
 
             lost_coords = {
-                k: out[k].mean() for k in lost_dims if k not in unindexed_dims
+                k: out[k].mean(keep_attrs=True)
+                for k in lost_dims
+                if k not in unindexed_dims
             }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
@@ -595,6 +597,35 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         return erlab.utils.array.sort_coord_order(
             out, keys=coord_order, dims_first=True
         )
+
+    def average(self, dim: Hashable | Iterable[Hashable]) -> xr.DataArray:
+        """Average the data along the specified dimension(s).
+
+        The difference between this method and :meth:`xarray.DataArray.mean` is that
+        this method averages the data along the specified dimension(s) and retains the
+        averaged coordinate. This method also implicitly averages all coordinates that
+        depend on the averaged dimension(s) instead of dropping them.
+
+        Parameters
+        ----------
+        dim
+            The dimension(s) along which to average the data.
+
+        Returns
+        -------
+        DataArray
+            The data averaged along the specified dimension(s).
+        """
+        if isinstance(dim, Hashable):
+            dim = [dim]
+
+        qsel_kwargs: dict[Hashable, float] = {}
+
+        for d in dim:
+            qsel_kwargs[d] = 0.0
+            qsel_kwargs[f"{d}_width"] = np.inf
+
+        return self.__call__(qsel_kwargs)
 
     def around(
         self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw
@@ -640,7 +671,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             drop=average,
         )
         if average:
-            return masked.mean(sel_kw.keys())
+            return masked.qsel.average(sel_kw.keys())
         return masked
 
 
