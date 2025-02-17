@@ -34,6 +34,7 @@ import numpy.typing as npt
 import scipy.special
 
 from erlab.constants import kb_eV
+from erlab.utils.array import broadcast_args
 
 #: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
 TINY: float = 1.0e-15
@@ -171,6 +172,7 @@ def do_convolve_2d(
     return convolved.ravel()
 
 
+@broadcast_args
 @numba.njit(cache=True)
 def gaussian_wh(
     x: npt.NDArray[np.float64], center: float, width: float, height: float
@@ -187,6 +189,7 @@ def gaussian_wh(
     )
 
 
+@broadcast_args
 @numba.njit(cache=True)
 def gaussian(
     x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
@@ -204,6 +207,7 @@ def gaussian(
     )
 
 
+@broadcast_args
 @numba.njit(cache=True)
 def lorentzian_wh(
     x: npt.NDArray[np.float64], center: float, width: float, height: float
@@ -218,6 +222,7 @@ def lorentzian_wh(
     return height / (1 + 4 * ((1.0 * x - center) / max(TINY, width)) ** 2)
 
 
+@broadcast_args
 @numba.njit(cache=True)
 def lorentzian(
     x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
@@ -235,6 +240,7 @@ def lorentzian(
     )
 
 
+@broadcast_args
 @numba.njit(cache=True)
 def fermi_dirac(
     x: npt.NDArray[np.float64], center: float, temp: float
@@ -259,6 +265,7 @@ def fermi_dirac(
 
 
 # adapted and improved from KWAN Igor procedures
+@broadcast_args
 @numba.njit(cache=True)
 def fermi_dirac_linbkg(
     x: npt.NDArray[np.float64],
@@ -300,6 +307,7 @@ def fermi_dirac_linbkg(
     )
 
 
+@broadcast_args
 def fermi_dirac_linbkg_broad(
     x: npt.NDArray[np.float64],
     center: float,
@@ -324,6 +332,7 @@ def fermi_dirac_linbkg_broad(
     )
 
 
+@broadcast_args
 def step_broad(
     x: npt.NDArray[np.float64],
     center: float = 0.0,
@@ -359,6 +368,7 @@ def step_broad(
     )
 
 
+@broadcast_args
 def step_linbkg_broad(
     x: npt.NDArray[np.float64],
     center: float,
@@ -374,6 +384,7 @@ def step_linbkg_broad(
     )
 
 
+@broadcast_args
 @numba.njit()
 def bcs_gap(
     x, a: float = 1.76, b: float = 1.74, tc: float = 100.0
