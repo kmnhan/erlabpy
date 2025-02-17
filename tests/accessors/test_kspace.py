@@ -9,7 +9,9 @@ from erlab.io.exampledata import generate_data_angles, generate_hvdep_cuts
 
 @pytest.fixture
 def hvdep():
-    return generate_hvdep_cuts((50, 250, 300), seed=1)
+    data = generate_hvdep_cuts((50, 250, 300), seed=1)
+    data.kspace.inner_potential = 10.0
+    return data
 
 
 @pytest.fixture
