@@ -107,57 +107,40 @@ def is_dims_uniform(
     return all(is_uniform_spaced(darr[dim].values, **kwargs) for dim in dims)
 
 
-def check_arg_2d_darr(func: Callable | None = None):
+def check_arg_2d_darr(func: Callable) -> Callable:
     """Decorate a function to check if the first argument is a 2D DataArray."""
 
-    def _decorator(func):
-        @functools.wraps(func)
-        def _wrapper(*args, **kwargs):
-            if not isinstance(args[0], xr.DataArray) or args[0].ndim != 2:
-                raise ValueError("Input must be a 2-dimensional xarray.DataArray")
-            return func(*args, **kwargs)
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs):
+        if not isinstance(args[0], xr.DataArray) or args[0].ndim != 2:
+            raise ValueError("Input must be a 2-dimensional xarray.DataArray")
+        return func(*args, **kwargs)
 
-        return _wrapper
-
-    if func is not None:
-        return _decorator(func)
-    return _decorator
+    return _wrapper
 
 
-def check_arg_uniform_dims(func: Callable | None = None):
+def check_arg_uniform_dims(func: Callable) -> Callable:
     """Decorate a function to check if all dims in the first argument are uniform."""
 
-    def _decorator(func):
-        @functools.wraps(func)
-        def _wrapper(*args, **kwargs):
-            if not isinstance(args[0], xr.DataArray) or not is_dims_uniform(args[0]):
-                raise ValueError(
-                    "Coordinates for all dimensions must be uniformly spaced"
-                )
-            return func(*args, **kwargs)
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs):
+        if not isinstance(args[0], xr.DataArray) or not is_dims_uniform(args[0]):
+            raise ValueError("Coordinates for all dimensions must be uniformly spaced")
+        return func(*args, **kwargs)
 
-        return _wrapper
-
-    if func is not None:
-        return _decorator(func)
-    return _decorator
+    return _wrapper
 
 
-def check_arg_has_no_nans(func: Callable | None = None):
+def check_arg_has_no_nans(func: Callable) -> Callable:
     """Decorate a function to check if the first argument has no NaNs."""
 
-    def _decorator(func):
-        @functools.wraps(func)
-        def _wrapper(*args, **kwargs):
-            if np.isnan(args[0]).any():
-                raise ValueError("Input must not contain any NaN values")
-            return func(*args, **kwargs)
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs):
+        if np.isnan(args[0]).any():
+            raise ValueError("Input must not contain any NaN values")
+        return func(*args, **kwargs)
 
-        return _wrapper
-
-    if func is not None:
-        return _decorator(func)
-    return _decorator
+    return _wrapper
 
 
 def trim_na(darr: xr.DataArray, dims: Iterable[Hashable] | None = None) -> xr.DataArray:
