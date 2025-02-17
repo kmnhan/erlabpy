@@ -16,6 +16,10 @@
 
   Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
 
+### 🐞 Bug Fixes
+
+- **io.plugins.da30:** zero DA offset for non-DA lens modes (#96) ([a3bdf84](https://github.com/kmnhan/erlabpy/commit/a3bdf8400278a1df9b38d40d7d9a33135bfb0961))
+
 ### ♻️ Code Refactor
 
 - **utils.array:** simplify decorators for 2D array checks ([7275e2e](https://github.com/kmnhan/erlabpy/commit/7275e2e0b276a401f377fb68df195891e61cac0e))
