@@ -109,7 +109,10 @@ class DA30Loader(LoaderBase):
     def post_process(self, data: xr.DataArray) -> xr.DataArray:
         data = super().post_process(data)
 
-        if "beta" not in data.coords:
+        if "beta" not in data.coords or (
+            len(data.beta) == 1 and not data.attrs.get("Lens Mode", "").startswith("DA")
+        ):
+            # Zero DA offset if not using DA lens mode
             data = data.assign_coords(beta=0.0)
 
         return data
