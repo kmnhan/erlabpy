@@ -99,6 +99,11 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         super().resizeEvent(event)
         self.fitInView(self._pixmapitem)
 
+    def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
+        # Disable scrolling by ignoring wheel events
+        if event:
+            event.ignore()
+
 
 class ImageToolManager(QtWidgets.QMainWindow):
     """The ImageToolManager window.
