@@ -18,6 +18,12 @@
 
 ### 🐞 Bug Fixes
 
+- **io.dataloader:** preserve darr name when loading without values ([3310ed6](https://github.com/kmnhan/erlabpy/commit/3310ed61e0ce7fb6f5569a455252fec5d173e54b))
+
+- **imagetool:** allow data with constant coordinates ([6ed4f2b](https://github.com/kmnhan/erlabpy/commit/6ed4f2b34c6c027cc06c565afa191dd97aa753b4))
+
+- **imagetool.manager:** disable scrolling in image preview ([bd77e8d](https://github.com/kmnhan/erlabpy/commit/bd77e8d17db4a5b09cdacb1263d66da6f2bb8ec5))
+
 - **io.plugins.da30:** zero DA offset for non-DA lens modes (#96) ([a3bdf84](https://github.com/kmnhan/erlabpy/commit/a3bdf8400278a1df9b38d40d7d9a33135bfb0961))
 
 ### ♻️ Code Refactor
