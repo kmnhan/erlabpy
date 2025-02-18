@@ -93,6 +93,8 @@ def broadcast_args(func: Callable) -> Callable:
 def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     """Check if the given array is uniformly spaced.
 
+    Constant arrays are also considered as uniformly spaced.
+
     Parameters
     ----------
     arr : array-like
@@ -285,11 +287,16 @@ def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
     int
         The effective number of decimal places, calculated as the order of magnitude of
         ``step`` plus one.
+
+        If the step size is zero, a default value of 3 is returned.
     """
     if isinstance(step_or_coord, np.ndarray):
         step = step_or_coord[1] - step_or_coord[0]
     else:
         step = step_or_coord
+
+    if step == 0.0:
+        return 3
     return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
 
 

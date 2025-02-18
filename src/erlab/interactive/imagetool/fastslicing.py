@@ -71,6 +71,9 @@ def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
 @numba.njit(numba.boolean(numba.float64[::1]), cache=True)
 def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
     dif = np.diff(arr)
+    if dif[0] == 0.0:
+        # Treat constant coordinate array as non-uniform
+        return False
     return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
 
 
@@ -81,15 +84,16 @@ def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
     ],
     cache=True,
 )
-def _index_of_value_nonuniform(
-    arr: npt.NDArray[np.floating], val: np.floating
-) -> np.int_:
+def _index_of_value_nonuniform(arr: npt.NDArray[np.floating], val: np.floating) -> int:
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
 @numba.njit(
     [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])], cache=True
 )
-def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> np.floating:
+def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> float:
     diff = np.diff(arr)
+
+    if np.all(diff == 0.0):  # Prevent division by zero
+        return 0.0
     return np.mean(diff[diff != 0])
