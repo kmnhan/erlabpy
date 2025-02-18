@@ -228,6 +228,7 @@ def test_loader(qtbot, accept_dialog) -> None:
                     coords=darr.coords,
                     dims=darr.dims,
                     attrs=darr.attrs,
+                    name=darr.name,
                 )
 
             return darr

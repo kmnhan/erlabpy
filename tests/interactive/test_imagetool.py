@@ -41,6 +41,15 @@ _TEST_DATA: dict[str, xr.DataArray] = {
             "beta": np.arange(5),
         },
     ),
+    "3D_const_nonuniform": xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=["x", "eV", "beta"],
+        coords={
+            "x": np.array([0.1, 0.1, 0.1, 0.1, 0.1]),
+            "eV": np.arange(5),
+            "beta": np.arange(5),
+        },
+    ),
 }
 
 
@@ -229,7 +238,9 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.close()
 
 
-@pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
+@pytest.mark.parametrize(
+    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
+)
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
 def test_itool_tools(qtbot, test_data_type, condition) -> None:
     data = _TEST_DATA[test_data_type]

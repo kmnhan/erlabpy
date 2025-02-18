@@ -473,6 +473,8 @@ class ArraySlicer(QtCore.QObject):
             step = self.incs_uniform[axis]
         else:
             step = self.incs[axis]
+        if step == 0:
+            return 3  # Default to 3 decimal places for zero step size
         return erlab.utils.array.effective_decimals(step)
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:

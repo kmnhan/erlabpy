@@ -55,7 +55,18 @@ class SSRL52Loader(LoaderBase):
         "sample_workfunction": "WorkFunction",
     }
 
-    coordinate_attrs = ("beta", "delta", "chi", "xi", "hv", "x", "y", "z")
+    coordinate_attrs = (
+        "beta",
+        "delta",
+        "chi",
+        "xi",
+        "hv",
+        "x",
+        "y",
+        "z",
+        "polarization",
+        "sample_temp",
+    )
 
     additional_attrs: typing.ClassVar[dict] = {
         "configuration": 3,
@@ -267,6 +278,7 @@ class SSRL52Loader(LoaderBase):
                     coords=darr.coords,
                     dims=darr.dims,
                     attrs=darr.attrs,
+                    name=darr.name,
                 )
 
             darr = darr.assign_attrs(attrs)

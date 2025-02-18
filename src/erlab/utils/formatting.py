@@ -289,9 +289,6 @@ def _format_array_values(val: npt.NDArray) -> str:
     val = val.squeeze()
 
     if val.ndim == 1:
-        if len(val) == 2:
-            return f"[{format_value(val[0])}, {format_value(val[1])}]"
-
         if erlab.utils.array.is_uniform_spaced(val):
             if val[0] == val[-1]:
                 return format_value(val[0])
@@ -304,6 +301,9 @@ def _format_array_values(val: npt.NDArray) -> str:
         if erlab.utils.array.is_monotonic(val):
             if val[0] == val[-1]:
                 return format_value(val[0])
+
+            if len(val) == 2:
+                return f"[{format_value(val[0])}, {format_value(val[1])}]"
 
             return f"{format_value(val[0])} to {format_value(val[-1])}"
 
