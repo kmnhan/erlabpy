@@ -13,6 +13,7 @@ import copy
 import functools
 import inspect
 import itertools
+import logging
 import os
 import pathlib
 import time
@@ -39,6 +40,8 @@ else:
     import lazy_loader as _lazy
 
     qtawesome = _lazy.load("qtawesome")
+
+logger = logging.getLogger(__name__)
 
 
 class ColorMapState(typing.TypedDict):
@@ -151,6 +154,7 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         self,
         slicer_area: ImageSlicerArea,
         display_axis: tuple[int] | tuple[int, int],
+        axis_enabled: tuple[int, int, int, int],
         image: bool = False,
         **item_kw,
     ) -> None:
@@ -161,7 +165,13 @@ class ItoolGraphicsLayoutWidget(pg.PlotWidget):
         # self.addItem(self.plotItem)
 
         super().__init__(
-            plotItem=ItoolPlotItem(slicer_area, display_axis, image, **item_kw)
+            plotItem=ItoolPlotItem(
+                slicer_area,
+                display_axis,
+                axis_enabled=axis_enabled,
+                image=image,
+                **item_kw,
+            )
         )
         self.viewport().setAttribute(
             QtCore.Qt.WidgetAttribute.WA_AcceptTouchEvents, False
@@ -384,6 +394,53 @@ class SlicerLinkProxy:
         return new_index
 
 
+class _AssociatedCoordsDialog(QtWidgets.QDialog):
+    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+        super().__init__(slicer_area)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+
+        self._slicer_area = weakref.ref(slicer_area)
+
+        self._layout = QtWidgets.QFormLayout()
+        self.setLayout(self._layout)
+
+        self._checks: dict[str, QtWidgets.QCheckBox] = {}
+        for dim, coords in slicer_area.array_slicer.associated_coords.items():
+            for k in coords:
+                self._checks[k] = QtWidgets.QCheckBox(k)
+                self._checks[k].setChecked(
+                    k in slicer_area.array_slicer.twin_coord_names
+                )
+                self._layout.addRow(self._checks[k], QtWidgets.QLabel(f"({dim})"))
+
+        self._button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+        self._layout.addRow(self._button_box)
+
+    def exec(self) -> int:
+        if len(self._checks) == 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Associated Coordinates",
+                "No 1D non-dimension coordinates were found in the data.",
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super().exec()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            slicer_area.array_slicer.twin_coord_names = {
+                coord for coord, check in self._checks.items() if check.isChecked()
+            }
+        super().accept()
+
+
 class ImageSlicerArea(QtWidgets.QWidget):
     """A interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
@@ -434,6 +491,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigShapeChanged()
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
+    sigTwinChanged()
+        Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
 
     """
 
@@ -446,6 +505,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         pg.mkColor("r"),
         pg.mkColor("b"),
     )  #: :class:`PySide6.QtGui.QColor`\ s for multiple cursors.
+
+    TWIN_COLORS: tuple[QtGui.QColor, ...] = (
+        pg.mkColor("#FFA500"),
+        pg.mkColor("#008080"),
+        pg.mkColor("#8A2BE2"),
+        pg.mkColor("#FF69B4"),
+        pg.mkColor("#BFFF00"),
+    )  #: :class:`PySide6.QtGui.QColor`\ s for twin plots.
+
+    HORIZ_PAD: int = 45  #: Reserved space for the x axes in each plot.
+    VERT_PAD: int = 30  #: Reserved space for the y axes in each plot.
+    TICK_FONT_SIZE: float = 11.0  #: Font size of axis ticks in points.
 
     sigDataChanged = QtCore.Signal()  #: :meta private:
     sigCurrentCursorChanged = QtCore.Signal(int)  #: :meta private:
@@ -472,6 +543,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def sigShapeChanged(self) -> QtCore.SignalInstance:
         """:meta private:"""  # noqa: D400
         return self.array_slicer.sigShapeChanged
+
+    @property
+    def sigTwinChanged(self) -> QtCore.SignalInstance:
+        """:meta private:"""  # noqa: D400
+        return self.array_slicer.sigTwinChanged
 
     def __init__(
         self,
@@ -562,14 +638,59 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 1), **pkw),
-            ItoolGraphicsLayoutWidget(self, display_axis=(0,), **pkw),
-            ItoolGraphicsLayoutWidget(self, display_axis=(1,), is_vertical=True, **pkw),
-            ItoolGraphicsLayoutWidget(self, display_axis=(2,), **pkw),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(0, 2), **pkw),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(2, 1), **pkw),
-            ItoolGraphicsLayoutWidget(self, display_axis=(3,), **pkw),
-            ItoolGraphicsLayoutWidget(self, image=True, display_axis=(3, 2), **pkw),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(0, 1),
+                axis_enabled=(1, 0, 0, 1),
+                image=True,
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(0,),
+                axis_enabled=(1, 1, 0, 0),
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(1,),
+                axis_enabled=(0, 0, 1, 1),
+                is_vertical=True,
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(2,),
+                axis_enabled=(0, 1, 1, 0),
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                image=True,
+                display_axis=(0, 2),
+                axis_enabled=(1, 0, 0, 0),
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(2, 1),
+                axis_enabled=(0, 0, 0, 1),
+                image=True,
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(3,),
+                axis_enabled=(0, 1, 1, 0),
+                **pkw,
+            ),
+            ItoolGraphicsLayoutWidget(
+                self,
+                display_axis=(3, 2),
+                axis_enabled=(0, 1, 1, 0),
+                image=True,
+                **pkw,
+            ),
         )
         for i in (1, 4):
             self._splitters[2].addWidget(self._plots[i])
@@ -944,6 +1065,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "Open data in the interactive momentum conversion tool"
         )
 
+        self.associated_coords_act = QtWidgets.QAction(
+            "Plot Associated Coordinates", self
+        )
+        self.associated_coords_act.triggered.connect(self._choose_associated_coords)
+        self.associated_coords_act.setToolTip("Plot associated coordinates")
+
+    @QtCore.Slot()
+    def _choose_associated_coords(self) -> None:
+        dialog = _AssociatedCoordsDialog(self)
+        dialog.exec()
+
     @QtCore.Slot()
     def _history_changed(self) -> None:
         """Enable undo and redo actions based on the current history.
@@ -1022,6 +1154,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if not only_plots:
             for ax in self.axes:
                 ax.refresh_labels()
+                ax.update_manual_range()  # Handle axis limits (in case of transpose)
 
     @QtCore.Slot(tuple)
     @link_slicer
@@ -1038,7 +1171,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def view_all(self) -> None:
         self.manual_limits = {}
         for ax in self.axes:
-            ax.update_manual_range()
+            ax.enableAutoRange()
 
     @QtCore.Slot()
     @link_slicer
@@ -1556,9 +1689,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def adjust_layout(
         self,
-        horiz_pad: int = 45,
-        vert_pad: int = 30,
-        font_size: float = 11.0,
         r: tuple[float, float, float, float] = (1.2, 1.5, 3.0, 1.0),
     ) -> None:
         """Determine the padding and aspect ratios.
@@ -1592,20 +1722,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                   r[3] * r[2]
 
         """
-        font = QtGui.QFont()
-        font.setPointSizeF(float(font_size))
-
-        valid_axis: tuple[tuple[typing.Literal[0, 1], ...], ...] = (
-            (1, 0, 0, 1),
-            (1, 1, 0, 0),
-            (0, 0, 1, 1),
-            (0, 1, 1, 0),
-            (1, 0, 0, 0),
-            (0, 0, 0, 1),
-            (0, 1, 1, 0),
-            (0, 1, 1, 0),
-        )  # booleans corresponding to the (left, top, right, bottom) axes of each plot.
-
         invalid: list[int] = []  # axes to hide.
         r0, r1, r2, r3 = r
 
@@ -1634,24 +1750,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for split, sz in zip(self._splitters, sizes, strict=True):
             split.setSizes(tuple(round(s * scale) for s in sz))
 
-        for i, sel in enumerate(valid_axis):
-            self.get_axes_widget(i).setVisible(i not in invalid)
-            if i in invalid:
-                continue
-            axes = self.get_axes(i)
-            axes.setDefaultPadding(0)
-            for axis in ("left", "bottom", "right", "top"):
-                axes.getAxis(axis).setTickFont(font)
-                axes.getAxis(axis).setStyle(
-                    autoExpandTextSpace=True, autoReduceTextSpace=True
-                )
-            axes.showAxes(sel, showValues=sel, size=(horiz_pad, vert_pad))
+        for i in range(8):
+            visible: bool = i not in invalid
+            self.get_axes_widget(i).setVisible(visible)
+            if visible:
+                self.get_axes(i).setup_twin()
 
         # reserve space, only hide plotItem
         self.get_axes(3).setVisible(self.data.ndim != 2)
 
         self._colorbar.set_dimensions(
-            width=horiz_pad + 30, horiz_pad=None, vert_pad=vert_pad, font_size=font_size
+            width=self.HORIZ_PAD + 30,
+            horiz_pad=None,
+            vert_pad=self.VERT_PAD,
+            font_size=self.TICK_FONT_SIZE,
         )
 
     def _cursor_name(self, i: int) -> str:
@@ -1915,6 +2027,7 @@ class ItoolPlotItem(pg.PlotItem):
         self,
         slicer_area: ImageSlicerArea,
         display_axis: tuple[int] | tuple[int, int],
+        axis_enabled: tuple[int, int, int, int],
         image: bool = False,
         image_cls=None,
         plotdata_cls=None,
@@ -1926,6 +2039,8 @@ class ItoolPlotItem(pg.PlotItem):
                 for a in ("left", "right", "top", "bottom")
             }
         )
+        self._axis_enabled = axis_enabled
+
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
 
@@ -2006,6 +2121,11 @@ class ItoolPlotItem(pg.PlotItem):
             self.plotdata_cls = ItoolPlotDataItem
 
         self.slicer_data_items: list[ItoolImageItem | ItoolPlotDataItem] = []
+        #: Data items added for each cursor. Contains image or line slice of data
+
+        self.other_data_items: list[pg.PlotDataItem] = []
+        #: Data items plotted in twin axes.
+
         self.cursor_lines: list[dict[int, ItoolCursorLine]] = []
         self.cursor_spans: list[dict[int, ItoolCursorSpan]] = []
         self.add_cursor(update=False)
@@ -2039,6 +2159,156 @@ class ItoolPlotItem(pg.PlotItem):
             self._guideline_actions[0].setChecked(True)
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
+
+        # Set axis visibility
+        self.setDefaultPadding(0)
+        font = QtGui.QFont()
+        font.setPointSizeF(float(self.slicer_area.TICK_FONT_SIZE))
+
+        for ax in ("left", "top", "right", "bottom"):
+            self.getAxis(ax).setTickFont(font)
+            self.getAxis(ax).setStyle(
+                autoExpandTextSpace=True, autoReduceTextSpace=True
+            )
+
+        self.showAxes(
+            self._axis_enabled,
+            showValues=self._axis_enabled,
+            size=(self.slicer_area.HORIZ_PAD, self.slicer_area.VERT_PAD),
+        )
+
+        self.vb1: pg.ViewBox | None = None
+        self._twin_visible: bool = False
+
+    def connect_signals(self) -> None:
+        self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
+        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
+        self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
+        if not self.is_image:
+            self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
+            self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
+
+    def disconnect_signals(self) -> None:
+        self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
+        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
+        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
+        self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
+        if not self.is_image:
+            self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
+            self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
+
+    def setup_twin(self) -> None:
+        if not self.is_image and self.vb1 is None:
+            self.vb1 = pg.ViewBox(enableMenu=False)
+            self.vb1.setDefaultPadding(0)
+            loc = self.twin_axes_location
+            self.scene().addItem(self.vb1)
+            self.getAxis(loc).linkToView(self.vb1)
+
+            # pass right clicks to original vb
+            self.getAxis(loc).mouseClickEvent = self.vb.mouseClickEvent
+
+            self._update_twin_geometry()
+            self.vb.sigResized.connect(self._update_twin_geometry)
+
+    @property
+    def _axis_to_link_twin(self) -> int:
+        return (
+            pg.ViewBox.YAxis
+            if self.slicer_data_items[-1].is_vertical
+            else pg.ViewBox.XAxis
+        )
+
+    @property
+    def twin_axes_location(self) -> typing.Literal["top", "bottom", "left", "right"]:
+        if self.slicer_data_items[-1].is_vertical:
+            return "top" if self._axis_enabled[-1] else "bottom"
+        return "right" if self._axis_enabled[0] else "left"
+
+    @property
+    def twin_visible(self) -> bool:
+        return self._twin_visible
+
+    @QtCore.Slot()
+    def _update_twin_geometry(self) -> None:
+        if self.vb1 is not None and self._twin_visible:
+            self.vb1.setGeometry(self.vb.sceneBoundingRect())
+
+    def enableAutoRange(self, axis=None, enable=True, x=None, y=None):
+        super().enableAutoRange(axis=axis, enable=enable, x=x, y=y)
+        if self.vb1 is not None and self._twin_visible:
+            self.vb1.enableAutoRange(axis=None, enable=True, x=None, y=None)
+
+    @QtCore.Slot()
+    def update_twin_range(self, autorange: bool = True) -> None:
+        if self.vb1 is not None and self._twin_visible:
+            kwargs = {}
+            full_bounds = self.vb1.childrenBoundingRect()
+            if self.slicer_data_items[-1].is_vertical:
+                kwargs["yRange"] = self.getViewBox().state["viewRange"][1]
+                if autorange:
+                    kwargs["xRange"] = [full_bounds.left(), full_bounds.right()]
+            else:
+                kwargs["xRange"] = self.getViewBox().state["viewRange"][0]
+                if autorange:
+                    kwargs["yRange"] = [full_bounds.bottom(), full_bounds.top()]
+            self.vb1.setRange(**kwargs)
+
+    @QtCore.Slot()
+    def update_twin_plots(self) -> None:
+        if self.vb1 is not None:
+            display_dim: str = str(self.slicer_area.data.dims[self.display_axis[0]])
+            associated: dict[str, tuple[npt.NDArray, npt.NDArray]] = (
+                self.array_slicer.associated_coords[display_dim]
+            )
+            loc = self.twin_axes_location
+
+            n_plots: int = 0
+            labels: list[str] = []
+            for k, (x, y) in associated.items():
+                if k in self.array_slicer.twin_coord_names:
+                    if n_plots >= len(self.other_data_items):
+                        item = pg.PlotDataItem()
+                        self.other_data_items.append(item)
+                        self.vb1.addItem(item)
+                    else:
+                        item = self.other_data_items[n_plots]
+
+                    clr: QtGui.QColor = self.slicer_area.TWIN_COLORS[
+                        tuple(associated.keys()).index(k)
+                        % len(self.slicer_area.TWIN_COLORS)
+                    ]  # Color by index among coords associated with this dim
+                    labels.append(
+                        "<tr>"
+                        f"<td style='color:{clr.name()}; text-align: center;'>{k}</td>"
+                        "</tr>"
+                    )
+
+                    if self.slicer_data_items[-1].is_vertical:
+                        item.setData(y, x)
+                    else:
+                        item.setData(x, y)
+                    item.setPen(width=2, color=clr)
+                    n_plots += 1
+
+            self._twin_visible = n_plots > 0
+            ax = self.getAxis(loc)
+            ax.show() if self._twin_visible else ax.hide()
+            ax.setStyle(showValues=self._twin_visible)
+
+            if self._twin_visible:
+                label_html = "<table cellspacing='0'>" + "".join(labels) + "</table>"
+                ax.setLabel(text=label_html)
+                ax.resizeEvent()
+
+            while len(self.other_data_items) != n_plots:
+                item = self.other_data_items.pop()
+                self.vb1.removeItem(item)
+                item.forgetViewBox()
+                del item
 
     @property
     def _serializable_state(self) -> PlotItemState:
@@ -2193,6 +2463,7 @@ class ItoolPlotItem(pg.PlotItem):
         area, and to other linked slicer areas.
         """
         self.slicer_area.propagate_limit_change(self)
+        self.update_twin_range(autorange=False)
 
     @QtCore.Slot()
     def refresh_manual_range(self) -> None:
@@ -2204,6 +2475,15 @@ class ItoolPlotItem(pg.PlotItem):
         When a user manually changes the view range, this slot is called before
         `range_changed_manually` is called.
         """
+        if self.vb.state["aspectLocked"] is not False:
+            # If aspect ratio is locked, treat all axes as if manual limits are set
+            for dim, rng in zip(
+                self.axis_dims, self.vb.state["viewRange"], strict=True
+            ):
+                if dim is not None:
+                    self.slicer_area.manual_limits[dim] = rng
+            return
+
         for dim, auto, rng in zip(
             self.axis_dims,
             self.vb.state["autoRange"],
@@ -2217,10 +2497,13 @@ class ItoolPlotItem(pg.PlotItem):
                         # Clear manual limits if auto range is enabled
                         # Also trigger update
                         del self.slicer_area.manual_limits[dim]
+                        logger.debug("%s manual limits cleared", dim)
                         self.range_changed_manually()
                 else:
                     # Store manual limits
-                    self.slicer_area.manual_limits[dim] = rng
+                    if self.slicer_area.manual_limits.get(dim, None) != rng:
+                        self.slicer_area.manual_limits[dim] = rng
+                        logger.debug("%s manual range set to %s", dim, rng)
 
     def update_manual_range(self) -> None:
         """Update view range from values stored in the parent slicer area."""
@@ -2233,12 +2516,18 @@ class ItoolPlotItem(pg.PlotItem):
             if dim in limits:
                 kwargs[key] = limits[dim]
             else:
+                if self.getViewBox().state["aspectLocked"] is not False:
+                    # If aspect locked, do not attempt to set autorange
+                    continue
+
                 if not self.getViewBox().state["autoRange"][i]:
                     # If manual limits are not set and auto range is disabled, set to
                     # bounding rect. Internally, vb.autoRange() just calls setRange(...)
                     # so calling setRange only once with the full bounds prevents
                     # recursive calls. Pyqtgraph will handle the rest.
-                    full_bounds = self.getViewBox().childrenBoundingRect()
+                    full_bounds = self.getViewBox().childrenBoundingRect(
+                        items=self.slicer_data_items
+                    )
                     kwargs[key] = (
                         [full_bounds.left(), full_bounds.right()]
                         if i == 0
@@ -2247,6 +2536,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         if len(kwargs) != 0:
             self.getViewBox().setRange(**kwargs)
+            self.update_twin_range()
 
     @QtCore.Slot()
     def toggle_aspect_equal(self) -> None:
@@ -2332,8 +2622,8 @@ class ItoolPlotItem(pg.PlotItem):
             self._time_end = time.perf_counter()
 
     def add_cursor(self, update: bool = True) -> None:
-        new_cursor = len(self.slicer_data_items)
-        line_angles = (90, 0)
+        new_cursor: int = len(self.slicer_data_items)
+        line_angles: tuple[int, int] = (90, 0)
 
         (clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge) = (
             self.slicer_area.gen_cursor_colors(new_cursor)
@@ -2526,22 +2816,6 @@ class ItoolPlotItem(pg.PlotItem):
         self._guideline_offset = [0.0, 0.0]
         self.setTitle(None)
 
-    def connect_signals(self) -> None:
-        self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
-        self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.connect(self.update_manual_range)
-        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
-        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
-        self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
-
-    def disconnect_signals(self) -> None:
-        self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
-        self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.disconnect(self.update_manual_range)
-        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
-        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
-        self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
-
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
         self.refresh_cursor(cursor)
@@ -2552,19 +2826,24 @@ class ItoolPlotItem(pg.PlotItem):
             if item.cursor_index != cursor:
                 continue
             self.set_active_cursor(cursor)
+            self.vb.blockSignals(True)
             item.refresh_data()
-        # TODO: autorange smarter
-        self.vb.updateAutoRange()
+            self.vb.blockSignals(False)
+            # Block vb state signals, handle axes limits in refresh_all after update by
+            # calling update_manual_range
 
     @QtCore.Slot()
     def refresh_labels(self) -> None:
         if self.is_image:
             label_kw = {
-                a: self._get_label_unit(i)
-                for a, i in zip(
-                    ("top", "bottom", "left", "right"), (0, 0, 1, 1), strict=True
+                loc: self._get_label_unit(axis)
+                for visible, loc, axis in zip(
+                    self._axis_enabled,
+                    ("left", "top", "right", "bottom"),
+                    (1, 0, 1, 0),
+                    strict=True,
                 )
-                if self.getAxis(a).isVisible()
+                if visible
             }
         else:
             label_kw = {}
@@ -2574,8 +2853,10 @@ class ItoolPlotItem(pg.PlotItem):
             else:
                 valid_ax = ("top", "bottom")
 
-            for a in ("top", "bottom", "left", "right"):
-                if self.getAxis(a).isVisible():
+            for visible, a in zip(
+                self._axis_enabled, ("left", "top", "right", "bottom"), strict=True
+            ):
+                if visible:
                     label_kw[a] = self._get_label_unit(0 if a in valid_ax else None)
         self.setLabels(**label_kw)
 
