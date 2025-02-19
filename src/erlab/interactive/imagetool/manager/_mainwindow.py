@@ -908,14 +908,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         return flags
 
-    @QtCore.Slot(list, str)
-    def _data_load(self, paths: list[str], loader_name: str) -> None:
+    @QtCore.Slot(list, str, dict)
+    def _data_load(
+        self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
+    ) -> None:
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
             [],
             func=erlab.io.loaders[loader_name].load,
-            kwargs={},
+            kwargs=kwargs,
             retry_callback=lambda _: self._data_load(paths, loader_name),
         )
 

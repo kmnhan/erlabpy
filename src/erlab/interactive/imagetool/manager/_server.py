@@ -60,7 +60,7 @@ def _recv_all(conn, size):
 
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
-    sigLoadRequested = QtCore.Signal(list, str)
+    sigLoadRequested = QtCore.Signal(list, str, dict)
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,7 +104,7 @@ class _ManagerServer(QtCore.QThread):
                         files = kwargs.pop("__filename")
                         loader_name = kwargs.pop("__loader_name", None)
                         if loader_name is not None:
-                            self.sigLoadRequested.emit(files, loader_name)
+                            self.sigLoadRequested.emit(files, loader_name, kwargs)
                             logger.debug("Emitted file and loader info")
                         else:
                             self.sigReceived.emit(
@@ -152,7 +152,9 @@ def _send_dict(contents: dict[str, typing.Any]) -> None:
     logger.debug("Data sent successfully")
 
 
-def load_in_manager(paths: typing.Iterable[str | os.PathLike], loader_name: str):
+def load_in_manager(
+    paths: typing.Iterable[str | os.PathLike], loader_name: str, **load_kwargs
+) -> None:
     """Load and display data in the ImageToolManager.
 
     Parameters
@@ -162,7 +164,8 @@ def load_in_manager(paths: typing.Iterable[str | os.PathLike], loader_name: str)
     loader_name
         Name of the loader to use to load the data. The loader must be registered in
         :attr:`erlab.io.loaders`.
-
+    **load_kwargs
+        Additional keyword arguments passed onto the load method of the loader.
     """
     if not erlab.interactive.imagetool.manager.is_running():
         raise RuntimeError(
@@ -187,11 +190,14 @@ def load_in_manager(paths: typing.Iterable[str | os.PathLike], loader_name: str)
     ):
         # If the manager is running in the same process, directly pass the data
         erlab.interactive.imagetool.manager._manager_instance._data_load(
-            path_list, loader
+            path_list, loader, load_kwargs
         )
         return
 
-    _send_dict({"__filename": path_list, "__loader_name": loader})
+    load_kwargs["__filename"] = path_list
+    load_kwargs["__loader_name"] = loader
+
+    _send_dict(load_kwargs)
 
 
 def show_in_manager(
