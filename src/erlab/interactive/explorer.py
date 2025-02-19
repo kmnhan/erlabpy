@@ -22,12 +22,15 @@ import time
 import typing
 import weakref
 
+import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Hashable
+
+    import xarray as xr
 
 _IGOR_PRO_MIME_TYPES = {
     "pxt": "Igor Pro Packed Stationery",
@@ -409,15 +412,30 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
 
 
 class _DataExplorerTreeView(QtWidgets.QTreeView):
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setSortingEnabled(True)
+    def __init__(self, dataexplorer: _DataExplorer) -> None:
+        super().__init__(dataexplorer)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_menu)
+        self._menu = QtWidgets.QMenu("Menu", self)
+        self._menu.addAction(dataexplorer._to_manager_act)
+        self._menu.addAction(dataexplorer._to_manager_single_act)
+        self._menu.addSeparator()
+        self._menu.addAction(dataexplorer._reload_act)
+        self._menu.addAction(dataexplorer._climb_up_act)
+        self._menu.addSeparator()
+        self._menu.addAction(dataexplorer._finder_act)
+
         self.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self.setDragEnabled(True)
         self.setAcceptDrops(False)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragOnly)
+        self.setSortingEnabled(True)
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_menu(self, position: QtCore.QPoint) -> None:
+        self._menu.popup(self.mapToGlobal(position))
 
     def model(self) -> _DataExplorerModel:
         return typing.cast(_DataExplorerModel, super().model())
@@ -447,7 +465,7 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
 
 
 class _ReprFetcherSignals(QtCore.QObject):
-    fetched = QtCore.Signal(str, str)
+    fetched = QtCore.Signal(str, str, object)
 
 
 class _ReprFetcher(QtCore.QRunnable):
@@ -461,24 +479,34 @@ class _ReprFetcher(QtCore.QRunnable):
         Name of the loader plugin to use.
     """
 
-    def __init__(self, file_path: str | pathlib.Path, load_method) -> None:
+    def __init__(
+        self, file_path: str | pathlib.Path, load_method, include_values: bool
+    ) -> None:
         super().__init__()
         self.signals = _ReprFetcherSignals()
         self.file_path = pathlib.Path(file_path)
         self.load_method = load_method
+        self.include_values = include_values
 
     @QtCore.Slot()
     def run(self) -> None:
         file_path = str(self.file_path)
+        dat = None
         try:
             dat = self.load_method(
-                file_path, single=True, load_kwargs={"without_values": True}
+                file_path,
+                single=True,
+                load_kwargs={"without_values": not self.include_values},
             )
-            text = erlab.utils.formatting.format_darr_html(dat, additional_info=[])
-            del dat
         except Exception as e:
             text = "Error loading file:\n" + f"{type(e).__name__}: {e}"
-        self.signals.fetched.emit(file_path, text)
+        else:
+            text = erlab.utils.formatting.format_darr_html(
+                dat, additional_info=[], show_size=self.include_values
+            )
+            if not self.include_values:
+                dat = None
+        self.signals.fetched.emit(file_path, text, dat)
 
 
 class _LoaderInfoModel(QtCore.QAbstractTableModel):
@@ -545,6 +573,225 @@ class _LoaderWidget(QtWidgets.QComboBox):
         )
 
 
+class _DataPreviewSelectionWidget(QtWidgets.QWidget):
+    sigValueChanged = QtCore.Signal()
+    sigTransposed = QtCore.Signal()
+
+    def __init__(self, preview_widget: _DataPreviewWidget) -> None:
+        super().__init__(preview_widget)
+        self._layout = QtWidgets.QHBoxLayout()
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self._layout)
+
+        self._preview_widget = weakref.ref(preview_widget)
+
+        self.dims: list[QtWidgets.QComboBox] = []
+        self.spins: list[QtWidgets.QSpinBox] = []
+        self.value_text: list[QtWidgets.QLineEdit] = []
+
+        self._combo_group = erlab.interactive.utils.ExclusiveComboGroup(self)
+
+    @property
+    def preview_widget(self) -> _DataPreviewWidget:
+        _preview_widget = self._preview_widget()
+        if _preview_widget:
+            return _preview_widget
+        raise LookupError("Parent was destroyed")
+
+    @property
+    def isel_indexers(self) -> dict[str, int]:
+        return {
+            combo.currentText(): spin.value()
+            for combo, spin in zip(self.dims, self.spins, strict=True)
+            if combo.isVisible()
+        }
+
+    @property
+    def transposed_dims(self) -> tuple[Hashable, ...]:
+        data = self.preview_widget._data
+        if data is None:
+            return ()
+        last_dims = tuple(dim.currentText() for dim in self.dims if dim.isVisible())
+        return tuple(d for d in data.dims if d not in last_dims) + last_dims
+
+    @QtCore.Slot()
+    def refresh_spin_ranges(self) -> None:
+        data = self.preview_widget._data
+        if data is not None:
+            for combo, spin in zip(self.dims, self.spins, strict=True):
+                if combo.isVisible():
+                    spin.blockSignals(True)
+                    spin.setRange(0, data.sizes[combo.currentText()] - 1)
+                    spin.blockSignals(False)
+        self.preview_widget.refresh()
+
+    @QtCore.Slot()
+    def value_changed(self) -> None:
+        self.sigValueChanged.emit()
+        self.update_coord_values()
+
+    def update_coord_values(self) -> None:
+        """Update the displayed coordinate values."""
+        data = self.preview_widget._data
+        if data is not None:
+            for combo, text, spin in zip(
+                self.dims, self.value_text, self.spins, strict=True
+            ):
+                if text.isVisible():
+                    coord = data[combo.currentText()].values
+                    text.setText(
+                        str(
+                            round(
+                                coord[spin.value()],
+                                erlab.utils.array.effective_decimals(coord),
+                            )
+                        )
+                    )
+
+    def set_data(self, data: xr.DataArray) -> None:
+        required_dims: int = data.ndim - 2
+        self.setVisible(required_dims > 0)
+
+        # Add widgets as needed
+        while len(self.dims) < required_dims:
+            self.dims.append(QtWidgets.QComboBox())
+            self.spins.append(QtWidgets.QSpinBox())
+            self.value_text.append(QtWidgets.QLineEdit())
+
+            self.dims[-1].addItems([str(d) for d in data.dims])
+            self._combo_group.addCombo(self.dims[-1])
+            self.dims[-1].currentTextChanged.connect(self.refresh_spin_ranges)
+
+            self.spins[-1].valueChanged.connect(self.value_changed)
+
+            self.value_text[-1].setReadOnly(True)
+
+            self._layout.addWidget(self.dims[-1])
+            self._layout.addWidget(self.spins[-1])
+            self._layout.addWidget(self.value_text[-1])
+
+        for i in range(required_dims):
+            self.dims[i].blockSignals(True)
+            self.dims[i].clear()
+            self.dims[i].addItems([str(d) for d in data.dims])
+            self.dims[i].setCurrentIndex(i + 2)
+            self.dims[i].blockSignals(False)
+            self.spins[i].blockSignals(True)
+            self.spins[i].setRange(0, data.shape[i + 2] - 1)
+            self.spins[i].blockSignals(False)
+
+        for i in range(len(self.dims)):
+            self.dims[i].setVisible(i < required_dims)
+            self.spins[i].setVisible(i < required_dims)
+            self.value_text[i].setVisible(i < required_dims)
+
+        self.update_coord_values()
+
+
+class _DataPreviewWidget(QtWidgets.QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self._data: xr.DataArray | None = None
+
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.setLayout(layout)
+
+        controls = QtWidgets.QWidget()
+        controls_layout = QtWidgets.QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls.setLayout(controls_layout)
+        layout.addWidget(controls)
+
+        controls_layout.addWidget(QtWidgets.QLabel("Preview:"))
+        controls_layout.addStretch()
+
+        self.transpose_check = QtWidgets.QCheckBox("Transpose")
+        self.transpose_check.toggled.connect(self.refresh)
+        controls_layout.addWidget(self.transpose_check)
+
+        self._sel_widget = _DataPreviewSelectionWidget(self)
+        self._sel_widget.sigValueChanged.connect(self.refresh)
+        controls_layout.addWidget(self._sel_widget)
+
+        graphics_layout = pg.GraphicsLayoutWidget()
+        layout.addWidget(graphics_layout)
+
+        self._image = erlab.interactive.utils.xImageItem()
+        self._plotdata = pg.PlotDataItem()
+
+        self._axes = pg.PlotItem(
+            axisItems={
+                a: erlab.interactive.utils.BetterAxisItem(a) for a in ("left", "bottom")
+            }
+        )
+        self._axes.vb.setDefaultPadding(0)
+        self._axes.addItem(self._image)
+        self._axes.addItem(self._plotdata)
+
+        self._hist = pg.HistogramLUTItem()
+        self._hist.setImageItem(self._image)
+
+        graphics_layout.addItem(self._axes, 0, 0)
+        graphics_layout.addItem(self._hist, 0, 1)
+
+    @QtCore.Slot()
+    def refresh(self) -> None:
+        if self._data is not None:
+            self.transpose_check.setDisabled(self._data.ndim == 1)
+
+            match self._data.ndim:
+                case 0:
+                    self.setVisible(False)
+                    return
+                case 1:
+                    self._image.setVisible(False)
+                    self._hist.setVisible(False)
+                    self._sel_widget.setVisible(False)
+                    self._image.setImage()
+
+                    self._plotdata.setData(
+                        x=self._data[self._data.dims[0]].values, y=self._data.values
+                    )
+                    self._plotdata.setVisible(True)
+
+                    self._axes.setLabel("left", "")
+                    self._axes.setLabel("bottom", self._data.dims[0])
+
+                case _:
+                    self._plotdata.setVisible(False)
+                    self._plotdata.setData()
+
+                    data_disp: xr.DataArray = (
+                        self._data.transpose(*self._sel_widget.transposed_dims)
+                        .isel(self._sel_widget.isel_indexers)
+                        .squeeze()
+                    )
+
+                    self._image.setDataArray(
+                        data_disp.T if self.transpose_check.isChecked() else data_disp
+                    )
+
+                    self._image.setVisible(True)
+                    self._hist.setVisible(True)
+
+    def set_data(self, data: xr.DataArray | None) -> None:
+        self._data = data
+        if self._data is None:
+            self.setVisible(False)
+            return
+
+        self.setVisible(True)
+        self._data = self._data.squeeze()
+        self._sel_widget.set_data(self._data)
+        self.refresh()
+
+
 class _DataExplorer(QtWidgets.QMainWindow):
     TEXT_NONE_SELECTED: str = (
         "Select a folder or drag and drop a folder into the window "
@@ -594,7 +841,20 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
         self._to_manager_act.triggered.connect(self.to_manager)
         self._to_manager_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
-        self._to_manager_act.setToolTip("Open the selected file(s) in ImageToolManager")
+        self._to_manager_act.setToolTip(
+            "Open the selected file(s) in ImageToolManager.\n"
+            "For scans across multiple files, selecting a single file will "
+            "automatically load and combine all files in the scan."
+        )
+
+        self._to_manager_single_act = QtWidgets.QAction(
+            "&Open in Manager as Single File", self
+        )
+        self._to_manager_single_act.triggered.connect(self.to_manager_single)
+        self._to_manager_single_act.setToolTip(
+            "Open the selected file(s) in ImageToolManager.\n"
+            "Each file will be opened in a separate window."
+        )
 
         self._close_act = QtWidgets.QAction("&Close Window", self)
         self._close_act.triggered.connect(self.close)
@@ -619,7 +879,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
         self._reload_act.setToolTip("Refresh the current directory contents")
 
-        self._climb_up_act = QtWidgets.QAction("Enclosing Folder", self)
+        self._climb_up_act = QtWidgets.QAction("Go to Enclosing Folder", self)
         self._climb_up_act.triggered.connect(self._fs_model.climb_up)
         self._climb_up_act.setShortcut(
             QtGui.QKeySequence("Ctrl+Up" if sys.platform == "darwin" else "Alt+Up")
@@ -629,12 +889,14 @@ class _DataExplorer(QtWidgets.QMainWindow):
         # Populate the menu bar
         file_menu = typing.cast(QtWidgets.QMenu, self.menu_bar.addMenu("&File"))
         file_menu.addAction(self._to_manager_act)
-        file_menu.addAction(self._close_act)
+        file_menu.addAction(self._to_manager_single_act)
         file_menu.addAction(self._finder_act)
         file_menu.addSeparator()
         file_menu.addAction(self._open_dir_act)
         file_menu.addAction(self._reload_act)
         file_menu.addAction(self._climb_up_act)
+        file_menu.addSeparator()
+        file_menu.addAction(self._close_act)
 
     def _setup_ui(self) -> None:
         main_widget = QtWidgets.QWidget(self)
@@ -643,6 +905,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(main_widget)
         main_widget.setLayout(layout)
 
+        # Top bar
         top_widget = QtWidgets.QWidget(self)
         top_layout = QtWidgets.QHBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -655,23 +918,19 @@ class _DataExplorer(QtWidgets.QMainWindow):
         top_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._open_dir_act, "mdi6.folder")
         )
-
         top_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._reload_act, "mdi6.refresh")
         )
-
         top_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._climb_up_act, "mdi6.arrow-up"
             )
         )
-
         top_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._to_manager_act, "mdi6.chart-tree"
             )
         )
-
         top_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._finder_act, "mdi6.apple-finder"
@@ -683,31 +942,49 @@ class _DataExplorer(QtWidgets.QMainWindow):
         top_layout.addWidget(QtWidgets.QLabel("Loader"))
         self._loader_combo = _LoaderWidget()
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
-
+        self._loader_combo.currentIndexChanged.connect(self._loader_changed)
         top_layout.addWidget(self._loader_combo)
+
+        self._preview_check = QtWidgets.QCheckBox("Preview")
+        self._preview_check.setToolTip(
+            "Show a preview of the selected file.\n"
+            "This may significantly slow down the browsing for large files."
+        )
+        self._preview_check.setChecked(False)
+        self._preview_check.toggled.connect(self._on_selection_changed)
+        top_layout.addWidget(self._preview_check)
 
         splitter = QtWidgets.QSplitter(main_widget)
         splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        self._tree_view = _DataExplorerTreeView(main_widget)
+        self._tree_view = _DataExplorerTreeView(self)
         self._tree_view.setModel(self._fs_model)
         self._tree_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
         )
         self._tree_view.doubleClicked.connect(self.to_manager)
+        self._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
         splitter.addWidget(self._tree_view)
+
+        preview_splitter = QtWidgets.QSplitter()
+        preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
 
         self._text_edit = QtWidgets.QTextEdit()
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
         self._text_edit.setReadOnly(True)
-
         scroll_bar = self._text_edit.verticalScrollBar()
         typing.cast(QtWidgets.QScrollBar, scroll_bar).valueChanged.connect(
             self._save_slider_pos
         )
+        preview_splitter.addWidget(self._text_edit)
 
-        splitter.addWidget(self._text_edit)
+        self._preview = _DataPreviewWidget()
+        self._preview.setVisible(False)
+        preview_splitter.addWidget(self._preview)
+
+        splitter.addWidget(preview_splitter)
+        preview_splitter.setSizes([200, 200])
 
         self.setMinimumWidth(487)
         self.setMinimumHeight(301)
@@ -761,21 +1038,30 @@ class _DataExplorer(QtWidgets.QMainWindow):
             self._fs_model.set_root_path(directory)
 
     @QtCore.Slot()
+    def _loader_changed(self) -> None:
+        always_single = erlab.io.loaders[self.loader_name].always_single
+        self._to_manager_single_act.setDisabled(always_single)
+        self._to_manager_single_act.setVisible(not always_single)
+
+    @QtCore.Slot()
     def _on_selection_changed(self) -> None:
         selected_files: list[pathlib.Path] = self._current_selection
         n_sel = len(selected_files)
+        self._to_manager_act.setEnabled(n_sel >= 1)
 
         if n_sel == 1:
             # Show loading text only if loading takes more than 100 ms
             QtCore.QTimer.singleShot(100, self._show_loading_text_if_needed)
             worker = _ReprFetcher(
                 selected_files[0],
-                erlab.io.loaders[self.loader_name].load,
+                load_method=erlab.io.loaders[self.loader_name].load,
+                include_values=self._preview_check.isChecked(),
             )
             worker.signals.fetched.connect(self._show_file_info)
             self._threadpool.start(worker)
 
         else:
+            self._preview.setVisible(False)
             self._text_edit.setText(
                 self.TEXT_NONE_SELECTED if n_sel == 0 else self.TEXT_MULTIPLE_SELECTED
             )
@@ -784,20 +1070,28 @@ class _DataExplorer(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def _show_loading_text_if_needed(self) -> None:
         if not self._up_to_date:
+            self._preview.setVisible(False)
             self._text_edit.setText(self.TEXT_LOADING)
 
-    @QtCore.Slot(str, str)
-    def _show_file_info(self, file_path: str, text: str) -> None:
+    @QtCore.Slot(str, str, object)
+    def _show_file_info(
+        self, file_path: str, text: str, data: xr.DataArray | None
+    ) -> None:
         selected_files: list[pathlib.Path] = self._current_selection
         if len(selected_files) == 1 and selected_files[0] == pathlib.Path(file_path):
+            # Update text and restore scroll position
             scroll_bar = typing.cast(
                 QtWidgets.QScrollBar, self._text_edit.verticalScrollBar()
             )
             scroll_bar.blockSignals(True)
             self._text_edit.setHtml(self._parse_file_info(text))
-            self._displayed_selection = selected_files
             self._load_slider_pos()
             scroll_bar.blockSignals(False)
+
+            # Update preview image
+            self._preview.set_data(data)
+
+            self._displayed_selection = selected_files
 
     @staticmethod
     def _parse_file_info(text: str) -> str:
@@ -809,7 +1103,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         return text
 
     @QtCore.Slot()
-    def to_manager(self) -> None:
+    def to_manager(self, **kwargs) -> None:
         """Open the selected files in ImageTool Manager."""
         if len(self._current_selection) == 1 and self._current_selection[0].is_dir():
             self._fs_model.set_root_path(self._current_selection[0])
@@ -824,8 +1118,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
             )
         else:
             erlab.interactive.imagetool.manager.load_in_manager(
-                self._current_selection, self.loader_name
+                self._current_selection, self.loader_name, **kwargs
             )
+
+    @QtCore.Slot()
+    def to_manager_single(self):
+        self.to_manager(single=True)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
         """Handle drag-and-drop operations entering the window."""
@@ -845,8 +1143,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 file_paths: list[pathlib.Path] = [
                     pathlib.Path(url.toLocalFile()) for url in urls
                 ]
-                if len(file_paths) == 1 and file_paths[0].is_dir():
-                    self._fs_model.set_root_path(file_paths[0])
+                if len(file_paths) == 1:
+                    self._fs_model.set_root_path(
+                        file_paths[0]
+                        if file_paths[0].is_dir()
+                        else file_paths[0].parent
+                    )
 
 
 def data_explorer(
