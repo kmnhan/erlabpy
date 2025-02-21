@@ -245,7 +245,7 @@ class RotationDialog(DataTransformDialog):
         return {
             "angle": self.angle_spin.value(),
             "axes": typing.cast(
-                tuple[str, str], tuple(self.slicer_area.main_image.axis_dims)
+                tuple[str, str], tuple(self.slicer_area.main_image.axis_dims_uniform)
             ),
             "center": typing.cast(
                 tuple[float, float], tuple(spin.value() for spin in self.center_spins)
@@ -267,7 +267,7 @@ class RotationDialog(DataTransformDialog):
         self.center_spins = (QtWidgets.QDoubleSpinBox(), QtWidgets.QDoubleSpinBox())
         for i in range(2):
             axis: int = main_image.display_axis[i]
-            dim: str = str(main_image.axis_dims[i])
+            dim: str = str(main_image.axis_dims_uniform[i])
 
             self.center_spins[i].setRange(
                 *map(float, self.array_slicer.lims_uniform[i])

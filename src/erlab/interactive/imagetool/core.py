@@ -1940,6 +1940,13 @@ class ItoolDisplayObject:
         pass
 
 
+def _pad_1d_plot(
+    coord: npt.NDArray, values: npt.NDArray
+) -> tuple[npt.NDArray, npt.NDArray]:
+    pad = 0.5 * (coord[1] - coord[0])
+    return np.r_[coord[0] - pad, coord, coord[-1] + pad], np.r_[np.nan, values, np.nan]
+
+
 class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
     """Display a 1D slice of data in a plot."""
 
@@ -1961,6 +1968,8 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
             avg = np.nanmean(vals)
             if not np.isnan(avg):
                 vals = vals / avg
+
+        coord, vals = _pad_1d_plot(coord, vals)
 
         if self.is_vertical:
             self.setData(vals, coord)
@@ -2287,6 +2296,7 @@ class ItoolPlotItem(pg.PlotItem):
                         "</tr>"
                     )
 
+                    x, y = _pad_1d_plot(x, y)
                     if self.slicer_data_items[-1].is_vertical:
                         item.setData(y, x)
                     else:
@@ -2338,7 +2348,7 @@ class ItoolPlotItem(pg.PlotItem):
             str(self.slicer_area.data.dims[ax]) for ax in self.display_axis
         ]
 
-        if uniform and self.array_slicer._nonuniform_axes:
+        if not uniform and self.array_slicer._nonuniform_axes:
             for i, ax in enumerate(self.display_axis):
                 if ax in self.array_slicer._nonuniform_axes:
                     dim_list[i] = dim_list[i].removesuffix("_idx")
@@ -2397,7 +2407,7 @@ class ItoolPlotItem(pg.PlotItem):
                 QtWidgets.QWidget | None,
                 erlab.interactive.itool(
                     data,
-                    transpose=(data.dims != self.axis_dims_uniform),
+                    transpose=(data.dims != self.axis_dims),
                     file_path=self.slicer_area._file_path,
                     execute=False,
                 ),
@@ -2478,14 +2488,14 @@ class ItoolPlotItem(pg.PlotItem):
         if self.vb.state["aspectLocked"] is not False:
             # If aspect ratio is locked, treat all axes as if manual limits are set
             for dim, rng in zip(
-                self.axis_dims, self.vb.state["viewRange"], strict=True
+                self.axis_dims_uniform, self.vb.state["viewRange"], strict=True
             ):
                 if dim is not None:
                     self.slicer_area.manual_limits[dim] = rng
             return
 
         for dim, auto, rng in zip(
-            self.axis_dims,
+            self.axis_dims_uniform,
             self.vb.state["autoRange"],
             self.vb.state["viewRange"],
             strict=True,
@@ -2511,9 +2521,9 @@ class ItoolPlotItem(pg.PlotItem):
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs) -> None:
         for i, (dim, key) in enumerate(
-            zip(self.axis_dims, ("xRange", "yRange"), strict=True)
+            zip(self.axis_dims_uniform, ("xRange", "yRange"), strict=True)
         ):
-            if dim in limits:
+            if dim is not None and dim in limits:
                 kwargs[key] = limits[dim]
             else:
                 if self.getViewBox().state["aspectLocked"] is not False:
