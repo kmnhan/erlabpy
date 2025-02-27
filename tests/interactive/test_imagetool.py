@@ -14,7 +14,7 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
-from erlab.interactive.imagetool.core import _parse_input
+from erlab.interactive.imagetool.core import _AssociatedCoordsDialog, _parse_input
 from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     NormalizeDialog,
@@ -203,8 +203,9 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
             "dims": ("y", "x"),
             "bins": [[2, 2], [2, 2]],
             "indices": [[2, 2], [2, 2]],
-            "values": [[2.0, 2.0], [2.0, 2.0]],
+            "values": [[2, 2], [2, 2]],
             "snap_to_data": True,
+            "twin_coord_names": (),
         },
         "current_cursor": 1,
         "manual_limits": {},
@@ -523,7 +524,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
                 if data_item.is_vertical
                 else data_item.getData()[1]
             )
-            assert_almost_equal(yvals.mean(), 1.0)
+            assert_almost_equal(np.nanmean(yvals), 1.0)
         profile_axis.set_normalize(False)
 
     # Test 2D crop
@@ -563,6 +564,42 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
     assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
+
+    win.close()
+
+
+def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
+    data = data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "z": ("x", [1, 3, 2, 4, 5]),
+            "u": ("x", np.arange(5)),
+            "t": ("y", np.arange(5)),
+            "v": ("y", np.arange(5)),
+        },
+    )
+    win = itool(data, execute=False, cmap="terrain_r")
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: _AssociatedCoordsDialog) -> None:
+        for check in dialog._checks.values():
+            check.setChecked(True)
+
+    _handler = accept_dialog(
+        win.slicer_area._choose_associated_coords, pre_call=_set_dialog_params
+    )
+
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
+    win.slicer_area.transpose_act.trigger()
 
     win.close()
 

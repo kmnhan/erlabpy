@@ -9,14 +9,13 @@ import typing
 
 import numpy as np
 import numpy.typing as npt
+import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
-
-    import xarray as xr
 
 
 class ArraySlicerState(typing.TypedDict):
@@ -27,6 +26,7 @@ class ArraySlicerState(typing.TypedDict):
     indices: list[list[int]]
     values: list[list[float]]
     snap_to_data: bool
+    twin_coord_names: typing.NotRequired[tuple[Hashable, ...]]
 
 
 def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
@@ -114,6 +114,8 @@ class ArraySlicer(QtCore.QObject):
         Emitted when the number of cursors is changed. Emits the new number of cursors.
     sigShapeChanged()
         Emitted when the underlying `xarray.DataArray` is transposed.
+    sigTwinChanged()
+        Emitted when the coordinates to be displayed in the twin axes are changed.
 
     Note
     ----
@@ -137,6 +139,7 @@ class ArraySlicer(QtCore.QObject):
     sigBinChanged = QtCore.Signal(int, tuple)  #: :meta private:
     sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
     sigShapeChanged = QtCore.Signal()  #: :meta private:
+    sigTwinChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, xarray_obj: xr.DataArray) -> None:
         super().__init__()
@@ -158,6 +161,15 @@ class ArraySlicer(QtCore.QObject):
     @snap_to_data.setter
     def snap_to_data(self, value: bool) -> None:
         self.snap_act.setChecked(value)
+
+    @property
+    def twin_coord_names(self) -> set[Hashable]:
+        return self._twin_coord_names
+
+    @twin_coord_names.setter
+    def twin_coord_names(self, coord_names: set[Hashable]) -> None:
+        self._twin_coord_names: set[Hashable] = set(coord_names)
+        self.sigTwinChanged.emit()
 
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
@@ -202,7 +214,27 @@ class ArraySlicer(QtCore.QObject):
             self._values: list[list[np.floating]] = [
                 [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
             ]
+            self._twin_coord_names = set()
             self.snap_to_data = False
+
+    @functools.cached_property
+    def associated_coords(
+        self,
+    ) -> dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]]:
+        out: dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]] = {
+            str(d): {} for d in self._obj.dims
+        }
+        for k, coord in self._obj.coords.items():
+            if (
+                isinstance(coord, xr.DataArray)
+                and len(coord.dims) == 1
+                and str(coord.dims[0]) != k
+            ):
+                out[str(coord.dims[0])][str(k)] = (
+                    coord[coord.dims[0]].values,
+                    coord.values,
+                )
+        return out
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.floating], ...]:
@@ -314,6 +346,7 @@ class ArraySlicer(QtCore.QObject):
             "indices": copy.deepcopy(self._indices),
             "values": erlab.utils.misc._convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
+            "twin_coord_names": tuple(self.twin_coord_names),
         }
 
     @state.setter
@@ -331,6 +364,8 @@ class ArraySlicer(QtCore.QObject):
             self.set_indices(i, indices, update=False)
             self.set_values(i, values, update=True)
             self.set_bins(i, bins, update=True)
+
+        self.twin_coord_names = set(state.get("twin_coord_names", set()))
 
         self.set_array(self._obj, validate=False)
         # Not sure why the last line is needed but the cursor is not fully restored
@@ -406,6 +441,7 @@ class ArraySlicer(QtCore.QObject):
         """
         for prop in (
             "coords",
+            "associated_coords",
             "coords_uniform",
             "incs",
             "incs_uniform",

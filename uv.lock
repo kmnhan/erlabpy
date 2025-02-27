@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -639,6 +640,7 @@ dev = [
     { name = "commitizen" },
     { name = "cz-changeup" },
     { name = "ipykernel" },
+    { name = "jupyter-bokeh" },
     { name = "mypy", extra = ["faster-cache", "reports"] },
     { name = "pooch" },
     { name = "pre-commit" },
@@ -703,12 +705,14 @@ requires-dist = [
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },
 ]
+provides-extras = ["complete", "viz", "io", "perf", "misc"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "commitizen", specifier = ">=3.29.0" },
     { name = "cz-changeup", specifier = ">=1.1.2" },
     { name = "ipykernel", specifier = ">=6.29.5" },
+    { name = "jupyter-bokeh", specifier = ">=4.0.5" },
     { name = "mypy", extras = ["faster-cache", "reports"], specifier = ">=1.13.0" },
     { name = "pooch", specifier = ">=1.8.0" },
     { name = "pre-commit", specifier = ">=3.7.0" },
@@ -1149,6 +1153,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/10/db/58f950c996c793472e336ff3655b13fbcf1e3b359dcf52dcf3ed3b52c352/jsonschema_specifications-2024.10.1.tar.gz", hash = "sha256:0f38b83639958ce1152d02a7f062902c41c8fd20d558b0c34344292d417ae272", size = 15561 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/0f/8910b19ac0670a0f80ce1008e5e751c4a57e14d2c4c13a482aa6079fa9d6/jsonschema_specifications-2024.10.1-py3-none-any.whl", hash = "sha256:a09a0680616357d9a0ecf05c12ad234479f549239d0f5b55f3deea67475da9bf", size = 18459 },
+]
+
+[[package]]
+name = "jupyter-bokeh"
+version = "4.0.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "bokeh" },
+    { name = "ipywidgets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/fd/8f0213c704bf36b5f523ae5bf7dc367f3687e75dcc2354084b75c05d2b53/jupyter_bokeh-4.0.5.tar.gz", hash = "sha256:a33d6ab85588f13640b30765fa15d1111b055cbe44f67a65ca57d3593af8245d", size = 149140 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/78/33b2294aad62e5f95b89a89379c5995c2bd978018387ef8bec79f6dc272c/jupyter_bokeh-4.0.5-py3-none-any.whl", hash = "sha256:1110076c14c779071cf492646a1a871aefa8a477261e4721327a666e65df1a2c", size = 148593 },
 ]
 
 [[package]]

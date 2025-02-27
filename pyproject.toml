@@ -52,6 +52,7 @@ dev = [
     "commitizen>=3.29.0",
     "cz-changeup>=1.1.2",
     "ipykernel>=6.29.5",
+    "jupyter-bokeh>=4.0.5",
     "mypy[faster-cache,reports]>=1.13.0",
     "pooch>=1.8.0",
     "pre-commit>=3.7.0",
