@@ -2,6 +2,14 @@
 
 ### ✨ Features
 
+- **imagetool:** implement non-dimension coordinate plotting ([48eac24](https://github.com/kmnhan/erlabpy/commit/48eac242e0d08fba8aa5e4f5e94c05d6db144003))
+
+  1D Non-dimension coordinates associated with a data dimension can now be plotted alongside 1D slices on a secondary axis.
+
+  For instance, if an ARPES map has a temperature coordinate that varies for each mapping angle, the temperature coordinate can be plotted as a function of angle.
+
+  The plot can be toggled in the added item inside the `View` menu of the menu bar in ImageTool.
+
 - add accessor method for averaging over dimensions while retaining coordinates ([90d28fb](https://github.com/kmnhan/erlabpy/commit/90d28fbe27114e6191b2b777c3d8fefc96e607cb))
 
   Adds `DataArray.qsel.average`, which takes dimension names and calls `DataArray.qsel` with the bin widths set to infinity. Unlike `DataArray.mean`, the new method retains coordinates associated with the averaged dimension.
@@ -17,6 +25,8 @@
   Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** correct 1D data axis padding ([68f59e9](https://github.com/kmnhan/erlabpy/commit/68f59e903cc9822f665c5c790a8296b7142358fb))
 
 - **imagetool:** allow loading data saved with non-default colormap (#102) ([c476be2](https://github.com/kmnhan/erlabpy/commit/c476be2775fb7f0e2a08f4a74346d419e3dc0e05))
 
