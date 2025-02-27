@@ -592,6 +592,13 @@ def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
         win.slicer_area._choose_associated_coords, pre_call=_set_dialog_params
     )
 
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
     win.slicer_area.transpose_act.trigger()
 
     win.close()
