@@ -689,6 +689,8 @@ class _DataPreviewSelectionWidget(QtWidgets.QWidget):
 
 
 class _DataPreviewWidget(QtWidgets.QWidget):
+    _sigDataChanged = QtCore.Signal()
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -779,6 +781,7 @@ class _DataPreviewWidget(QtWidgets.QWidget):
 
                     self._image.setVisible(True)
                     self._hist.setVisible(True)
+            self._sigDataChanged.emit()
 
     def set_data(self, data: xr.DataArray | None) -> None:
         self._data = data
