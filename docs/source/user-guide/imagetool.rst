@@ -103,8 +103,8 @@ Tips
 Keyboard shortcuts
 ~~~~~~~~~~~~~~~~~~
 
-Some shortcuts not in the menu bar. Mac users replace :kbd:`Ctrl` with :kbd:`⌘` and
-:kbd:`Alt` with :kbd:`⌥`.
+Some shortcuts that are not shown in the menu bar. Mac users must replace :kbd:`Ctrl`
+with :kbd:`⌘` and :kbd:`Alt` with :kbd:`⌥`.
 
 .. list-table::
     :header-rows: 1
@@ -147,8 +147,11 @@ ImageTools can also be used as a standalone application with :class:`ImageToolMa
         :class: only-dark
         :width: 600px
 
-The manager shows a list of opened ImageTools and buttons to manage them. Hover over
-buttons for tooltips.
+The manager shows a list of opened ImageTool windows along with some buttons. Information and preview about the data displayed in the currently selected ImageTool is shown in the right panel.
+
+.. hint::
+
+  Hovering your mouse over each button will show a brief description of its function.
 
 Starting the manager
 ~~~~~~~~~~~~~~~~~~~~
@@ -161,8 +164,8 @@ Run ``itool-manager`` in a terminal or command prompt window with ERLabPy instal
 
   - Sending data to the manager has slight overhead, noticeable for large data.
 
-Creating ImageTool windows
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Adding ImageTool windows
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 When the manager is running, new data can be opened in the manager by:
 
@@ -175,26 +178,29 @@ When the manager is running, new data can be opened in the manager by:
       darr.qshow(manager=True)
 
 - The ``Move to Manager`` (:kbd:`Ctrl+Shift+M`) action in the ``File`` menu from an
-  ImageTool window. This action moves the active ImageTool to the manager.
+  ImageTool window opened without specifying ``manager=True``. This action moves the
+  active ImageTool to the manager.
 
-- Opening files through the ``File`` menu in the manager.
+- Opening supported files through the ``File`` menu in the manager.
 
 - Dragging and dropping supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data.
 
-  For scans that are recorded across multiple files, drag and dropping any file in the
-  scan will automatically load and concatenate the entire scan. If you want to load only
-  the file you dropped, choose the plugin suffixed with "Single File".
+  .. hint::
+
+    For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with "Single File" in the dialog.
 
 Features
 ~~~~~~~~
 
-- Save and load ImageTool windows to a HDF5 file via the ``Save Workspace As...`` and
-  ``Open Workspace...`` menu items.
+- Save all ImageTool windows to a file via the ``Save Workspace As...`` menu item.
 
-- The manager has a Python console to manipulate ImageTool windows and data, and run
-  Python code.
+  The saved windows can be restored later with ``Open Workspace...`` or by dragging and
+  dropping the file into the manager.
+
+- The manager has a built-in iPython console to manipulate ImageTool windows and data,
+  and run Python code.
 
   Toggle the console with :kbd:`⌃+`` (Mac) or :kbd:`Ctrl+`` (Windows/Linux) or through
   the ``View`` menu.
@@ -202,36 +208,50 @@ Features
 - Toggle the ``Preview on Hover`` option in the ``View`` menu to show a preview of the
   main image when hovering over each tool.
 
-- Explore the menubar for more features!
+- After selecting multiple tools, you can perform actions on all selected tools at once
+  using the right-click context menu.
+
+- Selecting ``Concatenate`` from the right-click context menu will concatenate the data
+  from all selected tools and open a new ImageTool window with the concatenated data.
+  See :func:`xarray.concat <xarray.concat>` for more information on concatenation.
+
+- The manager has an integrated file browser to browse and preview data files. It can be
+  invoked from the ``File`` menu of the manager, or with the keyboard shortcut
+  :kbd:`Ctrl+E`.
+
+  See :mod:`erlab.interactive.explorer` for more information.
+
+- Explore the menu bar for more features!
 
 
-Tips
-~~~~
+Working with notebooks
+~~~~~~~~~~~~~~~~~~~~~~
 
-- Sometimes, you may wish to send data from the manager to a jupyter notebook for
-  further analysis. You can do this by using the manager console and the `%store
-  <https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html>`_ magic
-  command.
+Opening data in the manager from a notebook is straightforward, as shown above. However,
+you may wish to send data from the manager to a jupyter notebook for further analysis.
 
-  Suppose you want to store the data displayed in a tool with index 0. First select the tool in the manager. Then, trigger the ``Store with IPython`` action from the right-click context menu or the ``File`` menu. This will open a dialog to enter a variable name. Enter a variable name (e.g., ``my_data``) and click OK.
+This is easily done using the `%store
+<https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html>`_ magic
+command.
 
-  .. note::
+Suppose you want to store the data displayed in a tool with index 0. First select the
+tool in the manager. Then, trigger the ``Store with IPython`` action from the
+right-click context menu or the ``File`` menu. This will open a dialog to enter a
+variable name. Enter a variable name (e.g., ``my_data``) and click OK.
 
-     This is equivalent to running the following code in the manager console:
+.. note::
 
-     .. code-block:: python
+    This is equivalent to running the following code in the manager console:
 
-         my_data = tools[0].data
-         %store my_data
+    .. code-block:: python
 
-  Now, in any notebook, you can retrieve the data by running:
+        my_data = tools[0].data
+        %store my_data
 
-  .. code-block:: python
+Now, in any notebook, you can retrieve the data by running:
 
-      %store -r my_data
+.. code-block:: python
 
-  after which the data will be available as ``my_data`` in the notebook.
+    %store -r my_data
 
-- When browsing files, :mod:`erlab.interactive.explorer` can be used to preview the data
-  coordinates and attributes before opening them in ImageTool. It can be invoked from
-  the ``File`` menu in the manager.
+after which the data will be available as ``my_data`` in the notebook.
