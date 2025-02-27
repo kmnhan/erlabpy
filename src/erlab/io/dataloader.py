@@ -739,27 +739,22 @@ class LoaderBase(metaclass=_Loader):
         Parameters
         ----------
         coordinate_attrs
-            Additional attribute names to be treated as coordinates. Extends
-            :attr:`coordinate_attrs <erlab.io.dataloader.LoaderBase.coordinate_attrs>`.
+            Extends :attr:`coordinate_attrs
+            <erlab.io.dataloader.LoaderBase.coordinate_attrs>`.
         average_attrs
-            Additional attribute names to be averaged over. Extends :attr:`average_attrs
+            Extends :attr:`average_attrs
             <erlab.io.dataloader.LoaderBase.average_attrs>`.
         additional_attrs
-            Additional attributes to be added to the data after loading. Extends
-            :attr:`additional_attrs <erlab.io.dataloader.LoaderBase.additional_attrs>`.
+            Extends :attr:`additional_attrs
+            <erlab.io.dataloader.LoaderBase.additional_attrs>`.
         overridden_attrs
-            Additional keys in :attr:`additional_attrs
-            <erlab.io.dataloader.LoaderBase.additional_attrs>` that should override
-            existing attributes. Extends :attr:`overridden_attrs
+            Extends :attr:`overridden_attrs
             <erlab.io.dataloader.LoaderBase.overridden_attrs>`.
         additional_coords
-            Additional non-dimension coordinates to be added to the data after loading.
             Extends :attr:`additional_coords
             <erlab.io.dataloader.LoaderBase.additional_coords>`.
         overridden_coords
-            Additional keys in :attr:`additional_coords
-            <erlab.io.dataloader.LoaderBase.additional_coords>` that should override
-            existing coordinates. Extends :attr:`overridden_coords
+            Extends :attr:`overridden_coords
             <erlab.io.dataloader.LoaderBase.overridden_coords>`.
 
         Example
@@ -2208,7 +2203,6 @@ class LoaderRegistry(_RegistryBase):
 
     def extend_loader(
         self,
-        *,
         coordinate_attrs: tuple[str, ...] | None = None,
         average_attrs: tuple[str, ...] | None = None,
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
