@@ -18,6 +18,8 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** allow loading data saved with non-default colormap (#102) ([c476be2](https://github.com/kmnhan/erlabpy/commit/c476be2775fb7f0e2a08f4a74346d419e3dc0e05))
+
 - **io.dataloader:** preserve darr name when loading without values ([3310ed6](https://github.com/kmnhan/erlabpy/commit/3310ed61e0ce7fb6f5569a455252fec5d173e54b))
 
 - **imagetool:** allow data with constant coordinates ([6ed4f2b](https://github.com/kmnhan/erlabpy/commit/6ed4f2b34c6c027cc06c565afa191dd97aa753b4))
