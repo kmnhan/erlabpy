@@ -157,7 +157,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "RdYlBu", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
+        "BuWh", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
@@ -192,7 +192,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.slicer_area.add_cursor()
     expected_state = {
         "color": {
-            "cmap": "RdYlBu",
+            "cmap": "BuWh",
             "gamma": 1.5,
             "reverse": True,
             "high_contrast": True,

@@ -50,6 +50,32 @@ continuous data, and looks horrible.
 """
 
 
+CMAP_PACKAGES: tuple[str, ...] = (
+    "cmasher",
+    "cmocean",
+    "colorcet",
+    "cmcrameri",
+    "seaborn",
+)
+"""
+Packages that provide additional colormaps upon import.
+
+The packages listed here are not included in the default installation, but can be
+installed separately. Colormaps from installed packages are loaded when
+:func:`load_all_colormaps` is called, or when the user selects "Load All Colormaps" from
+the context menu of the :class:`ColorMapComboBox`.
+"""
+
+
+def load_all_colormaps() -> None:
+    """Load all colormaps from additional sources."""
+    import erlab.plotting  # noqa: F401
+
+    for package in CMAP_PACKAGES:
+        if importlib.util.find_spec(package):
+            importlib.import_module(package)
+
+
 class ColorMapComboBox(QtWidgets.QComboBox):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -87,20 +113,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
-        import erlab.plotting  # noqa: F401
-
-        # Import colormap packages if available
-        if importlib.util.find_spec("cmasher"):
-            importlib.import_module("cmasher")
-        if importlib.util.find_spec("cmocean"):
-            importlib.import_module("cmocean")
-        if importlib.util.find_spec("colorcet"):
-            importlib.import_module("colorcet")
-        if importlib.util.find_spec("cmcrameri"):
-            importlib.import_module("cmcrameri")
-        if importlib.util.find_spec("seaborn"):
-            importlib.import_module("seaborn")
-
+        load_all_colormaps()
         self.clear()
         for name in pg_colormap_names("all", exclude_local=True):
             self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
@@ -744,7 +757,9 @@ def pg_colormap_names(
     return list(dict.fromkeys(all_cmaps))
 
 
-def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
+def pg_colormap_from_name(
+    name: str, skipCache: bool = True, _loaded_all: bool = False
+) -> pg.ColorMap:
     """Get a :class:`pyqtgraph.ColorMap` from its name.
 
     Parameters
@@ -766,7 +781,15 @@ def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
         try:
             return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
         except ValueError:
-            return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
+            try:
+                return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
+            except KeyError:
+                if not _loaded_all:
+                    load_all_colormaps()
+                    return pg_colormap_from_name(
+                        name, skipCache=skipCache, _loaded_all=True
+                    )
+                raise
 
 
 def pg_colormap_powernorm(
