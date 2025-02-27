@@ -208,6 +208,9 @@
                <property name="minimum">
                 <double>0.001000000000000</double>
                </property>
+               <property name="singleStep">
+                <double>0.010000000000000</double>
+               </property>
                <property name="value">
                 <double>3.540000000000000</double>
                </property>
@@ -233,6 +236,9 @@
                </property>
                <property name="minimum">
                 <double>0.001000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.010000000000000</double>
                </property>
                <property name="value">
                 <double>3.540000000000000</double>
@@ -289,6 +295,9 @@
                <property name="minimum">
                 <double>0.001000000000000</double>
                </property>
+               <property name="singleStep">
+                <double>0.010000000000000</double>
+               </property>
                <property name="value">
                 <double>6.008000000000000</double>
                </property>
@@ -307,6 +316,9 @@
                </property>
                <property name="minimum">
                 <double>0.001000000000000</double>
+               </property>
+               <property name="singleStep">
+                <double>0.010000000000000</double>
                </property>
                <property name="value">
                 <double>3.540000000000000</double>
