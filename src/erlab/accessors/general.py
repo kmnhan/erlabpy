@@ -27,7 +27,9 @@ from erlab.accessors.utils import (
 def _check_hvplot():
     """Check if hvplot is installed and raise an ImportError if not."""
     if not importlib.util.find_spec("hvplot"):
-        raise ImportError("hvplot is required to visualize this data interactively")
+        raise ImportError(
+            "The hvplot package is required to visualize this data interactively. "
+        )
 
 
 @xr.register_dataarray_accessor("qplot")

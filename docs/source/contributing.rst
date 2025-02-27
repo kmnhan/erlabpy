@@ -397,7 +397,7 @@ then build the documentation by running:
 
 .. code-block:: sh
 
-    uv run make html --directory docs
+    uv run --directory docs make html
 
 Then you can find the HTML output files in the ``docs/build/html/``.
 

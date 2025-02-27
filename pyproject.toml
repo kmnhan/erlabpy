@@ -211,7 +211,7 @@ exclude = ["*.ipynb"]
 convention = "numpy"
 
 [tool.ruff.lint.flake8-builtins]
-builtins-allowed-modules = ["array"]
+builtins-allowed-modules = ["array", "io"]
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false

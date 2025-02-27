@@ -96,10 +96,14 @@ def test_loader(qtbot, accept_dialog) -> None:
     beta_coords = np.linspace(2, 7, 10)
 
     # Generate and save cuts with different beta values
+    data_2d = []
     for i, beta in enumerate(beta_coords):
         data = make_data(beta=beta, temp=20.0 + i, hv=50.0)
         filename = f"{tmp_dir.name}/data_001_S{str(i + 1).zfill(3)}.h5"
         data.to_netcdf(filename, engine="h5netcdf")
+        data_2d.append(data)
+
+    data_2d = xr.concat(data_2d, dim="Polar")
 
     # Write scan coordinates to a csv file
     with open(f"{tmp_dir.name}/data_001_axis.csv", "w", newline="") as file:
@@ -114,6 +118,14 @@ def test_loader(qtbot, accept_dialog) -> None:
         data = make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=-i * 0.05)
         filename = f"{tmp_dir.name}/data_{str(i + 2).zfill(3)}.h5"
         data.to_netcdf(filename, engine="h5netcdf")
+
+    # Save map data
+    data_2d.to_netcdf(f"{tmp_dir.name}/data_006.h5", engine="h5netcdf")
+
+    # Save XPS data
+    data_2d.isel(Polar=0, ThetaX=0).to_netcdf(
+        f"{tmp_dir.name}/data_007.h5", engine="h5netcdf"
+    )
 
     # Save data with wrong file extension
     wrong_file: str = f"{tmp_dir.name}/data_010.nc"
@@ -321,7 +333,7 @@ def test_loader(qtbot, accept_dialog) -> None:
     assert np.allclose(mfdata["sample_temp"].values, 20.0 + np.arange(len(beta_coords)))
 
     df = erlab.io.summarize(display=False)
-    assert len(df.index) == 5
+    assert len(df.index) == 7
 
     # Test if pretty printing works
     erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
@@ -351,6 +363,9 @@ def test_loader(qtbot, accept_dialog) -> None:
     # Show data explorer
     manager.show_explorer()
     qtbot.wait_exposed(explorer)
+
+    # Enable preview
+    explorer._preview_check.setChecked(True)
 
     assert explorer.loader_name == "example"
     assert explorer._fs_model.file_system.path == pathlib.Path(tmp_dir.name)
@@ -390,19 +405,29 @@ def test_loader(qtbot, accept_dialog) -> None:
     assert explorer._text_edit.toPlainText() == explorer.TEXT_NONE_SELECTED
 
     # Multiple selection
-    select_files([1, 2, 3])
+    select_files([2, 3, 4])
 
     # Show multiple in manager
     explorer.to_manager()
 
     # Clear selection
-    select_files([1, 2, 3], deselect=True)
+    select_files([2, 3, 4], deselect=True)
 
     # Single selection
-    select_files([1])
+    select_files([2])
 
     # Show single in manager
     explorer.to_manager()
+
+    # Clear selection
+    select_files([2], deselect=True)
+
+    # Single selection multiple times
+    for i in range(1, 5):
+        select_files([i])
+        qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000)
+        qtbot.wait(500)
+        select_files([i], deselect=True)
 
     # Test sorting by different columns
     for i in range(4):

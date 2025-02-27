@@ -172,8 +172,8 @@ class LoaderBase(metaclass=_Loader):
 
     Notes
     -----
-    - Changing the name of a loader is not recommended as it may break existing code. If
-      a different name is required, Add an alias instead.
+    - Changing the name of a loader is not recommended as it may break existing code.
+      Pick a simple, descriptive name that is unlikely to change.
     - Loaders with the name prefixed with an underscore are not registered.
     """
 
