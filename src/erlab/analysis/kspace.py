@@ -81,7 +81,7 @@ def hv_func(kx, ky, kz, inner_potential, work_function, binding_energy):
         hν = E_k + \Phi - E_b
 
     where :math:`\Phi` is the work function of the system and :math:`E_b` is the binding
-    energy.
+    energy (negative for occupied states).
 
     """
     return (

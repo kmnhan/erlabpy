@@ -15,6 +15,7 @@ loader.
    :toctree:
 
    da30
+   erpes
    esm
    i05
    kriss
