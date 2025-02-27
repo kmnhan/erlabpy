@@ -2,6 +2,8 @@
 
 ### ✨ Features
 
+- **explorer:** add image preview and fine-grained loading control ([dca8fcb](https://github.com/kmnhan/erlabpy/commit/dca8fcb6f4803cce39436d7610c98c9ebe2e9403))
+
 - **imagetool:** implement non-dimension coordinate plotting ([48eac24](https://github.com/kmnhan/erlabpy/commit/48eac242e0d08fba8aa5e4f5e94c05d6db144003))
 
   1D Non-dimension coordinates associated with a data dimension can now be plotted alongside 1D slices on a secondary axis.
@@ -39,6 +41,10 @@
 - **io.plugins.da30:** zero DA offset for non-DA lens modes (#96) ([a3bdf84](https://github.com/kmnhan/erlabpy/commit/a3bdf8400278a1df9b38d40d7d9a33135bfb0961))
 
 ### ♻️ Code Refactor
+
+- **ktool:** adjust default lattice parameter spinbox step to 0.1 for finer adjustments ([d7cba80](https://github.com/kmnhan/erlabpy/commit/d7cba80eaba9111180d4f05e089931106b83650b))
+
+- improve error message for missing hvplot package ([a0c2460](https://github.com/kmnhan/erlabpy/commit/a0c246024f990f2862915517175a3a4e365c9b22))
 
 - **utils.array:** simplify decorators for 2D array checks ([7275e2e](https://github.com/kmnhan/erlabpy/commit/7275e2e0b276a401f377fb68df195891e61cac0e))
 
