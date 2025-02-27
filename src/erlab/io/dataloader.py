@@ -716,6 +716,91 @@ class LoaderBase(metaclass=_Loader):
 
         return data
 
+    @contextlib.contextmanager
+    def extend_loader(
+        self,
+        *,
+        coordinate_attrs: tuple[str, ...] | None = None,
+        average_attrs: tuple[str, ...] | None = None,
+        additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
+        | None = None,
+        overridden_attrs: tuple[str, ...] | None = None,
+        additional_coords: dict[str, str | int | float] | None = None,
+        overridden_coords: tuple[str, ...] | None = None,
+    ) -> Iterator[typing.Self]:
+        """Context manager that temporarily extends various loader attributes.
+
+        This context manager can be used to temporarily customize the behavior of the
+        data loader. This is particularly useful when loading data across multiple
+        files, where the :attr:`coordinate_attrs
+        <erlab.io.dataloader.LoaderBase.coordinate_attrs>` can be extended to include
+        additional information in the output data.
+
+        Parameters
+        ----------
+        coordinate_attrs
+            Additional attribute names to be treated as coordinates. Extends
+            :attr:`coordinate_attrs <erlab.io.dataloader.LoaderBase.coordinate_attrs>`.
+        average_attrs
+            Additional attribute names to be averaged over. Extends :attr:`average_attrs
+            <erlab.io.dataloader.LoaderBase.average_attrs>`.
+        additional_attrs
+            Additional attributes to be added to the data after loading. Extends
+            :attr:`additional_attrs <erlab.io.dataloader.LoaderBase.additional_attrs>`.
+        overridden_attrs
+            Additional keys in :attr:`additional_attrs
+            <erlab.io.dataloader.LoaderBase.additional_attrs>` that should override
+            existing attributes. Extends :attr:`overridden_attrs
+            <erlab.io.dataloader.LoaderBase.overridden_attrs>`.
+        additional_coords
+            Additional non-dimension coordinates to be added to the data after loading.
+            Extends :attr:`additional_coords
+            <erlab.io.dataloader.LoaderBase.additional_coords>`.
+        overridden_coords
+            Additional keys in :attr:`additional_coords
+            <erlab.io.dataloader.LoaderBase.additional_coords>` that should override
+            existing coordinates. Extends :attr:`overridden_coords
+            <erlab.io.dataloader.LoaderBase.overridden_coords>`.
+
+        Example
+        -------
+        .. code-block:: python
+
+            import erlab
+
+            erlab.io.set_loader("loader_name")
+
+            with erlab.io.extend_loader(coordinate_attrs=("scan_number",)):
+                data = erlab.io.load("file_name")
+
+        See Also
+        --------
+        :attr:`coordinate_attrs <erlab.io.dataloader.LoaderBase.coordinate_attrs>`
+            The attribute that is temporarily extended.
+        """
+        old_vals: dict[str, typing.Any] = {}
+        for attr, extend in {
+            "coordinate_attrs": coordinate_attrs,
+            "average_attrs": average_attrs,
+            "additional_attrs": additional_attrs,
+            "overridden_attrs": overridden_attrs,
+            "additional_coords": additional_coords,
+            "overridden_coords": overridden_coords,
+        }.items():
+            if extend is not None:
+                old_val = getattr(self, attr)
+                old_vals[attr] = old_val
+                if isinstance(extend, dict):
+                    new_val = old_val.copy() | extend
+                else:
+                    new_val = old_val + tuple(extend)
+                setattr(self, attr, new_val)
+        try:
+            yield self
+        finally:
+            for attr, old_val in old_vals.items():
+                setattr(self, attr, old_val)
+
     def summarize(
         self,
         data_dir: str | os.PathLike,
@@ -1472,6 +1557,7 @@ class LoaderBase(metaclass=_Loader):
                             Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list
                         ),
                         combine_attrs=self.combine_attrs,
+                        data_vars="all",
                         join="exact",
                     )
                 except Exception as e:
@@ -1523,7 +1609,12 @@ class LoaderBase(metaclass=_Loader):
                 ]
 
             # Magically combine the data
-            combined = xr.combine_by_coords(processed, combine_attrs=self.combine_attrs)
+            combined = xr.combine_by_coords(
+                processed,
+                combine_attrs=self.combine_attrs,
+                data_vars="all",
+                join="exact",
+            )
 
             if (
                 isinstance(combined, xr.Dataset)
@@ -1988,7 +2079,7 @@ class LoaderRegistry(_RegistryBase):
     @contextlib.contextmanager
     def loader_context(
         self, loader: str | None = None, data_dir: str | os.PathLike | None = None
-    ):
+    ) -> Iterator[LoaderBase]:
         """
         Context manager for the current data loader and data directory.
 
@@ -2029,7 +2120,7 @@ class LoaderRegistry(_RegistryBase):
             self.set_data_dir(data_dir)
 
         try:
-            yield self.current_loader
+            yield typing.cast(LoaderBase, self.current_loader)
         finally:
             if loader is not None:
                 self.set_loader(old_loader)
@@ -2068,6 +2159,7 @@ class LoaderRegistry(_RegistryBase):
         single: bool = False,
         combine: bool = True,
         parallel: bool = False,
+        progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
@@ -2109,8 +2201,30 @@ class LoaderRegistry(_RegistryBase):
             single=single,
             combine=combine,
             parallel=parallel,
+            progress=progress,
             load_kwargs=load_kwargs,
             **kwargs,
+        )
+
+    def extend_loader(
+        self,
+        *,
+        coordinate_attrs: tuple[str, ...] | None = None,
+        average_attrs: tuple[str, ...] | None = None,
+        additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
+        | None = None,
+        overridden_attrs: tuple[str, ...] | None = None,
+        additional_coords: dict[str, str | int | float] | None = None,
+        overridden_coords: tuple[str, ...] | None = None,
+    ) -> Iterator[LoaderBase]:
+        loader, _ = self._get_current_defaults()
+        return loader.extend_loader(
+            coordinate_attrs=coordinate_attrs,
+            average_attrs=average_attrs,
+            additional_attrs=additional_attrs,
+            overridden_attrs=overridden_attrs,
+            additional_coords=additional_coords,
+            overridden_coords=overridden_coords,
         )
 
     def summarize(
@@ -2195,6 +2309,7 @@ class LoaderRegistry(_RegistryBase):
         return erlab.utils.formatting.format_html_table(rows, header_rows=1)
 
     load.__doc__ = LoaderBase.load.__doc__
+    extend_loader.__doc__ = LoaderBase.extend_loader.__doc__
     summarize.__doc__ = LoaderBase.summarize.__doc__
 
 
