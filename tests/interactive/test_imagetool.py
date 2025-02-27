@@ -203,8 +203,9 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
             "dims": ("y", "x"),
             "bins": [[2, 2], [2, 2]],
             "indices": [[2, 2], [2, 2]],
-            "values": [[2.0, 2.0], [2.0, 2.0]],
+            "values": [[2, 2], [2, 2]],
             "snap_to_data": True,
+            "twin_coord_names": (),
         },
         "current_cursor": 1,
         "manual_limits": {},
@@ -523,7 +524,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
                 if data_item.is_vertical
                 else data_item.getData()[1]
             )
-            assert_almost_equal(yvals.mean(), 1.0)
+            assert_almost_equal(np.nanmean(yvals), 1.0)
         profile_axis.set_normalize(False)
 
     # Test 2D crop
