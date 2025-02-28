@@ -154,6 +154,7 @@ def edge(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -186,6 +187,9 @@ def edge(
         attributes, by default `None`
     vary_temp
         Whether to fit the temperature value during fitting, by default `False`.
+    bkg_slope
+        Whether to include a linear background above the Fermi level. If `False`, the
+        background above the Fermi level is fit with a constant. Defaults to `True`.
     resolution
         The initial resolution value to use for fitting, by default `0.02`.
     fast
@@ -263,8 +267,11 @@ def edge(
     if parallel_kw is None:
         parallel_kw = {}
 
+    if not bkg_slope:
+        params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
+
     if fixed_center is not None:
-        params["center"].set(value=fixed_center, vary=False)
+        params["back1"] = lmfit.Parameter("center", value=fixed_center, vary=False)
 
     # Assuming Poisson noise, the weights are the square root of the counts.
     weights = 1 / np.sqrt(np.asarray(gold_sel.sum("eV").values))
@@ -480,6 +487,7 @@ def poly(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -492,20 +500,24 @@ def poly(
     fig: matplotlib.figure.Figure | None = None,
     scale_covar: bool = True,
     scale_covar_edge: bool = True,
-) -> lmfit.model.ModelResult | tuple[lmfit.model.ModelResult, xr.DataArray]:
-    center_arr, center_stderr = edge(
-        gold,
-        angle_range=angle_range,
-        eV_range=eV_range,
-        bin_size=bin_size,
-        temp=temp,
-        vary_temp=vary_temp,
-        resolution=resolution,
-        fast=fast,
-        method=method,
-        normalize=normalize,
-        parallel_kw=parallel_kw,
-        scale_covar=scale_covar_edge,
+) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
+    center_arr, center_stderr = typing.cast(
+        tuple[xr.DataArray, xr.DataArray],
+        edge(
+            gold,
+            angle_range=angle_range,
+            eV_range=eV_range,
+            bin_size=bin_size,
+            temp=temp,
+            vary_temp=vary_temp,
+            bkg_slope=bkg_slope,
+            resolution=resolution,
+            fast=fast,
+            method=method,
+            normalize=normalize,
+            parallel_kw=parallel_kw,
+            scale_covar=scale_covar_edge,
+        ),
     )
 
     modelresult = poly_from_edge(
@@ -535,6 +547,7 @@ def spline(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -546,18 +559,22 @@ def spline(
     fig: matplotlib.figure.Figure | None = None,
     scale_covar_edge: bool = True,
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
-    center_arr, center_stderr = edge(
-        gold,
-        angle_range=angle_range,
-        eV_range=eV_range,
-        bin_size=bin_size,
-        temp=temp,
-        vary_temp=vary_temp,
-        resolution=resolution,
-        fast=fast,
-        method=method,
-        parallel_kw=parallel_kw,
-        scale_covar=scale_covar_edge,
+    center_arr, center_stderr = typing.cast(
+        tuple[xr.DataArray, xr.DataArray],
+        edge(
+            gold,
+            angle_range=angle_range,
+            eV_range=eV_range,
+            bin_size=bin_size,
+            temp=temp,
+            vary_temp=vary_temp,
+            bkg_slope=bkg_slope,
+            resolution=resolution,
+            fast=fast,
+            method=method,
+            parallel_kw=parallel_kw,
+            scale_covar=scale_covar_edge,
+        ),
     )
 
     spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
