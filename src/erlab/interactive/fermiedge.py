@@ -79,19 +79,23 @@ class EdgeFitter(QtCore.QThread):
     def run(self) -> None:
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
-            self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
-                gold=self.data,
-                angle_range=self.x_range,
-                eV_range=self.y_range,
-                bin_size=(self.params["Bin x"], self.params["Bin y"]),
-                temp=self.params["T (K)"],
-                vary_temp=not self.params["Fix T"],
-                resolution=self.params["Resolution"],
-                fast=self.params["Fast"],
-                method=self.params["Method"],
-                scale_covar=self.params["Scale cov"],
-                progress=False,
-                parallel_obj=self.parallel_obj,
+            self.edge_center, self.edge_stderr = typing.cast(
+                tuple[xr.DataArray, xr.DataArray],
+                erlab.analysis.gold.edge(
+                    gold=self.data,
+                    angle_range=self.x_range,
+                    eV_range=self.y_range,
+                    bin_size=(self.params["Bin x"], self.params["Bin y"]),
+                    temp=self.params["T (K)"],
+                    vary_temp=not self.params["Fix T"],
+                    bkg_slope=self.params["Linear"],
+                    resolution=self.params["Resolution"],
+                    fast=self.params["Fast"],
+                    method=self.params["Method"],
+                    scale_covar=self.params["Scale cov"],
+                    progress=False,
+                    parallel_obj=self.parallel_obj,
+                ),
             )
         self.sigFinished.emit()
 
@@ -486,7 +490,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             degree=params["Degree"],
             method=self.params_edge.values["Method"],
             scale_covar=params["Scale cov"],
-        )
+        ).modelfit_results.values.item()
         target = self.data if self.data_corr is None else self.data_corr
         self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
