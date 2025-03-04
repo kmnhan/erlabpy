@@ -1,13 +1,7 @@
-﻿Lattices (:mod:`erlab.lattice`)
-===============================
+# Lattices ({mod}`erlab.lattice`)
 
+```{eval-rst}
 .. automodule:: erlab.lattice
-
-
-
-
-
-
 
    .. rubric:: Functions
 
@@ -18,3 +12,4 @@
       avec2abc
       to_reciprocal
       to_real
+```

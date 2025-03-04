@@ -8,8 +8,7 @@ package.
 
 .. currentmodule:: erlab.utils
 
-Modules
-=======
+.. rubric:: Modules
 
 .. autosummary::
    :toctree: generated
