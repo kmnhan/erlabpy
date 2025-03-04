@@ -4,7 +4,7 @@ Welcome to ERLabPy! This documentation will guide you through the installation p
 
 If you are new to programming with Python, check out [Scientific Python Lectures](https://github.com/jrjohansson/scientific-python-lectures) as a great starting point.
 
-Data structures in ERLabPy are represented using [xarray](https://docs.xarray.dev/){reference-type="ref" reference="hoyer2017xarray"}, which provides a powerful data structure for working with multi-dimensional arrays. Be sure to review the [xarray tutorial](https://tutorial.xarray.dev/) and the [xarray user guide](https://docs.xarray.dev/en/stable/index.html) to get familiar with it.
+Data structures in ERLabPy are represented using [xarray](https://docs.xarray.dev/){cite:p}`hoyer2017xarray`, which provides a powerful data structure for working with multi-dimensional arrays. Be sure to review the [xarray tutorial](https://tutorial.xarray.dev/) and the [xarray user guide](https://docs.xarray.dev/en/stable/index.html) to get familiar with it.
 
 ## Installing
 
@@ -14,9 +14,9 @@ Parts of this section are based on [Scipy’s installation guide](https://www.sc
 
 The recommended method of installation depends on your preferred workflow. The common workflows can roughly be broken down into the following categories:
 
-- *Project-based* (e.g. ``uv``, ``pixi``) **(recommended)**
-- *Environment-based* (e.g. ``pip``, ``conda``) **(the traditional workflow)**
-- *From source* **(for debugging and development)**
+- **Project-based** (e.g. ``uv``, ``pixi``) *(recommended)*
+- **Environment-based** (e.g. ``pip``, ``conda``) *(the traditional workflow)*
+- **From source** *(for debugging and development)*
 
 In project-based workflows, a project is a directory containing a manifest file describing the project, a lock-file describing the exact dependencies of the project, and the project’s (potentially multiple) environments.
 
