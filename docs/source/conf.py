@@ -56,6 +56,7 @@ extensions = [
     "myst_parser",
     "notfound.extension",
 ]
+myst_enable_extensions = ["colon_fence"]
 
 notfound_context = {
     "title": "Page not found",
@@ -79,8 +80,6 @@ default_role = "obj"
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
 highlight_language = "python3"
-
-autosectionlabel_prefix_document = True
 
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html

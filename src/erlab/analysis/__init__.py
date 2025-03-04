@@ -3,8 +3,7 @@ Various functions for data analysis.
 
 .. currentmodule:: erlab.analysis
 
-Modules
-=======
+.. rubric:: Modules
 
 .. autosummary::
    :toctree: generated

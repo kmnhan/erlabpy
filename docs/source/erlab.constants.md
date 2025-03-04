@@ -1,10 +1,7 @@
-﻿Constants (:mod:`erlab.constants`)
-==================================
+# Constants ({mod}`erlab.constants`)
 
-
+```{eval-rst}
 .. automodule:: erlab.constants
-
-
 
    .. rubric:: Module Attributes
 
@@ -30,13 +27,10 @@
       kb
       kb_eV
 
-
-
-
-
    .. rubric:: Functions
 
    .. autosummary::
 
       conv_eV_nm
       conv_watt_photons
+```
