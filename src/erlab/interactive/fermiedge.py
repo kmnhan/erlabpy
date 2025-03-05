@@ -79,19 +79,23 @@ class EdgeFitter(QtCore.QThread):
     def run(self) -> None:
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
-            self.edge_center, self.edge_stderr = erlab.analysis.gold.edge(
-                gold=self.data,
-                angle_range=self.x_range,
-                eV_range=self.y_range,
-                bin_size=(self.params["Bin x"], self.params["Bin y"]),
-                temp=self.params["T (K)"],
-                vary_temp=not self.params["Fix T"],
-                resolution=self.params["Resolution"],
-                fast=self.params["Fast"],
-                method=self.params["Method"],
-                scale_covar=self.params["Scale cov"],
-                progress=False,
-                parallel_obj=self.parallel_obj,
+            self.edge_center, self.edge_stderr = typing.cast(
+                tuple[xr.DataArray, xr.DataArray],
+                erlab.analysis.gold.edge(
+                    gold=self.data,
+                    angle_range=self.x_range,
+                    eV_range=self.y_range,
+                    bin_size=(self.params["Bin x"], self.params["Bin y"]),
+                    temp=self.params["T (K)"],
+                    vary_temp=not self.params["Fix T"],
+                    bkg_slope=self.params["Linear"],
+                    resolution=self.params["Resolution"],
+                    fast=self.params["Fast"],
+                    method=self.params["Method"],
+                    scale_covar=self.params["Scale cov"],
+                    progress=False,
+                    parallel_obj=self.parallel_obj,
+                ),
             )
         self.sigFinished.emit()
 
@@ -202,7 +206,18 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "singleStep": 0.001,
                     "decimals": 5,
                 },
-                "Fast": {"qwtype": "chkbox", "checked": False},
+                "Fast": {
+                    "qwtype": "chkbox",
+                    "checked": False,
+                    "toolTip": "If checked, fit with a broadened step function "
+                    "instead of Fermi-Dirac",
+                },
+                "Linear": {
+                    "qwtype": "chkbox",
+                    "checked": True,
+                    "toolTip": "If unchecked, fixes the slope of the background "
+                    "above the Fermi level to zero.",
+                },
                 "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
                 "# CPU": {
@@ -231,7 +246,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_poly = erlab.interactive.utils.ParameterGroup(
             {
                 "Degree": {"qwtype": "spin", "value": 4, "range": (1, 20)},
-                "Method": {"qwtype": "combobox", "items": LMFIT_METHODS},
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
                 "Residuals": {"qwtype": "chkbox", "checked": False},
                 "Corrected": {"qwtype": "chkbox", "checked": False},
@@ -474,9 +488,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             center=self.edge_center,
             weights=1 / self.edge_stderr,
             degree=params["Degree"],
-            method=params["Method"],
+            method=self.params_edge.values["Method"],
             scale_covar=params["Scale cov"],
-        )
+        ).modelfit_results.values.item()
         target = self.data if self.data_corr is None else self.data_corr
         self.corrected = erlab.analysis.gold.correct_with_edge(
             target, self.result, plot=False, shift_coords=params["Shift coords"]
@@ -525,8 +539,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             "eV_range": (y0, y1),
             "bin_size": (p0["Bin x"], p0["Bin y"]),
             "temp": p0["T (K)"],
-            "method": p0["Method"],
+            "vary_temp": not p0["Fix T"],
+            "bkg_slope": p0["Linear"],
             "resolution": p0["Resolution"],
+            "fast": p0["Fast"],
+            "method": p0["Method"],
+            "scale_covar_edge": p0["Scale cov"],
         }
 
         match mode:
@@ -541,13 +559,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     arg_dict["lam"] = p1["lambda"]
 
         if p0["Fast"]:
-            arg_dict["fast"] = True
             del arg_dict["temp"]
-        elif not p0["Fix T"]:
-            arg_dict["vary_temp"] = True
-
-        if not p0["Scale cov"]:
-            arg_dict["scale_covar_edge"] = False
 
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
