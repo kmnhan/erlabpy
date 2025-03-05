@@ -55,7 +55,7 @@ extensions = [
     "myst_nb",
     "notfound.extension",
 ]
-myst_enable_extensions = ["colon_fence"]
+myst_enable_extensions = ["colon_fence", "dollarmath"]
 suppress_warnings = [
     "mystnb.unknown_mime_type",  # holoviews rendering
 ]
