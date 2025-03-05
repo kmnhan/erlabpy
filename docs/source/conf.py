@@ -44,7 +44,6 @@ extensions = [
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     # "sphinx.ext.inheritance_diagram",
-    "nbsphinx",
     "sphinx.ext.linkcode",
     "sphinx_copybutton",
     "sphinx_design",
@@ -53,9 +52,15 @@ extensions = [
     "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
-    "myst_parser",
+    "myst_nb",
     "notfound.extension",
 ]
+myst_enable_extensions = ["colon_fence", "dollarmath"]
+suppress_warnings = [
+    "mystnb.unknown_mime_type",  # holoviews rendering
+]
+nb_execution_mode = "cache"
+nb_execution_timeout = -1
 
 notfound_context = {
     "title": "Page not found",
@@ -79,8 +84,6 @@ default_role = "obj"
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
 highlight_language = "python3"
-
-autosectionlabel_prefix_document = True
 
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html

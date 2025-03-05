@@ -6,8 +6,7 @@ Everything related to plotting.
 For some examples on how to use the plotting functions, see the :doc:`User Guide
 <user-guide/plotting>`.
 
-Modules
-=======
+.. rubric:: Modules
 
 This module is organized into several submodules, each providing a different set of
 tools for plotting. However, commonly used functions are available directly in the
