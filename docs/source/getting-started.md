@@ -181,8 +181,6 @@ See the [user-guide](./user-guide/index) to get started with ERLabPy!
 
 ## Optional dependencies
 
-For instructions on how to install optional dependencies with pip, see the [installing](#installing) section.
-
 For a full list of dependencies and optional dependency groups, check the `[project]` and `[project.optional-dependencies]` sections in [pyproject.toml](https://github.com/kmnhan/erlabpy/blob/main/pyproject.toml):
 
 ```{literalinclude} ../../pyproject.toml

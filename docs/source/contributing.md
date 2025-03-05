@@ -24,7 +24,7 @@ When reporting a bug, see this [stackoverflow article for tips on writing a good
 report](https://stackoverflow.com/help/mcve), and this [article on minimal bug
 reports](https://matthewrocklin.com/minimal-bug-reports).
 
-(contributing/creating-a-development-environment)=
+(creating-a-development-environment)=
 
 ## Creating a development environment
 
@@ -62,7 +62,7 @@ GitHub:
 - the [GitHub documentation for collaborating with pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests).
 - the [GitHub documentation for working with forks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks).
 
-(contributing/cloning-the-repository)=
+(cloning-the-repository)=
 
 ### Cloning the repository
 
@@ -84,7 +84,7 @@ GitHub:
    This creates the directory `erlabpy` and connects your repository to the upstream
    (main project) *erlabpy* repository.
 
-(contributing/installing-uv)=
+(installing-uv)=
 
 ### Installing uv
 
@@ -114,14 +114,14 @@ reflected in the package without having to reinstall it. Before installing:
 - For minor updates with editable installs, it is sufficient to just [update the main
   branch](#update-the-main-branch) and run `uv sync` again.
 
-(contributing/development-workflow)=
+(development-workflow)=
 
 ## Development workflow
 
 Before starting any development, make sure you have [created a local development
 environment](#creating-a-development-environment).
 
-(contributing/update-the-main-branch)=
+(update-the-main-branch)=
 
 ### Update the `main` branch
 
@@ -284,7 +284,7 @@ these steps:
    including the new plugin, test files, and updated `tests/conftest.py` to your
    development branch, and create a pull request.
 
-(contributing/code-standards)=
+(code-standards)=
 
 ## Code standards
 
@@ -327,7 +327,7 @@ these steps:
             self.setupUi(self)
     ```
 
-(contributing/documentation)=
+(documentation)=
 
 ## Documentation
 
@@ -372,7 +372,7 @@ Some other important things to know about the docs:
   - `~`, for subsections
   - `**bold**`, for **bold** text
 
-(contributing/building-the-documentation-locally)=
+(building-the-documentation-locally)=
 
 ### Building the documentation locally
 
