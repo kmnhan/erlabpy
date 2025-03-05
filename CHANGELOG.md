@@ -2,6 +2,12 @@
 
 ### ✨ Features
 
+- **io:** allow temporary overriding of loader properties (#101) ([bd4c50b](https://github.com/kmnhan/erlabpy/commit/bd4c50bb7cde93ea9a0d88dfb442349f18985fe0))
+
+  Adds a new context manager, `erlab.io.extend_loader`, for temporarily overriding data loader behaviour.
+
+  This is especially useful for data across multiple files, where the user can specify additional attributes to treat as coordinates, allowing them to be concatenated.
+
 - **explorer:** add image preview and fine-grained loading control ([dca8fcb](https://github.com/kmnhan/erlabpy/commit/dca8fcb6f4803cce39436d7610c98c9ebe2e9403))
 
 - **imagetool:** implement non-dimension coordinate plotting ([48eac24](https://github.com/kmnhan/erlabpy/commit/48eac242e0d08fba8aa5e4f5e94c05d6db144003))
