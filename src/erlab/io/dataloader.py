@@ -720,6 +720,7 @@ class LoaderBase(metaclass=_Loader):
     def extend_loader(
         self,
         *,
+        name_map: dict[str, str | Iterable[str]] | None = None,
         coordinate_attrs: tuple[str, ...] | None = None,
         average_attrs: tuple[str, ...] | None = None,
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
@@ -738,6 +739,8 @@ class LoaderBase(metaclass=_Loader):
 
         Parameters
         ----------
+        name_map
+            Extends :attr:`name_map <erlab.io.dataloader.LoaderBase.name_map>`.
         coordinate_attrs
             Extends :attr:`coordinate_attrs
             <erlab.io.dataloader.LoaderBase.coordinate_attrs>`.
@@ -775,6 +778,7 @@ class LoaderBase(metaclass=_Loader):
         """
         old_vals: dict[str, typing.Any] = {}
         for attr, extend in {
+            "name_map": name_map,
             "coordinate_attrs": coordinate_attrs,
             "average_attrs": average_attrs,
             "additional_attrs": additional_attrs,
@@ -2203,6 +2207,7 @@ class LoaderRegistry(_RegistryBase):
 
     def extend_loader(
         self,
+        name_map: dict[str, str | Iterable[str]] | None = None,
         coordinate_attrs: tuple[str, ...] | None = None,
         average_attrs: tuple[str, ...] | None = None,
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
@@ -2213,6 +2218,7 @@ class LoaderRegistry(_RegistryBase):
     ) -> Iterator[LoaderBase]:
         loader, _ = self._get_current_defaults()
         return loader.extend_loader(
+            name_map=name_map,
             coordinate_attrs=coordinate_attrs,
             average_attrs=average_attrs,
             additional_attrs=additional_attrs,

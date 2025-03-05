@@ -328,12 +328,14 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Interactive summary
     erlab.io.loaders.current_loader._isummarize(df)
+    qtbot.wait(100)
 
     # Interactive summary with imagetool manager
     manager = ImageToolManager()
     qtbot.addWidget(manager)
 
     erlab.io.loaders.current_loader._isummarize(df)
+    qtbot.wait(100)
 
     # Test data explorer
 
