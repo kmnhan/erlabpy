@@ -230,6 +230,7 @@ class ArraySlicer(QtCore.QObject):
         if (obj_original is not None) and reset:
             # If same coords, keep cursors
             if check_cursors_compatible(obj_original, self._obj):
+                self._obj = self._obj.transpose(*obj_original.dims)
                 reset = False
             del obj_original
 

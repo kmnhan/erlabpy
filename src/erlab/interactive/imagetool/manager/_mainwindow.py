@@ -223,6 +223,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
+        self.reload_action = QtWidgets.QAction("Reload Data", self)
+        self.reload_action.triggered.connect(self.reload_selected)
+        self.reload_action.setToolTip("Reload data from file for selected windows")
+        self.reload_action.setVisible(False)
+
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
             QtWidgets.QMenu, menu_bar.addMenu("&File")
@@ -519,6 +524,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.concat_action.setEnabled(multiple_selected)
         self.store_action.setEnabled(something_selected and only_unarchived)
 
+        self.reload_action.setVisible(
+            something_selected
+            and only_unarchived
+            and all(
+                self._tool_wrappers[s].slicer_area.reloadable
+                for s in selection_unarchived
+            )
+        )
+
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
 
@@ -586,6 +600,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Hide selected ImageTool windows."""
         for index in self.list_view.selected_tool_indices:
             self._tool_wrappers[index].close()
+
+    @QtCore.Slot()
+    def reload_selected(self) -> None:
+        """Reload data in selected ImageTool windows."""
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].slicer_area.reload()
 
     @QtCore.Slot()
     def remove_selected(self) -> None:

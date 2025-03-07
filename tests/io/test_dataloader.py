@@ -364,7 +364,6 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Show data explorer
     manager.show_explorer()
-    qtbot.wait_exposed(explorer)
 
     # Enable preview
     explorer._preview_check.setChecked(True)
@@ -421,6 +420,18 @@ def test_loader(qtbot, accept_dialog) -> None:
     # Show single in manager
     explorer.to_manager()
 
+    qtbot.wait_until(lambda: manager.ntools == 4)
+
+    # Reload data in manager
+    qmodelindex = manager.list_view._model._row_index(3)
+    manager.list_view.selectionModel().select(
+        QtCore.QItemSelection(qmodelindex, qmodelindex),
+        QtCore.QItemSelectionModel.SelectionFlag.Select,
+    )
+    manager.reload_action.trigger()
+    qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged)
+    qtbot.wait(100)
+
     # Clear selection
     select_files([2], deselect=True)
 
@@ -428,7 +439,6 @@ def test_loader(qtbot, accept_dialog) -> None:
     for i in range(1, 5):
         select_files([i])
         qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000)
-        qtbot.wait(500)
         select_files([i], deselect=True)
 
     # Test sorting by different columns

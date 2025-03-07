@@ -568,12 +568,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
+        _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
 
         self.initialize_actions()
 
-        self._in_manager: bool = _in_manager
+        self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
+
+        self._disable_reload: bool = _disable_reload
+        # For data like multiregion scans, one file may correspond to multiple windows.
+        # In this case, we can't reliably reload the data from the file path, so we
+        # disable reloading altogether when this flag is set by the manager.
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -1295,6 +1301,60 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
         self.flush_history()
+
+    @property
+    def reloadable(self) -> bool:
+        """Check if the data can be reloaded from the file.
+
+        The data can be reloaded if the data was loaded from a file that still exists
+        and the data loader name is stored in the data attributes.
+
+        Returns
+        -------
+        bool
+            `True` if the data can be reloaded, `False` otherwise.
+        """
+        if self._disable_reload:
+            return False
+        return (
+            (self._file_path is not None)
+            and ("data_loader_name" in self._data.attrs)
+            and self._file_path.exists()
+        )
+
+    def _fetch_for_reload(self) -> xr.DataArray:
+        reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
+            typing.cast(pathlib.Path, self._file_path)
+        )
+        if not isinstance(reloaded, xr.DataArray):
+            raise TypeError(
+                "Reloading data opened from files that contain "
+                "more than one DataArray is not supported"
+            )
+        return reloaded
+
+    def reload(self) -> None:
+        """Reload the data from the file it was loaded from, using the same loader.
+
+        Silently fails if the data cannot be reloaded. If an error occurs while
+        reloading the data, a message is shown to the user.
+
+        See Also
+        --------
+        :attr:`reloadable`
+        """
+        if self.reloadable:
+            try:
+                self.set_data(self._fetch_for_reload(), file_path=self._file_path)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "An error occurred while reloading data:\n\n"
+                    f"{type(e).__name__}: {e}",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                return
 
     def update_values(
         self, values: npt.NDArray | xr.DataArray, update: bool = True
