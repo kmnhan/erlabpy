@@ -237,13 +237,24 @@ class DataFilterDialog(_DataManipulationDialog):
 
 
 class RotationDialog(DataTransformDialog):
-    suffix = " Rotated"
     enable_copy = True
+
+    @property
+    def suffix(self) -> str:
+        angle_str = str(self._rotate_params["angle"]).replace(".", "p")
+        return f"_rot{angle_str}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
 
     @property
     def _rotate_params(self) -> dict[str, typing.Any]:
         return {
-            "angle": self.angle_spin.value(),
+            "angle": float(
+                np.round(self.angle_spin.value(), self.angle_spin.decimals())
+            ),
             "axes": typing.cast(
                 tuple[str, str], tuple(self.slicer_area.main_image.axis_dims_uniform)
             ),
