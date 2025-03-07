@@ -68,7 +68,15 @@ def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     return arr.transpose(1, 2, 3, 0)
 
 
-@numba.njit(numba.boolean(numba.float64[::1]), cache=True)
+@numba.njit(
+    [
+        numba.boolean(numba.float64[::1]),
+        numba.boolean(numba.float32[::1]),
+        numba.boolean(numba.int64[::1]),
+        numba.boolean(numba.int32[::1]),
+    ],
+    cache=True,
+)
 def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
     dif = np.diff(arr)
     if dif[0] == 0.0:
@@ -79,8 +87,10 @@ def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
 
 @numba.njit(
     [
-        numba.int64(numba.float32[::1], numba.float32),
         numba.int64(numba.float64[::1], numba.float64),
+        numba.int64(numba.float32[::1], numba.float32),
+        numba.int64(numba.int64[::1], numba.int64),
+        numba.int64(numba.int32[::1], numba.int32),
     ],
     cache=True,
 )
@@ -89,11 +99,17 @@ def _index_of_value_nonuniform(arr: npt.NDArray[np.floating], val: np.floating) 
 
 
 @numba.njit(
-    [numba.float64(numba.float32[::1]), numba.float64(numba.float64[::1])], cache=True
+    [
+        numba.float64(numba.float64[::1]),
+        numba.float32(numba.float32[::1]),
+        numba.int64(numba.int64[::1]),
+        numba.int32(numba.int32[::1]),
+    ],
+    cache=True,
 )
-def _avg_nonzero_abs_diff(arr: npt.NDArray[np.floating]) -> float:
+def _avg_nonzero_abs_diff(arr: npt.NDArray[np.number]) -> np.number:
     diff = np.diff(arr)
 
     if np.all(diff == 0.0):  # Prevent division by zero
-        return 0.0
+        return diff[0]
     return np.mean(diff[diff != 0])

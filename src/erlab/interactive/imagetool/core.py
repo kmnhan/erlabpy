@@ -81,9 +81,12 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
+def _squeezed_ndim(data: xr.DataArray) -> int:
+    return len(tuple(s for s in data.shape if s != 1))
+
+
 def _supported_shape(data: xr.DataArray) -> bool:
-    shape_squeezed = tuple(s for s in data.shape if s != 1)
-    return len(shape_squeezed) in (2, 3, 4)
+    return _squeezed_ndim(data) in (2, 3, 4)
 
 
 def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
@@ -565,12 +568,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
+        _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
 
         self.initialize_actions()
 
-        self._in_manager: bool = _in_manager
+        self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
+
+        self._disable_reload: bool = _disable_reload
+        # For data like multiregion scans, one file may correspond to multiple windows.
+        # In this case, we can't reliably reload the data from the file path, so we
+        # disable reloading altogether when this flag is set by the manager.
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -1256,9 +1265,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
+        ndim_changed: bool = True
         try:
             if hasattr(self, "_array_slicer"):
+                if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
+                    ndim_changed = False
                 self._array_slicer.set_array(self._data, reset=True)
+
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
                     erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
@@ -1276,7 +1289,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.connect_signals()
 
-        self.adjust_layout()
+        if ndim_changed:
+            self.adjust_layout()
 
         if self.current_cursor > self.n_cursors - 1:
             self.set_current_cursor(self.n_cursors - 1, update=False)
@@ -1287,6 +1301,60 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._colorbar.cb.setImageItem()
         self.lock_levels(False)
         self.flush_history()
+
+    @property
+    def reloadable(self) -> bool:
+        """Check if the data can be reloaded from the file.
+
+        The data can be reloaded if the data was loaded from a file that still exists
+        and the data loader name is stored in the data attributes.
+
+        Returns
+        -------
+        bool
+            `True` if the data can be reloaded, `False` otherwise.
+        """
+        if self._disable_reload:
+            return False
+        return (
+            (self._file_path is not None)
+            and ("data_loader_name" in self._data.attrs)
+            and self._file_path.exists()
+        )
+
+    def _fetch_for_reload(self) -> xr.DataArray:
+        reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
+            typing.cast(pathlib.Path, self._file_path)
+        )
+        if not isinstance(reloaded, xr.DataArray):
+            raise TypeError(
+                "Reloading data opened from files that contain "
+                "more than one DataArray is not supported"
+            )
+        return reloaded
+
+    def reload(self) -> None:
+        """Reload the data from the file it was loaded from, using the same loader.
+
+        Silently fails if the data cannot be reloaded. If an error occurs while
+        reloading the data, a message is shown to the user.
+
+        See Also
+        --------
+        :attr:`reloadable`
+        """
+        if self.reloadable:
+            try:
+                self.set_data(self._fetch_for_reload(), file_path=self._file_path)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "An error occurred while reloading data:\n\n"
+                    f"{type(e).__name__}: {e}",
+                    QtWidgets.QMessageBox.StandardButton.Ok,
+                )
+                return
 
     def update_values(
         self, values: npt.NDArray | xr.DataArray, update: bool = True

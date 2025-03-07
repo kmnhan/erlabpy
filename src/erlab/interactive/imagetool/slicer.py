@@ -29,6 +29,28 @@ class ArraySlicerState(typing.TypedDict):
     twin_coord_names: typing.NotRequired[tuple[Hashable, ...]]
 
 
+def check_cursors_compatible(old: xr.DataArray, new: xr.DataArray) -> bool:
+    """Check if the cursor positions of the old array can be applied to the new array.
+
+    The two arrays must have the same dimensions, and the coordinate values for each
+    dimension of the old array must be included in the coordinate values of the same
+    dimension in the new array.
+
+    Parameters
+    ----------
+    old
+        The original DataArray.
+    new
+        The new DataArray.
+    """
+    if set(old.dims) != set(new.dims):
+        return False
+    for d in old.dims:
+        if not np.isin(old[d].values, new[d].values, assume_unique=True).all():
+            return False
+    return True
+
+
 def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
     """Ensure that all dimensions of the given DataArray are uniform.
 
@@ -88,6 +110,13 @@ def restore_nonuniform_dims(darr: xr.DataArray) -> xr.DataArray:
                 nonuniform_dims.append(d)
                 darr = darr.swap_dims({d: stripped})
     return darr.drop_vars(nonuniform_dims)
+
+
+def _get_inc(coord):
+    try:
+        return coord[1] - coord[0]
+    except IndexError:
+        return 0
 
 
 class ArraySlicer(QtCore.QObject):
@@ -188,13 +217,22 @@ class ArraySlicer(QtCore.QObject):
             If True, reset cursors, bins, indices, and values.
 
         """
+        obj_original: xr.DataArray | None = None
         if hasattr(self, "_obj"):
+            obj_original = self._obj.copy()
             del self._obj
 
         if validate:
             self._obj: xr.DataArray = self.validate_array(xarray_obj)
         else:
             self._obj = xarray_obj
+
+        if (obj_original is not None) and reset:
+            # If same coords, keep cursors
+            if check_cursors_compatible(obj_original, self._obj):
+                self._obj = self._obj.transpose(*obj_original.dims)
+                reset = False
+            del obj_original
 
         # TODO: This is not robust, may break if user supplies dim that ends with "_idx"
         # Need to find a better way to handle this.
@@ -270,11 +308,11 @@ class ArraySlicer(QtCore.QObject):
                 (
                     erlab.interactive.imagetool.fastslicing._avg_nonzero_abs_diff(coord)
                     if i in self._nonuniform_axes
-                    else coord[1] - coord[0]
+                    else _get_inc(coord)
                 )
                 for i, coord in enumerate(self.coords)
             )
-        return tuple(coord[1] - coord[0] for coord in self.coords)
+        return tuple(_get_inc(coord) for coord in self.coords)
 
     @functools.cached_property
     def incs_uniform(self) -> tuple[np.floating, ...]:
@@ -282,7 +320,7 @@ class ArraySlicer(QtCore.QObject):
 
         Non-uniform dimensions will increment by 1.
         """
-        return tuple(coord[1] - coord[0] for coord in self.coords_uniform)
+        return tuple(_get_inc(coord) for coord in self.coords_uniform)
 
     @functools.cached_property
     def lims(self) -> tuple[tuple[np.floating, np.floating], ...]:

@@ -11,7 +11,7 @@ __all__ = [
 import functools
 import importlib
 import typing
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Collection, Hashable, Mapping
 
 import numpy as np
 import xarray as xr
@@ -600,7 +600,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out, keys=coord_order, dims_first=True
         )
 
-    def average(self, dim: Hashable | Iterable[Hashable]) -> xr.DataArray:
+    def average(self, dim: str | Collection[Hashable]) -> xr.DataArray:
         """Average the data along the specified dimension(s).
 
         The difference between this method and :meth:`xarray.DataArray.mean` is that
@@ -618,8 +618,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         DataArray
             The data averaged along the specified dimension(s).
         """
-        if isinstance(dim, Hashable):
-            dim = [dim]
+        if isinstance(dim, str):
+            dim = (dim,)
 
         qsel_kwargs: dict[Hashable, float] = {}
 

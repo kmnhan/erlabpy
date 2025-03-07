@@ -569,6 +569,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu.addAction(manager.remove_action)
         self._menu.addAction(manager.archive_action)
         self._menu.addAction(manager.unarchive_action)
+        self._menu.addAction(manager.reload_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)

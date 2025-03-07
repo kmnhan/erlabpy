@@ -16,9 +16,12 @@ from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.core import _AssociatedCoordsDialog, _parse_input
 from erlab.interactive.imagetool.dialogs import (
+    AverageDialog,
     CropDialog,
+    CropToViewDialog,
     NormalizeDialog,
     RotationDialog,
+    SymmetrizeDialog,
 )
 
 _TEST_DATA: dict[str, xr.DataArray] = {
@@ -61,7 +64,7 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
         dims=["x", "y"],
         coords={
             "x": np.arange(5, dtype=coord_dtype),
-            "y": np.arange(5, dtype=coord_dtype),
+            "y": np.array([1, 3, 2, 7, 8], dtype=coord_dtype),  # non-uniform
         },
     )
     win = itool(data, execute=False)
@@ -301,6 +304,27 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.close()
 
 
+def test_itool_load_compat(qtbot) -> None:
+    original = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = itool(original.expand_dims(z=2, axis=-1).T, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+
+    # Check if setting compatible data does not change cursor count
+    win.slicer_area.set_data(original.expand_dims(z=5, axis=-1))
+
+    assert win.slicer_area.n_cursors == 3
+
+    win.close()
+
+
 def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
@@ -482,7 +506,9 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
     )
 
     # Test 2D crop
-    def _set_dialog_params(dialog: CropDialog) -> None:
+    def _set_dialog_params(dialog: CropToViewDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
@@ -565,6 +591,62 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     )
     assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
 
+    win.close()
+
+
+def test_itool_average(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: AverageDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
+
+    assert pyperclip.paste() == '.qsel.average("x")'
+    win.close()
+
+
+def test_itool_symmetrize(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
+        dialog._dim_combo.setCurrentIndex(0)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "x", center=1)
+    )
+
+    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="x", center=1.0)'
     win.close()
 
 
