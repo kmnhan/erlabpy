@@ -646,7 +646,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
         win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "x", center=1)
     )
 
-    assert pyperclip.paste() == 'era.transform.symmetrize(, "x", center=1)'
+    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="x", center=1.0)'
     win.close()
 
 
