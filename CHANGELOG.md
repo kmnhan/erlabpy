@@ -2,6 +2,10 @@
 
 ### ✨ Features
 
+- **analysis.gold:** `gold.poly` now returns a fit result Dataset instead of a  lmfit modelresult. ([ff224e7](https://github.com/kmnhan/erlabpy/commit/ff224e7d16ef7c104a1f54ab93b16d02b989cbaf))
+
+- **analysis.gold:** add background slope option for Fermi edge fitting ([513e531](https://github.com/kmnhan/erlabpy/commit/513e531f7fb44365841b8079e36fcabe8f86254a))
+
 - **io:** allow temporary overriding of loader properties (#101) ([bd4c50b](https://github.com/kmnhan/erlabpy/commit/bd4c50bb7cde93ea9a0d88dfb442349f18985fe0))
 
   Adds a new context manager, `erlab.io.extend_loader`, for temporarily overriding data loader behaviour.
