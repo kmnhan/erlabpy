@@ -2,6 +2,20 @@
 
 ### ✨ Features
 
+- **imagetool:** add Symmetrize dialog ([4ebaeab](https://github.com/kmnhan/erlabpy/commit/4ebaeabf7d0c34420e4b32080a2ac96641aca228))
+
+- **imagetool.dialogs:** enhance CropToViewDialog with dimension selection and validation ([6394121](https://github.com/kmnhan/erlabpy/commit/6394121c9f428d522dd919e98451598b417fa1fb))
+
+- **imagetool:** add Average dialog for averaging data over selected dimensions ([2e81aec](https://github.com/kmnhan/erlabpy/commit/2e81aecb88fe057d2028191bb9ff5da5044c6175))
+
+- **imagetool:** include rotation angle in rotation transform suffix ([2842c5f](https://github.com/kmnhan/erlabpy/commit/2842c5f0a29b4a49e7b2ef9945f7380e04f2b3e4))
+
+- **imagetool.manager:** add new action to refresh ImageTool data from the file it was loaded from. ([d822f73](https://github.com/kmnhan/erlabpy/commit/d822f7378291781a3ced5a4834f7c99220a3bf9f))
+
+  When performing real-time data analysis, it is often necessary to update the data in the ImageTool from the file it was loaded from. This commit adds a new `Reload Data` action to the right-click context menu of the ImageTool manger. The action is only visible when the data can be properly reloaded.
+
+- **imagetool:** retain cursor info when loading new data that is compatible with the current data ([917851f](https://github.com/kmnhan/erlabpy/commit/917851fd9be8375f374eb6e2ea0db7d68d40d124))
+
 - **analysis.gold:** `gold.poly` now returns a fit result Dataset instead of a  lmfit modelresult. ([ff224e7](https://github.com/kmnhan/erlabpy/commit/ff224e7d16ef7c104a1f54ab93b16d02b989cbaf))
 
 - **analysis.gold:** add background slope option for Fermi edge fitting ([513e531](https://github.com/kmnhan/erlabpy/commit/513e531f7fb44365841b8079e36fcabe8f86254a))
@@ -37,6 +51,12 @@
   Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
 
 ### 🐞 Bug Fixes
+
+- **io.plugins.kriss:** properly assign rotation axes names ([3dcb2ae](https://github.com/kmnhan/erlabpy/commit/3dcb2ae26b4e641fd05fb9e573f6306d77850726))
+
+- **imagetool.dialogs:** make new windows opened within data transformation dialogs forget file path information ([7a012cd](https://github.com/kmnhan/erlabpy/commit/7a012cd2a21f8f3a3c65c1be0d50f8854aa3817d))
+
+- **imagetool:** properly handle integer coordinates, closes [#94](https://github.com/kmnhan/erlabpy/issues/94) ([5f0cd36](https://github.com/kmnhan/erlabpy/commit/5f0cd36d4b5bae03f6e689eea45557c55cd3ff45))
 
 - **imagetool:** correct 1D data axis padding ([68f59e9](https://github.com/kmnhan/erlabpy/commit/68f59e903cc9822f665c5c790a8296b7142358fb))
 
