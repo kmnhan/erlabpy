@@ -506,6 +506,8 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
 
     # Test 2D crop
     def _set_dialog_params(dialog: CropToViewDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 

@@ -345,6 +345,10 @@ class AverageDialog(DataTransformDialog):
 
         self.layout_.addRow(dim_group)
 
+    @property
+    def _target_dims(self) -> tuple[Hashable, ...]:
+        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return data.qsel.average(self._target_dims)
 
@@ -367,10 +371,6 @@ class AverageDialog(DataTransformDialog):
             return
 
         super().accept()
-
-    @property
-    def _target_dims(self) -> tuple[Hashable, ...]:
-        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
 
     def make_code(self) -> str:
         arg = (
@@ -428,15 +428,37 @@ class CropToViewDialog(_BaseCropDialog):
     title = "Crop to View"
     whatsthis = "Crop the data to the currently visible area."
 
+    def setup_widgets(self) -> None:
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QVBoxLayout()
+        dim_group.setLayout(dim_layout)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+
+        for i, d in enumerate(self.slicer_area.data.dims):
+            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
+            dim_layout.addWidget(self.dim_checks[d])
+            if i < 2:
+                # Enable first 2 dimensions by default
+                self.dim_checks[d].setChecked(True)
+
+            if d not in self.slicer_area.manual_limits:
+                # Disable dimensions without manual limits
+                self.dim_checks[d].setChecked(False)
+                self.dim_checks[d].setDisabled(True)
+
+        self.layout_.addRow(dim_group)
+
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         slice_dict: dict[Hashable, slice] = {}
         for k, v in self.slicer_area.manual_limits.items():
-            ax_idx = self.slicer_area.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            slice_dict[k] = slice(
-                *sorted(float(np.round(val, sig_digits)) for val in v)
-            )
+            if self.dim_checks[k].isChecked():
+                ax_idx = self.slicer_area.data.dims.index(k)
+                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+                slice_dict[k] = slice(
+                    *sorted(float(np.round(val, sig_digits)) for val in v)
+                )
 
         return slice_dict
 
@@ -446,7 +468,7 @@ class CropToViewDialog(_BaseCropDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Dimensions Selected",
-                "You need to select at least one dimension.",
+                "You need to select at least one dimension with manual limits.",
             )
             return
         super().accept()
