@@ -81,9 +81,12 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
+def _squeezed_ndim(data: xr.DataArray) -> int:
+    return len(tuple(s for s in data.shape if s != 1))
+
+
 def _supported_shape(data: xr.DataArray) -> bool:
-    shape_squeezed = tuple(s for s in data.shape if s != 1)
-    return len(shape_squeezed) in (2, 3, 4)
+    return _squeezed_ndim(data) in (2, 3, 4)
 
 
 def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
@@ -1256,9 +1259,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
+        ndim_changed: bool = True
         try:
             if hasattr(self, "_array_slicer"):
+                if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
+                    ndim_changed = False
                 self._array_slicer.set_array(self._data, reset=True)
+
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
                     erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
@@ -1276,7 +1283,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.connect_signals()
 
-        self.adjust_layout()
+        if ndim_changed:
+            self.adjust_layout()
 
         if self.current_cursor > self.n_cursors - 1:
             self.set_current_cursor(self.n_cursors - 1, update=False)

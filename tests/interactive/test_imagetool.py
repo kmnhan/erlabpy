@@ -301,6 +301,27 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.close()
 
 
+def test_itool_load_compat(qtbot) -> None:
+    original = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = itool(original.expand_dims(z=2, axis=-1).T, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+
+    # Check if setting compatible data does not change cursor count
+    win.slicer_area.set_data(original.expand_dims(z=5, axis=-1))
+
+    assert win.slicer_area.n_cursors == 3
+
+    win.close()
+
+
 def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
