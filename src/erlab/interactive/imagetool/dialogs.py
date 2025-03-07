@@ -329,8 +329,62 @@ class RotationDialog(DataTransformDialog):
         )
 
 
-class BaseCropDialog(DataTransformDialog):
-    suffix = " Cropped"
+class AverageDialog(DataTransformDialog):
+    title = "Average Over Dimensions"
+    suffix = "_avg"
+    enable_copy = True
+
+    def setup_widgets(self) -> None:
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QVBoxLayout()
+        dim_group.setLayout(dim_layout)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+
+        for d in self.slicer_area.data.dims:
+            self.dim_checks[d] = QtWidgets.QCheckBox(str(d))
+            dim_layout.addWidget(self.dim_checks[d])
+
+        self.layout_.addRow(dim_group)
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return data.qsel.average(self._target_dims)
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self._target_dims == {}:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "You need to select at least one dimension.",
+            )
+            return
+
+        if (self.slicer_area.data.ndim - len(self._target_dims)) < 2:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Not Enough Dimensions Left",
+                "Data must have at least 2 dimensions after averaging to be displayed.",
+            )
+            return
+
+        super().accept()
+
+    @property
+    def _target_dims(self) -> tuple[Hashable, ...]:
+        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+
+    def make_code(self) -> str:
+        arg = (
+            str(self._target_dims)
+            if len(self._target_dims) > 1
+            else f'"{self._target_dims[0]}"'
+        )
+        return f".qsel.average({arg})"
+
+
+class _BaseCropDialog(DataTransformDialog):
+    suffix = "_crop"
     enable_copy = True
 
     @property
@@ -372,7 +426,7 @@ class BaseCropDialog(DataTransformDialog):
         return out.replace(", None)", ")")
 
 
-class CropToViewDialog(BaseCropDialog):
+class CropToViewDialog(_BaseCropDialog):
     title = "Crop to View"
     whatsthis = "Crop the data to the currently visible area."
 
@@ -408,7 +462,7 @@ class CropToViewDialog(BaseCropDialog):
         return super().exec()
 
 
-class CropDialog(BaseCropDialog):
+class CropDialog(_BaseCropDialog):
     title = "Crop Between Cursors"
 
     @property

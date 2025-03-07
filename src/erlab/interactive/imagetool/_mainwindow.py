@@ -517,6 +517,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._crop_to_view,
                         "tooltip": "Crop to the current axes view range",
                     },
+                    "Average": {"triggered": self._average},
                 },
             },
             "helpMenu": {
@@ -628,6 +629,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _crop(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropDialog)
+
+    @QtCore.Slot()
+    def _average(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AverageDialog)
 
     @QtCore.Slot()
     def _crop_to_view(self) -> None:
