@@ -239,7 +239,7 @@ class RotationDialog(DataTransformDialog):
 
     @property
     def suffix(self) -> str:
-        angle_str = str(self._rotate_params["angle"]).replace(".", "p")
+        angle_str = str(self._rotate_params["angle"])
         return f"_rot{angle_str}"
 
     @suffix.setter
@@ -311,14 +311,6 @@ class RotationDialog(DataTransformDialog):
 
     def make_code(self) -> str:
         placeholder = " "
-        params = dict(self._rotate_params)
-
-        for k, v in params.items():
-            if isinstance(v, tuple):
-                params[k] = f"({', '.join(map(str, v))})"
-            else:
-                params[k] = str(v)
-
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.rotate,
             [f"|{placeholder}|"],
@@ -379,6 +371,86 @@ class AverageDialog(DataTransformDialog):
             else f'"{self._target_dims[0]}"'
         )
         return f".qsel.average({arg})"
+
+
+class SymmetrizeDialog(DataTransformDialog):
+    title = "Symmetrize"
+    enable_copy = True
+
+    @property
+    def suffix(self) -> str:
+        return f"_sym_{self._params['dim']}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def setup_widgets(self) -> None:
+        dim_group = QtWidgets.QGroupBox("Parameters")
+        dim_layout = QtWidgets.QHBoxLayout()
+        dim_group.setLayout(dim_layout)
+
+        self._dim_combo = QtWidgets.QComboBox()
+        self._dim_combo.addItems([str(d) for d in self.slicer_area.data.dims])
+        dim_layout.addWidget(self._dim_combo)
+
+        self._center_spin = QtWidgets.QDoubleSpinBox()
+        dim_layout.addWidget(self._center_spin)
+        self._dim_combo.currentIndexChanged.connect(self._update_spin)
+        self._update_spin()
+
+        option_group = QtWidgets.QGroupBox("Options")
+        option_layout = QtWidgets.QHBoxLayout()
+        option_layout.addWidget(QtWidgets.QLabel("Part to Keep:"))
+        option_group.setLayout(option_layout)
+
+        self.opts: list[QtWidgets.QRadioButton] = []
+        self.opts.append(QtWidgets.QRadioButton("below"))
+        self.opts.append(QtWidgets.QRadioButton("above"))
+        self.opts.append(QtWidgets.QRadioButton("both"))
+        self.opts[-1].setChecked(True)
+        for opt in self.opts:
+            option_layout.addWidget(opt)
+
+        self.layout_.addRow(dim_group)
+        self.layout_.addRow(option_group)
+
+    @QtCore.Slot()
+    def _update_spin(self) -> None:
+        axis = self._dim_combo.currentIndex()
+        self._center_spin.setRange(*map(float, self.array_slicer.lims_uniform[axis]))
+        self._center_spin.setSingleStep(float(self.array_slicer.incs_uniform[axis]))
+        self._center_spin.setDecimals(
+            self.array_slicer.get_significant(axis, uniform=True)
+        )
+        self._center_spin.setValue(
+            self.slicer_area.current_values_uniform[self._dim_combo.currentIndex()]
+        )
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        return {
+            "dim": self._dim_combo.currentText(),
+            "center": float(
+                np.round(self._center_spin.value(), self._center_spin.decimals())
+            ),
+            "part": ("below", "above", "both")[
+                next(i for i, opt in enumerate(self.opts) if opt.isChecked())
+            ],
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.transform.symmetrize(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.transform.symmetrize,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.transform",
+        )
 
 
 class _BaseCropDialog(DataTransformDialog):

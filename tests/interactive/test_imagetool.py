@@ -21,6 +21,7 @@ from erlab.interactive.imagetool.dialogs import (
     CropToViewDialog,
     NormalizeDialog,
     RotationDialog,
+    SymmetrizeDialog,
 )
 
 _TEST_DATA: dict[str, xr.DataArray] = {
@@ -617,6 +618,35 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
 
     assert pyperclip.paste() == '.qsel.average("x")'
+    win.close()
+
+
+def test_itool_symmetrize(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
+        dialog._dim_combo.setCurrentIndex(0)
+        dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "x", center=1)
+    )
+
+    assert pyperclip.paste() == 'era.transform.symmetrize(, "x", center=1)'
     win.close()
 
 
