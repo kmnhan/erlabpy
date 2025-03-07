@@ -41,7 +41,10 @@ else:
 
 def correct_with_edge(
     darr: xr.DataArray,
-    modelresult: lmfit.model.ModelResult | npt.NDArray[np.floating] | Callable,
+    modelresult: lmfit.model.ModelResult
+    | xr.Dataset
+    | npt.NDArray[np.floating]
+    | Callable,
     shift_coords: bool = True,
     plot: bool = False,
     plot_kw: dict | None = None,
@@ -57,8 +60,9 @@ def correct_with_edge(
     modelresult
         The model result that contains the fermi edge information. It can be an instance
         of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
-        angle, or a callable function that takes an array of angles and returns the
-        corresponding energy value.
+        angle, a fit result dataset that contains polynomial coefficients, or a callable
+        function that takes an array of angles and returns the corresponding energy
+        value.
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output
         contains all the values of the original data. If `False`, the coordinates and
@@ -78,6 +82,9 @@ def correct_with_edge(
     """
     if plot_kw is None:
         plot_kw = {}
+
+    if isinstance(modelresult, xr.Dataset) and "modelfit_results" in modelresult:
+        modelresult = modelresult.modelfit_results.values.item()
 
     if isinstance(modelresult, lmfit.model.ModelResult):
         if isinstance(modelresult.model, erlab.analysis.fit.models.FermiEdge2dModel):
@@ -154,6 +161,7 @@ def edge(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -165,7 +173,7 @@ def edge(
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
     **kwargs,
-) -> tuple[xr.DataArray, xr.DataArray] | list[lmfit.model.ModelResult]:
+) -> tuple[xr.DataArray, xr.DataArray] | xr.Dataset:
     """
     Fit a Fermi edge to the given gold data.
 
@@ -186,6 +194,9 @@ def edge(
         attributes, by default `None`
     vary_temp
         Whether to fit the temperature value during fitting, by default `False`.
+    bkg_slope
+        Whether to include a linear background above the Fermi level. If `False`, the
+        background above the Fermi level is fit with a constant. Defaults to `True`.
     resolution
         The initial resolution value to use for fitting, by default `0.02`.
     fast
@@ -217,7 +228,7 @@ def edge(
     center_arr, center_stderr
         The fitted center values and their standard errors, returned when `return_full`
         is `False`.
-    fitresults
+    fit_result
         A dataset containing the full fit results, returned when `return_full` is
         `True`.
 
@@ -263,8 +274,11 @@ def edge(
     if parallel_kw is None:
         parallel_kw = {}
 
+    if not bkg_slope:
+        params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
+
     if fixed_center is not None:
-        params["center"].set(value=fixed_center, vary=False)
+        params["back1"] = lmfit.Parameter("center", value=fixed_center, vary=False)
 
     # Assuming Poisson noise, the weights are the square root of the counts.
     weights = 1 / np.sqrt(np.asarray(gold_sel.sum("eV").values))
@@ -286,9 +300,9 @@ def edge(
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
 
-        return model.fit(
-            data,
-            x=data["eV"],
+        return data.modelfit(
+            "eV",
+            model=model,
             params=pars,
             method=method,
             scale_covar=scale_covar,
@@ -299,7 +313,7 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
-        fitresults = tqdm.tqdm(
+        fit_result = tqdm.tqdm(
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
@@ -308,23 +322,25 @@ def edge(
         )
     elif progress:
         with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
-            fitresults = parallel_obj(
+            fit_result = parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
             )
     else:
-        fitresults = parallel_obj(
+        fit_result = parallel_obj(
             joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
             for i in range(n_fits)
         )
 
+    fit_result = xr.concat(fit_result, "alpha")
+
     if return_full:
-        return list(fitresults)
+        return fit_result
 
     xval: list[npt.NDArray] = []
     res_vals = []
 
-    for i, r in enumerate(fitresults):
+    for i, r in enumerate(fit_result.modelfit_results.values):
         if hasattr(r, "uvars"):
             center_ufloat = r.uvars["center"]
 
@@ -349,16 +365,16 @@ def edge(
 
 def poly_from_edge(
     center, weights=None, degree=4, method="least_squares", scale_covar=True
-) -> lmfit.model.ModelResult:
+) -> xr.Dataset:
     model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
-    pars = model.guess(center.values, x=center[center.dims[0]].values)
-    return model.fit(
-        center,
-        x=center[center.dims[0]].values,
-        params=pars,
-        weights=weights,
+    return center.modelfit(
+        "alpha",
+        model=model,
+        params=model.guess(center.values, x=center["alpha"].values),
+        weights=np.asarray(weights),
         method=method,
         scale_covar=scale_covar,
+        output_result=True,
     )
 
 
@@ -373,12 +389,18 @@ def spline_from_edge(
 def _plot_gold_fit(
     fig, gold, angle_range, eV_range, center_arr, center_stderr, res
 ) -> None:
-    if isinstance(res, lmfit.model.ModelResult):
+    if isinstance(res, xr.Dataset) and "modelfit_results" in res:
+        is_callable = False
+        res = res.modelfit_results.values.item()
+    elif isinstance(res, lmfit.model.ModelResult):
         is_callable = False
     elif callable(res):
         is_callable = True
     else:
-        raise TypeError("res must be a callable or a lmfit.model.ModelResult")
+        raise TypeError(
+            "res must be one of callable, lmfit.model.ModelResult, "
+            "and fit result dataset"
+        )
 
     if not isinstance(fig, plt.Figure):
         fig = plt.figure(figsize=erlab.plotting.figwh(0.75, wscale=1.75))
@@ -480,6 +502,7 @@ def poly(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -492,23 +515,27 @@ def poly(
     fig: matplotlib.figure.Figure | None = None,
     scale_covar: bool = True,
     scale_covar_edge: bool = True,
-) -> lmfit.model.ModelResult | tuple[lmfit.model.ModelResult, xr.DataArray]:
-    center_arr, center_stderr = edge(
-        gold,
-        angle_range=angle_range,
-        eV_range=eV_range,
-        bin_size=bin_size,
-        temp=temp,
-        vary_temp=vary_temp,
-        resolution=resolution,
-        fast=fast,
-        method=method,
-        normalize=normalize,
-        parallel_kw=parallel_kw,
-        scale_covar=scale_covar_edge,
+) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
+    center_arr, center_stderr = typing.cast(
+        tuple[xr.DataArray, xr.DataArray],
+        edge(
+            gold,
+            angle_range=angle_range,
+            eV_range=eV_range,
+            bin_size=bin_size,
+            temp=temp,
+            vary_temp=vary_temp,
+            bkg_slope=bkg_slope,
+            resolution=resolution,
+            fast=fast,
+            method=method,
+            normalize=normalize,
+            parallel_kw=parallel_kw,
+            scale_covar=scale_covar_edge,
+        ),
     )
 
-    modelresult = poly_from_edge(
+    results = poly_from_edge(
         center_arr,
         weights=1.0 / center_stderr,
         degree=degree,
@@ -517,14 +544,14 @@ def poly(
     )
     if plot:
         _plot_gold_fit(
-            fig, gold, angle_range, eV_range, center_arr, center_stderr, modelresult
+            fig, gold, angle_range, eV_range, center_arr, center_stderr, results
         )
     if correct:
         if crop_correct:
             gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
-        corr = correct_with_edge(gold, modelresult, plot=False)
-        return modelresult, corr
-    return modelresult
+        corr = correct_with_edge(gold, results, plot=False)
+        return results, corr
+    return results
 
 
 def spline(
@@ -535,6 +562,7 @@ def spline(
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
+    bkg_slope: bool = True,
     resolution: float = 0.02,
     fast: bool = False,
     method: str = "least_squares",
@@ -546,18 +574,22 @@ def spline(
     fig: matplotlib.figure.Figure | None = None,
     scale_covar_edge: bool = True,
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
-    center_arr, center_stderr = edge(
-        gold,
-        angle_range=angle_range,
-        eV_range=eV_range,
-        bin_size=bin_size,
-        temp=temp,
-        vary_temp=vary_temp,
-        resolution=resolution,
-        fast=fast,
-        method=method,
-        parallel_kw=parallel_kw,
-        scale_covar=scale_covar_edge,
+    center_arr, center_stderr = typing.cast(
+        tuple[xr.DataArray, xr.DataArray],
+        edge(
+            gold,
+            angle_range=angle_range,
+            eV_range=eV_range,
+            bin_size=bin_size,
+            temp=temp,
+            vary_temp=vary_temp,
+            bkg_slope=bkg_slope,
+            resolution=resolution,
+            fast=fast,
+            method=method,
+            parallel_kw=parallel_kw,
+            scale_covar=scale_covar_edge,
+        ),
     )
 
     spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
@@ -874,7 +906,7 @@ def resolution(
     plot: bool = True,
     parallel_kw: dict | None = None,
     scale_covar: bool = True,
-) -> lmfit.model.ModelResult:
+) -> lmfit.model.ModelResult:  # pragma: no cover
     """Fit a Fermi edge and obtain the resolution from the corrected data.
 
     .. deprecated:: 3.5.1
@@ -889,17 +921,20 @@ def resolution(
         stacklevel=1,
     )
 
-    pol, gold_corr = poly(
-        gold,
-        angle_range=angle_range,
-        eV_range=eV_range_edge,
-        bin_size=bin_size,
-        degree=degree,
-        correct=True,
-        fast=fast,
-        method=method,
-        plot=plot,
-        parallel_kw=parallel_kw,
+    pol, gold_corr = typing.cast(
+        tuple[xr.Dataset, xr.DataArray],
+        poly(
+            gold,
+            angle_range=angle_range,
+            eV_range=eV_range_edge,
+            bin_size=bin_size,
+            degree=degree,
+            correct=True,
+            fast=fast,
+            method=method,
+            plot=plot,
+            parallel_kw=parallel_kw,
+        ),
     )
 
     if eV_range_fit is None:
@@ -958,7 +993,7 @@ def resolution_roi(
     method: str = "leastsq",
     plot: bool = True,
     scale_covar: bool = True,
-) -> lmfit.model.ModelResult:
+) -> lmfit.model.ModelResult:  # pragma: no cover
     """Fit a Fermi edge to the data and obtain the resolution.
 
     .. deprecated:: 3.5.1

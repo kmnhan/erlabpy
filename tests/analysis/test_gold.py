@@ -27,7 +27,7 @@ def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
     plt.close()
 
     assert_allclose(
-        np.array(list(res.best_values.values())),
+        np.array(list(res.modelfit_results.item().best_values.values())),
         np.array([0.04, 1e-5, -3e-4]),
         atol=1e-2,
     )
