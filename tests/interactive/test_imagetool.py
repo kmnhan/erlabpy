@@ -61,7 +61,7 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
         dims=["x", "y"],
         coords={
             "x": np.arange(5, dtype=coord_dtype),
-            "y": np.arange(5, dtype=coord_dtype),
+            "y": np.array([1, 3, 2, 7, 8], dtype=coord_dtype),  # non-uniform
         },
     )
     win = itool(data, execute=False)
