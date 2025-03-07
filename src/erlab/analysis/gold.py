@@ -906,7 +906,7 @@ def resolution(
     plot: bool = True,
     parallel_kw: dict | None = None,
     scale_covar: bool = True,
-) -> lmfit.model.ModelResult:
+) -> lmfit.model.ModelResult:  # pragma: no cover
     """Fit a Fermi edge and obtain the resolution from the corrected data.
 
     .. deprecated:: 3.5.1
@@ -993,7 +993,7 @@ def resolution_roi(
     method: str = "leastsq",
     plot: bool = True,
     scale_covar: bool = True,
-) -> lmfit.model.ModelResult:
+) -> lmfit.model.ModelResult:  # pragma: no cover
     """Fit a Fermi edge to the data and obtain the resolution.
 
     .. deprecated:: 3.5.1
