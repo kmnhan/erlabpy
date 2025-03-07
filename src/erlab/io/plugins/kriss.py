@@ -11,9 +11,9 @@ class KRISSLoader(DA30Loader):
     name = "kriss"
     description = "KRISS ARPES-MBE"
     aliases = ("KRISS",)
-    coordinate_attrs = ("beta", "chi", "xi", "hv", "x", "y", "z")
+    coordinate_attrs = ("beta", "chi", "xi", "hv")
     additional_attrs: typing.ClassVar[dict] = {"configuration": 4}
 
     @property
     def name_map(self):
-        return super().name_map | {"chi": "ThetaY", "xi": "ThetaX"}
+        return super().name_map | {"chi": "R1", "xi": "R2"}
