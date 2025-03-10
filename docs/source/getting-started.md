@@ -47,7 +47,7 @@ Here is a step-by-step guide to setting up a project to use ``erlab``, with ``uv
 3. Add the ``erlab`` package to your project with all recommended optional dependencies:
 
    ```bash
-   uv add erlab[complete]
+   uv add "erlab[complete]"
    ```
 
    :::{note}
