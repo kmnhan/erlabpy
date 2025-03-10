@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = [
-    "ModelFitDataArrayAccessor",
-    "ModelFitDatasetAccessor",
-    "ParallelFitDataArrayAccessor",
-]
+__all__ = ["ParallelFitDataArrayAccessor"]
 
 import typing
 import warnings
@@ -101,21 +97,20 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
         model : lmfit.Model
             The model to fit.
         **kwargs : dict
-            Additional keyword arguments to be passed to :func:`xarray.Dataset.modelfit
-            <erlab.accessors.fit.ModelFitDatasetAccessor.__call__>`.
+            Additional keyword arguments to be passed to
+            :meth:`xarray.Dataset.xlm.modelfit`.
 
         Returns
         -------
         curvefit_results : xarray.Dataset
             The dataset containing the results of the fit. See
-            :func:`xarray.DataArray.modelfit
-            <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` for details.
+            :meth:`xarray.DataArray.xlm.modelfit` for details.
 
         """
         if self._obj.chunks is not None:
             raise ValueError(
                 "The input DataArray is chunked. Parallel fitting will not offer any "
-                "performance benefits. Use `modelfit` instead"
+                "performance benefits. Use `DataArray.xlm.modelfit` instead"
             )
 
         ds = self._obj.to_dataset(dim, promote_attrs=True)
