@@ -72,6 +72,10 @@
 
 ### ♻️ Code Refactor
 
+- move fitting accessors to `xarray-lmfit` (#110) ([9106cef](https://github.com/kmnhan/erlabpy/commit/9106cef37a9c4e1b40ff78fea96ae2b8efd3ce07))
+
+  `DataArray.modelfit` and `Dataset.modelfit` are deprecated. The functionality has been moved to the [xarray-lmfit](https://github.com/kmnhan/xarray-lmfit) package, and can be accessed via `DataArray.xlm.modelfit` and `Dataset.xlm.modelfit` as a drop-in replacement.
+
 - **ktool:** adjust default lattice parameter spinbox step to 0.1 for finer adjustments ([d7cba80](https://github.com/kmnhan/erlabpy/commit/d7cba80eaba9111180d4f05e089931106b83650b))
 
 - improve error message for missing hvplot package ([a0c2460](https://github.com/kmnhan/erlabpy/commit/a0c246024f990f2862915517175a3a4e365c9b22))
