@@ -2,6 +2,7 @@ import typing
 from importlib.metadata import version as _version
 
 import lazy_loader as _lazy
+import xarray_lmfit  # noqa: F401
 
 # Register xarray accessors
 import erlab.accessors.fit

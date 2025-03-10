@@ -1,6 +1,6 @@
 version = 1
 revision = 1
-requires-python = ">=3.11, <3.14"
+requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
     "python_full_version < '3.12'",
@@ -591,6 +591,7 @@ dependencies = [
     { name = "tqdm" },
     { name = "varname" },
     { name = "xarray" },
+    { name = "xarray-lmfit" },
 ]
 
 [package.optional-dependencies]
@@ -689,6 +690,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.2" },
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },
+    { name = "xarray-lmfit", specifier = ">=0.1.2" },
 ]
 provides-extras = ["complete", "viz", "io", "perf", "misc"]
 
@@ -3029,7 +3031,7 @@ name = "sqlalchemy"
 version = "2.0.38"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'" },
+    { name = "greenlet", marker = "(python_full_version < '3.14' and platform_machine == 'AMD64') or (python_full_version < '3.14' and platform_machine == 'WIN32') or (python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version < '3.14' and platform_machine == 'amd64') or (python_full_version < '3.14' and platform_machine == 'ppc64le') or (python_full_version < '3.14' and platform_machine == 'win32') or (python_full_version < '3.14' and platform_machine == 'x86_64')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/08/9a90962ea72acd532bda71249a626344d855c4032603924b1b547694b837/sqlalchemy-2.0.38.tar.gz", hash = "sha256:e5a4d82bdb4bf1ac1285a68eab02d253ab73355d9f0fe725a97e1e0fa689decb", size = 9634782 }
@@ -3311,6 +3313,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/89/c0/edb2f6cfafa5369106f927409f6211141c3296c14877cc634d8ee4c970a4/xarray-2025.1.2.tar.gz", hash = "sha256:e7675c79ac69d274dd3b3c5450ce57176928d2792947576251ed1c7df1783224", size = 3271214 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/05/79/4e19100342fe13d69fd6e77b343e2269924fec681258e2ea21b55576aad2/xarray-2025.1.2-py3-none-any.whl", hash = "sha256:a7ad6a36c6e0becd67f8aff6a7808d20e4bdcd344debb5205f0a34b1a4a7f8d6", size = 1247773 },
+]
+
+[[package]]
+name = "xarray-lmfit"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "lmfit" },
+    { name = "numpy" },
+    { name = "tqdm" },
+    { name = "xarray" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/61/dd3f2162d528fe1ec4e30033aea2e692c1a672ccd975a7208c09874b19db/xarray_lmfit-0.1.2.tar.gz", hash = "sha256:cc9134b2922a6b4ff8323cd80d7963c19ab43462bab1575daac5fe6606138c6d", size = 154655 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/9b/874837d38f57e9eea9e26563ac13caaa8890fba56808b9b0f53cba964c5f/xarray_lmfit-0.1.2-py3-none-any.whl", hash = "sha256:9e71fd407eb308adba84db9b017cceba38b95100d5edc5d2e928778aca3c13fd", size = 36477 },
 ]
 
 [[package]]

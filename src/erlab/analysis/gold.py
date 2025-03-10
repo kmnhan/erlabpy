@@ -300,7 +300,7 @@ def edge(
     def _fit(data, w):
         pars = model.guess(data, x=data["eV"]).update(params)
 
-        return data.modelfit(
+        return data.xlm.modelfit(
             "eV",
             model=model,
             params=pars,
@@ -367,7 +367,7 @@ def poly_from_edge(
     center, weights=None, degree=4, method="least_squares", scale_covar=True
 ) -> xr.Dataset:
     model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
-    return center.modelfit(
+    return center.xlm.modelfit(
         "alpha",
         model=model,
         params=model.guess(center.values, x=center["alpha"].values),
@@ -625,9 +625,8 @@ def quick_fit(
 ) -> xr.Dataset:
     """Perform a Fermi edge fit on an EDC.
 
-    This function is a convenient wrapper around :meth:`DataArray.modelfit
-    <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>` that fits a Fermi edge to
-    the given data.
+    This function is a convenient wrapper around :meth:`DataArray.xlm.modelfit` that
+    fits a Fermi edge to the given data.
 
     If data with 2 or more dimensions is provided, the data is averaged over all
     dimensions except the energy prior to fitting.
@@ -680,8 +679,7 @@ def quick_fit(
         Additional keyword arguments for the plot span that indicates the fitted FWHM,
         passed to :meth:`matplotlib.axes.Axes.axvspan`. Defaults to `None`.
     **kwargs
-        Additional keyword arguments to :meth:`DataArray.modelfit
-        <erlab.accessors.fit.ModelFitDataArrayAccessor.__call__>`.
+        Additional keyword arguments to :meth:`DataArray.xlm.modelfit`.
 
     Returns
     -------
@@ -723,7 +721,7 @@ def quick_fit(
         params["center"]["vary"] = False
 
     kwargs.setdefault("guess", True)
-    fit_result = data_fit.modelfit(
+    fit_result = data_fit.xlm.modelfit(
         "eV",
         model=erlab.analysis.fit.models.FermiEdgeModel(),
         method=method,
