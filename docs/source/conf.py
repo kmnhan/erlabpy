@@ -245,6 +245,7 @@ intersphinx_mapping = {
     "lmfit": ("https://lmfit.github.io/lmfit-py", None),
     "matplotlib": ("https://matplotlib.org/stable", None),
     "xarray": ("https://docs.xarray.dev/en/stable", None),
+    "xarray-lmfit": ("https://xarray-lmfit.readthedocs.io/stable", None),
     "pandas": ("https://pandas.pydata.org/docs", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest", None),
     "csaps": ("https://csaps.readthedocs.io/en/latest", None),

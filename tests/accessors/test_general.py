@@ -47,7 +47,7 @@ def test_ds_qshow_fit(plot_components: bool) -> None:
     darr = xr.DataArray(
         y, dims=["beta", "alpha"], coords={"beta": beta, "alpha": alpha}
     )
-    result_ds = darr.modelfit(
+    result_ds = darr.xlm.modelfit(
         coords="alpha",
         model=lmfit.models.GaussianModel() + lmfit.models.LinearModel(),
         params={"center": xr.DataArray([-2, 0, 2], coords=[darr.beta]), "slope": -0.1},
@@ -60,7 +60,7 @@ def test_ds_qshow_fit(plot_components: bool) -> None:
 
     # Test with a Dataset
     ds = darr.rename("testvar").to_dataset()
-    result_ds = ds.modelfit(
+    result_ds = ds.xlm.modelfit(
         coords="alpha",
         model=lmfit.models.GaussianModel() + lmfit.models.LinearModel(),
         params={"center": xr.DataArray([-2, 0, 2], coords=[ds.beta]), "slope": -0.1},
