@@ -1,11 +1,10 @@
 """Momentum conversion functions.
 
 Typically, the user will not have to call this module directly, but will instead use the
-accessor method :meth:`DataArray.kspace.convert
-<erlab.accessors.kspace.MomentumAccessor.convert>`.
+accessor method :meth:`xarray.DataArray.kspace.convert`.
 
 For more front-end utilities related to momentum conversion, see the documentation of
-the :meth:`DataArray.kspace <erlab.accessors.kspace.MomentumAccessor>` accessor.
+the :attr:`xarray.DataArray.kspace` accessor.
 
 Angle conventions and function forms are based on Ref. :cite:p:`ishida2018kconv`.
 

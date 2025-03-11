@@ -8,7 +8,7 @@ Data structures in ERLabPy are represented using [xarray](https://docs.xarray.de
 
 ## Installing
 
-:::note
+:::{note}
 Parts of this section are based on [Scipy’s installation guide](https://www.scipy.org/install/) and [NumPy’s installation guide](https://numpy.org/install/).
 :::
 
@@ -86,7 +86,7 @@ conda install -c conda-forge erlab pyside6 hvplot ipywidgets
 
 If you require other [optional dependencies](#optional-dependencies), append them to the above command.
 
-:::hint
+:::{hint}
 If you are using conda on macOS, you might experience degraded performance with the default BLAS and LAPACK libraries.
 
 For Apple Silicon Macs, use [Accelerate](https://developer.apple.com/accelerate/):
@@ -110,7 +110,7 @@ To prevent conda from switching back to the default libraries upon updating, see
 
 2. Create and activate a virtual environment with ``venv``.
 
-   :::hint
+   :::{hint}
    See [the tutorial in the Python Packaging User Guide](https://packaging.python.org/en/latest/tutorials/installing-packages/#creating-virtual-environments).
    :::
 
@@ -158,7 +158,7 @@ import xarray as xr
 xr.set_options(keep_attrs=True)
 ```
 
-:::note
+:::{note}
 The interactive plotting module, `erlab.interactive`, requires a Qt library (such as PyQt6 or PySide6). If one is not installed, ERLabPy will notify you upon import.
 :::
 
