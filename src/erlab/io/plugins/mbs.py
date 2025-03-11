@@ -72,7 +72,7 @@ def load_text(filename: str | os.PathLike) -> xr.DataArray:
                 line = line.replace("TIMESTAMP:", "TIMESTAMP:\t", 1)
             header_lines.append(line)
     if data_start is None:
-        raise ValueError("No data marker ('Data') found in file.")
+        raise ValueError("Not a valid MBS data file.")
 
     header_dict = _parse_header(header_lines)
 
@@ -159,7 +159,7 @@ def load_krax(
         for row in header_str.strip().split("\r\n"):
             if row.startswith("DATA:"):
                 break
-            k, v = row.split("\t")
+            k, v = row.split("\t", 1)
             try:
                 v = float(v)
             except ValueError:
@@ -305,9 +305,6 @@ class MBSLoader(LoaderBase):
         pattern = re.compile(prefix_pattern + str(num).zfill(4) + r"_\d{5}.txt")
         files: list[pathlib.Path] = [f for f in all_files if pattern.match(f.name)]
 
-        if len(files) == 0:
-            return None
-
         if len(files) > 1:
             erlab.utils.misc.emit_user_level_warning(
                 f"Multiple files found for scan {num}, using {files[0]}. "
@@ -316,17 +313,3 @@ class MBSLoader(LoaderBase):
             files = files[:1]
 
         return files, {}
-
-    def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
-        try:
-            match_scan = self._TXT_PATTERN.match(name + ".txt")
-            if match_scan is None:
-                return None, {}
-            prefix, number, _ = match_scan.groups()
-
-        except IndexError:
-            return None, {}
-
-        if number.isdigit():
-            return int(number), {"prefix": prefix}
-        return None, {}
