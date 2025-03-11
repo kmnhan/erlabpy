@@ -2,6 +2,8 @@
 
 ### ✨ Features
 
+- **io.plugins:** add `mbs` plugin for setups based on MB Scientific AB analyzers (#112) ([43e454b](https://github.com/kmnhan/erlabpy/commit/43e454b1b27aa9a538449875b2df92284a845c8f))
+
 - **imagetool:** add Symmetrize dialog ([4ebaeab](https://github.com/kmnhan/erlabpy/commit/4ebaeabf7d0c34420e4b32080a2ac96641aca228))
 
 - **imagetool.dialogs:** enhance CropToViewDialog with dimension selection and validation ([6394121](https://github.com/kmnhan/erlabpy/commit/6394121c9f428d522dd919e98451598b417fa1fb))
