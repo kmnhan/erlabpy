@@ -380,6 +380,7 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Show data explorer
     manager.show_explorer()
+    qtbot.wait_exposed(explorer)
 
     # Enable preview
     explorer._preview_check.setChecked(True)
@@ -463,6 +464,8 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # # Trigger open in file explorer
     # explorer._finder_act.trigger()
+
+    explorer.close()
 
     # Close imagetool manager
     _handler = accept_dialog(manager.close)
