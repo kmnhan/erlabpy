@@ -339,15 +339,22 @@ def test_loader(qtbot, accept_dialog) -> None:
     erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
 
     # Interactive summary
-    erlab.io.loaders.current_loader._isummarize(df)
-    qtbot.wait(100)
+    box = erlab.io.loaders.current_loader._isummarize(df)
+    ui = box.children[0]
+    btn_box = ui.children[0]
+    assert len(btn_box.children) == 3  # prev, next, load full
+    btn_box.children[2].click()  # load full
+    btn_box.children[1].click()  # next
+    btn_box.children[1].click()  # next
 
     # Interactive summary with imagetool manager
     manager = ImageToolManager()
     qtbot.addWidget(manager)
 
     erlab.io.loaders.current_loader._isummarize(df)
-    qtbot.wait(100)
+    ui = box.children[0]
+    btn_box = ui.children[0]
+    assert len(btn_box.children) == 4  # prev, next, load full, imagetool
 
     # Test data explorer
 
