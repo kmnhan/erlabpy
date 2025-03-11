@@ -2,6 +2,10 @@
 
 ### ✨ Features
 
+- **kspace:** add method to convert between experimental configurations ([7a426a8](https://github.com/kmnhan/erlabpy/commit/7a426a85c0346c7fcf9e9f5e78f2cafc2b9701b7))
+
+  Adds a new method `DataArray.kspace.as_configuration` that allows the user to easily correct data loaded in the wrong configurations. This is useful for setups where the experimental geometry can be changed.
+
 - **io.plugins:** add `mbs` plugin for setups based on MB Scientific AB analyzers (#112) ([43e454b](https://github.com/kmnhan/erlabpy/commit/43e454b1b27aa9a538449875b2df92284a845c8f))
 
 - **imagetool:** add Symmetrize dialog ([4ebaeab](https://github.com/kmnhan/erlabpy/commit/4ebaeabf7d0c34420e4b32080a2ac96641aca228))
@@ -53,6 +57,10 @@
   Adds a new method `erlab.analysis.transform.symmetrize` for symmetrizing data across a single coordinate.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** center rotation guidelines on cursor position upon initialization ([18a7114](https://github.com/kmnhan/erlabpy/commit/18a711447523b21158f397d5d983d1a4ba8383e5))
+
+- **io.plugins.kriss:** support tilt compensated angle maps ([0229ea2](https://github.com/kmnhan/erlabpy/commit/0229ea21311a187f744543cdf18907f3359ded1d))
 
 - **io:** enforce native endianness for Igor Pro waves (#114) ([92fe389](https://github.com/kmnhan/erlabpy/commit/92fe3899cd655a3919439456f25f4e2e21369456))
 
