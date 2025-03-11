@@ -12,7 +12,7 @@ def _check_uniform(arr: npt.NDArray[np.float64]) -> bool:
     return np.allclose(dif, dif[0])
 
 
-@numba.njit(numba.types.ListType(numba.float64[:])(numba.float64[:]))
+@numba.njit(numba.types.ListType(numba.float64[:])(numba.float64[:]), cache=True)
 def _split_uniform_segments(
     arr: npt.NDArray[np.float64],
 ) -> numba.typed.List[npt.NDArray[np.float64]]:
@@ -23,7 +23,6 @@ def _split_uniform_segments(
         segments.append(arr)
         return segments
 
-    # Compute the differences manually
     diff = np.empty(n - 1, arr.dtype)
     for i in range(n - 1):
         diff[i] = arr[i + 1] - arr[i]
@@ -31,7 +30,7 @@ def _split_uniform_segments(
     segments = numba.typed.List()
     start = 0
 
-    for i in range(1, diff.shape[0]):
+    for i in range(1, n - 1):
         if not np.isclose(diff[i], diff[i - 1]):
             if i - start > 1:
                 segments.append(arr[start : (i + 1)])

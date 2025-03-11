@@ -128,6 +128,18 @@ def test_multi_peak_model() -> None:
         components["2Peak_fd"], model.func.eval_fd(x, **result.params.valuesdict())
     )
 
+    test_darr = xr.DataArray(y, dims=["x"], coords={"x": x})
+
+    # Cut out the middle of the data
+    test_darr = test_darr.where((test_darr.x < -3) | (test_darr.x > 3), drop=True)
+
+    # Fit the data with a segmented model
+    test_darr.xlm.modelfit(
+        "x",
+        model=models.MultiPeakModel(npeaks=2, fd=True, segmented=True),
+        params=params,
+    )
+
     # Make sure guesses work for different backgrounds
     for background in ["constant", "linear", "polynomial", "none"]:
         model = models.MultiPeakModel(npeaks=2, background=background)
