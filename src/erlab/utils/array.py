@@ -106,7 +106,7 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     Returns
     -------
     bool
-        `True` if the array is uniformly spaced, `False` otherwise.
+        `True` if the array is uniformly spaced and one-dimensional, `False` otherwise.
 
     Examples
     --------
@@ -115,11 +115,14 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     >>> is_uniform_spaced([1, 2, 3, 5])
     False
     """
-    arr = np.atleast_1d(np.array(arr, dtype=float))
-    dif = np.diff(arr)
-    if dif.size == 0:
-        return True
-    return np.allclose(dif, dif[0], **kwargs)
+    arr = np.atleast_1d(np.array(arr, dtype=np.float64))
+
+    if arr.ndim > 1:
+        return False
+
+    from erlab.utils._array_jit import _check_uniform
+
+    return _check_uniform(np.ascontiguousarray(arr))
 
 
 def is_monotonic(arr: npt.NDArray, strict: bool = False) -> np.bool_:

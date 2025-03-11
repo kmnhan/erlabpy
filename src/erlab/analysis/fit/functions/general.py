@@ -131,6 +131,40 @@ def do_convolve(
     return np.convolve(func(xn, **kwargs), g, mode="valid")
 
 
+def do_convolve_segments(
+    x: npt.NDArray[np.float64],
+    func: Callable,
+    resolution: float,
+    pad: int = 5,
+    **kwargs,
+) -> npt.NDArray[np.float64]:
+    r"""
+    Convolves `func` with gaussian of FWHM `resolution` in `x` with uniform segments.
+
+    This function is useful when `x` is piecewise evenly spaced and the convolution
+    needs to be performed independently on uniform segments of `x`.
+
+    Parameters
+    ----------
+    x
+        A piecewise evenly spaced 1D array.
+    func
+        Function to convolve.
+    resolution
+        FWHM of the gaussian kernel.
+    pad
+        Multiples of the standard deviation :math:`\sigma` to pad with.
+    **kwargs
+        Additional keyword arguments to `func`.
+    """
+    from erlab.utils._array_jit import _split_uniform_segments
+
+    x_segments = _split_uniform_segments(np.asarray(x, dtype=np.float64))
+    return np.concatenate(
+        [do_convolve(x, func, resolution, pad=pad, **kwargs) for x in x_segments]
+    )
+
+
 def do_convolve_2d(
     x: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64] | float,
