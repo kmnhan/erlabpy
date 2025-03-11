@@ -260,7 +260,7 @@ class LoaderBase(metaclass=_Loader):
     """
 
     additional_attrs: typing.ClassVar[
-        dict[str, str | float | Callable[[xr.DataArray], str | float]]
+        dict[str, str | int | float | Callable[[xr.DataArray], str | int | float]]
     ] = {}
     """Additional attributes to be added to the data after loading.
 
