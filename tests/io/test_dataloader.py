@@ -351,7 +351,7 @@ def test_loader(qtbot, accept_dialog) -> None:
     manager = ImageToolManager()
     qtbot.addWidget(manager)
 
-    erlab.io.loaders.current_loader._isummarize(df)
+    box = erlab.io.loaders.current_loader._isummarize(df)
     ui = box.children[0]
     btn_box = ui.children[0]
     assert len(btn_box.children) == 4  # prev, next, load full, imagetool

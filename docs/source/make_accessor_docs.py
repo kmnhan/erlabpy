@@ -139,7 +139,7 @@ content = f"""# Accessors ({{mod}}`erlab.accessors`)
 .. currentmodule:: xarray
 ```
 
-## Dataset Accessors
+## Dataset accessors
 
 ### Methods
 {_make_accessor_autosummary(content_ds_callable, "callable")}
@@ -147,7 +147,7 @@ content = f"""# Accessors ({{mod}}`erlab.accessors`)
 
 {_make_accessor_autosummary(content_ds_attributes, "attribute", "Attributes")}
 
-## DataArray Accessors
+## DataArray accessors
 
 ### General
 
