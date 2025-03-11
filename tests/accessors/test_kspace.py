@@ -245,3 +245,14 @@ def test_kconv_missing_attr(missing_attr, anglemap):
         match=IncompleteDataError._make_message("attr", missing_attr),
     ):
         data.kspace.convert(silent=True)
+
+
+def test_kspace_set_existing_configuration(anglemap):
+    data = anglemap.copy().assign_coords(chi=0.0)
+
+    with pytest.raises(
+        AttributeError,
+        match="Configuration is already set. To modify the experimental "
+        "configuration, use `DataArray.kspace.as_configuration`.",
+    ):
+        data.kspace.configuration = 4
