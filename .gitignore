@@ -77,6 +77,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/source/accessors
 docs/source/generated
 
 # PyBuilder
@@ -164,4 +165,4 @@ cython_debug/
 .vscode/*
 
 # Misc. files
-erlab.accessors.rst
+erlab.accessors.md

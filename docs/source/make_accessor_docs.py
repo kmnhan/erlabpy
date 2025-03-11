@@ -21,37 +21,48 @@ def _find_accessor_name(parent_class, accessor_class) -> str | None:
     return None
 
 
+content_da_callable: str = ""
 content_da_methods: str = ""
 content_da_attributes: str = ""
+content_ds_callable: str = ""
 content_ds_methods: str = ""
 content_ds_attributes: str = ""
 
+kspace_methods: str = ""
+kspace_attributes: str = ""
 
-def _make_table_row(name, obj, obj_full_name: str):
-    global \
-        content_da_methods, \
-        content_da_attributes, \
-        content_ds_methods, \
-        content_ds_attributes
 
-    directive = ":meth:" if callable(obj) else ":attr:"
+def _make_table_row(name, kind):
+    global content_da_callable, content_ds_callable
+    global content_da_methods, content_ds_methods
+    global content_da_attributes, content_ds_attributes
+    global kspace_methods, kspace_attributes
 
-    doc = obj.__doc__
-    if doc:
-        doc = doc.strip().split("\n")[0]
-
-    row = f"\n   * - {directive}`{name} <{obj_full_name}>`\n     - {doc}"
+    row = f"\n   {name}"
 
     if name.startswith("DataArray"):
-        if callable(obj):
-            content_da_methods += row
+        if name.removeprefix("DataArray.").startswith("kspace"):
+            match kind:
+                case "method":
+                    kspace_methods += row
+                case "attribute":
+                    kspace_attributes += row
         else:
-            content_da_attributes += row
+            match kind:
+                case "callable":
+                    content_da_callable += row
+                case "method":
+                    content_da_methods += row
+                case "attribute":
+                    content_da_attributes += row
     elif name.startswith("Dataset"):
-        if callable(obj):
-            content_ds_methods += row
-        else:
-            content_ds_attributes += row
+        match kind:
+            case "callable":
+                content_ds_callable += row
+            case "method":
+                content_ds_methods += row
+            case "attribute":
+                content_ds_attributes += row
 
 
 def _make_accessor_summary(accessor, accessor_cls_name):
@@ -65,15 +76,17 @@ def _make_accessor_summary(accessor, accessor_cls_name):
 
     members = dir(accessor)
 
-    if "__call__" in members:
-        _make_table_row(prefix, accessor.__call__, f"{accessor_cls_name}.__call__")
-
     for m in members:
-        if m.startswith("_") and m != "__getitem__":
+        if m.startswith("_") and m != "__getitem__" and m != "__call__":
             continue
-        member_obj = getattr(accessor, m)
-        member_obj_name = f"{accessor_cls_name}.{m}"
-        _make_table_row(f"{prefix}.{m}", member_obj, member_obj_name)
+
+        if m == "__call__":
+            _make_table_row(prefix, "callable")
+        else:
+            member_obj = getattr(accessor, m)
+            _make_table_row(
+                f"{prefix}.{m}", "method" if callable(member_obj) else "attribute"
+            )
 
 
 for path in pathlib.Path(erlab.accessors.__file__).resolve().parent.iterdir():
@@ -99,22 +112,60 @@ def _make_section(table_content: str, header: str) -> str:
     return f"\n{header}\n{len(header) * '~'}\n\n.. list-table::\n{table_content}"
 
 
-content = f"""Accessors (:mod:`erlab.accessors`)
-==================================
+def _make_accessor_autosummary(
+    content: str, kind: str, header=None, header_level=3
+) -> str:
+    if not content:
+        return ""
 
+    header = "" if header is None else f"{'#' * header_level} {header}"
+
+    return f"""{header}
+
+```{{eval-rst}}
+.. autosummary::
+   :toctree: accessors
+   :template: autosummary/accessor_{kind}.rst
+   {content}
+```
+"""
+
+
+content = f"""# Accessors ({{mod}}`erlab.accessors`)
+
+```{{eval-rst}}
 .. automodule:: erlab.accessors
 
-Dataset accessors
------------------
-{_make_section(content_ds_methods, "Methods")}
-{_make_section(content_ds_attributes, "Attributes")}
+.. currentmodule:: xarray
+```
 
-DataArray accessors
--------------------
-{_make_section(content_da_methods, "Methods")}
-{_make_section(content_da_attributes, "Attributes")}
+## Dataset Accessors
+
+### Methods
+{_make_accessor_autosummary(content_ds_callable, "callable")}
+{_make_accessor_autosummary(content_ds_methods, "method")}
+
+{_make_accessor_autosummary(content_ds_attributes, "attribute", "Attributes")}
+
+## DataArray Accessors
+
+### General
+
+#### Methods
+{_make_accessor_autosummary(content_da_callable, "callable")}
+{_make_accessor_autosummary(content_da_methods, "method")}
+
+{_make_accessor_autosummary(content_da_attributes, "attribute", "Attributes")}
+
+### Momentum Space
+
+#### Methods
+{_make_accessor_autosummary(kspace_methods, "method")}
+
+#### Attributes
+{_make_accessor_autosummary(kspace_attributes, "attribute")}
 
 """
 
-with open("erlab.accessors.rst", "w") as f:
+with open("erlab.accessors.md", "w") as f:
     f.write(content)

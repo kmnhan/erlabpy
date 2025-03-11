@@ -13,6 +13,7 @@ import pybtex.plugin
 import pybtex.style.formatting
 import pybtex.style.formatting.unsrt
 import pybtex.style.template
+import sphinx_autosummary_accessors
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -44,6 +45,7 @@ extensions = [
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     # "sphinx.ext.inheritance_diagram",
+    "sphinx_autosummary_accessors",
     "sphinx.ext.linkcode",
     "sphinx_copybutton",
     "sphinx_design",
@@ -75,8 +77,8 @@ if os.getenv("READTHEDOCS"):
     googleanalytics_id = "G-DDZYWTBV4S"
     html_baseurl = "https://erlabpy.readthedocs.io/en/stable/"  # Canonical URL
 
-# templates_path = ["_templates"]
-# exclude_patterns = []
+templates_path = ["_templates", sphinx_autosummary_accessors.templates_path]
+exclude_patterns = []
 
 default_role = "obj"
 

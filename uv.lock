@@ -646,6 +646,7 @@ docs = [
     { name = "pyqt6" },
     { name = "sphinx" },
     { name = "sphinx-autodoc-typehints" },
+    { name = "sphinx-autosummary-accessors" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
     { name = "sphinx-notfound-page" },
@@ -718,6 +719,7 @@ docs = [
     { name = "pyqt6", specifier = ">=6.8.0" },
     { name = "sphinx", specifier = ">=8.1.3" },
     { name = "sphinx-autodoc-typehints", specifier = ">=3.0.0" },
+    { name = "sphinx-autosummary-accessors", specifier = ">=2025.3.1" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-design", specifier = ">=0.6.1" },
     { name = "sphinx-notfound-page", specifier = ">=1.0.4" },
@@ -2881,6 +2883,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/cb/cc/d38e7260b1bd3af0c84ad8285dfd78236584b74544510584e07963e000ec/sphinx_autodoc_typehints-3.1.0.tar.gz", hash = "sha256:a6b7b0b6df0a380783ce5b29150c2d30352746f027a3e294d37183995d3f23ed", size = 36528 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/2f/bc5bed0677ae00b9ca7919968ea675e2f696b6b20f1648262f26a7a6c6b4/sphinx_autodoc_typehints-3.1.0-py3-none-any.whl", hash = "sha256:67bdee7e27ba943976ce92ebc5647a976a7a08f9f689a826c54617b96a423913", size = 20404 },
+]
+
+[[package]]
+name = "sphinx-autosummary-accessors"
+version = "2025.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "sphinx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/14/3f81ab3976f386bdf8ac96fb9c89adeaafa910216fa21b7d6be714e140f7/sphinx_autosummary_accessors-2025.3.1.tar.gz", hash = "sha256:41292dffe742703abe987f66c62e109d832490ff74d273d6512503e6066e456f", size = 17778 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/ac/12b1a7b9486dfcfd9c4c20a4ea5e2e4584681af8fe2f8898a716c2c51edb/sphinx_autosummary_accessors-2025.3.1-py3-none-any.whl", hash = "sha256:e90d140dce731162f70f2a46215e26dd46c57590e9f08bfff2e17cac45ce3a9f", size = 7820 },
 ]
 
 [[package]]

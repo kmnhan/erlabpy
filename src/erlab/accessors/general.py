@@ -663,9 +663,13 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Note
         ----
         The region is defined by a spherical mask, which is generated with
-        `erlab.analysis.mask.spherical_mask`. Depending on the radius and dimensions
-        provided, the mask will be hyperellipsoid in the dimensions specified in
-        `sel_kw`.
+        :func:`erlab.analysis.mask.spherical_mask`. Depending on the radius and
+        dimensions provided, the mask will be hyperellipsoid in the dimensions specified
+        in ``sel_kw``.
+
+        See Also
+        --------
+        :func:`erlab.analysis.mask.spherical_mask`
 
         """
         masked = self._obj.where(
@@ -679,7 +683,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
 @xr.register_dataarray_accessor("qinfo")
 class InfoDataArrayAccessor(ERLabDataArrayAccessor):
-    """`xarray.Dataset.qinfo` accessor for displaying information about the data."""
+    """`xarray.DataArray.qinfo` accessor for displaying information about the data."""
 
     def get_value(self, attr_or_coord_name: str) -> typing.Any:
         """Get the value of the specified attribute or coordinate.
