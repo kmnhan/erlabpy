@@ -194,14 +194,23 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         setting ``xr.set_options(keep_attrs='True')``.
 
         See :class:`erlab.constants.AxesConfiguration` for possible configurations.
+
+        Data from some ARPES setups may have a dynamic configuration that changes per
+        data. In such cases, the configuration should be converted with
+        :meth:`xarray.DataArray.kspace.as_configuration`.
         """
         if "configuration" not in self._obj.attrs:
             raise IncompleteDataError("attr", "configuration")
 
-        return AxesConfiguration(int(self._obj.attrs.get("configuration", 0)))
+        return AxesConfiguration(int(self._obj.attrs["configuration"]))
 
     @configuration.setter
     def configuration(self, value: AxesConfiguration | int) -> None:
+        if "configuration" in self._obj.attrs:
+            raise AttributeError(
+                "Configuration is already set. To modify the experimental "
+                "configuration, use `DataArray.kspace.as_configuration`."
+            )
         self._obj.attrs["configuration"] = int(value)
 
     @property
@@ -952,6 +961,27 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if not self._interactive_compatible:
             raise ValueError("Data is not compatible with the interactive tool.")
         return erlab.interactive.ktool(self._obj, **kwargs)
+
+    @_only_angles
+    def as_configuration(self, configuration: AxesConfiguration | int) -> xr.DataArray:
+        """Return a new DataArray with modified experimental configuration.
+
+        The coordinates of the new DataArray are renamed to match the given
+        configuration. The original data is not modified.
+
+        Parameters
+        ----------
+        configuration
+            The new configuration to apply.
+
+        Note
+        ----
+        This method assumes a conversion between 4 typical setups listed in the table in
+        :ref:`Nomenclature <nomenclature>`. Any non-standard setups should be handled by
+        the user.
+
+        """
+        return erlab.analysis.kspace.change_configuration(self._obj, configuration)
 
     @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:

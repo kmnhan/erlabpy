@@ -29,6 +29,53 @@ def _kperp_func(k_tot_sq, kx, ky):
     return np.sqrt(np.clip(k_tot_sq - kx**2 - ky**2, a_min=0, a_max=None))
 
 
+def change_configuration(
+    darr: xarray.DataArray, configuration: AxesConfiguration | int
+) -> xarray.DataArray:
+    """Apply a new axis configuration to the ARPES data.
+
+    Returns a copy of the input data with the coordinates renamed to match the given
+    configuration. The original data is not modified.
+
+    This function is useful for setups that are capable of changing the experimental
+    geometry.
+
+    Parameters
+    ----------
+    darr
+        The DataArray containing the ARPES data in angle space to modify.
+    configuration
+        The new configuration to apply.
+
+    Returns
+    -------
+    xarray.DataArray
+        The ARPES data with the new configuration.
+
+    """
+    current: AxesConfiguration = darr.kspace.configuration
+    new: AxesConfiguration = AxesConfiguration(configuration)
+
+    if current == new:
+        return darr.copy()
+
+    # Coord names for each configuration in order of (polar, tilt, deflector)
+    coord_order = {
+        AxesConfiguration.Type1: ("beta", "xi", "beta_deflector"),
+        AxesConfiguration.Type2: ("xi", "beta", "beta_deflector"),
+        AxesConfiguration.Type1DA: ("chi", "xi", "beta"),
+        AxesConfiguration.Type2DA: ("chi", "xi", "beta"),
+    }
+
+    coord_mapping = dict(zip(coord_order[current], coord_order[new], strict=True))
+
+    return (
+        darr.copy()
+        .rename({k: v for k, v in coord_mapping.items() if k in darr.coords})
+        .assign_attrs(configuration=int(new))
+    )
+
+
 def kz_func(kinetic_energy, inner_potential, kx, ky):
     r"""Calculate the out-of-plane momentum inside the sample :math:`k_z`.
 
