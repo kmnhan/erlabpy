@@ -16,4 +16,4 @@ class KRISSLoader(DA30Loader):
 
     @property
     def name_map(self):
-        return super().name_map | {"chi": "R1", "xi": "R2"}
+        return super().name_map | {"chi": "R1", "xi": ["R2", "Point [deg]"]}
