@@ -445,8 +445,8 @@ def test_loader(qtbot, accept_dialog) -> None:
         QtCore.QItemSelection(qmodelindex, qmodelindex),
         QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
-    manager.reload_action.trigger()
-    qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged)
+    with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
+        manager.reload_action.trigger()
     qtbot.wait(100)
 
     # Clear selection
@@ -454,8 +454,8 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Single selection multiple times
     for i in range(1, 5):
-        select_files([i])
-        qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000)
+        with qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000):
+            select_files([i])
         select_files([i], deselect=True)
 
     # Test sorting by different columns
