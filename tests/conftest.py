@@ -53,7 +53,7 @@ def exp_decay_model():
     return lmfit.Model(_exp_decay)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def fit_test_darr():
     t = np.arange(0, 5, 0.5)
     da = xr.DataArray(
@@ -65,12 +65,12 @@ def fit_test_darr():
     return da
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def anglemap():
     return generate_data_angles(shape=(10, 10, 10), assign_attributes=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def gold():
     return generate_gold_edge(
         (15, 150), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
