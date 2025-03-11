@@ -255,10 +255,10 @@ def accept_dialog():
     return _DialogHandler
 
 
-def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
+def _move_and_compare_values(bot, win, expected, cursor=0, target_win=None):
     if target_win is None:
         target_win = win
-    with qtbot.waitExposed(win):
+    with bot.waitExposed(win):
         target_win.show()
         target_win.activateWindow()
         target_win.setFocus()
@@ -275,26 +275,26 @@ def _move_and_compare_values(qtbot, win, expected, cursor=0, target_win=None):
 
     # Move left
     win.slicer_area.step_index(x_ax, -1)
-    qtbot.waitUntil(
+    bot.waitUntil(
         lambda: win.slicer_area.get_current_index(x_ax) == x0 - 1, timeout=2000
     )
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[1])
 
     # Move down
     win.slicer_area.step_index(y_ax, -1)
-    qtbot.waitUntil(
+    bot.waitUntil(
         lambda: win.slicer_area.get_current_index(y_ax) == y0 - 1, timeout=2000
     )
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[2])
 
     # Move right
     win.slicer_area.step_index(x_ax, 1)
-    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(x_ax) == x0, timeout=2000)
+    bot.waitUntil(lambda: win.slicer_area.get_current_index(x_ax) == x0, timeout=2000)
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[3])
 
     # Move up
     win.slicer_area.step_index(y_ax, 1)
-    qtbot.waitUntil(lambda: win.slicer_area.get_current_index(y_ax) == y0, timeout=2000)
+    bot.waitUntil(lambda: win.slicer_area.get_current_index(y_ax) == y0, timeout=2000)
     assert_almost_equal(win.array_slicer.point_value(cursor), expected[0])
 
 
