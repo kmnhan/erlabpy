@@ -7,14 +7,14 @@ from erlab.constants import AxesConfiguration
 from erlab.io.exampledata import generate_data_angles, generate_hvdep_cuts
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def hvdep():
     data = generate_hvdep_cuts((50, 250, 300), seed=1)
     data.kspace.inner_potential = 10.0
     return data
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def cut():
     return generate_data_angles(
         (300, 1, 500),
@@ -23,87 +23,87 @@ def cut():
     ).T
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_1_kmap(anglemap):
     data = anglemap.copy(deep=True)
-    data.kspace.configuration = 1
+    data.attrs["configuration"] = 1
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_2_kmap(anglemap):
     data = anglemap.copy(deep=True)
-    data.kspace.configuration = 2
+    data.attrs["configuration"] = 2
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_3_kmap(anglemap):
     data = anglemap.copy(deep=True)
-    data.kspace.configuration = 3
+    data.attrs["configuration"] = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_4_kmap(anglemap):
     data = anglemap.copy(deep=True)
-    data.kspace.configuration = 4
+    data.attrs["configuration"] = 4
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_1_cut(cut):
     data = cut.copy(deep=True)
-    data.kspace.configuration = 1
+    data.attrs["configuration"] = 1
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_2_cut(cut):
     data = cut.copy(deep=True)
-    data.kspace.configuration = 2
+    data.attrs["configuration"] = 2
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_3_cut(cut):
     data = cut.copy(deep=True)
-    data.kspace.configuration = 3
+    data.attrs["configuration"] = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_4_cut(cut):
     data = cut.copy(deep=True)
-    data.kspace.configuration = 4
+    data.attrs["configuration"] = 4
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_1_hvdep(hvdep):
     data = hvdep.copy(deep=True)
-    data.kspace.configuration = 1
+    data.attrs["configuration"] = 1
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_2_hvdep(hvdep):
     data = hvdep.copy(deep=True)
-    data.kspace.configuration = 2
+    data.attrs["configuration"] = 2
     return data.kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_3_hvdep(hvdep):
     data = hvdep.copy(deep=True)
-    data.kspace.configuration = 3
+    data.attrs["configuration"] = 3
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def config_4_hvdep(hvdep):
     data = hvdep.copy(deep=True)
-    data.kspace.configuration = 4
+    data.attrs["configuration"] = 4
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
@@ -147,7 +147,17 @@ def test_kconv(
     if use_dask:
         data = data.chunk("auto")
 
-    data.kspace.configuration = configuration
+    data.attrs["configuration"] = configuration.value
+
+    for c in AxesConfiguration:
+        _data = data.kspace.as_configuration(c)
+        if c == configuration:
+            xarray.testing.assert_identical(_data, data)
+        else:
+            assert _data.attrs["configuration"] == c.value
+
+    del _data
+
     match configuration:
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
             data = data.assign_coords(chi=0.0)
@@ -213,7 +223,7 @@ def test_kconv(
 @pytest.mark.parametrize("missing_coord", ["alpha", "beta", "chi", "xi", "eV", "hv"])
 def test_kconv_missing_coord(missing_coord, anglemap):
     data = anglemap.copy().assign_coords(chi=0.0)
-    data.kspace.configuration = 4
+    data.attrs["configuration"] = 4
 
     data = data.drop_vars(missing_coord)
 
@@ -227,7 +237,7 @@ def test_kconv_missing_coord(missing_coord, anglemap):
 @pytest.mark.parametrize("missing_attr", ["configuration"])
 def test_kconv_missing_attr(missing_attr, anglemap):
     data = anglemap.copy().assign_coords(chi=0.0)
-    data.kspace.configuration = 4
+    data.attrs["configuration"] = 4
     data.attrs.pop(missing_attr)
 
     with pytest.raises(
@@ -235,3 +245,14 @@ def test_kconv_missing_attr(missing_attr, anglemap):
         match=IncompleteDataError._make_message("attr", missing_attr),
     ):
         data.kspace.convert(silent=True)
+
+
+def test_kspace_set_existing_configuration(anglemap):
+    data = anglemap.copy().assign_coords(chi=0.0)
+
+    with pytest.raises(
+        AttributeError,
+        match="Configuration is already set. To modify the experimental "
+        "configuration, use `DataArray.kspace.as_configuration`.",
+    ):
+        data.kspace.configuration = 4

@@ -2854,10 +2854,19 @@ class ItoolPlotItem(pg.PlotItem):
             self.addItem(w)
             self._guidelines_items.append(w)
 
+        # Select first line since moving any line will move all lines
         line = self._guidelines_items[0]
+        target = self._guidelines_items[-1]
 
-        if old_pos is not None:
-            line.setPos(old_pos)
+        if old_pos is None:
+            target.setPos(
+                (
+                    self.slicer_area.get_current_value(0, uniform=True),
+                    self.slicer_area.get_current_value(1, uniform=True),
+                )
+            )
+        else:
+            target.setPos(old_pos)
             line.setAngle(old_angle)
 
         def _print_angle():
@@ -2890,6 +2899,7 @@ class ItoolPlotItem(pg.PlotItem):
         for item in list(self._guidelines_items):
             self.removeItem(item)
             self._guidelines_items.remove(item)
+            del item
         self._guideline_angle = 0.0
         self._guideline_offset = [0.0, 0.0]
         self.setTitle(None)

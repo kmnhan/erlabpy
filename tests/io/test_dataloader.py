@@ -380,6 +380,7 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Show data explorer
     manager.show_explorer()
+    qtbot.wait_exposed(explorer)
 
     # Enable preview
     explorer._preview_check.setChecked(True)
@@ -444,8 +445,8 @@ def test_loader(qtbot, accept_dialog) -> None:
         QtCore.QItemSelection(qmodelindex, qmodelindex),
         QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
-    manager.reload_action.trigger()
-    qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged)
+    with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
+        manager.reload_action.trigger()
     qtbot.wait(100)
 
     # Clear selection
@@ -453,8 +454,8 @@ def test_loader(qtbot, accept_dialog) -> None:
 
     # Single selection multiple times
     for i in range(1, 5):
-        select_files([i])
-        qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000)
+        with qtbot.wait_signal(explorer._preview._sigDataChanged, timeout=2000):
+            select_files([i])
         select_files([i], deselect=True)
 
     # Test sorting by different columns
@@ -464,8 +465,11 @@ def test_loader(qtbot, accept_dialog) -> None:
     # # Trigger open in file explorer
     # explorer._finder_act.trigger()
 
+    explorer.close()
+
     # Close imagetool manager
     _handler = accept_dialog(manager.close)
+    erlab.interactive.imagetool.manager._manager_instance = None
 
     # Cleanup the temporary directory
     tmp_dir.cleanup()

@@ -48,7 +48,7 @@ jobs:
 
       - name: Test with pytest
         if: matrix.python-version != '3.12' || matrix.qt-api != 'pyside6'
-        run: uv run pytest
+        run: uv run pytest -v
 
       - name: Test with pytest with coverage
         if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'

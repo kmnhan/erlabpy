@@ -20,7 +20,7 @@ from erlab.interactive.imagetool.manager._modelview import (
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_data():
     return xr.DataArray(
         np.arange(25).reshape((5, 5)),
