@@ -663,9 +663,13 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Note
         ----
         The region is defined by a spherical mask, which is generated with
-        `erlab.analysis.mask.spherical_mask`. Depending on the radius and dimensions
-        provided, the mask will be hyperellipsoid in the dimensions specified in
-        `sel_kw`.
+        :func:`erlab.analysis.mask.spherical_mask`. Depending on the radius and
+        dimensions provided, the mask will be hyperellipsoid in the dimensions specified
+        in ``sel_kw``.
+
+        See Also
+        --------
+        :func:`erlab.analysis.mask.spherical_mask`
 
         """
         masked = self._obj.where(
