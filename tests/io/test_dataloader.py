@@ -13,7 +13,6 @@ import xarray as xr
 from qtpy import QtCore
 
 import erlab
-from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.io.dataloader import LoaderBase, UnsupportedFileError
 from erlab.io.exampledata import generate_data_angles
 
@@ -339,15 +338,32 @@ def test_loader(qtbot, accept_dialog) -> None:
     erlab.io.loaders.current_loader.get_styler(df)._repr_html_()
 
     # Interactive summary
-    erlab.io.loaders.current_loader._isummarize(df)
-    qtbot.wait(100)
+    box = erlab.io.loaders.current_loader._isummarize(df)
+    btn_box = box.children[0].children[0]
+    assert len(btn_box.children) == 3  # prev, next, load full
+    btn_box.children[2].click()  # load full
+    btn_box.children[1].click()  # next
+    btn_box.children[1].click()  # next
+    del box, btn_box
 
     # Interactive summary with imagetool manager
-    manager = ImageToolManager()
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.addWidget(manager)
+    with qtbot.waitExposed(manager):
+        manager.show()
+        manager.activateWindow()
 
-    erlab.io.loaders.current_loader._isummarize(df)
-    qtbot.wait(100)
+    box = erlab.io.loaders.current_loader._isummarize(df)
+    btn_box = box.children[0].children[0]
+    assert len(btn_box.children) == 4  # prev, next, load full, imagetool
+    btn_box.children[3].click()  # imagetool
+
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+    manager.remove_tool(0)
+    qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+    del box, btn_box
 
     # Test data explorer
 
