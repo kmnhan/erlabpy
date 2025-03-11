@@ -273,9 +273,6 @@ class MBSLoader(LoaderBase):
     always_single = True
     skip_validate = True
 
-    _TXT_PATTERN = re.compile(r"(.*)(\d{5})_(\d{5}).txt")
-    re.compile(r".*(?P<number>\d{5})_(?P<region>\d{5}).txt")
-
     @property
     def file_dialog_methods(self):
         return {"MBS Raw Data (*.txt *.krx)": (self.load, {})}

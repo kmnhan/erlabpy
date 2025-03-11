@@ -21,6 +21,7 @@ loader.
    kriss
    lorea
    maestro
+   mbs
    merlin
    ssrl52
 
