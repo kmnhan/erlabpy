@@ -10,6 +10,7 @@ __all__ = [
     "is_monotonic",
     "is_uniform_spaced",
     "sort_coord_order",
+    "to_native_endian",
     "trim_na",
     "uniform_dims",
 ]
@@ -360,3 +361,26 @@ def sort_coord_order(
         name=darr.name,
         attrs=darr.attrs,
     )
+
+
+def to_native_endian(arr: npt.NDArray) -> npt.NDArray:
+    """Convert an array to native endianness.
+
+    Some Igor Pro files may contain data in big-endian format, which may be incompatible
+    with numba functions. This function converts the array to native endianness.
+
+    Parameters
+    ----------
+    arr : array-like
+        The input array.
+
+    Returns
+    -------
+    array
+        The array in native endianness.
+    """
+    if arr.dtype.byteorder not in ("=", "|"):
+        # Convert to native endianness
+        arr = arr.astype(arr.dtype.newbyteorder("="))
+
+    return arr
