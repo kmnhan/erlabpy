@@ -52,6 +52,10 @@
 
 ### 🐞 Bug Fixes
 
+- **io:** enforce native endianness for Igor Pro waves (#114) ([92fe389](https://github.com/kmnhan/erlabpy/commit/92fe3899cd655a3919439456f25f4e2e21369456))
+
+  Data loaded from Igor Pro waves will now be converted to have native endianness. Some old data were loaded in big-endian by default, causing incompatibility with several numba functions, with ambiguous error messages.
+
 - **io.plugins.kriss:** properly assign rotation axes names ([3dcb2ae](https://github.com/kmnhan/erlabpy/commit/3dcb2ae26b4e641fd05fb9e573f6306d77850726))
 
 - **imagetool.dialogs:** make new windows opened within data transformation dialogs forget file path information ([7a012cd](https://github.com/kmnhan/erlabpy/commit/7a012cd2a21f8f3a3c65c1be0d50f8854aa3817d))
