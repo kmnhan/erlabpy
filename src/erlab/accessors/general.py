@@ -679,7 +679,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
 @xr.register_dataarray_accessor("qinfo")
 class InfoDataArrayAccessor(ERLabDataArrayAccessor):
-    """`xarray.Dataset.qinfo` accessor for displaying information about the data."""
+    """`xarray.DataArray.qinfo` accessor for displaying information about the data."""
 
     def get_value(self, attr_or_coord_name: str) -> typing.Any:
         """Get the value of the specified attribute or coordinate.

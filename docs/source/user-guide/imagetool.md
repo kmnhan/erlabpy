@@ -44,7 +44,7 @@ import erlab.interactive as eri
 eri.itool(data)
 ```
 
-Or use the {meth}`DataArray.qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` accessor:
+Or use the {meth}`xarray.DataArray.qshow` accessor:
 
 ```python
 data.qshow()
@@ -166,8 +166,7 @@ Run `itool-manager` in a terminal or command prompt window with ERLabPy installe
 When the manager is running, new data can be opened in the manager by:
 
 - Invoking ImageTool from {func}`itool <erlab.interactive.imagetool.itool>` or
-  {meth}`qshow <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` with
-  `manager=True` from any script or notebook.
+  {meth}`xarray.DataArray.qshow` with `manager=True` from any script or notebook.
 
   ```python
   darr.qshow(manager=True)
