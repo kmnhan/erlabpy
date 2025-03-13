@@ -468,7 +468,9 @@ def test_loader(qtbot, accept_dialog) -> None:
     explorer.close()
 
     # Close imagetool manager
-    _handler = accept_dialog(manager.close)
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None
 
     # Cleanup the temporary directory

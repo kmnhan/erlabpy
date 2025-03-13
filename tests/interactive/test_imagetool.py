@@ -464,6 +464,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         assert dialog.center_spins[0].value() == 3.0
         assert dialog.center_spins[1].value() == 3.1
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
@@ -510,6 +511,7 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
@@ -563,6 +565,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
@@ -583,6 +586,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(False)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
@@ -612,6 +616,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: AverageDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
@@ -639,6 +644,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
         dialog._dim_combo.setCurrentIndex(0)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)

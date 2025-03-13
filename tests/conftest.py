@@ -7,6 +7,8 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 
+os.environ["DISPLAY"] = ":0"
+
 import lmfit
 import numpy as np
 import pooch

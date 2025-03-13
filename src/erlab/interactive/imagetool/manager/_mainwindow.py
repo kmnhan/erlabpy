@@ -130,6 +130,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self.server: _ManagerServer = _ManagerServer()
+        self.server.sigReceived.connect(self._data_recv)
+        self.server.sigLoadRequested.connect(self._data_load)
+        self.server.start()
 
         # Shared memory for detecting multiple instances
         # No longer used starting from v3.8.2, but kept for backward compatibility
@@ -349,11 +353,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._sigReloadLinkers.connect(self._cleanup_linkers)
         self._update_actions()
         self._update_info()
-
-        self.server: _ManagerServer = _ManagerServer()
-        self.server.sigReceived.connect(self._data_recv)
-        self.server.sigLoadRequested.connect(self._data_load)
-        self.server.start()
 
         # Golden ratio :)
         self.setMinimumWidth(301)
@@ -576,6 +575,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         wrapper.dispose()
         del wrapper
 
+    def remove_all_tools(self) -> None:
+        """Remove all ImageTool windows."""
+        for index in tuple(self._tool_wrappers.keys()):
+            self.remove_tool(index)
+
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
         """Remove linkers with one or no children."""
@@ -605,6 +609,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Hide selected ImageTool windows."""
         for index in self.list_view.selected_tool_indices:
             self._tool_wrappers[index].close()
+
+    @QtCore.Slot()
+    def hide_all(self) -> None:
+        """Hide all ImageTool windows."""
+        for tool in self._tool_wrappers.values():
+            tool.close()
 
     @QtCore.Slot()
     def reload_selected(self) -> None:
