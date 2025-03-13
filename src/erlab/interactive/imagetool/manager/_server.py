@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["PORT", "load_in_manager", "show_in_manager"]
+__all__ = ["PORT", "is_running", "load_in_manager", "show_in_manager"]
 
 import contextlib
 import errno
@@ -14,7 +14,6 @@ import socket
 import struct
 import tempfile
 import threading
-import time
 import typing
 import uuid
 
@@ -66,69 +65,80 @@ class _ManagerServer(QtCore.QThread):
         super().__init__()
         self.stopped = threading.Event()
 
+    def _handle_client(self, conn: socket.socket) -> None:
+        with conn:
+            # If no data is received in 2 seconds, close the connection
+            conn.settimeout(2.0)
+
+            # Receive the size of the data first
+            data_size_bytes = _recv_all(conn, 4)
+            data_size = struct.unpack(">L", data_size_bytes)[0]
+
+            # Receive the actual data
+            kwargs_bytes = _recv_all(conn, data_size)
+
+            try:
+                kwargs: dict = pickle.loads(kwargs_bytes)
+                logger.debug("Received data: %s", kwargs)
+
+                if "__ping" in kwargs:
+                    logger.debug("Received ping")
+                    return
+
+                # kwargs["__filename"] contains the list of paths to pickled data
+
+                # If "__loader_name" key is present, kwargs["__filename"] will be a list
+                # of paths to raw data files instead
+
+                files = kwargs.pop("__filename")
+                loader_name = kwargs.pop("__loader_name", None)
+
+                if loader_name is not None:
+                    self.sigLoadRequested.emit(files, loader_name, kwargs)
+                    logger.debug("Emitted file and loader info")
+                else:
+                    self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+                    logger.debug("Emitted loaded data")
+                    # Clean up temporary files
+                    for f in files:
+                        os.remove(f)
+                        dirname = os.path.dirname(f)
+                        if os.path.isdir(dirname):
+                            with contextlib.suppress(OSError):
+                                os.rmdir(dirname)
+                    logger.debug("Cleaned up temporary files")
+
+            except (
+                pickle.UnpicklingError,
+                AttributeError,
+                EOFError,
+                ImportError,
+                IndexError,
+            ):
+                logger.exception("Failed to unpickle received data")
+
     def run(self) -> None:
         self.stopped.clear()
 
         logger.debug("Starting server...")
-        soc = socket.socket()
+        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             soc.bind(("127.0.0.1", PORT))
-            soc.setblocking(False)
+            soc.setblocking(True)
             soc.listen()
             logger.info("Server is listening...")
 
             while not self.stopped.is_set():
                 try:
                     conn, _ = soc.accept()
-                except BlockingIOError:
-                    time.sleep(0.01)
+                except Exception:
+                    logger.exception("Unexpected error while accepting connection")
                     continue
-
-                with conn:
-                    conn.setblocking(True)
+                else:
                     logger.debug("Connection accepted")
-                    # Receive the size of the data first
-                    data_size = struct.unpack(">L", _recv_all(conn, 4))[0]
-
-                    # Receive the data
-                    kwargs = _recv_all(conn, data_size)
-
-                    # "__filename" contains the list of paths to pickled data
-
-                    # If "__loader_name" key is present, "__filename" will be a list of
-                    # paths to raw data files instead
-                    try:
-                        kwargs = pickle.loads(kwargs)
-                        logger.debug("Received data: %s", kwargs)
-
-                        files = kwargs.pop("__filename")
-                        loader_name = kwargs.pop("__loader_name", None)
-                        if loader_name is not None:
-                            self.sigLoadRequested.emit(files, loader_name, kwargs)
-                            logger.debug("Emitted file and loader info")
-                        else:
-                            self.sigReceived.emit(
-                                [_load_pickle(f) for f in files], kwargs
-                            )
-                            logger.debug("Emitted loaded data")
-                            # Clean up temporary files
-                            for f in files:
-                                os.remove(f)
-                                dirname = os.path.dirname(f)
-                                if os.path.isdir(dirname):
-                                    with contextlib.suppress(OSError):
-                                        os.rmdir(dirname)
-                            logger.debug("Cleaned up temporary files")
-
-                    except (
-                        pickle.UnpicklingError,
-                        AttributeError,
-                        EOFError,
-                        ImportError,
-                        IndexError,
-                    ):
-                        logger.exception("Failed to unpickle received data")
-
+                    threading.Thread(
+                        target=self._handle_client, args=(conn,), daemon=True
+                    ).start()
         except Exception:
             logger.exception("Server encountered an error")
         finally:
@@ -141,15 +151,56 @@ def _send_dict(contents: dict[str, typing.Any]) -> None:
 
     logger.debug("Connecting to server")
     client_socket = socket.socket()
-    client_socket.connect(("localhost", PORT))
 
-    logger.debug("Sending data")
-    # Send the size of the data first
-    client_socket.sendall(struct.pack(">L", len(contents)))
-    client_socket.sendall(contents)
-    client_socket.close()
+    try:
+        client_socket.connect(("localhost", PORT))
+    except Exception:
+        logger.exception("Failed to connect to server")
+    else:
+        # Send the size of the data first
+        logger.debug("Sending data")
+        client_socket.sendall(struct.pack(">L", len(contents)))
+        client_socket.sendall(contents)
+    finally:
+        client_socket.close()
 
     logger.debug("Data sent successfully")
+
+
+def _ping_server() -> bool:
+    """Ping the ImageToolManager server.
+
+    Returns
+    -------
+    bool
+        True if the ping was successful, False otherwise.
+    """
+    client_socket = socket.socket()
+
+    to_send = pickle.dumps({"__ping": True}, protocol=-1)
+    try:
+        client_socket.connect(("localhost", PORT))
+    except (TimeoutError, ConnectionRefusedError):
+        return False
+    else:
+        client_socket.sendall(struct.pack(">L", len(to_send)))
+        client_socket.sendall(to_send)
+    finally:
+        client_socket.close()
+    return True
+
+
+def is_running() -> bool:
+    """Check whether an instance of ImageToolManager is active.
+
+    Returns
+    -------
+    bool
+        True if an instance of ImageToolManager is running, False otherwise.
+    """
+    if erlab.interactive.imagetool.manager._manager_instance is not None:
+        return True
+    return _ping_server()
 
 
 def load_in_manager(

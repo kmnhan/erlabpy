@@ -359,7 +359,6 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
             menu = tl
             break
     assert isinstance(menu, QtWidgets.QMenu)
-    menu.close()
 
     _handler = accept_dialog(manager.close)
 

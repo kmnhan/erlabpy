@@ -26,7 +26,11 @@ from erlab.interactive.imagetool.manager._dialogs import (
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperListView
-from erlab.interactive.imagetool.manager._server import _ManagerServer, show_in_manager
+from erlab.interactive.imagetool.manager._server import (
+    _ManagerServer,
+    _ping_server,
+    show_in_manager,
+)
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
@@ -39,7 +43,7 @@ logger = logging.getLogger(__name__)
 _SHM_NAME: str = "__enforce_single_itoolmanager"
 """Name of `QtCore.QSharedMemory` that enforces single instance of ImageToolManager.
 
-If a shared memory object with this name exists, it means that an instance is running.
+No longer used starting from v3.8.2, but kept for backward compatibility.
 """
 
 _ICON_PATH = os.path.join(
@@ -128,6 +132,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         super().__init__()
 
         # Shared memory for detecting multiple instances
+        # No longer used starting from v3.8.2, but kept for backward compatibility
         self._shm = QtCore.QSharedMemory(_SHM_NAME)
         self._shm.create(1)  # Create segment so that it can be attached to
 
@@ -1265,5 +1270,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Stop the server
         self.server.stopped.set()
+        _ping_server()
         self.server.wait()
+
         super().closeEvent(event)
