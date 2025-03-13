@@ -221,6 +221,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._manager_instance = None
     erlab.interactive.imagetool.manager._always_use_socket = False
 
+
 def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
@@ -371,7 +372,6 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
 
 def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
-
 
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
