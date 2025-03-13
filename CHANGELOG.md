@@ -1,3 +1,11 @@
+## Unreleased
+
+### ⚡️ Performance
+
+- **imagetool.manager:** improve server responsiveness (#117) ([255c04f](https://github.com/kmnhan/erlabpy/commit/255c04f7f1950fa06bfd466f0137d3d616a23b8d))
+
+  Changes the internal detection mechanism for running manager instances to be more reliable, along with some server side micro-optimizations.
+
 ## v3.8.1 (2025-03-11)
 
 ### 🐞 Bug Fixes
