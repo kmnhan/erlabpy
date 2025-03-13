@@ -356,9 +356,8 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
             break
     assert isinstance(menu, QtWidgets.QMenu)
 
-    manager.remove_all_tools()
-    qtbot.wait_until(lambda: manager.ntools == 0)
-    manager.close()
+    _handler = accept_dialog(manager.close)
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
 
 def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
