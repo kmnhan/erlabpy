@@ -980,6 +980,7 @@ class LoaderBase(metaclass=_Loader):
             for f in self.files_for_summary(data_dir)
             if pathlib.Path(f) not in excluded
         ]
+        target_files.sort()
 
         if not self.always_single:
             signatures: list[int | None] = [

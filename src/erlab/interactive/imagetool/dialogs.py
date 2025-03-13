@@ -37,6 +37,8 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     overridden to provide the code to be copied.
     """
 
+    _sigCodeCopied = QtCore.Signal(str)
+
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__()
         if self.title is not None:
@@ -93,7 +95,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     def _copy(self) -> None:
         code = self.make_code()
         if code:
-            erlab.interactive.utils.copy_to_clipboard(code)
+            self._sigCodeCopied.emit(erlab.interactive.utils.copy_to_clipboard(code))
         else:
             QtWidgets.QMessageBox.warning(
                 self, "Nothing to Copy", "Generated code is empty."

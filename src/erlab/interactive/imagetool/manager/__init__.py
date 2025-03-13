@@ -40,16 +40,13 @@ import logging
 import sys
 import typing
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool.manager._mainwindow import (
-    _ICON_PATH,
-    _SHM_NAME,
-    ImageToolManager,
-)
+from erlab.interactive.imagetool.manager._mainwindow import _ICON_PATH, ImageToolManager
 from erlab.interactive.imagetool.manager._server import (
     PORT,
+    is_running,
     load_in_manager,
     show_in_manager,
 )
@@ -83,25 +80,6 @@ class _InitDialog(QtWidgets.QDialog):
 
         layout.addWidget(self.label)
         layout.addWidget(self.buttonBox)
-
-
-def is_running() -> bool:
-    """Check whether an instance of ImageToolManager is active.
-
-    Returns
-    -------
-    bool
-        True if an instance of ImageToolManager is running, False otherwise.
-    """
-    if sys.platform != "win32":
-        # Shared memory is removed on crash only on Windows
-        unix_fix_shared_mem = QtCore.QSharedMemory(_SHM_NAME)
-        if unix_fix_shared_mem.attach():
-            # Detaching will release the shared memory if no other process is attached
-            unix_fix_shared_mem.detach()
-
-    # If attaching succeeds, another instance is running
-    return QtCore.QSharedMemory(_SHM_NAME).attach()
 
 
 def main(execute: bool = True) -> None:

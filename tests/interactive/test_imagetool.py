@@ -247,8 +247,8 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 )
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
 def test_itool_tools(qtbot, test_data_type, condition) -> None:
-    data = _TEST_DATA[test_data_type]
-    win = itool(data, execute=False)
+    data = _TEST_DATA[test_data_type].copy()
+    win = ImageTool(data)
     qtbot.addWidget(win)
 
     main_image = win.slicer_area.images[0]
@@ -369,9 +369,7 @@ def test_itool_ds(qtbot) -> None:
 
 
 def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
-    win = itool(
-        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
-    )
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
 
     win.slicer_area.set_data(
@@ -396,7 +394,7 @@ def test_value_update(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     new_vals = -data.values.astype(np.float64)
 
-    win = itool(data, execute=False)
+    win = ImageTool(data)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
@@ -464,6 +462,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         assert dialog.center_spins[0].value() == 3.0
         assert dialog.center_spins[1].value() == 3.1
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
@@ -510,6 +509,7 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
@@ -563,9 +563,10 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h0 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -583,9 +584,10 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(False)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h1 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -612,6 +614,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: AverageDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
@@ -639,6 +642,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
         dialog._dim_combo.setCurrentIndex(0)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
