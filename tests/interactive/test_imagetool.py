@@ -247,8 +247,8 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 )
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
 def test_itool_tools(qtbot, test_data_type, condition) -> None:
-    data = _TEST_DATA[test_data_type]
-    win = itool(data, execute=False)
+    data = _TEST_DATA[test_data_type].copy()
+    win = ImageTool(data)
     qtbot.addWidget(win)
 
     main_image = win.slicer_area.images[0]
@@ -369,9 +369,7 @@ def test_itool_ds(qtbot) -> None:
 
 
 def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
-    win = itool(
-        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
-    )
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
 
     win.slicer_area.set_data(
@@ -396,7 +394,7 @@ def test_value_update(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     new_vals = -data.values.astype(np.float64)
 
-    win = itool(data, execute=False)
+    win = ImageTool(data)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
