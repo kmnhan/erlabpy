@@ -528,7 +528,7 @@ def example_loader():
             "azi": "delta",
         }
 
-        summary_sort = "Time"
+        summary_sort = "File Name"
 
         skip_validate = False
 

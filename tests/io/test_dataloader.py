@@ -95,7 +95,7 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     box = erlab.io.loaders.current_loader._isummarize(df)
     btn_box = box.children[0].children[0]
     assert len(btn_box.children) == 4  # prev, next, load full, imagetool
-    btn_box.children[2].click()  # load full
+    assert box.children[0].children[1].value == "data_001_S001"
     btn_box.children[3].click()  # imagetool
 
     qtbot.wait_until(lambda: manager.ntools == 1)
