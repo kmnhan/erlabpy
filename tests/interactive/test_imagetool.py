@@ -568,7 +568,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h0 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -589,7 +589,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h1 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )

@@ -56,7 +56,7 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
     )
 
 
-@pytest.mark.parametrize("use_socket", [True, False])
+@pytest.mark.parametrize("use_socket", [True, False], ids=["socket", "no_socket"])
 def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = use_socket
 
@@ -65,10 +65,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     qtbot.addWidget(manager)
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
 
     test_data.qshow(manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
@@ -225,6 +221,8 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._manager_instance = None
     erlab.interactive.imagetool.manager._always_use_socket = False
 
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
 
 def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager = ImageToolManager()
@@ -274,10 +272,7 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
-
-    with qtbot.waitExposed(manager):
-        manager.show()
-        manager.activateWindow()
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
