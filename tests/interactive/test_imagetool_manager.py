@@ -221,10 +221,9 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._manager_instance = None
     erlab.interactive.imagetool.manager._always_use_socket = False
 
+def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
-
-def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager = ImageToolManager()
     qtbot.addWidget(manager)
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -266,9 +265,12 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
 
 def test_manager_workspace_io(qtbot, accept_dialog) -> None:
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -307,6 +309,8 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
 
 def test_can_drop_mime_data(qtbot) -> None:
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
     manager = ImageToolManager()
     model = _ImageToolWrapperListModel(manager)
 
@@ -319,6 +323,8 @@ def test_can_drop_mime_data(qtbot) -> None:
 
 
 def test_listview(qtbot, accept_dialog, test_data) -> None:
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -364,6 +370,9 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
 
 
 def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
+
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
     test_data.to_netcdf(filename, engine="h5netcdf")
@@ -416,6 +425,8 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
 
 
 def test_manager_console(qtbot, accept_dialog) -> None:
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
     manager = ImageToolManager()
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),

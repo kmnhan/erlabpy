@@ -347,6 +347,7 @@ def test_loader(qtbot, accept_dialog) -> None:
     del box, btn_box
 
     # Interactive summary with imagetool manager
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
     erlab.interactive.imagetool.manager.main(execute=False)
     manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.addWidget(manager)
@@ -472,6 +473,8 @@ def test_loader(qtbot, accept_dialog) -> None:
     qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None
+
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
     # Cleanup the temporary directory
     tmp_dir.cleanup()

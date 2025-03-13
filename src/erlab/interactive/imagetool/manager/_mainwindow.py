@@ -1272,24 +1272,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for tool in list(self._tool_wrappers.keys()):
                 self.remove_tool(tool)
 
-        # Stop the server
-        self.server.stopped.set()
-        _ping_server()
-
-        # Close additional windows
         for widget in dict(self._additional_windows).values():
             widget.close()
-
-        if hasattr(self, "console"):
-            self.console.close()
-
-        if hasattr(self, "explorer"):
-            self.explorer.close()
 
         # Clean up temporary directory
         self._tmp_dir.cleanup()
 
-        # Wait for the server to stop
+        # Stop the server
+        self.server.stopped.set()
+        _ping_server()
         self.server.wait()
 
         super().closeEvent(event)
