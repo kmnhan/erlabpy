@@ -122,6 +122,7 @@ class _ManagerServer(QtCore.QThread):
 
         logger.debug("Starting server...")
         soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             soc.bind(("127.0.0.1", PORT))
             soc.setblocking(True)
