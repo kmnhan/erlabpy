@@ -99,7 +99,12 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     btn_box.children[3].click()  # imagetool
 
     qtbot.wait_until(lambda: manager.ntools == 1)
+
+    # Archive nd remove
+    manager._tool_wrappers[0].archive()
     manager.remove_tool(0)
     qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None
+
+    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
