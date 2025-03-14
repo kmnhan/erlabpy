@@ -38,15 +38,15 @@ jobs:
           changelog_increment_filename: body.md
           extra_requirements: "cz-changeup"
 
-      - name: Push changes
-        run: git push origin main --tags
-
       - name: Install uv
         if: env.REVISION != env.PREVIOUS_REVISION
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.13"
+
+      - name: Push changes
+        run: git push origin main --tags
 
       - name: Build and publish package distributions to PyPI
         if: env.REVISION != env.PREVIOUS_REVISION
