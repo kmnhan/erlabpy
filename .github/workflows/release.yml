@@ -46,7 +46,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Build and publish package distributions to PyPI
         if: env.REVISION != env.PREVIOUS_REVISION
