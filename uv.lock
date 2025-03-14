@@ -697,7 +697,7 @@ provides-extras = ["complete", "viz", "io", "perf", "misc"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "commitizen", specifier = ">=3.29.0" },
+    { name = "commitizen", specifier = ">=4.3.0" },
     { name = "cz-changeup", specifier = ">=1.1.2" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "jupyter-bokeh", specifier = ">=4.0.5" },
