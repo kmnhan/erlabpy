@@ -252,6 +252,7 @@ concurrency = ["multiprocessing", "thread"]
 [tool.coverage.report]
 exclude_also = [
     "@numba.njit",
+    "@numba.vectorize",
     "@cfunc",
     "get_ipython()",
     "from IPython",
