@@ -442,11 +442,51 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 class SelectionAccessor(ERLabDataArrayAccessor):
     """`xarray.DataArray.qsel` accessor for convenient selection and averaging."""
 
+    @staticmethod
+    def _qsel_scalar(
+        obj: xr.DataArray,
+        scalars: dict[Hashable, float | Collection[float]],
+        slices: dict[Hashable, slice],
+        avg_dims: list[Hashable],
+        lost_dims: list[Hashable],
+    ) -> xr.DataArray:
+        unindexed_dims: list[Hashable] = [
+            k for k in slices | scalars if k not in obj.indexes
+        ]  # Unindexed dimensions, i.e. dimensions without coordinates
+
+        if len(unindexed_dims) >= 1:
+            out = obj.assign_coords(
+                {k: np.arange(obj.sizes[k]) for k in unindexed_dims}
+            )  # Assign temporary coordinates
+        else:
+            out = obj
+
+        if len(scalars) >= 1:
+            for k, v in scalars.items():
+                if not isinstance(v, Collection) and (
+                    v < out[k].min() or v > out[k].max()
+                ):
+                    erlab.utils.misc.emit_user_level_warning(
+                        f"Selected value {v} for `{k}` is outside coordinate bounds"
+                    )
+            out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
+
+        if len(slices) >= 1:
+            out = out.sel(slices)
+
+            lost_coords = {
+                k: out[k].mean(keep_attrs=True)
+                for k in lost_dims
+                if k not in unindexed_dims
+            }
+            out = out.mean(dim=avg_dims, keep_attrs=True)
+            out = out.assign_coords(lost_coords)
+
+        return out.drop_vars(unindexed_dims, errors="ignore")
+
     def __call__(
         self,
         indexers: Mapping[Hashable, float | slice] | None = None,
-        *,
-        verbose: bool = False,
         **indexers_kwargs,
     ):
         """Select and average data along specified dimensions.
@@ -457,26 +497,28 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             Dictionary specifying the dimensions and their values or slices. Position
             along a dimension can be specified in three ways:
 
-            - As a scalar value: `alpha=-1.2`
+            - As a scalar value or a collection of scalar values: ``alpha=-1.2`` or
+              ``alpha=[-1.2, 0.0, 1.2]``:
 
-              If no width is specified, the data is selected along the nearest value. It
-              is equivalent to :meth:`xarray.DataArray.sel` with `method='nearest'`.
+              If no width is specified, the data is selected along the nearest value for
+              each element. It is equivalent to calling :meth:`xarray.DataArray.sel`
+              with ``method='nearest'``.
 
-            - As a value and width: `alpha=5, alpha_width=0.5`
+            - As a value and width: ``alpha=5, alpha_width=0.5``
 
-              The data is *averaged* over a slice of width `alpha_width`, centered at
-              `alpha`.
+              The data is *averaged* over a slice of width ``alpha_width``, centered at
+              ``alpha``. If ``alpha`` is a collection, the data is averaged over
+              multiple slices and concatenated along the dimension.
 
-            - As a slice: `alpha=slice(-10, 10)`
+            - As a slice: ``alpha=slice(-10, 10)``
 
               The data is selected over the specified slice. No averaging is performed.
+              This is equivalent to calling :meth:`xarray.DataArray.sel` with a slice.
 
-            One of `indexers` or `indexers_kwargs` must be provided.
-        verbose
-            If `True`, print information about the selected data and averaging process.
+            One of ``indexers`` or ``indexers_kwargs`` must be provided.
         **indexers_kwargs
-            The keyword arguments form of `indexers`. One of `indexers` or
-            `indexers_kwargs` must be provided.
+            The keyword arguments form of ``indexers``. One of ``indexers`` or
+            ``indexers_kwargs`` must be provided.
 
         Returns
         -------
@@ -525,10 +567,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         f"`{target_dim}_width` was specified without `{target_dim}`"
                     )
 
-        scalars: dict[Hashable, float] = {}
+        scalars: dict[Hashable, float | Collection[float]] = {}
         slices: dict[Hashable, slice] = {}
         avg_dims: list[Hashable] = []
         lost_dims: list[Hashable] = []
+        slice_collections: dict[Hashable, Collection[slice]] = {}
 
         for dim, width in bin_widths.items():
             value = indexers[dim]
@@ -537,64 +580,57 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 if isinstance(value, slice):
                     slices[dim] = value
                 else:
-                    scalars[dim] = float(value)
+                    scalars[dim] = value
             else:
                 if isinstance(value, slice):
                     raise ValueError(
                         f"Slice not allowed for value of dimension `{dim}` "
                         "with width specified"
                     )
-                slices[dim] = slice(value - width / 2.0, value + width / 2.0)
-                avg_dims.append(dim)
-                for k, v in self._obj.coords.items():
-                    if dim in v.dims:
-                        lost_dims.append(k)
+                if isinstance(value, Collection):
+                    # Given a list of center values, create a list of slices
+                    slice_collections[dim] = [
+                        slice(v - width / 2.0, v + width / 2.0) for v in value
+                    ]
+                else:
+                    slices[dim] = slice(value - width / 2.0, value + width / 2.0)
 
-        unindexed_dims: list[Hashable] = [
-            k for k in slices | scalars if k not in self._obj.indexes
-        ]  # Unindexed dimensions, i.e. dimensions without coordinates
+                    avg_dims.append(dim)
+                    for k, v in self._obj.coords.items():
+                        if dim in v.dims:
+                            lost_dims.append(k)
 
-        if len(unindexed_dims) >= 1:
-            out = self._obj.assign_coords(
-                {k: np.arange(self._obj.sizes[k]) for k in unindexed_dims}
-            )  # Assign temporary coordinates
-        else:
-            out = self._obj
-
-        if len(scalars) >= 1:
-            for k, v in scalars.items():
-                if v < out[k].min() or v > out[k].max():
-                    erlab.utils.misc.emit_user_level_warning(
-                        f"Selected value {v} for `{k}` is outside coordinate bounds"
-                    )
-            out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
-
-        if len(slices) >= 1:
-            out = out.sel(slices)
-
-            lost_coords = {
-                k: out[k].mean(keep_attrs=True)
-                for k in lost_dims
-                if k not in unindexed_dims
+        if len(slice_collections) >= 1:
+            # Sort the slice collections by reverse dimension order to ensure that
+            # non-dimension coords are also concatenated in the correct order
+            slice_collections = {
+                k: slice_collections[k]
+                for k in sorted(
+                    slice_collections, key=lambda k: -self._obj.dims.index(k)
+                )
             }
-            out = out.mean(dim=avg_dims, keep_attrs=True)
-            out = out.assign_coords(lost_coords)
 
-        if verbose:
-            out_str = "Selected data with "
-            if len(scalars) >= 1:
-                out_str = out_str + f"{scalars}"
-            if len(slices) >= 1:
-                if len(scalars) >= 1:
-                    out_str = out_str + " and "
-                out_str = out_str + f"{slices}"
+            out = self._obj
+            for dim, slice_list in slice_collections.items():
+                lost_dims_extend: list[Hashable] = [
+                    k for k, v in self._obj.coords.items() if dim in v.dims
+                ]
 
-            if len(avg_dims) >= 1:
-                out_str = out_str + f", averaging over {avg_dims}"
-
-            print(out_str)
-
-        out = out.drop_vars(unindexed_dims, errors="ignore")
+                out = xr.concat(
+                    [
+                        self._qsel_scalar(
+                            out,
+                            scalars,
+                            slices | {dim: s},
+                            [*avg_dims, dim],
+                            lost_dims + lost_dims_extend,
+                        )
+                        for s in slice_list
+                    ],
+                    dim=dim,
+                )
+        else:
+            out = self._qsel_scalar(self._obj, scalars, slices, avg_dims, lost_dims)
 
         return erlab.utils.array.sort_coord_order(
             out, keys=coord_order, dims_first=True
