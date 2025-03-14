@@ -41,6 +41,12 @@ TINY: float = 1.0e-15
 S2PI = np.sqrt(2 * np.pi)
 
 
+@numba.vectorize(cache=True)
+def _clip_tiny(x: float) -> float:
+    """Clip small values to avoid division by zero."""
+    return max(x, TINY)
+
+
 @numba.njit(cache=True)
 def _infer_meshgrid_shape(arr: np.ndarray) -> tuple[tuple[int, int], int, np.ndarray]:
     if arr.ndim != 1:
@@ -90,13 +96,13 @@ def _gen_kernel(
     """
     delta_x = x[1] - x[0]
 
-    sigma = abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
+    sigma = np.abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
     n_pad = int(sigma * pad / delta_x + 0.5)
     x_pad = n_pad * delta_x
 
     extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
     gauss = np.exp(
-        -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / max(TINY, 2 * sigma**2)
+        -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / _clip_tiny(2 * sigma**2)
     )
     gauss /= gauss.sum()
     return extended, gauss
@@ -219,7 +225,7 @@ def gaussian_wh(
 
     """
     return height * np.exp(
-        -16 * np.log(2) * (1.0 * x - center) ** 2 / max(TINY, width**2)
+        -16 * np.log(2) * (1.0 * x - center) ** 2 / _clip_tiny(width**2)
     )
 
 
@@ -236,8 +242,8 @@ def gaussian(
         \frac{A}{\sqrt{2\pi\sigma^2}} \exp\left[-\frac{(x-x_0)^2}{2\sigma^2}\right]
 
     """
-    return (amplitude / (max(TINY, S2PI * sigma))) * np.exp(
-        -((1.0 * x - center) ** 2) / max(TINY, (2 * sigma**2))
+    return (amplitude / _clip_tiny(S2PI * sigma)) * np.exp(
+        -((1.0 * x - center) ** 2) / _clip_tiny(2 * sigma**2)
     )
 
 
@@ -253,7 +259,7 @@ def lorentzian_wh(
     :math:`\sigma=w/2`
 
     """
-    return height / (1 + 4 * ((1.0 * x - center) / max(TINY, width)) ** 2)
+    return height / (1 + 4 * ((1.0 * x - center) / _clip_tiny(width)) ** 2)
 
 
 @broadcast_args
@@ -269,9 +275,9 @@ def lorentzian(
         \frac{A}{\pi\sigma\left[1 + \left(\frac{x-x_0}{\sigma}\right)^2\right]}
 
     """
-    return (amplitude / (1 + ((1.0 * x - center) / max(TINY, sigma)) ** 2)) / max(
-        TINY, (np.pi * sigma)
-    )
+    return (
+        amplitude / (1 + ((1.0 * x - center) / _clip_tiny(sigma)) ** 2)
+    ) / _clip_tiny(np.pi * sigma)
 
 
 @broadcast_args
@@ -295,7 +301,7 @@ def fermi_dirac(
         The temperature in K.
 
     """
-    return 1 / (1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV)))
+    return 1 / (1 + np.exp((1.0 * x - center) / _clip_tiny(temp * kb_eV)))
 
 
 # adapted and improved from KWAN Igor procedures
@@ -337,7 +343,7 @@ def fermi_dirac_linbkg(
     density of states below EF including the linear background.
     """
     return (back0 + back1 * x) + (dos0 - back0 + (dos1 - back1) * x) / (
-        1 + np.exp((1.0 * x - center) / max(TINY, temp * kb_eV))
+        1 + np.exp((1.0 * x - center) / _clip_tiny(temp * kb_eV))
     )
 
 
@@ -398,7 +404,7 @@ def step_broad(
     return (
         amplitude
         * 0.5
-        * scipy.special.erfc((1.0 * x - center) / max(TINY, np.sqrt(2) * sigma))
+        * scipy.special.erfc((1.0 * x - center) / _clip_tiny(np.sqrt(2) * sigma))
     )
 
 
