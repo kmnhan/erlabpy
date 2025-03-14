@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DISPLAY: ":99.0"
+      COV_VERSION: "3.13"
+      COV_QT_API: "pyside6"
     strategy:
       fail-fast: false
       matrix:
@@ -47,21 +49,21 @@ jobs:
           export QT_API=${{ matrix.qt-api }}
 
       - name: Test with pytest
-        if: matrix.python-version != '3.13' || matrix.qt-api != 'pyqt6'
+        if: ${{ matrix.python-version != env.COV_VERSION || matrix.qt-api != env.COV_QT_API }}
         run: uv run pytest -v
 
       - name: Test with pytest with coverage
-        if: matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6'
+        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
         run: uv run pytest -v --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6'
+        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
-        if: ${{ matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6' && !cancelled() }}
+        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API && !cancelled() }}
         uses: codecov/test-results-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
