@@ -1,0 +1,39 @@
+name: Update changelog
+
+on:
+  workflow_dispatch:
+
+jobs:
+  changelog:
+    name: Update changelog
+    runs-on: ubuntu-latest
+    if: github.repository == 'kmnhan/erlabpy'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install commitizen cz-changeup
+
+      - name: Generate changelog
+        run: cz changelog
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore: update changelog"
+            git push
+          else
+            echo "nothing to commit, working tree clean"
+          fi
