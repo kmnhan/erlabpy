@@ -172,7 +172,7 @@ def test_kconv(
                 match="Energy axis of photon energy dependent data must be in "
                 "binding energy.",
             ):
-                kconv = data.kspace.convert(silent=True)
+                kconv = data.kspace.convert(silent=False)
             return
 
         with pytest.warns(
@@ -180,9 +180,9 @@ def test_kconv(
             match="The energy axis seems to be in terms of kinetic energy, "
             "attempting conversion to binding energy.",
         ):
-            kconv = data.kspace.convert(silent=True)
+            kconv = data.kspace.convert(silent=False)
     else:
-        kconv = data.kspace.convert(silent=True)
+        kconv = data.kspace.convert(silent=False)
 
     if use_dask:
         kconv = kconv.compute()
