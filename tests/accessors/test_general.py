@@ -95,20 +95,41 @@ def test_qsel_shape(indexers, expected_shape) -> None:
     assert result.shape == expected_shape
 
 
-def test_qsel_verbose(capfd) -> None:
-    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
-    dat.qsel({"x": 2.0, "x_width": 1.0}, verbose=True)
-    captured = capfd.readouterr()
-    assert (
-        "Selected data with {'x': slice(1.5, 2.5, None)}, averaging over ['x']"
-        in captured.out
-    )
-
-
 def test_qsel_invalid_dimension() -> None:
     dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
     with pytest.raises(ValueError, match="Dimension `z` not found in data"):
         dat.qsel({"z": 2.0})
+
+
+def test_qsel_collection() -> None:
+    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+
+    # List of values & width
+    xr.testing.assert_identical(
+        dat.qsel(x=[1, 3], x_width=2),
+        xr.DataArray(
+            np.array([[5, 6, 7, 8, 9], [15, 16, 17, 18, 19]], dtype=float),
+            dims=("x", "y"),
+        ),
+    )
+
+    # List of values & width for both dimensions
+    xr.testing.assert_equal(
+        dat.qsel(x=[1, 3], x_width=2, y=[1, 3], y_width=2),
+        xr.DataArray(
+            np.array([[6, 16], [8, 18]], dtype=float),
+            dims=("x", "y"),
+        ),
+    )
+
+    # Check dim order consistency
+    xr.testing.assert_equal(
+        dat.qsel(y=[1, 3], y_width=2, x=[1, 3], x_width=2),
+        xr.DataArray(
+            np.array([[6, 16], [8, 18]], dtype=float),
+            dims=("x", "y"),
+        ),
+    )
 
 
 def test_qsel_slice_with_width() -> None:
