@@ -758,7 +758,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         resolution: dict[str, float] | None = None,
         *,
         method: str = "linear",
-        silent: bool = False,
+        silent: bool = True,
         **coords,
     ) -> xr.DataArray:
         """Convert to momentum space.
@@ -785,7 +785,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             :func:`erlab.analysis.interpolate.interpn`. Using methods other than
             ``'linear'`` will result in slower performance.
         silent
-            If `True`, suppresses printing, by default `False`.
+            If ``False``, print progress messages during the conversion.
         **coords
             Array-like keyword arguments that specifies the coordinate array for each
             momentum axis. If provided, the bounds and resolution will be ignored.
