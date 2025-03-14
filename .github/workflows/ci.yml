@@ -47,21 +47,21 @@ jobs:
           export QT_API=${{ matrix.qt-api }}
 
       - name: Test with pytest
-        if: matrix.python-version != '3.12' || matrix.qt-api != 'pyside6'
+        if: matrix.python-version != '3.13' || matrix.qt-api != 'pyqt6'
         run: uv run pytest -v
 
       - name: Test with pytest with coverage
-        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
+        if: matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6'
         run: uv run pytest -v --cov erlab --junitxml=junit.xml
 
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12' && matrix.qt-api == 'pyside6'
+        if: matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
-        if: ${{ matrix.python-version == '3.12' && matrix.qt-api == 'pyside6' && !cancelled() }}
+        if: ${{ matrix.python-version == '3.13' && matrix.qt-api == 'pyqt6' && !cancelled() }}
         uses: codecov/test-results-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -76,7 +76,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install mypy and dependencies
         run: uv sync --all-extras --dev --group pyqt6
