@@ -167,7 +167,10 @@ class _MultiFileHandler(QtCore.QObject):
         self, file_path: pathlib.Path, data_list: list[xr.DataArray]
     ) -> None:
         self.manager._status_bar.showMessage("")
-        self.manager._data_recv(data_list, kwargs={"file_path": file_path})
+        self.manager._data_recv(
+            data_list,
+            kwargs={"file_path": file_path, "_disable_reload": len(data_list) > 1},
+        )
         self.loaded.append(file_path)
         self.manager._recent_directory = str(file_path.parent)
         self._load_next()

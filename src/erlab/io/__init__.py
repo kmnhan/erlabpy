@@ -62,6 +62,7 @@ Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
    loader_context
    set_data_dir
    set_loader
+   extend_loader
    summarize
 
 """

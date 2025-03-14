@@ -15,11 +15,13 @@ loader.
    :toctree:
 
    da30
+   erpes
    esm
    i05
    kriss
    lorea
    maestro
+   mbs
    merlin
    ssrl52
 

@@ -22,6 +22,24 @@ def test_load_xps(expected_dir) -> None:
     )
 
 
+def test_load_extend(expected_dir) -> None:
+    with erlab.io.extend_loader(
+        name_map={"ta_test": "Temperature Sensor A", "sc_test": "Sample Current"},
+        coordinate_attrs=("Temperature Sensor A", "Sample Current"),
+    ):
+        dat = erlab.io.load(5)
+
+    for new_coord in ("ta_test", "sc_test"):
+        assert new_coord in dat.coords
+
+    assert float(dat["ta_test"][0]) != float(dat["ta_test"][1])
+
+    # Check if overridden attrs are restored
+    xr.testing.assert_identical(
+        erlab.io.load(5), xr.load_dataarray(expected_dir / "5.h5")
+    )
+
+
 def test_load_multiple(expected_dir) -> None:
     xr.testing.assert_identical(
         erlab.io.load("f_005_S001.pxt"), xr.load_dataarray(expected_dir / "5.h5")

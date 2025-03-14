@@ -24,6 +24,7 @@ from erlab.analysis.fit.functions.general import (
     TINY,
     do_convolve,
     do_convolve_2d,
+    do_convolve_segments,
     fermi_dirac,
     gaussian_wh,
     lorentzian_wh,
@@ -137,22 +138,22 @@ class PolynomialFunction(DynamicFunction):
 
 
 class MultiPeakFunction(DynamicFunction):
-    """A callable class for a multi-peak model.
+    """Multiple peaks with optional Fermi-Dirac distribution and background.
 
     Parameters
     ----------
     npeaks
         The number of peaks to fit.
     peak_shapes
-        The shape(s) of the peaks in the model. If a list of strings is provided, each
-        string represents the shape of a peak. If a single string is provided, it will
-        be split by spaces to create a list of peak shapes. If not provided, the default
-        peak shape will be used for all peaks.
+        The shape(s) of the peaks in the model. If a list of strings is provided,
+        each string represents the shape of a peak. If a single string is provided,
+        it will be split by spaces to create a list of peak shapes. If not provided,
+        the default peak shape will be used for all peaks.
     fd
         Flag indicating whether the model should be multiplied by the Fermi-Dirac
-        distribution. This adds three parameters to the model: `efermi`, `temp`, and
-        `offset`, each corresponding to the Fermi level, temperature in K, and constant
-        background.
+        distribution. This adds three parameters to the model: ``efermi``, ``temp``,
+        and ``offset``, each corresponding to the Fermi level, temperature in K, and
+        constant background.
     background
         The type of background to include in the model. Possible values are:
 
@@ -168,10 +169,13 @@ class MultiPeakFunction(DynamicFunction):
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
     convolve
-        Flag indicating whether the model should be convolved with a gaussian kernel. If
-        `True`, adds a `resolution` parameter to the model, corresponding to the FWHM of
-        the gaussian kernel.
-
+        Flag indicating whether the model should be convolved with a gaussian
+        kernel. If `True`, adds a ``resolution`` parameter to the model,
+        corresponding to the FWHM of the gaussian kernel.
+    segmented
+        Flag indicating whether to convolve the model in segments. If `True`, the
+        model will be convolved in segments of uniform spacing. This must be set to
+        `True` when fitting data with large gaps or discontinuities in the x-axis.
     """
 
     PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {
@@ -192,12 +196,14 @@ class MultiPeakFunction(DynamicFunction):
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
+        segmented: bool = False,
     ) -> None:
         super().__init__()
         self.npeaks = npeaks
         self.fd = fd
         self.convolve = convolve
         self.background = background
+        self.segmented = segmented
 
         if self.background == "polynomial":
             self.bkg_degree = degree
@@ -347,6 +353,8 @@ class MultiPeakFunction(DynamicFunction):
                 raise TypeError(
                     "Missing parameter `resolution` required for convolution"
                 )
+            if self.segmented:
+                return do_convolve_segments(x, self.pre_call, **params)
             return do_convolve(x, self.pre_call, **params)
         return self.pre_call(x, **params)
 

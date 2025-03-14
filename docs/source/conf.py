@@ -13,6 +13,7 @@ import pybtex.plugin
 import pybtex.style.formatting
 import pybtex.style.formatting.unsrt
 import pybtex.style.template
+import sphinx_autosummary_accessors
 
 # Build docs with PyQt6 since PySide6 is broken
 # https://bugreports.qt.io/browse/PYSIDE-1884
@@ -44,7 +45,7 @@ extensions = [
     # "IPython.sphinxext.ipython_directive",
     # "IPython.sphinxext.ipython_console_highlighting",
     # "sphinx.ext.inheritance_diagram",
-    "nbsphinx",
+    "sphinx_autosummary_accessors",
     "sphinx.ext.linkcode",
     "sphinx_copybutton",
     "sphinx_design",
@@ -53,9 +54,15 @@ extensions = [
     "matplotlib.sphinxext.roles",
     "sphinxcontrib.bibtex",
     "sphinx_qt_documentation",
-    "myst_parser",
+    "myst_nb",
     "notfound.extension",
 ]
+myst_enable_extensions = ["colon_fence", "dollarmath"]
+suppress_warnings = [
+    "mystnb.unknown_mime_type",  # holoviews rendering
+]
+nb_execution_mode = "cache"
+nb_execution_timeout = -1
 
 notfound_context = {
     "title": "Page not found",
@@ -70,8 +77,8 @@ if os.getenv("READTHEDOCS"):
     googleanalytics_id = "G-DDZYWTBV4S"
     html_baseurl = "https://erlabpy.readthedocs.io/en/stable/"  # Canonical URL
 
-# templates_path = ["_templates"]
-# exclude_patterns = []
+templates_path = ["_templates", sphinx_autosummary_accessors.templates_path]
+exclude_patterns = []
 
 default_role = "obj"
 
@@ -79,8 +86,6 @@ default_role = "obj"
 # nitpick_ignore = [("py:class", "numpy.float64")]
 
 highlight_language = "python3"
-
-autosectionlabel_prefix_document = True
 
 # -- Linkcode settings -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/extensions/linkcode.html
@@ -242,6 +247,7 @@ intersphinx_mapping = {
     "lmfit": ("https://lmfit.github.io/lmfit-py", None),
     "matplotlib": ("https://matplotlib.org/stable", None),
     "xarray": ("https://docs.xarray.dev/en/stable", None),
+    "xarray-lmfit": ("https://xarray-lmfit.readthedocs.io/stable", None),
     "pandas": ("https://pandas.pydata.org/docs", None),
     "pyqtgraph": ("https://pyqtgraph.readthedocs.io/en/latest", None),
     "csaps": ("https://csaps.readthedocs.io/en/latest", None),

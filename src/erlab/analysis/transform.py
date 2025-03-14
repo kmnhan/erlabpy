@@ -365,6 +365,7 @@ def symmetrize(
     *,
     center: float = 0.0,
     part: typing.Literal["both", "below", "above"] = "both",
+    interp_kw: dict[str, typing.Any] | None = None,
 ) -> xr.DataArray:
     """
     Symmetrize a DataArray along a specified dimension around a given center.
@@ -391,6 +392,8 @@ def symmetrize(
         The part of the symmetrized data to return. If 'both', the full symmetrized data
         is returned. If 'below', only the part below the center is returned. If 'above',
         only the part above the center is returned.
+    interp_kw : dict, optional
+        Additional keyword arguments passed to :meth:`xarray.DataArray.interp`.
 
     Returns
     -------
@@ -417,6 +420,11 @@ def symmetrize(
     if not erlab.utils.array.is_dims_uniform(darr, (dim,)):
         raise ValueError(f"Coordinate along dimension {dim} must be uniformly spaced")
 
+    if interp_kw is None:
+        interp_kw = {}
+
+    interp_kw.setdefault("assume_sorted", True)
+
     # Ensure coord is increasing
     out = darr.copy().sortby(dim)
 
@@ -432,7 +440,7 @@ def symmetrize(
         shifted_coords = coord.values - closest_val - step / 2
         shifted_coords = np.append(shifted_coords, shifted_coords[-1] + step)
 
-        out_shifted = out.interp({dim: shifted_coords}, assume_sorted=True).dropna(dim)
+        out_shifted = out.interp({dim: shifted_coords}, **interp_kw).dropna(dim)
 
         below = out_shifted.where(out_shifted[dim] < center, drop=True)
         above = out_shifted.where(out_shifted[dim] > center, drop=True)
@@ -441,7 +449,7 @@ def symmetrize(
         above = above.assign_coords({dim: center - (above[dim] - center)}).sortby(dim)
 
         # Ensure flipped coord matches exactly with original
-        above = above.assign_coords({dim: below[dim][-len(above) :]})
+        above = above.assign_coords({dim: below[dim][-len(above[dim]) :]})
 
         # Symmetrize
         sym_below = below + above

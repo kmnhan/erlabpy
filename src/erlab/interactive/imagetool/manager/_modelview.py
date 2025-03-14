@@ -123,6 +123,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         if viewport is not None:
             viewport.installEventFilter(self)
 
+        self._force_hover: bool = False  # Flag for debugging
+
     @property
     def manager(self) -> ImageToolManager:
         _manager = self._manager()
@@ -273,7 +275,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             not tool_wrapper.archived
             and not is_editing
             and self.manager.preview_action.isChecked()
-            and QtWidgets.QStyle.StateFlag.State_MouseOver in option.state
+            and (
+                QtWidgets.QStyle.StateFlag.State_MouseOver in option.state
+                or self._force_hover
+            )
         ):
             box_ratio, pixmap = tool_wrapper._preview_image
             popup_height = 150
@@ -569,6 +574,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu.addAction(manager.remove_action)
         self._menu.addAction(manager.archive_action)
         self._menu.addAction(manager.unarchive_action)
+        self._menu.addAction(manager.reload_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)

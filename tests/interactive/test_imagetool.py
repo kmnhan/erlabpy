@@ -14,11 +14,14 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
-from erlab.interactive.imagetool.core import _parse_input
+from erlab.interactive.imagetool.core import _AssociatedCoordsDialog, _parse_input
 from erlab.interactive.imagetool.dialogs import (
+    AverageDialog,
     CropDialog,
+    CropToViewDialog,
     NormalizeDialog,
     RotationDialog,
+    SymmetrizeDialog,
 )
 
 _TEST_DATA: dict[str, xr.DataArray] = {
@@ -41,6 +44,15 @@ _TEST_DATA: dict[str, xr.DataArray] = {
             "beta": np.arange(5),
         },
     ),
+    "3D_const_nonuniform": xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=["x", "eV", "beta"],
+        coords={
+            "x": np.array([0.1, 0.1, 0.1, 0.1, 0.1]),
+            "eV": np.arange(5),
+            "beta": np.arange(5),
+        },
+    ),
 }
 
 
@@ -52,7 +64,7 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
         dims=["x", "y"],
         coords={
             "x": np.arange(5, dtype=coord_dtype),
-            "y": np.arange(5, dtype=coord_dtype),
+            "y": np.array([1, 3, 2, 7, 8], dtype=coord_dtype),  # non-uniform
         },
     )
     win = itool(data, execute=False)
@@ -148,7 +160,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 
     # Set colormap and gamma
     win.slicer_area.set_colormap(
-        "RdYlBu", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
+        "BuWh", gamma=1.5, reverse=True, high_contrast=True, zero_centered=True
     )
 
     # Lock levels
@@ -183,7 +195,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.slicer_area.add_cursor()
     expected_state = {
         "color": {
-            "cmap": "RdYlBu",
+            "cmap": "BuWh",
             "gamma": 1.5,
             "reverse": True,
             "high_contrast": True,
@@ -194,8 +206,9 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
             "dims": ("y", "x"),
             "bins": [[2, 2], [2, 2]],
             "indices": [[2, 2], [2, 2]],
-            "values": [[2.0, 2.0], [2.0, 2.0]],
+            "values": [[2, 2], [2, 2]],
             "snap_to_data": True,
+            "twin_coord_names": (),
         },
         "current_cursor": 1,
         "manual_limits": {},
@@ -229,11 +242,13 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.close()
 
 
-@pytest.mark.parametrize("test_data_type", ["2D", "3D", "3D_nonuniform"])
+@pytest.mark.parametrize(
+    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
+)
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
 def test_itool_tools(qtbot, test_data_type, condition) -> None:
-    data = _TEST_DATA[test_data_type]
-    win = itool(data, execute=False)
+    data = _TEST_DATA[test_data_type].copy()
+    win = ImageTool(data)
     qtbot.addWidget(win)
 
     main_image = win.slicer_area.images[0]
@@ -289,6 +304,27 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.close()
 
 
+def test_itool_load_compat(qtbot) -> None:
+    original = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = itool(original.expand_dims(z=2, axis=-1).T, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+
+    # Check if setting compatible data does not change cursor count
+    win.slicer_area.set_data(original.expand_dims(z=5, axis=-1))
+
+    assert win.slicer_area.n_cursors == 3
+
+    win.close()
+
+
 def test_parse_input() -> None:
     # If no 2D to 4D data is present in given Dataset, ValueError is raised
     with pytest.raises(
@@ -333,9 +369,7 @@ def test_itool_ds(qtbot) -> None:
 
 
 def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
-    win = itool(
-        xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]), execute=False
-    )
+    win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
 
     win.slicer_area.set_data(
@@ -360,7 +394,7 @@ def test_value_update(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     new_vals = -data.values.astype(np.float64)
 
-    win = itool(data, execute=False)
+    win = ImageTool(data)
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
@@ -428,6 +462,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         assert dialog.center_spins[0].value() == 3.0
         assert dialog.center_spins[1].value() == 3.1
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
@@ -470,8 +505,11 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
     )
 
     # Test 2D crop
-    def _set_dialog_params(dialog: CropDialog) -> None:
+    def _set_dialog_params(dialog: CropToViewDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
@@ -512,7 +550,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
                 if data_item.is_vertical
                 else data_item.getData()[1]
             )
-            assert_almost_equal(yvals.mean(), 1.0)
+            assert_almost_equal(np.nanmean(yvals), 1.0)
         profile_axis.set_normalize(False)
 
     # Test 2D crop
@@ -525,9 +563,10 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(True)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h0 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -545,13 +584,108 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         dialog.dim_checks["y"].setChecked(False)
         dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    _h1 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
     assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
+
+    win.close()
+
+
+def test_itool_average(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: AverageDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
+
+    assert pyperclip.paste() == '.qsel.average("x")'
+    win.close()
+
+
+def test_itool_symmetrize(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
+        dialog._dim_combo.setCurrentIndex(0)
+        dialog.copy_button.click()
+        qtbot.wait_signal(dialog._sigCodeCopied)
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "x", center=1)
+    )
+
+    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="x", center=1.0)'
+    win.close()
+
+
+def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
+    data = data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "z": ("x", [1, 3, 2, 4, 5]),
+            "u": ("x", np.arange(5)),
+            "t": ("y", np.arange(5)),
+            "v": ("y", np.arange(5)),
+        },
+    )
+    win = itool(data, execute=False, cmap="terrain_r")
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: _AssociatedCoordsDialog) -> None:
+        for check in dialog._checks.values():
+            check.setChecked(True)
+
+    _handler = accept_dialog(
+        win.slicer_area._choose_associated_coords, pre_call=_set_dialog_params
+    )
+
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
+    win.slicer_area.transpose_act.trigger()
 
     win.close()
 

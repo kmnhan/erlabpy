@@ -10,6 +10,7 @@ __all__ = [
     "is_monotonic",
     "is_uniform_spaced",
     "sort_coord_order",
+    "to_native_endian",
     "trim_na",
     "uniform_dims",
 ]
@@ -93,6 +94,8 @@ def broadcast_args(func: Callable) -> Callable:
 def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     """Check if the given array is uniformly spaced.
 
+    Constant arrays are also considered as uniformly spaced.
+
     Parameters
     ----------
     arr : array-like
@@ -103,7 +106,7 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     Returns
     -------
     bool
-        `True` if the array is uniformly spaced, `False` otherwise.
+        `True` if the array is uniformly spaced and one-dimensional, `False` otherwise.
 
     Examples
     --------
@@ -112,11 +115,14 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     >>> is_uniform_spaced([1, 2, 3, 5])
     False
     """
-    arr = np.atleast_1d(np.array(arr, dtype=float))
-    dif = np.diff(arr)
-    if dif.size == 0:
-        return True
-    return np.allclose(dif, dif[0], **kwargs)
+    arr = np.atleast_1d(np.array(arr, dtype=np.float64))
+
+    if arr.ndim > 1:
+        return False
+
+    from erlab.utils._array_jit import _check_uniform
+
+    return _check_uniform(np.ascontiguousarray(arr))
 
 
 def is_monotonic(arr: npt.NDArray, strict: bool = False) -> np.bool_:
@@ -285,11 +291,16 @@ def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
     int
         The effective number of decimal places, calculated as the order of magnitude of
         ``step`` plus one.
+
+        If the step size is zero, a default value of 3 is returned.
     """
     if isinstance(step_or_coord, np.ndarray):
         step = step_or_coord[1] - step_or_coord[0]
     else:
         step = step_or_coord
+
+    if step == 0.0:
+        return 3
     return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
 
 
@@ -353,3 +364,26 @@ def sort_coord_order(
         name=darr.name,
         attrs=darr.attrs,
     )
+
+
+def to_native_endian(arr: npt.NDArray) -> npt.NDArray:
+    """Convert an array to native endianness.
+
+    Some Igor Pro files may contain data in big-endian format, which may be incompatible
+    with numba functions. This function converts the array to native endianness.
+
+    Parameters
+    ----------
+    arr : array-like
+        The input array.
+
+    Returns
+    -------
+    array
+        The array in native endianness.
+    """
+    if arr.dtype.byteorder not in ("=", "|"):
+        # Convert to native endianness
+        arr = arr.astype(arr.dtype.newbyteorder("="))
+
+    return arr

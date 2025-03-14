@@ -26,7 +26,11 @@ from erlab.interactive.imagetool.manager._dialogs import (
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperListView
-from erlab.interactive.imagetool.manager._server import _ManagerServer, show_in_manager
+from erlab.interactive.imagetool.manager._server import (
+    _ManagerServer,
+    _ping_server,
+    show_in_manager,
+)
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
@@ -39,7 +43,7 @@ logger = logging.getLogger(__name__)
 _SHM_NAME: str = "__enforce_single_itoolmanager"
 """Name of `QtCore.QSharedMemory` that enforces single instance of ImageToolManager.
 
-If a shared memory object with this name exists, it means that an instance is running.
+No longer used starting from v3.8.2, but kept for backward compatibility.
 """
 
 _ICON_PATH = os.path.join(
@@ -99,6 +103,11 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         super().resizeEvent(event)
         self.fitInView(self._pixmapitem)
 
+    def wheelEvent(self, event: QtGui.QWheelEvent | None) -> None:
+        # Disable scrolling by ignoring wheel events
+        if event:
+            event.ignore()
+
 
 class ImageToolManager(QtWidgets.QMainWindow):
     """The ImageToolManager window.
@@ -121,8 +130,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self.server: _ManagerServer = _ManagerServer()
+        self.server.sigReceived.connect(self._data_recv)
+        self.server.sigLoadRequested.connect(self._data_load)
+        self.server.start()
 
         # Shared memory for detecting multiple instances
+        # No longer used starting from v3.8.2, but kept for backward compatibility
         self._shm = QtCore.QSharedMemory(_SHM_NAME)
         self._shm.create(1)  # Create segment so that it can be attached to
 
@@ -217,6 +231,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
+
+        self.reload_action = QtWidgets.QAction("Reload Data", self)
+        self.reload_action.triggered.connect(self.reload_selected)
+        self.reload_action.setToolTip("Reload data from file for selected windows")
+        self.reload_action.setVisible(False)
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
@@ -334,11 +353,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._sigReloadLinkers.connect(self._cleanup_linkers)
         self._update_actions()
         self._update_info()
-
-        self.server: _ManagerServer = _ManagerServer()
-        self.server.sigReceived.connect(self._data_recv)
-        self.server.sigLoadRequested.connect(self._data_load)
-        self.server.start()
 
         # Golden ratio :)
         self.setMinimumWidth(301)
@@ -514,6 +528,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.concat_action.setEnabled(multiple_selected)
         self.store_action.setEnabled(something_selected and only_unarchived)
 
+        self.reload_action.setVisible(
+            something_selected
+            and only_unarchived
+            and all(
+                self._tool_wrappers[s].slicer_area.reloadable
+                for s in selection_unarchived
+            )
+        )
+
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
 
@@ -552,6 +575,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         wrapper.dispose()
         del wrapper
 
+    def remove_all_tools(self) -> None:
+        """Remove all ImageTool windows."""
+        for index in tuple(self._tool_wrappers.keys()):
+            self.remove_tool(index)
+
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
         """Remove linkers with one or no children."""
@@ -581,6 +609,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Hide selected ImageTool windows."""
         for index in self.list_view.selected_tool_indices:
             self._tool_wrappers[index].close()
+
+    @QtCore.Slot()
+    def hide_all(self) -> None:
+        """Hide all ImageTool windows."""
+        for tool in self._tool_wrappers.values():
+            tool.close()
+
+    @QtCore.Slot()
+    def reload_selected(self) -> None:
+        """Reload data in selected ImageTool windows."""
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].slicer_area.reload()
 
     @QtCore.Slot()
     def remove_selected(self) -> None:
@@ -903,14 +943,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         return flags
 
-    @QtCore.Slot(list, str)
-    def _data_load(self, paths: list[str], loader_name: str) -> None:
+    @QtCore.Slot(list, str, dict)
+    def _data_load(
+        self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
+    ) -> None:
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
             [],
             func=erlab.io.loaders[loader_name].load,
-            kwargs={},
+            kwargs=kwargs,
             retry_callback=lambda _: self._data_load(paths, loader_name),
         )
 
@@ -1238,5 +1280,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Stop the server
         self.server.stopped.set()
+        _ping_server()
         self.server.wait()
+
         super().closeEvent(event)

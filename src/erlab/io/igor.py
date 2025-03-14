@@ -15,6 +15,8 @@ import numpy as np
 import xarray as xr
 from xarray.backends import BackendEntrypoint
 
+import erlab
+
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -333,5 +335,8 @@ def load_wave(
                     attrs[key] = value
 
     return xr.DataArray(
-        d["wData"], dims=coords.keys(), coords=coords, attrs=attrs
+        erlab.utils.array.to_native_endian(d["wData"]),
+        dims=coords.keys(),
+        coords=coords,
+        attrs=attrs,
     ).rename(wave_header["bname"].decode())

@@ -28,9 +28,8 @@ def itool(
 ):
     """Create and display ImageTool windows.
 
-    This tool can also conveniently accessed with :meth:`DataArray.qshow
-    <erlab.accessors.general.InteractiveDataArrayAccessor.__call__>` and
-    :meth:`Dataset.qshow <erlab.accessors.general.InteractiveDatasetAccessor.__call__>`.
+    This tool can also conveniently accessed with :meth:`xarray.DataArray.qshow` and
+    :meth:`xarray.Dataset.qshow`.
 
     Parameters
     ----------

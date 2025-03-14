@@ -470,16 +470,18 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "viewAllAct": self.slicer_area.view_all_act,
                     "transposeAct": self.slicer_area.transpose_act,
                     "sep0": {"separator": True},
+                    "associatedAct": self.slicer_area.associated_coords_act,
+                    "sep1": {"separator": True},
                     "addCursorAct": self.slicer_area.add_cursor_act,
                     "remCursorAct": self.slicer_area.rem_cursor_act,
                     "snapCursorAct": self.array_slicer.snap_act,
                     "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
-                    "sep1": {"separator": True},
+                    "sep2": {"separator": True},
                     "colorInvertAct": self.slicer_area.reverse_act,
                     "highContrastAct": self.slicer_area.high_contrast_act,
                     "zeroCenterAct": self.slicer_area.zero_centered_act,
                     "ktoolAct": self.slicer_area.ktool_act,
-                    "sep2": {"separator": True},
+                    "sep3": {"separator": True},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
                         "text": "Reset",
@@ -515,6 +517,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._crop_to_view,
                         "tooltip": "Crop to the current axes view range",
                     },
+                    "Average": {"triggered": self._average},
+                    "Symmetrize": {"triggered": self._symmetrize},
                 },
             },
             "helpMenu": {
@@ -626,6 +630,14 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _crop(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropDialog)
+
+    @QtCore.Slot()
+    def _average(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AverageDialog)
+
+    @QtCore.Slot()
+    def _symmetrize(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeDialog)
 
     @QtCore.Slot()
     def _crop_to_view(self) -> None:

@@ -27,9 +27,17 @@ def expected_dir(data_dir):
         ("sample-1-00003_0.krx", "sample-1-00003_0.h5"),
     ],
 )
-def test_load(expected_dir, args, expected) -> None:
+def test_load(data_dir, expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
     xr.testing.assert_identical(
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
     )
+
+    if isinstance(args, str) and args.endswith(".krx"):
+        assert (
+            loaded.shape
+            == erlab.io.plugins.mbs.load_krax(
+                data_dir / args, without_values=True
+            ).shape
+        )

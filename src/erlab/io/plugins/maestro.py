@@ -229,7 +229,10 @@ class MAESTROMicroLoader(LoaderBase):
             data = groups["/2D_Data"]
             data = data[next(iter(data.data_vars))]
             data = xr.DataArray(
-                np.zeros(data.shape, dtype=np.uint8), dims=data.dims, attrs=data.attrs
+                np.zeros(data.shape, dtype=np.uint8),
+                dims=data.dims,
+                attrs=data.attrs,
+                name=data.name,
             )
         else:
             # Create or load cache
