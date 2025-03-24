@@ -254,14 +254,17 @@ class ArraySlicer(QtCore.QObject):
             ]
             self._twin_coord_names = set()
             self.snap_to_data = False
+        else:
+            # Update twin axes on reload
+            self.sigTwinChanged.emit()
 
     @functools.cached_property
     def associated_coords(
         self,
-    ) -> dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]]:
-        out: dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]] = {
-            str(d): {} for d in self._obj.dims
-        }
+    ) -> dict[str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]]:
+        out: dict[
+            str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
+        ] = {str(d): {} for d in self._obj.dims}
         for k, coord in self._obj.coords.items():
             if (
                 isinstance(coord, xr.DataArray)
@@ -269,8 +272,8 @@ class ArraySlicer(QtCore.QObject):
                 and str(coord.dims[0]) != k
             ):
                 out[str(coord.dims[0])][str(k)] = (
-                    coord[coord.dims[0]].values,
-                    coord.values,
+                    coord[coord.dims[0]].values.astype(np.float64),
+                    coord.values.astype(np.float64),
                 )
         return out
 

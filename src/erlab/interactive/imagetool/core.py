@@ -2382,6 +2382,8 @@ class ItoolPlotItem(pg.PlotItem):
                 ax.setLabel(text=label_html)
                 ax.resizeEvent()
 
+                self.update_twin_range()  # Resize to match parent axes on show
+
             while len(self.other_data_items) != n_plots:
                 item = self.other_data_items.pop()
                 self.vb1.removeItem(item)
