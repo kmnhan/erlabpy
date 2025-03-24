@@ -39,6 +39,7 @@ import xarray as xr
 import erlab
 
 if typing.TYPE_CHECKING:
+    import datetime
     from collections.abc import (
         Callable,
         ItemsView,
@@ -214,7 +215,7 @@ class LoaderBase(metaclass=_Loader):
     Note
     ----
     - Non-dimension coordinates in the resulting data will try to follow the order of
-      the keys in this dictionary.
+      the keys in this mapping.
     - Original **coordinate** names included in this mapping will be replaced by the new
       names. However, original **attribute** names will be duplicated with the new names
       so that both the original and new names are present in the data after loading.
@@ -260,7 +261,13 @@ class LoaderBase(metaclass=_Loader):
     """
 
     additional_attrs: typing.ClassVar[
-        dict[str, str | int | float | Callable[[xr.DataArray], str | int | float]]
+        dict[
+            str,
+            str
+            | float
+            | datetime.datetime
+            | Callable[[xr.DataArray], str | float | datetime.datetime],
+        ]
     ] = {}
     """Additional attributes to be added to the data after loading.
 
@@ -279,8 +286,18 @@ class LoaderBase(metaclass=_Loader):
     overridden_attrs: tuple[str, ...] = ()
     """Keys in :attr:`additional_attrs` that should override existing attributes."""
 
-    additional_coords: typing.ClassVar[dict[str, str | int | float]] = {}
-    """Additional non-dimension coordinates to be added to the data after loading.
+    additional_coords: typing.ClassVar[
+        dict[
+            str,
+            str
+            | float
+            | datetime.datetime
+            | Callable[[xr.DataArray], str | float | datetime.datetime],
+        ]
+    ] = {}
+    """Additional coordinates to be added to the data after loading.
+
+    If a callable is provided, it will be called with the data as the only argument.
 
     Notes
     -----
@@ -726,7 +743,10 @@ class LoaderBase(metaclass=_Loader):
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
         | None = None,
         overridden_attrs: tuple[str, ...] | None = None,
-        additional_coords: dict[str, str | int | float] | None = None,
+        additional_coords: dict[
+            str, str | float | Callable[[xr.DataArray], str | float]
+        ]
+        | None = None,
         overridden_coords: tuple[str, ...] | None = None,
     ) -> Iterator[typing.Self]:
         """Context manager that temporarily extends various loader attributes.
@@ -1728,18 +1748,25 @@ class LoaderBase(metaclass=_Loader):
         new_attrs["data_loader_name"] = str(self.name)
         darr = darr.assign_attrs(new_attrs)
 
-        new_coords = {
-            k: v
-            for k, v in self.additional_coords.items()
-            if k not in darr.coords or k in self.overridden_coords
-        }
+        new_coords = {}
+        for k, v in self.additional_coords.items():
+            if k not in darr.coords or k in self.overridden_coords:
+                if callable(v):
+                    new_coords[k] = v(darr)
+                else:
+                    new_coords[k] = v
+
         return darr.assign_coords(new_coords)
 
     def _reorder_coords(self, darr: xr.DataArray):
         """Sort the coordinates of the given DataArray."""
         return erlab.utils.array.sort_coord_order(
             darr,
-            keys=itertools.chain(self.name_map.keys(), self.additional_coords.keys()),
+            keys=itertools.chain(
+                self.name_map.keys(),
+                (s for s in self.coordinate_attrs if s not in self.name_map),
+                self.additional_coords.keys(),
+            ),
             dims_first=True,
         )
 
