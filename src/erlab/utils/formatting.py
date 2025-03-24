@@ -107,7 +107,9 @@ def format_value(
     val
         The value to be formatted.
     precision
-        The number of decimal places to use when formatting floating-point numbers.
+        The number of decimal places to use when formatting floating-point numbers. If
+        the magnitude of the value is smaller than the precision, the number will be
+        printed in scientific notation.
     use_unicode_minus
         Whether to replace the  Unicode hyphen-minus sign "-" (U+002D) with the
         better-looking Unicode minus sign "−" (U+2212) in the formatted value.
@@ -231,7 +233,14 @@ def format_value(
             val = typing.cast(np.floating, val)
             if val.is_integer():
                 return _format(np.int64(val))
-            formatted = np.format_float_positional(val, precision=precision, trim="-")
+            if np.abs(val) < 10 ** (-precision):
+                formatted = np.format_float_scientific(
+                    val, precision=precision, trim="-"
+                )
+            else:
+                formatted = np.format_float_positional(
+                    val, precision=precision, trim="-"
+                )
             if use_unicode_minus:
                 return formatted.replace("-", "−")
             return formatted
@@ -250,7 +259,10 @@ def format_value(
 
         return str(val)
 
-    return _format(val)
+    try:
+        return _format(val)
+    except Exception:
+        return str(val)
 
 
 def _format_dim_name(s: Hashable) -> str:
@@ -289,6 +301,9 @@ def _format_array_values(val: npt.NDArray) -> str:
     val = val.squeeze()
 
     if val.ndim == 1:
+        if len(val) == 2:
+            return format_value(val)
+
         if erlab.utils.array.is_uniform_spaced(val):
             if val[0] == val[-1]:
                 return format_value(val[0])
@@ -366,11 +381,17 @@ def format_darr_html(
     coord_rows: list[list[str]] = []
     for key, coord in darr.coords.items():
         is_dim: bool = key in darr.dims
+
+        try:
+            value_repr = _format_array_values(coord.values)
+        except Exception:
+            value_repr = f'["{coord.values[0]!s}",  ... , "{coord.values[-1]!s}"]'
+
         coord_rows.append(
             [
                 _format_coord_key(key, is_dim),
                 _format_coord_dims(coord),
-                _format_array_values(coord.values),
+                value_repr,
             ]
         )
     out += format_html_table(coord_rows)
