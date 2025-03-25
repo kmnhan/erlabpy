@@ -102,10 +102,7 @@ class ERPESLoader(DA30Loader):
         "Time",  # Convert to single datetime in additional_coords
     )
 
-    additional_attrs: typing.ClassVar[dict] = {
-        "configuration": 4,
-        "data_type": _determine_kind,
-    }
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 4}
 
     additional_coords: typing.ClassVar[dict] = {
         "hv": 6.0187,
