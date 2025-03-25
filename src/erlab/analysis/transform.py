@@ -364,6 +364,8 @@ def symmetrize(
     dim: Hashable,
     *,
     center: float = 0.0,
+    subtract: bool = False,
+    mode: typing.Literal["full", "valid"] = "full",
     part: typing.Literal["both", "below", "above"] = "both",
     interp_kw: dict[str, typing.Any] | None = None,
 ) -> xr.DataArray:
@@ -388,6 +390,13 @@ def symmetrize(
         The dimension along which to perform the symmetrization.
     center : float, optional
         The central value about which the data is symmetrized (default is 0.0).
+    subtract : bool, optional
+        If True, the reflected part is subtracted from the original data instead of
+        being added. Default is False.
+    mode: {'valid', 'full'}, optional
+        How to handle the parts of the symmetrized data that does not overlap with the
+        original data. If 'valid', only the part that exists in both the original and
+        reflected data is returned. If 'full', the full symmetrized data is returned.
     part : {'both', 'below', 'above'}, optional
         The part of the symmetrized data to return. If 'both', the full symmetrized data
         is returned. If 'below', only the part below the center is returned. If 'above',
@@ -425,11 +434,13 @@ def symmetrize(
 
     interp_kw.setdefault("assume_sorted", True)
 
+    center = float(center)
+
     # Ensure coord is increasing
     out = darr.copy().sortby(dim)
 
     with xr.set_options(keep_attrs=True):
-        coord: xr.DataArray = darr[dim]
+        coord: xr.DataArray = out[dim]
 
         step = float(np.abs(coord[1] - coord[0]))
         closest_val = (
@@ -440,19 +451,47 @@ def symmetrize(
         shifted_coords = coord.values - closest_val - step / 2
         shifted_coords = np.append(shifted_coords, shifted_coords[-1] + step)
 
-        out_shifted = out.interp({dim: shifted_coords}, **interp_kw).dropna(dim)
+        # Prevent interpolation outside of original coordinate range
+        if shifted_coords[0] < coord[0]:
+            shifted_coords = shifted_coords[1:]
+        if shifted_coords[-1] > coord[-1]:
+            shifted_coords = shifted_coords[:-1]
 
+        # Interpolate to shifted coordinate grid
+        out_shifted = out.interp({dim: shifted_coords}, **interp_kw)
+
+        # Split into parts below and above center
         below = out_shifted.where(out_shifted[dim] < center, drop=True)
         above = out_shifted.where(out_shifted[dim] > center, drop=True)
 
-        # Flip coord along center
+        n_below, n_above = len(below[dim]), len(above[dim])
+        if n_below == 0 or n_above == 0:
+            raise ValueError("Center does not lie within the coordinate range")
+
+        if mode == "valid":
+            len_valid = min(n_below, n_above)
+            below = below.isel({dim: slice(-len_valid, None)})
+            above = above.isel({dim: slice(0, len_valid)})
+
+        # Reflect above
         above = above.assign_coords({dim: center - (above[dim] - center)}).sortby(dim)
 
         # Ensure flipped coord matches exactly with original
-        above = above.assign_coords({dim: below[dim][-len(above[dim]) :]})
+        match mode:
+            case "valid":
+                above = above.assign_coords({dim: below[dim]})
+            case "full":
+                if n_below > n_above:
+                    above = above.assign_coords(
+                        {dim: below[dim][-len(above[dim]) :]}
+                    ).fillna(0.0)
+                else:
+                    below = below.assign_coords(
+                        {dim: above[dim][: len(below[dim])]}
+                    ).fillna(0.0)
 
         # Symmetrize
-        sym_below = below + above
+        sym_below = (below - above) if subtract else (below + above)
 
         # Retain coordinate attributes
         sym_below = sym_below.assign_coords(

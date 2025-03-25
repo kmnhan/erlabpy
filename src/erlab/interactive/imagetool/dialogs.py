@@ -389,7 +389,7 @@ class SymmetrizeDialog(DataTransformDialog):
         pass
 
     def setup_widgets(self) -> None:
-        dim_group = QtWidgets.QGroupBox("Parameters")
+        dim_group = QtWidgets.QGroupBox("Mirror plane")
         dim_layout = QtWidgets.QHBoxLayout()
         dim_group.setLayout(dim_layout)
 
@@ -403,17 +403,42 @@ class SymmetrizeDialog(DataTransformDialog):
         self._update_spin()
 
         option_group = QtWidgets.QGroupBox("Options")
-        option_layout = QtWidgets.QHBoxLayout()
-        option_layout.addWidget(QtWidgets.QLabel("Part to Keep:"))
-        option_group.setLayout(option_layout)
+        option_group_layout = QtWidgets.QVBoxLayout()
+        option_group.setLayout(option_group_layout)
 
-        self.opts: list[QtWidgets.QRadioButton] = []
-        self.opts.append(QtWidgets.QRadioButton("below"))
-        self.opts.append(QtWidgets.QRadioButton("above"))
-        self.opts.append(QtWidgets.QRadioButton("both"))
-        self.opts[-1].setChecked(True)
-        for opt in self.opts:
-            option_layout.addWidget(opt)
+        self.subtract_check = QtWidgets.QCheckBox("Subtract")
+        self.subtract_check.setChecked(False)
+        self.subtract_check.setToolTip(
+            "Subtract the reflected part from the data instead of adding it."
+        )
+        option_group_layout.addWidget(self.subtract_check)
+
+        option_mode = QtWidgets.QWidget()
+        option_group_layout.addWidget(option_mode)
+        option_mode_layout = QtWidgets.QHBoxLayout()
+        option_mode_layout.setContentsMargins(0, 0, 0, 0)
+        option_mode.setLayout(option_mode_layout)
+        option_mode_layout.addWidget(QtWidgets.QLabel("Mode:"))
+        self.opt_mode: list[QtWidgets.QRadioButton] = []
+        self.opt_mode.append(QtWidgets.QRadioButton("full"))
+        self.opt_mode.append(QtWidgets.QRadioButton("valid"))
+        self.opt_mode[0].setChecked(True)
+        for opt in self.opt_mode:
+            option_mode_layout.addWidget(opt)
+
+        option_part = QtWidgets.QWidget()
+        option_group_layout.addWidget(option_part)
+        option_part_layout = QtWidgets.QHBoxLayout()
+        option_part_layout.setContentsMargins(0, 0, 0, 0)
+        option_part.setLayout(option_part_layout)
+        option_part_layout.addWidget(QtWidgets.QLabel("Part to Keep:"))
+        self.opt_part: list[QtWidgets.QRadioButton] = []
+        self.opt_part.append(QtWidgets.QRadioButton("both"))
+        self.opt_part.append(QtWidgets.QRadioButton("below"))
+        self.opt_part.append(QtWidgets.QRadioButton("above"))
+        self.opt_part[0].setChecked(True)
+        for opt in self.opt_part:
+            option_part_layout.addWidget(opt)
 
         self.layout_.addRow(dim_group)
         self.layout_.addRow(option_group)
@@ -437,8 +462,12 @@ class SymmetrizeDialog(DataTransformDialog):
             "center": float(
                 np.round(self._center_spin.value(), self._center_spin.decimals())
             ),
-            "part": ("below", "above", "both")[
-                next(i for i, opt in enumerate(self.opts) if opt.isChecked())
+            "subtract": self.subtract_check.isChecked(),
+            "mode": ("full", "valid")[
+                next(i for i, opt in enumerate(self.opt_mode) if opt.isChecked())
+            ],
+            "part": ("both", "below", "above")[
+                next(i for i, opt in enumerate(self.opt_part) if opt.isChecked())
             ],
         }
 
