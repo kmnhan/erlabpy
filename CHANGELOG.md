@@ -1,6 +1,16 @@
-## Unreleased
+## v3.8.2 (2025-03-25)
 
 ### 🐞 Bug Fixes
+
+- **analysis.transform.symmetrize:** fix compatibility with data including NaN ([ce173ce](https://github.com/kmnhan/erlabpy/commit/ce173ce8fc067ee2d9898f89883f7120b9784f47))
+
+- **formatting:** make float formatting use scientific notation for very small values ([83843a0](https://github.com/kmnhan/erlabpy/commit/83843a047c5b38a6e68d92eb2fb430fa744652f7))
+
+- **plugins.erpes:** promote more attributes to coords ([c2c066a](https://github.com/kmnhan/erlabpy/commit/c2c066ae7bc09af69f393c4cf79e00fc925baaf0))
+
+- **dataloader:** allow datetime and callable objects in `additional_coords` ([732288f](https://github.com/kmnhan/erlabpy/commit/732288f585cef6b2b8cff86cb9c35aa9cbaff2dd))
+
+- **imagetool:** update associated coords on show and reload; ensure float64 type for associated coordinates ([1958b80](https://github.com/kmnhan/erlabpy/commit/1958b80e47bac3bb4424733c18d66a4ebfa09668))
 
 - **qsel:** allow passing arrays to simultaneously select multiple indices ([a5c987b](https://github.com/kmnhan/erlabpy/commit/a5c987bca3bd1fd0d3874129c9bc33226716ed8a))
 
