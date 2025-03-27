@@ -1275,6 +1275,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for widget in dict(self._additional_windows).values():
             widget.close()
 
+        if hasattr(self, "console"):
+            self.console.close()
+
+        if hasattr(self, "explorer"):
+            self.explorer.close()
+
         # Clean up temporary directory
         self._tmp_dir.cleanup()
 
