@@ -487,7 +487,7 @@ def symmetrize(
                     ).fillna(0.0)
                 else:
                     below = below.assign_coords(
-                        {dim: above[dim][: len(below[dim])]}
+                        {dim: above[dim][-len(below[dim]) :]}
                     ).fillna(0.0)
 
         # Symmetrize

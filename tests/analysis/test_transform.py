@@ -168,6 +168,28 @@ def test_symmetrize(mode, part, expected):
 @pytest.mark.parametrize(
     ("mode", "part", "expected"),
     [
+        ("valid", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("valid", "below", [10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("valid", "above", [3.0, 5.0, 7.0, 9.0, 10.0]),
+        ("full", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("full", "below", [10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("full", "above", [3.0, 5.0, 7.0, 9.0, 10.0]),
+    ],
+)
+def test_symmetrize_inverted(mode, part, expected):
+    da = xr.DataArray(
+        np.array([0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(5, -6, 12)},
+    )
+    sym_da = symmetrize(da, "x", center=0.0, mode=mode, part=part)
+    expected = np.array(expected, dtype=float)
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("mode", "part", "expected"),
+    [
         (
             "valid",
             "both",
