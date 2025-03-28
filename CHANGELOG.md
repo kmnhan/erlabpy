@@ -1,3 +1,13 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **analysis.transform.symmetrize:** keep original coordinate direction in symmetrization ([be255c2](https://github.com/kmnhan/erlabpy/commit/be255c266cedca2ead566aea1a0158762c01a117))
+
+- **imagetool.manager:** ensure console and explorer are closed on main window exit ([d39360d](https://github.com/kmnhan/erlabpy/commit/d39360d015efce09cbf39c600825af9648f32e25))
+
+- **analysis.transform.symmetrize:** correct full mode symmetrization ([e21aa3f](https://github.com/kmnhan/erlabpy/commit/e21aa3f63754ccac5584fea230eafd89a3e3e66e))
+
 ## v3.8.2 (2025-03-25)
 
 ### 🐞 Bug Fixes
