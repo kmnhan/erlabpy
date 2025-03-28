@@ -439,8 +439,10 @@ def symmetrize(
     # Ensure coord is increasing
 
     is_increasing = darr[dim].values[1] > darr[dim].values[0]
+    out = darr.copy()
+
     if not is_increasing:
-        out = darr.copy().sortby(dim)
+        out = out.sortby(dim)
 
     with xr.set_options(keep_attrs=True):
         coord: xr.DataArray = out[dim]
