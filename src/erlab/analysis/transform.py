@@ -437,7 +437,10 @@ def symmetrize(
     center = float(center)
 
     # Ensure coord is increasing
-    out = darr.copy().sortby(dim)
+
+    is_increasing = darr[dim].values[1] > darr[dim].values[0]
+    if not is_increasing:
+        out = darr.copy().sortby(dim)
 
     with xr.set_options(keep_attrs=True):
         coord: xr.DataArray = out[dim]
@@ -499,7 +502,11 @@ def symmetrize(
         )
 
         if part == "below":
-            return sym_below
+            return (
+                sym_below
+                if is_increasing
+                else sym_below.isel({dim: slice(None, None, -1)})
+            )
 
         # Flip symmetrized data
         sym_above = (
@@ -509,9 +516,18 @@ def symmetrize(
         )
 
         if part == "above":
-            return sym_above
+            return (
+                sym_above
+                if is_increasing
+                else sym_above.isel({dim: slice(None, None, -1)})
+            )
 
-        return xr.concat([sym_below, sym_above], dim=dim)
+        out = xr.concat([sym_below, sym_above], dim=dim)
+
+        if not is_increasing:
+            out = out.isel({dim: slice(None, None, -1)})
+
+        return out
 
 
 def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
