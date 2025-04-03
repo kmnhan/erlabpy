@@ -3,6 +3,7 @@
 __all__ = [
     "BCSGapModel",
     "DynesModel",
+    "FermiDiracModel",
     "FermiEdge2dModel",
     "FermiEdgeModel",
     "MultiPeakModel",
@@ -25,6 +26,7 @@ from erlab.analysis.fit.functions import (
     PolynomialFunction,
     bcs_gap,
     dynes,
+    fermi_dirac_broad,
     fermi_dirac_linbkg_broad,
     step_linbkg_broad,
 )
@@ -187,6 +189,45 @@ class FermiEdgeModel(lmfit.Model):
         pars[f"{self.prefix}back1"].set(value=back1)
         pars[f"{self.prefix}dos0"].set(value=dos0)
         pars[f"{self.prefix}dos1"].set(value=dos1)
+        pars[f"{self.prefix}temp"].set(value=float(temp))
+        pars[f"{self.prefix}resolution"].set(value=0.02)
+
+        return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
+
+    guess.__doc__ = COMMON_GUESS_DOC
+
+
+class FermiDiracModel(lmfit.Model):
+    """Model that represents a Fermi-Dirac distribution convolved with a Gaussian."""
+
+    __doc__ = __doc__ + lmfit.models.COMMON_INIT_DOC
+
+    @staticmethod
+    def _broadFermiDirac(x, center=0.0, temp=30.0, resolution=0.02):
+        return fermi_dirac_broad(x, center, temp, resolution)
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(self._broadFermiDirac, **kwargs)
+        self.set_param_hint("temp", min=0.0)
+        self.set_param_hint("resolution", min=0.0)
+
+    def guess(self, data, x, **kwargs):
+        pars = self.make_params()
+
+        temp = None
+        if isinstance(data, xr.DataArray):
+            temp = data.qinfo.get_value("sample_temp")
+        if temp is None:
+            temp = 30.0
+
+        smoothed_deriv = scipy.ndimage.gaussian_filter1d(
+            data, 0.2 * len(x), mode="nearest", order=1
+        )
+        efermi = float(x[np.argmin(smoothed_deriv)])
+
+        pars[f"{self.prefix}center"].set(
+            value=efermi, min=np.asarray(x).min(), max=np.asarray(x).max()
+        )
         pars[f"{self.prefix}temp"].set(value=float(temp))
         pars[f"{self.prefix}resolution"].set(value=0.02)
 

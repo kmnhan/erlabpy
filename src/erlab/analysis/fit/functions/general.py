@@ -16,6 +16,7 @@ __all__ = [
     "do_convolve_2d",
     "dynes",
     "fermi_dirac",
+    "fermi_dirac_broad",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
     "gaussian",
@@ -304,6 +305,21 @@ def fermi_dirac(
     return 1 / (1 + np.exp((1.0 * x - center) / _clip_tiny(temp * kb_eV)))
 
 
+@broadcast_args
+def fermi_dirac_broad(
+    x: npt.NDArray[np.float64], center: float, temp: float, resolution: float
+) -> npt.NDArray[np.float64]:
+    """Resolution-broadened Fermi edge."""
+    return do_convolve(
+        x,
+        fermi_dirac,
+        resolution=resolution,
+        center=center,
+        temp=temp,
+    )
+
+
+@broadcast_args
 # adapted and improved from KWAN Igor procedures
 @broadcast_args
 @numba.njit(cache=True)
