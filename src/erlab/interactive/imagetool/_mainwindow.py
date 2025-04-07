@@ -238,7 +238,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         # widgets. The events start at the ItoolGraphicsLayoutWidget and is never passed
         # to menu widgets so we need to intercept them at a higher level.
         if event is not None and event.type() == QtCore.QEvent.Type.ShortcutOverride:
-            event = typing.cast(QtGui.QKeyEvent, event)
+            event = typing.cast("QtGui.QKeyEvent", event)
             focused = QtWidgets.QApplication.focusWidget()
             if isinstance(
                 focused, QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit
@@ -336,7 +336,7 @@ class ImageTool(BaseImageTool):
 
     @property
     def mnb(self) -> ItoolMenuBar:
-        return typing.cast(ItoolMenuBar, self.menuBar())
+        return typing.cast("ItoolMenuBar", self.menuBar())
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
@@ -436,7 +436,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @property
     def image_tool(self) -> ImageTool:
-        return typing.cast(ImageTool, self.parent())
+        return typing.cast("ImageTool", self.parent())
 
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:

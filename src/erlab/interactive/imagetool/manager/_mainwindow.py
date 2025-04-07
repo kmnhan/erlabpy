@@ -86,8 +86,8 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._pixmapitem = typing.cast(
-            QtWidgets.QGraphicsPixmapItem,
-            typing.cast(QtWidgets.QGraphicsScene, self.scene()).addPixmap(
+            "QtWidgets.QGraphicsPixmapItem",
+            typing.cast("QtWidgets.QGraphicsScene", self.scene()).addPixmap(
                 QtGui.QPixmap()
             ),
         )
@@ -142,7 +142,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.setWindowTitle("ImageTool Manager")
 
-        menu_bar: QtWidgets.QMenuBar = typing.cast(QtWidgets.QMenuBar, self.menuBar())
+        menu_bar: QtWidgets.QMenuBar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
 
         self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
@@ -239,7 +239,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
-            QtWidgets.QMenu, menu_bar.addMenu("&File")
+            "QtWidgets.QMenu", menu_bar.addMenu("&File")
         )
         file_menu.addAction(self.open_action)
         file_menu.addSeparator()
@@ -255,7 +255,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.about_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
-            QtWidgets.QMenu, menu_bar.addMenu("&Edit")
+            "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
         )
         edit_menu.addAction(self.concat_action)
         edit_menu.addSeparator()
@@ -270,7 +270,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.unlink_action)
 
         view_menu: QtWidgets.QMenu = typing.cast(
-            QtWidgets.QMenu, menu_bar.addMenu("&View")
+            "QtWidgets.QMenu", menu_bar.addMenu("&View")
         )
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
@@ -385,7 +385,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @property
     def _status_bar(self) -> QtWidgets.QStatusBar:
-        return typing.cast(QtWidgets.QStatusBar, self.statusBar())
+        return typing.cast("QtWidgets.QStatusBar", self.statusBar())
 
     @QtCore.Slot()
     def about(self) -> None:
@@ -442,7 +442,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 wrapper.unarchive()
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
-        return typing.cast(ImageTool, wrapper.tool)
+        return typing.cast("ImageTool", wrapper.tool)
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
@@ -571,7 +571,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         wrapper = self._tool_wrappers.pop(index)
         if not wrapper.archived:
-            typing.cast(ImageTool, wrapper.tool).removeEventFilter(wrapper)
+            typing.cast("ImageTool", wrapper.tool).removeEventFilter(wrapper)
         wrapper.dispose()
         del wrapper
 
@@ -773,7 +773,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
-            for node in typing.cast(ValuesView[xr.DataTree], (tree.values())):
+            for node in typing.cast("ValuesView[xr.DataTree]", (tree.values())):
                 self.add_tool(
                     ImageTool.from_dataset(
                         node.to_dataset(inherit=False), _in_manager=True
@@ -1115,7 +1115,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, queued: list[pathlib.Path], try_workspace: bool = False
     ) -> None:
         """Open multiple files in the manager."""
-        n_files: int = int(len(queued))
+        n_files: int = len(queued)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
 
@@ -1239,7 +1239,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             and isinstance(obj, QtWidgets.QWidget)
             and obj.hasFocus()
         ):
-            event = typing.cast(QtGui.QKeyEvent, event)
+            event = typing.cast("QtGui.QKeyEvent", event)
             if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
                 QtGui.QKeySequence.StandardKey.Copy
             ):

@@ -727,7 +727,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.transpose_main_image()
 
         self.qapp = typing.cast(
-            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
         self.qapp.aboutToQuit.connect(self.on_close)
 
@@ -747,7 +747,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         If nothing can be inferred, an empty string is returned.
         """
-        name: str | None = typing.cast(str | None, self._data.name)
+        name: str | None = typing.cast("str | None", self._data.name)
         path: pathlib.Path | None = self._file_path
         if name is not None and name.strip() == "":
             # Name contains only whitespace
@@ -771,7 +771,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
-        return typing.cast(ColorMapState, prop)
+        return typing.cast("ColorMapState", prop)
 
     @property
     def state(self) -> ImageSlicerState:
@@ -1133,7 +1133,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def unlink(self) -> None:
         if self.is_linked:
-            typing.cast(SlicerLinkProxy, self._linking_proxy).remove(self)
+            typing.cast("SlicerLinkProxy", self._linking_proxy).remove(self)
 
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
@@ -1324,7 +1324,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _fetch_for_reload(self) -> xr.DataArray:
         reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
-            typing.cast(pathlib.Path, self._file_path)
+            typing.cast("pathlib.Path", self._file_path)
         )
         if not isinstance(reloaded, xr.DataArray):
             raise TypeError(
@@ -2423,13 +2423,13 @@ class ItoolPlotItem(pg.PlotItem):
                 if ax in self.array_slicer._nonuniform_axes:
                     dim_list[i] = dim_list[i].removesuffix("_idx")
 
-        dims = typing.cast(tuple[str] | tuple[str, str], tuple(dim_list))
+        dims = typing.cast("tuple[str] | tuple[str, str]", tuple(dim_list))
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
                 dims = (None, *dims)
             else:
                 dims = (*dims, None)
-        return typing.cast(tuple[str | None, str | None], dims)
+        return typing.cast("tuple[str | None, str | None]", dims)
 
     @property
     def axis_dims(self) -> tuple[str | None, str | None]:
@@ -2474,7 +2474,7 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             data = self.current_data
             tool = typing.cast(
-                QtWidgets.QWidget | None,
+                "QtWidgets.QWidget | None",
                 erlab.interactive.itool(
                     data,
                     transpose=(data.dims != self.axis_dims),

@@ -202,7 +202,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             painter.fillRect(option.rect, option.palette.base())
 
         # Draw text only if not editing
-        view = typing.cast(_ImageToolWrapperListView, self.parent())
+        view = typing.cast("_ImageToolWrapperListView", self.parent())
         is_editing: bool = (
             view.state() == QtWidgets.QAbstractItemView.State.EditingState
             and view.currentIndex() == index
@@ -245,7 +245,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 "mdi6.link-variant",
                 color=self.manager.color_for_linker(
                     typing.cast(
-                        erlab.interactive.imagetool.core.SlicerLinkProxy,
+                        "erlab.interactive.imagetool.core.SlicerLinkProxy",
                         tool_wrapper.slicer_area._linking_proxy,
                     )
                 ),
@@ -312,8 +312,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     self.preview_popup.hide()
                 case QtCore.QEvent.Type.MouseMove:
                     index = typing.cast(
-                        _ImageToolWrapperListView, self.parent()
-                    ).indexAt(typing.cast(QtGui.QMouseEvent, event).pos())
+                        "_ImageToolWrapperListView", self.parent()
+                    ).indexAt(typing.cast("QtGui.QMouseEvent", event).pos())
                     if not index.isValid():
                         self.preview_popup.hide()
 
@@ -556,7 +556,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self.setModel(self._model)
         self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
         self._selection_model = typing.cast(
-            QtCore.QItemSelectionModel, self.selectionModel()
+            "QtCore.QItemSelectionModel", self.selectionModel()
         )
 
         # Show tool on double-click

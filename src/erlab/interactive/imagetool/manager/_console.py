@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return typing.cast(ImageTool, self._wrapper.tool)
+        return typing.cast("ImageTool", self._wrapper.tool)
 
     @property
     def data(self) -> xr.DataArray:

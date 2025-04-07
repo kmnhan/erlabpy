@@ -639,7 +639,9 @@ def proportional_colorbar(
 
     if mappable.colorbar is None:
         plt.colorbar(mappable=mappable, cax=cax, ax=ax, **kwargs)
-        mappable.colorbar = typing.cast(matplotlib.colorbar.Colorbar, mappable.colorbar)
+        mappable.colorbar = typing.cast(
+            "matplotlib.colorbar.Colorbar", mappable.colorbar
+        )
 
     ticks = mappable.colorbar.get_ticks()
     if cax is None:
@@ -1012,7 +1014,7 @@ def _is_segment_iterable(cmap: matplotlib.colors.Colormap) -> bool:
     return not any(
         callable(
             _get_segment_for_color(
-                cmap, typing.cast(typing.Literal["red", "green", "blue", "alpha"], c)
+                cmap, typing.cast("typing.Literal['red', 'green', 'blue', 'alpha']", c)
             )
         )
         for c in ["red", "green", "blue"]
@@ -1061,10 +1063,10 @@ def combined_cmap(
 
     if all(_is_segment_iterable(c) for c in (cmap1, cmap2)):
         cmap1 = typing.cast(
-            matplotlib.colors.LinearSegmentedColormap, cmap1
+            "matplotlib.colors.LinearSegmentedColormap", cmap1
         )  # to appease mypy
         cmap2 = typing.cast(
-            matplotlib.colors.LinearSegmentedColormap, cmap2
+            "matplotlib.colors.LinearSegmentedColormap", cmap2
         )  # to appease mypy
 
         segnew: dict[
@@ -1170,10 +1172,10 @@ def gen_2d_colormap(
     img += (1 - l_vals) * background_arr
 
     lmin, lmax = (
-        typing.cast(float, lnorm.vmin),
-        typing.cast(float, lnorm.vmax),
+        typing.cast("float", lnorm.vmin),
+        typing.cast("float", lnorm.vmax),
     )  # to appease mypy
-    cmin, cmax = typing.cast(float, cnorm.vmin), typing.cast(float, cnorm.vmax)
+    cmin, cmax = typing.cast("float", cnorm.vmin), typing.cast("float", cnorm.vmax)
 
     l_linear = lnorm(np.linspace(lmin, lmax, N))[:, np.newaxis, np.newaxis]
     cmap_img = np.repeat(cmap(cnorm(np.linspace(cmin, cmax, N)))[np.newaxis, :], N, 0)

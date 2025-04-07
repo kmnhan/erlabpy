@@ -650,7 +650,7 @@ class LoaderBase(metaclass=_Loader):
                     "data_dir must be specified when identifier is an integer"
                 )
             file_paths, coord_dict = typing.cast(
-                tuple[list[str], dict[str, Sequence]],
+                "tuple[list[str], dict[str, Sequence]]",
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
             # file_paths: list of file paths with at least one element
@@ -1059,7 +1059,7 @@ class LoaderBase(metaclass=_Loader):
             try:
                 _add_content(
                     typing.cast(
-                        xr.DataArray | xr.Dataset | xr.DataTree,
+                        "xr.DataArray | xr.Dataset | xr.DataTree",
                         self.load(f, load_kwargs={"without_values": True}),
                     ),
                     f,
@@ -1098,7 +1098,7 @@ class LoaderBase(metaclass=_Loader):
 
         if summary is None:
             kwargs["display"] = False
-            df = typing.cast(pandas.DataFrame, self.summarize(**kwargs))
+            df = typing.cast("pandas.DataFrame", self.summarize(**kwargs))
         else:
             df = summary
 
@@ -1302,7 +1302,7 @@ class LoaderBase(metaclass=_Loader):
             itool_button.on_click(
                 lambda _: show_in_manager(
                     typing.cast(
-                        xr.DataArray | xr.Dataset,
+                        "xr.DataArray | xr.Dataset",
                         _update_data(None, full=True, ret=True),
                     )
                 )
@@ -1574,7 +1574,7 @@ class LoaderBase(metaclass=_Loader):
                 try:
                     return xr.combine_by_coords(
                         typing.cast(
-                            Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list
+                            "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
                         ),
                         combine_attrs=self.combine_attrs,
                         data_vars="all",
@@ -1823,7 +1823,7 @@ class LoaderBase(metaclass=_Loader):
 
         if isinstance(data, xr.DataTree):
             return typing.cast(
-                xr.DataTree, data.map_over_datasets(self.post_process_general)
+                "xr.DataTree", data.map_over_datasets(self.post_process_general)
             )
 
         raise TypeError(
@@ -2147,7 +2147,7 @@ class LoaderRegistry(_RegistryBase):
             self.set_data_dir(data_dir)
 
         try:
-            yield typing.cast(LoaderBase, self.current_loader)
+            yield typing.cast("LoaderBase", self.current_loader)
         finally:
             if loader is not None:
                 self.set_loader(old_loader)

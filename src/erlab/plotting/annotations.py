@@ -732,7 +732,7 @@ def mark_points(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
-        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
+        ax = typing.cast("matplotlib.axes.Axes", ax)  # to appease mypy
         fig = ax.get_figure()
 
         if fig is None:
@@ -801,7 +801,7 @@ def mark_points_outside(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points_outside(points, labels, axis, roman, bar, a)
     else:
-        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
+        ax = typing.cast("matplotlib.axes.Axes", ax)  # to appease mypy
 
         if axis == "x":
             label_ax = ax.twiny()

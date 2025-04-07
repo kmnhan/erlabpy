@@ -256,10 +256,10 @@ class RotationDialog(DataTransformDialog):
                 np.round(self.angle_spin.value(), self.angle_spin.decimals())
             ),
             "axes": typing.cast(
-                tuple[str, str], tuple(self.slicer_area.main_image.axis_dims_uniform)
+                "tuple[str, str]", tuple(self.slicer_area.main_image.axis_dims_uniform)
             ),
             "center": typing.cast(
-                tuple[float, float], tuple(spin.value() for spin in self.center_spins)
+                "tuple[float, float]", tuple(spin.value() for spin in self.center_spins)
             ),
             "reshape": self.reshape_check.isChecked(),
             "order": self.order_spin.value(),
@@ -510,7 +510,7 @@ class _BaseCropDialog(DataTransformDialog):
                 out = erlab.interactive.utils.generate_code(
                     xr.DataArray.sel,
                     [],
-                    kwargs=typing.cast(dict[str, slice], kwargs),
+                    kwargs=typing.cast("dict[str, slice]", kwargs),
                     module=out,
                 )
             else:
@@ -595,7 +595,8 @@ class CropDialog(_BaseCropDialog):
     @property
     def _cursor_indices(self) -> tuple[int, int]:
         return typing.cast(
-            tuple[int, int], tuple(combo.currentIndex() for combo in self.cursor_combos)
+            "tuple[int, int]",
+            tuple(combo.currentIndex() for combo in self.cursor_combos),
         )
 
     @property

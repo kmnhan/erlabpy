@@ -230,7 +230,7 @@ def format_value(
             )
 
         if np.issubdtype(type(val), np.floating):
-            val = typing.cast(np.floating, val)
+            val = typing.cast("np.floating", val)
             if val.is_integer():
                 return _format(np.int64(val))
             if np.abs(val) < 10 ** (-precision):
