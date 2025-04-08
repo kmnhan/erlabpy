@@ -414,7 +414,7 @@ def slice_along_path(
             if np.allclose(dif, dif[0], equal_nan=True):
                 step_size = min(step_size, np.abs(dif[0]))
 
-        if not np.isfinite(typing.cast(float, step_size)):
+        if not np.isfinite(typing.cast("float", step_size)):
             raise ValueError("Could not determine step size automatically")
     else:
         if not np.isfinite(step_size):

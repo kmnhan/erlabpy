@@ -712,10 +712,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             )
 
         return typing.cast(
-            dict[str, xr.DataArray],
+            "dict[str, xr.DataArray]",
             dict(
                 zip(
-                    typing.cast(list[str], out_dict.keys()),
+                    typing.cast("list[str]", out_dict.keys()),
                     xr.broadcast(*out_dict.values()),
                     strict=True,
                 )
@@ -922,7 +922,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         input_core_dims = [input_dims]
         input_core_dims.extend([(d,) for d in input_dims])
         input_core_dims.extend(
-            [typing.cast(tuple[str, ...], target_dict[d].dims) for d in input_dims]
+            [typing.cast("tuple[str, ...]", target_dict[d].dims) for d in input_dims]
         )
 
         out = xr.apply_ufunc(

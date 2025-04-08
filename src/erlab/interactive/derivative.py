@@ -42,7 +42,7 @@ class DerivativeTool(
         if data_name is None:
             try:
                 data_name = typing.cast(
-                    str,
+                    "str",
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
             except varname.VarnameRetrievingError:
@@ -218,7 +218,8 @@ class DerivativeTool(
                 case 1:
                     for _ in range(self.sn_spin.value()):
                         out = erlab.analysis.image.boxcar_filter(
-                            out, size=typing.cast(dict[Hashable, int], self.smooth_args)
+                            out,
+                            size=typing.cast("dict[Hashable, int]", self.smooth_args),
                         )
 
         self.images[0].setDataArray(out)

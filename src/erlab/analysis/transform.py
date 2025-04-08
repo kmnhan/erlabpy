@@ -76,7 +76,7 @@ def rotate(
 
     if isinstance(axes[0], int):
         axes_dims: list[Hashable] = [
-            darr.dims[a] for a in typing.cast(tuple[int, int], axes)
+            darr.dims[a] for a in typing.cast("tuple[int, int]", axes)
         ]
     else:
         axes_dims = list(axes)
@@ -166,7 +166,9 @@ def rotate(
             ]
         )
 
-        for coordinates in typing.cast(Iterable[tuple[slice | int, ...]], planes_coord):
+        for coordinates in typing.cast(
+            "Iterable[tuple[slice | int, ...]]", planes_coord
+        ):
             ia = input_arr[coordinates]
             oa = output[coordinates]
             scipy.ndimage.affine_transform(
@@ -449,7 +451,7 @@ def symmetrize(
 
         step = float(np.abs(coord[1] - coord[0]))
         closest_val = (
-            float(typing.cast(xr.DataArray, np.abs(coord - center)).idxmin(dim))
+            float(typing.cast("xr.DataArray", np.abs(coord - center)).idxmin(dim))
             - center
         )  # displacement relative to nearest grid point
 

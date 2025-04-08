@@ -99,7 +99,7 @@ class _FileSystem:
         """
         if self._children is None:
             self.reload()
-        return typing.cast(list[_FileSystem], self._children)
+        return typing.cast("list[_FileSystem]", self._children)
 
     @property
     def can_fetch_children(self) -> bool:
@@ -228,7 +228,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
         if not index.isValid():
             return self.file_system
 
-        return typing.cast(_FileSystem, index.internalPointer())
+        return typing.cast("_FileSystem", index.internalPointer())
 
     def fetchMore(self, parent: QtCore.QModelIndex) -> None:
         """Fetch more children of the file system."""
@@ -438,10 +438,10 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
         self._menu.popup(self.mapToGlobal(position))
 
     def model(self) -> _DataExplorerModel:
-        return typing.cast(_DataExplorerModel, super().model())
+        return typing.cast("_DataExplorerModel", super().model())
 
     def selectionModel(self) -> QtCore.QItemSelectionModel:
-        return typing.cast(QtCore.QItemSelectionModel, super().selectionModel())
+        return typing.cast("QtCore.QItemSelectionModel", super().selectionModel())
 
     @property
     def selected_paths(self) -> list[pathlib.Path]:
@@ -819,7 +819,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self.menu_bar: QtWidgets.QMenuBar = typing.cast(
-            QtWidgets.QMenuBar, self.menuBar()
+            "QtWidgets.QMenuBar", self.menuBar()
         )
 
         self._slider_value: int | None = None
@@ -890,7 +890,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._climb_up_act.setToolTip("Go up one directory level")
 
         # Populate the menu bar
-        file_menu = typing.cast(QtWidgets.QMenu, self.menu_bar.addMenu("&File"))
+        file_menu = typing.cast("QtWidgets.QMenu", self.menu_bar.addMenu("&File"))
         file_menu.addAction(self._to_manager_act)
         file_menu.addAction(self._to_manager_single_act)
         file_menu.addAction(self._finder_act)
@@ -977,7 +977,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
         self._text_edit.setReadOnly(True)
         scroll_bar = self._text_edit.verticalScrollBar()
-        typing.cast(QtWidgets.QScrollBar, scroll_bar).valueChanged.connect(
+        typing.cast("QtWidgets.QScrollBar", scroll_bar).valueChanged.connect(
             self._save_slider_pos
         )
         preview_splitter.addWidget(self._text_edit)
@@ -1019,7 +1019,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast(QtCore.QThreadPool, QtCore.QThreadPool.globalInstance())
+        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
 
     @property
     def _current_selection(self) -> list[pathlib.Path]:
@@ -1084,7 +1084,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         if len(selected_files) == 1 and selected_files[0] == pathlib.Path(file_path):
             # Update text and restore scroll position
             scroll_bar = typing.cast(
-                QtWidgets.QScrollBar, self._text_edit.verticalScrollBar()
+                "QtWidgets.QScrollBar", self._text_edit.verticalScrollBar()
             )
             scroll_bar.blockSignals(True)
             self._text_edit.setHtml(self._parse_file_info(text))
