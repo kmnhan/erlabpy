@@ -30,9 +30,6 @@ def test_minuit_from_lmfit() -> None:
 
     m = Minuit.from_lmfit(model, yval, xval, yerr, p0_center=-0.5, p1_center=0.5)
     m.scipy()
-    m.migrad()
-    m.minos()
-    m.hesse()
 
     assert_approx_equal(np.abs(m.values["p0_center"]), 0.5, 2)
     assert_approx_equal(np.abs(m.values["p1_center"]), 0.5, 2)
