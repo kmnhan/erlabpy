@@ -141,12 +141,15 @@ class FermiEdgeModel(lmfit.Model):
 
     The model function is a Fermi-dirac function with linear background above and below
     the fermi level, convolved with a gaussian kernel.
+
+    See Also
+    --------
+    FermiDiracModel
+        A model that does not include a linear background.
     """
 
-    __doc__ = __doc__ + lmfit.models.COMMON_INIT_DOC
-
     @staticmethod
-    def LinearBroadFermiDirac(
+    def _lin_broad_fd(
         x,
         center=0.0,
         temp=30.0,
@@ -161,7 +164,7 @@ class FermiEdgeModel(lmfit.Model):
         )
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(self.LinearBroadFermiDirac, **kwargs)
+        super().__init__(self._lin_broad_fd, **kwargs)
         self.set_param_hint("temp", min=0.0)
         self.set_param_hint("resolution", min=0.0)
 
@@ -194,13 +197,32 @@ class FermiEdgeModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
     guess.__doc__ = COMMON_GUESS_DOC
 
 
 class FermiDiracModel(lmfit.Model):
-    """Model that represents a Fermi-Dirac distribution convolved with a Gaussian."""
+    r"""Model that represents a Fermi-Dirac distribution convolved with a Gaussian.
 
-    __doc__ = __doc__ + lmfit.models.COMMON_INIT_DOC
+    The model function is given by
+
+    .. math::
+
+        I(\omega) = \left\{\frac{1}{1 + e^{(\omega-\omega_0)/k_B T}}\right\} \otimes
+        g(\sigma)
+
+    where :math:`\omega` is the binding energy, :math:`\omega_0` is the center,
+    :math:`k_B` is the Boltzmann constant, :math:`T` is the temperature, and
+    :math:`g(\sigma)` is a Gaussian kernel with standard deviation :math:`\sigma`. Note
+    that the resolution parameter is not the standard deviation of the Gaussian, but
+    rather the full width at half maximum (FWHM) of the Gaussian. The relationship is
+    given by :math:`\text{FWHM} = 2\sqrt{2\ln(2)}\sigma`.
+
+    See Also
+    --------
+    FermiEdgeModel
+        A model that includes a linear background.
+    """
 
     @staticmethod
     def _broadFermiDirac(x, center=0.0, temp=30.0, resolution=0.02):
@@ -233,6 +255,7 @@ class FermiDiracModel(lmfit.Model):
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
     guess.__doc__ = COMMON_GUESS_DOC
 
 
@@ -415,7 +438,7 @@ class FermiEdge2dModel(lmfit.Model):
     :math:`c` convolved with a gaussian, where :math:`\omega` is the binding energy and
     :math:`\alpha` is the detector angle.
 
-    """ + lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
+    """
 
     def __init__(
         self, degree: int = 2, independent_vars=("eV", "alpha"), **kwargs
@@ -470,6 +493,7 @@ class FermiEdge2dModel(lmfit.Model):
         return super().fit(data.ravel(), *args, **kwargs)
 
     guess.__doc__ = COMMON_GUESS_DOC.replace("x : ", "eV, alpha : ")
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC.replace("['x']", "['eV', 'alpha']")
 
 
 class BCSGapModel(lmfit.Model):
