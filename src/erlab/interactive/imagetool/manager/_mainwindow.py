@@ -9,7 +9,6 @@ import sys
 import tempfile
 import typing
 import uuid
-from collections.abc import ValuesView
 
 import numpy as np
 import pyqtgraph
@@ -34,7 +33,7 @@ from erlab.interactive.imagetool.manager._server import (
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, ValuesView
 
 
 logger = logging.getLogger(__name__)

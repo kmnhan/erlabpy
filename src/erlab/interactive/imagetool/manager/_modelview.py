@@ -11,11 +11,10 @@ import weakref
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
-import erlab
-
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
+    import erlab
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 

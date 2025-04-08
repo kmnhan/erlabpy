@@ -29,7 +29,6 @@ import os
 import pathlib
 import typing
 import warnings
-from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -47,6 +46,7 @@ if typing.TYPE_CHECKING:
         Iterator,
         KeysView,
         Mapping,
+        Sequence,
     )
 
     import joblib
