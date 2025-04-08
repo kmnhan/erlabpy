@@ -16,6 +16,7 @@ __all__ = [
     "do_convolve_2d",
     "dynes",
     "fermi_dirac",
+    "fermi_dirac_broad",
     "fermi_dirac_linbkg",
     "fermi_dirac_linbkg_broad",
     "gaussian",
@@ -304,6 +305,44 @@ def fermi_dirac(
     return 1 / (1 + np.exp((1.0 * x - center) / _clip_tiny(temp * kb_eV)))
 
 
+@broadcast_args
+def fermi_dirac_broad(
+    x: npt.NDArray[np.float64], center: float, temp: float, resolution: float
+) -> npt.NDArray[np.float64]:
+    r"""Resolution-broadened Fermi edge.
+
+    The Fermi edge is calculated as:
+
+    .. math::
+
+        \frac{1}{1 + e^{(x-x_0)/k_B T}} \otimes \text{g}(\sigma)
+
+    where :math:`\text{g}(\sigma)` is a Gaussian kernel with standard deviation
+    :math:`\sigma`. Note that the resolution is given in FWHM rather than the standard
+    deviation.
+
+    Parameters
+    ----------
+    x
+        The energy values at which to calculate the Fermi edge.
+    center
+        The Fermi level.
+    temp
+        The temperature in K.
+    resolution
+        The resolution of the Gaussian kernel in eV. Note that this is the FWHM of the
+        Gaussian kernel, not the standard deviation.
+    """
+    return do_convolve(
+        x,
+        fermi_dirac,
+        resolution=resolution,
+        center=center,
+        temp=temp,
+    )
+
+
+@broadcast_args
 # adapted and improved from KWAN Igor procedures
 @broadcast_args
 @numba.njit(cache=True)
