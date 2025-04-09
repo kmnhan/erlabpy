@@ -229,6 +229,10 @@ def format_value(
                 [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
             )
 
+        if isinstance(val, np.datetime64):
+            # Convert to a datetime object
+            return _format(val.astype("datetime64[ms]").item())
+
         if np.issubdtype(type(val), np.floating):
             val = typing.cast("np.floating", val)
             if val.is_integer():
@@ -256,6 +260,9 @@ def format_value(
 
         if isinstance(val, datetime.datetime):
             return val.isoformat(sep=" ", timespec="seconds")
+
+        if isinstance(val, datetime.date):
+            return val.isoformat()
 
         return str(val)
 
@@ -296,7 +303,7 @@ def _format_coord_dims(coord: xr.DataArray) -> str:
 
 def _format_array_values(val: npt.NDArray) -> str:
     if val.size == 1:
-        return format_value(val.item())
+        return format_value(val)
 
     val = val.squeeze()
 
