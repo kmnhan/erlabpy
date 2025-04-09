@@ -149,9 +149,13 @@ def test_shift() -> None:
         ("valid", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
         ("valid", "below", [3.0, 5.0, 7.0, 9.0, 10.0]),
         ("valid", "above", [10.0, 9.0, 7.0, 5.0, 3.0]),
-        ("full", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
-        ("full", "below", [3.0, 5.0, 7.0, 9.0, 10.0]),
-        ("full", "above", [10.0, 9.0, 7.0, 5.0, 3.0]),
+        (
+            "full",
+            "both",
+            [1.5, 3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0, 1.5],
+        ),
+        ("full", "below", [1.5, 3.0, 5.0, 7.0, 9.0, 10.0]),
+        ("full", "above", [10.0, 9.0, 7.0, 5.0, 3.0, 1.5]),
     ],
 )
 def test_symmetrize(mode, part, expected):
@@ -171,9 +175,13 @@ def test_symmetrize(mode, part, expected):
         ("valid", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
         ("valid", "below", [10.0, 9.0, 7.0, 5.0, 3.0]),
         ("valid", "above", [3.0, 5.0, 7.0, 9.0, 10.0]),
-        ("full", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
-        ("full", "below", [10.0, 9.0, 7.0, 5.0, 3.0]),
-        ("full", "above", [3.0, 5.0, 7.0, 9.0, 10.0]),
+        (
+            "full",
+            "both",
+            [1.5, 3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0, 1.5],
+        ),
+        ("full", "below", [10.0, 9.0, 7.0, 5.0, 3.0, 1.5]),
+        ("full", "above", [1.5, 3.0, 5.0, 7.0, 9.0, 10.0]),
     ],
 )
 def test_symmetrize_inverted(mode, part, expected):
@@ -197,9 +205,13 @@ def test_symmetrize_inverted(mode, part, expected):
         ),
         ("valid", "below", [np.nan, np.nan, 7.0, 9.0, 10.0]),
         ("valid", "above", [10.0, 9.0, 7.0, np.nan, np.nan]),
-        ("full", "both", [2.5, 3.5, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 3.5, 2.5]),
-        ("full", "below", [2.5, 3.5, 7.0, 9.0, 10.0]),
-        ("full", "above", [10.0, 9.0, 7.0, 3.5, 2.5]),
+        (
+            "full",
+            "both",
+            [1.5, 2.5, 3.5, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 3.5, 2.5, 1.5],
+        ),
+        ("full", "below", [1.5, 2.5, 3.5, 7.0, 9.0, 10.0]),
+        ("full", "above", [10.0, 9.0, 7.0, 3.5, 2.5, 1.5]),
     ],
 )
 def test_symmetrize_na(mode, part, expected):
@@ -220,7 +232,9 @@ def test_symmetrize_subtract():
         coords={"x": np.linspace(-6, 5, 12)},
     )
     sym_da = symmetrize(da, "x", center=0.0, subtract=True)
-    expected = np.array([2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0], dtype=float)
+    expected = np.array(
+        [1.5, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.5], dtype=float
+    )
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 
