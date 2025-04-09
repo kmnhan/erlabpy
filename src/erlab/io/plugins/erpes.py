@@ -75,6 +75,8 @@ class ERPESLoader(DA30Loader):
         # "xi",
         "hv",
         "sample_temp",
+        "hwp",
+        "qwp",
         "TA",
         "TC",
         "TD",
