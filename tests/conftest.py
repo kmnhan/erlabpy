@@ -77,9 +77,25 @@ def anglemap():
 
 
 @pytest.fixture(scope="session")
+def cut():
+    return generate_data_angles(
+        (300, 1, 500),
+        angrange={"alpha": (-15, 15), "beta": (4.5, 4.5)},
+        assign_attributes=True,
+    ).T
+
+
+@pytest.fixture(scope="session")
 def gold():
     return generate_gold_edge(
         (15, 150), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fine():
+    return generate_gold_edge(
+        (400, 500), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
 
 

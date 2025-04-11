@@ -302,3 +302,28 @@ def test_curvature1d() -> None:
 
     result_y = era.image.curvature1d(darr, "y")
     xr.testing.assert_allclose(result_y, expected_y)
+
+
+def test_remove_stripe(gold_fine):
+    stripe = 1 + 0.1 * (
+        0.42 * np.sin(np.deg2rad(gold_fine.alpha) * 2e4)
+        + np.cos(np.deg2rad(gold_fine.alpha) * 0.91e4)
+    )
+
+    corrupted = gold_fine * stripe
+
+    corrected, stripe_poly = era.image.remove_stripe(
+        corrupted, deg=23, eV=slice(-1.2, -0.2), full=True
+    )
+
+    assert np.abs((stripe_poly - (1 / stripe)).sel(alpha=slice(-14, 14)).mean()) < 1e-4
+
+
+def test_remove_stripe_invalid_dims():
+    # Create a DataArray that does not have the required dims "alpha" and "eV"
+    darr = xr.DataArray(
+        np.arange(10).reshape((2, 5)),
+        dims=["x", "y"],
+    )
+    with pytest.raises(ValueError, match="alpha"):
+        era.image.remove_stripe(darr, deg=2)
