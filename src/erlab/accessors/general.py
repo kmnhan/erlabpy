@@ -484,10 +484,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if len(slices) >= 1:
             out = out.sel(slices)
 
-            lost_coords = {
-                k: out[k].mean(dim=avg_dims, keep_attrs=True)
+            lost_coords: dict[Hashable, xr.DataArray] = {
+                k: out[k].mean(
+                    dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
+                )
                 for k in lost_dims
-                if k not in unindexed_dims
+                if (k not in unindexed_dims)
             }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
