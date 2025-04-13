@@ -1025,9 +1025,9 @@ def remove_stripe(
 
     with xr.set_options(keep_attrs=True):
         stripe = xr.ones_like(darr).isel(eV=0).squeeze()
-        sel_kw.pop("eV", None)
-        stripe.loc[sel_kw] = (poly_fit / cropped).mean("eV", skipna=True)
-
+        sel_kw_copy = sel_kw.copy()
+        sel_kw_copy.pop("eV", None)
+        stripe.loc[sel_kw_copy] = (poly_fit / cropped).mean("eV", skipna=True)
         corrected = darr * stripe
 
         if full:
