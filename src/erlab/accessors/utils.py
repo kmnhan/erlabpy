@@ -42,7 +42,7 @@ def either_dict_or_kwargs(
         # Need an explicit cast to appease mypy due to invariance; see
         # https://github.com/python/mypy/issues/6228
         return typing.cast(
-            collections.abc.Mapping[collections.abc.Hashable, _T], kw_kwargs
+            "collections.abc.Mapping[collections.abc.Hashable, _T]", kw_kwargs
         )
 
     if not is_dict_like(pos_kwargs):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import typing
 from collections.abc import Iterable, Sequence
 
 if not importlib.util.find_spec("iminuit"):
@@ -9,6 +8,7 @@ if not importlib.util.find_spec("iminuit"):
 
 import iminuit.cost
 import iminuit.util
+import lmfit
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
@@ -16,9 +16,6 @@ import xarray
 from iminuit.util import _detect_log_spacing, _smart_sampling
 
 import erlab
-
-if typing.TYPE_CHECKING:
-    import lmfit
 
 
 class LeastSq(iminuit.cost.LeastSquares):
@@ -175,19 +172,20 @@ class Minuit(iminuit.Minuit):
             values[k] = val
             limits[k] = (float(par.min), float(par.max))
 
-        # Convert to kwargs
         if len(model.independent_vars) == 1:
 
             def _temp_func(x, *fargs):
-                return model.func(
-                    x, **dict(zip(model._param_root_names, fargs, strict=True))
+                return model.eval(
+                    lmfit.create_params(**dict(zip(param_names, fargs, strict=True))),
+                    **{model.independent_vars[0]: x},
                 )
 
         else:
 
             def _temp_func(x, *fargs):
-                return model.func(
-                    *x, **dict(zip(model._param_root_names, fargs, strict=True))
+                return model.eval(
+                    lmfit.create_params(**dict(zip(param_names, fargs, strict=True))),
+                    **dict(zip(model.independent_vars, x, strict=True)),
                 )
 
         c = LeastSq(x, data, yerr, _temp_func)

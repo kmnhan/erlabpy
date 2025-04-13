@@ -14,9 +14,9 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import ImageTool
 
 if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return typing.cast(ImageTool, self._wrapper.tool)
+        return typing.cast("ImageTool", self._wrapper.tool)
 
     @property
     def data(self) -> xr.DataArray:

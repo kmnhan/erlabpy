@@ -128,7 +128,7 @@ def correct_with_edge(
 
     if plot is True:
         axes = typing.cast(
-            npt.NDArray, plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
+            "npt.NDArray", plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
         )
 
         plot_kw.setdefault("cmap", "copper")
@@ -517,7 +517,7 @@ def poly(
     scale_covar_edge: bool = True,
 ) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
     center_arr, center_stderr = typing.cast(
-        tuple[xr.DataArray, xr.DataArray],
+        "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
             angle_range=angle_range,
@@ -575,7 +575,7 @@ def spline(
     scale_covar_edge: bool = True,
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
     center_arr, center_stderr = typing.cast(
-        tuple[xr.DataArray, xr.DataArray],
+        "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
             angle_range=angle_range,
@@ -920,7 +920,7 @@ def resolution(
     )
 
     pol, gold_corr = typing.cast(
-        tuple[xr.Dataset, xr.DataArray],
+        "tuple[xr.Dataset, xr.DataArray]",
         poly(
             gold,
             angle_range=angle_range,

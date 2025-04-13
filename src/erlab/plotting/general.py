@@ -536,10 +536,10 @@ def plot_array_2d(
             cax.clear()
 
         lmin, lmax = (
-            typing.cast(float, lnorm.vmin),
-            typing.cast(float, lnorm.vmax),
+            typing.cast("float", lnorm.vmin),
+            typing.cast("float", lnorm.vmax),
         )  # to appease mypy
-        cmin, cmax = typing.cast(float, cnorm.vmin), typing.cast(float, cnorm.vmax)
+        cmin, cmax = typing.cast("float", cnorm.vmin), typing.cast("float", cnorm.vmax)
 
         cax.imshow(
             cmap_img.transpose(1, 0, 2),
@@ -846,7 +846,7 @@ def plot_slices(
             if slice_dim is not None:
                 raise ValueError("Only one slice dimension is allowed")
             slice_dim = k
-            slice_levels = list(typing.cast(Iterable[float], qsel_kw.pop(k)))
+            slice_levels = list(typing.cast("Iterable[float]", qsel_kw.pop(k)))
             slice_width = values.pop(f"{k}_width", None)
         elif f"{k}_width" in values:
             qsel_kw[f"{k}_width"] = values.pop(f"{k}_width")
@@ -883,7 +883,7 @@ def plot_slices(
 
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-        axes = typing.cast(npt.NDArray[typing.Any], axes)
+        axes = typing.cast("npt.NDArray[typing.Any]", axes)
     else:
         if not isinstance(axes, np.ndarray):
             if not isinstance(axes, Iterable):
@@ -936,7 +936,8 @@ def plot_slices(
                     else:
                         cmap = list(
                             typing.cast(
-                                Iterable[str | matplotlib.colors.Colormap], cmap_name[i]
+                                "Iterable[str | matplotlib.colors.Colormap]",
+                                cmap_name[i],
                             )
                         )[j]
                 elif cmap_order == "C":
@@ -945,7 +946,8 @@ def plot_slices(
                     else:
                         cmap = list(
                             typing.cast(
-                                Iterable[str | matplotlib.colors.Colormap], cmap_name[j]
+                                "Iterable[str | matplotlib.colors.Colormap]",
+                                cmap_name[j],
                             )
                         )[i]
             else:
@@ -987,7 +989,7 @@ def plot_slices(
                     if norm_order == "F":
                         try:
                             norm = list(
-                                typing.cast(Iterable[plt.Normalize], cmap_norm[i])
+                                typing.cast("Iterable[plt.Normalize]", cmap_norm[i])
                             )[j]
                         except TypeError:
                             norm = cmap_norm[i]
@@ -995,7 +997,7 @@ def plot_slices(
                     elif norm_order == "C":
                         try:
                             norm = list(
-                                typing.cast(Iterable[plt.Normalize], cmap_norm[j])
+                                typing.cast("Iterable[plt.Normalize]", cmap_norm[j])
                             )[i]
                         except TypeError:
                             norm = cmap_norm[j]
@@ -1004,7 +1006,7 @@ def plot_slices(
                 plot_array(
                     dat_sel,
                     ax=ax,
-                    norm=typing.cast(plt.Normalize, norm),
+                    norm=typing.cast("plt.Normalize", norm),
                     cmap=cmap,
                     **kwargs,
                 )
@@ -1021,7 +1023,7 @@ def plot_slices(
                 for col in axes.T:
                     unify_clim(col)
             case "all":
-                unify_clim(typing.cast(Sequence[matplotlib.axes.Axes], axes))
+                unify_clim(typing.cast("Sequence[matplotlib.axes.Axes]", axes))
 
     for ax in axes.flat:
         if not show_all_labels:

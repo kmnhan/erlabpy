@@ -76,7 +76,7 @@ def rotate(
 
     if isinstance(axes[0], int):
         axes_dims: list[Hashable] = [
-            darr.dims[a] for a in typing.cast(tuple[int, int], axes)
+            darr.dims[a] for a in typing.cast("tuple[int, int]", axes)
         ]
     else:
         axes_dims = list(axes)
@@ -166,7 +166,9 @@ def rotate(
             ]
         )
 
-        for coordinates in typing.cast(Iterable[tuple[slice | int, ...]], planes_coord):
+        for coordinates in typing.cast(
+            "Iterable[tuple[slice | int, ...]]", planes_coord
+        ):
             ia = input_arr[coordinates]
             oa = output[coordinates]
             scipy.ndimage.affine_transform(
@@ -396,7 +398,9 @@ def symmetrize(
     mode: {'valid', 'full'}, optional
         How to handle the parts of the symmetrized data that does not overlap with the
         original data. If 'valid', only the part that exists in both the original and
-        reflected data is returned. If 'full', the full symmetrized data is returned.
+        reflected data is returned. If 'full', the full symmetrized data is returned. In
+        this case, all NaN values in the part that exists in the overlapping region are
+        replaced with 0.0.
     part : {'both', 'below', 'above'}, optional
         The part of the symmetrized data to return. If 'both', the full symmetrized data
         is returned. If 'below', only the part below the center is returned. If 'above',
@@ -449,7 +453,7 @@ def symmetrize(
 
         step = float(np.abs(coord[1] - coord[0]))
         closest_val = (
-            float(typing.cast(xr.DataArray, np.abs(coord - center)).idxmin(dim))
+            float(typing.cast("xr.DataArray", np.abs(coord - center)).idxmin(dim))
             - center
         )  # displacement relative to nearest grid point
 
@@ -487,13 +491,9 @@ def symmetrize(
                 above = above.assign_coords({dim: below[dim]})
             case "full":
                 if n_below > n_above:
-                    above = above.assign_coords(
-                        {dim: below[dim][-len(above[dim]) :]}
-                    ).fillna(0.0)
+                    above = above.interp({dim: below[dim]}).fillna(0.0)
                 else:
-                    below = below.assign_coords(
-                        {dim: above[dim][-len(below[dim]) :]}
-                    ).fillna(0.0)
+                    below = below.interp({dim: above[dim]}).fillna(0.0)
 
         # Symmetrize
         sym_below = (below - above) if subtract else (below + above)

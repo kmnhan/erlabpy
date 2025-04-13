@@ -579,7 +579,7 @@ class KeyboardEventFilter(QtCore.QObject):
             and isinstance(obj, QtWidgets.QWidget)
             and obj.hasFocus()
         ):
-            event = typing.cast(QtGui.QKeyEvent, event)
+            event = typing.cast("QtGui.QKeyEvent", event)
             if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
                 QtGui.QKeySequence.StandardKey.Copy
             ):
@@ -1328,7 +1328,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.global_connect()
 
     def layout(self) -> QtWidgets.QGridLayout:
-        return typing.cast(QtWidgets.QGridLayout, super().layout())
+        return typing.cast("QtWidgets.QGridLayout", super().layout())
 
     @staticmethod
     def getParameterWidget(
@@ -1581,7 +1581,7 @@ class ROIControls(ParameterGroup):
             },
             **kwargs,
         )
-        self.draw_button = typing.cast(QtWidgets.QPushButton, self.widgets["drawbtn"])
+        self.draw_button = typing.cast("QtWidgets.QPushButton", self.widgets["drawbtn"])
         self.roi_spin = [self.widgets[i] for i in ["x0", "y0", "x1", "y1"]]
         self.roi.sigRegionChanged.connect(self.update_pos)
 
@@ -1703,7 +1703,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         **kwargs,
     ) -> None:
         self.qapp = typing.cast(
-            QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
         )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
@@ -1774,7 +1774,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         cb = typing.cast(
-            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         ).clipboard()
         if event is not None and cb is not None and cb.text(cb.Mode.Clipboard) != "":
             pyperclip.copy(cb.text(cb.Mode.Clipboard))

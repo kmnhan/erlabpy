@@ -560,7 +560,7 @@ def generate_gold_edge(
     data = erlab.analysis.image.gaussian_filter(
         data,
         sigma=typing.cast(
-            dict[Hashable, float],
+            "dict[Hashable, float]",
             {
                 "eV": Eres / np.sqrt(8 * np.log(2)),
                 "alpha": angres / np.sqrt(8 * np.log(2)),

@@ -125,7 +125,7 @@ class _MultiFileHandler(QtCore.QObject):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast(QtCore.QThreadPool, QtCore.QThreadPool.globalInstance())
+        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
 
     @property
     def manager(self) -> ImageToolManager:

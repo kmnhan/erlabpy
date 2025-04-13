@@ -89,7 +89,9 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    qapp = typing.cast(QtWidgets.QApplication | None, QtWidgets.QApplication.instance())
+    qapp = typing.cast(
+        "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
+    )
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 

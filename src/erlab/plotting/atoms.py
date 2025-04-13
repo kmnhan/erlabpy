@@ -355,7 +355,7 @@ class CrystalProperty:
         for dim in ("x", "y", "z"):
             try:
                 bound_list.append(
-                    self._bounds[typing.cast(typing.Literal["x", "y", "z"], dim)]
+                    self._bounds[typing.cast("typing.Literal['x', 'y', 'z']", dim)]
                 )
             except KeyError:
                 bound_list.append((-np.inf, np.inf))
@@ -483,7 +483,7 @@ class CrystalProperty:
         """
         if ax is None:
             ax = plt.gcf().add_subplot(projection="3d")
-        ax = typing.cast(mpl_toolkits.mplot3d.Axes3D, ax)
+        ax = typing.cast("mpl_toolkits.mplot3d.Axes3D", ax)
 
         if clean_axes:
             ax.set_facecolor("none")

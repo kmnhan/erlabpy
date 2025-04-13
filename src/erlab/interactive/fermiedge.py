@@ -80,7 +80,7 @@ class EdgeFitter(QtCore.QThread):
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = typing.cast(
-                tuple[xr.DataArray, xr.DataArray],
+                "tuple[xr.DataArray, xr.DataArray]",
                 erlab.analysis.gold.edge(
                     gold=self.data,
                     angle_range=self.x_range,
@@ -236,11 +236,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
         typing.cast(
-            QtWidgets.QComboBox, self.params_edge.widgets["Method"]
+            "QtWidgets.QComboBox", self.params_edge.widgets["Method"]
         ).setCurrentIndex(1)
 
         typing.cast(
-            QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
+            "QtWidgets.QCheckBox", self.params_edge.widgets["Fast"]
         ).stateChanged.connect(self._toggle_fast)
 
         self.params_poly = erlab.interactive.utils.ParameterGroup(
@@ -296,7 +296,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 },
             }
         )
-        _auto_check = typing.cast(QtWidgets.QCheckBox, self.params_spl.widgets["Auto"])
+        _auto_check = typing.cast(
+            "QtWidgets.QCheckBox", self.params_spl.widgets["Auto"]
+        )
         self.params_spl.widgets["lambda"].setDisabled(
             _auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
@@ -438,8 +440,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def post_fit(self) -> None:
         self.progress.reset()
         self.edge_center, self.edge_stderr = (
-            typing.cast(xr.DataArray, self.fitter.edge_center),
-            typing.cast(xr.DataArray, self.fitter.edge_stderr),
+            typing.cast("xr.DataArray", self.fitter.edge_center),
+            typing.cast("xr.DataArray", self.fitter.edge_stderr),
         )
 
         xval = self.edge_center.alpha.values
@@ -628,7 +630,7 @@ class ResolutionTool(
         if data_name is None:
             try:
                 data_name = typing.cast(
-                    str,
+                    "str",
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
             except varname.VarnameRetrievingError:
