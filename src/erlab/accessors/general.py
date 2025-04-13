@@ -485,7 +485,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel(slices)
 
             lost_coords = {
-                k: out[k].mean(keep_attrs=True)
+                k: out[k].mean(dim=avg_dims, keep_attrs=True)
                 for k in lost_dims
                 if k not in unindexed_dims
             }

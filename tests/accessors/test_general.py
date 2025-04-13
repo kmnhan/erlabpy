@@ -142,6 +142,7 @@ def test_qsel_slice_with_width() -> None:
 
 
 def test_qsel_associated_dim() -> None:
+    # 1D associated coordinate
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
         dims=("x", "y"),
@@ -155,6 +156,38 @@ def test_qsel_associated_dim() -> None:
             coords={"y": np.arange(5), "x": 2.0, "z": 2.0},
         ),
     )
+
+    # 2D associated coordinate
+    dat = xr.DataArray(
+        np.arange(5 * 4 * 3).reshape(5, 4, 3).astype(float),
+        dims=("x", "y", "z"),
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "w": (["x", "y"], np.arange(5 * 4).reshape(5, 4)),
+        },
+    )
+
+    expected = xr.DataArray(
+        np.array(
+            [
+                [24.0, 25.0, 26.0],
+                [27.0, 28.0, 29.0],
+                [30.0, 31.0, 32.0],
+                [33.0, 34.0, 35.0],
+            ]
+        ),
+        dims=("y", "z"),
+        coords={
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "x": 2.0,
+            "w": (["y"], np.array([8.0, 9.0, 10.0, 11.0])),
+        },
+    )
+
+    xr.testing.assert_identical(dat.qsel(x=2, x_width=3), expected)
 
 
 def test_qsel_value_outside_bounds() -> None:
