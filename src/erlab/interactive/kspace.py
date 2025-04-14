@@ -333,7 +333,7 @@ class KspaceTool(KspaceToolGUI):
         offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
-            self._offset_spins[k].setRange(-180, 180)
+            self._offset_spins[k].setRange(-360, 360)
             self._offset_spins[k].setSingleStep(0.01)
             self._offset_spins[k].setDecimals(3)
             self._offset_spins[k].setValue(self.data.kspace.offsets[k])
