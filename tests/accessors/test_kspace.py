@@ -4,7 +4,7 @@ import xarray.testing
 
 from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
-from erlab.io.exampledata import generate_data_angles, generate_hvdep_cuts
+from erlab.io.exampledata import generate_hvdep_cuts
 
 
 @pytest.fixture(scope="module")
@@ -12,15 +12,6 @@ def hvdep():
     data = generate_hvdep_cuts((50, 250, 300), seed=1)
     data.kspace.inner_potential = 10.0
     return data
-
-
-@pytest.fixture(scope="module")
-def cut():
-    return generate_data_angles(
-        (300, 1, 500),
-        angrange={"alpha": (-15, 15), "beta": (4.5, 4.5)},
-        assign_attributes=True,
-    ).T
 
 
 @pytest.fixture(scope="module")

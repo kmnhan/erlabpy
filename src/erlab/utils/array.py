@@ -17,7 +17,7 @@ __all__ = [
 
 import functools
 import typing
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Collection, Hashable, Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -228,6 +228,44 @@ def check_arg_has_no_nans(func: Callable) -> Callable:
         return func(*args, **kwargs)
 
     return _wrapper
+
+
+def check_arg_has(
+    dims: Collection[Hashable] | None = None, coords: Collection[Hashable] | None = None
+) -> Callable:
+    """Decorate a function to check its first argument.
+
+    The first argument must be a DataArray that contains the given dimensions or
+    coordinates.
+    """
+    if dims is None:
+        dims = set()
+    if coords is None:
+        coords = set()
+
+    def _decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def _wrapper(*args, **kwargs) -> typing.Any:
+            if not isinstance(args[0], xr.DataArray):
+                raise TypeError("Input must be a xarray.DataArray")
+
+            if not set(dims).issubset(args[0].dims):
+                raise ValueError(
+                    "Input must have the following dimensions: "
+                    f"{', '.join(str(s) for s in dims)}"
+                )
+
+            if not set(coords).issubset(args[0].coords.keys()):
+                raise ValueError(
+                    "Input must have the following coordinates: "
+                    f"{', '.join(str(s) for s in coords)}"
+                )
+
+            return func(*args, **kwargs)
+
+        return _wrapper
+
+    return _decorator
 
 
 def trim_na(darr: xr.DataArray, dims: Iterable[Hashable] | None = None) -> xr.DataArray:
