@@ -1,3 +1,17 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **qsel:** preserve non-averaged coord in multidimensional associated coordinates (#127) ([44ceb7e](https://github.com/kmnhan/erlabpy/commit/44ceb7e328036a7b55e58d6a591c0d927fde5545))
+
+  Fixes an issue where averaging over a dimension with `DataArray.qsel()` or `DataArray.qsel.average()` with multidimensional associated coordinates would average the coordinates over all dimensions instead of averaging over just the specified dimension.
+
+- **utils.formatting:** properly format numpy datetime64 objects ([1c74983](https://github.com/kmnhan/erlabpy/commit/1c7498342aa17e59b1a7d0f128cecd7b4e056bb9))
+
+### ♻️ Code Refactor
+
+- **io.plugins.erpes:** promote waveplate angle attributes to coordinates ([6920528](https://github.com/kmnhan/erlabpy/commit/6920528ec464873cef1cc8509a0159846cc5601b))
+
 ## v3.8.4 (2025-04-09)
 
 ### 🐞 Bug Fixes
