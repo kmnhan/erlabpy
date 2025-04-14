@@ -308,6 +308,11 @@ class KspaceTool(KspaceToolGUI):
 
         self.data: xr.DataArray = data.copy(deep=True)
 
+        self.config_label.setText(
+            f"Configuration {int(self.data.kspace.configuration)} "
+            f"({self.data.kspace.configuration.name})"
+        )
+
         if self.data.kspace._has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
             eV_step = self.data.eV.values[1] - self.data.eV.values[0]
