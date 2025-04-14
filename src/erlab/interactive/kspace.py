@@ -342,6 +342,13 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].setSingleStep(0.01)
             self._offset_spins[k].setDecimals(3)
             self._offset_spins[k].setValue(self.data.kspace.offsets[k])
+            if (
+                k != "delta"
+                and k in self.data.coords
+                and f"{k}_offset" not in self.data.attrs
+            ):
+                self._offset_spins[k].setValue(float(self.data[k].mean()))
+
             self._offset_spins[k].valueChanged.connect(self.update)
             self._offset_spins[k].setSuffix("°")
             self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
