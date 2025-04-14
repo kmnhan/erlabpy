@@ -115,9 +115,6 @@ class OffsetView:
 
     def __init__(self, xarray_obj: xr.DataArray) -> None:
         self._obj = xarray_obj
-        for k in self._obj.kspace._valid_offset_keys:
-            if k + "_offset" not in self._obj.attrs:
-                self[k] = 0.0
 
     def __iter__(self) -> Iterator[tuple[str, float]]:
         for key in self._obj.kspace._valid_offset_keys:
@@ -125,7 +122,15 @@ class OffsetView:
 
     def __getitem__(self, key: str) -> float:
         if key in self._obj.kspace._valid_offset_keys:
-            return float(self._obj.attrs[key + "_offset"])
+            offset_key: str = key + "_offset"
+            if offset_key in self._obj.attrs:
+                return float(self._obj.attrs[offset_key])
+
+            # If the offset key is not found, return the default value (0.0) This is to
+            # ensure that the offset view always has a value for the key even if it
+            # hasn't been set yet.
+            return 0.0
+
         raise KeyError(
             f"Invalid offset key `{key}` for experimental configuration "
             f"{self._obj.kspace.configuration}"
@@ -134,6 +139,12 @@ class OffsetView:
     def __setitem__(self, key: str, value: float) -> None:
         if key in self._obj.kspace._valid_offset_keys:
             self._obj.attrs[key + "_offset"] = float(value)
+        else:
+            raise KeyError(
+                f"Invalid offset key '{key}' for experimental configuration "
+                f"{self._obj.kspace.configuration}. Valid keys are: "
+                f"{self._obj.kspace._valid_offset_keys}."
+            )
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
@@ -166,9 +177,11 @@ class OffsetView:
         return dict(self).items()
 
     def reset(self) -> typing.Self:
-        """Reset all angle offsets to zero."""
+        """Reset all angle offsets."""
         for k in self._obj.kspace._valid_offset_keys:
-            self[k] = 0.0
+            offset_key: str = k + "_offset"
+            if offset_key in self._obj.attrs:
+                del self._obj.attrs[offset_key]
         return self
 
 
