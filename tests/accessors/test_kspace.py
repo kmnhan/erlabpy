@@ -1,3 +1,5 @@
+import re
+
 import pytest
 import xarray
 import xarray.testing
@@ -106,6 +108,16 @@ def test_offsets(data_type, request) -> None:
     answer = dict.fromkeys(data.kspace._valid_offset_keys, 0.0)
     answer["xi"] = 10.0
     assert dict(data.kspace.offsets) == answer
+
+    with pytest.raises(
+        KeyError,
+        match=re.escape(
+            "Invalid offset key 'invalid' for experimental configuration "
+            f"{data.kspace.configuration}. Valid keys are: "
+            f"{data.kspace._valid_offset_keys}."
+        ),
+    ):
+        data.kspace.offsets["invalid"] = 10.0
 
 
 @pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no-dask"])
