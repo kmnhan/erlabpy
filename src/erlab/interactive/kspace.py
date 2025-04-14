@@ -379,7 +379,6 @@ class KspaceTool(KspaceToolGUI):
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        bounds = self.data.kspace.estimate_bounds()
         for k in self.data.kspace.momentum_axes:
             for j in range(2):
                 name = f"{k}{j}"
@@ -389,17 +388,15 @@ class KspaceTool(KspaceToolGUI):
                 else:
                     self._bound_spins[name].setRange(-10, 10)
                 self._bound_spins[name].setSingleStep(0.01)
-                self._bound_spins[name].setDecimals(3)
-                self._bound_spins[name].setValue(bounds[k][j])
+                self._bound_spins[name].setDecimals(4)
                 self._bound_spins[name].valueChanged.connect(self.update)
                 self._bound_spins[name].setSuffix(" Å⁻¹")
                 self.bounds_group.layout().addRow(name, self._bound_spins[name])
 
             self._resolution_spins[k] = QtWidgets.QDoubleSpinBox()
-            self._resolution_spins[k].setRange(0.001, 10)
+            self._resolution_spins[k].setRange(0.0001, 10)
             self._resolution_spins[k].setSingleStep(0.001)
             self._resolution_spins[k].setDecimals(5)
-            self._resolution_spins[k].setValue(self.data.kspace.estimate_resolution(k))
             self._resolution_spins[k].valueChanged.connect(self.update)
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
@@ -413,17 +410,21 @@ class KspaceTool(KspaceToolGUI):
         # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
         # self._beta_scale_spin.valueChanged.connect(self.update)
 
-        self.bounds_btn.clicked.connect(self.calculate_bounds)
+        # Populate bounds and resolution
+        self.calculate_bounds()
+        self.calculate_resolution()
 
+        self.bounds_btn.clicked.connect(self.calculate_bounds)
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
-        for pi in self.plotitems:
-            if self.data.kspace._has_beta and not self.data.kspace._has_hv:
+        if self.data.kspace._has_beta and not self.data.kspace._has_hv:
+            for pi in self.plotitems:
                 pi.vb.setAspectLocked(lock=True, ratio=1)
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
+
         if avec is not None:
             self.bz_group.setChecked(True)
 
