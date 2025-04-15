@@ -29,7 +29,8 @@ def _determine_kind(data: xr.DataArray) -> str:
     return data_type
 
 
-def _get_start_time(data: xr.DataArray) -> datetime.datetime:
+def _get_start_time(data: xr.DataArray) -> xr.DataArray:
+    """Get the start time from raw data."""
     return xr.apply_ufunc(
         lambda x, y: datetime.datetime.fromisoformat(f"{x} {y}"),
         data["Date"],
@@ -38,13 +39,13 @@ def _get_start_time(data: xr.DataArray) -> datetime.datetime:
     )
 
 
-def _get_seq_start(data: xr.DataArray) -> datetime.datetime:
+def _get_seq_start(data: xr.DataArray) -> xr.DataArray:
     return xr.apply_ufunc(
         lambda x: datetime.datetime.fromisoformat(x), data["seq_start"], vectorize=True
     )
 
 
-def _get_attrs_time(data: xr.DataArray) -> datetime.datetime:
+def _get_attrs_time(data: xr.DataArray) -> xr.DataArray:
     return xr.apply_ufunc(
         lambda x: datetime.datetime.fromisoformat(x), data["attrs_time"], vectorize=True
     )
@@ -121,7 +122,7 @@ class ERPESLoader(DA30Loader):
     summary_attrs: typing.ClassVar[
         dict[str, str | Callable[[xr.DataArray], typing.Any]]
     ] = {
-        "time": _get_start_time,
+        "time": "datetime",
         "type": _determine_kind,
         "lens mode": "Lens Mode",
         "mode": "Acquisition Mode",
