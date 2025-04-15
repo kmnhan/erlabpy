@@ -20,13 +20,13 @@ __all__ = [
     "ValidationError",
     "ValidationWarning",
 ]
-
 import contextlib
 import errno
 import importlib
 import itertools
 import os
 import pathlib
+import traceback
 import typing
 import warnings
 
@@ -936,8 +936,7 @@ class LoaderBase(metaclass=_Loader):
         """Return the formatted value of the given attribute or coordinate.
 
         The value is formatted using the function specified in :attr:`formatters
-        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
-        string is returned.
+        <erlab.io.dataloader.LoaderBase.formatters>`.
 
         Parameters
         ----------
@@ -946,6 +945,11 @@ class LoaderBase(metaclass=_Loader):
         attr_or_coord_name : str or callable
             The name of the attribute or coordinate to extract. If a callable is passed,
             it is called with the data as the only argument.
+
+        Notes
+        -----
+        - Numpy datetime64 scalars are converted to pandas timestamps before formatting.
+        - If the attribute or coordinate is not found, an empty string is returned.
 
         """
         if callable(attr_or_coord_name):
@@ -957,10 +961,14 @@ class LoaderBase(metaclass=_Loader):
             val = func(data.attrs[attr_or_coord_name])
         elif attr_or_coord_name in data.coords:
             val = data.coords[attr_or_coord_name].values
+
             if val.size == 1:
-                val = func(val.item())
+                if np.issubdtype(val.dtype, np.datetime64):
+                    val = func(pandas.to_datetime(val.item()))
+                else:
+                    val = func(val.item())
             else:
-                val = np.array(list(map(func, val)), dtype=val.dtype)
+                val = np.array(list(map(func, val)))
         else:
             val = ""
         return val
@@ -1064,18 +1072,24 @@ class LoaderBase(metaclass=_Loader):
                     ),
                     f,
                 )
-            except Exception as e:
+            except Exception:
+                traceback_str = traceback.format_exc()
                 erlab.utils.misc.emit_user_level_warning(
-                    f"Failed to load {f} for summary: {e}"
+                    f"Failed to load {f} for summary: \n{traceback_str}",
+                    UserWarning,
                 )
 
         sort_by = self.summary_sort if self.summary_sort is not None else "File Name"
 
-        df = (
-            pandas.DataFrame(content, columns=columns)
-            .sort_values(sort_by)
-            .set_index("File Name")
-        )
+        df = pandas.DataFrame(content, columns=columns)
+
+        try:
+            df = df.sort_values(sort_by)
+        except ValueError:
+            # Sort failed, sort by index
+            df = df.sort_values("File Name")
+
+        df = df.set_index("File Name")
 
         # Cache directory contents for determining whether cache is up-to-date
         contents = {str(f.relative_to(data_dir)) for f in data_dir.glob("[!.]*")}
