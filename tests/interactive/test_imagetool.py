@@ -640,17 +640,18 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
 
     # Test dialog
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
-        dialog._dim_combo.setCurrentIndex(0)
+        dialog._dim_combo.setCurrentIndex(2)
+        dialog._center_spin.setValue(2.0)
         dialog.copy_button.click()
         qtbot.wait_signal(dialog._sigCodeCopied)
         dialog.new_window_check.setChecked(False)
 
     _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
-        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "x", center=1)
+        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "z", center=2)
     )
 
-    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="x", center=1.0)'
+    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="z", center=2.0)'
     win.close()
 
 
