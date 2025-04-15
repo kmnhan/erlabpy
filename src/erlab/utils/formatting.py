@@ -269,11 +269,11 @@ def format_value(
                 return str(val).replace("-", "−")
             return str(val)
 
-        if isinstance(val, datetime.datetime):
-            return _format(pandas.Timestamp(val))
-
         if isinstance(val, pandas.Timestamp):
             return val.isoformat(sep=" ", timespec="seconds")
+
+        if isinstance(val, datetime.datetime):
+            return _format(pandas.Timestamp(val))
 
         if isinstance(val, datetime.date):
             return val.isoformat()
