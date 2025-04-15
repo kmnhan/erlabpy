@@ -16,7 +16,13 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable
 
+    import pandas
     import xarray as xr
+
+else:
+    import lazy_loader as _lazy
+
+    pandas = _lazy.load("pandas")
 
 STYLE_SHEET = """
 .erlab-table td,
@@ -100,7 +106,11 @@ def format_value(
 ) -> str:
     """Format the given value based on its type.
 
-    This method is used when formatting the cells of the summary dataframe.
+    This method is used to format various types of values to a human-readable string. It
+    handles different types of values and formats them accordingly.
+
+    This function is used in various places in the codebase to provide a consistent
+    representation of values.
 
     Parameters
     ----------
@@ -127,7 +137,7 @@ def format_value(
 
     - For numpy arrays:
         - If the array has a size of 1, the value is recursively formatted using
-          `format_value(val.item())`.
+          ``format_value(val.item())``.
         - If the array can be squeezed to a 1-dimensional array, the following are
           applied.
 
@@ -138,7 +148,7 @@ def format_value(
               the start, end, and length values are formatted and returned as a string
               in the format "start→end (length)".
             - If all elements are equal, the value is recursively formatted using
-              `format_value(val[0])`.
+              ``format_value(val[0])``.
             - If the array is not monotonic, the minimum and maximum values are
               formatted and returned as a string in the format "min~max".
             - If the array has two elements, the two elements are formatted and
@@ -153,15 +163,19 @@ def format_value(
 
     - For floating-point numbers:
         - If the number is an integer, it is formatted as an integer using
-          `format_value(np.int64(val))`.
+          ``format_value(np.int64(val))``.
         - Otherwise, it is formatted as a floating-point number with specified decimal
           places and returned as a string.
 
     - For integers:
         The integer is returned as a string.
 
-    - For datetime objects:
-        The datetime object is formatted as a string in the format "%Y-%m-%d %H:%M:%S".
+    - For :class:`datetime.datetime`, :class:`numpy.datetime64`, and
+      :class:`pandas.Timestamp` objects:
+        They are formatted as a string in the format "%Y-%m-%d %H:%M:%S".
+
+    - For :class:`datetime.date` objects:
+        They are formatted as a string in the format "%Y-%m-%d".
 
     - For other types:
         The value is returned as is.
@@ -196,6 +210,8 @@ def format_value(
     def _format(val: object) -> str:
         if isinstance(val, np.ndarray):
             if val.size == 1:
+                if np.issubdtype(val.dtype, np.datetime64):
+                    return _format(pandas.Timestamp(val.item()))
                 return _format(val.item())
 
             val = val.squeeze()
@@ -230,8 +246,7 @@ def format_value(
             )
 
         if isinstance(val, np.datetime64):
-            # Convert to a datetime object
-            return _format(val.astype("datetime64[ms]").item())
+            return _format(pandas.Timestamp(val))
 
         if np.issubdtype(type(val), np.floating):
             val = typing.cast("np.floating", val)
@@ -254,15 +269,18 @@ def format_value(
                 return str(val).replace("-", "−")
             return str(val)
 
-        if isinstance(val, np.generic):
-            # Convert to native Python type
-            return _format(val.item())
-
         if isinstance(val, datetime.datetime):
+            return _format(pandas.Timestamp(val))
+
+        if isinstance(val, pandas.Timestamp):
             return val.isoformat(sep=" ", timespec="seconds")
 
         if isinstance(val, datetime.date):
             return val.isoformat()
+
+        if isinstance(val, np.generic):
+            # Convert to native Python type
+            return _format(val.item())
 
         return str(val)
 
