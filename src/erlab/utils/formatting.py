@@ -170,9 +170,10 @@ def format_value(
     - For integers:
         The integer is returned as a string.
 
-    - For :class:`datetime.datetime`, :class:`numpy.datetime64`, and
-      :class:`pandas.Timestamp` objects:
-        They are formatted as a string in the format "%Y-%m-%d %H:%M:%S".
+    - For datetime objects:
+        They are formatted as a string in the format "%Y-%m-%d %H:%M:%S". This includes
+        :class:`datetime.datetime`, :class:`numpy.datetime64`, and
+        :class:`pandas.Timestamp` objects.
 
     - For :class:`datetime.date` objects:
         They are formatted as a string in the format "%Y-%m-%d".
