@@ -142,6 +142,8 @@ class ERPESLoader(DA30Loader):
 
     always_single = False
 
+    parallel_kwargs: typing.ClassVar[dict] = {"n_jobs": -1, "prefer": "threads"}
+
     _PATTERN_MULTIFILE = re.compile(r".*\d{4}_S\d{5}.(pxt|zip)")
     _PATTERN_PREFIX = re.compile(r"(.*?)\d{4}(?:_S\d{5})?.(pxt|zip)")
     _PATTERN_FILENO = re.compile(r".*?(\d{4})(?:_S\d{5})?")
