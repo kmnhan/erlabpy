@@ -7,6 +7,7 @@ Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual load
 __all__ = ["CasePreservingConfigParser", "DA30Loader", "load_zip", "parse_ini"]
 
 import configparser
+import importlib
 import os
 import pathlib
 import re
@@ -165,11 +166,10 @@ def load_zip(
 
     if zipped:
         if use_libarchive:
+            use_libarchive = importlib.util.find_spec("libarchive") is not None
             # Check if libarchive is available
-            try:
+            if use_libarchive:
                 import libarchive
-            except ImportError:
-                use_libarchive = False
 
         zf = zipfile.ZipFile(filename, mode="r", allowZip64=False)
         f_names = zf.namelist()
