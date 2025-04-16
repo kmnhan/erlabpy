@@ -604,11 +604,13 @@ complete = [
     { name = "hvplot" },
     { name = "iminuit" },
     { name = "ipywidgets" },
+    { name = "libarchive-c" },
     { name = "nexusformat" },
     { name = "numbagg" },
 ]
 io = [
     { name = "astropy" },
+    { name = "libarchive-c" },
     { name = "nexusformat" },
 ]
 misc = [
@@ -672,11 +674,12 @@ requires-dist = [
     { name = "findiff", specifier = ">=0.12.0" },
     { name = "h5netcdf", specifier = ">=1.2.0" },
     { name = "hvplot", marker = "extra == 'viz'" },
-    { name = "igor2", specifier = ">=0.5.9" },
+    { name = "igor2", specifier = ">=0.5.12" },
     { name = "iminuit", marker = "extra == 'misc'", specifier = ">=2.25.2" },
     { name = "ipywidgets", marker = "extra == 'viz'" },
     { name = "joblib", specifier = ">=1.3.2" },
     { name = "lazy-loader", specifier = ">=0.4" },
+    { name = "libarchive-c", marker = "extra == 'io'", specifier = ">=5.2" },
     { name = "lmfit", specifier = ">=1.3.2" },
     { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "nexusformat", marker = "extra == 'io'", specifier = ">=1.0.6" },
@@ -985,14 +988,14 @@ wheels = [
 
 [[package]]
 name = "igor2"
-version = "0.5.11"
+version = "0.5.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/0a/e2ef308e4faae786a60d0b7a15e30c602b3339316b89bd9615541af2b154/igor2-0.5.11.tar.gz", hash = "sha256:32311a429b7dec027609e2d5f2c9bdca632b0cb233760522e6fc995f734bb558", size = 59735 }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/aa/2aadb0fca3dd2361ca6ce613fe4a0827114d63a42956c2b68b3f59f2c784/igor2-0.5.12.tar.gz", hash = "sha256:5a284ac3b7aa6a8a59f28509d06359ea29e08d6f9f563566d2a0f15ea9681893", size = 60174 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/55/7025c4bba012ec42760aba6b94ca4c64a53654257914190d56194c267210/igor2-0.5.11-py3-none-any.whl", hash = "sha256:eaa26d7be61ef5bf7ba8c4e6401c11a5513a50aa62289324b94ad716ccfd25ab", size = 32341 },
+    { url = "https://files.pythonhosted.org/packages/83/99/54e15e833757cb329da14e38e53f94bcf06395904e292e3c8c239c819d56/igor2-0.5.12-py3-none-any.whl", hash = "sha256:1d99b30a3b82710578aafb21fbe02572c59f77ad4daba6d13a952115d200bac6", size = 32427 },
 ]
 
 [[package]]
@@ -1356,6 +1359,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6f/6b/c875b30a1ba490860c93da4cabf479e03f584eba06fe5963f6f6644653d8/lazy_loader-0.4.tar.gz", hash = "sha256:47c75182589b91a4e1a85a136c074285a5ad4d9f39c63e0d7fb76391c4574cd1", size = 15431 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/60/d497a310bde3f01cb805196ac61b7ad6dc5dcf8dce66634dc34364b20b4f/lazy_loader-0.4-py3-none-any.whl", hash = "sha256:342aa8e14d543a154047afb4ba8ef17f5563baad3fc610d7b15b213b0f119efc", size = 12097 },
+]
+
+[[package]]
+name = "libarchive-c"
+version = "5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/0d/c45fe1307564cf550a407fca69cab3969a093d1d41bcd633b278440b4c30/libarchive_c-5.2.tar.gz", hash = "sha256:fd44a8e28509af6e78262c98d1a54f306eabd2963dfee57bf298977de5057417", size = 52474 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/ef/b21525339880eda2ee8e9018b7c5f74e1856e5bde257dde54b9e2274b323/libarchive_c-5.2-py3-none-any.whl", hash = "sha256:9e6dfae09c9c47cd9348410967af547efe80dc619e2066f20941b57296f0435a", size = 15690 },
 ]
 
 [[package]]
