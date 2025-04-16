@@ -1,6 +1,10 @@
-## Unreleased
+## v3.9.0 (2025-04-16)
 
 ### ✨ Features
+
+- **io.dataloader:** implement loader-based parallel keyword arguments ([ea8cfc6](https://github.com/kmnhan/erlabpy/commit/ea8cfc6d150a942d9c9b6bc5beaea8019e2ec335))
+
+  Allows plugins to pass different keyword arguments to `joblib.Parallel` by setting the `parallel_kwargs` class attribute.
 
 - **ktool:** set default angle offsets to coordinate values ([a8115d0](https://github.com/kmnhan/erlabpy/commit/a8115d05122b08311ec60fe1dbb64f835f22e4a9))
 
@@ -25,6 +29,12 @@
   Fixes an issue where averaging over a dimension with `DataArray.qsel()` or `DataArray.qsel.average()` with multidimensional associated coordinates would average the coordinates over all dimensions instead of averaging over just the specified dimension.
 
 - **utils.formatting:** properly format numpy datetime64 objects ([1c74983](https://github.com/kmnhan/erlabpy/commit/1c7498342aa17e59b1a7d0f128cecd7b4e056bb9))
+
+### ⚡️ Performance
+
+- **io.plugins.erpes:** default to threading ([ebfc527](https://github.com/kmnhan/erlabpy/commit/ebfc527f50b7583b3f3f5139746e074c385477ac))
+
+- **io.plugins.da30:** use `libarchive-c` library if it is installed when loading DA30 zip files ([6b9369f](https://github.com/kmnhan/erlabpy/commit/6b9369fc363ed0c0ba8f99c876251a26b7fe27d6))
 
 ### ♻️ Code Refactor
 
