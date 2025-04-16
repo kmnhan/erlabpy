@@ -327,6 +327,16 @@ class LoaderBase(metaclass=_Loader):
     is `False`.
     """
 
+    parallel_kwargs: typing.ClassVar[dict[str, typing.Any]] = {"n_jobs": -1}
+    """
+    Additional keyword arguments to be passed to :class:`joblib.Parallel` when loading
+    files in parallel. The default is to use all available CPU cores.
+
+    Set this attribute to configure the default behavior per loader.
+
+    .. versionadded:: 3.9.0
+    """
+
     skip_validate: bool = False
     """
     If `True`, validation checks will be skipped. If `False`, data will be checked with
@@ -1948,7 +1958,7 @@ class LoaderBase(metaclass=_Loader):
 
         if parallel:
             with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
-                return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
+                return joblib.Parallel(**self.parallel_kwargs)(
                     joblib.delayed(_load_func)(f) for f in file_paths
                 )
 
