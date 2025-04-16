@@ -33,3 +33,14 @@ def test_load(expected_dir, args, expected) -> None:
     xr.testing.assert_identical(
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
     )
+
+
+def test_zip_libarchive(data_dir):
+    darr_with_libarchive = erlab.io.plugins.da30.load_zip(
+        data_dir / "f0002.zip", use_libarchive=True, without_values=False
+    )
+    darr_without_libarchive = erlab.io.plugins.da30.load_zip(
+        data_dir / "f0002.zip", use_libarchive=False, without_values=False
+    )
+
+    xr.testing.assert_identical(darr_with_libarchive, darr_without_libarchive)
