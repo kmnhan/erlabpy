@@ -992,7 +992,7 @@ def plot_slices(
                                 typing.cast("Iterable[plt.Normalize]", cmap_norm[i])
                             )[j]
                         except TypeError:
-                            norm = cmap_norm[i]
+                            norm = copy.deepcopy(cmap_norm[i])
 
                     elif norm_order == "C":
                         try:
@@ -1000,7 +1000,7 @@ def plot_slices(
                                 typing.cast("Iterable[plt.Normalize]", cmap_norm[j])
                             )[i]
                         except TypeError:
-                            norm = cmap_norm[j]
+                            norm = copy.deepcopy(cmap_norm[j])
                 else:
                     norm = copy.deepcopy(cmap_norm)
                 plot_array(
