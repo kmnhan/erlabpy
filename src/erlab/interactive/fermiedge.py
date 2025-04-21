@@ -314,9 +314,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_tab = QtWidgets.QTabWidget()
         self.params_tab.addTab(self.params_poly, "Polynomial")
         self.params_tab.addTab(self.params_spl, "Spline")
-        self.params_tab.currentChanged.connect(
-            lambda i: self.perform_fit(("poly", "spl")[i])
-        )
+        self.params_tab.currentChanged.connect(self.perform_fit)
         self.controls.addWidget(self.params_tab)
 
         self.params_poly.setDisabled(True)
@@ -343,8 +341,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self.axes[i].addItem(self.scatterplots[i])
             self.axes[i].addItem(self.errorbars[i])
             self.axes[i].addItem(self.polycurves[i])
-        self.params_poly.sigParameterChanged.connect(lambda: self.perform_fit("poly"))
-        self.params_spl.sigParameterChanged.connect(lambda: self.perform_fit("spl"))
+        self.params_poly.sigParameterChanged.connect(self.perform_fit)
+        self.params_spl.sigParameterChanged.connect(self.perform_fit)
 
         self.axes[0].disableAutoRange()
 
@@ -388,7 +386,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._itool: QtWidgets.QWidget | None = None
 
         # Initialize fit result
-        self.result: scipy.interpolate.BSpline | lmfit.model.ModelResult | None = None
+        self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
 
         self.__post_init__(execute=execute)
 
@@ -453,16 +451,26 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_poly.setDisabled(False)
         self.params_spl.setDisabled(False)
         self.params_tab.setDisabled(False)
-        self.perform_fit("poly")
+        self.perform_fit()
 
-    def perform_fit(self, mode="poly") -> None:
-        match mode:
-            case "poly":
-                edgefunc = self._perform_poly_fit()
-                params = self.params_poly.values
-            case "spl":
-                edgefunc = self._perform_spline_fit()
-                params = self.params_spl.values
+    @property
+    def edge_func(self) -> typing.Callable:
+        """Returns the edge function."""
+        if self.params_tab.currentIndex() == 0:
+            return self._perform_poly_fit()
+        return self._perform_spline_fit()
+
+    @property
+    def edge_params(self) -> dict[str, typing.Any]:
+        """Returns the edge parameters."""
+        if self.params_tab.currentIndex() == 0:
+            return self.params_poly.values
+        return self.params_spl.values
+
+    def perform_fit(self) -> None:
+        edgefunc = self.edge_func
+        params = self.edge_params
+
         for i in range(2):
             xval = self.data.alpha.values
             if i == 1 and params["Residuals"]:
@@ -480,7 +488,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.scatterplots[1].setData(x=xval, y=yval, height=self.edge_stderr)
 
         self.aw.axes[1].setVisible(True)
-        self.aw.images[-1].setDataArray(self.corrected)
+
+        if params["Corrected"]:
+            self.aw.images[-1].setDataArray(self.corrected)
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
 
@@ -492,12 +502,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             degree=params["Degree"],
             method=self.params_edge.values["Method"],
             scale_covar=params["Scale cov"],
-        ).modelfit_results.values.item()
-        target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.gold.correct_with_edge(
-            target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
-        return lambda x: self.result.eval(self.result.params, x=x)
+
+        return lambda x: self.result.modelfit_results.values.item().eval(x=x)
 
     def _perform_spline_fit(self):
         params = self.params_spl.values
@@ -508,12 +515,17 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
         )
-
-        target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.gold.correct_with_edge(
-            target, self.result, plot=False, shift_coords=params["Shift coords"]
-        )
         return self.result
+
+    @property
+    def corrected(self) -> xr.DataArray:
+        target = self.data if self.data_corr is None else self.data_corr
+        return erlab.analysis.gold.correct_with_edge(
+            target,
+            self.result,
+            plot=False,
+            shift_coords=self.edge_params["Shift coords"],
+        )
 
     @QtCore.Slot()
     def open_itool(self) -> None:
