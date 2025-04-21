@@ -364,8 +364,12 @@ class ImageTool(BaseImageTool):
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
+
+            # This also sets the recent name filter & dir for the manager through the
+            # setter method
             self._recent_name_filter = dialog.selectedNameFilter()
             self._recent_directory = os.path.dirname(fname)
+
             fn, kargs = valid_loaders[self._recent_name_filter]
 
             try:
