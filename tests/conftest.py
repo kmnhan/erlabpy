@@ -24,6 +24,8 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 DATA_COMMIT_HASH = "19c743559a3008e0cb74f5c8e2ef87334b0e7dc1"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 

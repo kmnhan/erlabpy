@@ -56,8 +56,10 @@ __all__ = [
     "file_loaders",
     "format_kwargs",
     "generate_code",
+    "load_fit_ui",
     "make_crosshairs",
     "parse_data",
+    "save_fit_ui",
     "wait_dialog",
     "xImageItem",
 ]
@@ -555,6 +557,89 @@ def _gen_single_function_code(
         code = code.replace(", )", ")").replace("( ", "(")
 
     return code
+
+
+def save_fit_ui(
+    fit_result: xr.Dataset, *, parent: QtWidgets.QWidget | None = None
+) -> None:
+    """Save a fit result to a file using a file dialog.
+
+    When called, a file dialog is opened to select the file name and format. The fit
+    result dataset is saved to the selected file in the chosen format using
+    :func:`xarray_lmfit.save_fit`.
+
+    Parameters
+    ----------
+    fit_result
+        The fit result to save.
+    parent
+        Parent widget for the file dialog.
+
+    """
+    dialog = QtWidgets.QFileDialog(parent)
+    dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+    dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
+    dialog.setDefaultSuffix("nc")
+
+    if dialog.exec():
+        file_name = dialog.selectedFiles()[0]
+        selected_filter = dialog.selectedNameFilter()
+
+        import xarray_lmfit
+
+        match selected_filter:
+            case "HDF5 Files (*.h5)":
+                xarray_lmfit.save_fit(fit_result, file_name, engine="h5netcdf")
+            case _:
+                xarray_lmfit.save_fit(fit_result, file_name)
+
+
+def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None:
+    """Load a fit result from a file.
+
+    When called, a file dialog is opened to select the file to load. The fit result is
+    loaded from the selected file using :func:`xarray_lmfit.load_fit`.
+
+    Parameters
+    ----------
+    parent
+        Parent widget for the file dialog.
+
+    Returns
+    -------
+    result : xr.Dataset or None
+        The loaded fit result. Returns None if no file was selected or if the file could
+        not be loaded.
+
+    """
+    dialog = QtWidgets.QFileDialog(parent)
+    dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+    dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
+    dialog.setDefaultSuffix("nc")
+
+    if dialog.exec():
+        file_name = dialog.selectedFiles()[0]
+        selected_filter = dialog.selectedNameFilter()
+
+        import xarray_lmfit
+
+        try:
+            match selected_filter:
+                case "HDF5 Files (*.h5)":
+                    return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
+                case _:
+                    return xarray_lmfit.load_fit(file_name)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Error",
+                "An error occurred while loading the fit result:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+
+    return None
 
 
 class KeyboardEventFilter(QtCore.QObject):
