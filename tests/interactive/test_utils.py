@@ -1,7 +1,12 @@
-import pytest
-from qtpy import QtCore, QtGui
+import tempfile
 
-from erlab.interactive.utils import IconActionButton
+import lmfit
+import numpy as np
+import pytest
+import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
+
+from erlab.interactive.utils import IconActionButton, load_fit_ui, save_fit_ui
 
 
 @pytest.fixture
@@ -52,3 +57,39 @@ def test_icon_action_button_toggle(qtbot, action) -> None:
     assert button.isChecked()
     qtbot.mouseClick(button, QtCore.Qt.LeftButton)
     assert not button.isChecked()
+
+
+@pytest.fixture
+def fit_result_ds():
+    rng = np.random.default_rng(1)
+    xvals = np.linspace(0, 20, 100)
+    yvals = 2 * np.sin(xvals) + 0.1 * rng.normal(size=xvals.shape)
+    test_data = xr.DataArray(yvals, dims=["x"], coords={"x": xvals})
+
+    def model_func(x, a, b):
+        return a * np.sin(x) + b
+
+    model = lmfit.Model(model_func, independent_vars=["x"])
+    return test_data.xlm.modelfit("x", model=model, params={"a": 2, "b": 0})
+
+
+def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds):
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/fit_save.nc"
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("fit_save.nc")
+
+    # Save fit
+    _handler_save = accept_dialog(
+        lambda: save_fit_ui(fit_result_ds), pre_call=_go_to_file
+    )
+
+    # Load fit
+    _handler_load = accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
+
+    tmp_dir.cleanup()
