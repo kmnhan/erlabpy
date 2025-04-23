@@ -582,9 +582,13 @@ def save_fit_ui(
     dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
     dialog.setDefaultSuffix("nc")
 
+    recent_dir: str = erlab.interactive.imagetool.manager._get_recent_directory()
+    if recent_dir:
+        dialog.setDirectory(recent_dir)
+
     if dialog.exec():
-        file_name = dialog.selectedFiles()[0]
-        selected_filter = dialog.selectedNameFilter()
+        file_name: str = dialog.selectedFiles()[0]
+        selected_filter: str = dialog.selectedNameFilter()
 
         import xarray_lmfit
 
@@ -620,8 +624,8 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     dialog.setDefaultSuffix("nc")
 
     if dialog.exec():
-        file_name = dialog.selectedFiles()[0]
-        selected_filter = dialog.selectedNameFilter()
+        file_name: str = dialog.selectedFiles()[0]
+        selected_filter: str = dialog.selectedNameFilter()
 
         import xarray_lmfit
 
@@ -1306,6 +1310,7 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
         tool = erlab.interactive.itool(da, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
+            # Not in manager, must keep reference
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._itool = tool
             self._itool.show()
