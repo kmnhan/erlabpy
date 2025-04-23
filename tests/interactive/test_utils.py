@@ -73,16 +73,17 @@ def fit_result_ds():
     return test_data.xlm.modelfit("x", model=model, params={"a": 2, "b": 0})
 
 
-def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds):
+@pytest.mark.parametrize("file_ext", ["nc", "h5"])
+def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
     tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/fit_save.nc"
+    filename = f"{tmp_dir.name}/fit_save.{file_ext}"
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
         dialog.selectFile(filename)
         focused = dialog.focusWidget()
         if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("fit_save.nc")
+            focused.setText(f"fit_save.{file_ext}")
 
     # Save fit
     _handler_save = accept_dialog(
