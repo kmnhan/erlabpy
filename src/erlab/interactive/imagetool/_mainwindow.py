@@ -523,6 +523,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                     "Average": {"triggered": self._average},
                     "Symmetrize": {"triggered": self._symmetrize},
+                    "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
             },
             "helpMenu": {
@@ -642,6 +643,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _symmetrize(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeDialog)
+
+    @QtCore.Slot()
+    def _correct_with_edge(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.EdgeCorrectionDialog)
 
     @QtCore.Slot()
     def _crop_to_view(self) -> None:

@@ -16,7 +16,7 @@ from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_gold_edge
 
 
-def test_goldtool(qtbot, gold, accept_dialog) -> None:
+def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["# CPU"].setValue(1)
@@ -24,10 +24,6 @@ def test_goldtool(qtbot, gold, accept_dialog) -> None:
 
     with qtbot.waitSignal(win.fitter.sigFinished):
         win.params_edge.widgets["go"].click()
-
-    fit_res = erlab.analysis.gold.poly(
-        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
-    )
 
     def check_generated_code(w: GoldTool) -> None:
         namespace = {"era": erlab.analysis, "gold": gold}
@@ -39,7 +35,7 @@ def test_goldtool(qtbot, gold, accept_dialog) -> None:
         )
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
-            fit_res.drop_vars("modelfit_results"),
+            gold_fit_res.drop_vars("modelfit_results"),
         )
 
     check_generated_code(win)
@@ -60,9 +56,11 @@ def test_goldtool(qtbot, gold, accept_dialog) -> None:
 
     # Check saved file
     xr.testing.assert_identical(
-        fit_res.drop_vars("modelfit_results"),
+        gold_fit_res.drop_vars("modelfit_results"),
         xlm.load_fit(filename).drop_vars("modelfit_results"),
     )
+
+    tmp_dir.cleanup()
 
 
 def test_restool(qtbot) -> None:
