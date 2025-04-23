@@ -254,15 +254,22 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Open in ImageTool",
+                    "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
                 },
                 "copy": {
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Copy to clipboard",
+                    "text": "Copy code to clipboard",
                     "clicked": lambda: self.gen_code("poly"),
+                },
+                "save": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Save polynomial fit to file",
+                    "clicked": self._save_poly_fit,
                 },
             }
         )
@@ -284,14 +291,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Open in ImageTool",
+                    "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
                 },
                 "copy": {
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Copy to clipboard",
+                    "text": "Copy code to clipboard",
                     "clicked": lambda: self.gen_code("spl"),
                 },
             }
@@ -528,6 +535,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
     @QtCore.Slot()
+    def _save_poly_fit(self) -> None:
+        """Save the polynomial fit to a file."""
+        if self.result is None:
+            raise ValueError("No fit result available. Please perform a fit first.")
+
+        erlab.interactive.utils.save_fit_ui(self.result, parent=self)
+
+    @QtCore.Slot()
     def open_itool(self) -> None:
         tool = erlab.interactive.itool(self.corrected, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
@@ -539,7 +554,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._itool = tool
             self._itool.show()
 
-    def gen_code(self, mode: str) -> None:
+    def gen_code(self, mode: str) -> str:
         p0 = self.params_edge.values
         match mode:
             case "poly":
@@ -594,6 +609,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 assign="corrected",
             )
         erlab.interactive.utils.copy_to_clipboard(code_str)
+        return code_str
 
 
 class ResolutionTool(
