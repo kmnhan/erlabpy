@@ -1,19 +1,22 @@
+import tempfile
+
 import numpy as np
-import pyperclip
 import pytest
 import xarray as xr
+import xarray_lmfit as xlm
 from numpy.testing import assert_allclose
+from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.bzplot import BZPlotter
 from erlab.interactive.curvefittingtool import edctool, mdctool
 from erlab.interactive.derivative import DerivativeTool, dtool
-from erlab.interactive.fermiedge import ResolutionTool, goldtool, restool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool, goldtool, restool
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_gold_edge
 
 
-def test_goldtool(qtbot, gold) -> None:
+def test_goldtool(qtbot, gold, accept_dialog) -> None:
     win = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["# CPU"].setValue(1)
@@ -22,15 +25,43 @@ def test_goldtool(qtbot, gold) -> None:
     with qtbot.waitSignal(win.fitter.sigFinished):
         win.params_edge.widgets["go"].click()
 
-    win.params_poly.widgets["copy"].click()
-    assert (
-        pyperclip.paste()
-        == """modelresult = era.gold.poly(
-    gold,
-    angle_range=(-13.5, 13.5),
-    eV_range=(-0.204, 0.276),
-    fast=True,
-)"""
+    fit_res = erlab.analysis.gold.poly(
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
+    )
+
+    def check_generated_code(w: GoldTool) -> None:
+        namespace = {"era": erlab.analysis, "gold": gold}
+        exec(w.gen_code("poly"), {"__builtins__": {}}, namespace)  # noqa: S102
+
+        xr.testing.assert_identical(
+            w.result.drop_vars("modelfit_results"),
+            namespace["modelresult"].drop_vars("modelfit_results"),
+        )
+        xr.testing.assert_identical(
+            w.result.drop_vars("modelfit_results"),
+            fit_res.drop_vars("modelfit_results"),
+        )
+
+    check_generated_code(win)
+
+    # Test save fit
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/fit_save.nc"
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("fit_save.nc")
+
+    # Save fit
+    _handler_save = accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
+
+    # Check saved file
+    xr.testing.assert_identical(
+        fit_res.drop_vars("modelfit_results"),
+        xlm.load_fit(filename).drop_vars("modelfit_results"),
     )
 
 
