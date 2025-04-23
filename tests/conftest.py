@@ -88,9 +88,16 @@ def cut():
 
 
 @pytest.fixture(scope="session")
-def gold():
+def gold() -> xr.DataArray:
     return generate_gold_edge(
         (15, 150), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fit_res(gold) -> xr.Dataset:
+    return erlab.analysis.gold.poly(
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
     )
 
 

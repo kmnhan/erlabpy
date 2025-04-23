@@ -484,6 +484,40 @@ class SymmetrizeDialog(DataTransformDialog):
         )
 
 
+class EdgeCorrectionDialog(DataTransformDialog):
+    title = "Edge Correction"
+    suffix = "_corr"
+    enable_copy = False
+
+    def setup_widgets(self) -> None:
+        self.shift_coord_check = QtWidgets.QCheckBox("Shift Coordinates")
+        self.shift_coord_check.setChecked(True)
+
+        self.layout_.addRow(self.shift_coord_check)
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.gold.correct_with_edge(
+            data,
+            self._edge_fit,
+            shift_coords=self.shift_coord_check.isChecked(),
+        )
+
+    def exec(self) -> int:
+        if "eV" not in self.slicer_area.data.dims:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Energy Dimension",
+                "Edge correction requires an energy dimension (eV) in the data.",
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+
+        self._edge_fit: xr.Dataset | None = erlab.interactive.utils.load_fit_ui()
+        if self._edge_fit is None:
+            # User canceled the fit dialog
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super().exec()
+
+
 class _BaseCropDialog(DataTransformDialog):
     suffix = "_crop"
     enable_copy = True

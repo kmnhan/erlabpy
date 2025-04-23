@@ -6,6 +6,7 @@ import pyperclip
 import pytest
 import xarray as xr
 import xarray.testing
+import xarray_lmfit
 from numpy.testing import assert_almost_equal
 from qtpy import QtWidgets
 
@@ -19,6 +20,7 @@ from erlab.interactive.imagetool.dialogs import (
     AverageDialog,
     CropDialog,
     CropToViewDialog,
+    EdgeCorrectionDialog,
     NormalizeDialog,
     RotationDialog,
     SymmetrizeDialog,
@@ -689,6 +691,43 @@ def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
     win.slicer_area.transpose_act.trigger()
 
     win.close()
+
+
+@pytest.mark.parametrize("shift_coords", [True, False], ids=["shift", "no_shift"])
+def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) -> None:
+    win = itool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/fit_res.nc"
+
+    xarray_lmfit.save_fit(gold_fit_res, filename)
+
+    # Test dialog
+    def _set_dialog_params(dialog: EdgeCorrectionDialog) -> None:
+        dialog.shift_coord_check.setChecked(shift_coords)
+        dialog.new_window_check.setChecked(False)
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(tmp_dir.name)
+        dialog.selectFile(filename)
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("fit_res.nc")
+
+    _handler = accept_dialog(
+        win.mnb._correct_with_edge,
+        pre_call=[_go_to_file, _set_dialog_params],
+        chained_dialogs=2,
+    )
+    xarray.testing.assert_identical(
+        win.slicer_area._data,
+        erlab.analysis.gold.correct_with_edge(
+            gold, gold_fit_res, shift_coords=shift_coords
+        ),
+    )
+
+    tmp_dir.cleanup()
 
 
 def normalize(data, norm_dims, option):
