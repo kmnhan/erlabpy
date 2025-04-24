@@ -2,6 +2,7 @@ import tempfile
 
 import numpy as np
 import pytest
+import scipy
 import xarray as xr
 import xarray_lmfit as xlm
 from numpy.testing import assert_allclose
@@ -59,6 +60,11 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
         gold_fit_res.drop_vars("modelfit_results"),
         xlm.load_fit(filename).drop_vars("modelfit_results"),
     )
+
+    # Move to spline tab
+    win.params_tab.setCurrentIndex(1)
+
+    assert isinstance(win.result, scipy.interpolate.BSpline)
 
     tmp_dir.cleanup()
 
