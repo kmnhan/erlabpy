@@ -1,3 +1,31 @@
+## Unreleased
+
+### ✨ Features
+
+- **explorer:** show the name of the current directory in data explorer ([7262b4c](https://github.com/kmnhan/erlabpy/commit/7262b4c6cb5f7a461a108eca8bc11d95a9e35531))
+
+- **imagetool:** add edge correction menu ([fb47f1b](https://github.com/kmnhan/erlabpy/commit/fb47f1b23889030d8f4ae61455284af26530e137))
+
+  Adds a new menu item that allows correcting the Fermi edge by loading a polynomial fit result from a file saved from `goldtool`.
+
+- **goldtool:** add button to save polynomial fit to file ([94422b1](https://github.com/kmnhan/erlabpy/commit/94422b1429ae61ef4d250ffe0d74cd1a7a5dc5c2))
+
+- **interactive.utils:** add functions for saving and loading fit results from the GUI ([30caff2](https://github.com/kmnhan/erlabpy/commit/30caff28f2c82b1dd6eb82092fe9338390e3f4a4))
+
+### 🐞 Bug Fixes
+
+- **plotting:** fix color limits not being autoscaled when passing an iterable of norms to `plot_slices` ([fbfd3ec](https://github.com/kmnhan/erlabpy/commit/fbfd3ec41a807a01d685c00c9f5b9a1f7ad7e514))
+
+### ⚡️ Performance
+
+- **goldtool:** do not apply correction if not required ([6276883](https://github.com/kmnhan/erlabpy/commit/6276883b1fc78b50fac4ec6b481fff5ae490095c))
+
+  Greatly improves the performance of spline and polynomial fitting in goldtool by correcting data just in time.
+
+### ♻️ Code Refactor
+
+- **manager:** add internal function to retreive recent directory (intraprocess only) ([5d5cf96](https://github.com/kmnhan/erlabpy/commit/5d5cf96fec86c0917c0718d2cd1225787ded202e))
+
 ## v3.9.0 (2025-04-16)
 
 ### ✨ Features
