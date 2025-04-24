@@ -1015,7 +1015,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._tree_view.resizeColumnToContents(0)
         dir_path = self._fs_model.file_system.path
         self._current_dir_line.setText(str(dir_path))
-        self.setWindowTitle(f"Data Explorer — {dir_path.name}")
+        dir_name = dir_path.name if dir_path.name else str(dir_path)
+        self.setWindowTitle(f"Data Explorer — {dir_name}")
 
     @QtCore.Slot()
     def _save_slider_pos(self) -> None:
