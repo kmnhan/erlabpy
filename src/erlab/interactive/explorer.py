@@ -851,7 +851,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._to_manager_single_act = QtWidgets.QAction(
-            "&Open in Manager as Single File", self
+            "Open in Manager as Single File", self
         )
         self._to_manager_single_act.triggered.connect(self.to_manager_single)
         self._to_manager_single_act.setToolTip(
@@ -908,58 +908,46 @@ class _DataExplorer(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(main_widget)
         main_widget.setLayout(layout)
 
-        # Top bar
-        top_widget = QtWidgets.QWidget(self)
-        top_layout = QtWidgets.QHBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_widget.setLayout(top_layout)
-        top_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
-        )
-        layout.addWidget(top_widget)
+        splitter = QtWidgets.QSplitter(main_widget)
+        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+        layout.addWidget(splitter)
 
-        top_layout.addWidget(
+        left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_widget.setLayout(left_layout)
+        splitter.addWidget(left_widget)
+
+        left_header = QtWidgets.QWidget()
+        left_header_layout = QtWidgets.QHBoxLayout(left_header)
+        left_header_layout.setContentsMargins(0, 0, 0, 0)
+        left_header.setLayout(left_header_layout)
+        left_layout.addWidget(left_header)
+        self._current_dir_line = QtWidgets.QLineEdit()
+        self._current_dir_line.setReadOnly(True)
+        self._current_dir_line.setText(str(self._fs_model.file_system.path))
+        left_header_layout.addWidget(self._current_dir_line)
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._open_dir_act, "mdi6.folder")
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._reload_act, "mdi6.refresh")
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._climb_up_act, "mdi6.arrow-up"
             )
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._to_manager_act, "mdi6.chart-tree"
             )
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._finder_act, "mdi6.apple-finder"
             )
         )
-
-        top_layout.addStretch()
-
-        top_layout.addWidget(QtWidgets.QLabel("Loader"))
-        self._loader_combo = _LoaderWidget()
-        self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
-        self._loader_combo.currentIndexChanged.connect(self._loader_changed)
-        top_layout.addWidget(self._loader_combo)
-
-        self._preview_check = QtWidgets.QCheckBox("Preview")
-        self._preview_check.setToolTip(
-            "Show a preview of the selected file.\n"
-            "This may significantly slow down the browsing for large files."
-        )
-        self._preview_check.setChecked(False)
-        self._preview_check.toggled.connect(self._on_selection_changed)
-        top_layout.addWidget(self._preview_check)
-
-        splitter = QtWidgets.QSplitter(main_widget)
-        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
 
         self._tree_view = _DataExplorerTreeView(self)
         self._tree_view.setModel(self._fs_model)
@@ -968,10 +956,39 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
         self._tree_view.doubleClicked.connect(self.to_manager)
         self._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
-        splitter.addWidget(self._tree_view)
+        left_layout.addWidget(self._tree_view)
+
+        right_widget = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_widget.setLayout(right_layout)
+        splitter.addWidget(right_widget)
 
         preview_splitter = QtWidgets.QSplitter()
         preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
+        right_layout.addWidget(preview_splitter)
+
+        right_footer = QtWidgets.QWidget()
+        right_footer_layout = QtWidgets.QHBoxLayout(right_footer)
+        right_footer_layout.setContentsMargins(0, 0, 0, 0)
+        right_footer.setLayout(right_footer_layout)
+        right_layout.addWidget(right_footer)
+
+        right_footer_layout.addWidget(QtWidgets.QLabel("Loader"))
+        self._loader_combo = _LoaderWidget()
+        self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
+        self._loader_combo.currentIndexChanged.connect(self._loader_changed)
+        right_footer_layout.addWidget(self._loader_combo)
+        right_footer_layout.addStretch()
+
+        self._preview_check = QtWidgets.QCheckBox("Preview")
+        self._preview_check.setToolTip(
+            "Show a preview of the selected file.\n"
+            "This may significantly slow down the browsing for large files."
+        )
+        self._preview_check.setChecked(False)
+        self._preview_check.toggled.connect(self._on_selection_changed)
+        right_footer_layout.addWidget(self._preview_check)
 
         self._text_edit = QtWidgets.QTextEdit()
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
@@ -986,7 +1003,6 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._preview.setVisible(False)
         preview_splitter.addWidget(self._preview)
 
-        splitter.addWidget(preview_splitter)
         preview_splitter.setSizes([200, 200])
 
         self.setMinimumWidth(487)
@@ -997,6 +1013,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _dir_loaded(self) -> None:
         """Slot to be called when a directory is loaded."""
         self._tree_view.resizeColumnToContents(0)
+        dir_path = self._fs_model.file_system.path
+        self._current_dir_line.setText(str(dir_path))
+        self.setWindowTitle(f"Data Explorer — {dir_path.name}")
 
     @QtCore.Slot()
     def _save_slider_pos(self) -> None:
