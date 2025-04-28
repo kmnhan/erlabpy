@@ -2602,7 +2602,7 @@ class ItoolPlotItem(pg.PlotItem):
                     # If aspect locked, do not attempt to set autorange
                     continue
 
-                if not self.getViewBox().state["autoRange"][i]:
+                if not self.getViewBox().state["autoRange"][i] and dim is not None:
                     # If manual limits are not set and auto range is disabled, set to
                     # bounding rect. Internally, vb.autoRange() just calls setRange(...)
                     # so calling setRange only once with the full bounds prevents
