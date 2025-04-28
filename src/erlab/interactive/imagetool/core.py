@@ -2264,6 +2264,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
         if not self.is_image:
+            self.slicer_area.sigDataChanged.connect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
 
@@ -2274,10 +2275,12 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
         if not self.is_image:
+            self.slicer_area.sigDataChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
 
     def setup_twin(self) -> None:
+        """Initialize twin axis for plotting associated coordinates."""
         if not self.is_image and self.vb1 is None:
             self.vb1 = pg.ViewBox(enableMenu=False)
             self.vb1.setDefaultPadding(0)
@@ -2285,7 +2288,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.scene().addItem(self.vb1)
             self.getAxis(loc).linkToView(self.vb1)
 
-            # pass right clicks to original vb
+            # Pass right clicks to original vb
             self.getAxis(loc).mouseClickEvent = self.vb.mouseClickEvent
 
             self._update_twin_geometry()
@@ -2293,6 +2296,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def _axis_to_link_twin(self) -> int:
+        """Get the axis to link the twin axis to based on the orientation."""
         return (
             pg.ViewBox.YAxis
             if self.slicer_data_items[-1].is_vertical
@@ -2317,7 +2321,7 @@ class ItoolPlotItem(pg.PlotItem):
     def enableAutoRange(self, axis=None, enable=True, x=None, y=None):
         super().enableAutoRange(axis=axis, enable=enable, x=x, y=y)
         if self.vb1 is not None and self._twin_visible:
-            self.vb1.enableAutoRange(axis=None, enable=True, x=None, y=None)
+            self.vb1.enableAutoRange(axis=None, enable=enable, x=x, y=y)
 
     @QtCore.Slot()
     def update_twin_range(self, autorange: bool = True) -> None:
@@ -2381,8 +2385,6 @@ class ItoolPlotItem(pg.PlotItem):
                 label_html = "<table cellspacing='0'>" + "".join(labels) + "</table>"
                 ax.setLabel(text=label_html)
                 ax.resizeEvent()
-
-                self.update_twin_range()  # Resize to match parent axes on show
 
             while len(self.other_data_items) != n_plots:
                 item = self.other_data_items.pop()
