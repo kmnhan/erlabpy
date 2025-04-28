@@ -254,9 +254,6 @@ class ArraySlicer(QtCore.QObject):
             ]
             self._twin_coord_names = set()
             self.snap_to_data = False
-        else:
-            # Update twin axes on reload
-            self.sigTwinChanged.emit()
 
     @functools.cached_property
     def associated_coords(
