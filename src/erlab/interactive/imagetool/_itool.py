@@ -131,10 +131,10 @@ def itool(
         )
         return None
 
+    data_parsed = _parse_input(data)
     with erlab.interactive.utils.setup_qapp(execute) as execute:
         itool_list = [
-            erlab.interactive.imagetool.ImageTool(d, **kwargs)
-            for d in _parse_input(data)
+            erlab.interactive.imagetool.ImageTool(d, **kwargs) for d in data_parsed
         ]
 
         for w in itool_list:

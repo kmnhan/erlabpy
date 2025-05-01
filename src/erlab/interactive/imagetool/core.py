@@ -111,6 +111,12 @@ def _parse_input(
                 _parse_dataset(leaf.dataset) for leaf in data.leaves
             )
         )
+    elif not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
+        raise TypeError(
+            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
+            "DataTree, numpy array, or a list of DataArray or numpy arrays."
+        )
+
     if len(data) == 0:
         raise ValueError(f"No valid data for ImageTool found in {input_cls}")
 
@@ -634,6 +640,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         cmap_reversed: bool = False
         if isinstance(cmap, str):
+            cmap = cmap.strip().strip("'").strip('"')
             if cmap.endswith("_r"):
                 cmap = cmap.removesuffix("_r")
                 cmap_reversed = True
