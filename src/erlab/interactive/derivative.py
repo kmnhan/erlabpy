@@ -55,7 +55,10 @@ class DerivativeTool(
         self.setupUi(self)
         self.setWindowTitle("")
 
+        self.data_has_nan: bool = False
+
         if data.isnull().any():
+            self.data_has_nan = True
             self.show()
             QtWidgets.QMessageBox.warning(
                 self,
@@ -307,6 +310,9 @@ class DerivativeTool(
         data_name = (
             self.data_name
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
+
+        if self.data_has_nan:
+            data_name = f"{data_name}.fillna(0)"
         if self.interp_group.isChecked():
             arg_dict: dict[str, typing.Any] = {
                 str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"
