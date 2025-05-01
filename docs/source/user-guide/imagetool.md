@@ -55,9 +55,9 @@ There are three ways to display data in ImageTool:
 
   Note that `data` must be an *image-like* {class}`xarray.DataArray`.
 
-- (In an interactive session) Use the magic command `%itool`:
+- (In an interactive session) Use the IPython magic command `%itool`:
 
-  If you are in an interactive session such as IPython and Jupyter, you can use the `%itool` magic command to display an object in ImageTool. Before using this command, you must first load the IPython extension:
+  If you are in an interactive session such as IPython and Jupyter notebook, you can use the `%itool` magic command to display an object in ImageTool. Before using this command, you must first load the IPython extension:
 
   ```python
   %load_ext erlab.interactive
@@ -75,11 +75,7 @@ There are three ways to display data in ImageTool:
   %itool -m data
   ```
 
-  For all supported arguments, display the help message by running:
-
-  ```python
-  %itool?
-  ```
+  For all supported arguments, display the help message by running `%itool?` in an IPython session.
 
 ### Tips
 

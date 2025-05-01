@@ -16,8 +16,6 @@ import numpy as np
 import pooch
 import pytest
 import xarray as xr
-from IPython import InteractiveShell
-from IPython.testing.globalipapp import start_ipython
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
@@ -35,11 +33,6 @@ DATA_KNOWN_HASH = "5c60d819a8dd740121cb5e2c6170bc0ef38e31a753fe57f6a8a7056ed7359
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
-
-
-@pytest.fixture(scope="session")
-def ipapp() -> InteractiveShell:
-    return start_ipython()
 
 
 @pytest.fixture(scope="session")
