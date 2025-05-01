@@ -717,11 +717,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
-        if state is not None:
-            self.state = state
-
         self.reverse_act.setChecked(cmap_reversed)
         self.zero_centered_act.setChecked(zero_centered)
+
+        if state is not None:
+            self.state = state
 
         if transpose:
             self.transpose_main_image()
