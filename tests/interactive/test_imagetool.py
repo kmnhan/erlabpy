@@ -76,6 +76,15 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
     win.close()
 
 
+def test_parse_data() -> None:
+    with pytest.raises(
+        TypeError,
+        match="Unsupported input type str. Expected DataArray, Dataset, DataTree, "
+        "numpy array, or a list of DataArray or numpy arrays.",
+    ):
+        erlab.interactive.imagetool.core._parse_input("string")
+
+
 def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
