@@ -146,6 +146,11 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
             win.smooth_combo.setCurrentIndex(1)
 
     win.tab_widget.setCurrentIndex(method_idx)
+    if method_idx == 1:
+        win.lapl_factor_spin.setValue(40)
+    elif method_idx == 3:
+        win.curv_factor_spin.setValue(40)
+
     check_generated_code(win)
     win.close()
 
