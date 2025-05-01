@@ -152,7 +152,8 @@ class MERLINLoader(LoaderBase):
 
             motor_file = data_dir / f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
 
-            coord_arr = np.loadtxt(motor_file, skiprows=1)
+            # Load as string first to avoid issues with empty lines and trailing spaces
+            coord_arr = np.loadtxt(motor_file, dtype=str, skiprows=1).astype(np.float64)
 
             with motor_file.open(encoding="utf-8") as f:
                 header = f.readline().strip().split("\t")  # motor coordinate names
