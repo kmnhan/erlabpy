@@ -413,7 +413,9 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
 
 
 def test_manager_console(qtbot, accept_dialog) -> None:
-    manager = ImageToolManager()
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
+
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
         dims=["x", "y"],
@@ -465,7 +467,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         "np.arange(25).reshape((5, 5)) * 2, "
         "dims=['x', 'y'], "
         "coords={'x': np.arange(5), 'y': np.arange(5)}"
-        ")"
+        ")",
     )
     xr.testing.assert_identical(manager.get_tool(1).slicer_area.data, data * 2)
 
@@ -477,4 +479,20 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     # Test repr
     manager.console._console_widget.execute("tools")
     assert str(_get_last_output_contents()) == "No tools"
+
+    # Test magic command: itool
+    manager.console._console_widget.kernel_manager.kernel.shell.user_ns[
+        "example_data"
+    ] = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5), "eV": np.arange(5)},
+    )
+    manager.console._console_widget.execute(r"%itool example_data --cmap viridis")
+    qtbot.wait_until(lambda: manager.ntools == 1)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
