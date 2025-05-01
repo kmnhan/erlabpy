@@ -31,7 +31,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterable, Sequence
+    from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 
     import qtawesome
 
@@ -2089,6 +2089,47 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
             super().mouseClickEvent(ev)
 
 
+class _OptionKeyMenuFilter(QtCore.QObject):
+    """Filter to catch and modify the text of menu items.
+
+    Adds a '(Crop)' suffix to actions if the option key is down.
+    """
+
+    def __init__(self, menu: QtWidgets.QMenu, actions: list[QtWidgets.QAction]) -> None:
+        super().__init__(menu)
+        self.menu = menu
+
+        self._actions: dict[str, QtWidgets.QAction] = {}
+        for act in actions:
+            self._actions[act.text()] = act
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        if (
+            (event is not None)
+            and isinstance(obj, QtWidgets.QMenu)
+            and obj.isVisible()
+            and event.type()
+            in (
+                QtCore.QEvent.Type.Show,
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.QEvent.Type.KeyRelease,
+            )
+        ):
+            alt_pressed: bool = (
+                QtCore.Qt.KeyboardModifier.AltModifier
+                in QtWidgets.QApplication.queryKeyboardModifiers()
+            )
+
+            for k, v in self._actions.items():
+                v.setText(f"{k} (Crop)" if alt_pressed else k)
+
+            return True
+
+        return super().eventFilter(obj, event)
+
+
 class ItoolPlotItem(pg.PlotItem):
     """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
 
@@ -2138,6 +2179,8 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        croppable_actions: list[QtWidgets.QAction] = [save_action]
+
         if image:
             itool_action = self.vb.menu.addAction("New Window")
             itool_action.triggered.connect(self.open_in_new_window)
@@ -2179,12 +2222,19 @@ class ItoolPlotItem(pg.PlotItem):
                     equal_aspect_action.blockSignals(False)
 
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
+
+            croppable_actions.extend(
+                (itool_action, goldtool_action, restool_action, dtool_action)
+            )
         else:
             norm_action = self.vb.menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
             norm_action.toggled.connect(self.set_normalize)
         self.vb.menu.addSeparator()
+
+        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
+        self.vb.menu.installEventFilter(self._menu_filter)
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
@@ -2446,8 +2496,35 @@ class ItoolPlotItem(pg.PlotItem):
         return self.vb.state["linkedViews"] == [None, None]
 
     @property
+    def _current_data(self) -> xr.DataArray:
+        """Data in the current plot item."""
+        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+
+    @property
+    def _current_data_cropped(self) -> xr.DataArray:
+        """Data in the current plot item, cropped to the current axes view limits."""
+        slice_dict: dict[Hashable, slice] = {}
+        for k, v in self.slicer_area.manual_limits.items():
+            ax_idx = self.slicer_area.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+            slice_dict[k] = slice(
+                *sorted(float(np.round(val, sig_digits)) for val in v)
+            )
+        return self._current_data.sel(slice_dict)
+
+    @property
     def current_data(self) -> xr.DataArray:
-        data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        """Data in the current plot item, cropped or uncropped.
+
+        If accessed while the Alt (Option) key is pressed, the data is cropped to the
+        current axes view limits.
+        """
+        alt_pressed: bool = (
+            QtCore.Qt.KeyboardModifier.AltModifier
+            in QtWidgets.QApplication.queryKeyboardModifiers()
+        )
+        data = self._current_data_cropped if alt_pressed else self._current_data
+
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()
         )

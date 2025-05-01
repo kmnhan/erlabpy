@@ -57,7 +57,11 @@ data.qshow()
 - Most actions have associated keyboard shortcuts. Explore the menu bar to learn them.
 
 - Right-click on plots for context menus with options like copying slicing code, locking
-  aspect ratio, exporting to a file, and more.
+  aspect ratio, exporting to a file, opening various tools, and more.
+
+  :::{hint}
+  Holding {kbd}`Alt` inside the context menu will transform some menu items to work with the data cropped to the currently visible area.
+  :::
 
 - Cursor controls
 
@@ -90,7 +94,7 @@ data.qshow()
   - {material-regular}`settings_backup_restore`: reset all bin widths to 1.
   - {material-regular}`sync`: Apply binning changes to all cursors.
 
-- Rotate and normalize data via the edit and view menus.
+- In the "Edit" and "View" menu bar items, you can find various options to edit and transform the data, such as rotating, symmetrizing, and cropping. Try them out!
 
 - ImageTool is extensible. At our home lab, we use a modified version of ImageTool to
   plot data as it is being collected in real-time!

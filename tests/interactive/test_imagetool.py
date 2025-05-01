@@ -8,7 +8,7 @@ import xarray as xr
 import xarray.testing
 import xarray_lmfit
 from numpy.testing import assert_almost_equal
-from qtpy import QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
@@ -251,6 +251,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
 def test_itool_tools(qtbot, test_data_type, condition) -> None:
     data = _TEST_DATA[test_data_type].copy()
     win = ImageTool(data)
+    win.show()
     qtbot.addWidget(win)
 
     main_image = win.slicer_area.images[0]
@@ -266,6 +267,21 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
         win.array_slicer.set_bin(0, axis=1, value=2, update=True)
         if data.ndim == 3:
             win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+
+    # Test alt key menu
+    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
+    main_image.vb.menu.eventFilter(
+        main_image.vb.menu,
+        QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
+        ),
+    )
+    for action in main_image.vb.menu.actions():
+        if action.text().startswith("goldtool"):
+            action.text().endswith("(Crop)")
+
+    # Test cropped image
+    assert isinstance(main_image._current_data_cropped, xr.DataArray)
 
     # Open goldtool from main image
     if not test_data_type.endswith("nonuniform"):
