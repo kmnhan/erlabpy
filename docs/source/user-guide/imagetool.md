@@ -35,20 +35,51 @@ is a simple tool exploring images interactively.
 ### Displaying data in ImageTool
 
 ImageTool supports *image-like* {class}`xarray.DataArray`s from 2 to 4 dimensions.
-Non-uniform coordinates are converted to index arrays automatically.
+Non-uniform coordinates are converted to index arrays automatically, and are suffixed
+with `_idx`.
 
-Invoke ImageTool by calling {func}`itool <erlab.interactive.imagetool.itool>`:
+There are three ways to display data in ImageTool:
 
-```python
-import erlab.interactive as eri
-eri.itool(data)
-```
+- {func}`itool <erlab.interactive.imagetool.itool>`:
 
-Or use the {meth}`xarray.DataArray.qshow` accessor:
+  ```python
+  import erlab.interactive as eri
+  eri.itool(data)
+  ```
 
-```python
-data.qshow()
-```
+- The {meth}`xarray.DataArray.qshow` accessor:
+
+  ```python
+  data.qshow()
+  ```
+
+  Note that `data` must be an *image-like* {class}`xarray.DataArray`.
+
+- (In an interactive session) Use the magic command `%itool`:
+
+  If you are in an interactive session such as IPython and Jupyter, you can use the `%itool` magic command to display an object in ImageTool. Before using this command, you must first load the IPython extension:
+
+  ```python
+  %load_ext erlab.interactive
+  ```
+
+  Then, you can use the `%itool` command to display data in ImageTool:
+
+  ```python
+  %itool data
+  ```
+
+  This command is equivalent to calling {func}`itool <erlab.interactive.imagetool.itool>`. Many arguments to {func}`itool <erlab.interactive.imagetool.itool>` are also available as options. For example, you can specify to open the data in the ImageTool manager by using the `--manager` option (or `-m` for short):
+
+  ```python
+  %itool -m data
+  ```
+
+  For all supported arguments, display the help message by running:
+
+  ```python
+  %itool?
+  ```
 
 ### Tips
 

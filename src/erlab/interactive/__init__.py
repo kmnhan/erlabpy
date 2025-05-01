@@ -46,3 +46,9 @@ except ImportError as e:
 import lazy_loader as _lazy
 
 __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
+
+
+def load_ipython_extension(ipython) -> None:
+    from erlab.interactive.imagetool._magic import ImageToolMagics
+
+    ipython.register_magics(ImageToolMagics)

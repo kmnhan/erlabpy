@@ -176,6 +176,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             self.kernel_client.start_channels()
 
             self.execute(r"%load_ext storemagic", hidden=True)
+            self.execute(r"%load_ext erlab.interactive", hidden=True)
 
             if self._namespace is not None:
                 self.kernel_manager.kernel.shell.push(
