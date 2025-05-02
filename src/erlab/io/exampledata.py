@@ -459,7 +459,7 @@ def generate_hvdep_cuts(
                 (shape[1], 1, shape[2]),
                 angrange={"alpha": angrange, "beta": (beta_i, beta_i)},
                 Erange=Erange,
-                hv=hv_i,
+                hv=float(hv_i),
                 configuration=configuration,
                 temp=temp,
                 a=a,
