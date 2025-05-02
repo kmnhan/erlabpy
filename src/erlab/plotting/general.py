@@ -28,7 +28,6 @@ import matplotlib.patches
 import matplotlib.path
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 import xarray as xr
 
 import erlab
@@ -883,7 +882,7 @@ def plot_slices(
 
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-        axes = typing.cast("npt.NDArray[typing.Any]", axes)
+        axes = np.asarray(axes, dtype=object)  # to appease mypy
     else:
         if not isinstance(axes, np.ndarray):
             if not isinstance(axes, Iterable):
@@ -1018,10 +1017,10 @@ def plot_slices(
         match same_limits:
             case "row":
                 for row in axes:
-                    unify_clim(row)
+                    unify_clim(typing.cast("Sequence[matplotlib.axes.Axes]", row))
             case "col":
                 for col in axes.T:
-                    unify_clim(col)
+                    unify_clim(typing.cast("Sequence[matplotlib.axes.Axes]", col))
             case "all":
                 unify_clim(typing.cast("Sequence[matplotlib.axes.Axes]", axes))
 

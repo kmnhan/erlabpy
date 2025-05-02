@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 
 
-def angle_between(v1: npt.NDArray[np.float64], v2: npt.NDArray[np.float64]) -> float:
+def angle_between(v1: npt.NDArray[np.floating], v2: npt.NDArray[np.floating]) -> float:
     """Return the angle between two vectors.
 
     Parameters
@@ -29,8 +29,13 @@ def angle_between(v1: npt.NDArray[np.float64], v2: npt.NDArray[np.float64]) -> f
 
 
 def abc2avec(
-    a: float, b: float, c: float, alpha: float, beta: float, gamma: float
-) -> npt.NDArray:
+    a: np.floating,
+    b: np.floating,
+    c: np.floating,
+    alpha: np.floating,
+    beta: np.floating,
+    gamma: np.floating,
+) -> npt.NDArray[np.floating]:
     r"""Construct lattice vectors from lattice parameters.
 
     Parameters
@@ -75,7 +80,7 @@ def abc2avec(
 
 
 def avec2abc(
-    avec: npt.NDArray[np.float64],
+    avec: npt.NDArray[np.floating],
 ) -> tuple[float, float, float, float, float, float]:
     """Determine lattice parameters from lattice vectors.
 
@@ -96,7 +101,7 @@ def avec2abc(
     return a, b, c, alpha, beta, gamma
 
 
-def to_reciprocal(avec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def to_reciprocal(avec: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Construct the reciprocal lattice vectors from real lattice vectors.
 
     Parameters
@@ -113,7 +118,7 @@ def to_reciprocal(avec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     return 2 * np.pi * np.linalg.inv(avec).T
 
 
-def to_real(bvec: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def to_real(bvec: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     """Construct the real lattice vectors from reciprocal lattice vectors.
 
     Parameters

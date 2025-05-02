@@ -328,7 +328,7 @@ class ArraySlicer(QtCore.QObject):
         if self._nonuniform_axes:
             return tuple(
                 (
-                    (min(coord), max(coord))
+                    (np.amin(coord), np.amax(coord))
                     if i in self._nonuniform_axes
                     else (coord[0], coord[-1])
                 )

@@ -64,7 +64,7 @@ _SIG_4_3 = [
 
 
 @numba.njit(cache=True)
-def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.float64:
+def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.floating:
     return np.nanmean(a)
 
 

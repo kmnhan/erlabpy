@@ -304,7 +304,7 @@ def load_wave(
             # data_units = d["data_units"].decode()
             axis_units = [d["dimension_units"].decode()]
 
-    coords = {}
+    coords: dict[str, np.ndarray | xr.DataArray] = {}
     for i, (a, b, c) in enumerate(zip(sfA, sfB, shape, strict=True)):
         if c == 0:
             continue
