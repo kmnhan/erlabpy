@@ -803,7 +803,7 @@ def _plot_resolution_fit(
 
         center_repr = (
             f"$E_F = {center * 1e3:L}$ meV"
-            if center < 0.1
+            if center.n < 0.1
             else f"$E_F = {center:L}$ eV"
         )
         resolution_repr = f"$\\Delta E = {resolution * 1e3:L}$ meV"
