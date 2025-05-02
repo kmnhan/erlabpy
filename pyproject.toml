@@ -247,6 +247,7 @@ DISPLAY = ":99.0"
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
+parallel = true
 concurrency = ["multiprocessing", "thread"]
 
 [tool.coverage.report]
