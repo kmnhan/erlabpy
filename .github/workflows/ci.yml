@@ -54,7 +54,7 @@ jobs:
 
       - name: Test with pytest with coverage
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
-        run: uv run pytest -v --cov erlab --junitxml=junit.xml
+        run: uv run pytest -v --cov erlab --cov-report=xml
 
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
