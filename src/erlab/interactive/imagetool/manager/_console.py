@@ -187,6 +187,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                         for name, module in self._namespace.items()
                     }
                 )
+                self.execute(r"xr.set_options(keep_attrs=True)", hidden=True)
 
     def store_data_as(self, tool_index: int, name: str) -> None:
         """Store the data in an ImageTool with IPython to reuse in other scripts."""
