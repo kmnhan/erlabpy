@@ -41,6 +41,7 @@ if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import (
         Callable,
+        Hashable,
         ItemsView,
         Iterable,
         Iterator,
@@ -1652,12 +1653,24 @@ class LoaderBase(metaclass=_Loader):
                     for i, data in enumerate(data_list)
                 ]
 
+            # Ensure all processed data have the same set of coordinates by assigning
+            # NaN to missing coordinates. This is necessary for some setups where some
+            # data files have missing header entries, possibly due to a bug in the data
+            # acquisition software.
+            all_coord_names: set[Hashable] = set().union(
+                *(d.coords.keys() for d in processed)
+            )
+            for i, data in enumerate(processed):
+                missing = all_coord_names - set(data.coords.keys())
+                if missing:
+                    processed[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
+
             # Magically combine the data
             combined = xr.combine_by_coords(
                 processed,
-                combine_attrs=self.combine_attrs,
                 data_vars="all",
-                join="exact",
+                join="outer",
+                combine_attrs=self.combine_attrs,
             )
 
             if (
