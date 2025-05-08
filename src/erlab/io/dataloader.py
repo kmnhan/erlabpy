@@ -1661,10 +1661,9 @@ class LoaderBase(metaclass=_Loader):
                 *(d.coords.keys() for d in processed)
             )
             for i, data in enumerate(processed):
-                missing_coords = all_coord_names - set(data.coords.keys())
-                if missing_coords:
-                    data = data.assign_coords(dict.fromkeys(missing_coords, np.nan))
-                    processed[i] = data
+                missing = all_coord_names - set(data.coords.keys())
+                if missing:
+                    processed[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
 
             # Magically combine the data
             combined = xr.combine_by_coords(

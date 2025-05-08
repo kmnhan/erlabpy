@@ -24,6 +24,7 @@ def expected_dir(data_dir):
         (3, 3),  # DA map (DataTree)
         (4, 4),  # Single motor cut
         (5, 5),  # Single motor DA map
+        (6, 6),  # Single motor DA map with first slice missing coords
         ("test0002.pxt", 2),
         ("test0004_S00001.pxt", 4),
         ("test0005_S00002.zip", 5),
