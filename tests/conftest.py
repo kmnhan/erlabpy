@@ -26,10 +26,10 @@ from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-DATA_COMMIT_HASH = "19c743559a3008e0cb74f5c8e2ef87334b0e7dc1"
+DATA_COMMIT_HASH = "518a60cabe6d0690c895214f2751ded7aecfca80"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "5c60d819a8dd740121cb5e2c6170bc0ef38e31a753fe57f6a8a7056ed7359418"
+DATA_KNOWN_HASH = "8a2575828371aa3cbbc827c3c207410f1cc0517432963ca845a6a04d25711679"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
