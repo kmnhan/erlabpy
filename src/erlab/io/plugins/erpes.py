@@ -101,6 +101,7 @@ class ERPESLoader(DA30Loader):
         "torr_loadlock",
         "seq_start",
         "attrs_time",
+        "laser_power",
         "Date",  # Promote Date and Time
         "Time",  # Convert to single datetime in additional_coords
     )
