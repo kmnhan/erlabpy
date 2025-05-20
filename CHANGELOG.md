@@ -1,4 +1,4 @@
-## Unreleased
+## v3.10.2 (2025-05-20)
 
 ### 🐞 Bug Fixes
 
@@ -11,6 +11,8 @@
 - **imagetool.manager:** set xarray option `keep_attrs` to `True` by default in console ([330aca9](https://github.com/kmnhan/erlabpy/commit/330aca9d2adc405e9a769f40a66e7550a791caaf))
 
 ### ♻️ Code Refactor
+
+- **io.plugins.erpes:** add 'laser_power' to coordinate attributes (#140) ([0b86283](https://github.com/kmnhan/erlabpy/commit/0b862834e4ac2d895e88ed1b2fd3b515c1eb647a))
 
 - remove deprecated direct comparison of uncertainties ([c237a4d](https://github.com/kmnhan/erlabpy/commit/c237a4d30432c638529d1a2c7183651b58db53ba))
 
