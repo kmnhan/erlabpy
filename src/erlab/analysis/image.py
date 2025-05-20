@@ -724,7 +724,7 @@ def diffn(
     darr
         The input DataArray.
     coord
-        The coordinate along which to calculate the derivative.
+        The name of the coordinate along which to calculate the derivative.
     order
         The order of the derivative. If given as a tuple, a tuple of derivatives for
         each order is returned. Default is 1.
@@ -861,7 +861,6 @@ def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     return darr.copy(data=scaled_lapl_operator(darr.values.astype(np.float64)))
 
 
-@erlab.utils.array.check_arg_2d_darr
 @erlab.utils.array.check_arg_uniform_dims
 @erlab.utils.array.check_arg_has_no_nans
 def curvature(
@@ -874,7 +873,8 @@ def curvature(
     Parameters
     ----------
     darr
-        The 2D DataArray for which to calculate the curvature.
+        The DataArray for which to calculate the curvature. The curvature is calculated
+        along the first two dimensions of the DataArray.
     a0
         The regularization constant. Reasonable values range from 0.001 to 10, but
         different values may be needed depending on the data. Default is 1.0.
