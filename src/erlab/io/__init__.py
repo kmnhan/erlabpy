@@ -40,6 +40,7 @@ Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
    utils
    igor
    nexusutils
+   fitsutils
    exampledata
    characterization
 
