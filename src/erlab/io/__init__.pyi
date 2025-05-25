@@ -1,6 +1,7 @@
 __all__ = [
     "dataloader",
     "extend_loader",
+    "fitsutils",
     "igor",
     "load",
     "load_hdf5",
@@ -16,7 +17,7 @@ __all__ = [
     "utils",
 ]
 
-from . import dataloader, igor, nexusutils, utils
+from . import dataloader, fitsutils, igor, nexusutils, utils
 from ._namespace import (
     extend_loader,
     load,
