@@ -3079,7 +3079,9 @@ class ItoolPlotItem(pg.PlotItem):
     def copy_selection_code(self) -> None:
         if self.selection_code == "":
             QtWidgets.QMessageBox.critical(
-                self, "Error", "Selection code is undefined for main image of 2D data."
+                None,
+                "Error",
+                "Selection code is unavailable for main image of 2D data.",
             )
             return
         erlab.interactive.utils.copy_to_clipboard(self.selection_code)
