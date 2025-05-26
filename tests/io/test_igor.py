@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 import xarray as xr
 import xarray.testing
 
-from erlab.io.igor import load_wave
+from erlab.io.igor import _parse_wave_shape, load_text, load_wave, set_scale
 
 WAVE0 = xr.DataArray(
     np.linspace(-0.3, 0.7, 6, dtype=np.float32),
@@ -32,3 +33,56 @@ def test_backend_datatree(datadir) -> None:
 
 def test_load_wave(datadir) -> None:
     xarray.testing.assert_equal(load_wave(datadir / "wave0.ibw"), WAVE0)
+
+
+def test_set_scale_noargs() -> None:
+    data = xr.DataArray(np.arange(5))
+    scaled = set_scale(data, None, "x", 0, 5, units_str="new_name")
+    np.testing.assert_allclose(scaled["new_name"], np.linspace(0, 4, 5))
+
+
+def test_set_scale_endpoints() -> None:
+    data = xr.DataArray(np.arange(5), dims=["x"])
+    scaled = set_scale(data, "/I", "x", 0, 1)
+    np.testing.assert_allclose(scaled["x"], np.linspace(0, 1, 5))
+
+
+def test_set_scale_step() -> None:
+    data = xr.DataArray(np.arange(5), dims=["x"])
+    scaled = set_scale(data, "/P", "x", 0, 2)
+    np.testing.assert_allclose(scaled["x"], np.linspace(0, 8, 5))
+
+
+def test_set_scale_invalid_dimension() -> None:
+    data = xr.DataArray(np.arange(5), dims=["x"])
+    with pytest.raises(ValueError, match="Invalid dimension"):
+        set_scale(data, None, "invalid", 0, 4)
+
+
+def test_parse_wave_shape() -> None:
+    wave_str = r"WAVES/S/N=(100,200) 'wave_name'"
+    shape, name = _parse_wave_shape(wave_str)
+    assert shape == (100, 200)
+    assert name == "wave_name"
+
+    wave_str_invalid = r"non-matching string"
+    with pytest.raises(ValueError, match="Invalid format"):
+        _parse_wave_shape(wave_str_invalid)
+
+
+def test_load_text_basic(datadir) -> None:
+    wave = load_text(datadir / "wave0.itx", dtype=np.float32).rename(dim_0="W")
+    xarray.testing.assert_equal(wave, WAVE0)
+
+
+def test_load_text_invalid_file(datadir) -> None:
+    with pytest.raises(ValueError, match="No valid wave definition found"):
+        load_text(datadir / "invalid.itx")
+
+
+def test_load_text_multiple_waves(datadir) -> None:
+    with pytest.warns(UserWarning, match="Multiple wave definitions found"):
+        wave = load_text(datadir / "multiple_waves.itx", dtype=np.float32).rename(
+            dim_0="W"
+        )
+    xarray.testing.assert_equal(wave, WAVE0)
