@@ -10,6 +10,7 @@ import contextlib
 import fnmatch
 import inspect
 import itertools
+import keyword
 import pathlib
 import re
 import sys
@@ -49,6 +50,7 @@ __all__ = [
     "ExclusiveComboGroup",
     "IconActionButton",
     "IconButton",
+    "IdentifierValidator",
     "KeyboardEventFilter",
     "ParameterGroup",
     "RotatableLine",
@@ -2318,6 +2320,44 @@ class IconActionButton(IconButton):
         self._action.blockSignals(True)
         self._action.setIcon(self.icon())
         self._action.blockSignals(False)
+
+
+class IdentifierValidator(QtGui.QValidator):
+    """Validator for Python identifiers.
+
+    This validator checks if the input string is a valid Python identifier, and provides
+    a fixup method to convert invalid identifiers into valid ones. Use with
+    :class:`QtWidgets.QLineEdit` to restrict user input to valid Python identifiers.
+    """
+
+    def validate(
+        self, input_str: str | None, pos: int
+    ) -> tuple[QtGui.QValidator.State, str, int]:
+        if input_str is None:
+            return super().validate(input_str, pos)
+
+        if (not input_str) or keyword.iskeyword(input_str):
+            return QtGui.QValidator.State.Intermediate, input_str, pos
+
+        if not input_str.isidentifier():
+            return QtGui.QValidator.State.Invalid, input_str, pos
+
+        return QtGui.QValidator.State.Acceptable, input_str, pos
+
+    def fixup(self, input_str: str | None) -> str:
+        if input_str is None:
+            return super().fixup(input_str)
+
+        input_str = input_str.strip()
+        # Replace spaces and invalid chars with underscores
+        fixed = re.sub(r"\W|^(?=\d)", "_", input_str)
+        # Remove leading underscores if the rest is empty or all underscores
+        if not fixed or fixed.lstrip("_") == "":
+            fixed = "var"
+        # Avoid Python keywords
+        if keyword.iskeyword(fixed):
+            fixed += "_"
+        return fixed
 
 
 class RotatableLine(pg.InfiniteLine):
