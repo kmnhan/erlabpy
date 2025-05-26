@@ -21,6 +21,8 @@ def expected_dir(data_dir):
     [
         (5, "20211211_00005.h5"),
         ("20211211_00005.fits", "20211211_00005.h5"),
+        (11, "20211216_00011.h5"),
+        ("20211216_00011.fits", "20211216_00011.h5"),
     ],
 )
 def test_load(expected_dir, args, expected) -> None:
