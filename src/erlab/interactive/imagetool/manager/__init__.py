@@ -89,6 +89,14 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
+    if sys.platform == "win32":
+        import ctypes
+
+        # Set the AppUserModelID for Windows taskbar grouping
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "erlab.imagetool.manager"
+        )
+
     qapp = typing.cast(
         "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
     )
