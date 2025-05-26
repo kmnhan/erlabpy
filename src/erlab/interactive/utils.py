@@ -2347,7 +2347,7 @@ class IdentifierValidator(QtGui.QValidator):
 
     def fixup(self, input_str: str | None) -> str:
         if input_str is None:
-            return super().fixup(input_str)
+            return self.fixup("")
 
         input_str = input_str.strip()
         # Replace spaces and invalid chars with underscores
