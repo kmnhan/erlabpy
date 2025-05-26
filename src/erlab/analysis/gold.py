@@ -298,17 +298,25 @@ def edge(
         parallel_obj = joblib.Parallel(**parallel_kw)
 
     def _fit(data, w):
-        pars = model.guess(data, x=data["eV"]).update(params)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message=(
+                    "Using UFloat objects with std_dev==0 may give unexpected results."
+                ),
+            )
+            pars = model.guess(data, x=data["eV"]).update(params)
 
-        return data.xlm.modelfit(
-            "eV",
-            model=model,
-            params=pars,
-            method=method,
-            scale_covar=scale_covar,
-            weights=w,
-            **kwargs,
-        )
+            return data.xlm.modelfit(
+                "eV",
+                model=model,
+                params=pars,
+                method=method,
+                scale_covar=scale_covar,
+                weights=w,
+                **kwargs,
+            )
 
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 

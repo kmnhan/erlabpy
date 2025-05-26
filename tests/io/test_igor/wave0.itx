@@ -1,0 +1,11 @@
+IGOR
+WAVES	test
+BEGIN
+	-0.30000001
+	-0.1
+	0.1
+	0.30000001
+	0.5
+	0.69999999
+END
+X SetScale/P x 0,1,"", test; SetScale y 0,0,"", test
