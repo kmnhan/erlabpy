@@ -484,7 +484,7 @@ def generate_gold_edge(
     angres: float = 0.1,
     edge_coeffs: Sequence[float] = (0.04, 1e-5, -3e-4),
     background_coeffs: Sequence[float] = (1.0, 0.0, -2e-3),
-    count: int = 100000000,
+    count: int = 1000000000,
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
