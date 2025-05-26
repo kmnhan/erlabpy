@@ -2335,7 +2335,7 @@ class IdentifierValidator(QtGui.QValidator):
         self, input_str: str | None, pos: int
     ) -> tuple[QtGui.QValidator.State, str, int]:
         if input_str is None:
-            return super().validate(input_str, pos)
+            return QtGui.QValidator.State.Intermediate, "", pos
 
         if (not input_str) or keyword.iskeyword(input_str):
             return QtGui.QValidator.State.Intermediate, input_str, pos
@@ -2348,7 +2348,6 @@ class IdentifierValidator(QtGui.QValidator):
     def fixup(self, input_str: str | None) -> str:
         if input_str is None:
             return self.fixup("")
-
         input_str = input_str.strip()
         # Replace spaces and invalid chars with underscores
         fixed = re.sub(r"\W|^(?=\d)", "_", input_str)
