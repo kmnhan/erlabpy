@@ -158,8 +158,9 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
             if is_ipython:
                 execute = False
         yield execute
-
-    finally:
+    except Exception:  # noqa: TRY203
+        raise
+    else:
         if is_ipython:
             from IPython.lib.guisupport import start_event_loop_qt4
 
