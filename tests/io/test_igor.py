@@ -74,6 +74,11 @@ def test_load_text_basic(datadir) -> None:
     wave = load_text(datadir / "wave0.itx", dtype=np.float32).rename(dim_0="W")
     xarray.testing.assert_equal(wave, WAVE0)
 
+    wave = load_text(
+        datadir / "wave0.itx", dtype=np.float32, without_values=True
+    ).rename(dim_0="W")
+    xarray.testing.assert_equal(wave, xr.zeros_like(WAVE0))
+
 
 def test_load_text_invalid_file(datadir) -> None:
     with pytest.raises(ValueError, match="No valid wave definition found"):

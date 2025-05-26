@@ -24,6 +24,7 @@ loader.
    maestro
    mbs
    merlin
+   snu1
    ssrl52
 
 """
