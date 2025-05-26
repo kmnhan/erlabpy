@@ -6,7 +6,12 @@ import pytest
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
-from erlab.interactive.utils import IconActionButton, load_fit_ui, save_fit_ui
+from erlab.interactive.utils import (
+    IconActionButton,
+    IdentifierValidator,
+    load_fit_ui,
+    save_fit_ui,
+)
 
 
 @pytest.fixture
@@ -94,3 +99,41 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
     _handler_load = accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
 
     tmp_dir.cleanup()
+
+
+@pytest.mark.parametrize(
+    ("input_str", "expected_state"),
+    [
+        ("valid_name", QtGui.QValidator.State.Acceptable),
+        ("", QtGui.QValidator.State.Intermediate),
+        ("1invalid", QtGui.QValidator.State.Invalid),
+        ("with space", QtGui.QValidator.State.Invalid),
+        ("for", QtGui.QValidator.State.Intermediate),  # Python keyword
+        ("_hidden", QtGui.QValidator.State.Acceptable),
+        ("invalid-char!", QtGui.QValidator.State.Invalid),
+        (None, QtGui.QValidator.State.Intermediate),
+    ],
+)
+def test_identifier_validator_validate(input_str, expected_state):
+    validator = IdentifierValidator()
+    state, out_str, pos = validator.validate(input_str, 0)
+    assert state == expected_state
+
+
+@pytest.mark.parametrize(
+    ("input_str", "expected"),
+    [
+        ("valid_name", "valid_name"),
+        ("1invalid", "_1invalid"),
+        ("with space", "with_space"),
+        ("for", "for_"),
+        ("", "var"),
+        ("___", "var"),
+        ("!@#", "var"),
+        ("class", "class_"),
+        (None, "var"),
+    ],
+)
+def test_identifier_validator_fixup(input_str, expected):
+    validator = IdentifierValidator()
+    assert validator.fixup(input_str) == expected
