@@ -17,6 +17,7 @@ from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.core import _AssociatedCoordsDialog, _parse_input
 from erlab.interactive.imagetool.dialogs import (
+    AssignCoordsDialog,
     AverageDialog,
     CropDialog,
     CropToViewDialog,
@@ -769,6 +770,31 @@ def normalize(data, norm_dims, option):
             return data - minimum
         case _:
             return (data - minimum) / area
+
+
+def test_itool_assign_coords(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test dialog
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._coord_combo.setCurrentText("t")
+        dialog.coord_widget.mode_combo.setCurrentIndex(1)  # Set to 'Delta'
+        dialog.coord_widget.spin0.setValue(1)
+        dialog.new_window_check.setChecked(False)
+
+    _handler = accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
+    np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 
 @pytest.mark.parametrize("option", [0, 1, 2, 3])

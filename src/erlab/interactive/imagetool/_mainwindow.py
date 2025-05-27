@@ -509,6 +509,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
+                    "Edit Coordinates": {
+                        "triggered": self._assign_coords,
+                        "sep_after": True,
+                    },
                     "Rotate": {"triggered": self._rotate},
                     "Rotation Guidelines": {
                         "actions": {
@@ -655,6 +659,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _normalize(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.NormalizeDialog)
+
+    @QtCore.Slot()
+    def _assign_coords(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AssignCoordsDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
