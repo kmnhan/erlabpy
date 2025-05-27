@@ -453,9 +453,13 @@ class ArraySlicer(QtCore.QObject):
         # erlab>=3.2.0 should not save non-uniform data in the first place.
         data = restore_nonuniform_dims(data)
 
-        # Convert coords to C-contiguous array
-        data = data.assign_coords(
-            {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
+        # Convert coords to C-contiguous array while preserving display order.
+        data = erlab.utils.array.sort_coord_order(
+            data.assign_coords(
+                {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
+            ),
+            keys=data.coords.keys(),
+            dims_first=False,
         )
 
         if data.dtype not in (np.float32, np.float64):
