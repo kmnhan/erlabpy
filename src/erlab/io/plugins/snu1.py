@@ -21,7 +21,7 @@ class System1Loader(LoaderBase):
         "hv": "Excitation Energy",
     }
     coordinate_attrs = ("hv",)
-    additional_attrs: typing.ClassVar[dict] = {"configuration": 1}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 2}
     additional_coords: typing.ClassVar[dict] = {"hv": 21.2182}
 
     skip_validate: bool = True
