@@ -229,3 +229,15 @@ class MERLINLoader(LoaderBase):
 
     def files_for_summary(self, data_dir: str | os.PathLike):
         return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))
+
+    def pre_combine_multiple(self, data_list, coord_dict):
+        if data_list[0].attrs.get("Acquisition Mode") != "Dither":
+            # For non-dither scans, energy axis may have very small offsets on the order
+            # of 1e-6 eV, which can cause issues with merging.
+            # We can safely assume that the energy axis is the same for all data arrays
+            # in the list, so we can assign the first one to all of them. This is also
+            # the behavior when using `Assemble` from the LoadSESb GUI in Igor Pro.
+            return [
+                d.assign_coords(eV=data_list[0].eV.values) for d in data_list
+            ], coord_dict
+        return data_list, coord_dict
