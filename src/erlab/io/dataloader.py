@@ -674,7 +674,7 @@ class LoaderBase(metaclass=_Loader):
             else:
                 # Multiple files resolved
                 if combine:
-                    data = self._combine_multiple(
+                    data_list, coord_dict = self.pre_combine_multiple(
                         self.load_multiple_parallel(
                             file_paths,
                             parallel=parallel,
@@ -683,6 +683,8 @@ class LoaderBase(metaclass=_Loader):
                         ),
                         coord_dict,
                     )
+                    data = self._combine_multiple(data_list, coord_dict)
+                    del data_list, coord_dict  # Free memory
                 else:
                     return self.load_multiple_parallel(
                         file_paths,
@@ -1560,6 +1562,48 @@ class LoaderBase(metaclass=_Loader):
 
         """
         return dict(variable_attrs[0])
+
+    def pre_combine_multiple(
+        self,
+        data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
+        coord_dict: dict[str, Sequence],
+    ) -> tuple[
+        list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree], dict[str, Sequence]
+    ]:
+        """Pre-process data before combining multiple files.
+
+        This method is called only for loaders that support combining multiple files
+        into a single object, i.e., loaders with :attr:`always_single
+        <erlab.io.dataloader.LoaderBase.always_single>` set to `False`. The default
+        implementation returns the input data and coordinate dictionary unchanged.
+
+        Override this function to perform any necessary concatenation-specific
+        pre-processing steps. The primary use case is to correct small inconsistencies
+        in the loaded data that results in broken concatenation/combination.
+
+        For instance, ALS BL4.0.3 Merlin often produces data with the energy axis start
+        and step values shifted by a small amount (typically on the order of μeV). This
+        results in different energy values for the same scan in different files, leading
+        to the data not being combined correctly. See the implementation of
+        :class:`MERLINLoader <erlab.io.plugins.merlin.MERLINLoader>`.
+
+        Parameters
+        ----------
+        data_list : list of DataArray or Dataset or DataTree
+            A list of data objects to be pre-processed prior to combining.
+        coord_dict : dict of str to sequence
+            A dictionary mapping coordinate names to sequences of coordinate values, as
+            returned by :meth:`identify <erlab.io.dataloader.LoaderBase.identify>`.
+
+        Returns
+        -------
+        data_list : list of DataArray or Dataset or DataTree
+            The pre-processed data objects.
+        coord_dict : dict of str to sequence
+            The coordinate dictionary, with any necessary modifications made.
+
+        """
+        return data_list, coord_dict
 
     @typing.overload
     def _combine_multiple(
