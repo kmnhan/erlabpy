@@ -1,6 +1,7 @@
 __all__ = ["goldtool", "restool"]
 
 import concurrent.futures
+import importlib.resources
 import os
 import time
 import typing
@@ -613,7 +614,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
 
 class ResolutionTool(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "restool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
+    )
 ):
     _sigTriggerFit = QtCore.Signal()
 

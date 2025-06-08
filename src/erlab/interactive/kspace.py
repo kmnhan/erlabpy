@@ -18,7 +18,7 @@ from __future__ import annotations
 __all__ = ["ktool"]
 
 import functools
-import os
+import importlib.resources
 import typing
 import warnings
 
@@ -138,7 +138,9 @@ class _MovableCircleROI(pg.CircleROI):
 
 
 class KspaceToolGUI(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui"))
+    )
 ):
     def __init__(
         self,
