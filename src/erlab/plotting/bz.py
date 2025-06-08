@@ -19,10 +19,10 @@ abbrv_kws: dict[str, tuple[str, typing.Any]] = {
 
 
 def get_bz_edge(
-    basis: npt.NDArray[np.float64],
+    basis: npt.NDArray[np.floating],
     reciprocal: bool = True,
     extend: tuple[int, ...] | None = None,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Calculate the edge of the first Brillouin zone (BZ) from lattice vectors.
 
     Parameters

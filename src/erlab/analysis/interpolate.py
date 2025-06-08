@@ -426,7 +426,7 @@ def slice_along_path(
 
     # Calculate number of points for each segment
     num_points = [
-        round(np.linalg.norm(p2 - p1) / step_size) - 1  # type: ignore[call-overload,operator]
+        round(np.linalg.norm(p2 - p1) / step_size) - 1
         for p1, p2 in itertools.pairwise(points)
     ]
     # Generate points for each segment

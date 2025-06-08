@@ -1460,8 +1460,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
                 f"qwtype must be one of {list(ParameterGroup.VALID_QWTYPE.keys())}"
             )
 
-        widget_class = ParameterGroup.VALID_QWTYPE[qwtype]
-
         if qwtype == "combobox":
             items = kwargs.pop("items", None)
             currtxt = kwargs.pop("currentText", None)
@@ -1493,15 +1491,17 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         value = kwargs.pop("value", None)
 
-        widget = widget_class(**kwargs)
+        widget = ParameterGroup.VALID_QWTYPE[qwtype](**kwargs)
 
-        if qwtype == "combobox":
+        if isinstance(widget, QtWidgets.QComboBox):
+            # qwtype is "combobox"
             widget.addItems(items)
             if currtxt is not None:
                 widget.setCurrentText(currtxt)
             if curridx is not None:
                 widget.setCurrentIndex(curridx)
-        elif qwtype.endswith("pushbtn"):
+        elif isinstance(widget, QtWidgets.QPushButton):
+            # qwtype is either "pushbtn" or "chkpushbtn"
             if pressed is not None:
                 widget.pressed.connect(pressed)
             if released is not None:
@@ -1512,12 +1512,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
             elif clicked is not None:
                 widget.clicked.connect(clicked)
 
-        if newrange is not None:
+        if newrange is not None and hasattr(widget, "setRange"):
             widget.setRange(*newrange)
 
-        if valueChanged is not None:
+        if valueChanged is not None and hasattr(widget, "valueChanged"):
             widget.valueChanged.connect(valueChanged)
-        if textChanged is not None:
+        if textChanged is not None and hasattr(widget, "textChanged"):
             widget.textChanged.connect(textChanged)
 
         if fixedWidth is not None:
@@ -1526,10 +1526,10 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.setFixedHeight(fixedHeight)
         if policy is not None:
             widget.setSizePolicy(*policy)
-        if alignment is not None:
+        if alignment is not None and hasattr(widget, "setAlignment"):
             widget.setAlignment(alignment)
 
-        if value is not None:
+        if value is not None and hasattr(widget, "setValue"):
             widget.setValue(value)
 
         return widget
