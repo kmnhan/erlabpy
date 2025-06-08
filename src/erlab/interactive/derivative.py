@@ -16,7 +16,7 @@
 __all__ = ["dtool"]
 
 import functools
-import os
+import importlib.resources
 import typing
 from collections.abc import Callable, Hashable
 
@@ -36,7 +36,9 @@ else:
 
 
 class DerivativeTool(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui"))
+    )
 ):
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
