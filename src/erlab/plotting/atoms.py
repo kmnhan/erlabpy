@@ -354,9 +354,7 @@ class CrystalProperty:
         bound_list = []
         for dim in ("x", "y", "z"):
             try:
-                bound_list.append(
-                    self._bounds[typing.cast("typing.Literal['x', 'y', 'z']", dim)]
-                )
+                bound_list.append(self._bounds[dim])
             except KeyError:
                 bound_list.append((-np.inf, np.inf))
         return bound_list

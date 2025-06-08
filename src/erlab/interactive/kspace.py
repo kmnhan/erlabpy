@@ -624,7 +624,7 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
 
-    def get_bz_lines(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         from erlab.plotting.bz import get_bz_edge
 
         if self.data.kspace._has_hv:

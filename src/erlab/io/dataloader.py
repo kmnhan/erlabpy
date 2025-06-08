@@ -1813,7 +1813,7 @@ class LoaderBase(metaclass=_Loader):
                 v = darr[k].values.mean()
                 darr = darr.drop_vars(k).assign_attrs({k: v})
 
-        new_attrs: dict[str, str | float] = {}
+        new_attrs: dict[str, str | float | datetime.datetime] = {}
         for k, v in self.additional_attrs.items():
             if k not in darr.attrs:
                 if callable(v):
