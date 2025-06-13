@@ -6,6 +6,7 @@ __all__ = ["_ImageToolWrapper"]
 
 import datetime
 import os
+import sys
 import typing
 import uuid
 import weakref
@@ -221,6 +222,16 @@ class _ImageToolWrapper(QtCore.QObject):
         if self.tool is not None:
             if not self.tool.isVisible() and self._recent_geometry is not None:
                 self.tool.setGeometry(self._recent_geometry)
+
+            if sys.platform == "win32":
+                self.tool.setWindowFlags(
+                    self.tool.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                )
+                self.tool.show()
+                self.tool.setWindowFlags(
+                    self.tool.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
+                )
+            self.tool.show()
             self.tool.show()
             self.tool.activateWindow()
             self.tool.raise_()
