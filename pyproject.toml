@@ -241,12 +241,12 @@ xfail_strict = true
 filterwarnings = ["always"]
 
 [tool.pytest_env]
-NUMBA_JIT_COVERAGE = 1
 DISPLAY = ":99.0"
 
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
+branch = true
 parallel = true
 concurrency = ["multiprocessing", "thread"]
 
