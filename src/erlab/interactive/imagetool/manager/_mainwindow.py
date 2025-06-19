@@ -187,6 +187,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.rename_action.triggered.connect(self.rename_selected)
         self.rename_action.setToolTip("Rename selected windows")
 
+        self.duplicate_action = QtWidgets.QAction("Duplicate", self)
+        self.duplicate_action.triggered.connect(self.duplicate_selected)
+        self.duplicate_action.setToolTip("Duplicate selected windows")
+
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
@@ -258,9 +262,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
         )
         edit_menu.addAction(self.concat_action)
+        edit_menu.addAction(self.duplicate_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.show_action)
         edit_menu.addAction(self.hide_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.remove_action)
         edit_menu.addAction(self.archive_action)
         edit_menu.addAction(self.unarchive_action)
@@ -656,6 +662,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog.exec()
 
     @QtCore.Slot()
+    def duplicate_selected(self) -> None:
+        """Duplicate selected ImageTool windows."""
+        selected: list[int] = list(self.list_view.selected_tool_indices)
+        self.list_view.deselect_all()
+
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", self.list_view.selectionModel()
+        )
+        for index in selected:
+            new_index = self.duplicate_tool(index)
+
+            qmodelindex = self.list_view._model._row_index(new_index)
+
+            selection_model.select(
+                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+    @QtCore.Slot()
     @QtCore.Slot(bool)
     @QtCore.Slot(bool, bool)
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
@@ -731,6 +756,23 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
         self._tool_wrappers[index].name = new_name
+
+    def duplicate_tool(self, index: int) -> int:
+        """Duplicate the ImageTool window corresponding to the given index.
+
+        Parameters
+        ----------
+        index
+            Index of the ImageTool window to duplicate.
+
+        Returns
+        -------
+        int
+            Index of the newly created ImageTool window.
+        """
+        return self.add_tool(
+            self.get_tool(index).duplicate(_in_manager=True), activate=True
+        )
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""

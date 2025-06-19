@@ -566,6 +566,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction(manager.concat_action)
+        self._menu.addAction(manager.duplicate_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.show_action)
         self._menu.addAction(manager.hide_action)
