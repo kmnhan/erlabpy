@@ -219,6 +219,20 @@ When the manager is running, new data can be opened in the manager by:
 
 ### Additional features
 
+- Replace data in already opened ImageTool windows by supplying the `replace` argument
+  to {func}`itool <erlab.interactive.imagetool.itool>` or
+  {meth}`xarray.DataArray.qshow`.
+
+  ```python
+  data.qshow(manager=True, replace=1)
+  ```
+
+  To replace multiple windows at once:
+
+  ```python
+  eri.itool([data1, data2], manager=True, replace=[1, 2])
+  ```
+
 - Save all ImageTool windows to a file via the `Save Workspace As...` menu item.
 
   The saved windows can be restored later with `Open Workspace...` or by dragging and

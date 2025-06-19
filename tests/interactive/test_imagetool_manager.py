@@ -222,6 +222,29 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = False
 
 
+def test_replace(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    test_data.qshow(manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    # Replace data in the tool
+    test_data2 = test_data.copy() ** 2
+    test_data2.qshow(manager=True, replace=0)
+
+    qtbot.waitSignal(manager.server.sigReplaceRequested, timeout=5000)
+    qtbot.wait(100)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
 def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager = ImageToolManager()
     qtbot.addWidget(manager)

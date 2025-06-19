@@ -32,6 +32,7 @@ __all__ = [
     "is_running",
     "load_in_manager",
     "main",
+    "replace_data",
     "show_in_manager",
 ]
 
@@ -48,6 +49,7 @@ from erlab.interactive.imagetool.manager._server import (
     PORT,
     is_running,
     load_in_manager,
+    replace_data,
     show_in_manager,
 )
 

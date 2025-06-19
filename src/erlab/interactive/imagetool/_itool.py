@@ -19,6 +19,7 @@ def itool(
     link: bool = False,
     link_colors: bool = True,
     manager: bool | None = None,
+    replace: Collection[int] | int | None = None,
     execute: bool | None = None,
     **kwargs,
 ) -> (
@@ -72,7 +73,17 @@ def itool(
         .. versionchanged:: 3.4.0
 
             Argument renamed from ``use_manager`` to ``manager``.
+    replace
+        When using the manager, this argument specifies which existing ImageTool windows
+        should be replaced with the new data. If the manager is not used, this argument
+        is ignored. The argument can be a single integer or a list of integers
+        specifying the indices of the windows to be replaced. The length of the list
+        must match the number of windows ``data`` is expected to create. All indices
+        must be valid indices of existing ImageTool windows.
 
+        If this argument is used, the ``link``, ``link_colors``, and ``kwargs``
+        arguments are ignored, since no new windows are created. The existing windows
+        are updated with the new data.
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
         For more information, see :func:`erlab.interactive.utils.setup_qapp`.
@@ -105,7 +116,8 @@ def itool(
     >>> itool(data, cmap="gray", gamma=0.5)
     >>> itool([data1, data2], link=True)
     """
-    if "use_manager" in kwargs:
+    if "use_manager" in kwargs:  # pragma: no cover
+        # Deprecated argument, remove in future releases
         manager = kwargs.pop("use_manager")
         erlab.utils.misc.emit_user_level_warning(
             "The `use_manager` argument has been renamed to `manager`."
@@ -118,6 +130,7 @@ def itool(
         and erlab.interactive.imagetool.manager.is_running()
         and erlab.interactive.imagetool.manager._manager_instance is not None
     ):
+        # Called from the same process as the manager, using the manager by default
         manager = True
 
     if manager and not erlab.interactive.imagetool.manager.is_running():
@@ -126,9 +139,12 @@ def itool(
         )
 
     if manager:
-        erlab.interactive.imagetool.manager.show_in_manager(
-            data, link=link, link_colors=link_colors, **kwargs
-        )
+        if replace is not None:
+            erlab.interactive.imagetool.manager.replace_data(index=replace, data=data)
+        else:
+            erlab.interactive.imagetool.manager.show_in_manager(
+                data, link=link, link_colors=link_colors, **kwargs
+            )
         return None
 
     data_parsed = _parse_input(data)
@@ -149,7 +165,7 @@ def itool(
         itool_list[-1].activateWindow()
         itool_list[-1].raise_()
 
-    if execute:
+    if execute:  # pragma: no cover
         return None
 
     if len(itool_list) == 1:

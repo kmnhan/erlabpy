@@ -132,6 +132,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
+        self.server.sigReplaceRequested.connect(self._data_replace)
         self.server.start()
 
         # Shared memory for detecting multiple instances
@@ -946,6 +947,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _data_load(
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
+        """Load data from the given files using the specified loader."""
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
@@ -954,6 +956,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             kwargs=kwargs,
             retry_callback=lambda _: self._data_load(paths, loader_name),
         )
+
+    @QtCore.Slot(list, list)
+    def _data_replace(self, data_list: list[xr.DataArray], indices: list[int]) -> None:
+        """Replace data in the ImageTool windows with the given data."""
+        for darr, idx in zip(data_list, indices, strict=True):
+            self.get_tool(idx).slicer_area.set_data(darr)
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
