@@ -1296,12 +1296,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
+        # Save color limits so we may restore them later
+        _cached_levels: tuple[float, float] | None = None
+        if self.levels_locked:
+            _cached_levels = copy.deepcopy(self.levels)
+
         ndim_changed: bool = True
+        cursors_reset: bool = True
         try:
             if hasattr(self, "_array_slicer"):
                 if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
                     ndim_changed = False
-                self._array_slicer.set_array(self._data, reset=True)
+                cursors_reset = self._array_slicer.set_array(self._data, reset=True)
 
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
@@ -1333,6 +1339,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
         self.lock_levels(self.levels_locked)
+        if self.levels_locked and (_cached_levels is not None) and (not cursors_reset):
+            # If the levels were cached, restore them
+            # This is needed if the data was reloaded and the levels were locked
+            self.levels = _cached_levels
 
         self.flush_history()
 

@@ -92,14 +92,23 @@ def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None
     erlab.interactive.imagetool.manager._always_use_socket = False
 
     # Reload data in manager
+    # Choose tool 3
     qmodelindex = manager.list_view._model._row_index(3)
     manager.list_view.selectionModel().select(
         QtCore.QItemSelection(qmodelindex, qmodelindex),
         QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
+
+    # Lock levels to check if they are preserved after reloading
+    manager.get_tool(3).slicer_area.lock_levels(True)
+    manager.get_tool(3).slicer_area.levels = (1.0, 23.0)
+
+    old_state = manager.get_tool(3).slicer_area.state.copy()
     with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
         manager.reload_action.trigger()
     qtbot.wait(100)
+
+    assert manager.get_tool(3).slicer_area.state == old_state
 
     # Clear selection
     select_files([2], deselect=True)
