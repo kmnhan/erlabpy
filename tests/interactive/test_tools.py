@@ -23,7 +23,7 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
-    with qtbot.waitSignal(win.fitter.sigFinished):
+    with qtbot.wait_signal(win.fitter.sigFinished):
         win.params_edge.widgets["go"].click()
 
     def check_generated_code(w: GoldTool) -> None:
