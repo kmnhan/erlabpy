@@ -14,16 +14,16 @@ def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None
     manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.add_widget(manager)
 
-    # Initialize data explorer
-    manager.ensure_explorer_initialized()
-    assert hasattr(manager, "explorer")
-    explorer: _DataExplorer = manager.explorer
-
     # Set the recent directory and name filter
     manager._recent_directory = str(example_data_dir)
     manager._recent_name_filter = next(
         iter(erlab.io.loaders["example"].file_dialog_methods.keys())
     )
+
+    # Initialize data explorer
+    manager.ensure_explorer_initialized()
+    assert hasattr(manager, "explorer")
+    explorer: _DataExplorer = manager.explorer
 
     # Show data explorer
     manager.show_explorer()
