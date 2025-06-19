@@ -1305,8 +1305,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # self.refresh_current()
         self.refresh_colormap()
+
+        # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
-        self.lock_levels(False)
+        self.lock_levels(self.levels_locked)
+
         self.flush_history()
 
     @property
@@ -1948,11 +1951,6 @@ class ItoolCursorLine(pg.InfiniteLine):
             super().hoverEvent(ev)
         else:
             self.setMouseHover(False)
-
-    def _computeBoundingRect(self):
-        """CursorLine debugging."""
-        _ = self.getViewBox().size()
-        return super()._computeBoundingRect()
 
 
 class ItoolCursorSpan(pg.LinearRegionItem):
