@@ -1043,11 +1043,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.explorer = _DataExplorer(
                 root_path=self._recent_directory, loader_name=self._recent_loader_name
             )
-        else:
-            if self._recent_directory is not None:
-                self.explorer._fs_model.set_root_path(self._recent_directory)
-            if self._recent_loader_name is not None:
-                self.explorer._loader_combo.setCurrentText(self._recent_loader_name)
 
     @QtCore.Slot()
     def show_explorer(self) -> None:
