@@ -885,7 +885,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @levels.setter
     def levels(self, levels: tuple[float, float]) -> None:
-        self._colorbar.cb.setSpanRegion(levels)
+        self._colorbar.cb.setSpanRegion(
+            (
+                max(levels[0], self.array_slicer.nanmin),
+                min(levels[1], self.array_slicer.nanmax),
+            )
+        )
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
@@ -2576,14 +2581,23 @@ class ItoolPlotItem(pg.PlotItem):
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
             data = self.current_data
+
+            color_props = self.slicer_area.colormap_properties
+            itool_kw: dict[str, typing.Any] = {
+                "data": data,
+                "cmap": color_props["cmap"],
+                "gamma": color_props["gamma"],
+                "high_contrast": color_props["high_contrast"],
+                "zero_centered": color_props["zero_centered"],
+                "transpose": (data.dims != self.axis_dims),
+                "file_path": self.slicer_area._file_path,
+                "execute": False,
+            }
+            if color_props["levels_locked"]:
+                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+
             tool = typing.cast(
-                "QtWidgets.QWidget | None",
-                erlab.interactive.itool(
-                    data,
-                    transpose=(data.dims != self.axis_dims),
-                    file_path=self.slicer_area._file_path,
-                    execute=False,
-                ),
+                "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
