@@ -236,8 +236,11 @@ def test_manager_replace(qtbot, test_data) -> None:
     test_data2 = test_data.copy() ** 2
     test_data2.qshow(manager=True, replace=0)
 
-    qtbot.waitSignal(manager.server.sigReplaceRequested, timeout=5000)
-    qtbot.wait(100)
+    # Open a new tool with the manager. This ensures that the replace is finished since
+    # the server can only handle one request at a time
+    test_data.qshow(manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
     assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
 
     manager.remove_all_tools()
