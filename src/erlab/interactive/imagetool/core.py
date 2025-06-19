@@ -463,9 +463,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Default colormap of the data.
     gamma
         Default power law normalization of the colormap.
+    high_contrast
+        If `True`, the colormap is displayed in high contrast mode. This changes the
+        behavior of the exponent scaling of the colormap. See
+        :mod:`erlab.plotting.colors` for a detailed explanation of the difference.
     zero_centered
         If `True`, the normalization is applied symmetrically from the midpoint of the
         colormap.
+    vmin
+        Minimum value of the colormap.
+    vmax
+        Maximum value of the colormap.
     rad2deg
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
@@ -564,7 +572,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
+        high_contrast: bool = False,
         zero_centered: bool = False,
+        vmin: float | None = None,
+        vmax: float | None = None,
         rad2deg: bool | Iterable[str] = False,
         *,
         transpose: bool = False,
@@ -724,8 +735,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
+        self.high_contrast_act.setChecked(high_contrast)
         self.reverse_act.setChecked(cmap_reversed)
         self.zero_centered_act.setChecked(zero_centered)
+
+        if vmin is not None or vmax is not None:
+            if vmin is None:
+                vmin = self.array_slicer.nanmin
+            if vmax is None:
+                vmax = self.array_slicer.nanmax
+            self.set_colormap(levels_locked=True, levels=(vmin, vmax))
 
         if state is not None:
             self.state = state
