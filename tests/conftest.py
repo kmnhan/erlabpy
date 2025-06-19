@@ -360,20 +360,20 @@ def cover_qthreadpool(monkeypatch, qtbot):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2435049275
     from qtpy.QtCore import QThreadPool
 
-    base_constructor = QThreadPool.globalInstance().start
+    base_start = QThreadPool.start
 
-    def run_with_trace(self):  # pragma: no cover
+    def start_with_trace(self, runnable, *args, **kwargs):
         if "coverage" in sys.modules:
-            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-            sys.settrace(threading._trace_hook)
-        self._base_run()
+            original_run = runnable.run
 
-    def _start(worker, *args, **kwargs):
-        worker._base_run = worker.run
-        worker.run = functools.partial(run_with_trace, worker)
-        return base_constructor(worker, *args, **kwargs)
+            def wrapped_run(*a, **kw):
+                sys.settrace(threading._trace_hook)
+                return original_run(*a, **kw)
 
-    monkeypatch.setattr(QThreadPool.globalInstance(), "start", _start)
+            runnable.run = wrapped_run
+        return base_start(self, runnable, *args, **kwargs)
+
+    monkeypatch.setattr(QThreadPool, "start", start_with_trace)
 
 
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
