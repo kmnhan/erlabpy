@@ -11,6 +11,7 @@ import fnmatch
 import inspect
 import itertools
 import keyword
+import os
 import pathlib
 import re
 import sys
@@ -29,7 +30,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    import os
     from collections.abc import Callable, Collection, Iterator, Mapping
 
     import pyperclip
@@ -585,6 +585,10 @@ def save_fit_ui(
     dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
     dialog.setDefaultSuffix("nc")
 
+    if os.environ.get("PYTEST_VERSION") is not None:
+        # If running in pytest, do not use native file dialog
+        dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
     recent_dir: str = erlab.interactive.imagetool.manager._get_recent_directory()
     if recent_dir:
         dialog.setDirectory(recent_dir)
@@ -625,6 +629,10 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
     dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
     dialog.setDefaultSuffix("nc")
+
+    if os.environ.get("PYTEST_VERSION") is not None:
+        # If running in pytest, do not use native file dialog
+        dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
     if dialog.exec():
         file_name: str = dialog.selectedFiles()[0]

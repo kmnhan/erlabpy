@@ -247,8 +247,9 @@ DISPLAY = ":99.0"
 source = ["src"]
 omit = ["*/_deprecated/*"]
 branch = false
-parallel = true
 concurrency = ["multiprocessing", "thread"]
+parallel = true
+sigterm = true
 
 [tool.coverage.report]
 exclude_also = [

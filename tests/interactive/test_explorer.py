@@ -9,7 +9,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.explorer import _DataExplorer
 
 
-def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
+def test_explorer_general(
+    qtbot, example_loader, example_data_dir: pathlib.Path
+) -> None:
     erlab.interactive.imagetool.manager.main(execute=False)
     manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.add_widget(manager)
@@ -71,24 +73,35 @@ def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None
 
     # Multiple selection
     select_files([2, 3, 4])
+    assert (
+        len(explorer._tree_view.selectedIndexes())
+        == 3 * explorer._tree_view.model().columnCount()
+    )
 
     # Show multiple in manager
     explorer.to_manager()
+
+    # Wait until the manager has updated
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=20000)
 
     # Clear selection
     select_files([2, 3, 4], deselect=True)
 
     # Single selection
     select_files([2])
+    assert (
+        len(explorer._tree_view.selectedIndexes())
+        == explorer._tree_view.model().columnCount()
+    )
 
     # Show single in manager
     explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 4)
+    qtbot.wait_until(lambda: manager.ntools == 4, timeout=20000)
 
     # Show single in manager with socket
     erlab.interactive.imagetool.manager._always_use_socket = True
     explorer.to_manager()
-    qtbot.wait_until(lambda: manager.ntools == 5)
+    qtbot.wait_until(lambda: manager.ntools == 5, timeout=20000)
     erlab.interactive.imagetool.manager._always_use_socket = False
 
     # Reload data in manager
@@ -104,9 +117,10 @@ def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None
     manager.get_tool(3).slicer_area.levels = (1.0, 23.0)
 
     old_state = manager.get_tool(3).slicer_area.state.copy()
+
     with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
         manager.reload_action.trigger()
-    qtbot.wait(100)
+    qtbot.wait(200)
 
     assert manager.get_tool(3).slicer_area.state == old_state
 
@@ -131,8 +145,5 @@ def test_explorer(qtbot, example_loader, example_data_dir: pathlib.Path) -> None
     # Close imagetool manager
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
-    manager.close()
-    erlab.interactive.imagetool.manager._manager_instance = None
-
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None

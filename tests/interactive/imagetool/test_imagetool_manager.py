@@ -233,10 +233,9 @@ def test_manager_replace(qtbot, test_data) -> None:
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Replace data in the tool
-    itool(test_data**2, manager=True, replace=0)
+    with qtbot.wait_signal(manager._sigDataReplaced):
+        itool(test_data**2, manager=True, replace=0)
 
-    qtbot.wait_signal(manager._sigDataReplaced, timeout=5000)
-    qtbot.wait(200)
     assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
 
     manager.remove_all_tools()
