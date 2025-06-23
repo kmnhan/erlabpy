@@ -10,6 +10,7 @@ __all__ = [
     "show_in_manager",
 ]
 
+import concurrent.futures
 import contextlib
 import errno
 import logging
@@ -146,17 +147,17 @@ class _ManagerServer(QtCore.QThread):
             soc.listen()
             logger.info("Server is listening...")
 
-            while not self.stopped.is_set():
-                try:
-                    conn, _ = soc.accept()
-                except Exception:
-                    logger.exception("Unexpected error while accepting connection")
-                    continue
-                else:
-                    logger.debug("Connection accepted")
-                    threading.Thread(
-                        target=self._handle_client, args=(conn,), daemon=True
-                    ).start()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                while not self.stopped.is_set():
+                    try:
+                        conn, addr = soc.accept()
+                        logger.debug("Connection accepted from %s", addr)
+                    except Exception:
+                        logger.exception("Unexpected error while accepting connection")
+                        continue
+                    else:
+                        logger.debug("Connection accepted")
+                        executor.submit(self._handle_client, conn)
         except Exception:
             logger.exception("Server encountered an error")
         finally:

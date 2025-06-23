@@ -127,6 +127,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     sigLinkersChanged = QtCore.Signal()  #: :meta private:
     _sigReloadLinkers = QtCore.Signal()  #: Emitted when linker state needs refreshing
 
+    _sigDataReplaced = QtCore.Signal()  #: :meta private:
+    # Signal emitted when data is replaced in the manager, for testing purposes.
+
     def __init__(self) -> None:
         super().__init__()
         self.server: _ManagerServer = _ManagerServer()
@@ -1004,6 +1007,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Replace data in the ImageTool windows with the given data."""
         for darr, idx in zip(data_list, indices, strict=True):
             self.get_tool(idx).slicer_area.set_data(darr)
+        self._sigDataReplaced.emit()
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""

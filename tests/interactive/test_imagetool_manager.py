@@ -228,19 +228,15 @@ def test_manager_replace(qtbot, test_data) -> None:
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
     # Open a tool with the manager
-    test_data.qshow(manager=True)
+    itool(test_data, manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
 
     # Replace data in the tool
-    test_data2 = test_data.copy() ** 2
-    test_data2.qshow(manager=True, replace=0)
+    itool(test_data**2, manager=True, replace=0)
 
-    # Open a new tool with the manager. This ensures that the replace is finished since
-    # the server can only handle one request at a time
-    test_data.qshow(manager=True)
-    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-
+    qtbot.wait_signal(manager._sigDataReplaced, timeout=5000)
+    qtbot.wait(200)
     assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
 
     manager.remove_all_tools()
