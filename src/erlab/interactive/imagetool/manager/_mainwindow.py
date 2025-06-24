@@ -1295,6 +1295,37 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
+    def _cleanup(self) -> None:
+        """Perform cleanup tasks when the manager is closed."""
+        # Remove all ImageTool windows
+        self.remove_all_tools()
+
+        for widget in dict(self._additional_windows).values():
+            widget.close()
+
+        # Cleanup event filter
+        # This is just a precaution since the filter appeared in segfault tracebacks
+        self.text_box.removeEventFilter(self._kb_filter)
+
+        if hasattr(self, "console"):
+            self.console.close()
+
+        if hasattr(self, "explorer"):
+            self.explorer.close()
+
+        # Clean up temporary directory
+        self._tmp_dir.cleanup()
+
+        # Stop the server
+        if self.server.isRunning():
+            self.server.stopped.set()
+            _ping_server()
+            self.server.wait()
+
+    def __del__(self):
+        """Ensure proper cleanup of resources when the manager is deleted."""
+        self._cleanup()
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         if self.ntools != 0:
@@ -1317,28 +1348,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-            for tool in list(self._tool_wrappers.keys()):
-                self.remove_tool(tool)
-
-        for widget in dict(self._additional_windows).values():
-            widget.close()
-
-        # Cleanup event filter
-        # This is just a precaution since the filter appeared in segfault tracebacks
-        self.text_box.removeEventFilter(self._kb_filter)
-
-        if hasattr(self, "console"):
-            self.console.close()
-
-        if hasattr(self, "explorer"):
-            self.explorer.close()
-
-        # Clean up temporary directory
-        self._tmp_dir.cleanup()
-
-        # Stop the server
-        self.server.stopped.set()
-        _ping_server()
-        self.server.wait()
+        self._cleanup()
 
         super().closeEvent(event)
