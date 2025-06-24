@@ -40,16 +40,17 @@ _SETSCALE_PATTERN = re.compile(r"SetScale\s*((?:/I)|(?:/P))?(.*)")
 class IgorBackendEntrypoint(BackendEntrypoint):
     """Backend for Igor Pro files.
 
-    It can open ".pxt", ".pxp", and ".ibw" files using the `igor2` library.
+    This backend supports ".pxt", ".pxp", and ".ibw" files through `igor2
+    <https://github.com/AFM-analysis/igor2>`_.
 
-    It also supports loading HDF5 files exported from Igor Pro.
+    Partial support for Igor Pro text files (`.itx`) is also provided, allowing loading
+    `.itx` files that contain a single wave and well-defined ``SetScale`` commands.
 
-    For more information about the underlying library, visit:
-    https://github.com/AFM-analysis/igor2
+    HDF5 files exported from Igor Pro are also partially supported.
 
     """
 
-    description = "Open Igor Pro files (.pxt, .pxp and .ibw) in Xarray"
+    description = "Open Igor Pro files (.pxt, .pxp, .ibw, and .itx) in Xarray"
     url = "https://erlabpy.readthedocs.io/en/stable/generated/erlab.io.igor.html"
 
     def open_dataset(
@@ -68,7 +69,7 @@ class IgorBackendEntrypoint(BackendEntrypoint):
     def guess_can_open(self, filename_or_obj) -> bool:
         if isinstance(filename_or_obj, str | os.PathLike):
             _, ext = os.path.splitext(filename_or_obj)
-            return ext in {".pxt", ".pxp", ".ibw"}
+            return ext in {".pxt", ".pxp", ".ibw", ".itx"}
         return False
 
     def open_datatree(
@@ -99,15 +100,22 @@ def _open_igor_ds(
     recursive: bool = False,
 ) -> xr.Dataset:
     ext = os.path.splitext(filename)[-1]
-    if ext.casefold() in {".pxp", ".pxt"}:
-        if isinstance(drop_variables, str):
-            drop_variables = [drop_variables]
-        return load_experiment(filename, ignore=drop_variables, recursive=recursive)
 
-    if ext.casefold() == ".ibw":
-        ds = load_wave(filename).to_dataset()
-    else:
-        ds = load_igor_hdf5(filename)
+    match ext.casefold():
+        case ".pxp" | ".pxt":
+            if isinstance(drop_variables, str):
+                drop_variables = [drop_variables]
+            return load_experiment(
+                filename,
+                ignore=drop_variables,
+                recursive=recursive,
+            )
+        case ".itx":
+            ds = load_text(filename).to_dataset()
+        case ".ibw":
+            ds = load_wave(filename).to_dataset()
+        case _:
+            ds = load_igor_hdf5(filename)
 
     if drop_variables is not None:
         ds = ds.drop_vars(drop_variables)
@@ -588,7 +596,7 @@ def load_text(
         else:
             arr = arr.reshape(shape)
 
-    darr = xr.DataArray(arr, name=wave_name, attrs=comments)
+    darr = xr.DataArray(arr, name=wave_name.strip(), attrs=comments)
 
     for setscale_line in setscale_lines:
         darr = _parse_setscale(darr, setscale_line)
