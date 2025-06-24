@@ -1323,6 +1323,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for widget in dict(self._additional_windows).values():
             widget.close()
 
+        # Cleanup event filter
+        # This is just a precaution since the filter appeared in segfault tracebacks
+        self.text_box.removeEventFilter(self._kb_filter)
+
         if hasattr(self, "console"):
             self.console.close()
 
