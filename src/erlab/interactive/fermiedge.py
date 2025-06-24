@@ -59,7 +59,7 @@ class EdgeFitter(QtCore.QThread):
     sigFinished = QtCore.Signal()
 
     def set_params(self, data, x0, y0, x1, y1, params) -> None:
-        self.data = data
+        self.data = data.copy()
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
