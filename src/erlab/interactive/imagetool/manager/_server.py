@@ -137,27 +137,32 @@ class _ManagerServer(QtCore.QThread):
 
     def run(self) -> None:
         self.stopped.clear()
-
         logger.debug("Starting server...")
+
         soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
         try:
             soc.bind(("127.0.0.1", PORT))
-            soc.setblocking(True)
             soc.listen()
             logger.info("Server is listening...")
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 while not self.stopped.is_set():
                     try:
+                        soc.settimeout(1.0)
                         conn, addr = soc.accept()
                         logger.debug("Connection accepted from %s", addr)
-                    except Exception:
-                        logger.exception("Unexpected error while accepting connection")
-                        continue
-                    else:
-                        logger.debug("Connection accepted")
                         executor.submit(self._handle_client, conn)
+                    except TimeoutError:
+                        # Timeout occurred, continue to accept new connections
+                        continue
+                    except Exception:
+                        if not self.stopped.is_set():
+                            logger.exception(
+                                "Unexpected error while accepting connection"
+                            )
+                        break
         except Exception:
             logger.exception("Server encountered an error")
         finally:
