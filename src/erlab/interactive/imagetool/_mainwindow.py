@@ -177,6 +177,28 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
 
+    def duplicate(self, **kwargs) -> typing.Self:
+        """Create a duplicate of the current ImageTool window.
+
+        This method creates a new instance of the ImageTool with the same data and state
+        as the current one.
+
+        Parameters
+        ----------
+        kwargs
+            Additional keyword arguments passed to the constructor of the new ImageTool.
+
+        Returns
+        -------
+        tool
+            The duplicated ImageTool window.
+
+        """
+        kwargs["state"] = self.slicer_area.state.copy()
+        new_tool = self.__class__(self.slicer_area._data.copy(), **kwargs)
+        new_tool.setGeometry(self.geometry())
+        return new_tool
+
     @QtCore.Slot()
     def move_to_manager(self) -> None:
         from erlab.interactive.imagetool.manager import show_in_manager

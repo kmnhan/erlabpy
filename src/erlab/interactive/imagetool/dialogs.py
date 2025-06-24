@@ -15,7 +15,7 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
-    from erlab.interactive.imagetool.core import ImageSlicerArea
+    from erlab.interactive.imagetool.core import ColorMapState, ImageSlicerArea
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -134,10 +134,22 @@ class DataTransformDialog(_DataManipulationDialog):
     - Override attributes `prefix` and `suffix` to set the prefix and suffix of the new
       data name.
 
+    - Override attribute `keep_colors` and `keep_color_limits` to control which
+      color-related settings are migrated when opening in a new window.
+
     """
 
     prefix: str = ""
     suffix: str = ""
+
+    keep_colors: bool = True
+    """Whether to keep the color settings when opening in a new window.
+
+    If True, the same colormap and normalization is used in the new window.
+    """
+
+    keep_color_limits: bool = True
+    """Whether to also keep manual color limits when opening in a new window."""
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
@@ -164,7 +176,23 @@ class DataTransformDialog(_DataManipulationDialog):
             ).rename(new_name)
 
             if self.new_window_check.isChecked():
-                erlab.interactive.itool(processed, execute=False)
+                itool_kw: dict[str, typing.Any] = {
+                    "data": processed,
+                    "execute": False,
+                }
+
+                if self.keep_colors:
+                    color_props: ColorMapState = self.slicer_area.colormap_properties
+
+                    itool_kw["cmap"] = color_props["cmap"]
+                    itool_kw["gamma"] = color_props["gamma"]
+                    itool_kw["high_contrast"] = color_props["high_contrast"]
+                    itool_kw["zero_centered"] = color_props["zero_centered"]
+
+                    if color_props["levels_locked"] and self.keep_color_limits:
+                        itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+
+                erlab.interactive.itool(**itool_kw)
             else:
                 self.slicer_area.set_data(processed)
 

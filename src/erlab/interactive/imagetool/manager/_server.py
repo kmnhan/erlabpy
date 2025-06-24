@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
-__all__ = ["PORT", "is_running", "load_in_manager", "show_in_manager"]
+__all__ = [
+    "PORT",
+    "is_running",
+    "load_in_manager",
+    "replace_data",
+    "show_in_manager",
+]
 
+import concurrent.futures
 import contextlib
 import errno
 import logging
@@ -24,7 +31,7 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterable
 
     import numpy.typing as npt
 
@@ -60,6 +67,7 @@ def _recv_all(conn, size):
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
     sigLoadRequested = QtCore.Signal(list, str, dict)
+    sigReplaceRequested = QtCore.Signal(list, list)
 
     def __init__(self) -> None:
         super().__init__()
@@ -93,11 +101,21 @@ class _ManagerServer(QtCore.QThread):
                 files = kwargs.pop("__filename")
                 loader_name = kwargs.pop("__loader_name", None)
 
+                # If key "__replace_idxs" is present, replaces data in existing tools
+                # instead of adding new ones. Other kwargs are ignored.
+
+                replace_index_list = kwargs.pop("__replace_idxs", None)
+
                 if loader_name is not None:
                     self.sigLoadRequested.emit(files, loader_name, kwargs)
                     logger.debug("Emitted file and loader info")
                 else:
-                    self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
+                    if replace_index_list:
+                        self.sigReplaceRequested.emit(
+                            [_load_pickle(f) for f in files], replace_index_list
+                        )
+                    else:
+                        self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
                     logger.debug("Emitted loaded data")
                     # Clean up temporary files
                     for f in files:
@@ -119,27 +137,32 @@ class _ManagerServer(QtCore.QThread):
 
     def run(self) -> None:
         self.stopped.clear()
-
         logger.debug("Starting server...")
+
         soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
         try:
             soc.bind(("127.0.0.1", PORT))
-            soc.setblocking(True)
             soc.listen()
             logger.info("Server is listening...")
 
-            while not self.stopped.is_set():
-                try:
-                    conn, _ = soc.accept()
-                except Exception:
-                    logger.exception("Unexpected error while accepting connection")
-                    continue
-                else:
-                    logger.debug("Connection accepted")
-                    threading.Thread(
-                        target=self._handle_client, args=(conn,), daemon=True
-                    ).start()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                while not self.stopped.is_set():
+                    try:
+                        soc.settimeout(1.0)
+                        conn, addr = soc.accept()
+                        logger.debug("Connection accepted from %s", addr)
+                        executor.submit(self._handle_client, conn)
+                    except TimeoutError:
+                        # Timeout occurred, continue to accept new connections
+                        continue
+                    except Exception:
+                        if not self.stopped.is_set():
+                            logger.exception(
+                                "Unexpected error while accepting connection"
+                            )
+                        break
         except Exception:
             logger.exception("Server encountered an error")
         finally:
@@ -205,7 +228,7 @@ def is_running() -> bool:
 
 
 def load_in_manager(
-    paths: typing.Iterable[str | os.PathLike], loader_name: str, **load_kwargs
+    paths: Iterable[str | os.PathLike], loader_name: str, **load_kwargs
 ) -> None:
     """Load and display data in the ImageToolManager.
 
@@ -317,3 +340,40 @@ def show_in_manager(
     kwargs["__filename"] = files
 
     _send_dict(kwargs)
+
+
+def replace_data(
+    index: int | Collection[int],
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+) -> None:
+    """Replace data in existing ImageTool windows.
+
+    Parameters
+    ----------
+    index
+        Index or indices of the ImageTool windows to replace data in. If ``data``
+        corresponds to a single ImageTool window, for instance a single DataArray,
+        ``index`` is allowed to be a single integer. If ``data`` corresponds to multiple
+        ImageTool windows, for instance a list of DataArrays, ``index`` must be a list
+        of integers with the same length as ``data``. All indices must be valid
+        indices of existing ImageTool windows.
+    data
+        Data to replace the existing data in the ImageTool windows. See :func:`itool
+        <erlab.interactive.imagetool.itool>` for more information.
+    """
+    data_list = erlab.interactive.imagetool.core._parse_input(data)
+
+    if isinstance(index, int):
+        index = [index]
+
+    if len(data_list) != len(index):
+        raise ValueError(
+            f"Mismatch between number of data ({len(data_list)}) "
+            f"and provided indices ({len(index)})"
+        )
+
+    show_in_manager(data_list, __replace_idxs=index)

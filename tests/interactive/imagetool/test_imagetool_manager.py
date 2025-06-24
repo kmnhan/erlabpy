@@ -222,6 +222,53 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = False
 
 
+def test_manager_replace(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool(test_data, manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    # Replace data in the tool
+    with qtbot.wait_signal(manager._sigDataReplaced):
+        itool(test_data**2, manager=True, replace=0)
+
+    assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
+def test_manager_duplicate(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool([test_data, test_data], manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+    select_tools(manager, [0, 1])
+    manager.duplicate_selected()
+    qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+    # Check if the duplicated tools have the same data
+    for i in range(2):
+        original_tool = manager.get_tool(i)
+        duplicated_tool = manager.get_tool(i + 2)
+
+        assert original_tool.slicer_area._data.equals(duplicated_tool.slicer_area._data)
+        assert manager._tool_wrappers[i].name == manager._tool_wrappers[i + 2].name
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
 def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
     manager = ImageToolManager()
     qtbot.addWidget(manager)

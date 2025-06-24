@@ -127,11 +127,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
     sigLinkersChanged = QtCore.Signal()  #: :meta private:
     _sigReloadLinkers = QtCore.Signal()  #: Emitted when linker state needs refreshing
 
+    _sigDataReplaced = QtCore.Signal()  #: :meta private:
+    # Signal emitted when data is replaced in the manager, for testing purposes.
+
     def __init__(self) -> None:
         super().__init__()
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
+        self.server.sigReplaceRequested.connect(self._data_replace)
         self.server.start()
 
         # Shared memory for detecting multiple instances
@@ -185,6 +189,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.rename_action = QtWidgets.QAction("Rename", self)
         self.rename_action.triggered.connect(self.rename_selected)
         self.rename_action.setToolTip("Rename selected windows")
+
+        self.duplicate_action = QtWidgets.QAction("Duplicate", self)
+        self.duplicate_action.triggered.connect(self.duplicate_selected)
+        self.duplicate_action.setToolTip("Duplicate selected windows")
 
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
@@ -257,9 +265,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
         )
         edit_menu.addAction(self.concat_action)
+        edit_menu.addAction(self.duplicate_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.show_action)
         edit_menu.addAction(self.hide_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.remove_action)
         edit_menu.addAction(self.archive_action)
         edit_menu.addAction(self.unarchive_action)
@@ -655,6 +665,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog.exec()
 
     @QtCore.Slot()
+    def duplicate_selected(self) -> None:
+        """Duplicate selected ImageTool windows."""
+        selected: list[int] = list(self.list_view.selected_tool_indices)
+        self.list_view.deselect_all()
+
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", self.list_view.selectionModel()
+        )
+        for index in selected:
+            new_index = self.duplicate_tool(index)
+
+            qmodelindex = self.list_view._model._row_index(new_index)
+
+            selection_model.select(
+                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+    @QtCore.Slot()
     @QtCore.Slot(bool)
     @QtCore.Slot(bool, bool)
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
@@ -730,6 +759,23 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
         self._tool_wrappers[index].name = new_name
+
+    def duplicate_tool(self, index: int) -> int:
+        """Duplicate the ImageTool window corresponding to the given index.
+
+        Parameters
+        ----------
+        index
+            Index of the ImageTool window to duplicate.
+
+        Returns
+        -------
+        int
+            Index of the newly created ImageTool window.
+        """
+        return self.add_tool(
+            self.get_tool(index).duplicate(_in_manager=True), activate=True
+        )
 
     def link_tools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
@@ -946,6 +992,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _data_load(
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
+        """Load data from the given files using the specified loader."""
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
@@ -954,6 +1001,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             kwargs=kwargs,
             retry_callback=lambda _: self._data_load(paths, loader_name),
         )
+
+    @QtCore.Slot(list, list)
+    def _data_replace(self, data_list: list[xr.DataArray], indices: list[int]) -> None:
+        """Replace data in the ImageTool windows with the given data."""
+        for darr, idx in zip(data_list, indices, strict=True):
+            self.get_tool(idx).slicer_area.set_data(darr)
+        self._sigDataReplaced.emit()
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
@@ -993,11 +1047,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.explorer = _DataExplorer(
                 root_path=self._recent_directory, loader_name=self._recent_loader_name
             )
-        else:
-            if self._recent_directory is not None:
-                self.explorer._fs_model.set_root_path(self._recent_directory)
-            if self._recent_loader_name is not None:
-                self.explorer._loader_combo.setCurrentText(self._recent_loader_name)
 
     @QtCore.Slot()
     def show_explorer(self) -> None:
@@ -1246,6 +1295,37 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
+    def _cleanup(self) -> None:
+        """Perform cleanup tasks when the manager is closed."""
+        # Remove all ImageTool windows
+        self.remove_all_tools()
+
+        for widget in dict(self._additional_windows).values():
+            widget.close()
+
+        # Cleanup event filter
+        # This is just a precaution since the filter appeared in segfault tracebacks
+        self.text_box.removeEventFilter(self._kb_filter)
+
+        if hasattr(self, "console"):
+            self.console.close()
+
+        if hasattr(self, "explorer"):
+            self.explorer.close()
+
+        # Clean up temporary directory
+        self._tmp_dir.cleanup()
+
+        # Stop the server
+        if self.server.isRunning():
+            self.server.stopped.set()
+            _ping_server()
+            self.server.wait()
+
+    def __del__(self):
+        """Ensure proper cleanup of resources when the manager is deleted."""
+        self._cleanup()
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         if self.ntools != 0:
@@ -1268,24 +1348,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-            for tool in list(self._tool_wrappers.keys()):
-                self.remove_tool(tool)
-
-        for widget in dict(self._additional_windows).values():
-            widget.close()
-
-        if hasattr(self, "console"):
-            self.console.close()
-
-        if hasattr(self, "explorer"):
-            self.explorer.close()
-
-        # Clean up temporary directory
-        self._tmp_dir.cleanup()
-
-        # Stop the server
-        self.server.stopped.set()
-        _ping_server()
-        self.server.wait()
+        self._cleanup()
 
         super().closeEvent(event)

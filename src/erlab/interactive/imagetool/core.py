@@ -463,9 +463,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Default colormap of the data.
     gamma
         Default power law normalization of the colormap.
+    high_contrast
+        If `True`, the colormap is displayed in high contrast mode. This changes the
+        behavior of the exponent scaling of the colormap. See
+        :mod:`erlab.plotting.colors` for a detailed explanation of the difference.
     zero_centered
         If `True`, the normalization is applied symmetrically from the midpoint of the
         colormap.
+    vmin
+        Minimum value of the colormap.
+    vmax
+        Maximum value of the colormap.
     rad2deg
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
@@ -564,7 +572,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
+        high_contrast: bool = False,
         zero_centered: bool = False,
+        vmin: float | None = None,
+        vmax: float | None = None,
         rad2deg: bool | Iterable[str] = False,
         *,
         transpose: bool = False,
@@ -724,8 +735,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
+        self.high_contrast_act.setChecked(high_contrast)
         self.reverse_act.setChecked(cmap_reversed)
         self.zero_centered_act.setChecked(zero_centered)
+
+        if vmin is not None or vmax is not None:
+            if vmin is None:
+                vmin = self.array_slicer.nanmin
+            if vmax is None:
+                vmax = self.array_slicer.nanmax
+            self.set_colormap(levels_locked=True, levels=(vmin, vmax))
 
         if state is not None:
             self.state = state
@@ -866,7 +885,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @levels.setter
     def levels(self, levels: tuple[float, float]) -> None:
-        self._colorbar.cb.setSpanRegion(levels)
+        self._colorbar.cb.setSpanRegion(
+            (
+                max(levels[0], self.array_slicer.nanmin),
+                min(levels[1], self.array_slicer.nanmax),
+            )
+        )
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
@@ -1272,12 +1296,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
+        # Save color limits so we may restore them later
+        _cached_levels: tuple[float, float] | None = None
+        if self.levels_locked:
+            _cached_levels = copy.deepcopy(self.levels)
+
         ndim_changed: bool = True
+        cursors_reset: bool = True
         try:
             if hasattr(self, "_array_slicer"):
                 if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
                     ndim_changed = False
-                self._array_slicer.set_array(self._data, reset=True)
+                cursors_reset = self._array_slicer.set_array(self._data, reset=True)
 
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
@@ -1305,8 +1335,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # self.refresh_current()
         self.refresh_colormap()
+
+        # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
-        self.lock_levels(False)
+        self.lock_levels(self.levels_locked)
+        if self.levels_locked and (_cached_levels is not None) and (not cursors_reset):
+            # If the levels were cached, restore them
+            # This is needed if the data was reloaded and the levels were locked
+            self.levels = _cached_levels
+
         self.flush_history()
 
     @property
@@ -1949,11 +1986,6 @@ class ItoolCursorLine(pg.InfiniteLine):
         else:
             self.setMouseHover(False)
 
-    def _computeBoundingRect(self):
-        """CursorLine debugging."""
-        _ = self.getViewBox().size()
-        return super()._computeBoundingRect()
-
 
 class ItoolCursorSpan(pg.LinearRegionItem):
     def __init__(self, *args, **kargs) -> None:
@@ -2559,14 +2591,23 @@ class ItoolPlotItem(pg.PlotItem):
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
             data = self.current_data
+
+            color_props = self.slicer_area.colormap_properties
+            itool_kw: dict[str, typing.Any] = {
+                "data": data,
+                "cmap": color_props["cmap"],
+                "gamma": color_props["gamma"],
+                "high_contrast": color_props["high_contrast"],
+                "zero_centered": color_props["zero_centered"],
+                "transpose": (data.dims != self.axis_dims),
+                "file_path": self.slicer_area._file_path,
+                "execute": False,
+            }
+            if color_props["levels_locked"]:
+                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+
             tool = typing.cast(
-                "QtWidgets.QWidget | None",
-                erlab.interactive.itool(
-                    data,
-                    transpose=(data.dims != self.axis_dims),
-                    file_path=self.slicer_area._file_path,
-                    execute=False,
-                ),
+                "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)

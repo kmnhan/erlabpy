@@ -202,7 +202,7 @@ class ArraySlicer(QtCore.QObject):
 
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
-    ) -> None:
+    ) -> bool:
         """Set the DataArray object to be sliced.
 
         Parameters
@@ -216,6 +216,10 @@ class ArraySlicer(QtCore.QObject):
         reset
             If True, reset cursors, bins, indices, and values.
 
+        Returns
+        -------
+        bool
+            True if the cursors were reset, False if only the data was updated.
         """
         obj_original: xr.DataArray | None = None
         if hasattr(self, "_obj"):
@@ -254,6 +258,7 @@ class ArraySlicer(QtCore.QObject):
             ]
             self._twin_coord_names = set()
             self.snap_to_data = False
+        return reset
 
     @functools.cached_property
     def associated_coords(

@@ -241,14 +241,15 @@ xfail_strict = true
 filterwarnings = ["always"]
 
 [tool.pytest_env]
-NUMBA_JIT_COVERAGE = 1
 DISPLAY = ":99.0"
 
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
-parallel = true
+branch = false
 concurrency = ["multiprocessing", "thread"]
+parallel = true
+sigterm = true
 
 [tool.coverage.report]
 exclude_also = [
