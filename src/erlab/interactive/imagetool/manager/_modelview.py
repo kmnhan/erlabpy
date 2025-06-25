@@ -318,6 +318,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         return super().eventFilter(obj, event)
 
+    def _cleanup_filter(self) -> None:
+        """Remove the event filter from the viewport."""
+        viewport = typing.cast("_ImageToolWrapperListView", self.parent()).viewport()
+        if viewport is not None:
+            viewport.removeEventFilter(self)
+
 
 class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
     def __init__(self, manager: ImageToolManager, parent: QtCore.QObject | None = None):
@@ -553,7 +559,10 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
         self._model = _ImageToolWrapperListModel(manager, self)
         self.setModel(self._model)
-        self.setItemDelegate(_ImageToolWrapperItemDelegate(manager, self))
+
+        self._delegate = _ImageToolWrapperItemDelegate(manager, self)
+        self.setItemDelegate(self._delegate)
+
         self._selection_model = typing.cast(
             "QtCore.QItemSelectionModel", self.selectionModel()
         )

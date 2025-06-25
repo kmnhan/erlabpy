@@ -1,0 +1,47 @@
+name: Debug
+
+on:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  test:
+    name: Debug Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+    runs-on: ubuntu-latest
+    env:
+      DISPLAY: ":99.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        qt-api: ["pyside6"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: tlambert03/setup-qt-libs@v1
+      - name: Setup for Qt testing
+        run: |
+          /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install project with all extras
+        run: |
+          uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
+          export QT_API=${{ matrix.qt-api }}
+
+      - name: Test with pytest
+        run: uv run python -X faulthandler -m pytest -vv -s -p no:faulthandler

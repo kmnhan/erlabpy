@@ -3,7 +3,7 @@
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab?logo=python&logoColor=white)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab?logo=pypi&logoColor=white)](https://pypi.org/project/erlab/)
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white)](https://anaconda.org/conda-forge/erlab)
-[![Workflow Status](https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?logo=github&label=tests)](https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml)
+[![Workflow Status](https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?branch=main&logo=github&label=tests)](https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml)
 [![Documentation Status](https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white)](https://erlabpy.readthedocs.io/)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg)](https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main)
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white)](https://codecov.io/gh/kmnhan/erlabpy)

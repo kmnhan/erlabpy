@@ -280,6 +280,11 @@ class _DialogHandler(QtCore.QObject):
         log.debug("pre-call successfully called")
         self._handler.precall_called()
 
+    def __del__(self):
+        """Ensure the thread is stopped upon deletion."""
+        if hasattr(self, "_handler") and self._handler.isRunning():
+            self._handler.wait()
+
 
 @pytest.fixture
 def accept_dialog():

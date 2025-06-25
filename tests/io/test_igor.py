@@ -19,6 +19,11 @@ def test_backend_dataarray(datadir) -> None:
     xarray.testing.assert_equal(xr.load_dataarray(datadir / "wave0.ibw"), WAVE0)
 
 
+def test_backend_dataarray_itx(datadir) -> None:
+    wave = xr.load_dataarray(datadir / "wave0.itx").rename(dim_0="W").astype(np.float32)
+    xarray.testing.assert_equal(wave, WAVE0)
+
+
 def test_backend_dataset(datadir) -> None:
     xarray.testing.assert_equal(xr.load_dataset(datadir / "exp0.pxt")["wave0"], WAVE0)
 

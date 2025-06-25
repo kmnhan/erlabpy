@@ -796,7 +796,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def garbage_collect(self) -> None:
         """Run garbage collection to free up memory."""
-        gc.collect()
+        gc.collect()  # pragma: no cover
 
     def _to_datatree(self, close: bool = False) -> xr.DataTree:
         """Convert the current state of the manager to a DataTree object."""
@@ -1295,36 +1295,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
-    def _cleanup(self) -> None:
-        """Perform cleanup tasks when the manager is closed."""
-        # Remove all ImageTool windows
-        self.remove_all_tools()
-
-        for widget in dict(self._additional_windows).values():
-            widget.close()
-
-        # Cleanup event filter
-        # This is just a precaution since the filter appeared in segfault tracebacks
-        self.text_box.removeEventFilter(self._kb_filter)
-
-        if hasattr(self, "console"):
-            self.console.close()
-
-        if hasattr(self, "explorer"):
-            self.explorer.close()
-
-        # Clean up temporary directory
-        self._tmp_dir.cleanup()
-
-        # Stop the server
+    def _stop_server(self) -> None:
+        """Stop the server thread properly."""
         if self.server.isRunning():
             self.server.stopped.set()
             _ping_server()
             self.server.wait()
 
-    def __del__(self):
-        """Ensure proper cleanup of resources when the manager is deleted."""
-        self._cleanup()
+    # def __del__(self):
+    # """Ensure proper cleanup of server thread when the manager is deleted."""
+    # self._stop_server()
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
@@ -1348,6 +1328,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-        self._cleanup()
+        # Remove all ImageTool windows
+        self.remove_all_tools()
+
+        for widget in dict(self._additional_windows).values():
+            widget.close()
+
+        # Remove event filters (problematic in CI)
+        self.text_box.removeEventFilter(self._kb_filter)
+        self.list_view._delegate._cleanup_filter()
+
+        if hasattr(self, "console"):
+            self.console._console_widget.shutdown_kernel()
+            self.console.close()
+
+        if hasattr(self, "explorer"):
+            self.explorer.close()
+
+        # Clean up temporary directory
+        self._tmp_dir.cleanup()
+
+        # Properly close the server
+        self._stop_server()
 
         super().closeEvent(event)
