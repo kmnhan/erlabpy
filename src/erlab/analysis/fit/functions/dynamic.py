@@ -366,7 +366,7 @@ class FermiEdge2dFunction(DynamicFunction):
 
     @property
     def argnames(self) -> list[str]:
-        return ["eV", "alpha"] + self.poly.argnames[1:]
+        return ["eV", "alpha", *self.poly.argnames[1:]]
 
     @property
     def kwargs(self) -> list[tuple[str, float]]:

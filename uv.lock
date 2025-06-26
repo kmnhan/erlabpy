@@ -722,7 +722,7 @@ dev = [
     { name = "pytest-datadir", specifier = ">=1.5.0" },
     { name = "pytest-env", specifier = ">=1.1.5" },
     { name = "pytest-qt", specifier = ">=4.4.0" },
-    { name = "ruff", specifier = ">=0.9.1" },
+    { name = "ruff", specifier = ">=0.12.0" },
 ]
 docs = [
     { name = "furo", specifier = ">=2024.8.6" },

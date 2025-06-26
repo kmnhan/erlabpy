@@ -995,7 +995,7 @@ def flatten_transparency(rgba: npt.NDArray, background: RGBColorType | None = No
     a = rgba[:, -1][:, np.newaxis]
     rgb *= a
     rgb += (1 - a) * background
-    return rgb.reshape(original_shape[:-1] + (3,))
+    return rgb.reshape((*original_shape[:-1], 3))
 
 
 def _get_segment_for_color(
