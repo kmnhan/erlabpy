@@ -66,7 +66,7 @@ class EdgeFitter(QtCore.QThread):
         self.parallel_obj = joblib.Parallel(
             n_jobs=self.params["# CPU"],
             max_nbytes=None,
-            return_as="list",
+            return_as="generator",
             pre_dispatch="n_jobs",
         )
         self.edge_center: xr.DataArray | None = None
@@ -124,11 +124,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         Signal used to update the progress bar.
     sigAbortFitting()
         Signal used to abort the fitting, emitted when the cancel button is clicked.
-
+    sigUpdated()
+        Signal emitted when all fitting steps are finished and plots are updated.
     """
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
+    sigUpdated = QtCore.Signal()  #: :meta private:
 
     def __init__(
         self,
@@ -429,7 +431,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
         params = self.params_edge.values
-        n_total = len(
+        n_total: int = len(
             self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
             .mean()
             .sel(alpha=slice(x0, x1))
@@ -501,6 +503,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self.aw.images[-1].setDataArray(self.corrected)
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
+        self.sigUpdated.emit()
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
@@ -611,6 +614,21 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             )
         erlab.interactive.utils.copy_to_clipboard(code_str)
         return code_str
+
+    def _stop_server(self) -> None:
+        """Stop the fitter thread properly."""
+        if self.fitter.isRunning():
+            self.fitter.abort_fit()
+            self.fitter.wait()
+
+    def __del__(self) -> None:
+        """Ensure the fitter thread is stopped when the object is deleted."""
+        self._stop_server()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        """Overridden close event to ensure proper cleanup."""
+        self._stop_server()
+        super().closeEvent(event)
 
 
 class ResolutionTool(

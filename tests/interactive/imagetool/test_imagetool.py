@@ -254,84 +254,6 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.close()
 
 
-@pytest.mark.parametrize(
-    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
-)
-@pytest.mark.parametrize("condition", ["unbinned", "binned"])
-def test_itool_tools(qtbot, test_data_type, condition) -> None:
-    data = _TEST_DATA[test_data_type].copy()
-    win = ImageTool(data)
-    win.show()
-    qtbot.addWidget(win)
-
-    main_image = win.slicer_area.images[0]
-
-    # Test code generation
-    if data.ndim == 2:
-        assert main_image.selection_code == ""
-    else:
-        assert main_image.selection_code == ".qsel(beta=2.0)"
-
-    if condition == "binned":
-        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-        win.array_slicer.set_bin(0, axis=1, value=2, update=True)
-        if data.ndim == 3:
-            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
-
-    # Test alt key menu
-    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
-    main_image.vb.menu.eventFilter(
-        main_image.vb.menu,
-        QtGui.QKeyEvent(
-            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
-        ),
-    )
-    for action in main_image.vb.menu.actions():
-        if action.text().startswith("goldtool"):
-            action.text().endswith("(Crop)")
-
-    # Test cropped image
-    assert isinstance(main_image._current_data_cropped, xr.DataArray)
-
-    # Open goldtool from main image
-    if not test_data_type.endswith("nonuniform"):
-        main_image.open_in_goldtool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), GoldTool
-        )
-
-        # Close associated windows
-        win.slicer_area.close_associated_windows()
-        qtbot.wait_until(
-            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
-        )
-
-        main_image.open_in_restool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), ResolutionTool
-        )
-
-        # Close associated windows
-        win.slicer_area.close_associated_windows()
-        qtbot.wait_until(
-            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
-        )
-
-        # Open dtool from main image
-        main_image.open_in_dtool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
-        )
-
-    # Open main image in new window
-    main_image.open_in_new_window()
-    assert isinstance(list(win.slicer_area._associated_tools.values())[-1], ImageTool)
-
-    win.slicer_area.close_associated_windows()
-
-    win.close()
-
-
 def test_itool_load_compat(qtbot) -> None:
     original = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -833,5 +755,83 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         accept_call=lambda d: d.reject(),
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+@pytest.mark.parametrize(
+    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
+)
+@pytest.mark.parametrize("condition", ["unbinned", "binned"])
+def test_itool_tools(qtbot, test_data_type, condition) -> None:
+    data = _TEST_DATA[test_data_type].copy()
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    win.show()
+
+    main_image = win.slicer_area.images[0]
+
+    # Test code generation
+    if data.ndim == 2:
+        assert main_image.selection_code == ""
+    else:
+        assert main_image.selection_code == ".qsel(beta=2.0)"
+
+    if condition == "binned":
+        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+        win.array_slicer.set_bin(0, axis=1, value=2, update=True)
+        if data.ndim == 3:
+            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+
+    # Test alt key menu
+    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
+    main_image.vb.menu.eventFilter(
+        main_image.vb.menu,
+        QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
+        ),
+    )
+    for action in main_image.vb.menu.actions():
+        if action.text().startswith("goldtool"):
+            action.text().endswith("(Crop)")
+
+    # Test cropped image
+    assert isinstance(main_image._current_data_cropped, xr.DataArray)
+
+    # Open goldtool from main image
+    if not test_data_type.endswith("nonuniform"):
+        main_image.open_in_goldtool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), GoldTool
+        )
+
+        # Close associated windows
+        win.slicer_area.close_associated_windows()
+        qtbot.wait_until(
+            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+        )
+
+        main_image.open_in_restool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), ResolutionTool
+        )
+
+        # Close associated windows
+        win.slicer_area.close_associated_windows()
+        qtbot.wait_until(
+            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
+        )
+
+        # Open dtool from main image
+        main_image.open_in_dtool()
+        assert isinstance(
+            next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
+        )
+
+    # Open main image in new window
+    main_image.open_in_new_window()
+    assert isinstance(list(win.slicer_area._associated_tools.values())[-1], ImageTool)
+
+    win.slicer_area.close_associated_windows()
 
     win.close()

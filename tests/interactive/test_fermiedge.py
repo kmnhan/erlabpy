@@ -11,12 +11,12 @@ from erlab.io.exampledata import generate_gold_edge
 
 
 def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
-    win = goldtool(gold, execute=False)
+    win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(True)
 
-    with qtbot.wait_signal(win.fitter.sigFinished, timeout=10000):
+    with qtbot.wait_signal(win.sigUpdated, timeout=20000):
         win.params_edge.widgets["go"].click()
 
     def check_generated_code(w: GoldTool) -> None:

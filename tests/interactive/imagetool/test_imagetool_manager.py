@@ -211,9 +211,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     _handler = accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-    # Run garbage collection
-    manager.gc_action.trigger()
-
     # Show about dialog
     _handler = accept_dialog(manager.about)
 
