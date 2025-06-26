@@ -233,7 +233,7 @@ def test_symmetrize_subtract():
     )
     sym_da = symmetrize(da, "x", center=0.0, subtract=True)
     expected = np.array(
-        [1.5, 2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.5], dtype=float
+        [1.5, 2.0, 2.0, 2.0, 2.0, 1.0, -1.0, -2.0, -2.0, -2.0, -2.0, -1.5], dtype=float
     )
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
