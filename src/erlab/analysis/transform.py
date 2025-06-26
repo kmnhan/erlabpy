@@ -394,7 +394,8 @@ def symmetrize(
         The central value about which the data is symmetrized (default is 0.0).
     subtract : bool, optional
         If True, the reflected part is subtracted from the original data instead of
-        being added. Default is False.
+        being added, resulting in an antisymmetrized output instead of a symmetrized
+        one. Default is False (i.e., the reflected part is added).
     mode: {'valid', 'full'}, optional
         How to handle the parts of the symmetrized data that does not overlap with the
         original data. If 'valid', only the part that exists in both the original and
@@ -516,6 +517,8 @@ def symmetrize(
             .assign_coords({dim: center - (sym_below[dim] - center)})
             .sortby(dim)
         )
+        if subtract:
+            sym_above = -sym_above
 
         if part == "above":
             return (
