@@ -22,6 +22,8 @@
 
 ### 🐞 Bug Fixes
 
+- **analysis.tranform.symmetrize:** fix subtract behavior to produce properly antisymmetrized output (#150) ([b00625c](https://github.com/kmnhan/erlabpy/commit/b00625cf253a77719a5c2d89c32805e4ff223f00))
+
 - **goldtool:** fix potential segfault by copying instead of supplying a pointer ([5e3a812](https://github.com/kmnhan/erlabpy/commit/5e3a812480e9f212ab1b17ec131ce7dfe26d3fdf))
 
 - **imagetool.manager:** do not override recent directory and loader name for already open data explorer ([e82c73b](https://github.com/kmnhan/erlabpy/commit/e82c73ba956cf0715dfbf20a3a221d3f46b132a7))
