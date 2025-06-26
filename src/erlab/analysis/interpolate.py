@@ -255,7 +255,7 @@ def _interp1(x, values, xc, fill_value=np.nan):
     xc_flat = xc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[1:], values.dtype)
+    arr_new = np.empty((n, *values.shape[1:]), values.dtype)
 
     for m in numba.prange(n):
         v0 = _val2ind(xc_flat[m], x)
@@ -274,7 +274,7 @@ def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     xc_flat, yc_flat = xc.ravel(), yc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[2:], values.dtype)
+    arr_new = np.empty((n, *values.shape[2:]), values.dtype)
 
     for m in numba.prange(n):
         v0, v1 = _val2ind(xc_flat[m], x), _val2ind(yc_flat[m], y)
@@ -293,7 +293,7 @@ def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     xc_flat, yc_flat, zc_flat = xc.ravel(), yc.ravel(), zc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[3:], values.dtype)
+    arr_new = np.empty((n, *values.shape[3:]), values.dtype)
 
     for m in numba.prange(n):
         v0, v1, v2 = (
