@@ -111,6 +111,8 @@ class MERLINLoader(LoaderBase):
 
     always_single = False
 
+    parallel_kwargs: typing.ClassVar[dict] = {"n_jobs": -1, "prefer": "threads"}
+
     @property
     def file_dialog_methods(self):
         return {
@@ -205,7 +207,7 @@ class MERLINLoader(LoaderBase):
         data = super().post_process(data)
 
         if "eV" in data.coords:
-            data = data.assign_coords(eV=-data.eV.values)
+            data = self._fix_energy_axis(data)
 
         return data
 
@@ -230,14 +232,28 @@ class MERLINLoader(LoaderBase):
     def files_for_summary(self, data_dir: str | os.PathLike):
         return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))
 
+    @staticmethod
+    def _fix_energy_axis(data: xr.DataArray) -> xr.DataArray:
+        """Fix the energy axis by taking the energy step from the attributes."""
+        step = data.attrs.get("Energy Step")
+        if step and data.attrs.get("scan_type") != "live":
+            old_eV = data.eV.values
+            return data.assign_coords(
+                eV=data.eV.copy(
+                    data=np.linspace(
+                        -old_eV[0], -old_eV[0] + step * (len(old_eV) - 1), len(old_eV)
+                    )
+                )
+            )
+        return data.assign_coords(eV=-data.eV)
+
     def pre_combine_multiple(self, data_list, coord_dict):
-        if data_list[0].attrs.get("Acquisition Mode") != "Dither":
-            # For non-dither scans, energy axis may have very small offsets on the order
-            # of 1e-6 eV, which can cause issues with merging.
-            # We can safely assume that the energy axis is the same for all data arrays
-            # in the list, so we can assign the first one to all of them. This is also
-            # the behavior when using `Assemble` from the LoadSESb GUI in Igor Pro.
-            return [
-                d.assign_coords(eV=data_list[0].eV.values) for d in data_list
-            ], coord_dict
-        return data_list, coord_dict
+        # Energy start & step may have very small offsets on the order of 1e-6 eV, which
+        # can cause issues with merging. We just assume that the energy axis is the same
+        # for all data arrays in the list, so we can assign the first one to all of
+        # them. This is also the behavior when using `Assemble` from the LoadSESb GUI in
+        # Igor Pro.
+        return [
+            d.assign_coords(eV=d.eV.copy(data=data_list[0].eV.values))
+            for d in data_list
+        ], coord_dict
