@@ -227,7 +227,7 @@ class MERLINLoader(LoaderBase):
             }
         )
         wave = wave.assign_attrs(scan_type="live")
-        return wave.assign_coords(eV=-wave["eV"] + wave.attrs["BL Energy"])
+        return wave.assign_coords(eV=-wave["eV"])
 
     def files_for_summary(self, data_dir: str | os.PathLike):
         return sorted(erlab.io.utils.get_files(data_dir, extensions=(".pxt", ".ibw")))
