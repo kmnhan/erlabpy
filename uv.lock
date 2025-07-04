@@ -579,7 +579,7 @@ wheels = [
 
 [[package]]
 name = "erlab"
-version = "3.12.0"
+version = "3.12.1"
 source = { editable = "." }
 dependencies = [
     { name = "findiff" },
