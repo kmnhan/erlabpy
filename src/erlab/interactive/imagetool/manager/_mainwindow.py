@@ -1006,6 +1006,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _data_replace(self, data_list: list[xr.DataArray], indices: list[int]) -> None:
         """Replace data in the ImageTool windows with the given data."""
         for darr, idx in zip(data_list, indices, strict=True):
+            if idx < 0:
+                # Replace newest index
+                idx = sorted(self._tool_wrappers.keys())[idx]
+            elif idx == self.next_idx:
+                # If not yet created, add new tool
+                self._data_recv([darr], {})
+                continue
             self.get_tool(idx).slicer_area.set_data(darr)
         self._sigDataReplaced.emit()
 
