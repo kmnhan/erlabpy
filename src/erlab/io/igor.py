@@ -8,10 +8,12 @@ __all__ = [
     "load_igor_hdf5",
     "load_text",
     "load_wave",
+    "save_wave",
     "set_scale",
 ]
 
 import os
+import pathlib
 import re
 import shlex
 import typing
@@ -28,6 +30,12 @@ import erlab
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
+
+    import igorwriter
+else:
+    import lazy_loader as _lazy
+
+    igorwriter = _lazy.load("igorwriter")
 
 
 _WAVE_PATTERN = re.compile(r"WAVES\S*\s+[\"\']?([^\'\"\v:;]+)[\"\']?")  # 1D wave
@@ -364,6 +372,56 @@ def load_wave(
         coords=coords,
         attrs=attrs,
     ).rename(wave_header["bname"].decode())
+
+
+def save_wave(darr: xr.DataArray, filename: str | os.PathLike) -> None:
+    """Save a wave to an Igor binary file.
+
+    This function saves a single DataArray to an Igor binary file. It is the inverse of
+    :func:`load_wave`. Only supports simple 1D, 2D, 3D, and 4D DataArrays without any
+    associated coordinates and non-dimensional coordinates.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to save as a wave.
+    filename
+        The path to the output file.
+
+    Example
+    -------
+    >>> import xarray as xr
+    >>> import erlab
+    >>> darr = xr.DataArray([1, 2, 3], dims=["x"], coords={"x": [0, 1, 2]})
+    >>> erlab.io.igor.save_wave(darr, "output.ibw")
+    """
+    wave = igorwriter.IgorWave(
+        darr.values, name=darr.name if darr.name is not None else "wave0"
+    )
+
+    for dim_name, dim in zip(darr.dims, ("x", "y", "z", "t"), strict=False):
+        coord = darr.coords[dim_name].values
+        if not erlab.utils.array.is_uniform_spaced(coord):
+            raise ValueError(
+                "Failed to save the wave because the coordinate for dimension "
+                f"'{dim_name}' is not evenly spaced. "
+            )
+
+        wave.set_dimscale(
+            dim, start=coord[0], delta=coord[1] - coord[0], units=dim_name
+        )
+
+    for c in darr.coords:
+        if c not in darr.dims:
+            # If the coordinate is not a dimension, print a warning
+            erlab.utils.misc.emit_user_level_warning(
+                f"Coordinate '{c}' is not a DataArray dimension, and will not be "
+                "written to the Igor binary wave file."
+            )
+
+    wave.set_note("\n".join(f"{k}={v}" for k, v in darr.attrs.items()))
+    with pathlib.Path(filename).open("wb") as f:
+        wave.save(f)
 
 
 def _parse_wave_shape(wave_line: str) -> tuple[tuple[int, ...] | None, str]:
