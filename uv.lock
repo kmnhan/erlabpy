@@ -585,6 +585,7 @@ dependencies = [
     { name = "findiff" },
     { name = "h5netcdf" },
     { name = "igor2" },
+    { name = "igorwriter" },
     { name = "joblib" },
     { name = "lazy-loader" },
     { name = "lmfit" },
@@ -683,6 +684,7 @@ requires-dist = [
     { name = "h5netcdf", specifier = ">=1.2.0" },
     { name = "hvplot", marker = "extra == 'viz'" },
     { name = "igor2", specifier = ">=0.5.12" },
+    { name = "igorwriter", specifier = ">=0.6.1" },
     { name = "iminuit", marker = "extra == 'misc'", specifier = ">=2.25.2" },
     { name = "ipywidgets", marker = "extra == 'viz'" },
     { name = "joblib", specifier = ">=1.3.2" },
@@ -1004,6 +1006,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/aa/2aadb0fca3dd2361ca6ce613fe4a0827114d63a42956c2b68b3f59f2c784/igor2-0.5.12.tar.gz", hash = "sha256:5a284ac3b7aa6a8a59f28509d06359ea29e08d6f9f563566d2a0f15ea9681893", size = 60174 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/99/54e15e833757cb329da14e38e53f94bcf06395904e292e3c8c239c819d56/igor2-0.5.12-py3-none-any.whl", hash = "sha256:1d99b30a3b82710578aafb21fbe02572c59f77ad4daba6d13a952115d200bac6", size = 32427 },
+]
+
+[[package]]
+name = "igorwriter"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/3c/bcf2f0690d922fb944fcf58206963134f755052c21ef2904fae67928a787/igorwriter-0.6.1.tar.gz", hash = "sha256:8df17b7e880a4129d4958423402d65ef39f3102c1af8a43ba42602b83dfb7e22", size = 24545 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4f/81/b43b2df94c7e2abd85bd63dfdf7229d33cad65f4395152d5de3d2858b0ee/igorwriter-0.6.1-py2.py3-none-any.whl", hash = "sha256:3e1f915a45dd35ac922ec0e277211fc5bf6feec5d52cb4b745b3dd1da43e282f", size = 18582 },
 ]
 
 [[package]]
