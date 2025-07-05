@@ -76,14 +76,36 @@ def itool(
     replace
         When using the manager, this argument specifies which existing ImageTool windows
         should be replaced with the new data. If the manager is not used, this argument
-        is ignored. The argument can be a single integer or a list of integers
-        specifying the indices of the windows to be replaced. The length of the list
-        must match the number of windows ``data`` is expected to create. All indices
-        must be valid indices of existing ImageTool windows.
+        is ignored. ``replace`` can be set to:
+
+        - `None` (default):
+            No existing windows are replaced. New windows are created for the new data.
+
+        - A single integer:
+            - A valid index of an existing ImageTool window:
+
+                The data in the window with the specified index is replaced with the new
+                data.
+            - A number that is greater by 1 than the largest existing index:
+
+                A new ImageTool window is created with the new data. This is useful when
+                you want to add a new window on initial execution, but want to replace
+                the window with the same index on subsequent calls.
+
+            - A negative integer:
+                The index is interpreted as an index from the end of the list of
+                existing ImageTool windows, sorted by their indices. For example, ``-1``
+                refers to the window with the largest index, ``-2`` to the second
+                largest, and so on.
+
+        - A list of integers:
+
+            A list of integers specifying the indices of the windows to be replaced,
+            each of which is interpreted as described above. The length of the list must
+            match the number of windows ``data`` is expected to create.
 
         If this argument is used, the ``link``, ``link_colors``, and ``kwargs``
-        arguments are ignored, since no new windows are created. The existing windows
-        are updated with the new data.
+        arguments are ignored, since no new windows are created.
     execute
         Whether to execute the Qt event loop and display the window, by default `None`.
         For more information, see :func:`erlab.interactive.utils.setup_qapp`.
