@@ -16,7 +16,7 @@
 import os
 
 import erlab
-from erlab.interactive.explorer._base_explorer import _DataExplorer
+from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
 
 def data_explorer(
@@ -50,7 +50,7 @@ def data_explorer(
         :attr:`erlab.io.loaders`.
     """
     with erlab.interactive.utils.setup_qapp(execute):
-        win = _DataExplorer(root_path=directory, loader_name=loader_name)
+        win = _TabbedExplorer(root_path=directory, loader_name=loader_name)
         win.show()
         win.raise_()
         win.activateWindow()

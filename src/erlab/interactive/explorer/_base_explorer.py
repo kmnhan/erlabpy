@@ -797,6 +797,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     TEXT_LOADING: str = "Loading..."
 
     sigDirectoryChanged = QtCore.Signal(str)
+    sigCloseRequested = QtCore.Signal(object)
 
     def __init__(
         self,
@@ -842,11 +843,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def try_close(self) -> None:
-        parent = self.parent()
-        if parent is not None and hasattr(parent, "close_tab"):
-            parent.close_tab(self)
-        else:
+        if self.isWindow() and not hasattr(self.parent(), "close_tab"):
             self.close()
+        else:
+            self.sigCloseRequested.emit(self)
 
     def _setup_actions(self) -> None:
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
@@ -867,11 +867,13 @@ class _DataExplorer(QtWidgets.QMainWindow):
             "Each file will be opened in a separate window."
         )
 
-        parent = self.parent()
-        if parent is not None and hasattr(parent, "close_tab"):
-            self._close_act = QtWidgets.QAction("&Close Tab", self)
-        else:
-            self._close_act = QtWidgets.QAction("&Close Window", self)
+        self._close_act = QtWidgets.QAction(
+            "&Close Window"
+            if (self.isWindow() and not hasattr(self.parent(), "close_tab"))
+            else "&Close Tab",
+            self,
+        )
+
         self._close_act.triggered.connect(self.try_close)
         self._close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
 
