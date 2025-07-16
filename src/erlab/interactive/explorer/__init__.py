@@ -1228,7 +1228,3 @@ def data_explorer(
         win.show()
         win.raise_()
         win.activateWindow()
-
-
-if __name__ == "__main__":
-    data_explorer()
