@@ -183,15 +183,25 @@ def is_interactive() -> bool:
 
 
 def open_in_file_manager(path: str | os.PathLike):
-    """Open a directory in the system's file manager.
+    """Reveal a path in the system's file manager.
 
     Parameters
     ----------
     path
-        Path to the folder.
+        Path to the file or folder.
     """
-    if sys.platform == "win32":
-        os.startfile(path)  # noqa: S606
+    path = pathlib.Path(path).resolve()
+    if path.is_dir():
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606
+        else:
+            open_cmd = "open" if sys.platform == "darwin" else "xdg-open"
+            subprocess.call([open_cmd, str(path)])
     else:
-        open_cmd = "open" if os.name == "posix" else "xdg-open"
-        subprocess.call([open_cmd, path])
+        if sys.platform == "darwin":
+            subprocess.call(["open", "-R", str(path)])
+        elif sys.platform == "win32":
+            subprocess.call(["explorer", "/select,", str(path)])
+        else:
+            # We can't do this reliably on Linux, so we just open the folder
+            subprocess.call(["xdg-open", str(path.parent)])

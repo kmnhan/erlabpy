@@ -879,10 +879,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)
-        self._finder_act.setToolTip(f"Open the current folder in {fm_name}")
-        self._finder_act.triggered.connect(
-            lambda: erlab.utils.misc.open_in_file_manager(self.current_directory)
-        )
+        self._finder_act.setToolTip(f"Open the current item in {fm_name}")
+        self._finder_act.triggered.connect(self._open_in_file_manager)
 
         self._open_dir_act = QtWidgets.QAction("&Open Folder...", self)
         self._open_dir_act.triggered.connect(self._choose_directory)
@@ -912,6 +910,14 @@ class _DataExplorer(QtWidgets.QMainWindow):
         file_menu.addAction(self._climb_up_act)
         file_menu.addSeparator()
         file_menu.addAction(self._close_act)
+
+    @QtCore.Slot()
+    def _open_in_file_manager(self) -> None:
+        """Open the current selection in the file manager."""
+        selection = self._current_selection
+        erlab.utils.misc.open_in_file_manager(
+            self.current_directory if len(selection) == 0 else selection[-1]
+        )
 
     def _setup_ui(self) -> None:
         main_widget = QtWidgets.QWidget(self)
