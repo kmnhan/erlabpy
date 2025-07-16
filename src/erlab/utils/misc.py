@@ -182,7 +182,7 @@ def is_interactive() -> bool:
     return False
 
 
-def open_in_file_manager(path: str | os.PathLike):
+def open_in_file_manager(path: str | os.PathLike) -> None:  # pragma: no cover
     """Reveal a path in the system's file manager.
 
     Parameters
