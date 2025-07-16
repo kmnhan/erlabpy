@@ -2228,14 +2228,25 @@ class IconButton(QtWidgets.QPushButton):
     off : str, optional
         The icon to display when the button is in the "off" state. If provided, the
         button will be checkable, and the icon will change when the button is toggled.
+    icon_kw : dict, optional
+        Additional keyword arguments to pass to `qtawesome.icon()`. This can be used to
+        customize the icon's appearance, such as size or color.
     **kwargs
         Additional keyword arguments passed to the QPushButton constructor.
 
     """
 
-    def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        on: str | None = None,
+        off: str | None = None,
+        *,
+        icon_kw: dict[str, typing.Any] | None = None,
+        **kwargs,
+    ) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
+        self._icon_kw = icon_kw or {}
 
         if on is not None:
             self.icon_key_on = on
@@ -2255,7 +2266,7 @@ class IconButton(QtWidgets.QPushButton):
         self.refresh_icons()
 
     def get_icon(self, icon: str) -> QtGui.QIcon:
-        return qtawesome.icon(icon)
+        return qtawesome.icon(icon, **self._icon_kw)
 
     def refresh_icons(self) -> None:
         if self.icon_key_off is not None and self.isChecked():
