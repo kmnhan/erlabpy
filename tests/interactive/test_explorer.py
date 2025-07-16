@@ -6,7 +6,8 @@ from qtpy import QtCore
 import erlab
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.explorer import _DataExplorer
+    from erlab.interactive.explorer._base_explorer import _DataExplorer
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
 
 def test_explorer_general(
@@ -25,7 +26,17 @@ def test_explorer_general(
     # Initialize data explorer
     manager.ensure_explorer_initialized()
     assert hasattr(manager, "explorer")
-    explorer: _DataExplorer = manager.explorer
+    tabbed_explorer: _TabbedExplorer = manager.explorer
+
+    # Add tab
+    tabbed_explorer.add_tab()
+    qtbot.wait_until(lambda: tabbed_explorer.tab_widget.count() == 2)
+
+    # Remove tab
+    tabbed_explorer.close_tab(1)
+    qtbot.wait_until(lambda: tabbed_explorer.tab_widget.count() == 1)
+
+    explorer: _DataExplorer = tabbed_explorer.get_explorer(0)
 
     # Show data explorer
     manager.show_explorer()

@@ -1049,9 +1049,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def ensure_explorer_initialized(self) -> None:
         """Ensure that the data explorer window is initialized."""
         if not hasattr(self, "explorer"):
-            from erlab.interactive.explorer import _DataExplorer
+            from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
-            self.explorer = _DataExplorer(
+            self.explorer = _TabbedExplorer(
                 root_path=self._recent_directory, loader_name=self._recent_loader_name
             )
 
