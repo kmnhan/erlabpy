@@ -1,3 +1,11 @@
+"""File system explorer for ARPES data files.
+
+This module implements a file system explorer for ARPES data files. It can open a single
+directory and display its contents in a tree view, allowing users to navigate through
+the file system, view file attributes, and load data files into the ImageToolManager for
+further analysis.
+"""
+
 from __future__ import annotations
 
 import os
