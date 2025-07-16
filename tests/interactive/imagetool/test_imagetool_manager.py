@@ -236,10 +236,8 @@ def test_manager_replace(qtbot, test_data) -> None:
     assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
 
     # Replacing 1 should create a new tool
-    with qtbot.wait_signal(manager._sigDataReplaced):
-        itool(test_data**2, manager=True, replace=1)
-
-    assert manager.ntools == 2
+    itool(test_data**2, manager=True, replace=1)
+    qtbot.wait_until(lambda: manager.ntools == 2)
     assert manager.get_tool(1).array_slicer.point_value(0) == 144.0
 
     # Negative indexing
