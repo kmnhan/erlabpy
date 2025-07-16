@@ -227,24 +227,16 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             )
         self.update_menubar()
 
-    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
+    def dragEnterEvent(
+        self, event: QtGui.QDragEnterEvent | None
+    ) -> None:  # pragma: no cover
         """Pass drag events to the current explorer."""
         if self.current_explorer:
             self.current_explorer.dragEnterEvent(event)
         super().dragEnterEvent(event)
 
-    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:  # pragma: no cover
         """Pass drop events to the current explorer."""
         if self.current_explorer:
             self.current_explorer.dropEvent(event)
         super().dropEvent(event)
-
-
-if __name__ == "__main__":
-    qapp = QtWidgets.QApplication(sys.argv)
-    qapp.setStyle("Fusion")
-    explorer = _TabbedExplorer()
-    explorer.show()
-    explorer.raise_()
-    explorer.activateWindow()
-    qapp.exec()
