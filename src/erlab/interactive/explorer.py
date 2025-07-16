@@ -803,6 +803,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
     TEXT_MULTIPLE_SELECTED: str = "Multiple files selected"
     TEXT_LOADING: str = "Loading..."
 
+    sigDirectoryChanged = QtCore.Signal(str)
+
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
@@ -840,6 +842,19 @@ class _DataExplorer(QtWidgets.QMainWindow):
         """Name of the selected loader."""
         return self._loader_combo.currentText()
 
+    @property
+    def current_directory(self) -> pathlib.Path:
+        """Current directory being displayed."""
+        return self._fs_model.file_system.path
+
+    @QtCore.Slot()
+    def try_close(self) -> None:
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "close_tab"):
+            parent.close_tab(self)
+        else:
+            self.close()
+
     def _setup_actions(self) -> None:
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
         self._to_manager_act.triggered.connect(self.to_manager)
@@ -859,17 +874,19 @@ class _DataExplorer(QtWidgets.QMainWindow):
             "Each file will be opened in a separate window."
         )
 
-        self._close_act = QtWidgets.QAction("&Close Window", self)
-        self._close_act.triggered.connect(self.close)
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "close_tab"):
+            self._close_act = QtWidgets.QAction("&Close Tab", self)
+        else:
+            self._close_act = QtWidgets.QAction("&Close Window", self)
+        self._close_act.triggered.connect(self.try_close)
         self._close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)
         self._finder_act.setToolTip(f"Open the current folder in {fm_name}")
         self._finder_act.triggered.connect(
-            lambda: erlab.utils.misc.open_in_file_manager(
-                self._fs_model.file_system.path
-            )
+            lambda: erlab.utils.misc.open_in_file_manager(self.current_directory)
         )
 
         self._open_dir_act = QtWidgets.QAction("&Open Folder...", self)
@@ -925,7 +942,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         left_layout.addWidget(left_header)
         self._current_dir_line = QtWidgets.QLineEdit()
         self._current_dir_line.setReadOnly(True)
-        self._current_dir_line.setText(str(self._fs_model.file_system.path))
+        self._current_dir_line.setText(str(self.current_directory))
         left_header_layout.addWidget(self._current_dir_line)
         left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._open_dir_act, "mdi6.folder")
@@ -1013,10 +1030,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _dir_loaded(self) -> None:
         """Slot to be called when a directory is loaded."""
         self._tree_view.resizeColumnToContents(0)
-        dir_path = self._fs_model.file_system.path
+        dir_path = self.current_directory
         self._current_dir_line.setText(str(dir_path))
-        dir_name = dir_path.name if dir_path.name else str(dir_path)
-        self.setWindowTitle(f"Data Explorer — {dir_name}")
+        if self.isWindow():
+            dir_name = dir_path.name if dir_path.name else str(dir_path)
+            self.setWindowTitle(f"Data Explorer — {dir_name}")
+        self.sigDirectoryChanged.emit(str(dir_path))
 
     @QtCore.Slot()
     def _save_slider_pos(self) -> None:
@@ -1055,7 +1074,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _choose_directory(self) -> None:
         """Open a dialog to choose a directory."""
         directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Directory", str(self._fs_model.file_system.path)
+            self, "Select Directory", str(self.current_directory)
         )
         if directory:
             self._fs_model.set_root_path(directory)
