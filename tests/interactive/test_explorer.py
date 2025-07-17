@@ -33,7 +33,7 @@ def test_explorer_general(
     qtbot.wait_until(lambda: tabbed_explorer.tab_widget.count() == 2)
 
     # Remove tab
-    tabbed_explorer.close_tab(1)
+    tabbed_explorer.get_explorer(1).try_close()
     qtbot.wait_until(lambda: tabbed_explorer.tab_widget.count() == 1)
 
     explorer: _DataExplorer = tabbed_explorer.get_explorer(0)
