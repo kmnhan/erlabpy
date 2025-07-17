@@ -145,12 +145,14 @@ def load_zip(
     without_values : bool, optional
         If True, the values are not loaded, only the coordinates and attributes.
     use_libarchive : bool, optional
-        If True, uses `libarchive <https://github.com/Changaco/python-libarchive-c>`_ to
-        extract the files if it is available. Install it with ``pip install
-        libarchive-c`` or ``conda install -c conda-forge python-libarchive-c``. If
-        False, uses the built-in ``zipfile``. This does not have drastic performance
-        improvements when loading a single file, but improves multithreaded performance
-        since the underlying C library bypasses the GIL. Default is True.
+        If True, tries to use `libarchive
+        <https://github.com/Changaco/python-libarchive-c>`_ to extract the files.
+        Install it with ``pip install libarchive-c`` or ``conda install -c conda-forge
+        python-libarchive-c``. If False, uses the built-in ``zipfile``. This does not
+        have drastic performance improvements when loading a single file, but improves
+        multithreaded performance since the underlying C library bypasses the GIL. If
+        the C libarchive library is not available, it will fall back to the built-in
+        `zipfile` module even if ``libarchive-c`` is installed.
 
     Returns
     -------
@@ -166,7 +168,11 @@ def load_zip(
             use_libarchive = importlib.util.find_spec("libarchive") is not None
             # Check if libarchive is available
             if use_libarchive:
-                import libarchive
+                try:
+                    import libarchive
+                except (TypeError, ImportError):
+                    # TypeError is raised if underlying C libarchive is not available
+                    use_libarchive = False
 
         zf = zipfile.ZipFile(filename, mode="r", allowZip64=False)
         f_names = zf.namelist()
