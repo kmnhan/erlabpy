@@ -14,7 +14,6 @@ import re
 import tempfile
 import typing
 import zipfile
-from collections.abc import Iterable
 
 import numpy as np
 import xarray as xr
@@ -40,8 +39,6 @@ class CasePreservingConfigParser(configparser.ConfigParser):
 class DA30Loader(LoaderBase):
     name = "da30"
     description = "Scienta Omicron DA30 with SES"
-
-    aliases: Iterable[str] = ["DA30"]
 
     extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip", ""}
 
