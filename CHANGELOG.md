@@ -1,3 +1,41 @@
+## Unreleased
+
+### ✨ Features
+
+- **interactive.explorer:** improve open in finder functionality ([8571106](https://github.com/kmnhan/erlabpy/commit/85711060fb7b91a65d44ed959ca484e6be4a7bf9))
+
+  On macOS and windows, using the open in finder/explorer functionality now also highlights the selected file in the file manager instead of just opening the directory.
+
+- **interactive.explorer:** add multiple tabs to data explorer ([04bfcdf](https://github.com/kmnhan/erlabpy/commit/04bfcdfc3981ea17d0c6c73a24f0efdcc6496eff))
+
+  The data explorer is now tabbed, allowing users to open and manage multiple directories simultaneously.
+
+- **interactive.utils:** enhance IconButton to accept additional icon customization options ([1dee58b](https://github.com/kmnhan/erlabpy/commit/1dee58b5e423d29d7628b9c99fbd7521a9eb4a8c))
+
+- **imagetool.manager:** enhance data replacement logic (#153) ([cf3005a](https://github.com/kmnhan/erlabpy/commit/cf3005a501d83c96f0ba5666a29e8074fc6dbd9f))
+
+  The `replace` argument for `itool` now supports negative indices to replace the newest ImageTool window, and allows for replacing the next index if it has not yet been created. For example, if you have 2 windows open (indices 0 and 1), you can use `replace=-1` to replace the newest window (index 1) or `replace=2` to create a new window if it does not exist yet.
+
+- **io.igor:** add support for saving DataArrays to Igor Pro binary files (#152) ([9207cde](https://github.com/kmnhan/erlabpy/commit/9207cde6b7d0b485bb87b92623c0678512a0506c))
+
+  - Implemented `save_wave` function in `erlab.io.igor` to save xarray DataArray objects as Igor Pro binary files (.ibw).
+
+  - Adds a new dependency: `igorwriter`
+
+### 🐞 Bug Fixes
+
+- **io.plugins.da30:** use libarchive-c only if it is correctly installed ([017685f](https://github.com/kmnhan/erlabpy/commit/017685fe976afaf2381a90e2235b117d1ef42673))
+
+  Improper installation of `libarchive-c` can lead to `TypeError` upon import. This change places the import of `libarchive` inside a try-except block to handle such cases gracefully, ensuring that the code falls back to using the built-in `zipfile` module if `libarchive` is not available or improperly installed.
+
+- **io:** remove alias for da30 and improve documentation ([ea5ae2b](https://github.com/kmnhan/erlabpy/commit/ea5ae2b9ca667e0b4756c4b153335ffb9ce4c8d5))
+
+### ♻️ Code Refactor
+
+- **interactive.explorer:** refactor into submodule ([6313bbc](https://github.com/kmnhan/erlabpy/commit/6313bbc3fcbe4d03cb0dc2f70ac53a12227e252c))
+
+- **interactive.explorer:** misc. edits for future improvements ([a6113ca](https://github.com/kmnhan/erlabpy/commit/a6113caeef1e1876954c47aa5e814a63d3182969))
+
 ## v3.12.1 (2025-07-04)
 
 ### 🐞 Bug Fixes
