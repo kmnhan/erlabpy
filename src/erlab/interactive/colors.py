@@ -188,6 +188,15 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         else:
             self.setCurrentText(self.default_cmap)
 
+    def setCurrentText(self, text: str | None) -> None:
+        """Set the current text of the combobox."""
+        if self.findText(text) < 0:
+            # If the value is not in the combobox, try loading all and retry
+            self.load_all()
+            self.setCurrentText(text)
+        else:
+            super().setCurrentText(text)
+
 
 class ColorMapGammaWidget(QtWidgets.QWidget):
     """Slider and spinbox for adjusting colormap gamma.
