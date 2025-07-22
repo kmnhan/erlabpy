@@ -100,24 +100,30 @@ def test_plot_slices() -> None:
     plt.close()
 
     # Test 3D slicing
-    fig, axes = plot_slices(
-        [
-            xr.DataArray(
-                np.random.default_rng(0).random((11, 11, 11)),
-                coords=[
-                    np.linspace(0, 1, 11),
-                    np.linspace(0, 1, 11),
-                    np.linspace(0, 1, 11),
-                ],
-                dims=["x", "y", "z"],
-            )
+    test_darr = xr.DataArray(
+        np.random.default_rng(0).random((11, 11, 11)),
+        coords=[
+            np.linspace(0, 1, 11),
+            np.linspace(0, 1, 11),
+            np.linspace(0, 1, 11),
         ],
+        dims=["x", "y", "z"],
+    )
+    fig, axes = plot_slices(
+        [test_darr],
         x=0.1,
         y=[0.2, 0.4],
         x_width=0.2,
         y_width=0.2,
     )
     assert axes.shape == (1, 2)
+    test_darr_sel = test_darr.qsel(x=0.1, y=[0.2, 0.4], x_width=0.2, y_width=0.2)
+    np.testing.assert_allclose(
+        axes[0, 0].lines[0].get_ydata(), test_darr_sel.isel(y=0).values
+    )
+    np.testing.assert_allclose(
+        axes[0, 1].lines[0].get_ydata(), test_darr_sel.isel(y=1).values
+    )
     plt.close()
 
     # Test cmap option
@@ -213,59 +219,3 @@ def test_plot_array(data, colorbar, xlim, ylim, crop, kwargs) -> None:
         else:
             assert ax.get_ylim() == ylim
     plt.close()
-
-
-def test_qsel_average_single_dim() -> None:
-    # Create a simple 2D DataArray with dims 'x' and 'y'
-
-    x = np.array([10, 20])
-    y = np.array([30, 40, 50])
-    data = np.array([[1, 2, 3], [4, 5, 6]])
-    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
-
-    # Average over the 'x' dimension using qsel.average.
-    # The expected result is the mean along 'x' and retaining the averaged coordinate.
-    # Expected mean data: [[(1+4)/2, (2+5)/2, (3+6)/2]] = [[2.5, 3.5, 4.5]]
-    expected = data.mean(axis=0)
-    result = da.qsel.average("x")
-
-    # After averaging, 'x' should not be a dimension; it is stored as a coordinate.
-    assert "x" not in result.dims
-    # Compare the resulting data with the expected average.
-    np.testing.assert_allclose(result.data, expected)
-    # Check that the coordinate 'x' is the mean of the original x-values.
-    np.testing.assert_allclose(result.coords["x"].data, x.mean())
-
-
-def test_qsel_average_multiple_dim() -> None:
-    # Create a simple 2D DataArray with dims 'x' and 'y'
-
-    x = np.array([0, 10, 20])
-    y = np.array([100, 200])
-    data = np.array([[1, 2], [4, 5], [7, 8]])
-    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
-
-    # Average over both 'x' and 'y'
-    # Expected result is a scalar value: mean of all data.
-    expected = data.mean()
-    result = da.qsel.average(["x", "y"])
-
-    # The resulting DataArray should have no dimensions.
-    assert not result.dims
-    # Data should be equal to the overall mean.
-    np.testing.assert_allclose(result.data, expected)
-    # Coordinates are retained as scalars equal to the mean of the original coords.
-    np.testing.assert_allclose(result.coords["x"].data, x.mean())
-    np.testing.assert_allclose(result.coords["y"].data, y.mean())
-
-
-def test_qsel_average_invalid_dim() -> None:
-    # Create a simple 1D DataArray
-
-    x = np.array([0, 1, 2])
-    data = np.array([10, 20, 30])
-    da = xr.DataArray(data, dims=("x",), coords={"x": x})
-
-    # Averaging over an invalid dimension should raise a ValueError
-    with pytest.raises(ValueError, match="Dimension `z` not found in data"):
-        _ = da.qsel.average("z")

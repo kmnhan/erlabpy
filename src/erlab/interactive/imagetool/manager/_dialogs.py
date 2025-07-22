@@ -7,6 +7,8 @@ import weakref
 
 from qtpy import QtWidgets
 
+import erlab
+
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager import ImageToolManager
 
@@ -84,6 +86,7 @@ class _StoreDialog(QtWidgets.QDialog):
 
             line_new = QtWidgets.QLineEdit(default_name)
             line_new.setPlaceholderText("Enter variable name")
+            line_new.setValidator(erlab.interactive.utils.IdentifierValidator())
             self._layout.addRow(wrapper.label_text, line_new)
             self._var_name_lines.append(line_new)
 

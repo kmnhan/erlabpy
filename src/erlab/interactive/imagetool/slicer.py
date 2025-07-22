@@ -202,7 +202,7 @@ class ArraySlicer(QtCore.QObject):
 
     def set_array(
         self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
-    ) -> None:
+    ) -> bool:
         """Set the DataArray object to be sliced.
 
         Parameters
@@ -216,6 +216,10 @@ class ArraySlicer(QtCore.QObject):
         reset
             If True, reset cursors, bins, indices, and values.
 
+        Returns
+        -------
+        bool
+            True if the cursors were reset, False if only the data was updated.
         """
         obj_original: xr.DataArray | None = None
         if hasattr(self, "_obj"):
@@ -254,14 +258,15 @@ class ArraySlicer(QtCore.QObject):
             ]
             self._twin_coord_names = set()
             self.snap_to_data = False
+        return reset
 
     @functools.cached_property
     def associated_coords(
         self,
-    ) -> dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]]:
-        out: dict[str, dict[str, tuple[npt.NDArray, npt.NDArray]]] = {
-            str(d): {} for d in self._obj.dims
-        }
+    ) -> dict[str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]]:
+        out: dict[
+            str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
+        ] = {str(d): {} for d in self._obj.dims}
         for k, coord in self._obj.coords.items():
             if (
                 isinstance(coord, xr.DataArray)
@@ -269,8 +274,8 @@ class ArraySlicer(QtCore.QObject):
                 and str(coord.dims[0]) != k
             ):
                 out[str(coord.dims[0])][str(k)] = (
-                    coord[coord.dims[0]].values,
-                    coord.values,
+                    coord[coord.dims[0]].values.astype(np.float64),
+                    coord.values.astype(np.float64),
                 )
         return out
 
@@ -328,7 +333,7 @@ class ArraySlicer(QtCore.QObject):
         if self._nonuniform_axes:
             return tuple(
                 (
-                    (min(coord), max(coord))
+                    (np.amin(coord), np.amax(coord))
                     if i in self._nonuniform_axes
                     else (coord[0], coord[-1])
                 )
@@ -453,9 +458,13 @@ class ArraySlicer(QtCore.QObject):
         # erlab>=3.2.0 should not save non-uniform data in the first place.
         data = restore_nonuniform_dims(data)
 
-        # Convert coords to C-contiguous array
-        data = data.assign_coords(
-            {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
+        # Convert coords to C-contiguous array while preserving display order.
+        data = erlab.utils.array.sort_coord_order(
+            data.assign_coords(
+                {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
+            ),
+            keys=data.coords.keys(),
+            dims_first=False,
         )
 
         if data.dtype not in (np.float32, np.float64):

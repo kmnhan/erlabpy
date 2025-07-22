@@ -16,7 +16,7 @@
 __all__ = ["dtool"]
 
 import functools
-import os
+import importlib.resources
 import typing
 from collections.abc import Callable, Hashable
 
@@ -36,13 +36,15 @@ else:
 
 
 class DerivativeTool(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "dtool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui"))
+    )
 ):
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
             try:
                 data_name = typing.cast(
-                    str,
+                    "str",
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
             except varname.VarnameRetrievingError:
@@ -55,7 +57,10 @@ class DerivativeTool(
         self.setupUi(self)
         self.setWindowTitle("")
 
+        self.data_has_nan: bool = False
+
         if data.isnull().any():
+            self.data_has_nan = True
             self.show()
             QtWidgets.QMessageBox.warning(
                 self,
@@ -218,7 +223,8 @@ class DerivativeTool(
                 case 1:
                     for _ in range(self.sn_spin.value()):
                         out = erlab.analysis.image.boxcar_filter(
-                            out, size=typing.cast(dict[Hashable, int], self.smooth_args)
+                            out,
+                            size=typing.cast("dict[Hashable, int]", self.smooth_args),
                         )
 
         self.images[0].setDataArray(out)
@@ -306,6 +312,9 @@ class DerivativeTool(
         data_name = (
             self.data_name
         )  # "".join([s.strip() for s in self.data_name.split("\n")])
+
+        if self.data_has_nan:
+            data_name = f"{data_name}.fillna(0)"
         if self.interp_group.isChecked():
             arg_dict: dict[str, typing.Any] = {
                 str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"

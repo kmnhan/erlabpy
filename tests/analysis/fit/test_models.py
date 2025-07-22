@@ -4,6 +4,38 @@ import xarray as xr
 from erlab.analysis.fit import models
 
 
+def test_fermi_dirac_model() -> None:
+    # Create a test input DataArray
+    x = np.linspace(-0.1, 0.1, 100)
+    data = np.zeros_like(x)
+
+    # Create an instance of FermiDiracModel
+    model = models.FermiDiracModel()
+
+    # Set initial parameter values
+    params = model.make_params()
+    params["center"].set(value=0.0)
+    params["temp"].set(value=30.0)
+    params["resolution"].set(value=0.02)
+
+    # Generate test data based on the model
+    data += model.eval(params=params, x=x)
+
+    # Perform the fit
+    result = model.fit(data, params, x=x)
+
+    # Assert that the fit was successful
+    assert result.success
+
+    # Assert that the fitted parameters are close to the true values
+    assert np.isclose(result.params["center"].value, 0.0)
+    assert np.isclose(result.params["temp"].value, 30.0)
+    assert np.isclose(result.params["resolution"].value, 0.02)
+
+    # Assert that the fitted curve matches the test data
+    assert np.allclose(result.best_fit, data)
+
+
 def test_fermi_edge_model() -> None:
     # Create a test input DataArray
     x = np.linspace(-0.1, 0.1, 100)

@@ -35,20 +35,47 @@ is a simple tool exploring images interactively.
 ### Displaying data in ImageTool
 
 ImageTool supports *image-like* {class}`xarray.DataArray`s from 2 to 4 dimensions.
-Non-uniform coordinates are converted to index arrays automatically.
+Non-uniform coordinates are converted to index arrays automatically, and are suffixed
+with `_idx`.
 
-Invoke ImageTool by calling {func}`itool <erlab.interactive.imagetool.itool>`:
+There are three ways to display data in ImageTool:
 
-```python
-import erlab.interactive as eri
-eri.itool(data)
-```
+- {func}`itool <erlab.interactive.imagetool.itool>`:
 
-Or use the {meth}`xarray.DataArray.qshow` accessor:
+  ```python
+  import erlab.interactive as eri
+  eri.itool(data)
+  ```
 
-```python
-data.qshow()
-```
+- The {meth}`xarray.DataArray.qshow` accessor:
+
+  ```python
+  data.qshow()
+  ```
+
+  Note that `data` must be an *image-like* {class}`xarray.DataArray`.
+
+- (In an interactive session) Use the IPython magic command `%itool`:
+
+  If you are in an interactive session such as IPython and Jupyter notebook, you can use the `%itool` magic command to display an object in ImageTool. Before using this command, you must first load the IPython extension:
+
+  ```python
+  %load_ext erlab.interactive
+  ```
+
+  Then, you can use the `%itool` command to display data in ImageTool:
+
+  ```python
+  %itool data
+  ```
+
+  This command is equivalent to calling {func}`itool <erlab.interactive.imagetool.itool>`. Many arguments to {func}`itool <erlab.interactive.imagetool.itool>` are also available as options. For example, you can specify to open the data in the ImageTool manager by using the `--manager` option (or `-m` for short):
+
+  ```python
+  %itool -m data
+  ```
+
+  For all supported arguments, display the help message by running `%itool?` in an IPython session.
 
 ### Tips
 
@@ -57,7 +84,11 @@ data.qshow()
 - Most actions have associated keyboard shortcuts. Explore the menu bar to learn them.
 
 - Right-click on plots for context menus with options like copying slicing code, locking
-  aspect ratio, exporting to a file, and more.
+  aspect ratio, exporting to a file, opening various tools, and more.
+
+  :::{hint}
+  Holding {kbd}`Alt` inside the context menu will transform some menu items to work with the data cropped to the currently visible area.
+  :::
 
 - Cursor controls
 
@@ -90,7 +121,7 @@ data.qshow()
   - {material-regular}`settings_backup_restore`: reset all bin widths to 1.
   - {material-regular}`sync`: Apply binning changes to all cursors.
 
-- Rotate and normalize data via the edit and view menus.
+- In the "Edit" and "View" menu bar items, you can find various options to edit and transform the data, such as rotating, symmetrizing, and cropping. Try them out!
 
 - ImageTool is extensible. At our home lab, we use a modified version of ImageTool to
   plot data as it is being collected in real-time!
@@ -187,6 +218,20 @@ When the manager is running, new data can be opened in the manager by:
   :::
 
 ### Additional features
+
+- Replace data in already opened ImageTool windows by supplying the `replace` argument
+  to {func}`itool <erlab.interactive.imagetool.itool>` or
+  {meth}`xarray.DataArray.qshow`.
+
+  ```python
+  data.qshow(manager=True, replace=1)
+  ```
+
+  To replace multiple windows at once:
+
+  ```python
+  eri.itool([data1, data2], manager=True, replace=[1, 2])
+  ```
 
 - Save all ImageTool windows to a file via the `Save Workspace As...` menu item.
 

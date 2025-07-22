@@ -142,6 +142,7 @@ def test_qsel_slice_with_width() -> None:
 
 
 def test_qsel_associated_dim() -> None:
+    # 1D associated coordinate
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
         dims=("x", "y"),
@@ -155,6 +156,38 @@ def test_qsel_associated_dim() -> None:
             coords={"y": np.arange(5), "x": 2.0, "z": 2.0},
         ),
     )
+
+    # 2D associated coordinate
+    dat = xr.DataArray(
+        np.arange(5 * 4 * 3).reshape(5, 4, 3).astype(float),
+        dims=("x", "y", "z"),
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "w": (["x", "y"], np.arange(5 * 4).reshape(5, 4)),
+        },
+    )
+
+    expected = xr.DataArray(
+        np.array(
+            [
+                [24.0, 25.0, 26.0],
+                [27.0, 28.0, 29.0],
+                [30.0, 31.0, 32.0],
+                [33.0, 34.0, 35.0],
+            ]
+        ),
+        dims=("y", "z"),
+        coords={
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "x": 2.0,
+            "w": (["y"], np.array([8.0, 9.0, 10.0, 11.0])),
+        },
+    )
+
+    xr.testing.assert_identical(dat.qsel(x=2, x_width=3), expected)
 
 
 def test_qsel_value_outside_bounds() -> None:
@@ -198,3 +231,59 @@ def test_qsel_around() -> None:
     xr.testing.assert_identical(
         dat.qsel.around(radius=2.0, x=2.0, y=2.0, average=True), xr.DataArray(12.0)
     )
+
+
+def test_qsel_average_single_dim() -> None:
+    # Create a simple 2D DataArray with dims 'x' and 'y'
+
+    x = np.array([10, 20])
+    y = np.array([30, 40, 50])
+    data = np.array([[1, 2, 3], [4, 5, 6]])
+    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
+
+    # Average over the 'x' dimension using qsel.average.
+    # The expected result is the mean along 'x' and retaining the averaged coordinate.
+    # Expected mean data: [[(1+4)/2, (2+5)/2, (3+6)/2]] = [[2.5, 3.5, 4.5]]
+    expected = data.mean(axis=0)
+    result = da.qsel.average("x")
+
+    # After averaging, 'x' should not be a dimension; it is stored as a coordinate.
+    assert "x" not in result.dims
+    # Compare the resulting data with the expected average.
+    np.testing.assert_allclose(result.data, expected)
+    # Check that the coordinate 'x' is the mean of the original x-values.
+    np.testing.assert_allclose(result.coords["x"].data, x.mean())
+
+
+def test_qsel_average_multiple_dim() -> None:
+    # Create a simple 2D DataArray with dims 'x' and 'y'
+
+    x = np.array([0, 10, 20])
+    y = np.array([100, 200])
+    data = np.array([[1, 2], [4, 5], [7, 8]])
+    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
+
+    # Average over both 'x' and 'y'
+    # Expected result is a scalar value: mean of all data.
+    expected = data.mean()
+    result = da.qsel.average(["x", "y"])
+
+    # The resulting DataArray should have no dimensions.
+    assert not result.dims
+    # Data should be equal to the overall mean.
+    np.testing.assert_allclose(result.data, expected)
+    # Coordinates are retained as scalars equal to the mean of the original coords.
+    np.testing.assert_allclose(result.coords["x"].data, x.mean())
+    np.testing.assert_allclose(result.coords["y"].data, y.mean())
+
+
+def test_qsel_average_invalid_dim() -> None:
+    # Create a simple 1D DataArray
+
+    x = np.array([0, 1, 2])
+    data = np.array([10, 20, 30])
+    da = xr.DataArray(data, dims=("x",), coords={"x": x})
+
+    # Averaging over an invalid dimension should raise a ValueError
+    with pytest.raises(ValueError, match="Dimension `z` not found in data"):
+        _ = da.qsel.average("z")

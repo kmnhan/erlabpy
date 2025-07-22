@@ -24,10 +24,12 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "4a0daf8ff617f8559bcfccfc9dbf2c1a5791d80c"
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "3af40e2398c99af310ea5bf24bf8a176f38a37ac4f10c95b4defbd7900e65043"
+DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
@@ -77,9 +79,32 @@ def anglemap():
 
 
 @pytest.fixture(scope="session")
-def gold():
+def cut():
+    return generate_data_angles(
+        (300, 1, 500),
+        angrange={"alpha": (-15, 15), "beta": (4.5, 4.5)},
+        assign_attributes=True,
+    ).T
+
+
+@pytest.fixture(scope="session")
+def gold() -> xr.DataArray:
     return generate_gold_edge(
         (15, 150), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fit_res(gold) -> xr.Dataset:
+    return erlab.analysis.gold.poly(
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fine():
+    return generate_gold_edge(
+        (400, 500), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
 
 
@@ -255,6 +280,11 @@ class _DialogHandler(QtCore.QObject):
         log.debug("pre-call successfully called")
         self._handler.precall_called()
 
+    def __del__(self):
+        """Ensure the thread is stopped upon deletion."""
+        if hasattr(self, "_handler") and self._handler.isRunning():
+            self._handler.wait()
+
 
 @pytest.fixture
 def accept_dialog():
@@ -335,20 +365,20 @@ def cover_qthreadpool(monkeypatch, qtbot):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2435049275
     from qtpy.QtCore import QThreadPool
 
-    base_constructor = QThreadPool.globalInstance().start
+    base_start = QThreadPool.start
 
-    def run_with_trace(self):  # pragma: no cover
+    def start_with_trace(self, runnable, *args, **kwargs):
         if "coverage" in sys.modules:
-            # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
-            sys.settrace(threading._trace_hook)
-        self._base_run()
+            original_run = runnable.run
 
-    def _start(worker, *args, **kwargs):
-        worker._base_run = worker.run
-        worker.run = functools.partial(run_with_trace, worker)
-        return base_constructor(worker, *args, **kwargs)
+            def wrapped_run(*a, **kw):
+                sys.settrace(threading._trace_hook)
+                return original_run(*a, **kw)
 
-    monkeypatch.setattr(QThreadPool.globalInstance(), "start", _start)
+            runnable.run = wrapped_run
+        return base_start(self, runnable, *args, **kwargs)
+
+    monkeypatch.setattr(QThreadPool, "start", start_with_trace)
 
 
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):

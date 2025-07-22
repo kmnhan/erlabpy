@@ -143,39 +143,98 @@ def test_shift() -> None:
     assert np.allclose(shifted, expected, equal_nan=True)
 
 
-def test_symmetrize_both() -> None:
-    # Test symmetrize returns full (both) symmetrized DataArray.
+@pytest.mark.parametrize(
+    ("mode", "part", "expected"),
+    [
+        ("valid", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("valid", "below", [3.0, 5.0, 7.0, 9.0, 10.0]),
+        ("valid", "above", [10.0, 9.0, 7.0, 5.0, 3.0]),
+        (
+            "full",
+            "both",
+            [1.5, 3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0, 1.5],
+        ),
+        ("full", "below", [1.5, 3.0, 5.0, 7.0, 9.0, 10.0]),
+        ("full", "above", [10.0, 9.0, 7.0, 5.0, 3.0, 1.5]),
+    ],
+)
+def test_symmetrize(mode, part, expected):
     da = xr.DataArray(
-        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0], dtype=float),
         dims="x",
-        coords={"x": np.linspace(-2, 2, 6)},
+        coords={"x": np.linspace(-6, 5, 12)},
     )
-    sym_da = symmetrize(da, "x", center=0.0, part="both")
-    expected = np.array([2, 4, 6, 6, 4, 2], dtype=float)
+    sym_da = symmetrize(da, "x", center=0.0, mode=mode, part=part)
+    expected = np.array(expected, dtype=float)
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 
-def test_symmetrize_below() -> None:
-    # Test symmetrize returns only the lower half.
+@pytest.mark.parametrize(
+    ("mode", "part", "expected"),
+    [
+        ("valid", "both", [3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("valid", "below", [10.0, 9.0, 7.0, 5.0, 3.0]),
+        ("valid", "above", [3.0, 5.0, 7.0, 9.0, 10.0]),
+        (
+            "full",
+            "both",
+            [1.5, 3.0, 5.0, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 5.0, 3.0, 1.5],
+        ),
+        ("full", "below", [10.0, 9.0, 7.0, 5.0, 3.0, 1.5]),
+        ("full", "above", [1.5, 3.0, 5.0, 7.0, 9.0, 10.0]),
+    ],
+)
+def test_symmetrize_inverted(mode, part, expected):
     da = xr.DataArray(
-        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        np.array([0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1], dtype=float),
         dims="x",
-        coords={"x": np.linspace(-2, 2, 6)},
+        coords={"x": np.linspace(5, -6, 12)},
     )
-    sym_da = symmetrize(da, "x", center=0.0, part="below")
-    expected = np.array([2, 4, 6], dtype=float)
+    sym_da = symmetrize(da, "x", center=0.0, mode=mode, part=part)
+    expected = np.array(expected, dtype=float)
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 
-def test_symmetrize_above() -> None:
-    # Test symmetrize returns only the upper half (reflected).
+@pytest.mark.parametrize(
+    ("mode", "part", "expected"),
+    [
+        (
+            "valid",
+            "both",
+            [np.nan, np.nan, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, np.nan, np.nan],
+        ),
+        ("valid", "below", [np.nan, np.nan, 7.0, 9.0, 10.0]),
+        ("valid", "above", [10.0, 9.0, 7.0, np.nan, np.nan]),
+        (
+            "full",
+            "both",
+            [1.5, 2.5, 3.5, 7.0, 9.0, 10.0, 10.0, 9.0, 7.0, 3.5, 2.5, 1.5],
+        ),
+        ("full", "below", [1.5, 2.5, 3.5, 7.0, 9.0, 10.0]),
+        ("full", "above", [10.0, 9.0, 7.0, 3.5, 2.5, 1.5]),
+    ],
+)
+def test_symmetrize_na(mode, part, expected):
     da = xr.DataArray(
-        np.array([1, 2, 3, 3, 2, 1], dtype=float),
+        np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, np.nan, np.nan], dtype=float),
         dims="x",
-        coords={"x": np.linspace(-2, 2, 6)},
+        coords={"x": np.linspace(-6, 5, 12)},
     )
-    sym_da = symmetrize(da, "x", center=0.0, part="above")
-    expected = np.array([6, 4, 2], dtype=float)
+    sym_da = symmetrize(da, "x", center=0.0, mode=mode, part=part)
+    expected = np.array(expected, dtype=float)
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
+def test_symmetrize_subtract():
+    da = xr.DataArray(
+        np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(-6, 5, 12)},
+    )
+    sym_da = symmetrize(da, "x", center=0.0, subtract=True)
+    expected = np.array(
+        [1.5, 2.0, 2.0, 2.0, 2.0, 1.0, -1.0, -2.0, -2.0, -2.0, -2.0, -1.5], dtype=float
+    )
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 

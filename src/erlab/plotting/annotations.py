@@ -732,7 +732,6 @@ def mark_points(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
     else:
-        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
         fig = ax.get_figure()
 
         if fig is None:
@@ -742,7 +741,7 @@ def mark_points(
             kwargs.setdefault(k, v)
 
         if not np.iterable(y):
-            y = [y] * len(points)  # type: ignore[list-item]
+            y = [y] * len(points)
 
         with plt.rc_context({"font.family": "serif"}):
             for xi, yi, label in zip(points, y, labels, strict=True):
@@ -801,8 +800,6 @@ def mark_points_outside(
         for a in np.asarray(ax, dtype=object).flatten():
             mark_points_outside(points, labels, axis, roman, bar, a)
     else:
-        ax = typing.cast(matplotlib.axes.Axes, ax)  # to appease mypy
-
         if axis == "x":
             label_ax = ax.twiny()
             label_ax.set_xlim(ax.get_xlim())

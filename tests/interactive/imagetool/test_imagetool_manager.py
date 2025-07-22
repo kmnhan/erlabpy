@@ -211,15 +211,70 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     _handler = accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-    # Run garbage collection
-    manager.gc_action.trigger()
-
     # Show about dialog
     _handler = accept_dialog(manager.about)
 
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None
     erlab.interactive.imagetool.manager._always_use_socket = False
+
+
+def test_manager_replace(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool(test_data, manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    # Replace data in the tool
+    with qtbot.wait_signal(manager._sigDataReplaced):
+        itool(test_data**2, manager=True, replace=0)
+
+    assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
+
+    # Replacing 1 should create a new tool
+    itool(test_data**2, manager=True, replace=1)
+    qtbot.wait_until(lambda: manager.ntools == 2)
+    assert manager.get_tool(1).array_slicer.point_value(0) == 144.0
+
+    # Negative indexing
+    with qtbot.wait_signal(manager._sigDataReplaced):
+        itool(test_data, manager=True, replace=-1)
+
+    assert manager.get_tool(1).array_slicer.point_value(0) == 12.0
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
+def test_manager_duplicate(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool([test_data, test_data], manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+    select_tools(manager, [0, 1])
+    manager.duplicate_selected()
+    qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+    # Check if the duplicated tools have the same data
+    for i in range(2):
+        original_tool = manager.get_tool(i)
+        duplicated_tool = manager.get_tool(i + 2)
+
+        assert original_tool.slicer_area._data.equals(duplicated_tool.slicer_area._data)
+        assert manager._tool_wrappers[i].name == manager._tool_wrappers[i + 2].name
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
 
 
 def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
@@ -413,7 +468,9 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
 
 
 def test_manager_console(qtbot, accept_dialog) -> None:
-    manager = ImageToolManager()
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
+
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
         dims=["x", "y"],
@@ -465,7 +522,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         "np.arange(25).reshape((5, 5)) * 2, "
         "dims=['x', 'y'], "
         "coords={'x': np.arange(5), 'y': np.arange(5)}"
-        ")"
+        ")",
     )
     xr.testing.assert_identical(manager.get_tool(1).slicer_area.data, data * 2)
 
@@ -477,4 +534,20 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     # Test repr
     manager.console._console_widget.execute("tools")
     assert str(_get_last_output_contents()) == "No tools"
+
+    # Test magic command: itool
+    manager.console._console_widget.kernel_manager.kernel.shell.user_ns[
+        "example_data"
+    ] = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5), "eV": np.arange(5)},
+    )
+    manager.console._console_widget.execute(r"%itool example_data --cmap viridis")
+    qtbot.wait_until(lambda: manager.ntools == 1)
+    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None

@@ -459,7 +459,7 @@ def generate_hvdep_cuts(
                 (shape[1], 1, shape[2]),
                 angrange={"alpha": angrange, "beta": (beta_i, beta_i)},
                 Erange=Erange,
-                hv=hv_i,
+                hv=float(hv_i),
                 configuration=configuration,
                 temp=temp,
                 a=a,
@@ -484,7 +484,7 @@ def generate_gold_edge(
     angres: float = 0.1,
     edge_coeffs: Sequence[float] = (0.04, 1e-5, -3e-4),
     background_coeffs: Sequence[float] = (1.0, 0.0, -2e-3),
-    count: int = 100000000,
+    count: int = 1000000000,
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
@@ -560,7 +560,7 @@ def generate_gold_edge(
     data = erlab.analysis.image.gaussian_filter(
         data,
         sigma=typing.cast(
-            dict[Hashable, float],
+            "dict[Hashable, float]",
             {
                 "eV": Eres / np.sqrt(8 * np.log(2)),
                 "alpha": angres / np.sqrt(8 * np.log(2)),

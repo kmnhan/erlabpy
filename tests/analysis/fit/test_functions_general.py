@@ -6,6 +6,7 @@ from erlab.analysis.fit.functions.general import (
     _gen_kernel,
     do_convolve,
     fermi_dirac,
+    fermi_dirac_broad,
     fermi_dirac_linbkg,
     fermi_dirac_linbkg_broad,
     gaussian_wh,
@@ -124,6 +125,24 @@ def test_fermi_dirac_linbkg() -> None:
     )
     assert np.allclose(
         fermi_dirac_linbkg(x, center, temp, back0, back1, dos0, dos1), expected_result
+    )
+
+
+def test_fermi_dirac_broad() -> None:
+    x = np.linspace(0, 10, 100)
+    center = 5.0
+    temp = 300.0
+    resolution = 0.1
+    expected_result = do_convolve(
+        x,
+        fermi_dirac,
+        resolution=resolution,
+        center=center,
+        temp=temp,
+    )
+    assert np.allclose(
+        fermi_dirac_broad(x, center, temp, resolution),
+        expected_result,
     )
 
 

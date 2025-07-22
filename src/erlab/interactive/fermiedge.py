@@ -1,6 +1,7 @@
 __all__ = ["goldtool", "restool"]
 
 import concurrent.futures
+import importlib.resources
 import os
 import time
 import typing
@@ -58,14 +59,14 @@ class EdgeFitter(QtCore.QThread):
     sigFinished = QtCore.Signal()
 
     def set_params(self, data, x0, y0, x1, y1, params) -> None:
-        self.data = data
+        self.data = data.copy()
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
         self.parallel_obj = joblib.Parallel(
             n_jobs=self.params["# CPU"],
             max_nbytes=None,
-            return_as="list",
+            return_as="generator",
             pre_dispatch="n_jobs",
         )
         self.edge_center: xr.DataArray | None = None
@@ -80,7 +81,7 @@ class EdgeFitter(QtCore.QThread):
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = typing.cast(
-                tuple[xr.DataArray, xr.DataArray],
+                "tuple[xr.DataArray, xr.DataArray]",
                 erlab.analysis.gold.edge(
                     gold=self.data,
                     angle_range=self.x_range,
@@ -123,11 +124,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         Signal used to update the progress bar.
     sigAbortFitting()
         Signal used to abort the fitting, emitted when the cancel button is clicked.
-
+    sigUpdated()
+        Signal emitted when all fitting steps are finished and plots are updated.
     """
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
+    sigUpdated = QtCore.Signal()  #: :meta private:
 
     def __init__(
         self,
@@ -236,11 +239,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
 
         typing.cast(
-            QtWidgets.QComboBox, self.params_edge.widgets["Method"]
+            "QtWidgets.QComboBox", self.params_edge.widgets["Method"]
         ).setCurrentIndex(1)
 
         typing.cast(
-            QtWidgets.QCheckBox, self.params_edge.widgets["Fast"]
+            "QtWidgets.QCheckBox", self.params_edge.widgets["Fast"]
         ).stateChanged.connect(self._toggle_fast)
 
         self.params_poly = erlab.interactive.utils.ParameterGroup(
@@ -254,15 +257,22 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Open in ImageTool",
+                    "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
                 },
                 "copy": {
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Copy to clipboard",
+                    "text": "Copy code to clipboard",
                     "clicked": lambda: self.gen_code("poly"),
+                },
+                "save": {
+                    "qwtype": "pushbtn",
+                    "notrack": True,
+                    "showlabel": False,
+                    "text": "Save polynomial fit to file",
+                    "clicked": self._save_poly_fit,
                 },
             }
         )
@@ -284,19 +294,21 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Open in ImageTool",
+                    "text": "Open corrected in ImageTool",
                     "clicked": self.open_itool,
                 },
                 "copy": {
                     "qwtype": "pushbtn",
                     "notrack": True,
                     "showlabel": False,
-                    "text": "Copy to clipboard",
+                    "text": "Copy code to clipboard",
                     "clicked": lambda: self.gen_code("spl"),
                 },
             }
         )
-        _auto_check = typing.cast(QtWidgets.QCheckBox, self.params_spl.widgets["Auto"])
+        _auto_check = typing.cast(
+            "QtWidgets.QCheckBox", self.params_spl.widgets["Auto"]
+        )
         self.params_spl.widgets["lambda"].setDisabled(
             _auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
@@ -312,9 +324,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_tab = QtWidgets.QTabWidget()
         self.params_tab.addTab(self.params_poly, "Polynomial")
         self.params_tab.addTab(self.params_spl, "Spline")
-        self.params_tab.currentChanged.connect(
-            lambda i: self.perform_fit(("poly", "spl")[i])
-        )
+        self.params_tab.currentChanged.connect(self.perform_fit)
         self.controls.addWidget(self.params_tab)
 
         self.params_poly.setDisabled(True)
@@ -341,8 +351,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self.axes[i].addItem(self.scatterplots[i])
             self.axes[i].addItem(self.errorbars[i])
             self.axes[i].addItem(self.polycurves[i])
-        self.params_poly.sigParameterChanged.connect(lambda: self.perform_fit("poly"))
-        self.params_spl.sigParameterChanged.connect(lambda: self.perform_fit("spl"))
+        self.params_poly.sigParameterChanged.connect(self.perform_fit)
+        self.params_spl.sigParameterChanged.connect(self.perform_fit)
 
         self.axes[0].disableAutoRange()
 
@@ -386,7 +396,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._itool: QtWidgets.QWidget | None = None
 
         # Initialize fit result
-        self.result: scipy.interpolate.BSpline | lmfit.model.ModelResult | None = None
+        self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
 
         self.__post_init__(execute=execute)
 
@@ -421,7 +431,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
         params = self.params_edge.values
-        n_total = len(
+        n_total: int = len(
             self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
             .mean()
             .sel(alpha=slice(x0, x1))
@@ -438,8 +448,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def post_fit(self) -> None:
         self.progress.reset()
         self.edge_center, self.edge_stderr = (
-            typing.cast(xr.DataArray, self.fitter.edge_center),
-            typing.cast(xr.DataArray, self.fitter.edge_stderr),
+            typing.cast("xr.DataArray", self.fitter.edge_center),
+            typing.cast("xr.DataArray", self.fitter.edge_stderr),
         )
 
         xval = self.edge_center.alpha.values
@@ -451,16 +461,26 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_poly.setDisabled(False)
         self.params_spl.setDisabled(False)
         self.params_tab.setDisabled(False)
-        self.perform_fit("poly")
+        self.perform_fit()
 
-    def perform_fit(self, mode="poly") -> None:
-        match mode:
-            case "poly":
-                edgefunc = self._perform_poly_fit()
-                params = self.params_poly.values
-            case "spl":
-                edgefunc = self._perform_spline_fit()
-                params = self.params_spl.values
+    @property
+    def edge_func(self) -> typing.Callable:
+        """Returns the edge function."""
+        if self.params_tab.currentIndex() == 0:
+            return self._perform_poly_fit()
+        return self._perform_spline_fit()
+
+    @property
+    def edge_params(self) -> dict[str, typing.Any]:
+        """Returns the edge parameters."""
+        if self.params_tab.currentIndex() == 0:
+            return self.params_poly.values
+        return self.params_spl.values
+
+    def perform_fit(self) -> None:
+        edgefunc = self.edge_func
+        params = self.edge_params
+
         for i in range(2):
             xval = self.data.alpha.values
             if i == 1 and params["Residuals"]:
@@ -478,9 +498,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.scatterplots[1].setData(x=xval, y=yval, height=self.edge_stderr)
 
         self.aw.axes[1].setVisible(True)
-        self.aw.images[-1].setDataArray(self.corrected)
+
+        if params["Corrected"]:
+            self.aw.images[-1].setDataArray(self.corrected)
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
+        self.sigUpdated.emit()
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
@@ -490,12 +513,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             degree=params["Degree"],
             method=self.params_edge.values["Method"],
             scale_covar=params["Scale cov"],
-        ).modelfit_results.values.item()
-        target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.gold.correct_with_edge(
-            target, self.result, plot=False, shift_coords=params["Shift coords"]
         )
-        return lambda x: self.result.eval(self.result.params, x=x)
+
+        return lambda x: self.result.modelfit_results.values.item().eval(x=x)
 
     def _perform_spline_fit(self):
         params = self.params_spl.values
@@ -506,12 +526,25 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
         )
-
-        target = self.data if self.data_corr is None else self.data_corr
-        self.corrected = erlab.analysis.gold.correct_with_edge(
-            target, self.result, plot=False, shift_coords=params["Shift coords"]
-        )
         return self.result
+
+    @property
+    def corrected(self) -> xr.DataArray:
+        target = self.data if self.data_corr is None else self.data_corr
+        return erlab.analysis.gold.correct_with_edge(
+            target,
+            self.result,
+            plot=False,
+            shift_coords=self.edge_params["Shift coords"],
+        )
+
+    @QtCore.Slot()
+    def _save_poly_fit(self) -> None:
+        """Save the polynomial fit to a file."""
+        if self.result is None:
+            raise ValueError("No fit result available. Please perform a fit first.")
+
+        erlab.interactive.utils.save_fit_ui(self.result, parent=self)
 
     @QtCore.Slot()
     def open_itool(self) -> None:
@@ -525,7 +558,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._itool = tool
             self._itool.show()
 
-    def gen_code(self, mode: str) -> None:
+    def gen_code(self, mode: str) -> str:
         p0 = self.params_edge.values
         match mode:
             case "poly":
@@ -580,10 +613,28 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 assign="corrected",
             )
         erlab.interactive.utils.copy_to_clipboard(code_str)
+        return code_str
+
+    def _stop_server(self) -> None:
+        """Stop the fitter thread properly."""
+        if self.fitter.isRunning():
+            self.fitter.abort_fit()
+            self.fitter.wait()
+
+    def __del__(self) -> None:
+        """Ensure the fitter thread is stopped when the object is deleted."""
+        self._stop_server()
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        """Overridden close event to ensure proper cleanup."""
+        self._stop_server()
+        super().closeEvent(event)
 
 
 class ResolutionTool(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "restool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
+    )
 ):
     _sigTriggerFit = QtCore.Signal()
 
@@ -628,7 +679,7 @@ class ResolutionTool(
         if data_name is None:
             try:
                 data_name = typing.cast(
-                    str,
+                    "str",
                     varname.argname("data", func=self.__init__, vars_only=False),  # type: ignore[misc]
                 )
             except varname.VarnameRetrievingError:

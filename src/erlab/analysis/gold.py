@@ -128,7 +128,7 @@ def correct_with_edge(
 
     if plot is True:
         axes = typing.cast(
-            npt.NDArray, plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
+            "npt.NDArray", plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
         )
 
         plot_kw.setdefault("cmap", "copper")
@@ -298,17 +298,25 @@ def edge(
         parallel_obj = joblib.Parallel(**parallel_kw)
 
     def _fit(data, w):
-        pars = model.guess(data, x=data["eV"]).update(params)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                category=UserWarning,
+                message=(
+                    "Using UFloat objects with std_dev==0 may give unexpected results."
+                ),
+            )
+            pars = model.guess(data, x=data["eV"]).update(params)
 
-        return data.xlm.modelfit(
-            "eV",
-            model=model,
-            params=pars,
-            method=method,
-            scale_covar=scale_covar,
-            weights=w,
-            **kwargs,
-        )
+            return data.xlm.modelfit(
+                "eV",
+                model=model,
+                params=pars,
+                method=method,
+                scale_covar=scale_covar,
+                weights=w,
+                **kwargs,
+            )
 
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
@@ -517,7 +525,7 @@ def poly(
     scale_covar_edge: bool = True,
 ) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
     center_arr, center_stderr = typing.cast(
-        tuple[xr.DataArray, xr.DataArray],
+        "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
             angle_range=angle_range,
@@ -575,7 +583,7 @@ def spline(
     scale_covar_edge: bool = True,
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
     center_arr, center_stderr = typing.cast(
-        tuple[xr.DataArray, xr.DataArray],
+        "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
             angle_range=angle_range,
@@ -803,7 +811,7 @@ def _plot_resolution_fit(
 
         center_repr = (
             f"$E_F = {center * 1e3:L}$ meV"
-            if center < 0.1
+            if center.n < 0.1
             else f"$E_F = {center:L}$ eV"
         )
         resolution_repr = f"$\\Delta E = {resolution * 1e3:L}$ meV"
@@ -920,7 +928,7 @@ def resolution(
     )
 
     pol, gold_corr = typing.cast(
-        tuple[xr.Dataset, xr.DataArray],
+        "tuple[xr.Dataset, xr.DataArray]",
         poly(
             gold,
             angle_range=angle_range,

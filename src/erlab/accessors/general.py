@@ -23,6 +23,9 @@ from erlab.accessors.utils import (
     either_dict_or_kwargs,
 )
 
+if typing.TYPE_CHECKING:
+    import lmfit
+
 
 def _check_hvplot():
     """Check if hvplot is installed and raise an ImportError if not."""
@@ -283,10 +286,10 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
                     if comp not in all_comps:
                         all_comps.append(comp)
 
-        def get_slice(*s):
+        def get_slice(*s) -> xr.Dataset:
             return self._obj.sel(dict(zip(coord_dims, s, strict=False)))
 
-        def get_slice_params(*s):
+        def get_slice_params(*s) -> xr.Dataset:
             res_part = get_slice(*s).rename(param="Parameter")
             return xr.merge(
                 [
@@ -295,12 +298,19 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
                 ]
             )
 
-        def get_comps(*s):
+        def get_comps(*s) -> xr.Dataset:
             partial_res = get_slice(*s)
-            main_coord = self._obj[other_dims[0]]
-            components = (
-                partial_res[f"{prefix}modelfit_results"].item().eval_components()
+            mod_res: lmfit.model.ModelResult = partial_res[
+                f"{prefix}modelfit_results"
+            ].item()
+
+            main_coord = mod_res.userkws[mod_res.model.independent_vars[0]]
+
+            main_coord = xr.DataArray(
+                main_coord, dims=[other_dims[0]], coords=[main_coord]
             )
+
+            components = mod_res.eval_components()
 
             component_arrays = []
             for dim in all_comps:
@@ -474,10 +484,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         if len(slices) >= 1:
             out = out.sel(slices)
 
-            lost_coords = {
-                k: out[k].mean(keep_attrs=True)
+            lost_coords: dict[Hashable, xr.DataArray] = {
+                k: out[k].mean(
+                    dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
+                )
                 for k in lost_dims
-                if k not in unindexed_dims
+                if (k not in unindexed_dims)
             }
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)

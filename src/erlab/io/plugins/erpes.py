@@ -29,8 +29,26 @@ def _determine_kind(data: xr.DataArray) -> str:
     return data_type
 
 
-def _get_start_time(data: xr.DataArray) -> datetime.datetime:
-    return datetime.datetime.fromisoformat(f"{data.attrs['Date']} {data.attrs['Time']}")
+def _get_start_time(data: xr.DataArray) -> xr.DataArray:
+    """Get the start time from raw data."""
+    return xr.apply_ufunc(
+        lambda x, y: datetime.datetime.fromisoformat(f"{x} {y}"),
+        data["Date"],
+        data["Time"],
+        vectorize=True,
+    )
+
+
+def _get_seq_start(data: xr.DataArray) -> xr.DataArray:
+    return xr.apply_ufunc(
+        lambda x: datetime.datetime.fromisoformat(x), data["seq_start"], vectorize=True
+    )
+
+
+def _get_attrs_time(data: xr.DataArray) -> xr.DataArray:
+    return xr.apply_ufunc(
+        lambda x: datetime.datetime.fromisoformat(x), data["attrs_time"], vectorize=True
+    )
 
 
 def _emit_ambiguous_file_warning(num, file_to_use):
@@ -50,32 +68,62 @@ class ERPESLoader(DA30Loader):
         "alpha": ["Y-Scale [deg]", "Thetax [deg]"],
         "beta": ["Thetay [deg]", "ThetaY"],
         "hv": ["BL Energy", "Excitation Energy"],
-        "x": "X",
-        "y": "Y",
-        "z": "Z",
         "sample_temp": "TB",
     }
     coordinate_attrs: tuple[str, ...] = (
         "beta",
         "chi",
-        "xi",
+        # "xi",
         "hv",
-        "x",
-        "y",
-        "z",
         "sample_temp",
+        "hwp",
+        "qwp",
+        "TA",
+        "TC",
+        "TD",
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8",
+        "T0",
+        "ch1",
+        "ch2",
+        "ch3",
+        "ch4",
+        "ch5",
+        "ch6",
+        "torr_main",
+        "torr_middle",
+        "torr_loadlock",
+        "seq_start",
+        "attrs_time",
+        "laser_power",
+        "Date",  # Promote Date and Time
+        "Time",  # Convert to single datetime in additional_coords
     )
 
-    additional_attrs: typing.ClassVar[
-        dict[str, str | float | Callable[[xr.DataArray], str | float]]
-    ] = {"configuration": 4}
+    additional_attrs: typing.ClassVar[dict] = {"configuration": 4}
 
-    additional_coords: typing.ClassVar[dict[str, str | int | float]] = {"hv": 6.0187}
+    additional_coords: typing.ClassVar[dict] = {
+        "hv": 6.0187,
+        "datetime": _get_start_time,
+        "seq_start": _get_seq_start,
+        "attrs_time": _get_attrs_time,
+    }
+
+    overridden_coords: tuple[str, ...] = (
+        "seq_start",
+        "attrs_time",
+    )
 
     summary_attrs: typing.ClassVar[
         dict[str, str | Callable[[xr.DataArray], typing.Any]]
     ] = {
-        "time": _get_start_time,
+        "time": "datetime",
         "type": _determine_kind,
         "lens mode": "Lens Mode",
         "mode": "Acquisition Mode",
@@ -94,6 +142,8 @@ class ERPESLoader(DA30Loader):
     summary_sort = "time"
 
     always_single = False
+
+    parallel_kwargs: typing.ClassVar[dict] = {"n_jobs": -1, "prefer": "threads"}
 
     _PATTERN_MULTIFILE = re.compile(r".*\d{4}_S\d{5}.(pxt|zip)")
     _PATTERN_PREFIX = re.compile(r"(.*?)\d{4}(?:_S\d{5})?.(pxt|zip)")
@@ -217,3 +267,6 @@ class ERPESLoader(DA30Loader):
         if scan_num.isdigit():
             return int(scan_num), {"prefix": prefix}
         return None, {}
+
+    def post_process(self, data: xr.DataArray) -> xr.DataArray:
+        return super().post_process(data).drop_vars(["Date", "Time"], errors="ignore")

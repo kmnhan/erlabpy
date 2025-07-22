@@ -24,6 +24,7 @@ __all__ = [
     "laplace",
     "minimum_gradient",
     "ndsavgol",
+    "remove_stripe",
     "scaled_laplace",
 ]
 
@@ -723,7 +724,7 @@ def diffn(
     darr
         The input DataArray.
     coord
-        The coordinate along which to calculate the derivative.
+        The name of the coordinate along which to calculate the derivative.
     order
         The order of the derivative. If given as a tuple, a tuple of derivatives for
         each order is returned. Default is 1.
@@ -860,7 +861,6 @@ def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     return darr.copy(data=scaled_lapl_operator(darr.values.astype(np.float64)))
 
 
-@erlab.utils.array.check_arg_2d_darr
 @erlab.utils.array.check_arg_uniform_dims
 @erlab.utils.array.check_arg_has_no_nans
 def curvature(
@@ -873,7 +873,8 @@ def curvature(
     Parameters
     ----------
     darr
-        The 2D DataArray for which to calculate the curvature.
+        The DataArray for which to calculate the curvature. The curvature is calculated
+        along the first two dimensions of the DataArray.
     a0
         The regularization constant. Reasonable values range from 0.001 to 10, but
         different values may be needed depending on the data. Default is 1.0.
@@ -960,3 +961,75 @@ def curvature1d(
     dfdx, d2fdx2 = diffn(darr, along, order=(1, 2), **kwargs)
     curv = d2fdx2 / (a0 + dfdx**2 / (np.abs(dfdx).max() ** 2)) ** 1.5
     return darr.copy(data=curv)
+
+
+@erlab.utils.array.check_arg_has(dims=("alpha", "eV"))
+def remove_stripe(
+    darr: xr.DataArray, deg: int, full: bool = False, **sel_kw
+) -> xr.DataArray | tuple[xr.DataArray, xr.DataArray]:
+    r"""Remove angle-dependent stripe artifact from cuts and maps.
+
+    Energy-independent stripe artifacts may be introduced during the acquisition of
+    ARPES data due to imperfect alignment of the slit or other experimental factors.
+
+    Assume an original intensity :math:`I_0(\alpha, \omega)` that is corrupted by a
+    energy-independent stripe pattern :math:`S(\alpha)`:
+
+    .. math::
+
+        I(\alpha, \omega) = I_0(\alpha, \omega) \cdot S(\alpha).
+
+    If we assume that :math:`S(\alpha)` to be a high-frequency noise, we may approximate
+    :math:`I_0(\alpha, \omega)` by smoothing :math:`I(\alpha, \omega)` along
+    :math:`\alpha`. We can then obtain an approximation of :math:`1/S(\alpha)` by
+    dividing the smoothed data with :math:`I(\alpha, \omega)` and averaging the result
+    over :math:`\omega`. Finally, we can remove the stripe pattern by multiplying
+    :math:`I(\alpha, \omega)` with the obtained :math:`1/S(\alpha)`.
+
+    Works best for data with a high signal-to-noise ratio and a high background level.
+    Since the stripe is assumed to be energy-independent, the method is only suitable
+    for data acquired with sweep mode.
+
+    This method may introduce artifacts that are not present in the original data,
+    making it unsuitable for quantitative analysis. Use only for visualization purposes.
+
+    Parameters
+    ----------
+    darr
+        The data containing the stripe artifact. Data must have the dimensions "alpha"
+        and "eV".
+    deg
+        The degree of the polynomial fit. The degree should be high enough to capture
+        all intrinsic features of the data, but low enough to avoid overfitting. A good
+        starting value is around 20.
+    full
+        Flag determining whether to return the full stripe pattern. If True,
+        :math:`1/S(\alpha)` is also returned. Default is False.
+    **sel_kw
+        Keyword arguments to :meth:`xarray.DataArray.sel`. Specify the range of angles
+        and energies to use for the polynomial fit.
+
+    Returns
+    -------
+    corrected : xarray.DataArray
+        The data with the stripe artifact removed.
+    stripe : xarray.DataArray
+        The stripe pattern :math:`1/S(\alpha)`. Only returned if `full` is True.
+
+    """
+    cropped = darr.sel(**sel_kw)
+
+    poly_fit = xr.polyval(
+        cropped["alpha"], cropped.polyfit("alpha", deg).polyfit_coefficients
+    )
+
+    with xr.set_options(keep_attrs=True):
+        stripe = xr.ones_like(darr).isel(eV=0).squeeze()
+        sel_kw_copy = sel_kw.copy()
+        sel_kw_copy.pop("eV", None)
+        stripe.loc[sel_kw_copy] = (poly_fit / cropped).mean("eV", skipna=True)
+        corrected = darr * stripe
+
+        if full:
+            return corrected, stripe
+        return corrected

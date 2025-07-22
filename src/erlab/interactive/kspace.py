@@ -18,7 +18,7 @@ from __future__ import annotations
 __all__ = ["ktool"]
 
 import functools
-import os
+import importlib.resources
 import typing
 import warnings
 
@@ -138,7 +138,9 @@ class _MovableCircleROI(pg.CircleROI):
 
 
 class KspaceToolGUI(
-    *uic.loadUiType(os.path.join(os.path.dirname(__file__), "ktool.ui"))  # type: ignore[misc]
+    *uic.loadUiType(  # type: ignore[misc]
+        str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui"))
+    )
 ):
     def __init__(
         self,
@@ -308,6 +310,11 @@ class KspaceTool(KspaceToolGUI):
 
         self.data: xr.DataArray = data.copy(deep=True)
 
+        self.config_label.setText(
+            f"Configuration {int(self.data.kspace.configuration)} "
+            f"({self.data.kspace.configuration.name})"
+        )
+
         if self.data.kspace._has_eV:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
             eV_step = self.data.eV.values[1] - self.data.eV.values[0]
@@ -333,10 +340,17 @@ class KspaceTool(KspaceToolGUI):
         offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
-            self._offset_spins[k].setRange(-180, 180)
+            self._offset_spins[k].setRange(-360, 360)
             self._offset_spins[k].setSingleStep(0.01)
             self._offset_spins[k].setDecimals(3)
             self._offset_spins[k].setValue(self.data.kspace.offsets[k])
+            if (
+                k != "delta"
+                and k in self.data.coords
+                and f"{k}_offset" not in self.data.attrs
+            ):
+                self._offset_spins[k].setValue(float(self.data[k].mean()))
+
             self._offset_spins[k].valueChanged.connect(self.update)
             self._offset_spins[k].setSuffix("°")
             self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
@@ -374,7 +388,6 @@ class KspaceTool(KspaceToolGUI):
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        bounds = self.data.kspace.estimate_bounds()
         for k in self.data.kspace.momentum_axes:
             for j in range(2):
                 name = f"{k}{j}"
@@ -384,17 +397,15 @@ class KspaceTool(KspaceToolGUI):
                 else:
                     self._bound_spins[name].setRange(-10, 10)
                 self._bound_spins[name].setSingleStep(0.01)
-                self._bound_spins[name].setDecimals(3)
-                self._bound_spins[name].setValue(bounds[k][j])
+                self._bound_spins[name].setDecimals(4)
                 self._bound_spins[name].valueChanged.connect(self.update)
                 self._bound_spins[name].setSuffix(" Å⁻¹")
                 self.bounds_group.layout().addRow(name, self._bound_spins[name])
 
             self._resolution_spins[k] = QtWidgets.QDoubleSpinBox()
-            self._resolution_spins[k].setRange(0.001, 10)
+            self._resolution_spins[k].setRange(0.0001, 10)
             self._resolution_spins[k].setSingleStep(0.001)
             self._resolution_spins[k].setDecimals(5)
-            self._resolution_spins[k].setValue(self.data.kspace.estimate_resolution(k))
             self._resolution_spins[k].valueChanged.connect(self.update)
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
@@ -408,17 +419,21 @@ class KspaceTool(KspaceToolGUI):
         # self.offsets_group.layout().addRow("scale", self._beta_scale_spin)
         # self._beta_scale_spin.valueChanged.connect(self.update)
 
-        self.bounds_btn.clicked.connect(self.calculate_bounds)
+        # Populate bounds and resolution
+        self.calculate_bounds()
+        self.calculate_resolution()
 
+        self.bounds_btn.clicked.connect(self.calculate_bounds)
         self.res_btn.clicked.connect(self.calculate_resolution)
         self.res_npts_check.toggled.connect(self.calculate_resolution)
 
-        for pi in self.plotitems:
-            if self.data.kspace._has_beta and not self.data.kspace._has_hv:
+        if self.data.kspace._has_beta and not self.data.kspace._has_hv:
+            for pi in self.plotitems:
                 pi.vb.setAspectLocked(lock=True, ratio=1)
         self.open_btn.clicked.connect(self.show_converted)
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
+
         if avec is not None:
             self.bz_group.setChecked(True)
 
@@ -609,7 +624,7 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
 
-    def get_bz_lines(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         from erlab.plotting.bz import get_bz_edge
 
         if self.data.kspace._has_hv:

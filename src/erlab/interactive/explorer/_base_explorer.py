@@ -1,16 +1,9 @@
-"""Quickly browse and load ARPES data files with a file manager-like interface.
+"""File system explorer for ARPES data files.
 
-.. image:: ../images/explorer_light.png
-    :align: center
-    :alt: Data explorer window in light mode
-    :class: only-light
-
-.. only:: format_html
-
-    .. image:: ../images/explorer_dark.png
-        :align: center
-        :alt: Data explorer window in dark mode
-        :class: only-dark
+This module implements a file system explorer for ARPES data files. It can open a single
+directory and display its contents in a tree view, allowing users to navigate through
+the file system, view file attributes, and load data files into the ImageToolManager for
+further analysis.
 """
 
 from __future__ import annotations
@@ -99,7 +92,7 @@ class _FileSystem:
         """
         if self._children is None:
             self.reload()
-        return typing.cast(list[_FileSystem], self._children)
+        return typing.cast("list[_FileSystem]", self._children)
 
     @property
     def can_fetch_children(self) -> bool:
@@ -228,7 +221,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
         if not index.isValid():
             return self.file_system
 
-        return typing.cast(_FileSystem, index.internalPointer())
+        return typing.cast("_FileSystem", index.internalPointer())
 
     def fetchMore(self, parent: QtCore.QModelIndex) -> None:
         """Fetch more children of the file system."""
@@ -438,10 +431,10 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
         self._menu.popup(self.mapToGlobal(position))
 
     def model(self) -> _DataExplorerModel:
-        return typing.cast(_DataExplorerModel, super().model())
+        return typing.cast("_DataExplorerModel", super().model())
 
     def selectionModel(self) -> QtCore.QItemSelectionModel:
-        return typing.cast(QtCore.QItemSelectionModel, super().selectionModel())
+        return typing.cast("QtCore.QItemSelectionModel", super().selectionModel())
 
     @property
     def selected_paths(self) -> list[pathlib.Path]:
@@ -803,6 +796,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
     TEXT_MULTIPLE_SELECTED: str = "Multiple files selected"
     TEXT_LOADING: str = "Loading..."
 
+    sigDirectoryChanged = QtCore.Signal(str)
+    sigCloseRequested = QtCore.Signal(object)
+
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
@@ -819,7 +815,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self.menu_bar: QtWidgets.QMenuBar = typing.cast(
-            QtWidgets.QMenuBar, self.menuBar()
+            "QtWidgets.QMenuBar", self.menuBar()
         )
 
         self._slider_value: int | None = None
@@ -840,6 +836,18 @@ class _DataExplorer(QtWidgets.QMainWindow):
         """Name of the selected loader."""
         return self._loader_combo.currentText()
 
+    @property
+    def current_directory(self) -> pathlib.Path:
+        """Current directory being displayed."""
+        return self._fs_model.file_system.path
+
+    @QtCore.Slot()
+    def try_close(self) -> None:
+        if self.isWindow() and not hasattr(self.parent(), "close_tab"):
+            self.close()
+        else:
+            self.sigCloseRequested.emit(self)
+
     def _setup_actions(self) -> None:
         self._to_manager_act = QtWidgets.QAction("&Open in Manager", self)
         self._to_manager_act.triggered.connect(self.to_manager)
@@ -851,7 +859,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._to_manager_single_act = QtWidgets.QAction(
-            "&Open in Manager as Single File", self
+            "Open in Manager as Single File", self
         )
         self._to_manager_single_act.triggered.connect(self.to_manager_single)
         self._to_manager_single_act.setToolTip(
@@ -859,18 +867,20 @@ class _DataExplorer(QtWidgets.QMainWindow):
             "Each file will be opened in a separate window."
         )
 
-        self._close_act = QtWidgets.QAction("&Close Window", self)
-        self._close_act.triggered.connect(self.close)
+        self._close_act = QtWidgets.QAction(
+            "&Close Window"
+            if (self.isWindow() and not hasattr(self.parent(), "close_tab"))
+            else "&Close Tab",
+            self,
+        )
+
+        self._close_act.triggered.connect(self.try_close)
         self._close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)
-        self._finder_act.setToolTip(f"Open the current folder in {fm_name}")
-        self._finder_act.triggered.connect(
-            lambda: erlab.utils.misc.open_in_file_manager(
-                self._fs_model.file_system.path
-            )
-        )
+        self._finder_act.setToolTip(f"Open the current item in {fm_name}")
+        self._finder_act.triggered.connect(self._open_in_file_manager)
 
         self._open_dir_act = QtWidgets.QAction("&Open Folder...", self)
         self._open_dir_act.triggered.connect(self._choose_directory)
@@ -890,7 +900,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._climb_up_act.setToolTip("Go up one directory level")
 
         # Populate the menu bar
-        file_menu = typing.cast(QtWidgets.QMenu, self.menu_bar.addMenu("&File"))
+        file_menu = typing.cast("QtWidgets.QMenu", self.menu_bar.addMenu("&File"))
         file_menu.addAction(self._to_manager_act)
         file_menu.addAction(self._to_manager_single_act)
         file_menu.addAction(self._finder_act)
@@ -901,6 +911,14 @@ class _DataExplorer(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._close_act)
 
+    @QtCore.Slot()
+    def _open_in_file_manager(self) -> None:
+        """Open the current selection in the file manager."""
+        selection = self._current_selection
+        erlab.utils.misc.open_in_file_manager(
+            self.current_directory if len(selection) == 0 else selection[-1]
+        )
+
     def _setup_ui(self) -> None:
         main_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(main_widget)
@@ -908,58 +926,46 @@ class _DataExplorer(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(main_widget)
         main_widget.setLayout(layout)
 
-        # Top bar
-        top_widget = QtWidgets.QWidget(self)
-        top_layout = QtWidgets.QHBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_widget.setLayout(top_layout)
-        top_widget.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Maximum
-        )
-        layout.addWidget(top_widget)
+        splitter = QtWidgets.QSplitter(main_widget)
+        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+        layout.addWidget(splitter)
 
-        top_layout.addWidget(
+        left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_widget.setLayout(left_layout)
+        splitter.addWidget(left_widget)
+
+        left_header = QtWidgets.QWidget()
+        left_header_layout = QtWidgets.QHBoxLayout(left_header)
+        left_header_layout.setContentsMargins(0, 0, 0, 0)
+        left_header.setLayout(left_header_layout)
+        left_layout.addWidget(left_header)
+        self._current_dir_line = QtWidgets.QLineEdit()
+        self._current_dir_line.setReadOnly(True)
+        self._current_dir_line.setText(str(self.current_directory))
+        left_header_layout.addWidget(self._current_dir_line)
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._open_dir_act, "mdi6.folder")
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(self._reload_act, "mdi6.refresh")
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._climb_up_act, "mdi6.arrow-up"
             )
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._to_manager_act, "mdi6.chart-tree"
             )
         )
-        top_layout.addWidget(
+        left_header_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
                 self._finder_act, "mdi6.apple-finder"
             )
         )
-
-        top_layout.addStretch()
-
-        top_layout.addWidget(QtWidgets.QLabel("Loader"))
-        self._loader_combo = _LoaderWidget()
-        self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
-        self._loader_combo.currentIndexChanged.connect(self._loader_changed)
-        top_layout.addWidget(self._loader_combo)
-
-        self._preview_check = QtWidgets.QCheckBox("Preview")
-        self._preview_check.setToolTip(
-            "Show a preview of the selected file.\n"
-            "This may significantly slow down the browsing for large files."
-        )
-        self._preview_check.setChecked(False)
-        self._preview_check.toggled.connect(self._on_selection_changed)
-        top_layout.addWidget(self._preview_check)
-
-        splitter = QtWidgets.QSplitter(main_widget)
-        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
 
         self._tree_view = _DataExplorerTreeView(self)
         self._tree_view.setModel(self._fs_model)
@@ -968,16 +974,45 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
         self._tree_view.doubleClicked.connect(self.to_manager)
         self._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
-        splitter.addWidget(self._tree_view)
+        left_layout.addWidget(self._tree_view)
+
+        right_widget = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_widget.setLayout(right_layout)
+        splitter.addWidget(right_widget)
 
         preview_splitter = QtWidgets.QSplitter()
         preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
+        right_layout.addWidget(preview_splitter)
+
+        right_footer = QtWidgets.QWidget()
+        right_footer_layout = QtWidgets.QHBoxLayout(right_footer)
+        right_footer_layout.setContentsMargins(0, 0, 0, 0)
+        right_footer.setLayout(right_footer_layout)
+        right_layout.addWidget(right_footer)
+
+        right_footer_layout.addWidget(QtWidgets.QLabel("Loader"))
+        self._loader_combo = _LoaderWidget()
+        self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
+        self._loader_combo.currentIndexChanged.connect(self._loader_changed)
+        right_footer_layout.addWidget(self._loader_combo)
+        right_footer_layout.addStretch()
+
+        self._preview_check = QtWidgets.QCheckBox("Preview")
+        self._preview_check.setToolTip(
+            "Show a preview of the selected file.\n"
+            "This may significantly slow down the browsing for large files."
+        )
+        self._preview_check.setChecked(False)
+        self._preview_check.toggled.connect(self._on_selection_changed)
+        right_footer_layout.addWidget(self._preview_check)
 
         self._text_edit = QtWidgets.QTextEdit()
         self._text_edit.setText(self.TEXT_NONE_SELECTED)
         self._text_edit.setReadOnly(True)
         scroll_bar = self._text_edit.verticalScrollBar()
-        typing.cast(QtWidgets.QScrollBar, scroll_bar).valueChanged.connect(
+        typing.cast("QtWidgets.QScrollBar", scroll_bar).valueChanged.connect(
             self._save_slider_pos
         )
         preview_splitter.addWidget(self._text_edit)
@@ -986,7 +1021,6 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._preview.setVisible(False)
         preview_splitter.addWidget(self._preview)
 
-        splitter.addWidget(preview_splitter)
         preview_splitter.setSizes([200, 200])
 
         self.setMinimumWidth(487)
@@ -997,6 +1031,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _dir_loaded(self) -> None:
         """Slot to be called when a directory is loaded."""
         self._tree_view.resizeColumnToContents(0)
+        dir_path = self.current_directory
+        self._current_dir_line.setText(str(dir_path))
+        if self.isWindow():
+            dir_name = dir_path.name if dir_path.name else str(dir_path)
+            self.setWindowTitle(f"Data Explorer — {dir_name}")
+        self.sigDirectoryChanged.emit(str(dir_path))
 
     @QtCore.Slot()
     def _save_slider_pos(self) -> None:
@@ -1019,7 +1059,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast(QtCore.QThreadPool, QtCore.QThreadPool.globalInstance())
+        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
 
     @property
     def _current_selection(self) -> list[pathlib.Path]:
@@ -1035,7 +1075,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def _choose_directory(self) -> None:
         """Open a dialog to choose a directory."""
         directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Select Directory", str(self._fs_model.file_system.path)
+            self, "Select Directory", str(self.current_directory)
         )
         if directory:
             self._fs_model.set_root_path(directory)
@@ -1084,7 +1124,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         if len(selected_files) == 1 and selected_files[0] == pathlib.Path(file_path):
             # Update text and restore scroll position
             scroll_bar = typing.cast(
-                QtWidgets.QScrollBar, self._text_edit.verticalScrollBar()
+                "QtWidgets.QScrollBar", self._text_edit.verticalScrollBar()
             )
             scroll_bar.blockSignals(True)
             self._text_edit.setHtml(self._parse_file_info(text))
@@ -1152,44 +1192,3 @@ class _DataExplorer(QtWidgets.QMainWindow):
                         if file_paths[0].is_dir()
                         else file_paths[0].parent
                     )
-
-
-def data_explorer(
-    directory: str | os.PathLike | None = None,
-    loader_name: str | None = None,
-    *,
-    execute: bool | None = None,
-) -> None:
-    """Start the data explorer.
-
-    Data explorer is a tool to browse and load ARPES data files with a file manager-like
-    interface. Data attributes of supported files can be quickly inspected, and can be
-    loaded into ImageToolManager for further analysis.
-
-    The data explorer can be started from the command line as a standalone application
-    with the following command:
-
-    .. code-block:: bash
-
-        python -m erlab.interactive.explorer
-
-    Also, it can be opened from the GUI by selecting "File" -> "Data Explorer" in
-    ImageToolManager.
-
-    Parameters
-    ----------
-    directory
-        Initial directory to display in the explorer.
-    loader_name
-        Name of the loader to use to load the data. The loader must be registered in
-        :attr:`erlab.io.loaders`.
-    """
-    with erlab.interactive.utils.setup_qapp(execute):
-        win = _DataExplorer(root_path=directory, loader_name=loader_name)
-        win.show()
-        win.raise_()
-        win.activateWindow()
-
-
-if __name__ == "__main__":
-    data_explorer()

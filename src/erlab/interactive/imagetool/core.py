@@ -31,7 +31,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterable, Sequence
+    from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 
     import qtawesome
 
@@ -111,6 +111,12 @@ def _parse_input(
                 _parse_dataset(leaf.dataset) for leaf in data.leaves
             )
         )
+    elif not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
+        raise TypeError(
+            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
+            "DataTree, numpy array, or a list of DataArray or numpy arrays."
+        )
+
     if len(data) == 0:
         raise ValueError(f"No valid data for ImageTool found in {input_cls}")
 
@@ -457,9 +463,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Default colormap of the data.
     gamma
         Default power law normalization of the colormap.
+    high_contrast
+        If `True`, the colormap is displayed in high contrast mode. This changes the
+        behavior of the exponent scaling of the colormap. See
+        :mod:`erlab.plotting.colors` for a detailed explanation of the difference.
     zero_centered
         If `True`, the normalization is applied symmetrically from the midpoint of the
         colormap.
+    vmin
+        Minimum value of the colormap.
+    vmax
+        Maximum value of the colormap.
     rad2deg
         If `True` and `data` is not `None`, converts some known angle coordinates to
         degrees. If an iterable of strings is given, only the coordinates that
@@ -558,7 +572,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         cmap: str | pg.ColorMap = "magma",
         gamma: float = 0.5,
+        high_contrast: bool = False,
         zero_centered: bool = False,
+        vmin: float | None = None,
+        vmax: float | None = None,
         rad2deg: bool | Iterable[str] = False,
         *,
         transpose: bool = False,
@@ -634,6 +651,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         cmap_reversed: bool = False
         if isinstance(cmap, str):
+            cmap = cmap.strip().strip("'").strip('"')
             if cmap.endswith("_r"):
                 cmap = cmap.removesuffix("_r")
                 cmap_reversed = True
@@ -717,17 +735,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.bench:
             print("\n")
 
-        if state is not None:
-            self.state = state
-
+        self.high_contrast_act.setChecked(high_contrast)
         self.reverse_act.setChecked(cmap_reversed)
         self.zero_centered_act.setChecked(zero_centered)
+
+        if vmin is not None or vmax is not None:
+            if vmin is None:
+                vmin = self.array_slicer.nanmin
+            if vmax is None:
+                vmax = self.array_slicer.nanmax
+            self.set_colormap(levels_locked=True, levels=(vmin, vmax))
+
+        if state is not None:
+            self.state = state
 
         if transpose:
             self.transpose_main_image()
 
         self.qapp = typing.cast(
-            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
         self.qapp.aboutToQuit.connect(self.on_close)
 
@@ -747,7 +773,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         If nothing can be inferred, an empty string is returned.
         """
-        name: str | None = typing.cast(str | None, self._data.name)
+        name: str | None = typing.cast("str | None", self._data.name)
         path: pathlib.Path | None = self._file_path
         if name is not None and name.strip() == "":
             # Name contains only whitespace
@@ -771,7 +797,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
-        return typing.cast(ColorMapState, prop)
+        return typing.cast("ColorMapState", prop)
 
     @property
     def state(self) -> ImageSlicerState:
@@ -859,7 +885,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @levels.setter
     def levels(self, levels: tuple[float, float]) -> None:
-        self._colorbar.cb.setSpanRegion(levels)
+        self._colorbar.cb.setSpanRegion(
+            (
+                max(levels[0], self.array_slicer.nanmin),
+                min(levels[1], self.array_slicer.nanmax),
+            )
+        )
 
     @property
     def slices(self) -> tuple[ItoolPlotItem, ...]:
@@ -1133,7 +1164,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def unlink(self) -> None:
         if self.is_linked:
-            typing.cast(SlicerLinkProxy, self._linking_proxy).remove(self)
+            typing.cast("SlicerLinkProxy", self._linking_proxy).remove(self)
 
     def get_current_index(self, axis: int) -> int:
         return self.array_slicer.get_index(self.current_cursor, axis)
@@ -1265,12 +1296,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
+        # Save color limits so we may restore them later
+        _cached_levels: tuple[float, float] | None = None
+        if self.levels_locked:
+            _cached_levels = copy.deepcopy(self.levels)
+
         ndim_changed: bool = True
+        cursors_reset: bool = True
         try:
             if hasattr(self, "_array_slicer"):
                 if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
                     ndim_changed = False
-                self._array_slicer.set_array(self._data, reset=True)
+                cursors_reset = self._array_slicer.set_array(self._data, reset=True)
 
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
@@ -1298,8 +1335,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # self.refresh_current()
         self.refresh_colormap()
+
+        # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
-        self.lock_levels(False)
+        self.lock_levels(self.levels_locked)
+        if self.levels_locked and (_cached_levels is not None) and (not cursors_reset):
+            # If the levels were cached, restore them
+            # This is needed if the data was reloaded and the levels were locked
+            self.levels = _cached_levels
+
         self.flush_history()
 
     @property
@@ -1324,7 +1368,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _fetch_for_reload(self) -> xr.DataArray:
         reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
-            typing.cast(pathlib.Path, self._file_path)
+            typing.cast("pathlib.Path", self._file_path)
         )
         if not isinstance(reloaded, xr.DataArray):
             raise TypeError(
@@ -1942,11 +1986,6 @@ class ItoolCursorLine(pg.InfiniteLine):
         else:
             self.setMouseHover(False)
 
-    def _computeBoundingRect(self):
-        """CursorLine debugging."""
-        _ = self.getViewBox().size()
-        return super()._computeBoundingRect()
-
 
 class ItoolCursorSpan(pg.LinearRegionItem):
     def __init__(self, *args, **kargs) -> None:
@@ -2089,6 +2128,47 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
             super().mouseClickEvent(ev)
 
 
+class _OptionKeyMenuFilter(QtCore.QObject):
+    """Filter to catch and modify the text of menu items.
+
+    Adds a '(Crop)' suffix to actions if the option key is down.
+    """
+
+    def __init__(self, menu: QtWidgets.QMenu, actions: list[QtWidgets.QAction]) -> None:
+        super().__init__(menu)
+        self.menu = menu
+
+        self._actions: dict[str, QtWidgets.QAction] = {}
+        for act in actions:
+            self._actions[act.text()] = act
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        if (
+            (event is not None)
+            and isinstance(obj, QtWidgets.QMenu)
+            and obj.isVisible()
+            and event.type()
+            in (
+                QtCore.QEvent.Type.Show,
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.QEvent.Type.KeyRelease,
+            )
+        ):
+            alt_pressed: bool = (
+                QtCore.Qt.KeyboardModifier.AltModifier
+                in QtWidgets.QApplication.queryKeyboardModifiers()
+            )
+
+            for k, v in self._actions.items():
+                v.setText(f"{k} (Crop)" if alt_pressed else k)
+
+            return True
+
+        return super().eventFilter(obj, event)
+
+
 class ItoolPlotItem(pg.PlotItem):
     """A subclass of :class:`pyqtgraph.PlotItem` used in ImageTool.
 
@@ -2138,6 +2218,8 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        croppable_actions: list[QtWidgets.QAction] = [save_action]
+
         if image:
             itool_action = self.vb.menu.addAction("New Window")
             itool_action.triggered.connect(self.open_in_new_window)
@@ -2179,12 +2261,19 @@ class ItoolPlotItem(pg.PlotItem):
                     equal_aspect_action.blockSignals(False)
 
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
+
+            croppable_actions.extend(
+                (itool_action, goldtool_action, restool_action, dtool_action)
+            )
         else:
             norm_action = self.vb.menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
             norm_action.toggled.connect(self.set_normalize)
         self.vb.menu.addSeparator()
+
+        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
+        self.vb.menu.installEventFilter(self._menu_filter)
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
@@ -2264,6 +2353,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
         if not self.is_image:
+            self.slicer_area.sigDataChanged.connect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
 
@@ -2274,10 +2364,12 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
         if not self.is_image:
+            self.slicer_area.sigDataChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
 
     def setup_twin(self) -> None:
+        """Initialize twin axis for plotting associated coordinates."""
         if not self.is_image and self.vb1 is None:
             self.vb1 = pg.ViewBox(enableMenu=False)
             self.vb1.setDefaultPadding(0)
@@ -2285,7 +2377,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.scene().addItem(self.vb1)
             self.getAxis(loc).linkToView(self.vb1)
 
-            # pass right clicks to original vb
+            # Pass right clicks to original vb
             self.getAxis(loc).mouseClickEvent = self.vb.mouseClickEvent
 
             self._update_twin_geometry()
@@ -2293,6 +2385,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def _axis_to_link_twin(self) -> int:
+        """Get the axis to link the twin axis to based on the orientation."""
         return (
             pg.ViewBox.YAxis
             if self.slicer_data_items[-1].is_vertical
@@ -2317,7 +2410,7 @@ class ItoolPlotItem(pg.PlotItem):
     def enableAutoRange(self, axis=None, enable=True, x=None, y=None):
         super().enableAutoRange(axis=axis, enable=enable, x=x, y=y)
         if self.vb1 is not None and self._twin_visible:
-            self.vb1.enableAutoRange(axis=None, enable=True, x=None, y=None)
+            self.vb1.enableAutoRange(axis=None, enable=enable, x=x, y=y)
 
     @QtCore.Slot()
     def update_twin_range(self, autorange: bool = True) -> None:
@@ -2421,13 +2514,13 @@ class ItoolPlotItem(pg.PlotItem):
                 if ax in self.array_slicer._nonuniform_axes:
                     dim_list[i] = dim_list[i].removesuffix("_idx")
 
-        dims = typing.cast(tuple[str] | tuple[str, str], tuple(dim_list))
+        dims = typing.cast("tuple[str] | tuple[str, str]", tuple(dim_list))
         if not self.is_image:
             if self.slicer_data_items[-1].is_vertical:
                 dims = (None, *dims)
             else:
                 dims = (*dims, None)
-        return typing.cast(tuple[str | None, str | None], dims)
+        return typing.cast("tuple[str | None, str | None]", dims)
 
     @property
     def axis_dims(self) -> tuple[str | None, str | None]:
@@ -2442,8 +2535,35 @@ class ItoolPlotItem(pg.PlotItem):
         return self.vb.state["linkedViews"] == [None, None]
 
     @property
+    def _current_data(self) -> xr.DataArray:
+        """Data in the current plot item."""
+        return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+
+    @property
+    def _current_data_cropped(self) -> xr.DataArray:
+        """Data in the current plot item, cropped to the current axes view limits."""
+        slice_dict: dict[Hashable, slice] = {}
+        for k, v in self.slicer_area.manual_limits.items():
+            ax_idx = self.slicer_area.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+            slice_dict[k] = slice(
+                *sorted(float(np.round(val, sig_digits)) for val in v)
+            )
+        return self._current_data.sel(slice_dict)
+
+    @property
     def current_data(self) -> xr.DataArray:
-        data = self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+        """Data in the current plot item, cropped or uncropped.
+
+        If accessed while the Alt (Option) key is pressed, the data is cropped to the
+        current axes view limits.
+        """
+        alt_pressed: bool = (
+            QtCore.Qt.KeyboardModifier.AltModifier
+            in QtWidgets.QApplication.queryKeyboardModifiers()
+        )
+        data = self._current_data_cropped if alt_pressed else self._current_data
+
         return erlab.utils.array.sort_coord_order(
             data, self.slicer_area._data.coords.keys()
         )
@@ -2471,14 +2591,23 @@ class ItoolPlotItem(pg.PlotItem):
         """Open the current data in a new window. Only available for 2D data."""
         if self.is_image:
             data = self.current_data
+
+            color_props = self.slicer_area.colormap_properties
+            itool_kw: dict[str, typing.Any] = {
+                "data": data,
+                "cmap": color_props["cmap"],
+                "gamma": color_props["gamma"],
+                "high_contrast": color_props["high_contrast"],
+                "zero_centered": color_props["zero_centered"],
+                "transpose": (data.dims != self.axis_dims),
+                "file_path": self.slicer_area._file_path,
+                "execute": False,
+            }
+            if color_props["levels_locked"]:
+                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+
             tool = typing.cast(
-                QtWidgets.QWidget | None,
-                erlab.interactive.itool(
-                    data,
-                    transpose=(data.dims != self.axis_dims),
-                    file_path=self.slicer_area._file_path,
-                    execute=False,
-                ),
+                "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
             )
             if tool is not None:
                 self.slicer_area.add_tool_window(tool)
@@ -2598,7 +2727,7 @@ class ItoolPlotItem(pg.PlotItem):
                     # If aspect locked, do not attempt to set autorange
                     continue
 
-                if not self.getViewBox().state["autoRange"][i]:
+                if not self.getViewBox().state["autoRange"][i] and dim is not None:
                     # If manual limits are not set and auto range is disabled, set to
                     # bounding rect. Internally, vb.autoRange() just calls setRange(...)
                     # so calling setRange only once with the full bounds prevents
@@ -2991,7 +3120,9 @@ class ItoolPlotItem(pg.PlotItem):
     def copy_selection_code(self) -> None:
         if self.selection_code == "":
             QtWidgets.QMessageBox.critical(
-                self, "Error", "Selection code is undefined for main image of 2D data."
+                None,
+                "Error",
+                "Selection code is unavailable for main image of 2D data.",
             )
             return
         erlab.interactive.utils.copy_to_clipboard(self.selection_code)

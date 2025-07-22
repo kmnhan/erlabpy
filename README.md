@@ -3,23 +3,23 @@
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab?logo=python&logoColor=white)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab?logo=pypi&logoColor=white)](https://pypi.org/project/erlab/)
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white)](https://anaconda.org/conda-forge/erlab)
-[![Workflow Status](https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?logo=github&label=tests)](https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml)
+[![Workflow Status](https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?branch=main&logo=github&label=tests)](https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml)
 [![Documentation Status](https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white)](https://erlabpy.readthedocs.io/)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg)](https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main)
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white)](https://codecov.io/gh/kmnhan/erlabpy)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)
 
-ERLabPy provides tools to handle, manipulate, and visualize data from condensed matter physics experiments, focusing on angle-resolved photoemission spectroscopy (ARPES).
+ERLabPy provides tools to handle, manipulate, and visualize data from angle-resolved photoemission spectroscopy (ARPES) experiments.
 
-ERLabPy integrates with scientific Python workflows for efficient data analysis.
+Key elements are seamlessly integrated with popular scientific Python workflows. A fast native graphical user interface is provided for data exploration and manipulation, allowing users to get started quickly without needing to write code. The library is designed to be flexible and extensible, making it suitable for a wide range of data analysis tasks.
 
 ## Features
 
 - **Data Loading**: Flexible system for various data formats.
-- **Data Manipulation**: Tools for interpolation, masking, and symmetrization.
+- **Data Manipulation**: Tools for interpolation, masking, symmetrization, and more.
 - **Plotting**: Functions for 2D and 3D publication-quality plots.
-- **Fitting**: Functions for fitting data, including Fermi-Dirac distributions, MDCs, EDCs, and more.
+- **Fitting**: Functions for curve fitting, including Fermi-Dirac distributions, MDCs, EDCs, and more.
 - **Interactive Visualization**: Responsive plotting routines similar to Igor Pro.
 
 ## Gallery

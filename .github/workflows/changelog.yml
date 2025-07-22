@@ -1,5 +1,8 @@
 name: Update changelog
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
 

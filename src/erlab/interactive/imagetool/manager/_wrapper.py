@@ -6,6 +6,7 @@ __all__ = ["_ImageToolWrapper"]
 
 import datetime
 import os
+import sys
 import typing
 import uuid
 import weakref
@@ -143,6 +144,7 @@ class _ImageToolWrapper(QtCore.QObject):
             # Install event filter to detect visibility changes
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
+            value.slicer_area._in_manager = True
 
         self._tool = value
 
@@ -163,7 +165,7 @@ class _ImageToolWrapper(QtCore.QObject):
     @name.setter
     def name(self, name: str) -> None:
         self._name = name
-        typing.cast(ImageTool, self.tool).setWindowTitle(self.label_text)
+        typing.cast("ImageTool", self.tool).setWindowTitle(self.label_text)
         self.manager.list_view.refresh(self.index)
 
     @property
@@ -180,6 +182,11 @@ class _ImageToolWrapper(QtCore.QObject):
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
+        """Event filter to detect visibility changes of the tool window.
+
+        Stores the geometry of the tool window when it is shown or hidden so that it can
+        be restored when the tool is shown again.
+        """
         if (
             obj == self.tool
             and event is not None
@@ -200,12 +207,12 @@ class _ImageToolWrapper(QtCore.QObject):
     def update_title(self, title: str | None = None) -> None:
         if not self.archived:
             if title is None:
-                title = typing.cast(ImageTool, self.tool).windowTitle()
+                title = typing.cast("ImageTool", self.tool).windowTitle()
             self.name = title
 
     @QtCore.Slot()
     def visibility_changed(self) -> None:
-        tool = typing.cast(ImageTool, self.tool)
+        tool = typing.cast("ImageTool", self.tool)
         self._recent_geometry = tool.geometry()
 
     @QtCore.Slot()
@@ -221,6 +228,17 @@ class _ImageToolWrapper(QtCore.QObject):
         if self.tool is not None:
             if not self.tool.isVisible() and self._recent_geometry is not None:
                 self.tool.setGeometry(self._recent_geometry)
+
+            if sys.platform == "win32":  # pragma: no cover
+                # On Windows, window flags must be set to bring the window to the top
+                self.tool.setWindowFlags(
+                    self.tool.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                )
+                self.tool.show()
+                self.tool.setWindowFlags(
+                    self.tool.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
+                )
+            self.tool.show()
             self.tool.show()
             self.tool.activateWindow()
             self.tool.raise_()
@@ -258,7 +276,7 @@ class _ImageToolWrapper(QtCore.QObject):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            tool = typing.cast(ImageTool, self.tool)
+            tool = typing.cast("ImageTool", self.tool)
             tool.to_file(self._archived_fname)
             self.touch_timer.start()
 
@@ -276,7 +294,7 @@ class _ImageToolWrapper(QtCore.QObject):
         """
         if self.archived:
             self.touch_timer.stop()
-            self.tool = ImageTool.from_file(typing.cast(str, self._archived_fname))
+            self.tool = ImageTool.from_file(typing.cast("str", self._archived_fname))
             self.tool.show()
             self._info_text_archived = ""
             self._box_ratio_archived = float("NaN")

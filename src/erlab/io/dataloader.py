@@ -20,16 +20,15 @@ __all__ = [
     "ValidationError",
     "ValidationWarning",
 ]
-
 import contextlib
 import errno
 import importlib
 import itertools
 import os
 import pathlib
+import traceback
 import typing
 import warnings
-from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -39,13 +38,16 @@ import xarray as xr
 import erlab
 
 if typing.TYPE_CHECKING:
+    import datetime
     from collections.abc import (
         Callable,
+        Hashable,
         ItemsView,
         Iterable,
         Iterator,
         KeysView,
         Mapping,
+        Sequence,
     )
 
     import joblib
@@ -214,7 +216,7 @@ class LoaderBase(metaclass=_Loader):
     Note
     ----
     - Non-dimension coordinates in the resulting data will try to follow the order of
-      the keys in this dictionary.
+      the keys in this mapping.
     - Original **coordinate** names included in this mapping will be replaced by the new
       names. However, original **attribute** names will be duplicated with the new names
       so that both the original and new names are present in the data after loading.
@@ -260,7 +262,13 @@ class LoaderBase(metaclass=_Loader):
     """
 
     additional_attrs: typing.ClassVar[
-        dict[str, str | int | float | Callable[[xr.DataArray], str | int | float]]
+        dict[
+            str,
+            str
+            | float
+            | datetime.datetime
+            | Callable[[xr.DataArray], str | float | datetime.datetime],
+        ]
     ] = {}
     """Additional attributes to be added to the data after loading.
 
@@ -279,8 +287,18 @@ class LoaderBase(metaclass=_Loader):
     overridden_attrs: tuple[str, ...] = ()
     """Keys in :attr:`additional_attrs` that should override existing attributes."""
 
-    additional_coords: typing.ClassVar[dict[str, str | int | float]] = {}
-    """Additional non-dimension coordinates to be added to the data after loading.
+    additional_coords: typing.ClassVar[
+        dict[
+            str,
+            str
+            | float
+            | datetime.datetime
+            | Callable[[xr.DataArray], str | float | datetime.datetime],
+        ]
+    ] = {}
+    """Additional coordinates to be added to the data after loading.
+
+    If a callable is provided, it will be called with the data as the only argument.
 
     Notes
     -----
@@ -308,6 +326,16 @@ class LoaderBase(metaclass=_Loader):
 
     Only used when :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`
     is `False`.
+    """
+
+    parallel_kwargs: typing.ClassVar[dict[str, typing.Any]] = {"n_jobs": -1}
+    """
+    Additional keyword arguments to be passed to :class:`joblib.Parallel` when loading
+    files in parallel. The default is to use all available CPU cores.
+
+    Set this attribute to configure the default behavior per loader.
+
+    .. versionadded:: 3.9.0
     """
 
     skip_validate: bool = False
@@ -633,7 +661,7 @@ class LoaderBase(metaclass=_Loader):
                     "data_dir must be specified when identifier is an integer"
                 )
             file_paths, coord_dict = typing.cast(
-                tuple[list[str], dict[str, Sequence]],
+                "tuple[list[str], dict[str, Sequence]]",
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
             # file_paths: list of file paths with at least one element
@@ -646,7 +674,7 @@ class LoaderBase(metaclass=_Loader):
             else:
                 # Multiple files resolved
                 if combine:
-                    data = self._combine_multiple(
+                    data_list, coord_dict = self.pre_combine_multiple(
                         self.load_multiple_parallel(
                             file_paths,
                             parallel=parallel,
@@ -655,6 +683,8 @@ class LoaderBase(metaclass=_Loader):
                         ),
                         coord_dict,
                     )
+                    data = self._combine_multiple(data_list, coord_dict)
+                    del data_list, coord_dict  # Free memory
                 else:
                     return self.load_multiple_parallel(
                         file_paths,
@@ -726,7 +756,10 @@ class LoaderBase(metaclass=_Loader):
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
         | None = None,
         overridden_attrs: tuple[str, ...] | None = None,
-        additional_coords: dict[str, str | int | float] | None = None,
+        additional_coords: dict[
+            str, str | float | Callable[[xr.DataArray], str | float]
+        ]
+        | None = None,
         overridden_coords: tuple[str, ...] | None = None,
     ) -> Iterator[typing.Self]:
         """Context manager that temporarily extends various loader attributes.
@@ -916,8 +949,7 @@ class LoaderBase(metaclass=_Loader):
         """Return the formatted value of the given attribute or coordinate.
 
         The value is formatted using the function specified in :attr:`formatters
-        <erlab.io.dataloader.LoaderBase.formatters>`. If the name is not found, an empty
-        string is returned.
+        <erlab.io.dataloader.LoaderBase.formatters>`.
 
         Parameters
         ----------
@@ -926,6 +958,11 @@ class LoaderBase(metaclass=_Loader):
         attr_or_coord_name : str or callable
             The name of the attribute or coordinate to extract. If a callable is passed,
             it is called with the data as the only argument.
+
+        Notes
+        -----
+        - Numpy datetime64 scalars are converted to pandas timestamps before formatting.
+        - If the attribute or coordinate is not found, an empty string is returned.
 
         """
         if callable(attr_or_coord_name):
@@ -937,10 +974,14 @@ class LoaderBase(metaclass=_Loader):
             val = func(data.attrs[attr_or_coord_name])
         elif attr_or_coord_name in data.coords:
             val = data.coords[attr_or_coord_name].values
+
             if val.size == 1:
-                val = func(val.item())
+                if np.issubdtype(val.dtype, np.datetime64):
+                    val = func(pandas.to_datetime(val.item()))
+                else:
+                    val = func(val.item())
             else:
-                val = np.array(list(map(func, val)), dtype=val.dtype)
+                val = np.array(list(map(func, val)))
         else:
             val = ""
         return val
@@ -1039,23 +1080,29 @@ class LoaderBase(metaclass=_Loader):
             try:
                 _add_content(
                     typing.cast(
-                        xr.DataArray | xr.Dataset | xr.DataTree,
+                        "xr.DataArray | xr.Dataset | xr.DataTree",
                         self.load(f, load_kwargs={"without_values": True}),
                     ),
                     f,
                 )
-            except Exception as e:
+            except Exception:
+                traceback_str = traceback.format_exc()
                 erlab.utils.misc.emit_user_level_warning(
-                    f"Failed to load {f} for summary: {e}"
+                    f"Failed to load {f} for summary: \n{traceback_str}",
+                    UserWarning,
                 )
 
         sort_by = self.summary_sort if self.summary_sort is not None else "File Name"
 
-        df = (
-            pandas.DataFrame(content, columns=columns)
-            .sort_values(sort_by)
-            .set_index("File Name")
-        )
+        df = pandas.DataFrame(content, columns=columns)
+
+        try:
+            df = df.sort_values(sort_by)
+        except ValueError:
+            # Sort failed, sort by index
+            df = df.sort_values("File Name")
+
+        df = df.set_index("File Name")
 
         # Cache directory contents for determining whether cache is up-to-date
         contents = {str(f.relative_to(data_dir)) for f in data_dir.glob("[!.]*")}
@@ -1078,7 +1125,7 @@ class LoaderBase(metaclass=_Loader):
 
         if summary is None:
             kwargs["display"] = False
-            df = typing.cast(pandas.DataFrame, self.summarize(**kwargs))
+            df = typing.cast("pandas.DataFrame", self.summarize(**kwargs))
         else:
             df = summary
 
@@ -1282,7 +1329,7 @@ class LoaderBase(metaclass=_Loader):
             itool_button.on_click(
                 lambda _: show_in_manager(
                     typing.cast(
-                        xr.DataArray | xr.Dataset,
+                        "xr.DataArray | xr.Dataset",
                         _update_data(None, full=True, ret=True),
                     )
                 )
@@ -1516,6 +1563,48 @@ class LoaderBase(metaclass=_Loader):
         """
         return dict(variable_attrs[0])
 
+    def pre_combine_multiple(
+        self,
+        data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
+        coord_dict: dict[str, Sequence],
+    ) -> tuple[
+        list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree], dict[str, Sequence]
+    ]:
+        """Pre-process data before combining multiple files.
+
+        This method is called only for loaders that support combining multiple files
+        into a single object, i.e., loaders with :attr:`always_single
+        <erlab.io.dataloader.LoaderBase.always_single>` set to `False`. The default
+        implementation returns the input data and coordinate dictionary unchanged.
+
+        Override this function to perform any necessary concatenation-specific
+        pre-processing steps. The primary use case is to correct small inconsistencies
+        in the loaded data that results in broken concatenation/combination.
+
+        For instance, ALS BL4.0.3 Merlin often produces data with the energy axis start
+        and step values shifted by a small amount (typically on the order of μeV). This
+        results in different energy values for the same scan in different files, leading
+        to the data not being combined correctly. See the implementation of
+        :class:`MERLINLoader <erlab.io.plugins.merlin.MERLINLoader>`.
+
+        Parameters
+        ----------
+        data_list : list of DataArray or Dataset or DataTree
+            A list of data objects to be pre-processed prior to combining.
+        coord_dict : dict of str to sequence
+            A dictionary mapping coordinate names to sequences of coordinate values, as
+            returned by :meth:`identify <erlab.io.dataloader.LoaderBase.identify>`.
+
+        Returns
+        -------
+        data_list : list of DataArray or Dataset or DataTree
+            The pre-processed data objects.
+        coord_dict : dict of str to sequence
+            The coordinate dictionary, with any necessary modifications made.
+
+        """
+        return data_list, coord_dict
+
     @typing.overload
     def _combine_multiple(
         self, data_list: list[xr.DataArray], coord_dict: dict[str, Sequence]
@@ -1554,7 +1643,7 @@ class LoaderBase(metaclass=_Loader):
                 try:
                     return xr.combine_by_coords(
                         typing.cast(
-                            Sequence[xr.DataArray] | Sequence[xr.Dataset], data_list
+                            "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
                         ),
                         combine_attrs=self.combine_attrs,
                         data_vars="all",
@@ -1608,12 +1697,24 @@ class LoaderBase(metaclass=_Loader):
                     for i, data in enumerate(data_list)
                 ]
 
+            # Ensure all processed data have the same set of coordinates by assigning
+            # NaN to missing coordinates. This is necessary for some setups where some
+            # data files have missing header entries, possibly due to a bug in the data
+            # acquisition software.
+            all_coord_names: set[Hashable] = set().union(
+                *(d.coords.keys() for d in processed)
+            )
+            for i, data in enumerate(processed):
+                missing = all_coord_names - set(data.coords.keys())
+                if missing:
+                    processed[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
+
             # Magically combine the data
             combined = xr.combine_by_coords(
                 processed,
-                combine_attrs=self.combine_attrs,
                 data_vars="all",
-                join="exact",
+                join="outer",
+                combine_attrs=self.combine_attrs,
             )
 
             if (
@@ -1712,7 +1813,7 @@ class LoaderBase(metaclass=_Loader):
                 v = darr[k].values.mean()
                 darr = darr.drop_vars(k).assign_attrs({k: v})
 
-        new_attrs: dict[str, str | float] = {}
+        new_attrs: dict[str, str | float | datetime.datetime] = {}
         for k, v in self.additional_attrs.items():
             if k not in darr.attrs:
                 if callable(v):
@@ -1728,18 +1829,25 @@ class LoaderBase(metaclass=_Loader):
         new_attrs["data_loader_name"] = str(self.name)
         darr = darr.assign_attrs(new_attrs)
 
-        new_coords = {
-            k: v
-            for k, v in self.additional_coords.items()
-            if k not in darr.coords or k in self.overridden_coords
-        }
+        new_coords = {}
+        for k, v in self.additional_coords.items():
+            if k not in darr.coords or k in self.overridden_coords:
+                if callable(v):
+                    new_coords[k] = v(darr)
+                else:
+                    new_coords[k] = v
+
         return darr.assign_coords(new_coords)
 
     def _reorder_coords(self, darr: xr.DataArray):
         """Sort the coordinates of the given DataArray."""
         return erlab.utils.array.sort_coord_order(
             darr,
-            keys=itertools.chain(self.name_map.keys(), self.additional_coords.keys()),
+            keys=itertools.chain(
+                self.name_map.keys(),
+                (s for s in self.coordinate_attrs if s not in self.name_map),
+                self.additional_coords.keys(),
+            ),
             dims_first=True,
         )
 
@@ -1796,7 +1904,7 @@ class LoaderBase(metaclass=_Loader):
 
         if isinstance(data, xr.DataTree):
             return typing.cast(
-                xr.DataTree, data.map_over_datasets(self.post_process_general)
+                "xr.DataTree", data.map_over_datasets(self.post_process_general)
             )
 
         raise TypeError(
@@ -1907,7 +2015,7 @@ class LoaderBase(metaclass=_Loader):
 
         if parallel:
             with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
-                return joblib.Parallel(n_jobs=-1, max_nbytes=None)(
+                return joblib.Parallel(**self.parallel_kwargs)(
                     joblib.delayed(_load_func)(f) for f in file_paths
                 )
 
@@ -2120,7 +2228,7 @@ class LoaderRegistry(_RegistryBase):
             self.set_data_dir(data_dir)
 
         try:
-            yield typing.cast(LoaderBase, self.current_loader)
+            yield typing.cast("LoaderBase", self.current_loader)
         finally:
             if loader is not None:
                 self.set_loader(old_loader)

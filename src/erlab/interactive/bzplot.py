@@ -41,7 +41,7 @@ class BZPlotter(QtWidgets.QMainWindow):
         execute: bool = True,
     ) -> None:
         self.qapp = typing.cast(
-            QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
         )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
@@ -314,7 +314,7 @@ class BZPlotWidget(QtWidgets.QWidget):
         layout.addWidget(self._canvas)
 
         self.ax = typing.cast(
-            mpl_toolkits.mplot3d.axes3d.Axes3D,
+            "mpl_toolkits.mplot3d.axes3d.Axes3D",
             self._canvas.figure.add_subplot(projection="3d"),
         )
         self.ax.axis("off")

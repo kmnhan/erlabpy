@@ -17,12 +17,14 @@ loader.
    da30
    erpes
    esm
+   hers
    i05
    kriss
    lorea
    maestro
    mbs
    merlin
+   snu1
    ssrl52
 
 """

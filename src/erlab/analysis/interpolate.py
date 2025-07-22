@@ -255,7 +255,7 @@ def _interp1(x, values, xc, fill_value=np.nan):
     xc_flat = xc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[1:], values.dtype)
+    arr_new = np.empty((n, *values.shape[1:]), values.dtype)
 
     for m in numba.prange(n):
         v0 = _val2ind(xc_flat[m], x)
@@ -274,7 +274,7 @@ def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     xc_flat, yc_flat = xc.ravel(), yc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[2:], values.dtype)
+    arr_new = np.empty((n, *values.shape[2:]), values.dtype)
 
     for m in numba.prange(n):
         v0, v1 = _val2ind(xc_flat[m], x), _val2ind(yc_flat[m], y)
@@ -293,7 +293,7 @@ def _interp3(x, y, z, values, xc, yc, zc, fill_value=np.nan):
     xc_flat, yc_flat, zc_flat = xc.ravel(), yc.ravel(), zc.ravel()
     n = len(xc_flat)
 
-    arr_new = np.empty((n,) + values.shape[3:], values.dtype)
+    arr_new = np.empty((n, *values.shape[3:]), values.dtype)
 
     for m in numba.prange(n):
         v0, v1, v2 = (
@@ -414,7 +414,7 @@ def slice_along_path(
             if np.allclose(dif, dif[0], equal_nan=True):
                 step_size = min(step_size, np.abs(dif[0]))
 
-        if not np.isfinite(typing.cast(float, step_size)):
+        if not np.isfinite(typing.cast("float", step_size)):
             raise ValueError("Could not determine step size automatically")
     else:
         if not np.isfinite(step_size):
@@ -426,7 +426,7 @@ def slice_along_path(
 
     # Calculate number of points for each segment
     num_points = [
-        round(np.linalg.norm(p2 - p1) / step_size) - 1  # type: ignore[call-overload,operator]
+        round(np.linalg.norm(p2 - p1) / step_size) - 1
         for p1, p2 in itertools.pairwise(points)
     ]
     # Generate points for each segment

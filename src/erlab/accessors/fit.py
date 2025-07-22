@@ -15,7 +15,6 @@ from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 
 if typing.TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
-    import joblib
     import lmfit
     import tqdm.auto as tqdm
 else:
@@ -24,7 +23,6 @@ else:
     from erlab.utils.misc import LazyImport
 
     lmfit = _lazy.load("lmfit")
-    joblib = _lazy.load("joblib")
     tqdm = LazyImport("tqdm.auto")
 
 

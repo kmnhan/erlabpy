@@ -56,7 +56,7 @@ def load_text(filename: str | os.PathLike) -> xr.DataArray:
     """Load data from MB Scientific analyzers in ``.txt`` format.
 
     Adapted to Python from the ``MBS_FileLoader_v4.ipf`` Igor procedure with some code
-    from `mueslo/mbs <https://githubhttps://github.com/mueslo/mbs.com/mueslo/mbs>`_.
+    from `mueslo/mbs <https://github.com/mueslo/mbs>`_.
 
     """
     header_lines = []

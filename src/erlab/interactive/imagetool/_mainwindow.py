@@ -177,6 +177,28 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
 
+    def duplicate(self, **kwargs) -> typing.Self:
+        """Create a duplicate of the current ImageTool window.
+
+        This method creates a new instance of the ImageTool with the same data and state
+        as the current one.
+
+        Parameters
+        ----------
+        kwargs
+            Additional keyword arguments passed to the constructor of the new ImageTool.
+
+        Returns
+        -------
+        tool
+            The duplicated ImageTool window.
+
+        """
+        kwargs["state"] = self.slicer_area.state.copy()
+        new_tool = self.__class__(self.slicer_area._data.copy(), **kwargs)
+        new_tool.setGeometry(self.geometry())
+        return new_tool
+
     @QtCore.Slot()
     def move_to_manager(self) -> None:
         from erlab.interactive.imagetool.manager import show_in_manager
@@ -238,7 +260,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         # widgets. The events start at the ItoolGraphicsLayoutWidget and is never passed
         # to menu widgets so we need to intercept them at a higher level.
         if event is not None and event.type() == QtCore.QEvent.Type.ShortcutOverride:
-            event = typing.cast(QtGui.QKeyEvent, event)
+            event = typing.cast("QtGui.QKeyEvent", event)
             focused = QtWidgets.QApplication.focusWidget()
             if isinstance(
                 focused, QtWidgets.QAbstractSpinBox | QtWidgets.QLineEdit
@@ -336,7 +358,7 @@ class ImageTool(BaseImageTool):
 
     @property
     def mnb(self) -> ItoolMenuBar:
-        return typing.cast(ItoolMenuBar, self.menuBar())
+        return typing.cast("ItoolMenuBar", self.menuBar())
 
     def _update_title(self) -> None:
         if self.slicer_area._data is not None:
@@ -364,8 +386,12 @@ class ImageTool(BaseImageTool):
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
+
+            # This also sets the recent name filter & dir for the manager through the
+            # setter method
             self._recent_name_filter = dialog.selectedNameFilter()
             self._recent_directory = os.path.dirname(fname)
+
             fn, kargs = valid_loaders[self._recent_name_filter]
 
             try:
@@ -436,7 +462,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @property
     def image_tool(self) -> ImageTool:
-        return typing.cast(ImageTool, self.parent())
+        return typing.cast("ImageTool", self.parent())
 
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
@@ -505,6 +531,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._copy_cursor_idx,
                         "sep_after": True,
                     },
+                    "Edit Coordinates": {
+                        "triggered": self._assign_coords,
+                        "sep_after": True,
+                    },
                     "Rotate": {"triggered": self._rotate},
                     "Rotation Guidelines": {
                         "actions": {
@@ -519,6 +549,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                     "Average": {"triggered": self._average},
                     "Symmetrize": {"triggered": self._symmetrize},
+                    "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
             },
             "helpMenu": {
@@ -640,12 +671,20 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeDialog)
 
     @QtCore.Slot()
+    def _correct_with_edge(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.EdgeCorrectionDialog)
+
+    @QtCore.Slot()
     def _crop_to_view(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropToViewDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.NormalizeDialog)
+
+    @QtCore.Slot()
+    def _assign_coords(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AssignCoordsDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:

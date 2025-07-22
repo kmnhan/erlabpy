@@ -11,8 +11,6 @@ import importlib
 from collections.abc import Callable, Collection
 
 import numba
-import numba.core.registry
-import numba.typed
 import numpy as np
 import numpy.typing as npt
 
@@ -64,7 +62,7 @@ _SIG_4_3 = [
 
 
 @numba.njit(cache=True)
-def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.float64:
+def _nanmean_all(a: npt.NDArray[np.float32 | np.float64]) -> np.floating:
     return np.nanmean(a)
 
 
@@ -370,6 +368,8 @@ def fast_nanmean(
     if a.ndim == 1 or axis is None:
         return _nanmean_all(a)
     if a.ndim > 4:
+        if isinstance(axis, Collection):
+            axis = tuple(axis)
         return np.ascontiguousarray(
             _general_nanmean_func(a.astype(np.float64), axis=axis), dtype=a.dtype
         )

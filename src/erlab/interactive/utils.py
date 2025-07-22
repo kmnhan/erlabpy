@@ -10,6 +10,8 @@ import contextlib
 import fnmatch
 import inspect
 import itertools
+import keyword
+import os
 import pathlib
 import re
 import sys
@@ -28,7 +30,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    import os
     from collections.abc import Callable, Collection, Iterator, Mapping
 
     import pyperclip
@@ -49,6 +50,7 @@ __all__ = [
     "ExclusiveComboGroup",
     "IconActionButton",
     "IconButton",
+    "IdentifierValidator",
     "KeyboardEventFilter",
     "ParameterGroup",
     "RotatableLine",
@@ -56,8 +58,10 @@ __all__ = [
     "file_loaders",
     "format_kwargs",
     "generate_code",
+    "load_fit_ui",
     "make_crosshairs",
     "parse_data",
+    "save_fit_ui",
     "wait_dialog",
     "xImageItem",
 ]
@@ -154,8 +158,9 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
             if is_ipython:
                 execute = False
         yield execute
-
-    finally:
+    except Exception:  # noqa: TRY203
+        raise
+    else:
         if is_ipython:
             from IPython.lib.guisupport import start_event_loop_qt4
 
@@ -557,6 +562,101 @@ def _gen_single_function_code(
     return code
 
 
+def save_fit_ui(
+    fit_result: xr.Dataset, *, parent: QtWidgets.QWidget | None = None
+) -> None:
+    """Save a fit result to a file using a file dialog.
+
+    When called, a file dialog is opened to select the file name and format. The fit
+    result dataset is saved to the selected file in the chosen format using
+    :func:`xarray_lmfit.save_fit`.
+
+    Parameters
+    ----------
+    fit_result
+        The fit result to save.
+    parent
+        Parent widget for the file dialog.
+
+    """
+    dialog = QtWidgets.QFileDialog(parent)
+    dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+    dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
+    dialog.setDefaultSuffix("nc")
+
+    if os.environ.get("PYTEST_VERSION") is not None:
+        # If running in pytest, do not use native file dialog
+        dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+    recent_dir: str = erlab.interactive.imagetool.manager._get_recent_directory()
+    if recent_dir:
+        dialog.setDirectory(recent_dir)
+
+    if dialog.exec():
+        file_name: str = dialog.selectedFiles()[0]
+        selected_filter: str = dialog.selectedNameFilter()
+
+        import xarray_lmfit
+
+        match selected_filter:
+            case "HDF5 Files (*.h5)":
+                xarray_lmfit.save_fit(fit_result, file_name, engine="h5netcdf")
+            case _:
+                xarray_lmfit.save_fit(fit_result, file_name)
+
+
+def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None:
+    """Load a fit result from a file.
+
+    When called, a file dialog is opened to select the file to load. The fit result is
+    loaded from the selected file using :func:`xarray_lmfit.load_fit`.
+
+    Parameters
+    ----------
+    parent
+        Parent widget for the file dialog.
+
+    Returns
+    -------
+    result : xr.Dataset or None
+        The loaded fit result. Returns None if no file was selected or if the file could
+        not be loaded.
+
+    """
+    dialog = QtWidgets.QFileDialog(parent)
+    dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+    dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
+    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
+    dialog.setDefaultSuffix("nc")
+
+    if os.environ.get("PYTEST_VERSION") is not None:
+        # If running in pytest, do not use native file dialog
+        dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+    if dialog.exec():
+        file_name: str = dialog.selectedFiles()[0]
+        selected_filter: str = dialog.selectedNameFilter()
+
+        import xarray_lmfit
+
+        try:
+            match selected_filter:
+                case "HDF5 Files (*.h5)":
+                    return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
+                case _:
+                    return xarray_lmfit.load_fit(file_name)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                None,
+                "Error",
+                "An error occurred while loading the fit result:\n\n"
+                f"{type(e).__name__}: {e}",
+            )
+
+    return None
+
+
 class KeyboardEventFilter(QtCore.QObject):
     """Event filter that intercepts select all and copy shortcuts.
 
@@ -579,7 +679,7 @@ class KeyboardEventFilter(QtCore.QObject):
             and isinstance(obj, QtWidgets.QWidget)
             and obj.hasFocus()
         ):
-            event = typing.cast(QtGui.QKeyEvent, event)
+            event = typing.cast("QtGui.QKeyEvent", event)
             if event.matches(QtGui.QKeySequence.StandardKey.SelectAll) or event.matches(
                 QtGui.QKeySequence.StandardKey.Copy
             ):
@@ -1221,6 +1321,7 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
         tool = erlab.interactive.itool(da, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
+            # Not in manager, must keep reference
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._itool = tool
             self._itool.show()
@@ -1328,7 +1429,7 @@ class ParameterGroup(QtWidgets.QGroupBox):
         self.global_connect()
 
     def layout(self) -> QtWidgets.QGridLayout:
-        return typing.cast(QtWidgets.QGridLayout, super().layout())
+        return typing.cast("QtWidgets.QGridLayout", super().layout())
 
     @staticmethod
     def getParameterWidget(
@@ -1367,8 +1468,6 @@ class ParameterGroup(QtWidgets.QGroupBox):
                 f"qwtype must be one of {list(ParameterGroup.VALID_QWTYPE.keys())}"
             )
 
-        widget_class = ParameterGroup.VALID_QWTYPE[qwtype]
-
         if qwtype == "combobox":
             items = kwargs.pop("items", None)
             currtxt = kwargs.pop("currentText", None)
@@ -1400,15 +1499,17 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
         value = kwargs.pop("value", None)
 
-        widget = widget_class(**kwargs)
+        widget = ParameterGroup.VALID_QWTYPE[qwtype](**kwargs)
 
-        if qwtype == "combobox":
+        if isinstance(widget, QtWidgets.QComboBox):
+            # qwtype is "combobox"
             widget.addItems(items)
             if currtxt is not None:
                 widget.setCurrentText(currtxt)
             if curridx is not None:
                 widget.setCurrentIndex(curridx)
-        elif qwtype.endswith("pushbtn"):
+        elif isinstance(widget, QtWidgets.QPushButton):
+            # qwtype is either "pushbtn" or "chkpushbtn"
             if pressed is not None:
                 widget.pressed.connect(pressed)
             if released is not None:
@@ -1419,12 +1520,12 @@ class ParameterGroup(QtWidgets.QGroupBox):
             elif clicked is not None:
                 widget.clicked.connect(clicked)
 
-        if newrange is not None:
+        if newrange is not None and hasattr(widget, "setRange"):
             widget.setRange(*newrange)
 
-        if valueChanged is not None:
+        if valueChanged is not None and hasattr(widget, "valueChanged"):
             widget.valueChanged.connect(valueChanged)
-        if textChanged is not None:
+        if textChanged is not None and hasattr(widget, "textChanged"):
             widget.textChanged.connect(textChanged)
 
         if fixedWidth is not None:
@@ -1433,10 +1534,10 @@ class ParameterGroup(QtWidgets.QGroupBox):
             widget.setFixedHeight(fixedHeight)
         if policy is not None:
             widget.setSizePolicy(*policy)
-        if alignment is not None:
+        if alignment is not None and hasattr(widget, "setAlignment"):
             widget.setAlignment(alignment)
 
-        if value is not None:
+        if value is not None and hasattr(widget, "setValue"):
             widget.setValue(value)
 
         return widget
@@ -1581,7 +1682,7 @@ class ROIControls(ParameterGroup):
             },
             **kwargs,
         )
-        self.draw_button = typing.cast(QtWidgets.QPushButton, self.widgets["drawbtn"])
+        self.draw_button = typing.cast("QtWidgets.QPushButton", self.widgets["drawbtn"])
         self.roi_spin = [self.widgets[i] for i in ["x0", "y0", "x1", "y1"]]
         self.roi.sigRegionChanged.connect(self.update_pos)
 
@@ -1703,7 +1804,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
         **kwargs,
     ) -> None:
         self.qapp = typing.cast(
-            QtWidgets.QApplication | None, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
         )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
@@ -1774,7 +1875,7 @@ class AnalysisWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         cb = typing.cast(
-            QtWidgets.QApplication, QtWidgets.QApplication.instance()
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         ).clipboard()
         if event is not None and cb is not None and cb.text(cb.Mode.Clipboard) != "":
             pyperclip.copy(cb.text(cb.Mode.Clipboard))
@@ -2127,14 +2228,25 @@ class IconButton(QtWidgets.QPushButton):
     off : str, optional
         The icon to display when the button is in the "off" state. If provided, the
         button will be checkable, and the icon will change when the button is toggled.
+    icon_kw : dict, optional
+        Additional keyword arguments to pass to `qtawesome.icon()`. This can be used to
+        customize the icon's appearance, such as size or color.
     **kwargs
         Additional keyword arguments passed to the QPushButton constructor.
 
     """
 
-    def __init__(self, on: str | None = None, off: str | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        on: str | None = None,
+        off: str | None = None,
+        *,
+        icon_kw: dict[str, typing.Any] | None = None,
+        **kwargs,
+    ) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
+        self._icon_kw = icon_kw or {}
 
         if on is not None:
             self.icon_key_on = on
@@ -2154,7 +2266,7 @@ class IconButton(QtWidgets.QPushButton):
         self.refresh_icons()
 
     def get_icon(self, icon: str) -> QtGui.QIcon:
-        return qtawesome.icon(icon)
+        return qtawesome.icon(icon, **self._icon_kw)
 
     def refresh_icons(self) -> None:
         if self.icon_key_off is not None and self.isChecked():
@@ -2228,6 +2340,43 @@ class IconActionButton(IconButton):
         self._action.blockSignals(True)
         self._action.setIcon(self.icon())
         self._action.blockSignals(False)
+
+
+class IdentifierValidator(QtGui.QValidator):
+    """Validator for Python identifiers.
+
+    This validator checks if the input string is a valid Python identifier, and provides
+    a fixup method to convert invalid identifiers into valid ones. Use with
+    :class:`QtWidgets.QLineEdit` to restrict user input to valid Python identifiers.
+    """
+
+    def validate(
+        self, input_str: str | None, pos: int
+    ) -> tuple[QtGui.QValidator.State, str, int]:
+        if input_str is None:
+            return QtGui.QValidator.State.Intermediate, "", pos
+
+        if (not input_str) or keyword.iskeyword(input_str):
+            return QtGui.QValidator.State.Intermediate, input_str, pos
+
+        if not input_str.isidentifier():
+            return QtGui.QValidator.State.Invalid, input_str, pos
+
+        return QtGui.QValidator.State.Acceptable, input_str, pos
+
+    def fixup(self, input_str: str | None) -> str:
+        if input_str is None:
+            return self.fixup("")
+        input_str = input_str.strip()
+        # Replace spaces and invalid chars with underscores
+        fixed = re.sub(r"\W|^(?=\d)", "_", input_str)
+        # Remove leading underscores if the rest is empty or all underscores
+        if not fixed or fixed.lstrip("_") == "":
+            fixed = "var"
+        # Avoid Python keywords
+        if keyword.iskeyword(fixed):
+            fixed += "_"
+        return fixed
 
 
 class RotatableLine(pg.InfiniteLine):

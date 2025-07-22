@@ -16,7 +16,13 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable
 
+    import pandas
     import xarray as xr
+
+else:
+    import lazy_loader as _lazy
+
+    pandas = _lazy.load("pandas")
 
 STYLE_SHEET = """
 .erlab-table td,
@@ -100,14 +106,20 @@ def format_value(
 ) -> str:
     """Format the given value based on its type.
 
-    This method is used when formatting the cells of the summary dataframe.
+    This method is used to format various types of values to a human-readable string. It
+    handles different types of values and formats them accordingly.
+
+    This function is used in various places in the codebase to provide a consistent
+    representation of values.
 
     Parameters
     ----------
     val
         The value to be formatted.
     precision
-        The number of decimal places to use when formatting floating-point numbers.
+        The number of decimal places to use when formatting floating-point numbers. If
+        the magnitude of the value is smaller than the precision, the number will be
+        printed in scientific notation.
     use_unicode_minus
         Whether to replace the  Unicode hyphen-minus sign "-" (U+002D) with the
         better-looking Unicode minus sign "−" (U+2212) in the formatted value.
@@ -125,7 +137,7 @@ def format_value(
 
     - For numpy arrays:
         - If the array has a size of 1, the value is recursively formatted using
-          `format_value(val.item())`.
+          ``format_value(val.item())``.
         - If the array can be squeezed to a 1-dimensional array, the following are
           applied.
 
@@ -136,7 +148,7 @@ def format_value(
               the start, end, and length values are formatted and returned as a string
               in the format "start→end (length)".
             - If all elements are equal, the value is recursively formatted using
-              `format_value(val[0])`.
+              ``format_value(val[0])``.
             - If the array is not monotonic, the minimum and maximum values are
               formatted and returned as a string in the format "min~max".
             - If the array has two elements, the two elements are formatted and
@@ -151,7 +163,7 @@ def format_value(
 
     - For floating-point numbers:
         - If the number is an integer, it is formatted as an integer using
-          `format_value(np.int64(val))`.
+          ``format_value(np.int64(val))``.
         - Otherwise, it is formatted as a floating-point number with specified decimal
           places and returned as a string.
 
@@ -159,7 +171,12 @@ def format_value(
         The integer is returned as a string.
 
     - For datetime objects:
-        The datetime object is formatted as a string in the format "%Y-%m-%d %H:%M:%S".
+        They are formatted as a string in the format "%Y-%m-%d %H:%M:%S". This includes
+        :class:`datetime.datetime`, :class:`numpy.datetime64`, and
+        :class:`pandas.Timestamp` objects.
+
+    - For :class:`datetime.date` objects:
+        They are formatted as a string in the format "%Y-%m-%d".
 
     - For other types:
         The value is returned as is.
@@ -194,6 +211,8 @@ def format_value(
     def _format(val: object) -> str:
         if isinstance(val, np.ndarray):
             if val.size == 1:
+                if np.issubdtype(val.dtype, np.datetime64):
+                    return _format(pandas.Timestamp(val.item()))
                 return _format(val.item())
 
             val = val.squeeze()
@@ -227,11 +246,21 @@ def format_value(
                 [f"[{k}]×{len(tuple(g))}" for k, g in itertools.groupby(val)]
             )
 
+        if isinstance(val, np.datetime64):
+            return _format(pandas.Timestamp(val))
+
         if np.issubdtype(type(val), np.floating):
-            val = typing.cast(np.floating, val)
+            val = typing.cast("np.floating", val)
             if val.is_integer():
                 return _format(np.int64(val))
-            formatted = np.format_float_positional(val, precision=precision, trim="-")
+            if np.abs(val) < 10 ** (-precision):
+                formatted = np.format_float_scientific(
+                    val, precision=precision, trim="-"
+                )
+            else:
+                formatted = np.format_float_positional(
+                    val, precision=precision, trim="-"
+                )
             if use_unicode_minus:
                 return formatted.replace("-", "−")
             return formatted
@@ -241,16 +270,25 @@ def format_value(
                 return str(val).replace("-", "−")
             return str(val)
 
+        if isinstance(val, pandas.Timestamp):
+            return val.isoformat(sep=" ", timespec="seconds")
+
+        if isinstance(val, datetime.datetime):
+            return _format(pandas.Timestamp(val))
+
+        if isinstance(val, datetime.date):
+            return val.isoformat()
+
         if isinstance(val, np.generic):
             # Convert to native Python type
             return _format(val.item())
 
-        if isinstance(val, datetime.datetime):
-            return val.isoformat(sep=" ", timespec="seconds")
-
         return str(val)
 
-    return _format(val)
+    try:
+        return _format(val)
+    except Exception:
+        return str(val)
 
 
 def _format_dim_name(s: Hashable) -> str:
@@ -284,11 +322,14 @@ def _format_coord_dims(coord: xr.DataArray) -> str:
 
 def _format_array_values(val: npt.NDArray) -> str:
     if val.size == 1:
-        return format_value(val.item())
+        return format_value(val)
 
     val = val.squeeze()
 
     if val.ndim == 1:
+        if len(val) == 2:
+            return format_value(val)
+
         if erlab.utils.array.is_uniform_spaced(val):
             if val[0] == val[-1]:
                 return format_value(val[0])
@@ -366,11 +407,17 @@ def format_darr_html(
     coord_rows: list[list[str]] = []
     for key, coord in darr.coords.items():
         is_dim: bool = key in darr.dims
+
+        try:
+            value_repr = _format_array_values(coord.values)
+        except Exception:
+            value_repr = f'["{coord.values[0]!s}",  ... , "{coord.values[-1]!s}"]'
+
         coord_rows.append(
             [
                 _format_coord_key(key, is_dim),
                 _format_coord_dims(coord),
-                _format_array_values(coord.values),
+                value_repr,
             ]
         )
     out += format_html_table(coord_rows)

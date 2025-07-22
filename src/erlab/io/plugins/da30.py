@@ -7,13 +7,13 @@ Omicron's DA30 analyzer using ``SES.exe``. Subclass to implement the actual load
 __all__ = ["CasePreservingConfigParser", "DA30Loader", "load_zip", "parse_ini"]
 
 import configparser
+import importlib
 import os
 import pathlib
 import re
 import tempfile
 import typing
 import zipfile
-from collections.abc import Iterable
 
 import numpy as np
 import xarray as xr
@@ -40,8 +40,6 @@ class DA30Loader(LoaderBase):
     name = "da30"
     description = "Scienta Omicron DA30 with SES"
 
-    aliases: Iterable[str] = ["DA30"]
-
     extensions: typing.ClassVar[set[str]] = {".ibw", ".pxt", ".zip", ""}
 
     name_map: typing.ClassVar[dict] = {
@@ -59,7 +57,10 @@ class DA30Loader(LoaderBase):
         return {"DA30 Raw Data (*.ibw *.pxt *.zip)": (self.load, {})}
 
     def load_single(
-        self, file_path: str | os.PathLike, without_values: bool = False
+        self,
+        file_path: str | os.PathLike,
+        without_values: bool = False,
+        use_libarchive: bool = True,
     ) -> xr.DataArray | xr.DataTree:
         file_path = pathlib.Path(file_path)
 
@@ -78,7 +79,11 @@ class DA30Loader(LoaderBase):
                     data.load()  # Ensure repr shows data
 
             case ".zip" | "":
-                data = load_zip(file_path, without_values)
+                data = load_zip(
+                    file_path,
+                    without_values=without_values,
+                    use_libarchive=use_libarchive,
+                )
 
             case _:
                 raise ValueError(f"Unsupported file extension {file_path.suffix}")
@@ -124,7 +129,9 @@ class DA30Loader(LoaderBase):
 
 
 def load_zip(
-    filename: str | os.PathLike, without_values: bool = False
+    filename: str | os.PathLike,
+    without_values: bool = False,
+    use_libarchive: bool = True,
 ) -> xr.DataArray | xr.DataTree:
     """Load data from a ``.zip`` file from a Scienta Omicron DA30 analyzer.
 
@@ -137,16 +144,46 @@ def load_zip(
         The path to the ``.zip`` file or the directory containing the unzipped files.
     without_values : bool, optional
         If True, the values are not loaded, only the coordinates and attributes.
+    use_libarchive : bool, optional
+        If True, tries to use `libarchive
+        <https://github.com/Changaco/python-libarchive-c>`_ to extract the files.
+        Install it with ``pip install libarchive-c`` or ``conda install -c conda-forge
+        python-libarchive-c``. If False, uses the built-in ``zipfile``. This does not
+        have drastic performance improvements when loading a single file, but improves
+        multithreaded performance since the underlying C library bypasses the GIL. If
+        the C libarchive library is not available, it will fall back to the built-in
+        `zipfile` module even if ``libarchive-c`` is installed.
+
+    Returns
+    -------
+    xr.DataArray or xr.DataTree
+        The loaded data. If the file contains a single region, a DataArray is returned.
+        Otherwise, a DataTree containing all regions is returned.
+
     """
     zipped: bool = not os.path.isdir(filename)
 
     if zipped:
+        if use_libarchive:
+            use_libarchive = importlib.util.find_spec("libarchive") is not None
+            # Check if libarchive is available
+            if use_libarchive:
+                try:
+                    import libarchive
+                except (TypeError, ImportError):
+                    # TypeError is raised if underlying C libarchive is not available
+                    use_libarchive = False
+
         zf = zipfile.ZipFile(filename, mode="r", allowZip64=False)
+        f_names = zf.namelist()
+        if use_libarchive:
+            zf.close()
+
+    else:
+        f_names = os.listdir(filename)
 
     regions: list[str] = [
-        fn[9:-4]
-        for fn in (os.listdir(filename) if not zipped else zf.namelist())
-        if fn.startswith("Spectrum_") and fn.endswith(".bin")
+        fn[9:-4] for fn in f_names if fn.startswith("Spectrum_") and fn.endswith(".bin")
     ]
 
     if len(regions) == 0:
@@ -157,8 +194,31 @@ def load_zip(
     for region in regions:
         with tempfile.TemporaryDirectory() as tmp_dir:
             if zipped:
-                zf.extract(f"Spectrum_{region}.ini", tmp_dir)
-                zf.extract(f"{region}.ini", tmp_dir)
+                required_files: set[str] = {
+                    f"Spectrum_{region}.ini",
+                    f"{region}.ini",
+                }
+                if not without_values:
+                    required_files.add(f"Spectrum_{region}.bin")
+
+                if use_libarchive:
+                    # Extract required files using libarchive
+                    extracted = 0
+
+                    with libarchive.file_reader(str(filename)) as archive:
+                        for entry in archive:
+                            name = entry.pathname
+                            if name in required_files:
+                                with (pathlib.Path(tmp_dir) / name).open("wb") as f:
+                                    for block in entry.get_blocks():
+                                        f.write(block)
+                                extracted += 1
+                                if extracted == len(required_files):
+                                    break
+                else:
+                    for f in required_files:
+                        zf.extract(f, tmp_dir)
+
                 unzipped = pathlib.Path(tmp_dir)
             else:
                 unzipped = pathlib.Path(filename)
@@ -169,8 +229,6 @@ def load_zip(
                 attrs.update(d)
 
             if not without_values:
-                if zipped:
-                    zf.extract(f"Spectrum_{region}.bin", tmp_dir)
                 arr = np.fromfile(unzipped / f"Spectrum_{region}.bin", dtype=np.float32)
 
         shape = []
@@ -193,7 +251,7 @@ def load_zip(
             xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
         )
 
-    if zipped:
+    if zipped and not use_libarchive:
         zf.close()
 
     if len(out) == 1:

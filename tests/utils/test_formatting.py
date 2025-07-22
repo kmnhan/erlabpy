@@ -98,7 +98,35 @@ def test_format_value_integer() -> None:
     assert format_value(val) == expected
 
 
+def test_format_value_date() -> None:
+    val = datetime.date(2024, 1, 1)
+    expected = "2024-01-01"
+    assert format_value(val) == expected
+
+
 def test_format_value_datetime() -> None:
     val = datetime.datetime(2024, 1, 1, 12, 0, 0, 0)
+    expected = "2024-01-01 12:00:00"
+    assert format_value(val) == expected
+
+
+def test_format_value_datetime64() -> None:
+    val = np.datetime64("2024-01-01T12:00:00")
+    expected = "2024-01-01 12:00:00"
+    assert format_value(val) == expected
+
+
+def test_format_value_datetime64_array() -> None:
+    val = np.array(
+        [np.datetime64("2024-01-01T12:00:00"), np.datetime64("2024-01-02T12:00:00")]
+    )
+    expected = "[2024-01-01 12:00:00, 2024-01-02 12:00:00]"
+    assert format_value(val) == expected
+
+
+def test_format_value_pandas_timestamp() -> None:
+    import pandas as pd
+
+    val = pd.Timestamp("2024-01-01 12:00:00")
     expected = "2024-01-01 12:00:00"
     assert format_value(val) == expected

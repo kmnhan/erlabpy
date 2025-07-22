@@ -315,13 +315,25 @@ these steps:
   - Use the signal and slot syntax from PySide6 (`QtCore.Signal` and `QtCore.Slot`
     instead of `QtCore.pyqtSignal` and `QtCore.pyqtSlot`).
 
-  - When using Qt Designer, place `.ui` files in the same directory as the Python file
-    that uses them. The files must be imported using the `qtpy.uic.loadUiType`.
+  - When using Qt Designer, place the `.ui` files in the same directory as the Python
+    file that uses them. The files must be imported using `qtpy.uic.loadUiType`.
+
+    For instance, if you place `mywidget.py` and `mywidget.ui` in
+    `src/erlab/interactive/`, `mywidget.py` should look like this:
 
     ```python
+    import importlib.resources
+
     from qtpy import uic
 
-    class MyWidget(*uic.loadUiType(os.path.join(os.path.dirname(__file__), "mywidget.ui"))):
+    import erlab
+
+
+    class MyWidget(
+        *uic.loadUiType(
+            str(importlib.resources.files(erlab.interactive).joinpath("mywidget.ui"))
+        )
+    ):
         def __init__(self):
             super().__init__()
             self.setupUi(self)

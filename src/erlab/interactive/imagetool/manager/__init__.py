@@ -32,6 +32,7 @@ __all__ = [
     "is_running",
     "load_in_manager",
     "main",
+    "replace_data",
     "show_in_manager",
 ]
 
@@ -48,6 +49,7 @@ from erlab.interactive.imagetool.manager._server import (
     PORT,
     is_running,
     load_in_manager,
+    replace_data,
     show_in_manager,
 )
 
@@ -89,7 +91,17 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    qapp = typing.cast(QtWidgets.QApplication | None, QtWidgets.QApplication.instance())
+    if sys.platform == "win32":
+        import ctypes
+
+        # Set the AppUserModelID for Windows taskbar grouping
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "erlab.imagetool.manager"
+        )
+
+    qapp = typing.cast(
+        "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
+    )
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
 
@@ -110,3 +122,19 @@ def main(execute: bool = True) -> None:
         if execute:
             qapp.exec()
             _manager_instance = None
+
+
+def _get_recent_directory() -> str:
+    """Return the most recent directory used by the ImageToolManager.
+
+    Used internally to set the default directory for various file dialogs in tools
+    launched inside the manager. Returns an empty string if no directory has been set
+    yet, or if the manager is running in a different process.
+
+    """
+    if (
+        _manager_instance is not None
+        and _manager_instance._recent_directory is not None
+    ):
+        return str(_manager_instance._recent_directory)
+    return ""

@@ -14,9 +14,9 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import ImageTool
 
 if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return typing.cast(ImageTool, self._wrapper.tool)
+        return typing.cast("ImageTool", self._wrapper.tool)
 
     @property
     def data(self) -> xr.DataArray:
@@ -176,6 +176,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             self.kernel_client.start_channels()
 
             self.execute(r"%load_ext storemagic", hidden=True)
+            self.execute(r"%load_ext erlab.interactive", hidden=True)
 
             if self._namespace is not None:
                 self.kernel_manager.kernel.shell.push(
@@ -186,6 +187,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                         for name, module in self._namespace.items()
                     }
                 )
+                self.execute(r"xr.set_options(keep_attrs=True)", hidden=True)
 
     def store_data_as(self, tool_index: int, name: str) -> None:
         """Store the data in an ImageTool with IPython to reuse in other scripts."""

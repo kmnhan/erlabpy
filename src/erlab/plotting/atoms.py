@@ -140,7 +140,7 @@ class Atom3DCollection(mpl_toolkits.mplot3d.art3d.Path3DCollection):
             color_array = color_array[self._z_markers_idx]
         return matplotlib.colors.to_rgba_array(color_array, self._alpha)
 
-    def set_sizes(self, sizes: np.ndarray, dpi: float = 72.0) -> None:
+    def set_sizes(self, sizes: np.ndarray | float, dpi: float = 72.0) -> None:
         super().set_sizes(sizes, dpi)
         self.sizes_orig = np.asarray(sizes) if np.iterable(sizes) else sizes
 
@@ -354,9 +354,7 @@ class CrystalProperty:
         bound_list = []
         for dim in ("x", "y", "z"):
             try:
-                bound_list.append(
-                    self._bounds[typing.cast(typing.Literal["x", "y", "z"], dim)]
-                )
+                bound_list.append(self._bounds[dim])
             except KeyError:
                 bound_list.append((-np.inf, np.inf))
         return bound_list
@@ -367,7 +365,9 @@ class CrystalProperty:
 
     @functools.cached_property
     def atom_pos(self) -> dict[str, npt.NDArray[np.float64]]:
-        atom_pos = {k: np.zeros((1, 3)) for k in self.atom_pos_given}
+        atom_pos: dict[str, npt.NDArray[np.float64]] = {
+            k: np.zeros((1, 3)) for k in self.atom_pos_given
+        }
         for k, v in self.atom_pos_given.items():
             for x, y, z in itertools.product(*[range(-n + 1, n) for n in self.repeat]):
                 atom_pos[k] = np.r_[
@@ -483,7 +483,7 @@ class CrystalProperty:
         """
         if ax is None:
             ax = plt.gcf().add_subplot(projection="3d")
-        ax = typing.cast(mpl_toolkits.mplot3d.Axes3D, ax)
+        ax = typing.cast("mpl_toolkits.mplot3d.Axes3D", ax)
 
         if clean_axes:
             ax.set_facecolor("none")
