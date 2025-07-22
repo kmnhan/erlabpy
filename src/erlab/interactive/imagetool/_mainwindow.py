@@ -488,6 +488,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self.image_tool.move_to_manager,
                         "shortcut": "Ctrl+Shift+M",
                     },
+                    "SettingsAct": {
+                        "text": "Settings",
+                        "triggered": self._settings,
+                        "shortcut": QtGui.QKeySequence.StandardKey.Preferences,
+                        "sep_after": True,
+                    },
                 },
             },
             "viewMenu": {
@@ -653,6 +659,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
         dialog = dialog_cls(self.slicer_area)
         dialog.exec()
+
+    @QtCore.Slot()
+    def _settings(self) -> None:
+        self.execute_dialog(erlab.interactive._options.OptionDialog)
 
     @QtCore.Slot()
     def _rotate(self) -> None:

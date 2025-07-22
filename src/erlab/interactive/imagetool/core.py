@@ -461,7 +461,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Data to display. The data must have 2 to 4 dimensions.
     cmap
         Default colormap of the data.
-    gamma
+    gamma : float, optional
         Default power law normalization of the colormap.
     high_contrast
         If `True`, the colormap is displayed in high contrast mode. This changes the
@@ -513,22 +513,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     """
 
-    COLORS: tuple[QtGui.QColor, ...] = (
-        pg.mkColor(0.8),
-        pg.mkColor("y"),
-        pg.mkColor("m"),
-        pg.mkColor("c"),
-        pg.mkColor("g"),
-        pg.mkColor("r"),
-        pg.mkColor("b"),
-    )  #: :class:`PySide6.QtGui.QColor`\ s for multiple cursors.
+    @property
+    def COLORS(self) -> tuple[QtGui.QColor, ...]:
+        r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
+        return tuple(
+            QtGui.QColor(c) for c in erlab.interactive.options["colors/cursors"]
+        )
 
     TWIN_COLORS: tuple[QtGui.QColor, ...] = (
-        pg.mkColor("#FFA500"),
+        pg.mkColor("#ffa500"),
         pg.mkColor("#008080"),
-        pg.mkColor("#8A2BE2"),
-        pg.mkColor("#FF69B4"),
-        pg.mkColor("#BFFF00"),
+        pg.mkColor("#8a2be2"),
+        pg.mkColor("#ff69b4"),
+        pg.mkColor("#bfff00"),
     )  #: :class:`PySide6.QtGui.QColor`\ s for twin plots.
 
     HORIZ_PAD: int = 45  #: Reserved space for the x axes in each plot.
@@ -570,8 +567,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self,
         parent: QtWidgets.QWidget,
         data: xr.DataArray | npt.NDArray,
-        cmap: str | pg.ColorMap = "magma",
-        gamma: float = 0.5,
+        cmap: str | pg.ColorMap | None = None,
+        gamma: float | None = None,
         high_contrast: bool = False,
         zero_centered: bool = False,
         vmin: float | None = None,
@@ -588,6 +585,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
+
+        # Handle default values
+        if cmap is None:
+            cmap = erlab.interactive.options["colors/cmap/name"]
+            if erlab.interactive.options["colors/cmap/reverse"]:
+                cmap = f"{cmap}_r"
+        if gamma is None:
+            gamma = erlab.interactive.options["colors/cmap/gamma"]
 
         self.initialize_actions()
 

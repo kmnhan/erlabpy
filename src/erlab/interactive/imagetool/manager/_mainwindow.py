@@ -155,6 +155,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
 
         # Initialize actions
+        self.settings_action = QtWidgets.QAction("Settings", self)
+        self.settings_action.triggered.connect(self.open_settings)
+        self.settings_action.setShortcut(QtGui.QKeySequence.StandardKey.Preferences)
+        self.settings_action.setToolTip("Open settings")
+
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
         self.show_action.setToolTip("Show selected windows")
@@ -260,6 +265,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.gc_action)
         file_menu.addSeparator()
         file_menu.addAction(self.about_action)
+        file_menu.addAction(self.settings_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
@@ -1312,6 +1318,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
     # def __del__(self):
     # """Ensure proper cleanup of server thread when the manager is deleted."""
     # self._stop_server()
+
+    @QtCore.Slot()
+    def open_settings(self) -> None:
+        """Open the settings dialog for the ImageTool manager."""
+        dialog = erlab.interactive._options.OptionDialog(self)
+        dialog.exec()
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
