@@ -33,7 +33,6 @@ import pkgutil
 import lazy_loader as _lazy
 import matplotlib
 import matplotlib.colors
-import matplotlib.font_manager
 import matplotlib.style
 import numpy as np
 

@@ -83,11 +83,10 @@ def itool(
 
         - A single integer:
             - A valid index of an existing ImageTool window:
-
                 The data in the window with the specified index is replaced with the new
                 data.
-            - A number that is greater by 1 than the largest existing index:
 
+            - A number that is greater by 1 than the largest existing index:
                 A new ImageTool window is created with the new data. This is useful when
                 you want to add a new window on initial execution, but want to replace
                 the window with the same index on subsequent calls.
@@ -99,7 +98,6 @@ def itool(
                 largest, and so on.
 
         - A list of integers:
-
             A list of integers specifying the indices of the windows to be replaced,
             each of which is interpreted as described above. The length of the list must
             match the number of windows ``data`` is expected to create.

@@ -29,7 +29,7 @@ def data_explorer(
 
     Data explorer is a tool to browse and load ARPES data files with a file manager-like
     interface. Data attributes of supported files can be quickly inspected, and can be
-    loaded into ImageToolManager for further analysis.
+    loaded into ImageTool manager for further analysis.
 
     The data explorer can be started from the command line as a standalone application
     with the following command:
@@ -38,8 +38,8 @@ def data_explorer(
 
         python -m erlab.interactive.explorer
 
-    Also, it can be opened from the GUI by selecting "File" -> "Data Explorer" in
-    ImageToolManager.
+    Also, it can be opened from the GUI by selecting "File" -> "Data Explorer" or by
+    pressing :kbd:`Ctrl+E` in ImageTool manager.
 
     Parameters
     ----------
