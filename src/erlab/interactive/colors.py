@@ -25,53 +25,17 @@ import numpy.typing as npt
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
+
 if typing.TYPE_CHECKING:
     from matplotlib.typing import ColorType
-
-EXCLUDED_CMAPS: tuple[str, ...] = (
-    "prism",
-    "tab10",
-    "tab20",
-    "tab20b",
-    "tab20c",
-    "flag",
-    "Set1",
-    "Set2",
-    "Set3",
-    "Pastel1",
-    "Pastel2",
-    "Pastel3",
-    "Paired",
-    "Dark2",
-)
-"""
-Colormaps to exclude from the list of available colormaps. They are not suitable for
-continuous data, and looks horrible.
-"""
-
-
-CMAP_PACKAGES: tuple[str, ...] = (
-    "cmasher",
-    "cmocean",
-    "colorcet",
-    "cmcrameri",
-    "seaborn",
-)
-"""
-Packages that provide additional colormaps upon import.
-
-The packages listed here are not included in the default installation, but can be
-installed separately. Colormaps from installed packages are loaded when
-:func:`load_all_colormaps` is called, or when the user selects "Load All Colormaps" from
-the context menu of the :class:`ColorMapComboBox`.
-"""
 
 
 def load_all_colormaps() -> None:
     """Load all colormaps from additional sources."""
-    import erlab.plotting  # noqa: F401
+    import erlab.plotting
 
-    for package in CMAP_PACKAGES:
+    for package in erlab.interactive.options["colors/cmap/packages"]:
         if importlib.util.find_spec(package):
             importlib.import_module(package)
 
@@ -746,7 +710,7 @@ def pg_colormap_names(
         if (
             cmap.startswith("cet_")
             or cmap.endswith(("_r", "_r_i"))
-            or cmap in EXCLUDED_CMAPS
+            or cmap in erlab.interactive.options["colors/cmap/exclude"]
         ):
             _mpl = list(filter((cmap).__ne__, _mpl))
     if source == "all":
