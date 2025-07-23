@@ -12,6 +12,7 @@ __all__ = [
 import importlib.util
 import os
 import pathlib
+import warnings
 from collections.abc import Iterable
 
 import numpy as np
@@ -21,8 +22,12 @@ import xarray as xr
 import erlab
 
 
-def showfitsinfo(path: str | os.PathLike) -> None:
+def showfitsinfo(path: str | os.PathLike) -> None:  # pragma: no cover
     """Print raw metadata from a ``.fits`` file.
+
+    .. deprecated:: 3.14.0
+
+       Use `astropy.io.fits` directly to handle FITS files.
 
     Parameters
     ----------
@@ -30,6 +35,12 @@ def showfitsinfo(path: str | os.PathLike) -> None:
         Local path to ``.fits`` file.
 
     """
+    warnings.warn(
+        "`showfitsinfo` is deprecated, use `astropy.io.fits` directly",
+        FutureWarning,
+        stacklevel=1,
+    )
+
     if not importlib.util.find_spec("astropy"):
         raise ImportError("`astropy` needs to be installed to handle FITS files")
 
@@ -107,7 +118,7 @@ def get_files(
     return files
 
 
-def fix_attr_format(da: xr.DataArray):
+def _fix_attr_format(da: xr.DataArray):  # pragma: no cover
     """Discards attributes that are incompatible with the ``netCDF4`` file format.
 
     Parameters
@@ -142,10 +153,16 @@ def fix_attr_format(da: xr.DataArray):
     return da
 
 
-def open_hdf5(filename: str | os.PathLike, **kwargs) -> xr.DataArray | xr.Dataset:
+def open_hdf5(
+    filename: str | os.PathLike, **kwargs
+) -> xr.DataArray | xr.Dataset:  # pragma: no cover
     """Open data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.open_dataarray` and `xarray.open_dataset`.
+
+    .. deprecated:: 3.14.0
+
+       Use `xarray.open_dataarray` or `xarray.open_dataset` directly.
 
     Parameters
     ----------
@@ -166,10 +183,17 @@ def open_hdf5(filename: str | os.PathLike, **kwargs) -> xr.DataArray | xr.Datase
         return xr.open_dataset(filename, **kwargs)
 
 
-def load_hdf5(filename: str | os.PathLike, **kwargs) -> xr.DataArray | xr.Dataset:
+def load_hdf5(
+    filename: str | os.PathLike, **kwargs
+) -> xr.DataArray | xr.Dataset:  # pragma: no cover
     """Load data from an HDF5 file saved with `save_as_hdf5`.
 
     This is a thin wrapper around `xarray.load_dataarray` and `xarray.load_dataset`.
+
+    .. deprecated:: 3.14.0
+
+       Use `xarray.load_dataarray` or `xarray.load_dataset` directly.
+
 
     Parameters
     ----------
@@ -195,8 +219,13 @@ def save_as_hdf5(
     filename: str | os.PathLike,
     igor_compat: bool = True,
     **kwargs,
-) -> None:
+) -> None:  # pragma: no cover
     """Save data in ``HDF5`` format.
+
+    .. deprecated:: 3.14.0
+
+       Use `xarray.DataArray.to_netcdf` or `xarray.Dataset.to_netcdf` directly. To save
+       data in a format compatible with Igor, use :func:`erlab.io.igor.save_wave`.
 
     Parameters
     ----------
@@ -242,8 +271,14 @@ def save_as_hdf5(
     data.to_netcdf(filename, **kwargs)
 
 
-def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs) -> None:
+def save_as_netcdf(
+    data: xr.DataArray, filename: str | os.PathLike, **kwargs
+) -> None:  # pragma: no cover
     """Save data in ``netCDF4`` format.
+
+    .. deprecated:: 3.14.0
+
+       Use `xarray.DataArray.to_netcdf` or `xarray.Dataset.to_netcdf` directly.
 
     Discards invalid ``netCDF4`` attributes and produces a warning.
 
@@ -259,7 +294,7 @@ def save_as_netcdf(data: xr.DataArray, filename: str | os.PathLike, **kwargs) ->
 
     """
     kwargs.setdefault("engine", "h5netcdf")
-    fix_attr_format(data).to_netcdf(
+    _fix_attr_format(data).to_netcdf(
         filename,
         encoding={var: {"zlib": True, "complevel": 5} for var in data.coords},
         **kwargs,
