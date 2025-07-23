@@ -1,3 +1,15 @@
+## Unreleased
+
+### ✨ Features
+
+- **interactive:** implement user customization options for interactive tools ([6af26f3](https://github.com/kmnhan/erlabpy/commit/6af26f398fff6d747cc5794c5bf35851f885b4be))
+
+  Users can now customize various default settings related to ImageTool, such as the default cursor color and colormap. The options can be modified from a new preference menu option in the menu bar of ImageTool and ImageTool manager. The changes are saved and restored across sessions.
+
+### 🐞 Bug Fixes
+
+- **interactive.colors:** automatically load all colormaps when given cmap is not found ([7bdf47d](https://github.com/kmnhan/erlabpy/commit/7bdf47df4bc8e2b775ae045f9680ac0afc604169))
+
 ## v3.13.0 (2025-07-18)
 
 ### ✨ Features
