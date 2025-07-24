@@ -535,7 +535,7 @@ def symmetrize(
         return out
 
 
-def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
+def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):  # pragma: no cover
     """Rotate a 2D DataArray in the plane defined by the two dimensions.
 
     .. deprecated:: 2.9.0
@@ -557,7 +557,7 @@ def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
     return data.interp({d0: x, d1: y}, **interp_kwargs)
 
 
-def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):
+def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):  # pragma: no cover
     """Rotate a 3D DataArray in the plane defined by the two dimensions.
 
     .. deprecated:: 2.9.0

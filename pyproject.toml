@@ -256,7 +256,7 @@ DISPLAY = ":99.0"
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
-branch = false
+branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
