@@ -13,7 +13,6 @@ __all__ = [
     "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
-    "plot_hv_text",
     "property_labels",
     "scale_units",
     "set_titles",
@@ -43,6 +42,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pyperclip
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 else:
     import lazy_loader as _lazy
 
@@ -842,38 +842,6 @@ def mark_points_y(pts, labels, roman=True, bar=False, ax=None) -> None:
         label_ax.set_frame_on(False)
 
 
-def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="left",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
-
-
-def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="right",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
-
-
 def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:
     delim = "" if name == "" else " = "
     if name is None:
@@ -1115,7 +1083,7 @@ def sizebar(
     sep: float = 3.0,
     frameon: bool = False,
     **kwargs,
-):
+) -> AnchoredSizeBar:
     """Add a size bar to an axes.
 
     Parameters
