@@ -1,9 +1,10 @@
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
 
-from erlab.plotting.general import plot_array, plot_slices
+from erlab.plotting.general import place_inset, plot_array, plot_slices
 
 
 def test_plot_slices() -> None:
@@ -219,3 +220,56 @@ def test_plot_array(data, colorbar, xlim, ylim, crop, kwargs) -> None:
         else:
             assert ax.get_ylim() == ylim
     plt.close()
+
+
+def test_place_inset_basic():
+    fig, ax = plt.subplots()
+    inset_ax = place_inset(ax, width=1.0, height=1.0)
+    assert isinstance(inset_ax, plt.Axes)
+    assert inset_ax is not ax
+    plt.close(fig)
+
+
+def test_place_inset_relative_size():
+    fig, ax = plt.subplots()
+    inset_ax = place_inset(ax, width="50%", height="50%")
+    assert isinstance(inset_ax, plt.Axes)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "loc",
+    [
+        "upper left",
+        "upper center",
+        "upper right",
+        "center left",
+        "center",
+        "center right",
+        "lower left",
+        "lower center",
+        "lower right",
+    ],
+)
+def test_place_inset_locations(loc):
+    fig, ax = plt.subplots()
+    inset_ax = place_inset(ax, width=0.5, height=0.5, loc=loc)
+    assert isinstance(inset_ax, plt.Axes)
+    plt.close(fig)
+
+
+def test_place_inset_with_pad_tuple():
+    fig, ax = plt.subplots()
+    inset_ax = place_inset(ax, width=0.5, height=0.5, pad=(0.2, 0.3))
+    assert isinstance(inset_ax, plt.Axes)
+    plt.close(fig)
+
+
+def test_place_inset_passes_kwargs():
+    fig, ax = plt.subplots()
+    inset_ax = place_inset(ax, width=0.5, height=0.5, facecolor="red")
+    assert isinstance(inset_ax, plt.Axes)
+    # Check that the facecolor is set (axes patch color)
+    fc = inset_ax.patch.get_facecolor()
+    assert np.allclose(fc[:3], matplotlib.colors.to_rgb("red"))
+    plt.close(fig)
