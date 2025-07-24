@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from erlab.plotting.general import place_inset, plot_array, plot_slices
+from erlab.plotting.general import (
+    clean_labels,
+    fermiline,
+    place_inset,
+    plot_array,
+    plot_slices,
+)
 
 
 def test_plot_slices_general() -> None:
@@ -484,4 +490,65 @@ def test_place_inset_passes_kwargs():
     # Check that the facecolor is set (axes patch color)
     fc = inset_ax.patch.get_facecolor()
     assert np.allclose(fc[:3], matplotlib.colors.to_rgb("red"))
+    plt.close(fig)
+
+
+def test_fermiline_horizontal_and_vertical():
+    fig, ax = plt.subplots()
+    # Horizontal line at y=0.0
+    line_h = fermiline(ax, value=0.0, orientation="h")
+    assert isinstance(line_h, matplotlib.lines.Line2D)
+    assert np.allclose(line_h.get_ydata(), [0.0, 0.0])
+    # Vertical line at x=1.0
+    line_v = fermiline(ax, value=1.0, orientation="v")
+    assert isinstance(line_v, matplotlib.lines.Line2D)
+    assert np.allclose(line_v.get_xdata(), [1.0, 1.0])
+    plt.close(fig)
+
+
+def test_fermiline_with_custom_kwargs():
+    fig, ax = plt.subplots()
+    line = fermiline(ax, value=2.0, orientation="h", color="red", lw=2, ls="--")
+    assert line.get_color() == "red"
+    assert line.get_linewidth() == 2
+    assert line.get_linestyle() == "--"
+    plt.close(fig)
+
+
+def test_fermiline_iterable_axes():
+    fig, axs = plt.subplots(2)
+    lines = fermiline(axs, value=0.5, orientation="v", color="blue")
+    assert isinstance(lines, list)
+    assert all(isinstance(ln, matplotlib.lines.Line2D) for ln in lines)
+    for ln in lines:
+        assert ln.get_color() == "blue"
+        assert np.allclose(ln.get_xdata(), [0.5, 0.5])
+    plt.close(fig)
+
+
+def test_fermiline_invalid_orientation():
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError, match="`orientation` must be either 'v' or 'h'"):
+        fermiline(ax, value=0.0, orientation="invalid")
+    plt.close(fig)
+
+
+def test_clean_labels():
+    fig, axes = plt.subplots(2, 2)
+    # Set custom labels to check if they are removed
+    for ax in axes.flat:
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+    clean_labels(axes)
+    # Only bottom row should have xlabel, only left column should have ylabel
+    for i, ax in enumerate(axes.flat):
+        row, col = divmod(i, 2)
+        if row == 1:
+            assert ax.get_xlabel() != ""
+        else:
+            assert ax.get_xlabel() == ""
+        if col == 0:
+            assert ax.get_ylabel() != ""
+        else:
+            assert ax.get_ylabel() == ""
     plt.close(fig)
