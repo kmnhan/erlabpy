@@ -7,7 +7,7 @@ import xarray as xr
 from erlab.plotting.general import place_inset, plot_array, plot_slices
 
 
-def test_plot_slices() -> None:
+def test_plot_slices_general() -> None:
     # Create some sample data
     x = np.linspace(0, 1, 11)
     y = np.linspace(0, 1, 11)
@@ -179,6 +179,218 @@ def test_plot_slices() -> None:
     assert axes[0, 0].get_images()[0].norm.vmin == axes[0, 1].get_images()[0].norm.vmin
     assert axes[0, 0].get_images()[0].norm.vmax == axes[0, 1].get_images()[0].norm.vmax
     plt.close()
+
+
+@pytest.mark.parametrize("order", ["C", "F"], ids=["C order", "F order"])
+@pytest.mark.parametrize("transpose", [False, True], ids=["no transpose", "transpose"])
+@pytest.mark.parametrize("colorbar", ["none", "right", "rightspan", "all"])
+@pytest.mark.parametrize(
+    "same_limits",
+    [False, True, "row", "col", "all"],
+    ids=[
+        "no limits",
+        "same limits",
+        "same row limits",
+        "same column limits",
+        "same all limits",
+    ],
+)
+def test_plot_slices_2d_options(order, transpose, colorbar, same_limits):
+    x = np.linspace(0, 1, 8)
+    y = np.linspace(0, 1, 8)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((8, 8)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(
+        np.random.default_rng(1).random((8, 8)), coords=[x, y], dims=["x", "y"]
+    )
+    maps = [arr1, arr2]
+    fig, axes = plot_slices(
+        maps,
+        transpose=transpose,
+        colorbar=colorbar,
+        same_limits=same_limits,
+        order=order,
+    )
+    assert isinstance(fig, plt.Figure)
+    assert isinstance(axes, np.ndarray)
+    if order == "F":
+        assert axes.shape == (1, 2)
+    else:
+        assert axes.shape == (2, 1)
+    plt.close(fig)
+
+
+def test_plot_slices_gradient_and_gradient_kw():
+    x = np.linspace(0, 1, 10)
+    arr = xr.DataArray(np.sin(2 * np.pi * x), coords=[x], dims=["x"], name="sin")
+    fig, axes = plot_slices(
+        [arr], gradient=True, gradient_kw={"alpha": 0.5, "color": "green"}
+    )
+    assert isinstance(fig, plt.Figure)
+    assert isinstance(axes, np.ndarray)
+    plt.close(fig)
+
+
+def test_plot_slices_1d_and_2d_mix_error():
+    x = np.linspace(0, 1, 5)
+    y = np.linspace(0, 1, 5)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((5, 5)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(np.random.default_rng(1).random(5), coords=[x], dims=["x"])
+    with pytest.raises(
+        ValueError, match="All input arrays must have the same dimensions"
+    ):
+        plot_slices([arr1, arr2])
+
+
+def test_plot_slices_invalid_axes_type():
+    x = np.linspace(0, 1, 5)
+    y = np.linspace(0, 1, 5)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((5, 5)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, ax = plt.subplots()
+    with pytest.raises(
+        TypeError, match="axes must be an iterable of matplotlib.axes.Axes"
+    ):
+        plot_slices(arr, axes=ax)
+    plt.close(fig)
+
+
+def test_plot_slices_with_custom_axes_and_order():
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(
+        np.random.default_rng(1).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plt.subplots(2, 1)
+    plot_slices([arr1, arr2], axes=axes, order="F")
+    plt.close(fig)
+
+
+def test_plot_slices_with_cmap_and_norm_iterables():
+    x = np.linspace(0, 1, 7)
+    y = np.linspace(0, 1, 7)
+    arr1 = xr.DataArray(
+        np.random.default_rng(0).random((7, 7)), coords=[x, y], dims=["x", "y"]
+    )
+    arr2 = xr.DataArray(
+        np.random.default_rng(1).random((7, 7)), coords=[x, y], dims=["x", "y"]
+    )
+    cmaps = ["viridis", "plasma"]
+    norms = [plt.Normalize(0, 0.5), plt.Normalize(0, 1)]
+    fig, axes = plot_slices([arr1, arr2], cmap=cmaps, norm=norms)
+    assert axes.shape == (2, 1)
+    plt.close(fig)
+
+
+def test_plot_slices_with_annotate_kw_and_subplot_kw():
+    x = np.linspace(0, 1, 4)
+    y = np.linspace(0, 1, 4)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((4, 4)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(
+        arr, annotate_kw={"fontsize": 8}, subplot_kw={"sharex": "all"}
+    )
+    assert isinstance(fig, plt.Figure)
+    plt.close(fig)
+
+
+def test_plot_slices_with_axis_and_show_all_labels():
+    x = np.linspace(0, 1, 5)
+    y = np.linspace(0, 1, 5)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((5, 5)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(arr, axis="equal", show_all_labels=True)
+    for ax in axes.flat:
+        assert ax.get_xlabel() != ""
+        assert ax.get_ylabel() != ""
+    plt.close(fig)
+
+
+def test_plot_slices_with_invalid_slice_dim():
+    x = np.linspace(0, 1, 5)
+    y = np.linspace(0, 1, 5)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((5, 5)), coords=[x, y], dims=["x", "y"]
+    )
+    with pytest.raises(ValueError, match="Only one slice dimension is allowed"):
+        plot_slices(arr, x=[0.1, 0.2], y=[0.3, 0.4])
+
+
+def test_plot_slices_with_invalid_ndim():
+    arr = xr.DataArray(np.random.default_rng(0).random((2, 2, 2)), dims=["a", "b", "c"])
+    with pytest.raises(ValueError, match="The data to plot must be 1D or 2D"):
+        plot_slices(arr, a=0.1, b=[0.2, 0.3], c=0.4)
+
+
+def test_plot_slices_with_colorbar_kw_and_hide_colorbar_ticks_false():
+    x = np.linspace(0, 1, 6)
+    y = np.linspace(0, 1, 6)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(
+        arr, colorbar="all", colorbar_kw={"shrink": 0.5}, hide_colorbar_ticks=False
+    )
+    plt.close(fig)
+
+
+def test_plot_slices_with_crop_false_and_xlim_ylim():
+    x = np.linspace(-1, 1, 10)
+    y = np.linspace(-1, 1, 10)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((10, 10)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(arr, crop=False, xlim=(-0.5, 0.5), ylim=(-0.5, 0.5))
+    for ax in axes.flat:
+        assert ax.get_xlim() == (-0.5, 0.5)
+        assert ax.get_ylim() == (-0.5, 0.5)
+    plt.close(fig)
+
+
+def test_plot_slices_with_1d_line_and_cmap_color():
+    x = np.linspace(0, 1, 12)
+    arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
+    fig, axes = plot_slices(arr, cmap="red")
+    plt.close(fig)
+
+
+def test_plot_slices_with_1d_gradient_auto_color():
+    x = np.linspace(0, 1, 12)
+    arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
+    fig, axes = plot_slices(arr, gradient=True)
+    plt.close(fig)
+
+
+def test_plot_slices_with_2d_and_crop_and_limits():
+    x = np.linspace(-2, 2, 20)
+    y = np.linspace(-2, 2, 20)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((20, 20)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(arr, crop=True, xlim=(-1, 1), ylim=(-1, 1))
+    for ax in axes.flat:
+        assert ax.get_xlim() == (-1, 1)
+        assert ax.get_ylim() == (-1, 1)
+    plt.close(fig)
+
+
+def test_plot_slices_with_annotate_false():
+    x = np.linspace(0, 1, 8)
+    y = np.linspace(0, 1, 8)
+    arr = xr.DataArray(
+        np.random.default_rng(0).random((8, 8)), coords=[x, y], dims=["x", "y"]
+    )
+    fig, axes = plot_slices(arr, annotate=False)
+    plt.close(fig)
 
 
 @pytest.mark.parametrize(
