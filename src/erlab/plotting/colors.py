@@ -690,48 +690,6 @@ def _size_to_bounds(ax, width, height, loc):
     return origin + sizes
 
 
-def _refresh_pads(ax, cax, pads, loc):
-    ref = _size_to_bounds(ax, 0, 0, loc)[:2]
-    bbox = ax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
-    x0, y0 = (
-        bbox.x0 + ref[0] * (bbox.x1 - bbox.x0),
-        bbox.y1 + ref[1] * (bbox.y1 - bbox.y0),
-    )
-    bbox = cax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
-    x1, y1 = (
-        bbox.x0 + ref[0] * (bbox.x1 - bbox.x0),
-        bbox.y1 + ref[1] * (bbox.y1 - bbox.y0),
-    )
-
-    pads[0] += x1 - x0
-    pads[1] += y1 - y0
-    return pads
-
-
-def _get_pad(pad, loc):
-    pad_num = False
-    if isinstance(pad, Number):
-        pad_num = True
-        pad = [pad, pad]
-    pads = [-pad[0], -pad[1]]
-    if "center" in loc:
-        pads[0] *= -1
-        pads[1] *= -1
-        if "upper" in loc or "lower" in loc:
-            if pad_num:
-                pads[0] = 0
-            pads[1] *= -1
-        elif "left" in loc or "right" in loc:
-            if pad_num:
-                pads[1] = 0
-            pads[0] *= -1
-    if "left" in loc:
-        pads[0] *= -1
-    if "lower" in loc:
-        pads[1] *= -1
-    return pads
-
-
 def _ez_inset(
     parent_axes: matplotlib.axes.Axes,
     width: float | str,
