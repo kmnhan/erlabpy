@@ -1276,11 +1276,11 @@ def axes_textcolor(
         The axes object for which the text color needs to be determined.
     light : ColorType
         The *light* color, returned when :func:`image_is_light
-        <erlab.plotting.colors.image_is_light>` returns `False`. Default is ``'w'``
+        <erlab.plotting.colors.image_is_light>` returns `False`. Default is ``'k'``
         (white).
     dark : ColorType
         The *dark* color, returned when :func:`image_is_light
-        <erlab.plotting.colors.image_is_light>` returns `True`. Default is ``'k'``
+        <erlab.plotting.colors.image_is_light>` returns `True`. Default is ``'w'``
         (black).
 
     """
