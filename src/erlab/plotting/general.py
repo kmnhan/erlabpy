@@ -882,7 +882,7 @@ def plot_slices(
 
     if axes is None:
         fig, axes = plt.subplots(nrow, ncol, figsize=figsize, **subplot_kw)
-        axes = np.asarray(axes, dtype=object)  # to appease mypy
+        axes = np.atleast_1d(np.asarray(axes, dtype=object))
     else:
         if not isinstance(axes, np.ndarray):
             if not isinstance(axes, Iterable):

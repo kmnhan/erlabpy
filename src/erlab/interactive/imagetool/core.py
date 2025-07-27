@@ -111,14 +111,15 @@ def _parse_input(
                 _parse_dataset(leaf.dataset) for leaf in data.leaves
             )
         )
-    elif not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
+
+    if len(data) == 0:
+        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
+
+    if not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
         raise TypeError(
             f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
             "DataTree, numpy array, or a list of DataArray or numpy arrays."
         )
-
-    if len(data) == 0:
-        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
 
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
@@ -760,7 +761,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp = typing.cast(
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
-        self.qapp.aboutToQuit.connect(self.on_close)
+        # self.qapp.aboutToQuit.connect(self.on_close)
 
     @property
     def parent_title(self) -> str:
@@ -980,14 +981,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         finally:
             self._write_history = original
 
-    def on_close(self) -> None:
-        if hasattr(self, "array_slicer"):
-            self.array_slicer.clear_cache()
-        if hasattr(self, "data"):
-            self.data.close()
-        if hasattr(self, "_data") and self._data is not None:
-            self._data.close()
-            del self._data
+    # def on_close(self) -> None:
+    #     if hasattr(self, "array_slicer"):
+    #         self.array_slicer.clear_cache()
+    #     if hasattr(self, "data"):
+    #         self.data.close()
+    #     if hasattr(self, "_data") and self._data is not None:
+    #         self._data.close()
+    #         del self._data
 
     @QtCore.Slot()
     def write_state(self) -> None:
@@ -1597,7 +1598,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             colors = list(colors)
 
         if len(colors) != n:
-            raise ValueError("Number of colors must match number of cursors")
+            raise ValueError("Number of colors must match the number of cursors")
 
         for clr in colors:
             self.add_cursor(color=clr)
