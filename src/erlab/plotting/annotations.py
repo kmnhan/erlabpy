@@ -10,7 +10,6 @@ __all__ = [
     "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
-    "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
     "property_labels",
@@ -577,116 +576,6 @@ def label_subplots(
                 clip_on=False,
             )
         ax.add_artist(at)
-
-
-def label_subplots_nature(
-    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
-    values: Sequence[int | str] | None = None,
-    startfrom: int = 1,
-    order: typing.Literal["C", "F", "A", "K"] = "C",
-    offset: tuple[float, float] = (-20.0, 7.0),
-    prefix: str = "",
-    suffix: str = "",
-    numeric: bool = False,
-    capital: bool = False,
-    fontweight: typing.Literal[
-        "ultralight",
-        "light",
-        "normal",
-        "regular",
-        "book",
-        "medium",
-        "roman",
-        "semibold",
-        "demibold",
-        "demi",
-        "bold",
-        "heavy",
-        "extra bold",
-        "black",
-    ] = "black",
-    fontsize: (
-        float
-        | typing.Literal[
-            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
-        ]
-    ) = "medium",
-    **kwargs,
-) -> None:
-    r"""Labels subplots with automatically generated labels.
-
-    Parameters
-    ----------
-    axes
-        `matplotlib.axes.Axes` to label. If an array is given, the order will be
-        determined by the flattening method given by `order`.
-    values
-        Integer or string labels corresponding to each Axes in `axes` for
-        manual labels.
-    startfrom
-        Start from this number when creating automatic labels. Has no
-        effect when `values` is not `None`.
-    order
-        Order in which to flatten `ax`. 'C' means to flatten in
-        row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran-style) order. 'A' means to flatten in column-major
-        order if a is Fortran contiguous in memory, row-major order
-        otherwise. 'K' means to flatten a in the order the elements
-        occur in memory. The default is 'C'.
-    offset
-        Values that are used to position the labels, given in points.
-    prefix
-        String to prepend to the alphabet label.
-    suffix
-        String to append to the alphabet label.
-    numeric
-        Use integer labels instead of alphabets.
-    capital
-        Capitalize automatically generated alphabetical labels.
-    fontweight
-        Set the font weight. The default is ``'normal'``.
-    fontsize
-        Set the font size. The default is ``'medium'`` for axes, and ``'large'`` for
-        figures.
-    **kwargs
-        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
-        documentation for a list of all possible arguments.
-
-    """
-    kwargs["fontweight"] = fontweight
-    if plt.rcParams["text.usetex"] & (fontweight == "bold"):
-        prefix = "\\textbf{" + prefix
-        suffix = suffix + "}"
-        kwargs.pop("fontweight")
-
-    axlist = np.array(axes, dtype=object).flatten(order=order)
-    if values is None:
-        value_arr = np.array(
-            [i + startfrom for i in range(len(axlist))], dtype=np.int64
-        )
-    else:
-        value_arr = np.array(values).flatten(order=order)
-        if not (axlist.size == value_arr.size):
-            raise IndexError(
-                "The number of given values must match the number of given axes."
-            )
-
-    for i in range(len(axlist)):
-        label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
-        trans = matplotlib.transforms.ScaledTranslation(
-            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
-        )
-        axlist[i].figure.text(
-            # axlist[i].text(
-            0.0,
-            1.0,
-            label_str,
-            transform=axlist[i].transAxes + trans,
-            fontsize=fontsize,
-            va="baseline",
-            clip_on=False,
-            **kwargs,
-        )
 
 
 def mark_points(
