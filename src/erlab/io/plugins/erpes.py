@@ -29,26 +29,31 @@ def _determine_kind(data: xr.DataArray) -> str:
     return data_type
 
 
+def _make_iso(x: str) -> datetime.datetime | str:
+    """Convert a string to ISO format."""
+    return datetime.datetime.fromisoformat(x) if str(x) != "nan" else "NaT"
+
+
+def _make_iso_date_time(d, t) -> datetime.datetime | str:
+    """Convert a string to ISO format."""
+    if str(d) == "nan" or str(t) == "nan":
+        return "NaT"
+    return _make_iso(f"{d} {t}")
+
+
 def _get_start_time(data: xr.DataArray) -> xr.DataArray:
     """Get the start time from raw data."""
     return xr.apply_ufunc(
-        lambda x, y: datetime.datetime.fromisoformat(f"{x} {y}"),
-        data["Date"],
-        data["Time"],
-        vectorize=True,
+        _make_iso_date_time, data["Date"], data["Time"], vectorize=True
     )
 
 
 def _get_seq_start(data: xr.DataArray) -> xr.DataArray:
-    return xr.apply_ufunc(
-        lambda x: datetime.datetime.fromisoformat(x), data["seq_start"], vectorize=True
-    )
+    return xr.apply_ufunc(_make_iso, data["seq_start"], vectorize=True)
 
 
 def _get_attrs_time(data: xr.DataArray) -> xr.DataArray:
-    return xr.apply_ufunc(
-        lambda x: datetime.datetime.fromisoformat(x), data["attrs_time"], vectorize=True
-    )
+    return xr.apply_ufunc(_make_iso, data["attrs_time"], vectorize=True)
 
 
 def _emit_ambiguous_file_warning(num, file_to_use):
