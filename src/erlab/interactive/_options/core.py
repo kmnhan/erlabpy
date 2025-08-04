@@ -86,7 +86,12 @@ class OptionManager:
     @property
     def qsettings(self) -> QtCore.QSettings:
         """Get the QSettings object."""
-        return QtCore.QSettings("erlabpy", "imagetool")
+        return QtCore.QSettings(
+            QtCore.QSettings.Format.IniFormat,
+            QtCore.QSettings.Scope.UserScope,
+            "erlabpy",
+            "interactive",
+        )
 
     @property
     def option_dict(self) -> dict:
@@ -97,7 +102,7 @@ class OptionManager:
     def option_dict(self, d: dict) -> None:
         """Set the settings from a dictionary."""
         write_settings(d, self.qsettings)
-        # self.qsettings.sync()
+        self.qsettings.sync()
 
     def restore(self) -> None:
         """Restore the settings to defaults."""
