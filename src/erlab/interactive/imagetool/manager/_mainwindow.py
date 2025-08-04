@@ -7,6 +7,7 @@ import pathlib
 import platform
 import sys
 import tempfile
+import traceback
 import typing
 import uuid
 
@@ -751,7 +752,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self,
                     "Error",
                     "An error occurred while concatenating data:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
@@ -893,7 +894,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self,
                     "Error",
                     "An error occurred while loading the workspace file:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 self.load()
@@ -1236,7 +1237,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msg_box.setText("An error occurred while creating the ImageTool window.")
         msg_box.setInformativeText("The data may be incompatible with ImageTool.")
-        msg_box.setDetailedText(f"{type(e).__name__}: {e}")
+
+        msg_box.setDetailedText(
+            f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+        )
         msg_box.exec()
 
     def _add_from_multiple_files(

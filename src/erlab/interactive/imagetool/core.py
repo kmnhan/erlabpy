@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import time
+import traceback
 import typing
 import uuid
 import weakref
@@ -1401,7 +1402,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     self,
                     "Error",
                     "An error occurred while reloading data:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
