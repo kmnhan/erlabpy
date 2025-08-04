@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import sys
+import traceback
 import types
 import typing
 import warnings
@@ -651,7 +652,7 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
                 None,
                 "Error",
                 "An error occurred while loading the fit result:\n\n"
-                f"{type(e).__name__}: {e}",
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
             )
 
     return None

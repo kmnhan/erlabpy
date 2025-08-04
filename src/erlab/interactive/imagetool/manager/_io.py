@@ -7,6 +7,7 @@ __all__ = ["_MultiFileHandler"]
 import collections
 import logging
 import pathlib
+import traceback
 import typing
 import weakref
 
@@ -70,7 +71,9 @@ class _DataLoader(QtCore.QRunnable):
             )
         except Exception as e:
             logger.exception("Error loading data from %s", self._file_path)
-            self.signals.sigFailed.emit(self._file_path, f"{type(e).__name__}: {e}")
+            self.signals.sigFailed.emit(
+                self._file_path, f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            )
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)
 
