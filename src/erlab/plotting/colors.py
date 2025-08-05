@@ -663,33 +663,6 @@ def proportional_colorbar(
     return cbar
 
 
-def _size_to_bounds(ax, width, height, loc):
-    fig = ax.get_figure()
-    sizes = [width, height]
-
-    ax_sizes = (
-        ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted()).bounds[2:]
-    )
-    sizes = [
-        float(size[:-1]) / 100 if isinstance(size, str) else size / ax_sizes[i]
-        for i, size in enumerate(sizes)
-    ]
-
-    origin = [1 - sizes[0], 1 - sizes[1]]
-    if "center" in loc:
-        origin[0] /= 2
-        origin[1] /= 2
-        if "upper" in loc or "lower" in loc:
-            origin[1] *= 2
-        elif "left" in loc or "right" in loc:
-            origin[0] *= 2
-    if "left" in loc:
-        origin[0] = 0
-    if "lower" in loc:
-        origin[1] = 0
-    return origin + sizes
-
-
 def _ez_inset(
     parent_axes: matplotlib.axes.Axes,
     width: float | str,
@@ -706,21 +679,22 @@ def _ez_inset(
         "lower center",
         "lower right",
     ] = "upper right",
+    *,
+    zorder: int = 5,
     **kwargs,
 ) -> matplotlib.axes.Axes:
-    fig = parent_axes.get_figure()
+    inset_locator = InsetAxesLocator(width, height, pad, loc)
+    bounds = inset_locator(parent_axes, None).bounds
+    fig = parent_axes.get_figure(root=False)
     if fig is None:
-        raise RuntimeError("Parent axes is not attached to a figure")
-    locator = InsetAxesLocator(parent_axes, width, height, pad, loc)
-    ax_ = fig.add_axes(locator(parent_axes, None).bounds, **kwargs)
-    ax_.set_axes_locator(locator)
-    return ax_
+        raise RuntimeError("Parent axes must be part of a figure")
+    inset_ax = fig.add_axes(bounds, zorder=zorder, **kwargs)
+    inset_ax.set_axes_locator(inset_locator)
+    return inset_ax
 
 
 class InsetAxesLocator:
-    def __init__(self, ax, width, height, pad, loc) -> None:
-        self._ax = ax
-        self._transAxes = ax.transAxes
+    def __init__(self, width, height, pad, loc) -> None:
         self._width = width
         self._height = height
         self._loc = loc
@@ -729,11 +703,11 @@ class InsetAxesLocator:
     def __call__(self, ax, renderer):
         return matplotlib.transforms.TransformedBbox(
             matplotlib.transforms.Bbox.from_bounds(*self._size_to_bounds(ax)),
-            self._transAxes
+            ax.transAxes
             + matplotlib.transforms.ScaledTranslation(
-                self.pads[0], self.pads[1], ax.figure.dpi_scale_trans
+                self.pads[0], self.pads[1], ax.get_figure(root=False).dpi_scale_trans
             )
-            - ax.figure.transSubfigure,
+            - ax.get_figure(root=False).transSubfigure,
         )
 
     def set_pad(self, pad) -> None:
@@ -758,10 +732,6 @@ class InsetAxesLocator:
         if "lower" in self._loc:
             self.pads[1] *= -1
 
-    def add_pad(self, delta) -> None:
-        self.pads[0] += delta[0]
-        self.pads[1] += delta[1]
-
     def sizes(self, ax):
         ax_sizes = (
             ax.get_window_extent()
@@ -784,23 +754,24 @@ class InsetAxesLocator:
             elif "left" in self._loc or "right" in self._loc:
                 origin[0] *= 2
         if "left" in self._loc:
-            origin[0] = 0
+            origin[0] = 0.0
         if "lower" in self._loc:
-            origin[1] = 0
+            origin[1] = 0.0
         return origin + sizes
 
 
 def _gen_cax(ax, width=4.0, aspect=7.0, pad=3.0, horiz=False, **kwargs):
     w, h = width / 72, aspect * width / 72
     if horiz:
-        cax = _ez_inset(ax, h, w, pad=(0, -w - pad / 72), **kwargs)
+        cax = _ez_inset(ax, h, w, pad=(0, -pad / 72), **kwargs)
     else:
-        cax = _ez_inset(ax, w, h, pad=(-w - pad / 72, 0), **kwargs)
+        cax = _ez_inset(ax, w, h, pad=(-pad / 72, 0), **kwargs)
     return cax
 
 
 def nice_colorbar(
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    *,
     mappable: matplotlib.cm.ScalarMappable | None = None,
     width: float = 8.0,
     aspect: float = 5.0,
@@ -856,10 +827,12 @@ def nice_colorbar(
         else:
             parent = ax
 
+        cax = _gen_cax(parent, width, aspect, pad, is_horizontal)
+
         cbar = proportional_colorbar(
             mappable=mappable,
             ax=ax,
-            cax=_gen_cax(parent, width, aspect, pad, is_horizontal),
+            cax=cax,
             orientation=orientation,
             **kwargs,
         )
