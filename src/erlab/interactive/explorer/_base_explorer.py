@@ -812,7 +812,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setWindowTitle("Data Explorer")
-        root_path = root_path if root_path else os.getcwd()
+        root_path = root_path or os.getcwd()
         self._fs_model = _DataExplorerModel(root_path, self)
         self._fs_model.modelReset.connect(
             lambda: QtCore.QTimer.singleShot(1, self._dir_loaded)
@@ -1041,7 +1041,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         dir_path = self.current_directory
         self._current_dir_line.setText(str(dir_path))
         if self.isWindow():
-            dir_name = dir_path.name if dir_path.name else str(dir_path)
+            dir_name = dir_path.name or str(dir_path)
             self.setWindowTitle(f"Data Explorer — {dir_name}")
         self.sigDirectoryChanged.emit(str(dir_path))
 

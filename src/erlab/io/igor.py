@@ -468,7 +468,7 @@ def _parse_setscale(darr: xr.DataArray, setscale_line: str) -> xr.DataArray:
     if not m:
         raise ValueError(f"Invalid SetScale line format: {setscale_line}")
 
-    method = typing.cast("typing.Literal['/I', '/P', None]", m.group(1))
+    method = typing.cast("typing.Literal['/I', '/P'] | None", m.group(1))
 
     # Split args while respecting quotes
     splitter = shlex.shlex(m.group(2), posix=True)
@@ -488,7 +488,7 @@ def _parse_setscale(darr: xr.DataArray, setscale_line: str) -> xr.DataArray:
 
 def set_scale(
     darr: xr.DataArray,
-    method: typing.Literal["/I", "/P", None],
+    method: typing.Literal["/I", "/P"] | None,
     dim: typing.Literal["d", "t", "x", "y", "z"],
     num1: str | float,
     num2: str | float,

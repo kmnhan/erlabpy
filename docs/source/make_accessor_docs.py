@@ -33,10 +33,15 @@ kspace_attributes: str = ""
 
 
 def _make_table_row(name, kind):
-    global content_da_callable, content_ds_callable
-    global content_da_methods, content_ds_methods
-    global content_da_attributes, content_ds_attributes
-    global kspace_methods, kspace_attributes
+    global \
+        content_da_callable, \
+        content_ds_callable, \
+        content_da_methods, \
+        content_ds_methods, \
+        content_da_attributes, \
+        content_ds_attributes, \
+        kspace_methods, \
+        kspace_attributes
 
     row = f"\n   {name}"
 
