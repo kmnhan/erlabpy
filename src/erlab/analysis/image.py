@@ -102,7 +102,7 @@ def gaussian_filter(
     cval: float = 0.0,
     truncate: float = 4.0,
     *,
-    radius: None | float | Collection[float] | Mapping[Hashable, float] = None,
+    radius: float | Collection[float] | Mapping[Hashable, float] | None = None,
 ) -> xr.DataArray:
     """Coordinate-aware wrapper around `scipy.ndimage.gaussian_filter`.
 

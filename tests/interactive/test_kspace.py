@@ -13,7 +13,7 @@ def test_ktool_compatible(anglemap) -> None:
 
     for data in (cut, data_4d, data_3d_without_alpha):
         with pytest.raises(
-            ValueError, match="Data is not compatible with the interactive tool."
+            ValueError, match=r"Data is not compatible with the interactive tool."
         ):
             data.kspace.interactive()
 

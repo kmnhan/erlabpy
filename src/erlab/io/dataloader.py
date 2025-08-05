@@ -1179,7 +1179,7 @@ class LoaderBase(metaclass=_Loader):
 
         def _update_data(
             _, *, full: bool = False, ret: bool = False
-        ) -> None | xr.DataArray | xr.Dataset:
+        ) -> xr.DataArray | xr.Dataset | None:
             # Load data for selected row
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
