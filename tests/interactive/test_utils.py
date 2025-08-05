@@ -116,7 +116,7 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
 )
 def test_identifier_validator_validate(input_str, expected_state):
     validator = IdentifierValidator()
-    state, out_str, pos = validator.validate(input_str, 0)
+    state, _, _ = validator.validate(input_str, 0)
     assert state == expected_state
 
 

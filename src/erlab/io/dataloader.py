@@ -1185,23 +1185,23 @@ class LoaderBase(metaclass=_Loader):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
 
-                _path = pathlib.Path(series["Path"])
+                pth = pathlib.Path(series["Path"])
 
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx, _ = self.infer_index(_path.stem)
+                    idx, _ = self.infer_index(pth.stem)
                     if idx is not None:
-                        ident = self.identify(idx, _path.parents[0])
+                        ident = self.identify(idx, pth.parents[0])
                         if ident is not None:
                             n_scans = len(ident[0])
                             if n_scans > 1 and not full:
                                 full_button.disabled = False
 
-                out = self.load(_path, single=not full)
+                out = self.load(pth, single=not full)
                 if ret:
                     if isinstance(out, xr.DataArray):
-                        return out.rename(_path.stem)
+                        return out.rename(pth.stem)
                     if isinstance(out, xr.Dataset):
                         return out
                     raise ValueError("Unsupported data type for itool")

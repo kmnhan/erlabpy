@@ -439,12 +439,12 @@ def nxgroup_to_xarray(
 
             return t
 
-        _tmp_list = list(t)
+        tmp_list = list(t)
         if isinstance(t[0], str):
-            _tmp_list[0] = _make_relative(t[0])
+            tmp_list[0] = _make_relative(t[0])
         elif isinstance(t[0], Iterable):
-            _tmp_list[0] = tuple(_make_relative(s) for s in t[0])
-        return tuple(_tmp_list)
+            tmp_list[0] = tuple(_make_relative(s) for s in t[0])
+        return tuple(tmp_list)
 
     dims = tuple(_make_relative(d) for d in dims)
     coords = {_make_relative(k): _make_coord_relative(v) for k, v in coords.items()}

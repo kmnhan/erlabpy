@@ -301,7 +301,7 @@ def test_plot_slices_with_annotate_kw_and_subplot_kw():
     arr = xr.DataArray(
         np.random.default_rng(0).random((4, 4)), coords=[x, y], dims=["x", "y"]
     )
-    fig, axes = plot_slices(
+    fig, _axes = plot_slices(
         arr, annotate_kw={"fontsize": 8}, subplot_kw={"sharex": "all"}
     )
     assert isinstance(fig, plt.Figure)
@@ -343,7 +343,7 @@ def test_plot_slices_with_colorbar_kw_and_hide_colorbar_ticks_false():
     arr = xr.DataArray(
         np.random.default_rng(0).random((6, 6)), coords=[x, y], dims=["x", "y"]
     )
-    fig, axes = plot_slices(
+    fig, _axes = plot_slices(
         arr, colorbar="all", colorbar_kw={"shrink": 0.5}, hide_colorbar_ticks=False
     )
     plt.close(fig)
@@ -365,14 +365,14 @@ def test_plot_slices_with_crop_false_and_xlim_ylim():
 def test_plot_slices_with_1d_line_and_cmap_color():
     x = np.linspace(0, 1, 12)
     arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
-    fig, axes = plot_slices(arr, cmap="red")
+    fig, _axes = plot_slices(arr, cmap="red")
     plt.close(fig)
 
 
 def test_plot_slices_with_1d_gradient_auto_color():
     x = np.linspace(0, 1, 12)
     arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
-    fig, axes = plot_slices(arr, gradient=True)
+    fig, _axes = plot_slices(arr, gradient=True)
     plt.close(fig)
 
 
@@ -395,7 +395,7 @@ def test_plot_slices_with_annotate_false():
     arr = xr.DataArray(
         np.random.default_rng(0).random((8, 8)), coords=[x, y], dims=["x", "y"]
     )
-    fig, axes = plot_slices(arr, annotate=False)
+    fig, _axes = plot_slices(arr, annotate=False)
     plt.close(fig)
 
 

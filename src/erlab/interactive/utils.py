@@ -1007,9 +1007,9 @@ class BetterAxisItem(pg.AxisItem):
 
     def updateAutoSIPrefix(self) -> None:
         if self.label.isVisible():
-            _range = 10 ** np.array(self.range) if self.logMode else self.range
+            range_ = 10 ** np.array(self.range) if self.logMode else self.range
             (scale, prefix) = pg.siScale(
-                max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
+                max(abs(range_[0] * self.scale), abs(range_[1] * self.scale))
             )
             if self.labelUnits == "" and prefix in [
                 "k",

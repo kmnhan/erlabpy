@@ -153,13 +153,13 @@ def test_kconv(
     data.attrs["configuration"] = configuration.value
 
     for c in AxesConfiguration:
-        _data = data.kspace.as_configuration(c)
+        data_ = data.kspace.as_configuration(c)
         if c == configuration:
-            xarray.testing.assert_identical(_data, data)
+            xarray.testing.assert_identical(data_, data)
         else:
-            assert _data.attrs["configuration"] == c.value
+            assert data_.attrs["configuration"] == c.value
 
-    del _data
+    del data_
 
     match configuration:
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
