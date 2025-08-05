@@ -661,7 +661,10 @@ class KspaceTool(KspaceToolGUI):
 
             if rot != 0.0:
                 rotmat = np.array(
-                    [[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]]
+                    [
+                        [np.cos(rot), -np.sin(rot)],
+                        [np.sin(rot), np.cos(rot)],
+                    ]
                 )
                 lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
                 vertices = (rotmat @ vertices.T).T

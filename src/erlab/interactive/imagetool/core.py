@@ -2266,7 +2266,12 @@ class ItoolPlotItem(pg.PlotItem):
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
             croppable_actions.extend(
-                (itool_action, goldtool_action, restool_action, dtool_action)
+                (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                )
             )
         else:
             norm_action = self.vb.menu.addAction("Normalize by mean")
