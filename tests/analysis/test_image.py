@@ -312,7 +312,7 @@ def test_remove_stripe(gold_fine):
 
     corrupted = gold_fine * stripe
 
-    corrected, stripe_poly = era.image.remove_stripe(
+    _, stripe_poly = era.image.remove_stripe(
         corrupted, deg=23, eV=slice(-1.2, -0.2), full=True
     )
 

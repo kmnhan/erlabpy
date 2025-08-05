@@ -79,9 +79,9 @@ class _DataManipulationDialog(QtWidgets.QDialog):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter

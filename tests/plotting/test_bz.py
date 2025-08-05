@@ -49,7 +49,7 @@ def test_get_bz_edge_reciprocal_input():
     # Provide reciprocal basis, should not invert
     a = 2.0
     basis = np.array([[2 * np.pi / a, 0], [0, 2 * np.pi / a]])
-    lines, vertices = get_bz_edge(basis, reciprocal=True)
+    _, vertices = get_bz_edge(basis, reciprocal=True)
     # Vertices should be at +/- pi/a
     expected = np.array(
         [

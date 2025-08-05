@@ -306,15 +306,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 },
             }
         )
-        _auto_check = typing.cast(
-            "QtWidgets.QCheckBox", self.params_spl.widgets["Auto"]
-        )
+        auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
         self.params_spl.widgets["lambda"].setDisabled(
-            _auto_check.checkState() == QtCore.Qt.CheckState.Checked
+            auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
-        _auto_check.toggled.connect(
+        auto_check.toggled.connect(
             lambda _: self.params_spl.widgets["lambda"].setDisabled(
-                _auto_check.checkState() == QtCore.Qt.CheckState.Checked
+                auto_check.checkState() == QtCore.Qt.CheckState.Checked
             )
         )
 

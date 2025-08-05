@@ -343,11 +343,11 @@ def shift(
 
     for idxs in itertools.product(*[range(darr.shape[i]) for i in domain_indices]):
         # Construct slices for indexing
-        _slices: list[slice | int] = [slice(None)] * darr.ndim
+        slices_: list[slice | int] = [slice(None)] * darr.ndim
         for domain_index, i in zip(domain_indices, idxs, strict=True):
-            _slices[domain_index] = i
+            slices_[domain_index] = i
 
-        slices: tuple[slice | int, ...] = tuple(_slices)
+        slices: tuple[slice | int, ...] = tuple(slices_)
 
         # Initialize arguments to `scipy.ndimage.shift`
         arr = out[slices]

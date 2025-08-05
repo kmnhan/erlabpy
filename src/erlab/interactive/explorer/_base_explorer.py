@@ -168,9 +168,9 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
     @property
     def file_browser(self) -> _DataExplorer:
         """Parent DataExplorer widget."""
-        _file_browser = self._file_browser()
-        if _file_browser:
-            return _file_browser
+        file_browser = self._file_browser()
+        if file_browser:
+            return file_browser
         raise LookupError("Parent was destroyed")
 
     def set_root_path(self, root_path: str | os.PathLike) -> None:
@@ -590,9 +590,9 @@ class _DataPreviewSelectionWidget(QtWidgets.QWidget):
 
     @property
     def preview_widget(self) -> _DataPreviewWidget:
-        _preview_widget = self._preview_widget()
-        if _preview_widget:
-            return _preview_widget
+        preview_widget = self._preview_widget()
+        if preview_widget:
+            return preview_widget
         raise LookupError("Parent was destroyed")
 
     @property

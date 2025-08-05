@@ -1302,9 +1302,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         # Save color limits so we may restore them later
-        _cached_levels: tuple[float, float] | None = None
+        cached_levels: tuple[float, float] | None = None
         if self.levels_locked:
-            _cached_levels = copy.deepcopy(self.levels)
+            cached_levels = copy.deepcopy(self.levels)
 
         ndim_changed: bool = True
         cursors_reset: bool = True
@@ -1344,10 +1344,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
         self.lock_levels(self.levels_locked)
-        if self.levels_locked and (_cached_levels is not None) and (not cursors_reset):
+        if self.levels_locked and (cached_levels is not None) and (not cursors_reset):
             # If the levels were cached, restore them
             # This is needed if the data was reloaded and the levels were locked
-            self.levels = _cached_levels
+            self.levels = cached_levels
 
         self.flush_history()
 
@@ -3137,9 +3137,9 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
@@ -3175,9 +3175,9 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter

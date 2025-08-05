@@ -133,10 +133,10 @@ class _MultiFileHandler(QtCore.QObject):
     @property
     def manager(self) -> ImageToolManager:
         """Access the parent manager instance."""
-        _manager = self._manager()
-        if _manager is None:
+        manager = self._manager()
+        if manager is None:
             raise LookupError("Parent was destroyed")
-        return _manager
+        return manager
 
     @property
     def queued(self) -> list[pathlib.Path]:

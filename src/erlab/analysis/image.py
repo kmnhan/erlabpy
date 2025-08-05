@@ -563,7 +563,7 @@ def ndsavgol(
         # Cfunc definition overhead is a bottleneck for small arrays
         # Python function is faster for 1D arrays of reasonable size
 
-        def _func(values):
+        def func(values):
             if accurate:
                 out, _, _, _ = np.linalg.lstsq(vander, values, rcond=-1.0)
                 return out[deriv_idx] * scale
@@ -590,12 +590,12 @@ def ndsavgol(
 
             return 1
 
-        _func = scipy.LowLevelCallable(
+        func = scipy.LowLevelCallable(
             _calc_savgol.ctypes, signature="int (double *, npy_intp, double *, void *)"
         )
 
     return scipy.ndimage.generic_filter(
-        arr.astype(np.float64), _func, size=window_shape, mode=mode, cval=cval
+        arr.astype(np.float64), func, size=window_shape, mode=mode, cval=cval
     )
 
 

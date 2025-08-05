@@ -126,9 +126,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
     @property
     def manager(self) -> ImageToolManager:
-        _manager = self._manager()
-        if _manager:
-            return _manager
+        manager = self._manager()
+        if manager:
+            return manager
         raise LookupError("Parent was destroyed")
 
     @staticmethod
@@ -332,9 +332,9 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
 
     @property
     def manager(self) -> ImageToolManager:
-        _manager = self._manager()
-        if _manager:
-            return _manager
+        manager = self._manager()
+        if manager:
+            return manager
         raise LookupError("Parent was destroyed")
 
     def _tool_index(self, row_index: int | QtCore.QModelIndex) -> int:

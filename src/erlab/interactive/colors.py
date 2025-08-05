@@ -705,14 +705,14 @@ def pg_colormap_names(
     local = sorted(pg.colormap.listMaps())
     if source == "local":
         return local
-    _mpl = sorted(pg.colormap.listMaps(source="matplotlib"))
-    for cmap in _mpl:
+    mpl_ = sorted(pg.colormap.listMaps(source="matplotlib"))
+    for cmap in mpl_:
         if (
             cmap.startswith("cet_")
             or cmap.endswith(("_r", "_r_i"))
             or cmap in erlab.interactive.options["colors/cmap/exclude"]
         ):
-            _mpl = list(filter((cmap).__ne__, _mpl))
+            mpl_ = list(filter((cmap).__ne__, mpl_))
     if source == "all":
         cet = sorted(pg.colormap.listMaps(source="colorcet"))
         for cmap in cet:
@@ -722,11 +722,11 @@ def pg_colormap_names(
         # if (_mpl != []) and (cet != []):
         # local = []
 
-        all_cmaps = cet + _mpl if exclude_local else local + cet + _mpl
+        all_cmaps = cet + mpl_ if exclude_local else local + cet + mpl_
     elif exclude_local:
-        all_cmaps = _mpl
+        all_cmaps = mpl_
     else:
-        all_cmaps = local + _mpl
+        all_cmaps = local + mpl_
     return list(dict.fromkeys(all_cmaps))
 
 

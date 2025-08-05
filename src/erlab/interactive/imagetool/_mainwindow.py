@@ -473,7 +473,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         return self.slicer_area.array_slicer
 
     def _generate_menu_kwargs(self) -> dict:
-        _guideline_actions = self.slicer_area.main_image._guideline_actions
+        guideline_actions = self.slicer_area.main_image._guideline_actions
         menu_kwargs: dict[str, typing.Any] = {
             "fileMenu": {
                 "title": "&File",
@@ -544,7 +544,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Rotate": {"triggered": self._rotate},
                     "Rotation Guidelines": {
                         "actions": {
-                            f"guide{i}": act for i, act in enumerate(_guideline_actions)
+                            f"guide{i}": act for i, act in enumerate(guideline_actions)
                         },
                         "sep_after": True,
                     },
