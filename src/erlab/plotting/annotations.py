@@ -20,6 +20,7 @@ __all__ = [
     "sizebar",
 ]
 
+import contextlib
 import io
 import re
 import typing
@@ -318,7 +319,9 @@ def copy_mathtext(
 
         buffer_str = buffer.getvalue().decode("utf-8")
 
-    pyperclip.copy(buffer_str)
+    with contextlib.suppress(pyperclip.PyperclipException):
+        # Try to copy to clipboard, if available
+        pyperclip.copy(buffer_str)
     return buffer_str
 
 
