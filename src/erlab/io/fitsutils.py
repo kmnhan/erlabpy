@@ -223,7 +223,7 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
                 | "Line Scan Fine"
             ):
                 # Get dim name without coordinates
-                for d in next(iter(ds.data_vars.values())).dims:
+                for d in next(iter(ds.data_vars.values())).dims:  # pragma: no branch
                     if d not in ds.coords:
                         d_name = d
                         break

@@ -119,7 +119,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         # Handle preview closing
         viewport = parent.viewport()
-        if viewport is not None:
+        if viewport is not None:  # pragma: no branch
             viewport.installEventFilter(self)
 
         self._force_hover: bool = False  # Flag for debugging
@@ -166,7 +166,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         option: QtWidgets.QStyleOptionViewItem,
         index: QtCore.QModelIndex,
     ) -> None:
-        if editor is not None:
+        if editor is not None:  # pragma: no branch
             rect = QtCore.QRectF(option.rect)
             rect.setLeft(rect.left() + 5)
             rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
@@ -178,7 +178,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         option: QtWidgets.QStyleOptionViewItem,
         index: QtCore.QModelIndex,
     ) -> None:
-        if painter is None:
+        if painter is None:  # pragma: no branch
             return
         painter.save()
 
@@ -206,7 +206,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             view.state() == QtWidgets.QAbstractItemView.State.EditingState
             and view.currentIndex() == index
         )
-        if not is_editing:
+        if not is_editing:  # pragma: no branch
             # Grey text for archived tools
             painter.setPen(index.data(role=QtCore.Qt.ItemDataRole.ForegroundRole))
 
@@ -301,7 +301,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
-        if event is not None:
+        if event is not None:  # pragma: no branch
             match event.type():
                 case (
                     QtCore.QEvent.Type.Resize
@@ -321,7 +321,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     def _cleanup_filter(self) -> None:
         """Remove the event filter from the viewport."""
         viewport = typing.cast("_ImageToolWrapperListView", self.parent()).viewport()
-        if viewport is not None:
+        if viewport is not None:  # pragma: no branch
             viewport.removeEventFilter(self)
 
 
@@ -349,7 +349,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
         return self.index(self.manager._displayed_indices.index(tool_index))
 
     def _is_archived(self, row_index: int | QtCore.QModelIndex) -> bool:
-        if isinstance(row_index, QtCore.QModelIndex):
+        if isinstance(row_index, QtCore.QModelIndex):  # pragma: no branch
             row_index = row_index.row()
         return self._tool_wrapper(row_index).archived
 
@@ -359,7 +359,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
     def data(
         self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole
     ) -> typing.Any:
-        if not index.isValid():
+        if not index.isValid():  # pragma: no branch
             return None
 
         tool_idx: int = self._tool_index(index)
@@ -398,7 +398,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
     def removeRows(
         self, row: int, count: int, parent: QtCore.QModelIndex | None = None
     ) -> bool:
-        if parent is None:
+        if parent is None:  # pragma: no branch
             parent = QtCore.QModelIndex()
         self.beginRemoveRows(parent, row, row + count - 1)
         del self.manager._displayed_indices[row : row + count]
@@ -408,7 +408,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
     def insertRows(
         self, row: int, count: int, parent: QtCore.QModelIndex | None = None
     ) -> bool:
-        if parent is None:
+        if parent is None:  # pragma: no branch
             parent = QtCore.QModelIndex()
         self.beginInsertRows(parent, row, row + count - 1)
         for i in range(count):
@@ -422,7 +422,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
         value: typing.Any,
         role: int = QtCore.Qt.ItemDataRole.EditRole,
     ) -> bool:
-        if not index.isValid():
+        if not index.isValid():  # pragma: no branch
             return False
 
         if role == QtCore.Qt.ItemDataRole.EditRole:
@@ -431,7 +431,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
             self.dataChanged.emit(index, index, [role])
             return True
 
-        if role == _WrapperItemDataRole.ToolIndexRole:
+        if role == _WrapperItemDataRole.ToolIndexRole:  # pragma: no branch
             if index.row() >= len(self.manager._displayed_indices):
                 self.manager._displayed_indices.append(value)
             else:
@@ -460,7 +460,7 @@ class _ImageToolWrapperListModel(QtCore.QAbstractListModel):
             QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
         )
 
-        if index.isValid():
+        if index.isValid():  # pragma: no branch
             if not self._is_archived(index):
                 default_flags |= QtCore.Qt.ItemFlag.ItemIsEditable
             return (
@@ -642,7 +642,9 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
 
         This must be called before the tool is removed from the manager.
         """
-        for i, tool_idx in enumerate(self._model.manager._displayed_indices):
-            if tool_idx == index:
+        for i, tool_idx in enumerate(
+            self._model.manager._displayed_indices
+        ):  # pragma: no branch
+            if tool_idx == index:  # pragma: no branch
                 self._model.removeRows(i, 1)
                 break

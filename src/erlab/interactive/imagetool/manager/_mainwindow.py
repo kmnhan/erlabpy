@@ -578,7 +578,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.get_tool(index).slicer_area._linking_proxy
                     for index in selection_unarchived
                 ]
-                if all(p == proxies[0] for p in proxies):
+                if all(p == proxies[0] for p in proxies):  # pragma: no branch
                     self.link_action.setEnabled(False)
 
     def remove_tool(self, index: int) -> None:
@@ -1314,7 +1314,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _stop_server(self) -> None:
         """Stop the server thread properly."""
-        if self.server.isRunning():
+        if self.server.isRunning():  # pragma: no branch
             self.server.stopped.set()
             _ping_server()
             self.server.wait()

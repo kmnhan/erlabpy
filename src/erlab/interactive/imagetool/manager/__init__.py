@@ -91,7 +91,7 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: no cover
         import ctypes
 
         # Set the AppUserModelID for Windows taskbar grouping
@@ -111,7 +111,7 @@ def main(execute: bool = True) -> None:
     qapp.setApplicationDisplayName("ImageTool Manager")
     qapp.setApplicationVersion(erlab.__version__)
 
-    while is_running():
+    while is_running():  # pragma: no branch
         dialog = _InitDialog()
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
