@@ -581,6 +581,7 @@ def label_subplots(
 def mark_points(
     points: Sequence[float],
     labels: Sequence[str],
+    *,
     y: float | Sequence[float] = 0.0,
     pad: tuple[float, float] = (0, 1.75),
     literal: bool = False,
@@ -599,19 +600,25 @@ def mark_points(
         Floats indicating the position of each label.
     labels
         Sequence of label strings indicating a high symmetry point. Must be the same
-        length as `points`.
+        length as ``points``.
     y
-        Position of the label in data coordinates
+        Position of the label in data coordinates. If a single float is given, it will
+        be used for all points. If a sequence is given, it must be the same length as
+        ``points``.
     pad
         Offset of the text in points.
     literal
         If `True`, take the input string literally.
     roman
-        If ``False``, *True*, itallic fonts are used.
+        If `False`, itallic fonts are used.
     bar
-        If ``True``, prints a bar over the label.
+        If `True`, prints a bar over the label.
     ax
-        `matplotlib.axes.Axes` to annotate.
+        `matplotlib.axes.Axes` to annotate. If `None`, the current axes is used.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.text`. By default, the horizontal
+        alignment is set to ``'center'`` and the vertical alignment is set to
+        ``'baseline'``. The text is not clipped to the axes limits.
 
     """
     if ax is None:
@@ -619,31 +626,47 @@ def mark_points(
 
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
-            mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
+            mark_points(
+                points,
+                labels,
+                y=y,
+                pad=pad,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=a,
+                **kwargs,
+            )
     else:
         fig = ax.get_figure()
 
         if fig is None:
             raise ValueError("Given axes does not belong to a figure")
-
-        for k, v in {"ha": "center", "va": "baseline", "fontsize": "small"}.items():
-            kwargs.setdefault(k, v)
+        kwargs.setdefault("ha", kwargs.pop("horizontalalignment", "center"))
+        kwargs.setdefault("va", kwargs.pop("verticalalignment", "baseline"))
+        kwargs.setdefault("clip_on", False)
 
         if not np.iterable(y):
             y = [y] * len(points)
 
-        with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, label in zip(points, y, labels, strict=True):
-                ax.text(
-                    xi,
-                    yi,
-                    label if literal else parse_point_labels(label, roman, bar),
-                    transform=ax.transData
-                    + mtransforms.ScaledTranslation(
-                        pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
-                    ),
-                    **kwargs,
-                )
+        default_color = kwargs.pop("c", kwargs.pop("color", None))
+
+        for xi, yi, label in zip(points, y, labels, strict=True):
+            if default_color is None:
+                color = "k" if ax.get_ylim()[1] < yi else axes_textcolor(ax)
+            else:
+                color = default_color
+            ax.text(
+                xi,
+                yi,
+                label if literal else parse_point_labels(label, roman, bar),
+                transform=ax.transData
+                + mtransforms.ScaledTranslation(
+                    pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
+                ),
+                color=color,
+                **kwargs,
+            )
 
 
 def mark_points_outside(
@@ -711,23 +734,6 @@ def mark_points_outside(
                 ],
                 **kwargs,
             )
-        label_ax.set_frame_on(False)
-
-
-def mark_points_y(pts, labels, roman=True, bar=False, ax=None) -> None:
-    if ax is None:
-        ax = plt.gca()
-    if not isinstance(ax, tuple | list | np.ndarray):
-        ax = [ax]
-    for a in np.array(ax, dtype=object).flatten():
-        label_ax = a.twinx()
-        label_ax.set_ylim(a.get_ylim())
-        label_ax.set_yticks(pts)
-        # label_ax.set_xlabel('')
-        label_ax.set_yticklabels(
-            [parse_point_labels(lab, roman, bar) for lab in labels]
-        )
-        # label_ax.set_zorder(a.get_zorder())
         label_ax.set_frame_on(False)
 
 
