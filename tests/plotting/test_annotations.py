@@ -7,6 +7,7 @@ from erlab.plotting.annotations import (
     _SIFormatter,
     copy_mathtext,
     mark_points,
+    mark_points_outside,
     property_labels,
     scale_units,
     set_titles,
@@ -200,4 +201,81 @@ def test_sizebar_with_decimals():
     # Should round to 1.23 mm
     assert asb.txt_label.get_text().startswith("1.23")
     assert "mm" in asb.txt_label.get_text()
+    plt.close(fig)
+
+
+def test_mark_points_outside_x_axis_labels():
+    fig, ax = plt.subplots()
+    x = np.linspace(0, 8, 100)
+    ax.plot(x, 0.1 * x)
+    points = [1, 3, 5, 7]
+    labels = ["A", "B", "C", "D"]
+
+    mark_points_outside(points, labels, axis="x", ax=ax)
+
+    # There should be a twiny axes
+    assert len(fig.axes) == 2
+    label_ax = fig.axes[1]
+    # Check that the twiny axes has the correct tick locations and labels
+    assert np.allclose(label_ax.get_xticks(), points)
+    assert [tick.get_text() for tick in label_ax.get_xticklabels()] == [
+        "$\\mathdefault{A}$",
+        "$\\mathdefault{B}$",
+        "$\\mathdefault{C}$",
+        "$\\mathdefault{\\Delta}$",
+    ]
+    plt.close(fig)
+
+
+def test_mark_points_outside_y_axis_labels():
+    fig, ax = plt.subplots()
+    y = np.linspace(0, 8, 100)
+    ax.plot(0.1 * y, y)
+    points = [2, 4, 6, 8]
+    labels = ["X", "Y", "Z", "W"]
+
+    mark_points_outside(points, labels, axis="y", ax=ax)
+
+    # There should be a twiny axes for y
+    assert len(fig.axes) == 2
+    label_ax = fig.axes[1]
+    # Check that the twiny axes has the correct tick locations and labels
+    assert np.allclose(label_ax.get_yticks(), points)
+    assert [tick.get_text() for tick in label_ax.get_yticklabels()] == [
+        "$\\mathdefault{X}$",
+        "$\\mathdefault{Y}$",
+        "$\\mathdefault{Z}$",
+        "$\\mathdefault{W}$",
+    ]
+    plt.close(fig)
+
+
+def test_mark_points_outside_literal_labels():
+    fig, ax = plt.subplots()
+    points = [0, 1]
+    labels = ["foo", "bar"]
+
+    mark_points_outside(points, labels, axis="x", ax=ax, literal=True)
+
+    label_ax = fig.axes[1]
+    assert [tick.get_text() for tick in label_ax.get_xticklabels()] == ["foo", "bar"]
+    plt.close(fig)
+
+
+def test_mark_points_outside_iterable_axes():
+    fig, axs = plt.subplots(1, 2)
+    points = [1, 2]
+    labels = ["A", "B"]
+
+    mark_points_outside(points, labels, axis="x", ax=axs)
+
+    # Should add a twiny axes to each subplot
+    assert len(fig.axes) == 4
+    for i in range(1):
+        label_ax = fig.axes[2 + i]
+        assert np.allclose(label_ax.get_xticks(), points)
+        assert [tick.get_text() for tick in label_ax.get_xticklabels()] == [
+            "$\\mathdefault{A}$",
+            "$\\mathdefault{B}$",
+        ]
     plt.close(fig)
