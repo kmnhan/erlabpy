@@ -202,7 +202,7 @@ def test_minimum_gradient() -> None:
     # Test decorators that check for input validity
     darr = xr.DataArray(np.arange(5), dims=["x"])
     with pytest.raises(
-        ValueError, match="Input must be a 2-dimensional xarray.DataArray"
+        ValueError, match=r"Input must be a 2-dimensional xarray.DataArray"
     ):
         era.image.minimum_gradient(darr)
 

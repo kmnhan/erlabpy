@@ -172,8 +172,8 @@ def test_kconv(
         if data_type == "hvdep":
             with pytest.raises(
                 ValueError,
-                match="Energy axis of photon energy dependent data must be in "
-                "binding energy.",
+                match=r"Energy axis of photon energy dependent data must be in "
+                r"binding energy.",
             ):
                 kconv = data.kspace.convert(silent=False)
             return
@@ -255,7 +255,7 @@ def test_kspace_set_existing_configuration(anglemap):
 
     with pytest.raises(
         AttributeError,
-        match="Configuration is already set. To modify the experimental "
-        "configuration, use `DataArray.kspace.as_configuration`.",
+        match=r"Configuration is already set. To modify the experimental "
+        r"configuration, use `DataArray.kspace.as_configuration`.",
     ):
         data.kspace.configuration = 4

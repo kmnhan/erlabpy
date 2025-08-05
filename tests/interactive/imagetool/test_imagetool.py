@@ -80,8 +80,8 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
 def test_parse_data() -> None:
     with pytest.raises(
         TypeError,
-        match="Unsupported input type str. Expected DataArray, Dataset, DataTree, "
-        "numpy array, or a list of DataArray or numpy arrays.",
+        match=r"Unsupported input type str. Expected DataArray, Dataset, DataTree, "
+        r"numpy array, or a list of DataArray or numpy arrays.",
     ):
         erlab.interactive.imagetool.core._parse_input("string")
 
@@ -432,7 +432,7 @@ def test_value_update_errors(qtbot) -> None:
         win.slicer_area.update_values(
             xr.DataArray(np.arange(24).reshape((4, 6)), dims=["x", "y"])
         )
-    with pytest.raises(ValueError, match="^Data shape does not match.*"):
+    with pytest.raises(ValueError, match=r"^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
 
     win.close()

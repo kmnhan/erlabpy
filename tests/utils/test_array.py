@@ -16,7 +16,7 @@ from erlab.utils.array import (
 
 def test_broadcast_args() -> None:
     def testfunc(x, y):
-        return x * y
+        return x * (y + 1)
 
     testfunc_ = broadcast_args(testfunc)
 

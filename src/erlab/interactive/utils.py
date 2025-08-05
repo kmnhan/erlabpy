@@ -295,7 +295,7 @@ def _filter_to_patterns(name_filter: str) -> list[str]:
 
 
 def file_loaders(
-    file_name: str | os.PathLike | None | Iterable[str | os.PathLike] = None,
+    file_name: str | os.PathLike | Iterable[str | os.PathLike] | None = None,
 ) -> dict[str, tuple[Callable, dict]]:
     """Generate a dictionary of namefilters and loader functions for file dialogs.
 
@@ -1235,7 +1235,7 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
     def __init__(self, image: npt.NDArray | None = None, **kwargs) -> None:
         super().__init__(image, **kwargs)
         self.cut_tolerance = [30, 30]
-        self.data_array: None | xr.DataArray = None
+        self.data_array: xr.DataArray | None = None
 
     def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
@@ -1916,7 +1916,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             raise ValueError("Orientation must be 'vertical' or 'horizontal'.")
         self.cut_to_data = cut_to_data
 
-        self.input: None | xr.DataArray | npt.NDArray = None
+        self.input: xr.DataArray | npt.NDArray | None = None
 
         self.initialize_layout(num_ax)
 

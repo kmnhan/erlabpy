@@ -79,7 +79,7 @@ def test_plot_slices_general() -> None:
     # Test wrong dtype
     fig, ax = plt.subplots()
     with pytest.raises(
-        TypeError, match="axes must be an iterable of matplotlib.axes.Axes"
+        TypeError, match=r"axes must be an iterable of matplotlib.axes.Axes"
     ):
         plot_slices(data0, axes=ax, y=[0.2, 0.4], y_width=0.1)
     plt.close()
@@ -259,7 +259,7 @@ def test_plot_slices_invalid_axes_type():
     )
     fig, ax = plt.subplots()
     with pytest.raises(
-        TypeError, match="axes must be an iterable of matplotlib.axes.Axes"
+        TypeError, match=r"axes must be an iterable of matplotlib.axes.Axes"
     ):
         plot_slices(arr, axes=ax)
     plt.close(fig)
