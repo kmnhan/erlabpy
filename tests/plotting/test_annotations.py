@@ -6,6 +6,7 @@ from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from erlab.plotting.annotations import (
     _SIFormatter,
     copy_mathtext,
+    integer_ticks,
     mark_points,
     mark_points_outside,
     property_labels,
@@ -124,6 +125,59 @@ def test_scale_units_axis_formatter_type():
     ax.set_xlabel("Distance (m)")
     scale_units(ax, "x", si=6, prefix=True)
     assert isinstance(ax.xaxis.get_major_formatter(), _SIFormatter)
+    plt.close(fig)
+
+
+def test_integer_ticks_basic():
+    fig, ax = plt.subplots()
+    ax.plot([0, 1, 2, 3], [0, 1, 4, 9])
+    ax.set_xticks([0, 1, 2, 3, 4.5])
+    ax.set_yticks([0, 1, 2, 3, 4.5])
+    integer_ticks(ax)
+    # Only integer ticks within axis limits should remain
+    assert all(float(int(t)) == t for t in ax.get_xticks())
+    assert all(ax.get_xlim()[0] <= t <= ax.get_xlim()[1] for t in ax.get_xticks())
+    assert all(float(int(t)) == t for t in ax.get_yticks())
+    assert all(ax.get_ylim()[0] <= t <= ax.get_ylim()[1] for t in ax.get_yticks())
+    plt.close(fig)
+
+
+def test_integer_ticks_iterable_axes():
+    fig, axs = plt.subplots(1, 2)
+    for ax in axs:
+        ax.plot([0, 1, 2], [0, 1, 2])
+        ax.set_xticks([0, 1, 2, 2.5])
+        ax.set_yticks([0, 1, 2, 2.5])
+    integer_ticks(axs)
+    for ax in axs:
+        assert all(float(int(t)) == t for t in ax.get_xticks())
+        assert all(ax.get_xlim()[0] <= t <= ax.get_xlim()[1] for t in ax.get_xticks())
+        assert all(float(int(t)) == t for t in ax.get_yticks())
+        assert all(ax.get_ylim()[0] <= t <= ax.get_ylim()[1] for t in ax.get_yticks())
+    plt.close(fig)
+
+
+def test_integer_ticks_no_integer_ticks():
+    fig, ax = plt.subplots()
+    ax.set_xticks([0.1, 0.2, 0.3])
+    ax.set_yticks([0.1, 0.2, 0.3])
+    integer_ticks(ax)
+    # Should result in empty tick lists since no integer ticks are present
+    assert len(ax.get_xticks()) == 0
+    assert len(ax.get_yticks()) == 0
+    plt.close(fig)
+
+
+def test_integer_ticks_out_of_limits():
+    fig, ax = plt.subplots()
+    ax.set_xticks([0, 1, 2, 3, 4])
+    ax.set_yticks([0, 1, 2, 3, 4])
+    ax.set_xlim(1, 3)
+    ax.set_ylim(1, 3)
+    integer_ticks(ax)
+    # Only ticks within [1, 3] should remain
+    assert set(ax.get_xticks()) == {1, 2, 3}
+    assert set(ax.get_yticks()) == {1, 2, 3}
     plt.close(fig)
 
 
