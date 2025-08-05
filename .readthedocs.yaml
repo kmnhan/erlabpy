@@ -9,8 +9,6 @@ build:
   os: "ubuntu-24.04"
   tools:
     python: "3.12"
-  apt_packages:
-    - xclip
   jobs:
     create_environment:
       - asdf plugin add uv
