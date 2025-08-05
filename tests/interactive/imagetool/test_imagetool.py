@@ -293,6 +293,8 @@ def test_image_slicer_area_history_and_manual_limits(qtbot):
     w = QtWidgets.QWidget()
     area.add_tool_window(w)
     w.close()
+    qtbot.wait_until(lambda: len(area._associated_tools) == 0)
+
     # state setter with partial state
     s = dict(area.state)
     s.pop("splitter_sizes", None)

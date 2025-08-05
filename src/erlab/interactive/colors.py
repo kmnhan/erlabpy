@@ -776,7 +776,9 @@ def pg_colormap_powernorm(
     if isinstance(cmap, str):
         cmap = pg_colormap_from_name(cmap, skipCache=True)
 
-    if gamma == 1:
+    gamma = float(gamma)
+
+    if gamma == 1.0:
 
         def mapping_fn(x):
             return x

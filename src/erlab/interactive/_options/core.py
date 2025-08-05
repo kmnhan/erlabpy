@@ -10,12 +10,12 @@ import typing
 
 from qtpy import QtCore
 
-from erlab.interactive._options.defaults import DEFAULT_OPTIONS
+from erlab.interactive._options.defaults import DEFAULT_OPTIONS, _as_bool, _as_float
 
 
 def read_settings(
     qsettings: QtCore.QSettings, defaults: dict, prefix: str = ""
-) -> dict:
+) -> dict[str, dict[str, typing.Any]]:
     """Parse QSettings into a dictionary with a structure matching `defaults`.
 
     This function reads settings recursively from a QSettings object, using the provided
@@ -38,13 +38,19 @@ def read_settings(
         A dictionary with the same structure as `defaults`, but with values read from
         QSettings where available.
     """
-    result = {}
+    result: dict[str, typing.Any] = {}
     for k, v in defaults.items():
         key = f"{prefix}/{k}" if prefix else k
         if isinstance(v, dict):
             result[k] = read_settings(qsettings, v, key)
         else:
-            result[k] = qsettings.value(key, v)
+            # Convert to appropriate type based on the default value
+            if isinstance(v, bool):
+                result[k] = _as_bool(qsettings.value(key, v))
+            elif isinstance(v, float):
+                result[k] = _as_float(qsettings.value(key, v))
+            else:
+                result[k] = qsettings.value(key, v)
     return result
 
 
