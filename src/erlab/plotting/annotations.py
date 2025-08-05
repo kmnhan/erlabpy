@@ -676,6 +676,7 @@ def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
     axis: typing.Literal["x", "y"] = "x",
+    *,
     literal: bool = False,
     roman: bool = True,
     bar: bool = False,
@@ -707,13 +708,20 @@ def mark_points_outside(
     **kwargs
         Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
         documentation for a list of all possible arguments.
-
     """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
-        for a in np.asarray(ax, dtype=object).flatten():
-            mark_points_outside(points, labels, axis, roman, bar, a)
+        for ax_i in np.asarray(ax, dtype=object).flat:
+            mark_points_outside(
+                points,
+                labels=labels,
+                axis=axis,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=ax_i,
+            )
     else:
         if axis == "x":
             label_ax = ax.twiny()
