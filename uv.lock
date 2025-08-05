@@ -694,7 +694,7 @@ requires-dist = [
     { name = "erlab", extras = ["viz", "io", "perf", "misc"], marker = "extra == 'complete'" },
     { name = "findiff", specifier = ">=0.12.0" },
     { name = "h5netcdf", specifier = ">=1.2.0" },
-    { name = "hvplot", marker = "extra == 'viz'" },
+    { name = "hvplot", marker = "extra == 'viz'", specifier = ">=0.11.0,!=0.12.0" },
     { name = "igor2", specifier = ">=0.5.12" },
     { name = "igorwriter", specifier = ">=0.6.1" },
     { name = "iminuit", marker = "extra == 'misc'", specifier = ">=2.25.2" },

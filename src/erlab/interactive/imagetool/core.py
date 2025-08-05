@@ -1698,7 +1698,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if cmap is not None:
             self._colormap_properties["cmap"] = cmap
         if gamma is not None:
-            self._colormap_properties["gamma"] = gamma
+            self._colormap_properties["gamma"] = float(gamma)
         if reverse is not None:
             # Don't block signals here to trigger updates to linked buttons.
             # Will be called twice, but unnoticable
