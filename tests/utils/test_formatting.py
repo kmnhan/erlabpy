@@ -118,7 +118,10 @@ def test_format_value_datetime64() -> None:
 
 def test_format_value_datetime64_array() -> None:
     val = np.array(
-        [np.datetime64("2024-01-01T12:00:00"), np.datetime64("2024-01-02T12:00:00")]
+        [
+            np.datetime64("2024-01-01T12:00:00"),
+            np.datetime64("2024-01-02T12:00:00"),
+        ]
     )
     expected = "[2024-01-01 12:00:00, 2024-01-02 12:00:00]"
     assert format_value(val) == expected
