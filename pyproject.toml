@@ -44,7 +44,7 @@ dependencies = [
 
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
-viz = ["hvplot", "ipywidgets"]
+viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
 io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
 perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
