@@ -24,6 +24,7 @@ __all__ = [
     "place_inset",
     "plot_array",
     "plot_array_2d",
+    "plot_bz",
     "plot_hex_bz",
     "plot_slices",
     "property_labels",
@@ -51,7 +52,7 @@ from .annotations import (
     set_ylabels,
     sizebar,
 )
-from .bz import get_bz_edge, plot_hex_bz
+from .bz import get_bz_edge, plot_bz, plot_hex_bz
 from .colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,
