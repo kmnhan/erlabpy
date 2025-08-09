@@ -2550,13 +2550,15 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
+        darr: xr.DataArray = self._current_data
         slice_dict: dict[Hashable, slice] = {}
         for k, v in self.slicer_area.manual_limits.items():
-            ax_idx = self.slicer_area.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            slice_dict[k] = slice(
-                *sorted(float(np.round(val, sig_digits)) for val in v)
-            )
+            if k in darr.dims:
+                ax_idx = self.slicer_area.data.dims.index(k)
+                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+                slice_dict[k] = slice(
+                    *sorted(float(np.round(val, sig_digits)) for val in v)
+                )
         return self._current_data.sel(slice_dict)
 
     @property
