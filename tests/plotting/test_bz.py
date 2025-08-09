@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from erlab.plotting.bz import get_bz_edge, plot_hex_bz
+from erlab.plotting.bz import get_bz_edge, plot_bz, plot_hex_bz
 
 
 def test_get_bz_edge_square_lattice():
@@ -97,18 +97,6 @@ def test_get_bz_edge_3d():
     assert len(unique) == 8
 
 
-def test_plot_hex_bz_returns_patch():
-    # Should return a RegularPolygon patch
-
-    fig, ax = plt.subplots()
-    patch = plot_hex_bz(a=3.54, ax=ax)
-    assert isinstance(patch, matplotlib.patches.RegularPolygon)
-    # Patch should be added to ax.patches
-    assert patch in ax.patches
-
-    plt.close(fig)
-
-
 def test_plot_hex_bz_offset_and_rotate():
     fig, ax = plt.subplots()
     offset = (1.0, 2.0)
@@ -155,4 +143,102 @@ def test_plot_hex_bz_clip_path():
     clip = matplotlib.patches.Circle((0, 0), radius=1)
     patch = plot_hex_bz(a=2.0, ax=ax, clip_path=clip)
     assert patch.get_clip_path() is not None
+    plt.close(fig)
+
+
+def test_plot_bz_square_lattice():
+    fig, ax = plt.subplots()
+    a = 1.0
+    basis = np.array([[a, 0], [0, a]])
+    patch = plot_bz(basis, ax=ax)
+    # Should be a Polygon with 4 vertices (square)
+    assert isinstance(patch, matplotlib.patches.Polygon)
+    assert patch.get_xy().shape[0] == 5  # 4 vertices + closing point
+    # Vertices should be at +/- pi/a
+    expected = np.array(
+        [
+            [np.pi / a, np.pi / a],
+            [-np.pi / a, np.pi / a],
+            [-np.pi / a, -np.pi / a],
+            [np.pi / a, -np.pi / a],
+        ]
+    )
+    for v in expected:
+        assert np.any(np.all(np.isclose(patch.get_xy()[:-1], v, atol=1e-8), axis=1))
+    plt.close(fig)
+
+
+def test_plot_bz_hexagonal_lattice():
+    fig, ax = plt.subplots()
+    a = 1.0
+    basis = np.array([[a, 0], [a / 2, a * np.sqrt(3) / 2]])
+    patch = plot_bz(basis, ax=ax)
+    # Should be a Polygon with 6 vertices (hexagon)
+    assert isinstance(patch, matplotlib.patches.Polygon)
+    assert patch.get_xy().shape[0] == 7  # 6 vertices + closing point
+    plt.close(fig)
+
+
+def test_plot_bz_rotate_and_offset():
+    fig, ax = plt.subplots()
+    a = 1.0
+    basis = np.eye(2) * a
+    rotate = 45.0
+    offset = (2.0, -1.0)
+    patch = plot_bz(basis, rotate=rotate, offset=offset, ax=ax)
+    # All vertices should be offset by (2, -1)
+    verts = patch.get_xy()[:-1]
+    center = np.mean(verts, axis=0)
+    np.testing.assert_allclose(center, offset, atol=1e-1)
+    plt.close(fig)
+
+
+def test_plot_bz_reciprocal_basis():
+    fig, ax = plt.subplots()
+    a = 2.0
+    basis = np.array([[2 * np.pi / a, 0], [0, 2 * np.pi / a]])
+    patch = plot_bz(basis, reciprocal=True, ax=ax)
+    # Vertices should be at +/- pi/a
+    expected = np.array(
+        [
+            [np.pi / a, np.pi / a],
+            [-np.pi / a, np.pi / a],
+            [-np.pi / a, -np.pi / a],
+            [np.pi / a, -np.pi / a],
+        ]
+    )
+    for v in expected:
+        assert np.any(np.all(np.isclose(patch.get_xy()[:-1], v, atol=1e-8), axis=1))
+    plt.close(fig)
+
+
+def test_plot_bz_kwargs_and_abbrv():
+    fig, ax = plt.subplots()
+    a = 1.0
+    basis = np.eye(2) * a
+    patch = plot_bz(basis, ax=ax, ls=":", lw=3.0, ec="blue")
+    assert patch.get_linestyle() == ":"
+    assert patch.get_linewidth() == 3.0
+    assert patch.get_edgecolor() == (0.0, 0.0, 1.0, 1.0)  # blue in RGBA
+    plt.close(fig)
+
+
+def test_plot_bz_fill_and_closed():
+    fig, ax = plt.subplots()
+    a = 1.0
+    basis = np.eye(2) * a
+    patch = plot_bz(basis, ax=ax, fill=True, closed=True)
+    assert patch.get_fill()
+    assert patch.get_closed()
+    plt.close(fig)
+
+
+def test_plot_bz_iterable_axes():
+    fig, axs = plt.subplots(1, 2)
+    a = 1.0
+    basis = np.eye(2) * a
+    patches = [plot_bz(basis, ax=ax) for ax in axs]
+    assert isinstance(patches, list)
+    assert all(isinstance(p, matplotlib.patches.Polygon) for p in patches)
+    assert all(p in ax.patches for p, ax in zip(patches, axs, strict=True))
     plt.close(fig)
