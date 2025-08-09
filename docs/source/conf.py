@@ -256,7 +256,7 @@ intersphinx_mapping = {
     "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable", None),
     "joblib": ("https://joblib.readthedocs.io/en/latest", None),
     "panel": ("https://panel.holoviz.org", None),
-    # "hvplot": ("https://hvplot.holoviz.org/en/docs/latest", None),
+    "hvplot": ("https://hvplot.holoviz.org", None),
     "nexusformat": ("https://nexpy.github.io/nexpy", None),
     "findiff": ("https://findiff.readthedocs.io/en/stable", None),
 }
