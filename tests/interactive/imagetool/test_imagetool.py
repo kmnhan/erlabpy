@@ -80,8 +80,8 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
 def test_parse_data() -> None:
     with pytest.raises(
         TypeError,
-        match="Unsupported input type str. Expected DataArray, Dataset, DataTree, "
-        "numpy array, or a list of DataArray or numpy arrays.",
+        match=r"Unsupported input type str. Expected DataArray, Dataset, DataTree, "
+        r"numpy array, or a list of DataArray or numpy arrays.",
     ):
         erlab.interactive.imagetool.core._parse_input("string")
 
@@ -254,6 +254,54 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     win.close()
 
 
+def test_image_slicer_area_history_and_manual_limits(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    # undoable/redoable
+    assert not area.undoable
+    assert not area.redoable
+
+    # history_suppressed context
+    with area.history_suppressed():
+        area._write_history = True
+
+    # set_manual_limits/propagate_limit_change
+    area.set_manual_limits({"x": [0, 4]})
+    area.propagate_limit_change(area.main_image)
+    # make_cursors with custom colors and error
+    area.make_cursors(2, ["#ff0000", "#00ff00"])
+    with pytest.raises(
+        ValueError,
+        match="Number of colors must match the number of cursors",
+    ):
+        area.make_cursors(2, ["#ff0000"])  # not enough colors
+    # gen_cursor_color with more cursors than COLORS
+    for _ in range(10):
+        area.gen_cursor_color(_)
+    # apply_func with None and with a function
+    area.apply_func(None)
+    area.apply_func(lambda d: d + 1)
+
+    # reloadable/reload (simulate missing file/loader)
+    area._file_path = None
+    assert not area.reloadable
+
+    # add_tool_window (no manager)
+    w = QtWidgets.QWidget()
+    area.add_tool_window(w)
+    w.close()
+    qtbot.wait_until(lambda: len(area._associated_tools) == 0)
+
+    # state setter with partial state
+    s = dict(area.state)
+    s.pop("splitter_sizes", None)
+    area.state = s
+    win.close()
+
+
 def test_itool_load_compat(qtbot) -> None:
     original = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -282,6 +330,16 @@ def test_parse_input() -> None:
     ):
         _parse_input(
             xr.Dataset({"data1d": xr.DataArray(np.arange(5), dims=["x"]), "data0d": 1})
+        )
+
+    with pytest.raises(ValueError, match="No valid data for ImageTool found"):
+        _parse_input([])
+
+    with pytest.raises(ValueError, match="No valid data for ImageTool found"):
+        _parse_input(
+            xr.DataTree.from_dict(
+                {"dummy": xr.Dataset({"a": xr.DataArray(np.arange(5), dims=["x"])})}
+            )
         )
 
 
@@ -374,7 +432,7 @@ def test_value_update_errors(qtbot) -> None:
         win.slicer_area.update_values(
             xr.DataArray(np.arange(24).reshape((4, 6)), dims=["x", "y"])
         )
-    with pytest.raises(ValueError, match="^Data shape does not match.*"):
+    with pytest.raises(ValueError, match=r"^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
 
     win.close()

@@ -103,7 +103,6 @@ class OptionDialog(QtWidgets.QDialog):
     def _tree_changed(self):
         """Update button states when the tree changes."""
         self.btn_restore.setDisabled(self.is_default)
-        print(self.current_options)
         if self.modified:
             self.setWindowTitle("Settings (Unsaved Changes)")
             self.btn_apply.setEnabled(True)

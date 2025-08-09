@@ -7,6 +7,7 @@ __all__ = ["_MultiFileHandler"]
 import collections
 import logging
 import pathlib
+import traceback
 import typing
 import weakref
 
@@ -70,7 +71,9 @@ class _DataLoader(QtCore.QRunnable):
             )
         except Exception as e:
             logger.exception("Error loading data from %s", self._file_path)
-            self.signals.sigFailed.emit(self._file_path, f"{type(e).__name__}: {e}")
+            self.signals.sigFailed.emit(
+                self._file_path, f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            )
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)
 
@@ -130,10 +133,10 @@ class _MultiFileHandler(QtCore.QObject):
     @property
     def manager(self) -> ImageToolManager:
         """Access the parent manager instance."""
-        _manager = self._manager()
-        if _manager is None:
+        manager = self._manager()
+        if manager is None:
             raise LookupError("Parent was destroyed")
-        return _manager
+        return manager
 
     @property
     def queued(self) -> list[pathlib.Path]:

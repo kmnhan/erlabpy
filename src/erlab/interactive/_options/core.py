@@ -10,12 +10,12 @@ import typing
 
 from qtpy import QtCore
 
-from erlab.interactive._options.defaults import DEFAULT_OPTIONS
+from erlab.interactive._options.defaults import DEFAULT_OPTIONS, _as_bool, _as_float
 
 
 def read_settings(
     qsettings: QtCore.QSettings, defaults: dict, prefix: str = ""
-) -> dict:
+) -> dict[str, dict[str, typing.Any]]:
     """Parse QSettings into a dictionary with a structure matching `defaults`.
 
     This function reads settings recursively from a QSettings object, using the provided
@@ -38,13 +38,19 @@ def read_settings(
         A dictionary with the same structure as `defaults`, but with values read from
         QSettings where available.
     """
-    result = {}
+    result: dict[str, typing.Any] = {}
     for k, v in defaults.items():
         key = f"{prefix}/{k}" if prefix else k
         if isinstance(v, dict):
             result[k] = read_settings(qsettings, v, key)
         else:
-            result[k] = qsettings.value(key, v)
+            # Convert to appropriate type based on the default value
+            if isinstance(v, bool):
+                result[k] = _as_bool(qsettings.value(key, v))
+            elif isinstance(v, float):
+                result[k] = _as_float(qsettings.value(key, v))
+            else:
+                result[k] = qsettings.value(key, v)
     return result
 
 
@@ -86,7 +92,12 @@ class OptionManager:
     @property
     def qsettings(self) -> QtCore.QSettings:
         """Get the QSettings object."""
-        return QtCore.QSettings("erlabpy", "imagetool")
+        return QtCore.QSettings(
+            QtCore.QSettings.Format.IniFormat,
+            QtCore.QSettings.Scope.UserScope,
+            "erlabpy",
+            "interactive",
+        )
 
     @property
     def option_dict(self) -> dict:
@@ -97,7 +108,7 @@ class OptionManager:
     def option_dict(self, d: dict) -> None:
         """Set the settings from a dictionary."""
         write_settings(d, self.qsettings)
-        # self.qsettings.sync()
+        self.qsettings.sync()
 
     def restore(self) -> None:
         """Restore the settings to defaults."""

@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import sys
+import traceback
 import types
 import typing
 import warnings
@@ -294,7 +295,7 @@ def _filter_to_patterns(name_filter: str) -> list[str]:
 
 
 def file_loaders(
-    file_name: str | os.PathLike | None | Iterable[str | os.PathLike] = None,
+    file_name: str | os.PathLike | Iterable[str | os.PathLike] | None = None,
 ) -> dict[str, tuple[Callable, dict]]:
     """Generate a dictionary of namefilters and loader functions for file dialogs.
 
@@ -651,7 +652,7 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
                 None,
                 "Error",
                 "An error occurred while loading the fit result:\n\n"
-                f"{type(e).__name__}: {e}",
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
             )
 
     return None
@@ -1006,9 +1007,9 @@ class BetterAxisItem(pg.AxisItem):
 
     def updateAutoSIPrefix(self) -> None:
         if self.label.isVisible():
-            _range = 10 ** np.array(self.range) if self.logMode else self.range
+            range_ = 10 ** np.array(self.range) if self.logMode else self.range
             (scale, prefix) = pg.siScale(
-                max(abs(_range[0] * self.scale), abs(_range[1] * self.scale))
+                max(abs(range_[0] * self.scale), abs(range_[1] * self.scale))
             )
             if self.labelUnits == "" and prefix in [
                 "k",
@@ -1234,7 +1235,7 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
     def __init__(self, image: npt.NDArray | None = None, **kwargs) -> None:
         super().__init__(image, **kwargs)
         self.cut_tolerance = [30, 30]
-        self.data_array: None | xr.DataArray = None
+        self.data_array: xr.DataArray | None = None
 
     def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
@@ -1915,7 +1916,7 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             raise ValueError("Orientation must be 'vertical' or 'horizontal'.")
         self.cut_to_data = cut_to_data
 
-        self.input: None | xr.DataArray | npt.NDArray = None
+        self.input: xr.DataArray | npt.NDArray | None = None
 
         self.initialize_layout(num_ax)
 

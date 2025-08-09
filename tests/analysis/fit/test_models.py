@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import xarray as xr
 
 from erlab.analysis.fit import models
@@ -13,7 +14,7 @@ def test_fermi_dirac_model() -> None:
     model = models.FermiDiracModel()
 
     # Set initial parameter values
-    params = model.make_params()
+    params = model.guess(data, x=x)
     params["center"].set(value=0.0)
     params["temp"].set(value=30.0)
     params["resolution"].set(value=0.02)
@@ -100,6 +101,17 @@ def test_fermi_edge_2d_model() -> None:
     assert result["const_bkg"].value > 0.0
     assert result["lin_bkg"].value > 0.0
     assert result["temp"].value == 300.0
+
+    # Call guess with meshgrid
+    eV, alpha = np.meshgrid(eV, alpha, indexing="ij")
+    result = model.guess(data.values, eV=eV, alpha=alpha)
+
+    # Check if the parameters are set correctly
+    assert result["c0"].value == 0.0
+    assert result["c1"].value == 0.0
+    assert result["c2"].value == 0.0
+    assert result["const_bkg"].value > 0.0
+    assert result["lin_bkg"].value > 0.0
 
 
 def test_multi_peak_model() -> None:
@@ -188,7 +200,10 @@ def test_polynomial_model() -> None:
     model = models.PolynomialModel(degree=2)
 
     # Set initial parameter values
-    params = model.make_params()
+    # Guess with only y
+    params = model.guess(y)
+    # Guess with x and y
+    params = model.guess(y, x=x)
     params["c0"].set(value=1.0)
     params["c1"].set(value=-2.0)
     params["c2"].set(value=3.0)
@@ -244,3 +259,40 @@ def test_step_edge_model() -> None:
 
     # Assert that the fitted curve matches the test data
     assert np.allclose(result.best_fit, data)
+
+
+def test_get_edges() -> None:
+    # Basic test with fraction=0.2
+    x = np.arange(20)
+    y = np.arange(20)
+    edges_x, edges_y = models._get_edges(x, y, fraction=0.2)
+    num = max(5, round(len(x) * 0.2))
+    assert len(edges_x) == 2 * num
+    assert np.array_equal(edges_x, np.r_[x[:num], x[-num:]])
+    assert np.array_equal(edges_y, np.r_[y[:num], y[-num:]])
+
+    # fraction = 0 (should select 5 elements from each edge)
+    edges_x, edges_y = models._get_edges(x, y, fraction=0)
+    assert len(edges_x) == 10
+    # fraction = 0.5 (should select half from each edge)
+    edges_x, edges_y = models._get_edges(x, y, fraction=0.5)
+    assert len(edges_x) == 20
+
+    # Test errors
+    with pytest.raises(ValueError, match=r"Fraction must be between 0 and 0.5"):
+        models._get_edges(x, y, fraction=-0.1)
+    with pytest.raises(ValueError, match=r"Fraction must be between 0 and 0.5"):
+        models._get_edges(x, y, fraction=0.6)
+
+    # Test with mismatched lengths
+    x = np.arange(20)
+    y = np.arange(19)
+    with pytest.raises(ValueError, match=r"x and y must have the same length"):
+        models._get_edges(x, y)
+
+    # Test with arrays that are too short
+    x = np.arange(9)
+    y = np.arange(9)
+
+    with pytest.raises(ValueError, match=r"Array must have at least 10 elements"):
+        models._get_edges(x, y)

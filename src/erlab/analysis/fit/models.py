@@ -450,10 +450,11 @@ class FermiEdge2dModel(lmfit.Model):
 
         if isinstance(data, xr.DataArray):
             avg_edc = data.mean("alpha").values
-
         elif data.shape == eV.shape:
-            shape, _, eV = _infer_meshgrid_shape(np.ascontiguousarray(eV))
-            shape_, ax_alpha, alpha = _infer_meshgrid_shape(np.ascontiguousarray(alpha))
+            shape, _, eV = _infer_meshgrid_shape(np.ascontiguousarray(eV.ravel()))
+            shape_, ax_alpha, alpha = _infer_meshgrid_shape(
+                np.ascontiguousarray(alpha.ravel())
+            )
             if shape != shape_:
                 raise ValueError(
                     "eV and alpha seems to be meshgrids of different shapes."

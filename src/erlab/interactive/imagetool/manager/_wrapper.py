@@ -72,9 +72,9 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @property
     def manager(self) -> ImageToolManager:
-        _manager = self._manager()
-        if _manager:
-            return _manager
+        manager = self._manager()
+        if manager:
+            return manager
         raise LookupError("Parent was destroyed")
 
     @property

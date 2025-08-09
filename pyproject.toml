@@ -44,7 +44,7 @@ dependencies = [
 
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
-viz = ["hvplot", "ipywidgets"]
+viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
 io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
 perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
@@ -63,7 +63,7 @@ dev = [
     "pytest-datadir>=1.5.0",
     "pytest-env>=1.1.5",
     "pytest-qt>=4.4.0",
-    "ruff>=0.12.0",
+    "ruff>=0.12.7",
 ]
 docs = [
     "furo>=2024.8.6",
@@ -256,7 +256,7 @@ DISPLAY = ":99.0"
 [tool.coverage.run]
 source = ["src"]
 omit = ["*/_deprecated/*"]
-branch = false
+branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true

@@ -158,7 +158,7 @@ def parameter_to_dict(param: pyqtgraph.parametertree.Parameter) -> dict:
     """Convert a pyqtgraph Parameter to a dictionary.
 
     This function extracts the values from the parameter tree and returns them in a
-    dictionary format that matches the structure of `DEFAULT_OPTIONS`. The pyqtgraph
+    dictionary format that has the same structure as `DEFAULT_OPTIONS`. The pyqtgraph
     Parameter is the one created by `make_parameter`.
     """
     color = param.child("colors")
@@ -167,8 +167,8 @@ def parameter_to_dict(param: pyqtgraph.parametertree.Parameter) -> dict:
         "colors": {
             "cmap": {
                 "name": color.child("cmap").child("name").value(),
-                "gamma": color.child("cmap").child("gamma").value(),
-                "reverse": color.child("cmap").child("reverse").value(),
+                "gamma": _as_float(color.child("cmap").child("gamma").value()),
+                "reverse": _as_bool(color.child("cmap").child("reverse").value()),
                 "exclude": [
                     s.strip()
                     for s in color.child("cmap").child("exclude").value().split(",")
@@ -182,3 +182,18 @@ def parameter_to_dict(param: pyqtgraph.parametertree.Parameter) -> dict:
         },
         "io": {"default_loader": io.child("default_loader").value()},
     }
+
+
+def _as_bool(value: typing.Any) -> bool:
+    """Convert a value to a boolean."""
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return bool(value)
+
+
+def _as_float(value: typing.Any) -> float:
+    """Convert a value to a float."""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return float("nan")

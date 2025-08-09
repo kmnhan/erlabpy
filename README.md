@@ -60,7 +60,7 @@ Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.i
 
 ## Contributing
 
-We welcome contributions. Report issues [here](https://github.com/kmnhan/erlabpy/issues). For questions, visit the [Discussions page](https://github.com/kmnhan/erlabpy/discussions). To contribute, fork the repository and submit a pull request. See our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html) for more information.
+We welcome contributions. Report issues to the [issue tracker](https://github.com/kmnhan/erlabpy/issues). For questions, visit the [Discussions page](https://github.com/kmnhan/erlabpy/discussions). To contribute, fork the repository and submit a pull request. See our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html) for more information.
 
 ## License
 

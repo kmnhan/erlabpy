@@ -54,17 +54,17 @@ def clear_layout(layout: QtWidgets.QLayout | None) -> None:
     layout
         The layout to be cleared.
     """
-    if layout is None:
-        return
-    while layout.count():
-        child = layout.takeAt(0)
-        if child is not None:
-            wi, lo = child.widget(), child.layout()
-            if wi:
-                wi.deleteLater()
-            elif lo:
-                clear_layout(lo)
-                lo.deleteLater()
+    if layout is not None:  # pragma: no branch
+        while layout.count():
+            child = layout.takeAt(0)
+            if child is not None:  # pragma: no branch
+                child_widget, child_layout = child.widget(), child.layout()
+                if child_widget:
+                    child_widget.deleteLater()
+                elif child_layout:
+                    clear_layout(child_layout)
+                    child_layout.setParent(None)
+                    child_layout.deleteLater()
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
@@ -108,7 +108,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
 
     def connect_signals(self) -> None:
         for ctrl in self.sub_controls:
-            if isinstance(ctrl, ItoolControlsBase):
+            if isinstance(ctrl, ItoolControlsBase):  # pragma: no branch
                 ctrl.connect_signals()
 
     def disconnect_signals(self) -> None:
@@ -195,12 +195,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def __init__(
         self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs
     ) -> None:
-        if isinstance(orientation, QtCore.Qt.Orientation):
-            self.orientation = orientation
-        elif orientation == "vertical":
-            self.orientation = QtCore.Qt.Orientation.Vertical
-        elif orientation == "horizontal":
-            self.orientation = QtCore.Qt.Orientation.Horizontal
+        self.orientation = orientation
         super().__init__(*args, **kwargs)
 
     def initialize_widgets(self) -> None:
@@ -440,12 +435,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
-        if count == self.cb_cursors.count():
-            return
-        if count > self.cb_cursors.count():
-            self.addCursor()
-        else:
-            self.remCursor()
+        if count != self.cb_cursors.count():
+            if count > self.cb_cursors.count():
+                self.addCursor()
+            else:
+                self.remCursor()
 
     def addCursor(self) -> None:
         self.cb_cursors.setDisabled(False)
@@ -513,12 +507,7 @@ class ItoolColormapControls(ItoolControlsBase):
     def __init__(
         self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs
     ) -> None:
-        if isinstance(orientation, QtCore.Qt.Orientation):
-            self.orientation = orientation
-        elif orientation == "vertical":
-            self.orientation = QtCore.Qt.Orientation.Vertical
-        elif orientation == "horizontal":
-            self.orientation = QtCore.Qt.Orientation.Horizontal
+        self.orientation = orientation
         super().__init__(*args, **kwargs)
 
     def initialize_layout(self) -> None:

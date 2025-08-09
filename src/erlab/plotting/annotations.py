@@ -10,10 +10,8 @@ __all__ = [
     "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
-    "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
-    "plot_hv_text",
     "property_labels",
     "scale_units",
     "set_titles",
@@ -22,6 +20,7 @@ __all__ = [
     "sizebar",
 ]
 
+import contextlib
 import io
 import re
 import typing
@@ -43,6 +42,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pyperclip
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 else:
     import lazy_loader as _lazy
 
@@ -319,7 +319,9 @@ def copy_mathtext(
 
         buffer_str = buffer.getvalue().decode("utf-8")
 
-    pyperclip.copy(buffer_str)
+    with contextlib.suppress(pyperclip.PyperclipException):
+        # Try to copy to clipboard, if available
+        pyperclip.copy(buffer_str)
     return buffer_str
 
 
@@ -579,119 +581,10 @@ def label_subplots(
         ax.add_artist(at)
 
 
-def label_subplots_nature(
-    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
-    values: Sequence[int | str] | None = None,
-    startfrom: int = 1,
-    order: typing.Literal["C", "F", "A", "K"] = "C",
-    offset: tuple[float, float] = (-20.0, 7.0),
-    prefix: str = "",
-    suffix: str = "",
-    numeric: bool = False,
-    capital: bool = False,
-    fontweight: typing.Literal[
-        "ultralight",
-        "light",
-        "normal",
-        "regular",
-        "book",
-        "medium",
-        "roman",
-        "semibold",
-        "demibold",
-        "demi",
-        "bold",
-        "heavy",
-        "extra bold",
-        "black",
-    ] = "black",
-    fontsize: (
-        float
-        | typing.Literal[
-            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
-        ]
-    ) = "medium",
-    **kwargs,
-) -> None:
-    r"""Labels subplots with automatically generated labels.
-
-    Parameters
-    ----------
-    axes
-        `matplotlib.axes.Axes` to label. If an array is given, the order will be
-        determined by the flattening method given by `order`.
-    values
-        Integer or string labels corresponding to each Axes in `axes` for
-        manual labels.
-    startfrom
-        Start from this number when creating automatic labels. Has no
-        effect when `values` is not `None`.
-    order
-        Order in which to flatten `ax`. 'C' means to flatten in
-        row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran-style) order. 'A' means to flatten in column-major
-        order if a is Fortran contiguous in memory, row-major order
-        otherwise. 'K' means to flatten a in the order the elements
-        occur in memory. The default is 'C'.
-    offset
-        Values that are used to position the labels, given in points.
-    prefix
-        String to prepend to the alphabet label.
-    suffix
-        String to append to the alphabet label.
-    numeric
-        Use integer labels instead of alphabets.
-    capital
-        Capitalize automatically generated alphabetical labels.
-    fontweight
-        Set the font weight. The default is ``'normal'``.
-    fontsize
-        Set the font size. The default is ``'medium'`` for axes, and ``'large'`` for
-        figures.
-    **kwargs
-        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
-        documentation for a list of all possible arguments.
-
-    """
-    kwargs["fontweight"] = fontweight
-    if plt.rcParams["text.usetex"] & (fontweight == "bold"):
-        prefix = "\\textbf{" + prefix
-        suffix = suffix + "}"
-        kwargs.pop("fontweight")
-
-    axlist = np.array(axes, dtype=object).flatten(order=order)
-    if values is None:
-        value_arr = np.array(
-            [i + startfrom for i in range(len(axlist))], dtype=np.int64
-        )
-    else:
-        value_arr = np.array(values).flatten(order=order)
-        if not (axlist.size == value_arr.size):
-            raise IndexError(
-                "The number of given values must match the number of given axes."
-            )
-
-    for i in range(len(axlist)):
-        label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
-        trans = matplotlib.transforms.ScaledTranslation(
-            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
-        )
-        axlist[i].figure.text(
-            # axlist[i].text(
-            0.0,
-            1.0,
-            label_str,
-            transform=axlist[i].transAxes + trans,
-            fontsize=fontsize,
-            va="baseline",
-            clip_on=False,
-            **kwargs,
-        )
-
-
 def mark_points(
     points: Sequence[float],
     labels: Sequence[str],
+    *,
     y: float | Sequence[float] = 0.0,
     pad: tuple[float, float] = (0, 1.75),
     literal: bool = False,
@@ -710,19 +603,25 @@ def mark_points(
         Floats indicating the position of each label.
     labels
         Sequence of label strings indicating a high symmetry point. Must be the same
-        length as `points`.
+        length as ``points``.
     y
-        Position of the label in data coordinates
+        Position of the label in data coordinates. If a single float is given, it will
+        be used for all points. If a sequence is given, it must be the same length as
+        ``points``.
     pad
         Offset of the text in points.
     literal
         If `True`, take the input string literally.
     roman
-        If ``False``, *True*, itallic fonts are used.
+        If `False`, itallic fonts are used.
     bar
-        If ``True``, prints a bar over the label.
+        If `True`, prints a bar over the label.
     ax
-        `matplotlib.axes.Axes` to annotate.
+        `matplotlib.axes.Axes` to annotate. If `None`, the current axes is used.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.text`. By default, the horizontal
+        alignment is set to ``'center'`` and the vertical alignment is set to
+        ``'baseline'``. The text is not clipped to the axes limits.
 
     """
     if ax is None:
@@ -730,37 +629,54 @@ def mark_points(
 
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
-            mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
+            mark_points(
+                points,
+                labels,
+                y=y,
+                pad=pad,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=a,
+                **kwargs,
+            )
     else:
         fig = ax.get_figure()
 
         if fig is None:
             raise ValueError("Given axes does not belong to a figure")
-
-        for k, v in {"ha": "center", "va": "baseline", "fontsize": "small"}.items():
-            kwargs.setdefault(k, v)
+        kwargs.setdefault("ha", kwargs.pop("horizontalalignment", "center"))
+        kwargs.setdefault("va", kwargs.pop("verticalalignment", "baseline"))
+        kwargs.setdefault("clip_on", False)
 
         if not np.iterable(y):
             y = [y] * len(points)
 
-        with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, label in zip(points, y, labels, strict=True):
-                ax.text(
-                    xi,
-                    yi,
-                    label if literal else parse_point_labels(label, roman, bar),
-                    transform=ax.transData
-                    + mtransforms.ScaledTranslation(
-                        pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
-                    ),
-                    **kwargs,
-                )
+        default_color = kwargs.pop("c", kwargs.pop("color", None))
+
+        for xi, yi, label in zip(points, y, labels, strict=True):
+            if default_color is None:
+                color = "k" if ax.get_ylim()[1] < yi else axes_textcolor(ax)
+            else:
+                color = default_color
+            ax.text(
+                xi,
+                yi,
+                label if literal else parse_point_labels(label, roman, bar),
+                transform=ax.transData
+                + mtransforms.ScaledTranslation(
+                    pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
+                ),
+                color=color,
+                **kwargs,
+            )
 
 
 def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
     axis: typing.Literal["x", "y"] = "x",
+    *,
     literal: bool = False,
     roman: bool = True,
     bar: bool = False,
@@ -792,13 +708,20 @@ def mark_points_outside(
     **kwargs
         Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
         documentation for a list of all possible arguments.
-
     """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
-        for a in np.asarray(ax, dtype=object).flatten():
-            mark_points_outside(points, labels, axis, roman, bar, a)
+        for ax_i in np.asarray(ax, dtype=object).flat:
+            mark_points_outside(
+                points,
+                labels=labels,
+                axis=axis,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=ax_i,
+            )
     else:
         if axis == "x":
             label_ax = ax.twiny()
@@ -823,55 +746,6 @@ def mark_points_outside(
                 **kwargs,
             )
         label_ax.set_frame_on(False)
-
-
-def mark_points_y(pts, labels, roman=True, bar=False, ax=None) -> None:
-    if ax is None:
-        ax = plt.gca()
-    if not isinstance(ax, tuple | list | np.ndarray):
-        ax = [ax]
-    for a in np.array(ax, dtype=object).flatten():
-        label_ax = a.twinx()
-        label_ax.set_ylim(a.get_ylim())
-        label_ax.set_yticks(pts)
-        # label_ax.set_xlabel('')
-        label_ax.set_yticklabels(
-            [parse_point_labels(lab, roman, bar) for lab in labels]
-        )
-        # label_ax.set_zorder(a.get_zorder())
-        label_ax.set_frame_on(False)
-
-
-def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="left",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
-
-
-def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="right",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
 
 
 def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:
@@ -1115,7 +989,7 @@ def sizebar(
     sep: float = 3.0,
     frameon: bool = False,
     **kwargs,
-):
+) -> AnchoredSizeBar:
     """Add a size bar to an axes.
 
     Parameters

@@ -7,6 +7,7 @@ import pathlib
 import platform
 import sys
 import tempfile
+import traceback
 import typing
 import uuid
 
@@ -577,7 +578,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.get_tool(index).slicer_area._linking_proxy
                     for index in selection_unarchived
                 ]
-                if all(p == proxies[0] for p in proxies):
+                if all(p == proxies[0] for p in proxies):  # pragma: no branch
                     self.link_action.setEnabled(False)
 
     def remove_tool(self, index: int) -> None:
@@ -751,7 +752,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self,
                     "Error",
                     "An error occurred while concatenating data:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
@@ -893,7 +894,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self,
                     "Error",
                     "An error occurred while loading the workspace file:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 self.load()
@@ -1236,7 +1237,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
         msg_box.setText("An error occurred while creating the ImageTool window.")
         msg_box.setInformativeText("The data may be incompatible with ImageTool.")
-        msg_box.setDetailedText(f"{type(e).__name__}: {e}")
+
+        msg_box.setDetailedText(
+            f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+        )
         msg_box.exec()
 
     def _add_from_multiple_files(
@@ -1310,7 +1314,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _stop_server(self) -> None:
         """Stop the server thread properly."""
-        if self.server.isRunning():
+        if self.server.isRunning():  # pragma: no branch
             self.server.stopped.set()
             _ping_server()
             self.server.wait()

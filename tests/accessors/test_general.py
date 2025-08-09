@@ -74,8 +74,8 @@ def test_ds_qshow_fit(plot_components: bool) -> None:
 
     with pytest.raises(
         ValueError,
-        match="Fit results for data variable `some_nonexistent_var` "
-        "were not found in the Dataset.",
+        match=r"Fit results for data variable `some_nonexistent_var` "
+        r"were not found in the Dataset.",
     ):
         result_ds.qshow.params("some_nonexistent_var")
 

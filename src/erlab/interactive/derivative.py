@@ -362,8 +362,12 @@ class DerivativeTool(
             if n_repeat == 1:
                 data_name = smooth_func_code.replace(" = ", "=")
             else:
-                lines.append(f"for _ in range({self.sn_spin.value()}):")
-                lines.append("\t" + smooth_func_code)
+                lines.extend(
+                    (
+                        f"for _ in range({self.sn_spin.value()}):",
+                        f"\t{smooth_func_code}",
+                    )
+                )
 
         lines.append(
             erlab.interactive.utils.generate_code(

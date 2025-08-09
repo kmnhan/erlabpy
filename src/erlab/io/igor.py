@@ -294,7 +294,7 @@ def load_wave(
 
     """
     DEFAULT_DIMS = ["W", "X", "Y", "Z"]
-    _MAXDIM = 4
+    MAXDIM = 4
 
     if isinstance(wave, dict):
         wave_dict = wave
@@ -307,15 +307,15 @@ def load_wave(
 
     d = wave_dict["wave"]
     version = wave_dict["version"]
-    dim_labels = [""] * _MAXDIM
+    dim_labels = [""] * MAXDIM
     bin_header, wave_header = d["bin_header"], d["wave_header"]
     if version <= 3:
-        shape = [wave_header["npnts"]] + [0] * (_MAXDIM - 1)
-        sfA = [wave_header["hsA"]] + [0] * (_MAXDIM - 1)
-        sfB = [wave_header["hsB"]] + [0] * (_MAXDIM - 1)
+        shape = [wave_header["npnts"]] + [0] * (MAXDIM - 1)
+        sfA = [wave_header["hsA"]] + [0] * (MAXDIM - 1)
+        sfB = [wave_header["hsB"]] + [0] * (MAXDIM - 1)
         # data_units = wave_header["dataUnits"]
         axis_units = [wave_header["xUnits"]]
-        axis_units.extend([""] * (_MAXDIM - len(axis_units)))
+        axis_units.extend([""] * (MAXDIM - len(axis_units)))
     else:
         shape = wave_header["nDim"]
         sfA = wave_header["sfA"]
@@ -468,7 +468,7 @@ def _parse_setscale(darr: xr.DataArray, setscale_line: str) -> xr.DataArray:
     if not m:
         raise ValueError(f"Invalid SetScale line format: {setscale_line}")
 
-    method = typing.cast("typing.Literal['/I', '/P', None]", m.group(1))
+    method = typing.cast("typing.Literal['/I', '/P'] | None", m.group(1))
 
     # Split args while respecting quotes
     splitter = shlex.shlex(m.group(2), posix=True)
@@ -488,7 +488,7 @@ def _parse_setscale(darr: xr.DataArray, setscale_line: str) -> xr.DataArray:
 
 def set_scale(
     darr: xr.DataArray,
-    method: typing.Literal["/I", "/P", None],
+    method: typing.Literal["/I", "/P"] | None,
     dim: typing.Literal["d", "t", "x", "y", "z"],
     num1: str | float,
     num2: str | float,

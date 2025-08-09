@@ -287,13 +287,13 @@ def _kconv_func_type2(k_tot, delta=0.0, xi=0.0, xi0=0.0, beta0=0.0):
 
 
 def _kconv_func_type1_da(k_tot, delta=0.0, chi=0.0, chi0=0.0, xi=0.0, xi0=0.0):
-    _fwd_2, _inv_2 = _kconv_func_type2_da(k_tot, delta, chi, chi0, xi, xi0)
+    fwd_2, inv_2 = _kconv_func_type2_da(k_tot, delta, chi, chi0, xi, xi0)
 
     def _forward_func(alpha, beta):
-        return _fwd_2(-beta, alpha)
+        return fwd_2(-beta, alpha)
 
     def _inverse_func(kx, ky, kperp=None):
-        alpha, beta = _inv_2(kx, ky, kperp)
+        alpha, beta = inv_2(kx, ky, kperp)
         return beta, -alpha
 
     return _forward_func, _inverse_func

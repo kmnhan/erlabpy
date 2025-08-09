@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import time
+import traceback
 import typing
 import uuid
 import weakref
@@ -111,14 +112,15 @@ def _parse_input(
                 _parse_dataset(leaf.dataset) for leaf in data.leaves
             )
         )
-    elif not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
+
+    if len(data) == 0:
+        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
+
+    if not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
         raise TypeError(
             f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
             "DataTree, numpy array, or a list of DataArray or numpy arrays."
         )
-
-    if len(data) == 0:
-        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
 
     return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
 
@@ -267,7 +269,7 @@ def link_slicer(
                 all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
                 all_args.apply_defaults()
                 obj = all_args.arguments.pop("self")
-                if obj._linking_proxy is not None:
+                if obj._linking_proxy is not None:  # pragma: no branch
                     obj._linking_proxy.sync(
                         obj, func.__name__, all_args.arguments, indices, steps, color
                     )
@@ -443,7 +445,7 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         slicer_area = self._slicer_area()
-        if slicer_area:
+        if slicer_area:  # pragma: no branch
             slicer_area.array_slicer.twin_coord_names = {
                 coord for coord, check in self._checks.items() if check.isChecked()
             }
@@ -655,7 +657,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         layout.addWidget(self._colorbar)
 
         cmap_reversed: bool = False
-        if isinstance(cmap, str):
+        if isinstance(cmap, str):  # pragma: no branch
             cmap = cmap.strip().strip("'").strip('"')
             if cmap.endswith("_r"):
                 cmap = cmap.removesuffix("_r")
@@ -760,12 +762,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.qapp = typing.cast(
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
-        self.qapp.aboutToQuit.connect(self.on_close)
+        # self.qapp.aboutToQuit.connect(self.on_close)
 
     @property
     def parent_title(self) -> str:
         parent = self.parent()
-        if isinstance(parent, QtWidgets.QWidget):
+        if isinstance(parent, QtWidgets.QWidget):  # pragma: no branch
             return parent.windowTitle()
         return ""
 
@@ -840,7 +842,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigDataChanged.emit()
 
         plotitem_states = state.get("plotitem_states", None)
-        if plotitem_states is not None:
+        if plotitem_states is not None:  # pragma: no branch
             for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
                 ax._serializable_state = plotitem_state
 
@@ -867,7 +869,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def linked_slicers(self) -> weakref.WeakSet[ImageSlicerArea]:
-        if self._linking_proxy is not None:
+        if self._linking_proxy is not None:  # pragma: no branch
             return self._linking_proxy.children - {self}
 
         return weakref.WeakSet()
@@ -904,7 +906,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return ()
             case 3:
                 return tuple(self.get_axes(ax) for ax in (4, 5))
-            case 4:
+            case 4:  # pragma: no branch
                 return tuple(self.get_axes(ax) for ax in (4, 5, 7))
             case _:
                 raise ValueError("Data must have 2 to 4 dimensions")
@@ -980,14 +982,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         finally:
             self._write_history = original
 
-    def on_close(self) -> None:
-        if hasattr(self, "array_slicer"):
-            self.array_slicer.clear_cache()
-        if hasattr(self, "data"):
-            self.data.close()
-        if hasattr(self, "_data") and self._data is not None:
-            self._data.close()
-            del self._data
+    # def on_close(self) -> None:
+    #     if hasattr(self, "array_slicer"):
+    #         self.array_slicer.clear_cache()
+    #     if hasattr(self, "data"):
+    #         self.data.close()
+    #     if hasattr(self, "_data") and self._data is not None:
+    #         self._data.close()
+    #         del self._data
 
     @QtCore.Slot()
     def write_state(self) -> None:
@@ -1021,22 +1023,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def undo(self) -> None:
         """Undo the most recent action."""
-        if not self.undoable:
-            return
-        self._next_states.append(self.state)
-        self.state = self._prev_states.pop()
-        self.sigHistoryChanged.emit()
+        if self.undoable:  # pragma: no branch
+            self._next_states.append(self.state)
+            self.state = self._prev_states.pop()
+            self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
     @link_slicer
     @suppress_history
     def redo(self) -> None:
         """Redo the most recently undone action."""
-        if not self.redoable:
-            return
-        self._prev_states.append(self.state)
-        self.state = self._next_states.pop()
-        self.sigHistoryChanged.emit()
+        if self.redoable:  # pragma: no branch
+            self._prev_states.append(self.state)
+            self.state = self._next_states.pop()
+            self.sigHistoryChanged.emit()
 
     def initialize_actions(self) -> None:
         """Initialize :class:`QtWidgets.QAction` instances."""
@@ -1270,7 +1270,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
-            if isinstance(self._data, xr.DataArray):
+            if isinstance(self._data, xr.DataArray):  # pragma: no branch
                 self._data.close()
             del self._data
             self.disconnect_axes_signals()
@@ -1302,9 +1302,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         # Save color limits so we may restore them later
-        _cached_levels: tuple[float, float] | None = None
+        cached_levels: tuple[float, float] | None = None
         if self.levels_locked:
-            _cached_levels = copy.deepcopy(self.levels)
+            cached_levels = copy.deepcopy(self.levels)
 
         ndim_changed: bool = True
         cursors_reset: bool = True
@@ -1344,10 +1344,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
         self.lock_levels(self.levels_locked)
-        if self.levels_locked and (_cached_levels is not None) and (not cursors_reset):
+        if self.levels_locked and (cached_levels is not None) and (not cursors_reset):
             # If the levels were cached, restore them
             # This is needed if the data was reloaded and the levels were locked
-            self.levels = _cached_levels
+            self.levels = cached_levels
 
         self.flush_history()
 
@@ -1392,7 +1392,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         --------
         :attr:`reloadable`
         """
-        if self.reloadable:
+        if self.reloadable:  # pragma: no branch
             try:
                 self.set_data(self._fetch_for_reload(), file_path=self._file_path)
             except Exception as e:
@@ -1400,7 +1400,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     self,
                     "Error",
                     "An error occurred while reloading data:\n\n"
-                    f"{type(e).__name__}: {e}",
+                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                     QtWidgets.QMessageBox.StandardButton.Ok,
                 )
                 return
@@ -1448,7 +1448,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
         self.array_slicer._obj[:] = values
 
-        if update:
+        if update:  # pragma: no branch
             self.array_slicer.clear_val_cache(include_vals=True)
             self.refresh_all(only_plots=True)
 
@@ -1539,7 +1539,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def step_index(
         self, axis: int, value: int, update: bool = True, cursor: int | None = None
     ) -> None:
-        if cursor is None:
+        if cursor is None:  # pragma: no branch
             cursor = self.current_cursor
         self.array_slicer.step_index(cursor, axis, value, update)
 
@@ -1561,7 +1561,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         uniform: bool = False,
         cursor: int | None = None,
     ) -> None:
-        if cursor is None:
+        if cursor is None:  # pragma: no branch
             cursor = self.current_cursor
         self.array_slicer.set_value(cursor, axis, value, update, uniform)
 
@@ -1571,7 +1571,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def set_bin(
         self, axis: int, value: int, update: bool = True, cursor: int | None = None
     ) -> None:
-        if cursor is None:
+        if cursor is None:  # pragma: no branch
             cursor = self.current_cursor
         new_bins: list[int | None] = [None] * self.data.ndim
         new_bins[axis] = value
@@ -1597,7 +1597,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             colors = list(colors)
 
         if len(colors) != n:
-            raise ValueError("Number of colors must match number of cursors")
+            raise ValueError("Number of colors must match the number of cursors")
 
         for clr in colors:
             self.add_cursor(color=clr)
@@ -1637,7 +1637,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if index == 0:
                 self.current_cursor = 1
             self.current_cursor -= 1
-        elif self.current_cursor > index:
+        elif self.current_cursor > index:  # pragma: no branch
             self.current_cursor -= 1
 
         for ax in self.axes:
@@ -1696,7 +1696,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if cmap is not None:
             self._colormap_properties["cmap"] = cmap
         if gamma is not None:
-            self._colormap_properties["gamma"] = gamma
+            self._colormap_properties["gamma"] = float(gamma)
         if reverse is not None:
             # Don't block signals here to trigger updates to linked buttons.
             # Will be called twice, but unnoticable
@@ -1778,7 +1778,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if self._in_manager:
             manager = self._manager_instance
-            if manager:
+            if manager:  # pragma: no branch
                 manager.add_widget(widget)
                 return
 
@@ -1955,19 +1955,17 @@ class ItoolCursorLine(pg.InfiniteLine):
                     self._sigDragStarted.emit(self)
                 ev.accept()
 
-                if not self.moving:
-                    return
+                if self.moving:
+                    new_position = self.cursorOffset + self.mapToParent(ev.pos())
+                    if self.angle % 180 == 0:
+                        self.temp_value = new_position.y()
+                    elif self.angle % 180 == 90:
+                        self.temp_value = new_position.x()
 
-                new_position = self.cursorOffset + self.mapToParent(ev.pos())
-                if self.angle % 180 == 0:
-                    self.temp_value = new_position.y()
-                elif self.angle % 180 == 90:
-                    self.temp_value = new_position.x()
-
-                self.sigDragged.emit(self)
-                if ev.isFinish():
-                    self.moving = False
-                    self.sigPositionChangeFinished.emit(self)
+                    self.sigDragged.emit(self)
+                    if ev.isFinish():
+                        self.moving = False
+                        self.sigPositionChangeFinished.emit(self)
         else:
             self.setMouseHover(False)
             self.plotItem.mouseDragEvent(ev)
@@ -2078,7 +2076,7 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         )
         if self.normalize:
             avg = np.nanmean(vals)
-            if not np.isnan(avg):
+            if not np.isnan(avg):  # pragma: no branch
                 vals = vals / avg
 
         coord, vals = _pad_1d_plot(coord, vals)
@@ -2268,7 +2266,12 @@ class ItoolPlotItem(pg.PlotItem):
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
             croppable_actions.extend(
-                (itool_action, goldtool_action, restool_action, dtool_action)
+                (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                )
             )
         else:
             norm_action = self.vb.menu.addAction("Normalize by mean")
@@ -2286,9 +2289,9 @@ class ItoolPlotItem(pg.PlotItem):
         self.is_image = image
         self._item_kw = item_kw
 
-        if image_cls is None:
+        if image_cls is None:  # pragma: no branch
             self.image_cls = ItoolImageItem
-        if plotdata_cls is None:
+        if plotdata_cls is None:  # pragma: no branch
             self.plotdata_cls = ItoolPlotDataItem
 
         self.slicer_data_items: list[ItoolImageItem | ItoolPlotDataItem] = []
@@ -2424,17 +2427,17 @@ class ItoolPlotItem(pg.PlotItem):
             full_bounds = self.vb1.childrenBoundingRect()
             if self.slicer_data_items[-1].is_vertical:
                 kwargs["yRange"] = self.getViewBox().state["viewRange"][1]
-                if autorange:
+                if autorange:  # pragma: no branch
                     kwargs["xRange"] = [full_bounds.left(), full_bounds.right()]
             else:
                 kwargs["xRange"] = self.getViewBox().state["viewRange"][0]
-                if autorange:
+                if autorange:  # pragma: no branch
                     kwargs["yRange"] = [full_bounds.bottom(), full_bounds.top()]
             self.vb1.setRange(**kwargs)
 
     @QtCore.Slot()
     def update_twin_plots(self) -> None:
-        if self.vb1 is not None:
+        if self.vb1 is not None:  # pragma: no branch
             display_dim: str = str(self.slicer_area.data.dims[self.display_axis[0]])
             associated: dict[str, tuple[npt.NDArray, npt.NDArray]] = (
                 self.array_slicer.associated_coords[display_dim]
@@ -2547,13 +2550,15 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
+        darr: xr.DataArray = self._current_data
         slice_dict: dict[Hashable, slice] = {}
         for k, v in self.slicer_area.manual_limits.items():
-            ax_idx = self.slicer_area.data.dims.index(k)
-            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            slice_dict[k] = slice(
-                *sorted(float(np.round(val, sig_digits)) for val in v)
-            )
+            if k in darr.dims:
+                ax_idx = self.slicer_area.data.dims.index(k)
+                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+                slice_dict[k] = slice(
+                    *sorted(float(np.round(val, sig_digits)) for val in v)
+                )
         return self._current_data.sel(slice_dict)
 
     @property
@@ -2586,7 +2591,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot(bool)
     def set_normalize(self, normalize: bool) -> None:
         """Toggle normalization for 1D plots."""
-        if not self.is_image:
+        if not self.is_image:  # pragma: no branch
             for item in self.slicer_data_items:
                 item.normalize = normalize
                 item.refresh_data()
@@ -2594,7 +2599,7 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
         """Open the current data in a new window. Only available for 2D data."""
-        if self.is_image:
+        if self.is_image:  # pragma: no branch
             data = self.current_data
 
             color_props = self.slicer_area.colormap_properties
@@ -2614,12 +2619,12 @@ class ItoolPlotItem(pg.PlotItem):
             tool = typing.cast(
                 "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
             )
-            if tool is not None:
+            if tool is not None:  # pragma: no branch
                 self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:
-        if self.is_image:
+        if self.is_image:  # pragma: no branch
             data = self.current_data
 
             if set(data.dims) != {"alpha", "eV"}:
@@ -2639,7 +2644,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def open_in_restool(self) -> None:
-        if self.is_image:
+        if self.is_image:  # pragma: no branch
             data = self.current_data
 
             if "eV" not in data.dims:
@@ -2658,7 +2663,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
-        if self.is_image:
+        if self.is_image:  # pragma: no branch
             self.slicer_area.add_tool_window(
                 erlab.interactive.dtool(
                     self.current_data.T,
@@ -2692,7 +2697,7 @@ class ItoolPlotItem(pg.PlotItem):
             for dim, rng in zip(
                 self.axis_dims_uniform, self.vb.state["viewRange"], strict=True
             ):
-                if dim is not None:
+                if dim is not None:  # pragma: no branch
                     self.slicer_area.manual_limits[dim] = rng
             return
 
@@ -2959,9 +2964,8 @@ class ItoolPlotItem(pg.PlotItem):
     @QtCore.Slot(int)
     def set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:
         """Show rotating crosshairs for alignment."""
-        if not self.is_image:
-            return
-        self._guideline_actions[n].setChecked(True)
+        if self.is_image:  # pragma: no branch
+            self._guideline_actions[n].setChecked(True)
 
     @QtCore.Slot()
     def remove_guidelines(self) -> None:
@@ -2970,73 +2974,71 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot(int)
     def _set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:
-        if not self.is_image:
-            return
-        if n == 0:
-            self._remove_guidelines()
-            return
+        if self.is_image:  # pragma: no branch
+            if n == 0:
+                self._remove_guidelines()
+                return
 
-        old_pos: pg.Point | None = None
-        if len(self._guidelines_items) != n + 1 and self.is_guidelines_visible:
-            old_pos = self._guidelines_items[0].pos()
-            old_angle = float(
-                self._guidelines_items[0].angle - self._guidelines_items[0].offset
-            )
-            self._remove_guidelines()
-
-        for w in erlab.interactive.utils.make_crosshairs(n):
-            self.addItem(w)
-            self._guidelines_items.append(w)
-
-        # Select first line since moving any line will move all lines
-        line = self._guidelines_items[0]
-        target = self._guidelines_items[-1]
-
-        if old_pos is None:
-            target.setPos(
-                (
-                    self.slicer_area.get_current_value(0, uniform=True),
-                    self.slicer_area.get_current_value(1, uniform=True),
+            old_pos: pg.Point | None = None
+            if len(self._guidelines_items) != n + 1 and self.is_guidelines_visible:
+                old_pos = self._guidelines_items[0].pos()
+                old_angle = float(
+                    self._guidelines_items[0].angle - self._guidelines_items[0].offset
                 )
-            )
-        else:
-            target.setPos(old_pos)
-            line.setAngle(old_angle)
+                self._remove_guidelines()
 
-        def _print_angle():
-            line_pos = line.pos()
-            self._guideline_angle = line.angle_effective
-            self._guideline_offset = [line_pos.x(), line_pos.y()]
-            for i in range(2):
-                self._guideline_offset[i] = float(
-                    np.round(
-                        self._guideline_offset[i],
-                        self.array_slicer.get_significant(
-                            self.display_axis[i], uniform=True
-                        ),
+            for w in erlab.interactive.utils.make_crosshairs(n):
+                self.addItem(w)
+                self._guidelines_items.append(w)
+
+            # Select first line since moving any line will move all lines
+            line = self._guidelines_items[0]
+            target = self._guidelines_items[-1]
+
+            if old_pos is None:
+                target.setPos(
+                    (
+                        self.slicer_area.get_current_value(0, uniform=True),
+                        self.slicer_area.get_current_value(1, uniform=True),
                     )
                 )
+            else:
+                target.setPos(old_pos)
+                line.setAngle(old_angle)
 
-            self.setTitle(
-                f"{self._guideline_angle}° "
-                + str(tuple(self._guideline_offset)).replace("-", "−")
-            )
+            def _print_angle():
+                line_pos = line.pos()
+                self._guideline_angle = line.angle_effective
+                self._guideline_offset = [line_pos.x(), line_pos.y()]
+                for i in range(2):
+                    self._guideline_offset[i] = float(
+                        np.round(
+                            self._guideline_offset[i],
+                            self.array_slicer.get_significant(
+                                self.display_axis[i], uniform=True
+                            ),
+                        )
+                    )
 
-        line.sigAngleChanged.connect(lambda: _print_angle())
-        line.sigPositionChanged.connect(lambda: _print_angle())
-        _print_angle()
+                self.setTitle(
+                    f"{self._guideline_angle}° "
+                    + str(tuple(self._guideline_offset)).replace("-", "−")
+                )
+
+            line.sigAngleChanged.connect(lambda: _print_angle())
+            line.sigPositionChanged.connect(lambda: _print_angle())
+            _print_angle()
 
     @QtCore.Slot()
     def _remove_guidelines(self) -> None:
-        if not self.is_image:
-            return
-        for item in list(self._guidelines_items):
-            self.removeItem(item)
-            self._guidelines_items.remove(item)
-            del item
-        self._guideline_angle = 0.0
-        self._guideline_offset = [0.0, 0.0]
-        self.setTitle(None)
+        if self.is_image:  # pragma: no branch
+            for item in list(self._guidelines_items):
+                self.removeItem(item)
+                self._guidelines_items.remove(item)
+                del item
+            self._guideline_angle = 0.0
+            self._guideline_offset = [0.0, 0.0]
+            self.setTitle(None)
 
     @QtCore.Slot(int, object)
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
@@ -3142,9 +3144,9 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
@@ -3156,7 +3158,9 @@ class ItoolPlotItem(pg.PlotItem):
         return self.slicer_area.array_slicer
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
-        if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:
+        if (
+            evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange
+        ):  # pragma: no branch
             self._sigPaletteChanged.emit()
         super().changeEvent(evt)
 
@@ -3178,9 +3182,9 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter

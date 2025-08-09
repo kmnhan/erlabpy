@@ -1,3 +1,4 @@
+import matplotlib.colorbar
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -157,4 +158,58 @@ def test_unify_clim_with_target() -> None:
     assert im4.norm.vmin == vmin
     assert im4.norm.vmax == vmax
 
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("orientation", ["vertical", "horizontal"])
+@pytest.mark.parametrize("floating", [False, True], ids=["no_floating", "floating"])
+@pytest.mark.parametrize("minmax", [False, True], ids=["minmax", "no_minmax"])
+def test_nice_colorbar_basic(orientation, floating, minmax):
+    data = np.linspace(0, 1, 100).reshape(10, 10)
+    fig, ax = plt.subplots()
+    im = ax.imshow(data, cmap="viridis")
+    cbar = eplt.nice_colorbar(
+        ax=ax,
+        mappable=im,
+        width=10,
+        aspect=2,
+        pad=2,
+        minmax=minmax,
+        orientation=orientation,
+        floating=floating,
+    )
+    assert isinstance(cbar, matplotlib.colorbar.Colorbar)
+    # Check orientation
+    if orientation == "horizontal":
+        assert cbar.orientation == "horizontal"
+    else:
+        assert cbar.orientation == "vertical"
+    plt.close(fig)
+
+
+def test_nice_colorbar_multiple_axes():
+    rng = np.random.default_rng(1)
+    data = rng.random((5, 5))
+    fig, axs = plt.subplots(1, 2)
+    ims = [ax.imshow(data, cmap="magma") for ax in axs]
+    cbar = eplt.nice_colorbar(ax=axs, mappable=ims[0], width=6, aspect=3, pad=1)
+    assert isinstance(cbar, matplotlib.colorbar.Colorbar)
+    plt.close(fig)
+
+
+def test_nice_colorbar_no_mappable_raises():
+    fig, ax = plt.subplots()
+    with pytest.raises(RuntimeError):
+        eplt.nice_colorbar(ax=ax, mappable=None)
+    plt.close(fig)
+
+
+def test_nice_colorbar_box_aspect():
+    data = np.arange(9).reshape(3, 3)
+    fig, ax = plt.subplots()
+    im = ax.imshow(data)
+    cbar = eplt.nice_colorbar(ax=ax, mappable=im, aspect=4)
+    # Check box aspect
+    box_aspect = cbar.ax.get_box_aspect()
+    assert box_aspect == 4
     plt.close(fig)
