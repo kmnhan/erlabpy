@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: erlab
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Kimoon
+    family-names: Han
+    email: khan@kaist.ac.kr
+    affiliation: Korea Advanced Institute of Science and Technology
+    orcid: 'https://orcid.org/0000-0002-0489-4940'
+repository-code: 'https://github.com/kmnhan/erlabpy'
+url: 'https://erlabpy.readthedocs.io/'
+abstract: >-
+  The erlab package provides a complete python workflow for
+  ARPES (Angle-Resolved Photoemission Spectroscopy)
+  experiments. It provides a wide range of tools for
+  processing, analyzing, and visualizing ARPES data.
+keywords:
+  - arpes
+  - spectroscopy
+  - condensed-matter-physics
+license: GPL-3.0
