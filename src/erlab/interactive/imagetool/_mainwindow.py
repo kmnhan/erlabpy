@@ -508,6 +508,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "remCursorAct": self.slicer_area.rem_cursor_act,
                     "snapCursorAct": self.array_slicer.snap_act,
                     "toggleCursorAct": self.slicer_area.toggle_cursor_act,
+                    "cursorColorAct": self.slicer_area.cursor_color_act,
                     "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
                     "sep2": {"separator": True},
                     "colorInvertAct": self.slicer_area.reverse_act,

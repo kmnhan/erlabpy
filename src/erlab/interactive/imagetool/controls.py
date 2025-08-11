@@ -355,6 +355,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigCursorCountChanged.connect(self.update_cursor_count)
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
+        self.slicer_area.sigCursorColorsChanged.connect(self.update_colors)
 
     def disconnect_signals(self) -> None:
         super().disconnect_signals()
@@ -364,6 +365,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigCursorCountChanged.disconnect(self.update_cursor_count)
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
+        self.slicer_area.sigCursorColorsChanged.disconnect(self.update_colors)
+
+    @QtCore.Slot()
+    def update_colors(self) -> None:
+        """Update the colors of the controls based on the current cursor."""
+        for i in range(self.n_cursors):
+            self.cb_cursors.setItemIcon(i, self.slicer_area._cursor_icon(i))
+            self.cb_cursors.setItemText(i, self.slicer_area._cursor_name(i))
+        self.cb_cursors.setCurrentIndex(self.current_cursor)
 
     @QtCore.Slot()
     def update_content(self) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = [
     "BetterColorBarItem",
     "BetterImageItem",
+    "ColorCycleDialog",
     "ColorMapComboBox",
     "ColorMapGammaWidget",
     "color_to_QColor",
@@ -847,3 +848,260 @@ def pg_colormap_to_QPixmap(
     # print(cmap_arr.shape)
     img = QtGui.QImage(cmap_arr, w, 1, QtGui.QImage.Format.Format_RGBA8888)
     return QtGui.QPixmap.fromImage(img).scaled(w, h)
+
+
+class ColorCycleDialog(QtWidgets.QDialog):
+    """Dialog for selecting a color cycle.
+
+    This dialog takes a list of colors and allows the user to edit each color in the
+    cycle, or overwrite the entire cycle by sampling from a colormap.
+
+    Parameters
+    ----------
+    colors
+        An iterable of colors to use as the initial color cycle.
+    parent
+        The parent widget for the dialog.
+    preview_cursors
+        If `True`, the preview will inclue cursor lines and spans with the selected
+        colors.
+    opacity_values
+        A tuple of four float values representing the opacity for the cursor line,
+        cursor line hover, span background, and span edge, respectively. Each value
+        should be between 0 and 1, where 1 is fully opaque and 0 is fully transparent.
+    default_colors
+        An iterable of default colors to return to when the user clicks "Restore
+        Defaults". If `None`, the restore defaults button will not be shown.
+
+    """
+
+    sigAccepted = QtCore.Signal(tuple)  #: :meta private:
+
+    def __init__(
+        self,
+        colors: Iterable[QtGui.QColor],
+        *,
+        parent: QtWidgets.QWidget | None = None,
+        preview_cursors: bool = False,
+        opacity_values: tuple[float, float, float, float] = (0.95, 0.75, 0.15, 0.35),
+        default_colors: Iterable[QtGui.QColor] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.original_colors: Iterable[QtGui.QColor] = colors
+        self._colors: tuple[QtGui.QColor] = tuple(pg.mkColor(c) for c in colors)
+
+        self.preview_cursors = preview_cursors
+        self.opacity_values = opacity_values
+        self.default_colors = default_colors
+        self.setup_ui()
+
+    @property
+    def colors(self) -> tuple[QtGui.QColor]:
+        """Return the current color cycle."""
+        return self._colors
+
+    @colors.setter
+    def colors(self, colors: Iterable[QtGui.QColor]) -> None:
+        """Set the color cycle to a new list of colors."""
+        self._colors = tuple(pg.mkColor(c) for c in colors)
+        for i, clr in enumerate(self._colors):
+            self.color_btns[i].blockSignals(True)
+            self.color_btns[i].setColor(clr)
+            self.color_btns[i].blockSignals(False)
+            self.curves[i].setPen(pg.mkPen(clr))
+
+            if self.preview_cursors:
+                clr_cursor = pg.mkColor(clr)
+                clr_cursor_hover = pg.mkColor(clr)
+                clr_span = pg.mkColor(clr)
+                clr_span_edge = pg.mkColor(clr)
+
+                clr_cursor.setAlphaF(self.opacity_values[0])
+                clr_cursor_hover.setAlphaF(self.opacity_values[1])
+                clr_span.setAlphaF(self.opacity_values[2])
+                clr_span_edge.setAlphaF(self.opacity_values[3])
+
+                self.lines[i].setPen(pg.mkPen(clr_cursor))
+                self.lines[i].setHoverPen(pg.mkPen(clr_cursor_hover))
+
+                for span_line in self.spans[i].lines:
+                    span_line.setPen(pg.mkPen(clr_span_edge))
+                self.spans[i].setBrush(pg.mkBrush(clr_span))
+
+    def setup_ui(self):
+        self.layout_ = QtWidgets.QVBoxLayout(self)
+        self.setLayout(self.layout_)
+
+        # Colormap selection
+        cmap_group = QtWidgets.QGroupBox("Choose from colormap", self)
+        self.layout_.addWidget(cmap_group)
+        cmap_layout = QtWidgets.QHBoxLayout()
+        cmap_group.setLayout(cmap_layout)
+
+        self.cmap_combo = erlab.interactive.colors.ColorMapComboBox(self)
+        self.cmap_combo.setToolTip("Select a colormap to sample colors from")
+        self.cmap_combo.setDefaultCmap("coolwarm")
+        cmap_layout.addWidget(self.cmap_combo)
+
+        self.reverse_check = QtWidgets.QCheckBox("Reverse", self)
+        self.reverse_check.setToolTip("Reverse the colormap")
+        cmap_layout.addWidget(self.reverse_check)
+
+        cmap_layout.addStretch()
+        cmap_layout.addWidget(QtWidgets.QLabel("Range:"))
+        self.start_spin = QtWidgets.QDoubleSpinBox(self)
+        self.start_spin.setRange(0.0, 1.0)
+        self.start_spin.setDecimals(2)
+        self.start_spin.setSingleStep(0.1)
+        self.start_spin.setValue(0.1)
+        self.start_spin.setToolTip("Start of the colormap")
+        cmap_layout.addWidget(self.start_spin)
+
+        self.stop_spin = QtWidgets.QDoubleSpinBox(self)
+        self.stop_spin.setRange(0.0, 1.0)
+        self.stop_spin.setDecimals(2)
+        self.stop_spin.setSingleStep(0.1)
+        self.stop_spin.setValue(0.9)
+        self.stop_spin.setToolTip("End of the colormap")
+        cmap_layout.addWidget(self.stop_spin)
+        cmap_layout.addStretch()
+
+        self.apply_btn = QtWidgets.QPushButton("Apply", self)
+        self.apply_btn.setToolTip("Sample colors from the colormap")
+        self.apply_btn.clicked.connect(self.set_from_cmap)
+        cmap_layout.addWidget(self.apply_btn)
+
+        # Bottom layout
+        bottom_layout = QtWidgets.QHBoxLayout()
+        self.layout_.addLayout(bottom_layout)
+
+        # Color editor
+        editor_group = QtWidgets.QGroupBox("Edit Colors", self)
+        bottom_layout.addWidget(editor_group)
+
+        editor_layout = QtWidgets.QFormLayout(editor_group)
+        editor_group.setLayout(editor_layout)
+
+        self.color_btns = []
+        for i, color in enumerate(self.colors):
+            btn = pg.ColorButton(self)
+            btn.colorDialog.setOption(
+                QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog, False
+            )
+            btn.setColor(color)
+            btn.setToolTip(f"Cursor {i}")
+            btn.sigColorChanged.connect(self._update_color)
+            self.color_btns.append(btn)
+            editor_layout.addRow(f"Cursor {i}", btn)
+
+        # Dialog buttons
+        self.button_box = QtWidgets.QDialogButtonBox()
+        btn_ok = self.button_box.addButton(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+        btn_cancel = self.button_box.addButton(
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+        )
+        btn_reset = self.button_box.addButton(
+            QtWidgets.QDialogButtonBox.StandardButton.Reset,
+        )
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+        btn_reset.clicked.connect(self.reset)
+        btn_reset.setToolTip("Reset to current colors")
+
+        if self.default_colors is not None:
+            btn_default = self.button_box.addButton(
+                QtWidgets.QDialogButtonBox.StandardButton.RestoreDefaults
+            )
+            btn_default.clicked.connect(self.restore_defaults)
+            btn_default.setToolTip("Restore from current user defaults")
+
+        # Preview
+        preview_group = QtWidgets.QGroupBox("Preview", self)
+        bottom_layout.addWidget(preview_group)
+
+        preview_group_layout = QtWidgets.QVBoxLayout(preview_group)
+        preview_group.setLayout(preview_group_layout)
+
+        self.plot_widget = pg.PlotWidget(preview_group)
+        preview_group_layout.addWidget(self.plot_widget)
+
+        self.curves = []
+        self.lines = []
+        self.spans = []
+        for i in range(len(self.colors)):
+            curve = pg.PlotDataItem(
+                x=np.linspace(0, 1, 100),
+                y=np.sin(np.linspace(0, 2 * np.pi, 100) + i * np.pi / 12),
+                name=f"Cursor {i}",
+            )
+            self.curves.append(curve)
+            self.plot_widget.addItem(curve)
+
+            if self.preview_cursors:
+                cursor_center = i * np.pi / 64 + np.pi / 64
+                span_halfwidth = np.pi / 128 - 0.01
+                line = pg.InfiniteLine(cursor_center, angle=90, movable=True)
+                self.lines.append(line)
+                self.plot_widget.addItem(line)
+
+                span = pg.LinearRegionItem(
+                    (cursor_center - span_halfwidth, cursor_center + span_halfwidth),
+                    movable=False,
+                )
+
+                # Make the span move with the line
+                def update_span(line=line, span=span, hw=span_halfwidth):
+                    center = line.value()
+                    span.setRegion((center - hw, center + hw))
+
+                line.sigPositionChanged.connect(update_span)
+                self.spans.append(span)
+                self.plot_widget.addItem(span)
+
+        self.layout_.addWidget(self.button_box)
+
+        self.reset()  # Initialize with original colors
+
+    @QtCore.Slot()
+    def _update_color(self) -> None:
+        """Update internal color state when a color button is changed."""
+        sender = typing.cast("pg.ColorButton", self.sender())
+        if sender in self.color_btns:
+            sender.blockSignals(True)
+            index = self.color_btns.index(sender)
+            color_list = list(self.colors)
+            color_list[index] = sender.color()
+            self.colors = color_list
+            sender.blockSignals(False)
+
+    @QtCore.Slot()
+    def set_from_cmap(self) -> None:
+        """Set the color cycle from a colormap."""
+        pg_cmap = pg_colormap_powernorm(
+            self.cmap_combo.currentText(),
+            gamma=1.0,
+            reverse=self.reverse_check.isChecked(),
+        )
+        self.colors = pg_cmap.getLookupTable(
+            start=self.start_spin.value(),
+            stop=self.stop_spin.value(),
+            nPts=len(self.colors),
+            mode=pg_cmap.QCOLOR,
+        )
+
+    @QtCore.Slot()
+    def reset(self) -> None:
+        self.colors = self.original_colors
+
+    @QtCore.Slot()
+    def restore_defaults(self) -> None:
+        """Restore the default colors if provided."""
+        if self.default_colors is not None:  # pragma: no branch
+            self.colors = self.default_colors
+
+    def accept(self) -> None:
+        """Accept the dialog and emit the new colors."""
+        self.sigAccepted.emit(self.colors)
+        super().accept()
