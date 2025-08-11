@@ -114,8 +114,14 @@ class _DialogDetectionThread(QtCore.QThread):
     sigTrigger = QtCore.Signal(int, object)
     sigPreCall = QtCore.Signal(int, object)
 
-    def __init__(self, index: int, pre_call: Callable | None, timeout: float) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        parent: QtCore.QObject | None,
+        index: int,
+        pre_call: Callable | None,
+        timeout: float,
+    ) -> None:
+        super().__init__(parent)
         self.pre_call = pre_call
         self.index = index
         self.timeout = timeout
@@ -135,7 +141,7 @@ class _DialogDetectionThread(QtCore.QThread):
 
         dialog = None
 
-        log.debug("looking for dialog %d...", self.index)
+        log.info("looking for dialog %d...", self.index)
         while (
             dialog is None or isinstance(dialog, _WaitDialog)
         ) and time.perf_counter() - start_time < self.timeout:
@@ -143,20 +149,20 @@ class _DialogDetectionThread(QtCore.QThread):
             time.sleep(0.01)
 
         if dialog is None or isinstance(dialog, _WaitDialog):
-            log.debug("emitting timeout %d", self.index)
+            log.info("emitting timeout %d", self.index)
             self.sigTimeout.emit(self.index)
             return
 
-        log.debug("dialog %d detected: %s", self.index, dialog)
+        log.info("dialog %d detected: %s", self.index, dialog)
 
         if self.pre_call is not None:
-            log.debug("pre_call %d...", self.index)
+            log.info("pre_call %d...", self.index)
             self.sigPreCall.emit(self.index, dialog)
             while not self._precall_called.is_set():
                 time.sleep(0.01)
-            log.debug("pre_call %d done", self.index)
+            log.info("pre_call %d done", self.index)
 
-        log.debug("emitting trigger for %d", self.index + 1)
+        log.info("emitting trigger for %d", self.index + 1)
         self.sigTrigger.emit(self.index + 1, dialog)
 
 
@@ -188,7 +194,13 @@ class _DialogHandler(QtCore.QObject):
         multiple dialogs.
     """
 
-    def __init__(
+    sigFinished = QtCore.Signal()
+
+    def __init__(self, qtbot):
+        super().__init__()
+        self._qtbot = qtbot
+
+    def __call__(
         self,
         dialog_trigger: Callable,
         timeout: float = 5.0,
@@ -196,8 +208,6 @@ class _DialogHandler(QtCore.QObject):
         accept_call: Callable | Sequence[Callable | None] | None = None,
         chained_dialogs: int = 1,
     ):
-        super().__init__()
-
         self.timeout: float = timeout
         self._timed_out = False
 
@@ -210,11 +220,12 @@ class _DialogHandler(QtCore.QObject):
         self._accept_call_list = accept_call
         self._max_index = chained_dialogs - 1
 
-        self.trigger_index(0, dialog_trigger)
+        with self._qtbot.wait_signal(self.sigFinished, timeout=round(timeout * 1e3)):
+            self.trigger_index(0, dialog_trigger)
 
     @QtCore.Slot(int)
     def _timeout(self, index: int) -> None:
-        log.debug("timeout %d", index)
+        log.info("timeout %d", index)
         self._timed_out = True
         if hasattr(self, "_handler") and self._handler.isRunning():
             self._handler.wait()
@@ -228,8 +239,7 @@ class _DialogHandler(QtCore.QObject):
     def trigger_index(
         self, index: int, dialog_or_trigger: QtWidgets.QDialog | Callable
     ) -> None:
-        """
-        Trigger the dialog creation.
+        """Trigger the dialog creation.
 
         Parameters
         ----------
@@ -240,7 +250,7 @@ class _DialogHandler(QtCore.QObject):
             The callable that triggers the dialog creation or a prviously created dialog
             which will create the next dialog upon acceptance.
         """
-        log.debug("index %d triggered", index)
+        log.info("index %d triggered", index)
 
         if index <= self._max_index:
             if hasattr(self, "_handler") and self._handler.isRunning():
@@ -248,7 +258,7 @@ class _DialogHandler(QtCore.QObject):
                 self._handler = None
 
             self._handler = _DialogDetectionThread(
-                index, self._pre_call_list[index], self.timeout
+                self, index, self._pre_call_list[index], self.timeout
             )
             self._handler.sigTimeout.connect(self._timeout)
             self._handler.sigTrigger.connect(self.trigger_index)
@@ -268,27 +278,26 @@ class _DialogHandler(QtCore.QObject):
                     dialog_or_trigger.defaultButton().click()
                 else:
                     dialog_or_trigger.accept()
-            log.debug("finished %d", index - 1)
+            log.info("finished %d", index - 1)
+
+            if index > self._max_index:
+                log.info("all dialogs finished, emitting sigFinished")
+                self.sigFinished.emit()
 
         else:
             dialog_or_trigger()
 
     @QtCore.Slot(int, object)
     def handle_pre_call(self, index: int, dialog: QtWidgets.QDialog) -> None:
-        log.debug("pre-call callable received")
+        log.info("pre-call callable received")
         self._pre_call_list[index](dialog)
-        log.debug("pre-call successfully called")
+        log.info("pre-call successfully called")
         self._handler.precall_called()
-
-    def __del__(self):
-        """Ensure the thread is stopped upon deletion."""
-        if hasattr(self, "_handler") and self._handler.isRunning():
-            self._handler.wait()
 
 
 @pytest.fixture
-def accept_dialog():
-    return _DialogHandler
+def accept_dialog(qtbot):
+    return _DialogHandler(qtbot=qtbot)
 
 
 def _move_and_compare_values(bot, win, expected, cursor=0, target_win=None):
