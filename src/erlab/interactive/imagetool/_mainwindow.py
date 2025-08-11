@@ -659,7 +659,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
         dialog = dialog_cls(self.slicer_area)
-        dialog.exec()
+        dialog.setModal(True)
+        self.slicer_area.add_tool_window(
+            dialog, update_title=False, transfer_to_manager=False
+        )
 
     @QtCore.Slot()
     def _settings(self) -> None:

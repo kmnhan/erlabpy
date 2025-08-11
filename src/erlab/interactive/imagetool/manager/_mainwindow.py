@@ -1286,7 +1286,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         uid = str(uuid.uuid4())
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         self._additional_windows[uid] = widget  # Store reference to prevent gc
-        widget.destroyed.connect(lambda: self._additional_windows.pop(uid))
+        widget.destroyed.connect(lambda: self._additional_windows.pop(uid, None))
         widget.show()
 
     def eventFilter(
