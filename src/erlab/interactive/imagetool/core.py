@@ -2443,7 +2443,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.vb1.setGeometry(self.vb.sceneBoundingRect())
 
     def enableAutoRange(self, axis=None, enable=True, x=None, y=None):
-        super().enableAutoRange(axis=axis, enable=enable, x=x, y=y)
+        self.vb.enableAutoRange(axis=axis, enable=enable, x=x, y=y)
         if self.vb1 is not None and self._twin_visible:
             self.vb1.enableAutoRange(axis=None, enable=enable, x=x, y=y)
 
@@ -2981,6 +2981,12 @@ class ItoolPlotItem(pg.PlotItem):
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
+
+        # Store autorange state and disable it temporarily to prevent the viewbox from
+        # trying to autorange while removing items.
+        auto_range = self.vb.state["autoRange"]
+        self.enableAutoRange(enable=False)
+
         self.removeItem(item)
         for line, span in zip(
             self.cursor_lines.pop(index).values(),
@@ -2991,6 +2997,11 @@ class ItoolPlotItem(pg.PlotItem):
             self.removeItem(span)
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
+
+        # Restore autorange state
+        for enable, axis in zip(auto_range, ("x", "y"), strict=True):
+            if enable is not False:
+                self.enableAutoRange(axis=axis, enable=enable)
 
     def refresh_cursor(self, cursor: int) -> None:
         for ax, line in self.cursor_lines[cursor].items():
@@ -3086,7 +3097,8 @@ class ItoolPlotItem(pg.PlotItem):
     def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
         self.refresh_cursor(cursor)
         if axes is not None and all(elem in self.display_axis for elem in axes):
-            # display_axis는 축 dim 표시하는거임. 즉 해당 축만 바뀌면 데이터 변화 없음
+            # When only the indices along display_axis change, it has no effect on the
+            # sliced data, so we do not need to refresh the data.
             return
         for item in self.slicer_data_items:
             if item.cursor_index != cursor:
