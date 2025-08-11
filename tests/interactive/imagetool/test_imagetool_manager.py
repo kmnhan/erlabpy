@@ -122,7 +122,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         dialog._new_name_lines[0].setText("new_name_1")
         dialog._new_name_lines[1].setText("new_name_2")
 
-    _handler = accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
+    accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
     assert manager._tool_wrappers[1].name == "new_name_1"
     assert manager._tool_wrappers[2].name == "new_name_2"
 
@@ -165,7 +165,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     # Select tools
     select_tools(manager, [1, 2])
-    _handler = accept_dialog(manager.concat_action.trigger)
+    accept_dialog(manager.concat_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     xr.testing.assert_identical(
@@ -208,11 +208,11 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     # Remove all selected
     select_tools(manager, [1, 2, 3])
-    _handler = accept_dialog(manager.remove_action.trigger)
+    accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
     # Show about dialog
-    _handler = accept_dialog(manager.about)
+    accept_dialog(manager.about)
 
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None
@@ -344,16 +344,16 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
             focused.setText("workspace.h5")
 
     # Save workspace
-    _handler = accept_dialog(lambda: manager.save(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: manager.save(native=False), pre_call=_go_to_file)
 
     # Load workspace
-    _handler = accept_dialog(lambda: manager.load(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: manager.load(native=False), pre_call=_go_to_file)
 
     # Check if the data is loaded
     assert manager.ntools == 4
 
     select_tools(manager, list(manager._tool_wrappers.keys()))
-    _handler = accept_dialog(manager.remove_action.trigger)
+    accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
     manager.close()
     tmp_dir.cleanup()
@@ -411,7 +411,7 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
             break
     assert isinstance(menu, QtWidgets.QMenu)
 
-    _handler = accept_dialog(manager.close)
+    accept_dialog(manager.close)
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
 
@@ -438,7 +438,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
     )
 
     # Simulate drag and drop
-    _handler = accept_dialog(lambda: manager.dropEvent(evt))
+    accept_dialog(lambda: manager.dropEvent(evt))
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
     xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, test_data)
 
@@ -452,7 +452,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
     def _choose_correct_filter(dialog: _NameFilterDialog):
         dialog._button_group.buttons()[0].setChecked(True)
 
-    _handler = accept_dialog(
+    accept_dialog(
         lambda: manager.dropEvent(evt),
         pre_call=[_choose_wrong_filter, None, None, _choose_correct_filter],
         chained_dialogs=4,
@@ -509,7 +509,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     ]
 
     # Test storing with ipython
-    _handler = accept_dialog(manager.store_action.trigger)
+    accept_dialog(manager.store_action.trigger)
     manager.console._console_widget.execute(r"%store -d data_0 data_1")
 
     # Test calling wrapped methods
@@ -528,7 +528,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
 
     # Remove all tools
     select_tools(manager, list(manager._tool_wrappers.keys()))
-    _handler = accept_dialog(manager.remove_action.trigger)
+    accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
     # Test repr
