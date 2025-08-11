@@ -310,15 +310,11 @@ def test_image_slicer_area_history_and_manual_limits(qtbot):
     area.set_manual_limits({"x": [0, 4]})
     area.propagate_limit_change(area.main_image)
     # make_cursors with custom colors and error
-    area.make_cursors(2, ["#ff0000", "#00ff00"])
-    with pytest.raises(
-        ValueError,
-        match="Number of colors must match the number of cursors",
-    ):
-        area.make_cursors(2, ["#ff0000"])  # not enough colors
-    # gen_cursor_color with more cursors than COLORS
+    area.make_cursors(["#ff0000", "#00ff00"])
+
+    # create colors with more cursors than COLORS
     for _ in range(10):
-        area.gen_cursor_color(_)
+        area.color_for_cursor(_)
     # apply_func with None and with a function
     area.apply_func(None)
     area.apply_func(lambda d: d + 1)
@@ -759,7 +755,7 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
         if isinstance(focused, QtWidgets.QLineEdit):
             focused.setText("fit_res.nc")
 
-    _handler = accept_dialog(
+    accept_dialog(
         win.mnb._correct_with_edge,
         pre_call=[_go_to_file, _set_dialog_params],
         chained_dialogs=2,
@@ -811,7 +807,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog.coord_widget.spin0.setValue(1)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 
@@ -833,7 +829,7 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         # Preview
         dialog._preview()
 
-    _handler = accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
 
     # Check if the data is normalized
     xarray.testing.assert_identical(
@@ -845,7 +841,7 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
     # Check if canceling the dialog does not change the data
-    _handler = accept_dialog(
+    accept_dialog(
         win.mnb._normalize,
         pre_call=_set_dialog_params,
         accept_call=lambda d: d.reject(),
@@ -931,3 +927,36 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
     win.slicer_area.close_associated_windows()
 
     win.close()
+
+
+def test_itool_edit_cursor_colors(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+    assert win.slicer_area.n_cursors == 3
+
+    def parse_dialog(dialog: erlab.interactive.colors.ColorCycleDialog):
+        dialog.set_from_cmap()
+
+    accept_dialog(win.slicer_area.edit_cursor_colors, pre_call=parse_dialog)
+
+    assert [c.name() for c in win.slicer_area.cursor_colors] == [
+        "#5978e3",
+        "#dddddd",
+        "#d75344",
+    ]
+
+    for plot_item in win.slicer_area.profiles:
+        for cursor, plot_data_item in enumerate(plot_item.slicer_data_items):
+            assert (
+                plot_data_item.opts["pen"].color().name()
+                == win.slicer_area.cursor_colors[cursor].name()
+            )

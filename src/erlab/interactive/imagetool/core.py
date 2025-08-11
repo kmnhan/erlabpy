@@ -94,6 +94,27 @@ def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
     return tuple(d for d in data.data_vars.values() if _supported_shape(d))
 
 
+def _make_cursor_colors(
+    clr: QtGui.QColor,
+) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:
+    """Given a color, return a tuple of colors used for cursors and spans.
+
+    This function generates a set of colors based on the input color `clr` with
+    pre-defined transparency levels.
+    """
+    clr_cursor = pg.mkColor(clr)
+    clr_cursor_hover = pg.mkColor(clr)
+    clr_span = pg.mkColor(clr)
+    clr_span_edge = pg.mkColor(clr)
+
+    clr_cursor.setAlphaF(0.75)
+    clr_cursor_hover.setAlphaF(0.95)
+    clr_span.setAlphaF(0.15)
+    clr_span_edge.setAlphaF(0.35)
+
+    return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
+
+
 def _parse_input(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
@@ -502,6 +523,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigWriteHistory()
 
+    sigCursorColorsChanged()
+
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -539,6 +562,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigViewOptionChanged = QtCore.Signal()  #: :meta private:
     sigHistoryChanged = QtCore.Signal()  #: :meta private:
     sigWriteHistory = QtCore.Signal()  #: :meta private:
+    sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
@@ -825,7 +849,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.splitter_sizes = state["splitter_sizes"]
 
         # Restore cursor number and colors
-        self.make_cursors(len(state["cursor_colors"]), colors=state["cursor_colors"])
+        self.make_cursors(state["cursor_colors"])
 
         # Set current cursor before restoring coordinates
         self.set_current_cursor(state["current_cursor"], update=False)
@@ -1068,6 +1092,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.toggle_cursor_act.setToolTip("Toggle visibility of all cursors")
         self.toggle_cursor_act.toggled.connect(self.toggle_cursor_visibility)
 
+        self.cursor_color_act = QtWidgets.QAction("Edit Cursor Colors...", self)
+        self.cursor_color_act.triggered.connect(self.edit_cursor_colors)
+
         self.undo_act = QtWidgets.QAction("&Undo", self)
         self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
         self.undo_act.setDisabled(True)
@@ -1122,6 +1149,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         self.associated_coords_act.triggered.connect(self._choose_associated_coords)
         self.associated_coords_act.setToolTip("Plot associated coordinates")
+
+    @QtCore.Slot()
+    def edit_cursor_colors(self) -> None:
+        """Open a dialog to edit cursor colors."""
+        dialog = erlab.interactive.colors.ColorCycleDialog(
+            self.cursor_colors,
+            parent=self,
+            preview_cursors=True,
+            default_colors=tuple(
+                self.COLORS[i % len(self.COLORS)] for i in range(self.n_cursors)
+            ),
+        )
+        dialog.setWindowTitle("Edit Cursor Colors")
+        dialog.setModal(True)
+        dialog.sigAccepted.connect(self.set_cursor_colors)
+        self.add_tool_window(dialog, update_title=False, transfer_to_manager=False)
 
     @QtCore.Slot()
     def _choose_associated_coords(self) -> None:
@@ -1593,18 +1636,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
 
-    def make_cursors(self, n: int, colors: Iterable[QtGui.QColor | str] | None) -> None:
-        # Used when restoring state to match the number of cursors
+    def make_cursors(self, colors: Iterable[QtGui.QColor | str]) -> None:
+        """Create cursors with the specified colors.
+
+        Used when restoring the state of the slicer. All existing cursors are removed.
+        """
         while self.n_cursors > 1:
             self.remove_cursor(0)
-
-        if colors is None:
-            colors = [self.gen_cursor_color(i) for i in range(n)]
-        else:
-            colors = list(colors)
-
-        if len(colors) != n:
-            raise ValueError("Number of colors must match the number of cursors")
 
         for clr in colors:
             self.add_cursor(color=clr)
@@ -1619,7 +1657,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def add_cursor(self, color: QtGui.QColor | str | None = None) -> None:
         self.array_slicer.add_cursor(self.current_cursor, update=False)
         if color is None:
-            self.cursor_colors.append(self.gen_cursor_color(self.n_cursors - 1))
+            self.cursor_colors.append(self.color_for_cursor(self.n_cursors - 1))
         else:
             self.cursor_colors.append(QtGui.QColor(color))
 
@@ -1664,31 +1702,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.axes:
             ax.set_cursor_visible(self.toggle_cursor_act.isChecked())
 
-    def gen_cursor_color(self, index: int) -> QtGui.QColor:
-        clr = self.COLORS[index % len(self.COLORS)]
-        while clr in self.cursor_colors:
-            clr = self.COLORS[index % len(self.COLORS)]
-            if self.n_cursors > len(self.COLORS):
+    def color_for_cursor(self, index: int) -> QtGui.QColor:
+        """Pick a cursor color based on the index."""
+        n_color: int = len(self.COLORS)
+        color = self.COLORS[index % n_color]
+        while color in self.cursor_colors:
+            # Try to find a unique color
+            color = self.COLORS[index % n_color]
+            if self.n_cursors > n_color:
                 break
             index += 1
-        return clr
+        return color
 
-    def gen_cursor_colors(
-        self, index: int
-    ) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:
-        clr = self.cursor_colors[index]
+    @QtCore.Slot(tuple)
+    def set_cursor_colors(self, colors: Iterable[QtGui.QColor]) -> None:
+        """Set the colors of the cursors.
 
-        clr_cursor = pg.mkColor(clr)
-        clr_cursor_hover = pg.mkColor(clr)
-        clr_span = pg.mkColor(clr)
-        clr_span_edge = pg.mkColor(clr)
-
-        clr_cursor.setAlphaF(0.75)
-        clr_cursor_hover.setAlphaF(0.95)
-        clr_span.setAlphaF(0.15)
-        clr_span_edge.setAlphaF(0.35)
-
-        return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
+        Parameters
+        ----------
+        colors
+            An iterable of colors to set for the cursors.
+        """
+        self.cursor_colors = [pg.mkColor(c) for c in colors]
+        for ax in self.axes:
+            ax.set_cursor_colors(self.cursor_colors)
+        self.sigCursorColorsChanged.emit()
 
     @link_slicer(color=True)
     def set_colormap(
@@ -2865,12 +2903,32 @@ class ItoolPlotItem(pg.PlotItem):
         if self.slicer_area.bench:
             self._time_end = time.perf_counter()
 
+    def set_cursor_colors(self, colors: Iterable[QtGui.QColor]) -> None:
+        """Set the colors of the cursors and spans."""
+        for cursor, (clr, line_dict, span_dict) in enumerate(
+            zip(colors, self.cursor_lines, self.cursor_spans, strict=True)
+        ):
+            _, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge = (
+                _make_cursor_colors(clr)
+            )
+            for line in line_dict.values():
+                line.setPen(pg.mkPen(clr_cursor, width=1))
+                line.setHoverPen(pg.mkPen(clr_cursor_hover, width=1))
+            for span in span_dict.values():
+                for span_line in span.lines:
+                    span_line.setPen(pg.mkPen(clr_span_edge))
+                span.setBrush(pg.mkBrush(clr_span))
+
+            if not self.is_image:
+                # For line plots, set the pen color of the data item
+                self.slicer_data_items[cursor].setPen(pg.mkPen(clr))
+
     def add_cursor(self, update: bool = True) -> None:
         new_cursor: int = len(self.slicer_data_items)
         line_angles: tuple[int, int] = (90, 0)
 
-        (clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge) = (
-            self.slicer_area.gen_cursor_colors(new_cursor)
+        clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge = (
+            _make_cursor_colors(self.slicer_area.cursor_colors[new_cursor])
         )
 
         if self.is_image:
