@@ -76,7 +76,7 @@ def test_reject_with_modifications(dialog: OptionDialog, qtbot, accept_dialog):
     def _msgbox_close(dialog: QtWidgets.QMessageBox):
         dialog.button(QtWidgets.QMessageBox.StandardButton.Cancel).click()
 
-    _h0 = accept_dialog(dialog.reject, accept_call=_msgbox_close)
+    accept_dialog(dialog.reject, accept_call=_msgbox_close)
 
     # Dialog should remain open, and changes should not be saved
     assert dialog.current_options["colors"]["cmap"]["name"] == "bwr"
@@ -85,7 +85,7 @@ def test_reject_with_modifications(dialog: OptionDialog, qtbot, accept_dialog):
     def _msgbox_savechanges(dialog: QtWidgets.QMessageBox):
         dialog.button(QtWidgets.QMessageBox.StandardButton.Ok).click()
 
-    _h1 = accept_dialog(dialog.reject, accept_call=_msgbox_savechanges)
+    accept_dialog(dialog.reject, accept_call=_msgbox_savechanges)
 
     # Changes should be saved now
     assert options.option_dict["colors"]["cmap"]["name"] == "bwr"

@@ -46,7 +46,7 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
             focused.setText("fit_save.nc")
 
     # Save fit
-    _handler_save = accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
+    accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
 
     # Check saved file
     xr.testing.assert_identical(

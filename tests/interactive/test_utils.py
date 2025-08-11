@@ -91,12 +91,10 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
             focused.setText(f"fit_save.{file_ext}")
 
     # Save fit
-    _handler_save = accept_dialog(
-        lambda: save_fit_ui(fit_result_ds), pre_call=_go_to_file
-    )
+    accept_dialog(lambda: save_fit_ui(fit_result_ds), pre_call=_go_to_file)
 
     # Load fit
-    _handler_load = accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
+    accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
 
     tmp_dir.cleanup()
 

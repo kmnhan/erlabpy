@@ -107,7 +107,7 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
         if isinstance(focused, QtWidgets.QLineEdit):
             focused.setText("data.h5")
 
-    _handler = accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
+    accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
     move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     win.close()
@@ -130,9 +130,7 @@ def test_itool_save(qtbot, accept_dialog) -> None:
         if isinstance(focused, QtWidgets.QLineEdit):
             focused.setText("data.h5")
 
-    _handler = accept_dialog(
-        lambda: win._export_file(native=False), pre_call=_go_to_file
-    )
+    accept_dialog(lambda: win._export_file(native=False), pre_call=_go_to_file)
 
     win.close()
 
@@ -483,7 +481,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
     xarray.testing.assert_allclose(
@@ -508,7 +506,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
     xarray.testing.assert_allclose(
@@ -554,7 +552,7 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -608,7 +606,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _h0 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -629,7 +627,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _h1 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -659,7 +657,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
 
     assert pyperclip.paste() == '.qsel.average("x")'
@@ -688,7 +686,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "z", center=2)
     )
@@ -717,7 +715,7 @@ def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
         for check in dialog._checks.values():
             check.setChecked(True)
 
-    _handler = accept_dialog(
+    accept_dialog(
         win.slicer_area._choose_associated_coords, pre_call=_set_dialog_params
     )
 
