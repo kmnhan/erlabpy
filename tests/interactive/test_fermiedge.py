@@ -13,7 +13,7 @@ from erlab.io.exampledata import generate_gold_edge
 def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.params_edge.widgets["# CPU"].setValue(1)
+    win.params_edge.widgets["# CPU"].setValue(2)
     win.params_edge.widgets["Fast"].setChecked(True)
 
     with qtbot.wait_signal(win.sigUpdated, timeout=20000):
