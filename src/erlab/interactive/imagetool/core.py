@@ -1764,7 +1764,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
         return erlab.interactive.imagetool.manager._manager_instance
 
-    def add_tool_window(self, widget: QtWidgets.QWidget) -> None:
+    def add_tool_window(
+        self,
+        widget: QtWidgets.QWidget,
+        update_title: bool = True,
+        transfer_to_manager: bool = True,
+    ) -> None:
         """Save a reference to an additional window widget.
 
         This is mainly used for handling tool windows such as goldtool and dtool.
@@ -1775,21 +1780,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         Only pass widgets that are not associated with a parent widget.
 
         If the parent ImageTool is in the manager, the widget is transferred to the
-        manager instead.
+        manager instead
 
         Parameters
         ----------
         widget
             The widget to add.
+        update_title
+            If `True`, the window title is updated to include the parent title. If
+            `False`, the window title is not changed.
+        transfer_to_manager
+            If `True`, the ownership of the widget is transferred to the manager if the
+            parent ImageTool is in the manager. Use `False` for dialog windows that
+            should not be managed by the manager.
         """
-        old_title = widget.windowTitle().strip()
-        new_title = self.parent_title.strip()
-        if new_title != "" and old_title != "":
-            new_title += f" - {old_title}"
-        widget.setWindowTitle(new_title)
+        if update_title:
+            old_title = widget.windowTitle().strip()
+            new_title = self.parent_title.strip()
+            if new_title != "" and old_title != "":
+                new_title += f" - {old_title}"
+            widget.setWindowTitle(new_title)
+
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        if self._in_manager:
+        if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
                 manager.add_widget(widget)
@@ -1797,7 +1811,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         uid: str = str(uuid.uuid4())
         self._associated_tools[uid] = widget  # Store reference to prevent gc
-        widget.destroyed.connect(lambda: self._associated_tools.pop(uid))
+        widget.destroyed.connect(lambda: self._associated_tools.pop(uid, None))
         widget.show()
 
     @QtCore.Slot()
