@@ -1061,6 +1061,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
         self.rem_cursor_act.setToolTip("Remove the current cursor")
 
+        self.toggle_cursor_act = QtWidgets.QAction("Cursor Visibility", self)
+        self.toggle_cursor_act.setShortcut("Shift+V")
+        self.toggle_cursor_act.setCheckable(True)
+        self.toggle_cursor_act.setChecked(True)
+        self.toggle_cursor_act.setToolTip("Toggle visibility of all cursors")
+        self.toggle_cursor_act.toggled.connect(self.toggle_cursor_visibility)
+
         self.undo_act = QtWidgets.QAction("&Undo", self)
         self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
         self.undo_act.setDisabled(True)
@@ -1650,6 +1657,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @record_history
     def remove_current_cursor(self) -> None:
         self.remove_cursor(self.current_cursor)
+
+    @QtCore.Slot()
+    def toggle_cursor_visibility(self) -> None:
+        """Toggle the visibility of the cursor lines."""
+        for ax in self.axes:
+            ax.set_cursor_visible(self.toggle_cursor_act.isChecked())
 
     def gen_cursor_color(self, index: int) -> QtGui.QColor:
         clr = self.COLORS[index % len(self.COLORS)]
@@ -2909,6 +2922,20 @@ class ItoolPlotItem(pg.PlotItem):
         if update:
             self.refresh_cursor(new_cursor)
 
+    def set_cursor_visible(self, visible: bool) -> None:
+        """Set visibility of all cursors."""
+        for cursor, (line_dict, span_dict) in enumerate(
+            zip(self.cursor_lines, self.cursor_spans, strict=True)
+        ):
+            for line in line_dict.values():
+                line.setVisible(visible)
+            for ax, span in span_dict.items():
+                # Span visibility is controlled by region bounds
+                if visible:
+                    span.setRegion(self.array_slicer.span_bounds(cursor, ax))
+                else:
+                    span.setVisible(visible)
+
     def index_of_line(self, line: ItoolCursorLine) -> int:
         for i, line_dict in enumerate(self.cursor_lines):
             for v in line_dict.values():
@@ -2957,9 +2984,10 @@ class ItoolPlotItem(pg.PlotItem):
                 self.array_slicer.lims_uniform[ax],
                 self.array_slicer.get_value(cursor, ax, uniform=True),
             )
-            self.cursor_spans[cursor][ax].setRegion(
-                self.array_slicer.span_bounds(cursor, ax)
-            )
+            span = self.cursor_spans[cursor][ax]
+            span.setRegion(self.array_slicer.span_bounds(cursor, ax))
+            if not line.isVisible():
+                span.setVisible(False)
 
     @QtCore.Slot(int)
     def set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:

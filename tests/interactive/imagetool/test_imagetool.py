@@ -251,6 +251,44 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     cmap_ctrl.cb_colormap.load_all()
     cmap_ctrl.cb_colormap.showPopup()
 
+    # Toggle cursor visibility off
+    win.slicer_area.toggle_cursor_act.setChecked(False)
+    win.slicer_area.toggle_cursor_visibility()
+
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert not line_dict[ax].isVisible()
+            for span_dict in plot_item.cursor_spans:
+                assert not span_dict[ax].isVisible()
+
+    # Try setting bins
+    win.slicer_area.set_bin_all(axis=0, value=1, update=True)
+
+    # Check again if still hidden
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert not line_dict[ax].isVisible()
+            for span_dict in plot_item.cursor_spans:
+                assert not span_dict[ax].isVisible()
+
+    # Toggle cursor visibility on
+    win.slicer_area.toggle_cursor_act.setChecked(True)
+    win.slicer_area.toggle_cursor_visibility()
+
+    # Check if cursors are visible again
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert line_dict[ax].isVisible()
+            for cursor, span_dict in enumerate(plot_item.cursor_spans):
+                span_region = win.array_slicer.span_bounds(cursor, ax)
+                if span_region[0] == span_region[1]:
+                    assert not span_dict[ax].isVisible()
+                else:
+                    assert span_dict[ax].isVisible()
+
     win.close()
 
 
