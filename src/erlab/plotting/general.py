@@ -580,7 +580,7 @@ def gradient_fill(
     ax
         The :class:`matplotlib.axes.Axes` to plot in.
     **kwargs
-        Keyword arguments passed onto :func:`matplotlib.axes.Axes.imshow`.
+        Keyword arguments passed onto :meth:`matplotlib.axes.Axes.imshow`.
 
     Returns
     -------
