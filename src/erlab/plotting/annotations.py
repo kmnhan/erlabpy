@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 __all__ = [
-    "SI_PREFIXES",
-    "SI_PREFIX_NAMES",
+    "PRETTY_NAMES",
+    "PRETTY_UNITS",
     "copy_mathtext",
     "fancy_labels",
     "integer_ticks",
@@ -47,6 +47,68 @@ else:
     import lazy_loader as _lazy
 
     pyperclip = _lazy.load("pyperclip")
+
+PRETTY_NAMES: dict[str, tuple[str, str]] = {
+    "temperature": ("Temperature", "Temperature"),
+    "T": (r"\ensuremath{T}", r"$T$"),
+    "sample_temp": (r"\ensuremath{T}", r"$T$"),
+    "t": (r"\ensuremath{t}", r"$t$"),
+    "beta": (r"\ensuremath{\beta}", r"$\beta$"),
+    "theta": (r"\ensuremath{\theta}", r"$\theta$"),
+    "chi": (r"\ensuremath{\chi}", r"$\chi$"),
+    "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
+    "psi": (r"\ensuremath{\psi}", r"$\psi$"),
+    "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+    "xi": (r"\ensuremath{\xi}", r"$\xi$"),
+    "Eb": (r"\ensuremath{E}", r"$E$"),
+    "Ek": (r"\ensuremath{E_{\text{kin}}}", r"$E_{\text{kin}}$"),
+    "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
+    "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
+    "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
+    "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
+    "kp": (r"\ensuremath{k_{||}}", r"$k_{||}$"),
+    "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
+}
+"""Pretty names for automated labeling of plots.
+
+Contains a mapping from dimension names to tuples of strings. The first element of the
+tuple is used when matplotlib is configured to use LaTeX, and the second is used for
+`Mathtext <https://matplotlib.org/stable/users/explain/text/mathtext.html>`_. Unless you
+have explicitly set the ``text.usetex`` parameter in your matplotlib configuration, the
+second element will be used.
+
+"""
+
+PRETTY_UNITS: dict[str, tuple[str, str]] = {
+    "temperature": (r"K", r"K"),
+    "T": (r"K", r"K"),
+    "sample_temp": (r"K", r"K"),
+    "t": (r"s", r"s"),
+    "theta": (r"deg", r"deg"),
+    "beta": (r"deg", r"deg"),
+    "psi": (r"deg", r"deg"),
+    "chi": (r"deg", r"deg"),
+    "alpha": (r"deg", r"deg"),
+    "phi": (r"deg", r"deg"),
+    "xi": (r"deg", r"deg"),
+    "Eb": (r"eV", r"eV"),
+    "Ek": (r"eV", r"eV"),
+    "eV": (r"eV", r"eV"),
+    "hv": (r"eV", r"eV"),
+    "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+}
+"""Pretty units for automated labeling of plots.
+
+Contains a mapping from dimension names to tuples of strings. The first element of the
+tuple is used when matplotlib is configured to use LaTeX, and the second is used for
+`Mathtext <https://matplotlib.org/stable/users/explain/text/mathtext.html>`_. Unless you
+have explicitly set the ``text.usetex`` parameter in your matplotlib configuration, the
+second element will be used.
+
+"""
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",
@@ -95,60 +157,6 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
     "zepto",
     "yocto",
 )  #: Names of the SI prefixes.
-
-PRETTY_NAMES: dict[str, tuple[str, str]] = {
-    "temperature": ("Temperature", "Temperature"),
-    "T": (r"\ensuremath{T}", r"$T$"),
-    "sample_temp": (r"\ensuremath{T}", r"$T$"),
-    "t": (r"\ensuremath{t}", r"$t$"),
-    "beta": (r"\ensuremath{\beta}", r"$\beta$"),
-    "theta": (r"\ensuremath{\theta}", r"$\theta$"),
-    "chi": (r"\ensuremath{\chi}", r"$\chi$"),
-    "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
-    "psi": (r"\ensuremath{\psi}", r"$\psi$"),
-    "phi": (r"\ensuremath{\phi}", r"$\phi$"),
-    "xi": (r"\ensuremath{\xi}", r"$\xi$"),
-    "Eb": (r"\ensuremath{E}", r"$E$"),
-    "Ek": (r"\ensuremath{E_{\text{kin}}}", r"$E_{\text{kin}}$"),
-    "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
-    "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
-    "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
-    "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
-    "kp": (r"\ensuremath{k_{||}}", r"$k_{||}$"),
-    "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
-}
-"""Pretty names for labeling plots.
-
-The first element is for LaTeX, and the second is for plain text.
-
-"""
-
-PRETTY_UNITS: dict[str, tuple[str, str]] = {
-    "temperature": (r"K", r"K"),
-    "T": (r"K", r"K"),
-    "sample_temp": (r"K", r"K"),
-    "t": (r"s", r"s"),
-    "theta": (r"deg", r"deg"),
-    "beta": (r"deg", r"deg"),
-    "psi": (r"deg", r"deg"),
-    "chi": (r"deg", r"deg"),
-    "alpha": (r"deg", r"deg"),
-    "phi": (r"deg", r"deg"),
-    "xi": (r"deg", r"deg"),
-    "Eb": (r"eV", r"eV"),
-    "Ek": (r"eV", r"eV"),
-    "eV": (r"eV", r"eV"),
-    "hv": (r"eV", r"eV"),
-    "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-}
-"""Pretty units for labeling plots.
-
-The first element is for LaTeX, and the second is for plain text.
-
-"""
 
 
 def _alph_label(val, prefix, suffix, numeric, capital):
@@ -202,6 +210,7 @@ def get_si_str(si: int) -> str:
 
 
 def name_for_dim(dim_name: str, escaped: bool = True) -> str:
+    """Return the pretty name for a given dimension."""
     names: tuple[str, str] | None = PRETTY_NAMES.get(dim_name)
 
     if names is None:
@@ -214,7 +223,8 @@ def name_for_dim(dim_name: str, escaped: bool = True) -> str:
     return name
 
 
-def unit_for_dim(dim_name: str, deg2rad: bool = False) -> str:
+def unit_for_dim(dim_name: str, radians: bool = False) -> str:
+    """Return the pretty unit for a given dimension."""
     units: tuple[str, str] | None = PRETTY_UNITS.get(dim_name)
 
     if units is None:
@@ -222,14 +232,15 @@ def unit_for_dim(dim_name: str, deg2rad: bool = False) -> str:
     else:
         unit = units[0] if plt.rcParams["text.usetex"] else units[1]
 
-    if deg2rad:
+    if radians:
         unit = unit.replace("deg", "rad")
     return unit
 
 
-def label_for_dim(dim_name: str, deg2rad: bool = False, escaped: bool = True) -> str:
+def label_for_dim(dim_name: str, radians: bool = False, escaped: bool = True) -> str:
+    """Return the pretty label for a given dimension."""
     name = name_for_dim(dim_name, escaped=escaped)
-    unit = unit_for_dim(dim_name, deg2rad=deg2rad)
+    unit = unit_for_dim(dim_name, radians=radians)
     if unit == "":
         return name
     return f"{name} ({unit})"
@@ -272,10 +283,39 @@ def copy_mathtext(
     | None = None,
     fontproperties: matplotlib.font_manager.FontProperties | None = None,
     outline: bool = False,
-    svg: bool = True,
     rcparams: dict | None = None,
     **mathtext_rc,
 ) -> str:
+    """Copy math equations to the clipboard as SVG.
+
+    Parameters
+    ----------
+    s
+        The math text to convert to SVG.
+    fontsize
+        The font size to use for the math text. If None, the default font size is used.
+    fontproperties
+        The font properties to use for the math text. If None, the default font
+        properties are used.
+    outline
+        If True, the SVG will contain outlined paths instead of text.
+    rcparams
+        Additional rc parameters to use for the math text rendering. If None, the
+        default rc parameters are used.
+
+    Returns
+    -------
+    str
+        The SVG string representation of the math text.
+
+    Example
+    -------
+    >>> import erlab.plotting as eplt
+    >>> svg_str = eplt.copy_mathtext(r"$E = mc^2$", fontsize=12)
+
+    """
+    from matplotlib.backends.backend_svg import FigureCanvasSVG
+
     if fontproperties is None:
         fontproperties = matplotlib.font_manager.FontProperties(size=fontsize)
     else:
@@ -289,15 +329,7 @@ def copy_mathtext(
     fig.patch.set_facecolor("none")
     fig.text(0, depth / height, s, fontproperties=fontproperties)
 
-    if svg:
-        from matplotlib.backends.backend_svg import FigureCanvasSVG
-
-        FigureCanvasSVG(fig)
-
-    else:
-        from matplotlib.backends.backend_pdf import FigureCanvasPdf
-
-        FigureCanvasPdf(fig)
+    FigureCanvasSVG(fig)
 
     for k, v in mathtext_rc.items():
         if k in ["bf", "cal", "it", "rm", "sf", "tt"] and isinstance(
@@ -307,15 +339,10 @@ def copy_mathtext(
         rcparams[f"mathtext.{k}"] = v
 
     with io.BytesIO() as buffer:
-        if svg:
-            rcparams.setdefault("svg.fonttype", "path" if outline else "none")
-            rcparams.setdefault("svg.image_inline", True)
-            with plt.rc_context(rcparams):
-                fig.canvas.print_svg(buffer)  # type: ignore[attr-defined]
-        else:
-            rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
-            with plt.rc_context(rcparams):
-                fig.canvas.print_pdf(buffer)  # type: ignore[attr-defined]
+        rcparams.setdefault("svg.fonttype", "path" if outline else "none")
+        rcparams.setdefault("svg.image_inline", True)
+        with plt.rc_context(rcparams):
+            fig.canvas.print_svg(buffer)  # type: ignore[attr-defined]
 
         buffer_str = buffer.getvalue().decode("utf-8")
 
@@ -325,18 +352,51 @@ def copy_mathtext(
     return buffer_str
 
 
-def fancy_labels(ax=None, deg2rad=False) -> None:
+def fancy_labels(
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    *,
+    radians: bool = False,
+) -> None:
+    """Apply pretty labels to Matplotlib axes based on their current label text.
+
+    This function converts plain dimension names already set on the axes into nicely
+    formatted labels (e.g., symbols and units). The labels are determined based on
+    :attr:`PRETTY_NAMES <erlab.plotting.annotations.PRETTY_NAMES>` and
+    :attr:`PRETTY_UNITS <erlab.plotting.annotations.PRETTY_UNITS>`.
+
+    Parameters
+    ----------
+    ax
+        The target axes or an iterable of axes. If None (default), the current axes is
+        used.
+    radians : bool, optional
+        If `True`, angle units will be displayed in radians instead of degrees.
+
+    Examples
+    --------
+    >>> import matplotlib.pyplot as plt
+    >>> import erlab.plotting as eplt
+    >>> fig, ax = plt.subplots()
+    >>> ax.set_xlabel("kx")
+    >>> ax.set_ylabel("eV")
+    >>> fancy_labels(ax)
+    >>> ax.get_xlabel()
+    '$k_x$ (Å${}^{-1}$)'
+    >>> ax.get_ylabel()
+    '$E-E_F$ (eV)'
+
+    """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
         for axi in ax:
-            fancy_labels(axi, deg2rad)
+            fancy_labels(axi, radians=radians)
         return
 
-    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), deg2rad=deg2rad))
-    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), deg2rad=deg2rad))
-    if hasattr(ax, "get_zlabel"):
-        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), deg2rad=deg2rad))
+    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), radians=radians))
+    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), radians=radians))
+    if hasattr(ax, "get_zlabel") and hasattr(ax, "set_zlabel"):
+        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), radians=radians))
 
 
 def property_labels(
@@ -863,6 +923,9 @@ def scale_units(
 def integer_ticks(ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes]) -> None:
     """Set the ticks on the x and y axes to only display integer values.
 
+    Modifies the x and y ticks of the given axes to only show integer values that are
+    within the current limits of the axes.
+
     Parameters
     ----------
     ax
@@ -1025,7 +1088,7 @@ def sizebar(
 
     Example
     -------
-    Plotting a size bar with a length of 200 μm on an axes given in mm:
+    >>> # Plot a size bar with a length of 200 μm on an axes given in mm
     >>> eplt.sizebar(ax, value=2e-6, unit="m", si=-6, resolution=1e-3)
 
     """
