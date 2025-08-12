@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "autoscale_off",
-    "autoscale_to",
     "clean_labels",
     "fermiline",
     "figwh",
@@ -62,7 +60,7 @@ def figwh(ratio=0.6180339887498948, wide=0, wscale=1, style="aps", fixed_height=
 
 
 @contextlib.contextmanager
-def autoscale_off(ax: matplotlib.axes.Axes | None = None):
+def _autoscale_off(ax: matplotlib.axes.Axes | None = None):
     if ax is None:
         ax = plt.gca()
     xauto, yauto = ax.get_autoscalex_on(), ax.get_autoscaley_on()
@@ -74,12 +72,6 @@ def autoscale_off(ax: matplotlib.axes.Axes | None = None):
     finally:
         ax.autoscale(enable=xauto, axis="x")
         ax.autoscale(enable=yauto, axis="y")
-
-
-def autoscale_to(arr, margin=0.2):
-    mn, mx = min(arr), max(arr)
-    diff = margin * (mx - mn)
-    return mn - diff, mx + diff
 
 
 def place_inset(
@@ -150,6 +142,7 @@ def array_extent(
         raise ValueError("Input array must be 2D")
 
     data_coords = tuple(darr[dim].values for dim in darr.dims)
+
     for dim, coord in zip(darr.dims, data_coords, strict=True):
         dif = np.diff(coord)
         if not np.allclose(dif, dif[0], rtol=rtol, atol=atol):
@@ -638,7 +631,7 @@ def gradient_fill(
     else:
         im.set_data(np.linspace(0, 1, 1024).reshape(1024, 1))
 
-    with autoscale_off(ax):
+    with _autoscale_off(ax):
         ax.add_patch(patch)
         im.set_clip_path(patch)
         im.autoscale_None()

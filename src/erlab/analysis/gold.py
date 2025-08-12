@@ -485,8 +485,8 @@ def _plot_gold_fit(
         )
         ax2.plot(x_eval, res(x_eval), "-", label="best fit", **fit_kws)
         ax2.legend()
-        ax1.set_ylim(erlab.plotting.autoscale_to(residuals))
-        ax2.set_ylim(erlab.plotting.autoscale_to(center_arr.values))
+        ax1.relim()
+        ax2.relim()
     else:
         res.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
         res.plot_fit(
@@ -495,9 +495,8 @@ def _plot_gold_fit(
             fit_kws=fit_kws,
             numpoints=3 * len(center_arr.alpha),
         )
-        ax1.set_ylim(erlab.plotting.autoscale_to(res.eval() - res.data))
-        ax2.set_ylim(erlab.plotting.autoscale_to(res.data))
-
+        ax1.relim()
+        ax2.relim()
     ax1.set_title("")
     ax2.set_title("")
 
