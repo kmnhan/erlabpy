@@ -6,7 +6,6 @@ __all__ = [
     "InversePowerNorm",
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
-    "autoscale_to",
     "clean_labels",
     "copy_mathtext",
     "fancy_labels",
@@ -71,7 +70,6 @@ from erlab.plotting.colors import (
     unify_clim,
 )
 from erlab.plotting.general import (
-    autoscale_to,
     clean_labels,
     fermiline,
     figwh,

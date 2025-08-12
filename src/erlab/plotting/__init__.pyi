@@ -4,7 +4,6 @@ __all__ = [
     "InversePowerNorm",
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
-    "autoscale_to",
     "clean_labels",
     "copy_mathtext",
     "fancy_labels",
@@ -67,7 +66,6 @@ from .colors import (
     unify_clim,
 )
 from .general import (
-    autoscale_to,
     clean_labels,
     fermiline,
     figwh,
