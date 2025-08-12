@@ -29,7 +29,7 @@ def get_bz_edge(
     Parameters
     ----------
     basis
-        ``(N, N)`` numpy array where ``N = 2``or ``3`` with each row containing the
+        ``(N, N)`` numpy array where ``N = 2`` or ``3`` with each row containing the
         lattice vectors.
     reciprocal
         If `False`, the `basis` are given in real space lattice vectors.
