@@ -51,7 +51,7 @@ def test_mark_points() -> None:
 
 @pytest.mark.parametrize("outline", [True, False])
 def test_copy_mathtext(outline) -> None:
-    assert copy_mathtext("$c_1$", svg=True, outline=outline).startswith(
+    assert copy_mathtext("$c_1$", outline=outline).startswith(
         '<?xml version="1.0" encoding="utf-8"'
     )
 
