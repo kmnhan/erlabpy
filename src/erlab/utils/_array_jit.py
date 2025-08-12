@@ -3,13 +3,13 @@ import numpy as np
 import numpy.typing as npt
 
 
-@numba.njit(numba.boolean(numba.float64[::1]), cache=True)
-def _check_uniform(arr: npt.NDArray[np.float64]) -> bool:
+@numba.njit(numba.boolean(numba.float64[::1], numba.float64, numba.float64), cache=True)
+def _check_uniform(arr: npt.NDArray[np.float64], rtol, atol) -> bool:
     """Check if a 1D NumPy array is uniformly spaced."""
     dif = np.diff(arr)
     if dif.size == 0:
         return True
-    return np.allclose(dif, dif[0])
+    return np.allclose(dif, dif[0], rtol=rtol, atol=atol)
 
 
 @numba.njit(numba.types.ListType(numba.float64[:])(numba.float64[:]), cache=True)
