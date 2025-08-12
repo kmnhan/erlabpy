@@ -1,5 +1,6 @@
 # ERLabPy
 
+[![DOI](https://zenodo.org/badge/453256660.svg)](https://zenodo.org/badge/latestdoi/453256660)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab?logo=python&logoColor=white)](https://pypi.org/project/erlab/)
 [![PyPi](https://img.shields.io/pypi/v/erlab?logo=pypi&logoColor=white)](https://pypi.org/project/erlab/)
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white)](https://anaconda.org/conda-forge/erlab)

@@ -10,6 +10,9 @@ authors:
     email: khan@kaist.ac.kr
     affiliation: Korea Advanced Institute of Science and Technology
     orcid: 'https://orcid.org/0000-0002-0489-4940'
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.16809480
 repository-code: 'https://github.com/kmnhan/erlabpy'
 url: 'https://erlabpy.readthedocs.io/'
 abstract: >-
