@@ -1,8 +1,7 @@
 cff-version: 1.2.0
-title: erlab
+title: 'erlab: A Complete Python Workflow for ARPES Experiments'
 message: >-
-  If you use this software, please cite it using the
-  metadata from this file.
+  If you use this software, please cite it using the metadata from this file.
 type: software
 authors:
   - given-names: Kimoon
@@ -16,10 +15,11 @@ identifiers:
 repository-code: 'https://github.com/kmnhan/erlabpy'
 url: 'https://erlabpy.readthedocs.io/'
 abstract: >-
-  The erlab package provides a complete python workflow for
-  ARPES (Angle-Resolved Photoemission Spectroscopy)
-  experiments. It provides a wide range of tools for
-  processing, analyzing, and visualizing ARPES data.
+  The erlab package provides a complete python workflow for ARPES (Angle-Resolved
+  Photoemission Spectroscopy) experiments. It provides a wide range of tools for
+  processing, analyzing, and visualizing ARPES data, mainly focused on highly efficient
+  GUI tools. Most analysis routines make minimal assumptions about the data, allowing
+  users to apply their own analysis methods.
 keywords:
   - arpes
   - spectroscopy
