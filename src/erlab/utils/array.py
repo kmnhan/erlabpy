@@ -91,7 +91,7 @@ def broadcast_args(func: Callable) -> Callable:
     return _wrapper
 
 
-def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
+def is_uniform_spaced(arr: npt.NDArray, rtol=1.0e-5, atol=1.0e-8) -> bool:
     """Check if the given array is uniformly spaced.
 
     Constant arrays are also considered as uniformly spaced.
@@ -100,8 +100,10 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     ----------
     arr : array-like
         The input array.
-    **kwargs
-        Additional keyword arguments passed to `numpy.isclose`.
+    rtol : float, optional
+        Relative tolerance passed to :func:`numpy.isclose`.
+    atol : float, optional
+        Absolute tolerance passed to :func:`numpy.isclose`.
 
     Returns
     -------
@@ -122,7 +124,7 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
 
     from erlab.utils._array_jit import _check_uniform
 
-    return _check_uniform(np.ascontiguousarray(arr))
+    return _check_uniform(np.ascontiguousarray(arr), rtol, atol)
 
 
 def is_monotonic(arr: npt.NDArray, strict: bool = False) -> np.bool_:
