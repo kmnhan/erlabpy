@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository == 'kmnhan/erlabpy'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ssh-key: ${{ secrets.DEPLOY_KEY }}
           fetch-depth: 0
