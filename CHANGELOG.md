@@ -1,3 +1,13 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **utils:** fixes uniform spacing check not applying tolerance ([1ba2483](https://github.com/kmnhan/erlabpy/commit/1ba24832f4d9a210f91618f68d55d3c507561607))
+
+### ♻️ Code Refactor
+
+- **plotting:** remove unused and undocumented functions from public API ([b2def4d](https://github.com/kmnhan/erlabpy/commit/b2def4d3450846f823052fdb3055cd6f13f8ac4c))
+
 ## v3.14.0 (2025-08-12)
 
 ### ✨ Features
