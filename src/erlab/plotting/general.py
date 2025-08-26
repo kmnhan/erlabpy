@@ -65,8 +65,12 @@ def _autoscale_off(ax: matplotlib.axes.Axes | None = None):
         ax = plt.gca()
     xauto, yauto = ax.get_autoscalex_on(), ax.get_autoscaley_on()
     xl, yl = ax.get_xlim(), ax.get_ylim()
-    ax.set_xlim(*xl)
-    ax.set_ylim(*yl)
+
+    if xauto:  # pragma: no branch
+        ax.set_xlim(*xl)
+    if yauto:  # pragma: no branch
+        ax.set_ylim(*yl)
+
     try:
         yield
     finally:
