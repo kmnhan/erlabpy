@@ -678,7 +678,14 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         return self.__call__(qsel_kwargs)
 
     def around(
-        self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw
+        self,
+        radius: float | dict[Hashable, float],
+        *,
+        boundary: bool = True,
+        invert: bool = False,
+        drop: bool = False,
+        average: bool = True,
+        **sel_kw,
     ) -> xr.DataArray:
         """
         Average data within a specified radius of a specified point.
@@ -696,6 +703,15 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             The radius of the region. If a single number, the same radius is used for
             all dimensions. If a dictionary, keys must be valid dimension names and the
             values are the radii for the corresponding dimensions.
+        boundary
+            Whether to consider points on the boundary to be inside the mask. Default is
+            `True`.
+        invert
+            If `True`, invert the mask so that points inside are masked and points
+            outside are kept. This is applied after the mask is created.
+        drop
+            If `True`, drop coordinate labels along dims for which all values are
+            masked. This argument is ignored if ``average=True``.
         average
             If `True`, return the mean value of the data within the region. If `False`,
             return the masked data.
@@ -706,23 +722,23 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Returns
         -------
         DataArray
-            The mean value of the data within the region.
+            The mean value of the data within the region if ``average=True``, else the
+            masked data.
 
         Note
         ----
-        The region is defined by a spherical mask, which is generated with
-        :func:`erlab.analysis.mask.spherical_mask`. Depending on the radius and
-        dimensions provided, the mask will be hyperellipsoid in the dimensions specified
-        in ``sel_kw``.
+        Depending on the radius and dimensions provided, the mask will be hyperellipsoid
+        in the dimensions specified in ``sel_kw``.
 
         See Also
         --------
-        :func:`erlab.analysis.mask.spherical_mask`
+        :func:`erlab.analysis.mask.mask_with_radius`
 
         """
-        masked = self._obj.where(
-            erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw),
-            drop=average,
+        if average:
+            drop = True
+        masked = erlab.analysis.mask.mask_with_radius(
+            self._obj, radius, boundary=boundary, invert=invert, drop=drop, **sel_kw
         )
         if average:
             return masked.qsel.average(sel_kw.keys())
