@@ -86,6 +86,21 @@ def broadcast_args(func: Callable) -> Callable:
                 attrs=broadcast_ref.attrs,
             )
 
+        elif isinstance(result, tuple):
+            # If the result is a tuple, check if any of the elements can be converted to
+            # DataArray
+            new_result = []
+            for r in result:
+                if isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape:
+                    r = xr.DataArray(
+                        r,
+                        coords=broadcast_ref.coords,
+                        dims=broadcast_ref.dims,
+                        attrs=broadcast_ref.attrs,
+                    )
+                new_result.append(r)
+            result = tuple(new_result)
+
         return result
 
     return _wrapper
