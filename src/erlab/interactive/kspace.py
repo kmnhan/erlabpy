@@ -625,8 +625,6 @@ class KspaceTool(KspaceToolGUI):
         self.images[1].setDataArray(k.T)
 
     def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-        from erlab.plotting.bz import get_bz_edge
-
         if self.data.kspace._has_hv:
             # Out-of-plane BZ
             a, c = self.ab_spin.value(), self.c_spin.value()
@@ -639,7 +637,7 @@ class KspaceTool(KspaceToolGUI):
             if rot != 0.0:
                 basis[0, :] *= np.cos(rot)
 
-            lines, vertices = get_bz_edge(
+            lines, vertices = erlab.lattice.get_bz_edge(
                 basis,
                 reciprocal=True,
                 extend=(self.n1_spin.value(), self.n2_spin.value()),
@@ -653,7 +651,7 @@ class KspaceTool(KspaceToolGUI):
 
             avec = np.array([[a, 0], [b * np.cos(ang), b * np.sin(ang)]])
 
-            lines, vertices = get_bz_edge(
+            lines, vertices = erlab.lattice.get_bz_edge(
                 avec,
                 reciprocal=self.reciprocal_check.isChecked(),
                 extend=(self.n1_spin.value(), self.n2_spin.value()),
