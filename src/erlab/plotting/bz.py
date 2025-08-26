@@ -82,40 +82,12 @@ def plot_bz(
     for k, v in abbrv_kws.items():
         kwargs[k] = kwargs.pop(k, kwargs.pop(*v))
 
-    lines, vertices = erlab.lattice.get_bz_edge(
-        np.asarray(basis)[:2, :2], reciprocal=reciprocal
+    patch = matplotlib.patches.Polygon(
+        erlab.lattice.get_2d_vertices(
+            basis, reciprocal=reciprocal, rotate=rotate, offset=offset
+        ),
+        **kwargs,
     )
-
-    # Reconstruct ordered vertices for the polygon
-    # Start from the first point, follow connections
-    verts = [lines[0][0]]
-    current = lines[0][1]
-    used = {0}
-    while len(used) < len(lines):
-        for i, line in enumerate(lines):
-            if i in used:
-                continue
-            if np.allclose(line[0], current):
-                verts.append(line[0])
-                current = line[1]
-                used.add(i)
-                break
-            if np.allclose(line[1], current):
-                verts.append(line[1])
-                current = line[0]
-                used.add(i)
-                break
-
-    rotation_matrix = np.array(
-        [
-            [np.cos(np.deg2rad(-rotate)), -np.sin(np.deg2rad(-rotate))],
-            [np.sin(np.deg2rad(-rotate)), np.cos(np.deg2rad(-rotate))],
-        ]
-    )
-    verts = np.dot(verts, rotation_matrix)
-    verts += offset
-
-    patch = matplotlib.patches.Polygon(verts, **kwargs)
     ax.add_patch(patch)
     return patch
 

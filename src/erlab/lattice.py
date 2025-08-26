@@ -9,6 +9,7 @@ __all__ = [
     "abc2avec",
     "angle_between",
     "avec2abc",
+    "get_2d_vertices",
     "get_bz_edge",
     "to_real",
     "to_reciprocal",
@@ -179,7 +180,7 @@ def get_bz_edge(
         raise ValueError("Shape of `basis` must be (N, N) where N = 2 or 3.")
 
     if not reciprocal:
-        basis = 2 * np.pi * np.linalg.inv(basis).T
+        basis = to_reciprocal(basis)
 
     if extend is None:
         extend = (1,) * ndim
@@ -239,3 +240,67 @@ def get_bz_edge(
     vertices_arr = np.concatenate((vertices_arr, *additional_verts))
 
     return lines_arr, vertices_arr
+
+
+def get_2d_vertices(
+    basis: npt.NDArray[np.floating],
+    *,
+    reciprocal: bool = True,
+    rotate: float = 0.0,
+    offset: tuple[float, float] = (0.0, 0.0),
+) -> npt.NDArray[np.floating]:
+    """Get the vertices of a 2D Brillouin zone.
+
+    Unlike :func:`get_bz_edge`, this function only returns the vertices of the BZ. The
+    vertices are ordered such that they can be used to create a polygon. Also, this
+    function allows for rotation and offset of the BZ.
+
+    Parameters
+    ----------
+    basis
+        A 2D or 3D numpy array with shape ``(N, N)`` where ``N = 2`` or ``3``,
+        containing the basis vectors of the lattice. If N is 3, only the upper left 2x2
+        submatrix is used.
+    reciprocal
+        If `True`, the ``basis`` are treated as reciprocal lattice vectors. If `False`,
+        the `basis` are treated as real space lattice vectors.
+    rotate
+        Rotation angle in degrees to apply to the BZ.
+    offset
+        Offset for the Brillouin zone center in the form of a tuple ``(x, y)``.
+
+    Returns
+    -------
+    vertices : array-like
+        Vertices of the BZ.
+
+    """
+    lines, _ = get_bz_edge(
+        np.asarray(basis)[:2, :2], reciprocal=reciprocal, extend=None
+    )
+
+    # Reconstruct ordered vertices for the polygon
+    # Start from the first point, follow connections
+    verts = [lines[0][0]]
+    current = lines[0][1]
+    used = {0}
+    while len(used) < len(lines):
+        for i, line in enumerate(lines):
+            if i in used:
+                continue
+            if np.allclose(line[0], current):
+                verts.append(line[0])
+                current = line[1]
+                used.add(i)
+                break
+            if np.allclose(line[1], current):
+                verts.append(line[1])
+                current = line[0]
+                used.add(i)
+                break
+
+    cx, sx = np.cos(np.deg2rad(rotate)), np.sin(np.deg2rad(rotate))
+    rotation_matrix = np.array([[cx, sx], [-sx, cx]])
+    verts = verts @ rotation_matrix
+    verts += offset
+    return verts
