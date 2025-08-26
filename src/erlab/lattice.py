@@ -285,7 +285,7 @@ def get_2d_vertices(
     current = lines[0][1]
     used = {0}
     while len(used) < len(lines):
-        for i, line in enumerate(lines):
+        for i, line in enumerate(lines):  # pragma: no branch
             if i in used:
                 continue
             if np.allclose(line[0], current):
