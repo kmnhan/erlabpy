@@ -102,8 +102,9 @@ class UnsupportedFileError(Exception):
 class _Loader(type):
     """Metaclass for data loaders.
 
-    This metaclass wraps the `identify` method to display informative warnings and error
-    messages for missing files or multiple files found for a single scan.
+    This metaclass wraps the `identify` and `load_single` method to display informative
+    warnings and error messages for missing files or multiple files found for a single
+    scan.
     """
 
     def __new__(cls, name, bases, dct):
@@ -656,15 +657,21 @@ class LoaderBase(metaclass=_Loader):
             load_kwargs = {}
 
         if isinstance(identifier, int):
+            # Scan number given
             if data_dir is None:
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
+
+            # Identify all files corresponding to the scan number
             file_paths, coord_dict = typing.cast(
                 "tuple[list[str], dict[str, Sequence]]",
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
-            # file_paths: list of file paths with at least one element
+
+            # file_paths is a list of file paths with at least one element and
+            # coord_dict is a dictionary (can be empty), maps coordinate names to
+            # sequences of values.
 
             if len(file_paths) == 1 and len(coord_dict) == 0:
                 # Single file resolved
