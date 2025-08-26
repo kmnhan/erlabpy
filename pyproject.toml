@@ -52,6 +52,7 @@ misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 [dependency-groups]
 dev = [
     "commitizen>=4.3.0",
+    "coverage>=7.10.5",
     "cz-changeup>=1.1.2",
     "ipykernel>=6.29.5",
     "jupyter-bokeh>=4.0.5",
@@ -260,6 +261,7 @@ branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
+patch = ["execv", "_exit", "fork", "subprocess"]
 
 [tool.coverage.report]
 exclude_also = [

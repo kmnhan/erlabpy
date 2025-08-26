@@ -26,6 +26,10 @@ from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
+# Disable pytest-cov subprocess coverage and rely on coverage's own subprocess coverage
+if os.environ.get("COV_CORE_SOURCE", None) is not None:
+    del os.environ["COV_CORE_SOURCE"]
+
 DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
@@ -97,7 +101,11 @@ def gold() -> xr.DataArray:
 @pytest.fixture(scope="session")
 def gold_fit_res(gold) -> xr.Dataset:
     return erlab.analysis.gold.poly(
-        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
+        gold,
+        angle_range=(-13.5, 13.5),
+        eV_range=(-0.204, 0.276),
+        fast=True,
+        parallel_kw={"n_jobs": 1},
     )
 
 
