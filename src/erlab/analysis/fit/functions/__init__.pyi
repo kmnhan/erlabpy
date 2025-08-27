@@ -1,5 +1,4 @@
 __all__ = [
-    "TINY",
     "FermiEdge2dFunction",
     "MultiPeakFunction",
     "PolynomialFunction",
@@ -23,7 +22,6 @@ __all__ = [
 from . import dynamic, general
 from .dynamic import FermiEdge2dFunction, MultiPeakFunction, PolynomialFunction
 from .general import (
-    TINY,
     bcs_gap,
     do_convolve,
     do_convolve_2d,

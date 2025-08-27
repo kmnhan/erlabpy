@@ -9,6 +9,9 @@ import enum
 
 import numpy as np
 
+#: From :mod:`lmfit.lineshapes`, equal to ``numpy.finfo(numpy.float64).resolution``
+TINY: float = 1.0e-15
+
 #: Elementary charge :math:`e` (C)
 e: float = 1.602176634e-19
 #: Speed of light :math:`c` (m/s)
