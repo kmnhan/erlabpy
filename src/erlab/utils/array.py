@@ -86,12 +86,13 @@ def broadcast_args(func: Callable) -> Callable:
                 attrs=broadcast_ref.attrs,
             )
 
-        elif isinstance(result, tuple):
-            # If the result is a tuple, check if any of the elements can be converted to
-            # DataArray
+        elif isinstance(result, tuple):  # pragma: no branch
+            # Support multiple return values
             new_result = []
             for r in result:
-                if isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape:
+                if (
+                    isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape
+                ):  # pragma: no branch
                     r = xr.DataArray(
                         r,
                         coords=broadcast_ref.coords,

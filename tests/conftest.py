@@ -12,6 +12,7 @@ import typing
 from collections.abc import Callable, Sequence
 
 import lmfit
+import numexpr
 import numpy as np
 import pooch
 import pytest
@@ -24,17 +25,22 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
+DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
+"""The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
+
+DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
+"""The SHA-256 checksum of the `.tar.gz` file."""
+
+# Headless mode for Qt
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 # Disable pytest-cov subprocess coverage and rely on coverage's own subprocess coverage
 if os.environ.get("COV_CORE_SOURCE", None) is not None:
     del os.environ["COV_CORE_SOURCE"]
 
-DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
-"""The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
+# Limit numexpr to a single thread; this reduces probability of segfaults, not sure why
+numexpr.set_num_threads(1)
 
-DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
-"""The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
 
