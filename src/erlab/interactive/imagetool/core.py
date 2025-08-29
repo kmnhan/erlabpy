@@ -1372,7 +1372,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if self._in_manager:
                 # Let the manager handle the exception
                 raise
-            QtWidgets.QMessageBox.critical(self, "Error", str(e))
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Error",
+                "An error occurred while setting data:\n\n"
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                QtWidgets.QMessageBox.StandardButton.Ok,
+            )
             self.set_data(xr.DataArray(np.zeros((2, 2))))
             return
 

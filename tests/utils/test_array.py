@@ -9,6 +9,7 @@ from erlab.utils.array import (
     is_dims_uniform,
     is_monotonic,
     is_uniform_spaced,
+    sort_coord_order,
     trim_na,
     uniform_dims,
 )
@@ -153,3 +154,50 @@ def test_trim_na() -> None:
     darr0 = xr.DataArray(np.array([]), dims=("x",), coords={"x": []})
     xarray.testing.assert_identical(trim_na(darr1), darr0)
     xarray.testing.assert_identical(trim_na(darr0), darr0)
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_sort_coord_order(use_dask) -> None:
+    darr = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("y", "x"),
+        coords={"a": 1, "x": [0, 1, 2], "b": 2, "y": [10, 11]},
+    )
+
+    # Assert initial order of coordinates
+    assert list(darr.coords.keys()) == ["a", "x", "b", "y"]
+    if use_dask:
+        darr = darr.chunk("auto")
+
+    # keys=None and dims_first=False should return the same object unchanged
+    result = sort_coord_order(darr, keys=None, dims_first=False)
+    assert result is darr
+    assert list(darr.coords.keys()) == ["a", "x", "b", "y"]
+    if use_dask:
+        assert result.chunks == darr.chunks
+
+    # Default behavior (keys=None, dims_first=True) should move dimension coords to
+    # front, and the original object should remain unchanged
+    sorted_darr = sort_coord_order(darr)
+    assert list(sorted_darr.coords.keys()) == ["y", "x", "a", "b"]
+    assert list(darr.coords.keys()) == ["a", "x", "b", "y"]
+    if use_dask:
+        assert result.chunks == darr.chunks
+
+    # Provide a specific ordering for some coordinates; remaining coords come after
+    sorted_darr = sort_coord_order(darr, keys=["b", "a", "x"], dims_first=False)
+    assert list(sorted_darr.coords.keys()) == ["b", "a", "x", "y"]
+    if use_dask:
+        assert result.chunks == darr.chunks
+
+    # When dims_first is True, dimensions appear first, then keys are applied
+    sorted_darr = sort_coord_order(darr, keys=["a", "b"], dims_first=True)
+    assert list(sorted_darr.coords.keys()) == ["y", "x", "a", "b"]
+    if use_dask:
+        assert result.chunks == darr.chunks
+
+    # Non-existent key 'z' should be ignored without raising
+    sorted_darr = sort_coord_order(darr, keys=["z", "b", "a"], dims_first=False)
+    assert list(sorted_darr.coords.keys()) == ["b", "a", "x", "y"]
+    if use_dask:
+        assert result.chunks == darr.chunks

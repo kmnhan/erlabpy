@@ -400,7 +400,7 @@ def sort_coord_order(
         keys = []
 
     ordered_coords: dict[Hashable, typing.Any] = {}
-    coord_dict: dict[Hashable, typing.Any] = dict(darr.coords)
+    coord_dict: dict[Hashable, typing.Any] = darr._coords.copy()
 
     if dims_first:
         for d in darr.dims:
@@ -411,15 +411,10 @@ def sort_coord_order(
     for coord_name in keys:
         if coord_name in coord_dict:
             ordered_coords[coord_name] = coord_dict.pop(coord_name)
-    ordered_coords = ordered_coords | coord_dict
 
-    return xr.DataArray(
-        darr.values,
-        coords=ordered_coords,
-        dims=darr.dims,
-        name=darr.name,
-        attrs=darr.attrs,
-    )
+    out = darr.copy()
+    out._coords = ordered_coords | coord_dict
+    return out
 
 
 def to_native_endian(arr: npt.NDArray) -> npt.NDArray:
