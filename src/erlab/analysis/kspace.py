@@ -188,12 +188,14 @@ def get_kconv_func(
 
     See Also
     --------
-    - `NumPy Broadcasting Documentation
-      <https://numpy.org/doc/stable/user/basics.broadcasting.html>`_
+    `NumPy Broadcasting Documentation
+    <https://numpy.org/doc/stable/user/basics.broadcasting.html>`_
 
-    - :func:`erlab.analysis.kspace.get_kconv_forward`: Get only the forward function.
+    :func:`erlab.analysis.kspace.get_kconv_forward`
+        Get only the forward function.
 
-    - :func:`erlab.analysis.kspace.get_kconv_inverse`: Get only the inverse function.
+    :func:`erlab.analysis.kspace.get_kconv_inverse`
+        Get only the inverse function.
 
     """
 
@@ -213,14 +215,30 @@ def get_kconv_func(
 def get_kconv_forward(configuration: AxesConfiguration | int) -> Callable:
     """Return the appropriate forward momentum conversion function.
 
-    The returned function takes :math:`(α, β, k_{tot})` and returns :math:`(k_x, k_y)`.
-    Note that :math:`k_{tot}` must be computed from the kinetic energy before passing
-    it to the function.
+    The returned function takes :math:`(α, β, k_{tot})` as mandatory arguments and
+    returns :math:`(k_x, k_y)`. Note that :math:`k_{tot}` must be computed from the
+    kinetic energy before passing it to the function. The angle parameters can be passed
+    as optional arguments with default values of zero.
 
     Parameters
     ----------
     configuration
         Experimental configuration.
+
+    Returns
+    -------
+    forward: Callable
+        The forward conversion function with the following signature:
+
+        .. code-block:: python
+
+            def forward(alpha, beta, kinetic_energy, **angle_params) -> (kx, ky)
+            ...
+
+        ``**angle_params`` are the optional angle parameters. For geometry without DA,
+        they are ``delta, xi, xi0, beta0``. For geometry with DA, they are ``delta, chi,
+        chi0, xi, xi0``. All angle parameters have default values of zero.
+
     """
     match configuration:
         case AxesConfiguration.Type1:
@@ -238,8 +256,9 @@ def get_kconv_forward(configuration: AxesConfiguration | int) -> Callable:
 def get_kconv_inverse(configuration: AxesConfiguration | int) -> Callable:
     r"""Return the appropriate inverse momentum conversion function.
 
-    The returned function takes :math:`(k_x, k_y, k_\perp, E_k)` and returns :math:`(α,
-    β)`.
+    The returned function takes :math:`(k_x, k_y, k_\perp, E_k)` as mandatory arguments
+    and returns :math:`(α, β)`. The angle parameters can be passed as optional arguments
+    with default values of zero.
 
     If :math:`k_\perp` is `None`, it will be computed from the kinetic energy
     :math:`E_k`. Otherwise, the angles will be computed at the given :math:`k_\perp`.
@@ -248,6 +267,22 @@ def get_kconv_inverse(configuration: AxesConfiguration | int) -> Callable:
     ----------
     configuration
         Experimental configuration.
+
+    Returns
+    -------
+    inverse: Callable
+        The inverse conversion function with the following signature:
+
+        .. code-block:: python
+
+            def inverse(kx, ky, kperp, kinetic_energy, **angle_params) -> (alpha, beta)
+            ...
+
+        ``**angle_params`` are the optional angle parameters. For geometry without DA,
+        they are ``delta, xi, xi0, beta0``. For geometry with DA, they are ``delta, chi,
+        chi0, xi, xi0``. All angle parameters have default values of zero.
+
+        If ``kperp`` is `None`, it will be computed from ``kinetic_energy``.
     """
     match configuration:
         case AxesConfiguration.Type1:
