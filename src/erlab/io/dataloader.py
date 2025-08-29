@@ -2411,7 +2411,20 @@ class LoaderRegistry(_RegistryBase):
                 f"{cls_name:<{max_cls_len}}"
             )
 
-        return "\n".join(rows)
+        all_loaders = "\n".join(rows)
+
+        current_loader_str = (
+            self.current_loader.name if self.current_loader else "Not set"
+        )
+        current_data_dir_str = (
+            self.current_data_dir if self.current_data_dir else "Not set"
+        )
+        current_settings = (
+            f"Current loader: {current_loader_str}\n"
+            f"Current data directory: {current_data_dir_str}"
+        )
+
+        return all_loaders + "\n\n" + current_settings
 
     def _repr_html_(self) -> str:
         rows: list[tuple[str, str, str]] = [("Name", "Description", "Loader class")]
@@ -2426,7 +2439,23 @@ class LoaderRegistry(_RegistryBase):
             cls_name = f"{v.__module__}.{v.__qualname__}"
             rows.append((k, desc, cls_name))
 
-        return erlab.utils.formatting.format_html_table(rows, header_rows=1)
+        all_loaders = erlab.utils.formatting.format_html_table(rows, header_rows=1)
+
+        current_settings = erlab.utils.formatting.format_html_table(
+            [
+                [
+                    "Current loader",
+                    self.current_loader.name if self.current_loader else "Not set",
+                ],
+                [
+                    "Current data directory",
+                    str(self.current_data_dir) if self.current_data_dir else "Not set",
+                ],
+            ],
+            header_cols=1,
+        )
+
+        return all_loaders + "<br>" + current_settings
 
     load.__doc__ = LoaderBase.load.__doc__
     extend_loader.__doc__ = LoaderBase.extend_loader.__doc__
