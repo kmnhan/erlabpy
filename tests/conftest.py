@@ -35,10 +35,6 @@ DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063
 # Headless mode for Qt
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-# Disable pytest-cov subprocess coverage and rely on coverage's own subprocess coverage
-if os.environ.get("COV_CORE_SOURCE", None) is not None:
-    del os.environ["COV_CORE_SOURCE"]
-
 # Limit numexpr to a single thread; this reduces probability of segfaults
 numexpr.set_num_threads(1)
 

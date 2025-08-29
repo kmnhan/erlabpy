@@ -262,7 +262,7 @@ branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
-patch = ["execv", "_exit", "fork", "subprocess"]
+patch = ["execv", "_exit", "fork"]
 
 [tool.coverage.report]
 exclude_also = [
