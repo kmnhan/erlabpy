@@ -2112,6 +2112,10 @@ class LoaderRegistry(_RegistryBase):
         # Add class to loader
         self._loaders[loader_class.name] = loader_class
 
+        # Sort loader registry alphabetically
+        for k in sorted(self._loaders):
+            self._loaders[k] = self._loaders.pop(k)
+
         # Add aliases to mapping
         self._alias_mapping[loader_class.name] = loader_class.name
         if loader_class.aliases is not None:
