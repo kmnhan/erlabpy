@@ -11,6 +11,7 @@ import time
 import typing
 from collections.abc import Callable, Sequence
 
+import dask
 import lmfit
 import numexpr
 import numpy as np
@@ -38,8 +39,11 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 if os.environ.get("COV_CORE_SOURCE", None) is not None:
     del os.environ["COV_CORE_SOURCE"]
 
-# Limit numexpr to a single thread; this reduces probability of segfaults, not sure why
+# Limit numexpr to a single thread; this reduces probability of segfaults
 numexpr.set_num_threads(1)
+
+# Limit dask to a single thread; this reduces probability of segfaults
+dask.config.set(scheduler="synchronous")
 
 
 log = logging.getLogger(__name__)
