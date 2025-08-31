@@ -74,10 +74,15 @@ class EdgeFitter(QtCore.QThread):
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
+        if self.isRunning():
+            self.mutex.lock()
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
+        if self.isRunning():
+            self.mutex.unlock()
 
     def run(self) -> None:
+        self.mutex = QtCore.QMutex()
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = typing.cast(

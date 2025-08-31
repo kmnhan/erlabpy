@@ -111,7 +111,18 @@ def gold_fit_res(gold) -> xr.Dataset:
         angle_range=(-13.5, 13.5),
         eV_range=(-0.204, 0.276),
         fast=True,
-        parallel_kw={"n_jobs": 1},
+        parallel_kw={"n_jobs": 1, "backend": "threading"},
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fit_res_fd(gold) -> xr.Dataset:
+    return erlab.analysis.gold.poly(
+        gold,
+        angle_range=(-13.5, 13.5),
+        eV_range=(-0.204, 0.276),
+        fast=False,
+        parallel_kw={"n_jobs": 1, "backend": "threading"},
     )
 
 
