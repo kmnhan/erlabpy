@@ -2,9 +2,33 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** make ImageTool work with dask arrays ([73f8ad6](https://github.com/kmnhan/erlabpy/commit/73f8ad6a898b6e22a757d3cb9bda1d1f409482e8))
+
+  Passing dask arrays to ImageTool used to load the entire array into memory. This commit fixes that by ensuring that the data is kept as a dask array and is indexed lazily. However, this makes the GUI much slower to respond, so it is recommended to use ImageTool with in-memory arrays when possible.
+
+- improve autoscaling behavior for `erlab.plotting.gradient_fill` ([fd065f2](https://github.com/kmnhan/erlabpy/commit/fd065f2eacf7bbf9e9ff8e5cc29c124423a8cdab))
+
 - **utils:** fixes uniform spacing check not applying tolerance ([1ba2483](https://github.com/kmnhan/erlabpy/commit/1ba24832f4d9a210f91618f68d55d3c507561607))
 
+### ⚡️ Performance
+
+- speed up momentum conversion grid calculation ([8da5bc0](https://github.com/kmnhan/erlabpy/commit/8da5bc093ec33bdc4079c9b06e2f5d7c717e42b0))
+
+  Improves speed of k-space grid calculation using `numexpr`. Should also reduce memory usage during momentum conversion for large data.
+
 ### ♻️ Code Refactor
+
+- **io:** show current loader and data directory details in `erlab.io.loaders` representation ([63c4c50](https://github.com/kmnhan/erlabpy/commit/63c4c50a3da22aed063d4b0d8a1d7349e597cac4))
+
+- **io:** sort loader registry alphabetically instead of by registration order ([bb8dcc2](https://github.com/kmnhan/erlabpy/commit/bb8dcc2191acfbaae80a5c16b00849c28af8b111))
+
+- move `TINY` constant from `analysis.fit.functions.general` to `constants` ([b212062](https://github.com/kmnhan/erlabpy/commit/b212062f992e6a56013f878efd674ee775b60e85))
+
+- adjust top level mthods in `analysis.mask` module ([2c6f004](https://github.com/kmnhan/erlabpy/commit/2c6f004027940661f21141971a1964ed21ac2cec))
+
+- refactor 2D BZ vertices generation into `erlab.lattice.get_2d_vertices` function ([fa89077](https://github.com/kmnhan/erlabpy/commit/fa890779bb7fc8a1aee91111ef4b19b3160a3c39))
+
+- move `erlab.plotting.bz.get_bz_edge` to `erlab.lattice.get_bz_edge` ([9c1e78d](https://github.com/kmnhan/erlabpy/commit/9c1e78d9ad316429c8d4241458ea9f7a5431ccb6))
 
 - **plotting:** remove unused and undocumented functions from public API ([b2def4d](https://github.com/kmnhan/erlabpy/commit/b2def4d3450846f823052fdb3055cd6f13f8ac4c))
 
