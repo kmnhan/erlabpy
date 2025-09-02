@@ -2,6 +2,8 @@ import numba
 import numpy as np
 import numpy.typing as npt
 
+import erlab
+
 
 @numba.njit(numba.boolean(numba.float64[::1], numba.float64, numba.float64), cache=True)
 def _check_uniform(arr: npt.NDArray[np.float64], rtol, atol) -> bool:
@@ -38,3 +40,9 @@ def _split_uniform_segments(
     segments.append(arr[start:n])
 
     return segments
+
+
+@numba.vectorize(cache=True)
+def _clip_tiny(x: float) -> float:
+    """Clip small values to avoid division by zero."""
+    return max(x, erlab.constants.TINY)

@@ -281,6 +281,8 @@ def generate_data_angles(
         alpha = np.linspace(-angrange, angrange, shape[0])
         beta = np.linspace(-angrange, angrange, shape[1])
 
+    a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
+    a_mesh, b_mesh = a_mesh[:, :, None], b_mesh[:, :, None]
     eV = np.linspace(*Erange, shape[2])
 
     # Pad energy range for gaussian kernel
@@ -288,13 +290,10 @@ def generate_data_angles(
         eV, float(Eres), pad=5
     )
     Ekin = hv - 4.5 + eV_extended[None, None, :]
-    forward_func, _ = erlab.analysis.kspace.get_kconv_func(
-        Ekin, configuration=configuration, angle_params={}
-    )
 
-    a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
-    a_mesh, b_mesh = a_mesh[:, :, None], b_mesh[:, :, None]
-    kxv, kyv = forward_func(a_mesh, b_mesh)
+    kxv, kyv = erlab.analysis.kspace.get_kconv_forward(configuration)(
+        a_mesh, b_mesh, Ekin
+    )
 
     # k-point grid
     point_iter = np.stack([kxv, kyv], axis=3)
@@ -320,10 +319,9 @@ def generate_data_angles(
         dummy_data = dummy_data.expand_dims("hv")
 
         Ekin = dummy_data.hv - 4.5 + dummy_data.eV
-        forward_func, _ = erlab.analysis.kspace.get_kconv_func(
-            Ekin, configuration=configuration, angle_params={}
+        kx, ky = erlab.analysis.kspace.get_kconv_forward(configuration)(
+            dummy_data.alpha, dummy_data.beta, Ekin
         )
-        kx, ky = forward_func(dummy_data.alpha, dummy_data.beta)
 
         c1, c2 = 143.0, 0.054
         imfp = (c1 / (Ekin**2) + c2 * np.sqrt(Ekin)) * 10
@@ -334,7 +332,7 @@ def generate_data_angles(
         k_tot = erlab.constants.rel_kconv * np.sqrt(Ekin)
 
         # Final out-of-plane momentum
-        k_perp = erlab.analysis.kspace._kperp_func(k_tot**2, kx, ky)
+        k_perp = np.sqrt(np.clip(k_tot**2 - kx**2 - ky**2, a_min=0, a_max=None))
 
         # Photon polarization
         pol = np.array(polarization)
@@ -444,10 +442,12 @@ def generate_hvdep_cuts(
 
     Ekin = hv - 4.5 + 0.0  # Kinetic energy at the Fermi level
 
-    _, inverse_func = erlab.analysis.kspace.get_kconv_func(
-        Ekin, configuration=configuration, angle_params={}
-    )
-    beta = inverse_func(-2 * np.pi / (a * np.sqrt(3)), 2 * np.pi / (a * 3))[1]
+    beta = erlab.analysis.kspace.get_kconv_inverse(configuration)(
+        kx=-2 * np.pi / (a * np.sqrt(3)),
+        ky=2 * np.pi / (a * 3),
+        kperp=None,
+        kinetic_energy=Ekin,
+    )[1]
 
     kwargs.setdefault("assign_attributes", True)
     kwargs.setdefault("extended", True)

@@ -100,7 +100,7 @@ def config_4_hvdep(hvdep):
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut", "hvdep"])
 def test_offsets(data_type, request) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()

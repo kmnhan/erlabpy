@@ -86,6 +86,22 @@ def broadcast_args(func: Callable) -> Callable:
                 attrs=broadcast_ref.attrs,
             )
 
+        elif isinstance(result, tuple):  # pragma: no branch
+            # Support multiple return values
+            new_result = []
+            for r in result:
+                if (
+                    isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape
+                ):  # pragma: no branch
+                    r = xr.DataArray(
+                        r,
+                        coords=broadcast_ref.coords,
+                        dims=broadcast_ref.dims,
+                        attrs=broadcast_ref.attrs,
+                    )
+                new_result.append(r)
+            result = tuple(new_result)
+
         return result
 
     return _wrapper
@@ -384,7 +400,7 @@ def sort_coord_order(
         keys = []
 
     ordered_coords: dict[Hashable, typing.Any] = {}
-    coord_dict: dict[Hashable, typing.Any] = dict(darr.coords)
+    coord_dict: dict[Hashable, typing.Any] = darr._coords.copy()
 
     if dims_first:
         for d in darr.dims:
@@ -395,15 +411,10 @@ def sort_coord_order(
     for coord_name in keys:
         if coord_name in coord_dict:
             ordered_coords[coord_name] = coord_dict.pop(coord_name)
-    ordered_coords = ordered_coords | coord_dict
 
-    return xr.DataArray(
-        darr.values,
-        coords=ordered_coords,
-        dims=darr.dims,
-        name=darr.name,
-        attrs=darr.attrs,
-    )
+    out = darr.copy()
+    out._coords = ordered_coords | coord_dict
+    return out
 
 
 def to_native_endian(arr: npt.NDArray) -> npt.NDArray:

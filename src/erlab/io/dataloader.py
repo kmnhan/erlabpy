@@ -102,8 +102,9 @@ class UnsupportedFileError(Exception):
 class _Loader(type):
     """Metaclass for data loaders.
 
-    This metaclass wraps the `identify` method to display informative warnings and error
-    messages for missing files or multiple files found for a single scan.
+    This metaclass wraps the `identify` and `load_single` method to display informative
+    warnings and error messages for missing files or multiple files found for a single
+    scan.
     """
 
     def __new__(cls, name, bases, dct):
@@ -656,15 +657,21 @@ class LoaderBase(metaclass=_Loader):
             load_kwargs = {}
 
         if isinstance(identifier, int):
+            # Scan number given
             if data_dir is None:
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
+
+            # Identify all files corresponding to the scan number
             file_paths, coord_dict = typing.cast(
                 "tuple[list[str], dict[str, Sequence]]",
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
-            # file_paths: list of file paths with at least one element
+
+            # file_paths is a list of file paths with at least one element and
+            # coord_dict is a dictionary (can be empty), maps coordinate names to
+            # sequences of values.
 
             if len(file_paths) == 1 and len(coord_dict) == 0:
                 # Single file resolved
@@ -2105,6 +2112,10 @@ class LoaderRegistry(_RegistryBase):
         # Add class to loader
         self._loaders[loader_class.name] = loader_class
 
+        # Sort loader registry alphabetically
+        for k in sorted(self._loaders):
+            self._loaders[k] = self._loaders.pop(k)
+
         # Add aliases to mapping
         self._alias_mapping[loader_class.name] = loader_class.name
         if loader_class.aliases is not None:
@@ -2400,7 +2411,20 @@ class LoaderRegistry(_RegistryBase):
                 f"{cls_name:<{max_cls_len}}"
             )
 
-        return "\n".join(rows)
+        all_loaders = "\n".join(rows)
+
+        current_loader_str = (
+            self.current_loader.name if self.current_loader else "Not set"
+        )
+        current_data_dir_str = (
+            self.current_data_dir if self.current_data_dir else "Not set"
+        )
+        current_settings = (
+            f"Current loader: {current_loader_str}\n"
+            f"Current data directory: {current_data_dir_str}"
+        )
+
+        return all_loaders + "\n\n" + current_settings
 
     def _repr_html_(self) -> str:
         rows: list[tuple[str, str, str]] = [("Name", "Description", "Loader class")]
@@ -2415,7 +2439,23 @@ class LoaderRegistry(_RegistryBase):
             cls_name = f"{v.__module__}.{v.__qualname__}"
             rows.append((k, desc, cls_name))
 
-        return erlab.utils.formatting.format_html_table(rows, header_rows=1)
+        all_loaders = erlab.utils.formatting.format_html_table(rows, header_rows=1)
+
+        current_settings = erlab.utils.formatting.format_html_table(
+            [
+                [
+                    "Current loader",
+                    self.current_loader.name if self.current_loader else "Not set",
+                ],
+                [
+                    "Current data directory",
+                    str(self.current_data_dir) if self.current_data_dir else "Not set",
+                ],
+            ],
+            header_cols=1,
+        )
+
+        return all_loaders + "<br>" + current_settings
 
     load.__doc__ = LoaderBase.load.__doc__
     extend_loader.__doc__ = LoaderBase.extend_loader.__doc__

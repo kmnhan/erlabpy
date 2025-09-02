@@ -59,9 +59,12 @@ _TEST_DATA: dict[str, xr.DataArray] = {
 }
 
 
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
 @pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
 @pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
-def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) -> None:
+def test_itool_dtypes(
+    qtbot, move_and_compare_values, val_dtype, coord_dtype, use_dask
+) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(val_dtype),
         dims=["x", "y"],
@@ -70,6 +73,8 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
             "y": np.array([1, 3, 2, 7, 8], dtype=coord_dtype),  # non-uniform
         },
     )
+    if use_dask:
+        data = data.chunk("auto")
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
@@ -138,8 +143,12 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     tmp_dir.cleanup()
 
 
-def test_itool_general(qtbot, move_and_compare_values) -> None:
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
+def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    if use_dask:
+        data = data.chunk("auto")
+
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 

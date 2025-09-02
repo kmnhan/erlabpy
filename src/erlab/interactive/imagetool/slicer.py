@@ -353,9 +353,40 @@ class ArraySlicer(QtCore.QObject):
     def data_vals_T(self) -> npt.NDArray[np.floating]:
         """Transposed data values.
 
-        This property is used for fast slicing and binning operations.
+        This property stores a transposed view of the data values for fast slicing. This
+        attribute is only used for in-memory arrays.
+
+        The :attr:`transposed_data` property returns this for in-memory arrays, and a
+        view of the original :class:`xarray.DataArray` for dask arrays.
         """
         return erlab.interactive.imagetool.fastslicing._transposed(self._obj.values)
+
+    @property
+    def transposed_data(self) -> npt.NDArray[np.floating] | xr.DataArray:
+        """Transposed data values.
+
+        This property is used for fast slicing and binning operations. If the underlying
+        DataArray is a dask array, the transposed view of the original DataArray is
+        returned. Otherwise, the cached transposed data values are returned as a numpy
+        array.
+        """
+        if self._obj.chunks is None:
+            # In-memory array, use cached transposed data
+            return self.data_vals_T
+
+        match self._obj.ndim:
+            case 2:
+                return self._obj.T
+            case 3:
+                return self._obj.transpose(
+                    self._obj.dims[1], self._obj.dims[2], self._obj.dims[0]
+                )
+        return self._obj.transpose(
+            self._obj.dims[1],
+            self._obj.dims[2],
+            self._obj.dims[3],
+            self._obj.dims[0],
+        )
 
     # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
     # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
@@ -458,7 +489,7 @@ class ArraySlicer(QtCore.QObject):
         # erlab>=3.2.0 should not save non-uniform data in the first place.
         data = restore_nonuniform_dims(data)
 
-        # Convert coords to C-contiguous array while preserving display order.
+        # Convert coords to C-contiguous array
         data = erlab.utils.array.sort_coord_order(
             data.assign_coords(
                 {d: data[d].astype(data[d].dtype, order="C") for d in data.dims}
@@ -467,6 +498,7 @@ class ArraySlicer(QtCore.QObject):
             dims_first=False,
         )
 
+        # Cast to float64 if not a floating point type (e.g. int)
         if data.dtype not in (np.float32, np.float64):
             data = data.astype(np.float64)
 
@@ -927,7 +959,7 @@ class ArraySlicer(QtCore.QObject):
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.floating] | np.floating:
         if len(axis) == 0:
-            return self.data_vals_T
+            return np.asarray(self.transposed_data)
         if len(axis) == 1:
             return self._bin_along_axis(cursor, axis[0])
         return self._bin_along_multiaxis(cursor, axis)
@@ -956,13 +988,17 @@ class ArraySlicer(QtCore.QObject):
     ) -> npt.NDArray[np.floating] | np.floating:
         axis_val = (axis - 1) % self._obj.ndim
         if not self.get_binned(cursor)[axis]:
-            return self.data_vals_T[
-                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-            ].squeeze(axis=axis_val)
+            return np.asarray(
+                self.transposed_data[
+                    (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
+                ].squeeze(axis=axis_val)
+            )
         return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
-            self.data_vals_T[
-                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-            ],
+            np.asarray(
+                self.transposed_data[
+                    (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
+                ]
+            ),
             axis=axis_val,
         )
 
@@ -974,12 +1010,14 @@ class ArraySlicer(QtCore.QObject):
         else:
             slices = tuple(self.get_indices(cursor)[i] for i in axis)
         axis = tuple((ax - 1) % self._obj.ndim for ax in axis)
-        selected = self.data_vals_T[
-            tuple(
-                slices[axis.index(d)] if d in axis else slice(None)
-                for d in range(self._obj.ndim)
-            )
-        ]
+        selected = np.asarray(
+            self.transposed_data[
+                tuple(
+                    slices[axis.index(d)] if d in axis else slice(None)
+                    for d in range(self._obj.ndim)
+                )
+            ]
+        )
         if any(self.get_binned(cursor)):
             return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
                 selected, axis=axis

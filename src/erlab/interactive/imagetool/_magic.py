@@ -43,7 +43,7 @@ class ImageToolMagics(Magics):
         args = parse_argstring(self.itool, args)
 
         data = args.data
-        if isinstance(data, str):
+        if isinstance(data, str):  # pragma: no branch
             # data is a python expression
             data = f"_data_obj = {data}"
             parsed = self.shell.transform_ast(

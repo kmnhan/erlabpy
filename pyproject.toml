@@ -28,6 +28,7 @@ dependencies = [
     "lmfit>=1.3.2",
     "matplotlib>=3.8.0",
     "numba>=0.61.0",
+    "numexpr>=2.11.0",
     "numpy>=1.26.0",
     "pickleshare>=0.7.5",
     "pyperclip>=1.8.2",
@@ -52,6 +53,7 @@ misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
 [dependency-groups]
 dev = [
     "commitizen>=4.3.0",
+    "coverage>=7.10.5",
     "cz-changeup>=1.1.2",
     "ipykernel>=6.29.5",
     "jupyter-bokeh>=4.0.5",
@@ -98,8 +100,8 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.8.13"]
+build-backend = "uv_build"
 
 [tool.commitizen]
 change_type_map = { "BREAKING CHANGE" = "💥 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "♻️ Code Refactor" }
@@ -260,6 +262,7 @@ branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
+patch = ["execv", "_exit", "fork"]
 
 [tool.coverage.report]
 exclude_also = [

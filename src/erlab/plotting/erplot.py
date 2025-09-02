@@ -12,7 +12,6 @@ __all__ = [
     "fermiline",
     "figwh",
     "flatten_transparency",
-    "get_bz_edge",
     "get_mappable",
     "gradient_fill",
     "image_is_light",
@@ -55,7 +54,7 @@ from erlab.plotting.annotations import (
     set_ylabels,
     sizebar,
 )
-from erlab.plotting.bz import get_bz_edge, plot_hex_bz
+from erlab.plotting.bz import plot_hex_bz
 from erlab.plotting.colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,

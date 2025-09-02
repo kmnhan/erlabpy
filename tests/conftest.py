@@ -11,7 +11,9 @@ import time
 import typing
 from collections.abc import Callable, Sequence
 
+import dask
 import lmfit
+import numexpr
 import numpy as np
 import pooch
 import pytest
@@ -24,13 +26,21 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
-
 DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
 DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
 """The SHA-256 checksum of the `.tar.gz` file."""
+
+# Headless mode for Qt
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+# Limit numexpr to a single thread; this reduces probability of segfaults
+numexpr.set_num_threads(1)
+
+# Limit dask to a single thread; this reduces probability of segfaults
+dask.config.set(scheduler="synchronous")
+
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +107,22 @@ def gold() -> xr.DataArray:
 @pytest.fixture(scope="session")
 def gold_fit_res(gold) -> xr.Dataset:
     return erlab.analysis.gold.poly(
-        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
+        gold,
+        angle_range=(-13.5, 13.5),
+        eV_range=(-0.204, 0.276),
+        fast=True,
+        parallel_kw={"n_jobs": 1, "backend": "threading"},
+    )
+
+
+@pytest.fixture(scope="session")
+def gold_fit_res_fd(gold) -> xr.Dataset:
+    return erlab.analysis.gold.poly(
+        gold,
+        angle_range=(-13.5, 13.5),
+        eV_range=(-0.204, 0.276),
+        fast=False,
+        parallel_kw={"n_jobs": 1, "backend": "threading"},
     )
 
 

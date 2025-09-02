@@ -1,8 +1,10 @@
 import tempfile
 
+import pytest
 import scipy
 import xarray as xr
 import xarray_lmfit as xlm
+from joblib import parallel_config
 from qtpy import QtWidgets
 
 import erlab
@@ -10,13 +12,21 @@ from erlab.interactive.fermiedge import GoldTool, ResolutionTool, goldtool, rest
 from erlab.io.exampledata import generate_gold_edge
 
 
-def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
+@pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
+def test_goldtool(
+    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog
+) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.params_edge.widgets["# CPU"].setValue(2)
-    win.params_edge.widgets["Fast"].setChecked(True)
+    win.params_edge.widgets["# CPU"].setValue(1)
+    win.params_edge.widgets["Fast"].setChecked(fast)
 
-    with qtbot.wait_signal(win.sigUpdated, timeout=20000):
+    expected = gold_fit_res if fast else gold_fit_res_fd
+
+    with (
+        parallel_config(backend="threading"),
+        qtbot.wait_signal(win.sigUpdated, timeout=20000),
+    ):
         win.params_edge.widgets["go"].click()
 
     def check_generated_code(w: GoldTool) -> None:
@@ -29,7 +39,7 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
         )
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
-            gold_fit_res.drop_vars("modelfit_results"),
+            expected.drop_vars("modelfit_results"),
         )
 
     check_generated_code(win)
@@ -50,7 +60,7 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
 
     # Check saved file
     xr.testing.assert_identical(
-        gold_fit_res.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
         xlm.load_fit(filename).drop_vars("modelfit_results"),
     )
 

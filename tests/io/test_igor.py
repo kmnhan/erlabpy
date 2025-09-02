@@ -120,14 +120,20 @@ def test_save_wave_roundtrip(tmp_path, data, dims, coords, name):
 
 
 def test_save_wave_non_uniform_coord(tmp_path):
-    arr = xr.DataArray(np.arange(5), dims=["x"], coords={"x": [0, 1, 3, 6, 10]})
+    arr = xr.DataArray(
+        np.arange(5).astype(np.float64), dims=["x"], coords={"x": [0, 1, 3, 6, 10]}
+    )
     path = tmp_path / "fail.ibw"
     with pytest.raises(ValueError, match="not evenly spaced"):
         save_wave(arr, path)
 
 
 def test_save_wave_extra_coord_warns(tmp_path):
-    arr = xr.DataArray(np.arange(5), dims=["x"], coords={"x": np.arange(5), "foo": 3})
+    arr = xr.DataArray(
+        np.arange(5).astype(np.float64),
+        dims=["x"],
+        coords={"x": np.arange(5), "foo": 3},
+    )
     path = tmp_path / "warn.ibw"
     with pytest.warns(UserWarning, match="not a DataArray dimension"):
         save_wave(arr, path)
@@ -135,7 +141,7 @@ def test_save_wave_extra_coord_warns(tmp_path):
 
 def test_save_wave_attrs_roundtrip(tmp_path):
     arr = xr.DataArray(
-        np.arange(3),
+        np.arange(3).astype(np.float64),
         dims=["x"],
         coords={"x": np.arange(3)},
         name="attrwave",

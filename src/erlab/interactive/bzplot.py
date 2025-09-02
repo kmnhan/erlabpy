@@ -359,7 +359,7 @@ class BZPlotWidget(QtWidgets.QWidget):
 
     def set_bvec(self, bvec, update=True) -> None:
         self.bvec = bvec
-        self.lines, self.vertices = erlab.plotting.get_bz_edge(
+        self.lines, self.vertices = erlab.lattice.get_bz_edge(
             self.bvec, reciprocal=True
         )
         if update:
