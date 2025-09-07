@@ -19,6 +19,7 @@ def fit_expected_darr():
     )
 
 
+@pytest.mark.filterwarnings("ignore:`DataArray.parallel_fit` is deprecated")
 def test_parallel_fit(fit_test_darr, fit_expected_darr) -> None:
     def exp_decay(t, n0, tau=1):
         return n0 * np.exp(-t / tau)
@@ -31,7 +32,6 @@ def test_parallel_fit(fit_test_darr, fit_expected_darr) -> None:
         model=model,
         params={"n0": 4, "tau": {"min": 2, "max": 6}},
         output_result=False,
-        parallel_kw={"n_jobs": 1},
     )
     np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
 
@@ -40,6 +40,5 @@ def test_parallel_fit(fit_test_darr, fit_expected_darr) -> None:
         model=model,
         params=lmfit.create_params(n0=4, tau={"min": 2, "max": 6}),
         output_result=False,
-        parallel_kw={"n_jobs": 1},
     )
     np.testing.assert_allclose(fit.modelfit_coefficients, fit_expected_darr, rtol=1e-3)
