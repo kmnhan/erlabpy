@@ -11,7 +11,7 @@ __all__ = [
 import functools
 import importlib
 import typing
-from collections.abc import Collection, Hashable, Mapping
+from collections.abc import Collection, Hashable, Mapping, Sequence
 
 import numpy as np
 import xarray as xr
@@ -465,9 +465,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         ]  # Unindexed dimensions, i.e. dimensions without coordinates
 
         if len(unindexed_dims) >= 1:
+            # Assign temporary coordinates to allow proper selection
             out = obj.assign_coords(
                 {k: np.arange(obj.sizes[k]) for k in unindexed_dims}
-            )  # Assign temporary coordinates
+            )
         else:
             out = obj
 
@@ -482,8 +483,28 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
 
         if len(slices) >= 1:
+            for k, slice_obj in slices.copy().items():
+                if k in avg_dims:
+                    if not erlab.utils.array.is_monotonic(out[k].values):
+                        raise ValueError(
+                            f"Cannot average over dimension `{k}` because its "
+                            "coordinate is not monotonic. Try sorting the data along "
+                            "the affected dimension."
+                        )
+                    if out[k].values[0] > out[k].values[-1]:
+                        # Width-based selection: make slice direction match coordinate
+                        # order. If coordinate decreases (first > last), reverse the
+                        # slice.
+                        slices[k] = slice(
+                            slice_obj.stop,
+                            slice_obj.start,
+                            -slice_obj.step if slice_obj.step is not None else None,
+                        )
+
             out = out.sel(slices)
 
+            # Average coordinate values over the dimensions being averaged and add them
+            # back afterward
             lost_coords: dict[Hashable, xr.DataArray] = {
                 k: out[k].mean(
                     dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
@@ -589,6 +610,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             value = indexers[dim]
 
             if width == 0.0:
+                # Treat as point selection when width is zero
                 if isinstance(value, slice):
                     slices[dim] = value
                 else:
@@ -605,9 +627,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         slice(v - width / 2.0, v + width / 2.0) for v in value
                     ]
                 else:
+                    # Center and width given, single slice
                     slices[dim] = slice(value - width / 2.0, value + width / 2.0)
 
                     avg_dims.append(dim)
+
+                    # Store associated coordinate names that will be lost when averaging
                     for k, v in self._obj.coords.items():
                         if dim in v.dims:
                             lost_dims.append(k)
@@ -622,7 +647,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 )
             }
 
-            out = self._obj
+            out = self._obj.copy()
             for dim, slice_list in slice_collections.items():
                 lost_dims_extend: list[Hashable] = [
                     k for k, v in self._obj.coords.items() if dim in v.dims
@@ -632,23 +657,25 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     [
                         self._qsel_scalar(
                             out,
-                            scalars,
-                            slices | {dim: s},
-                            [*avg_dims, dim],
-                            lost_dims + lost_dims_extend,
+                            scalars=scalars,
+                            slices=slices | {dim: s},
+                            avg_dims=[*avg_dims, dim],
+                            lost_dims=lost_dims + lost_dims_extend,
                         )
                         for s in slice_list
                     ],
                     dim=dim,
                 )
         else:
-            out = self._qsel_scalar(self._obj, scalars, slices, avg_dims, lost_dims)
+            out = self._qsel_scalar(
+                self._obj.copy(), scalars, slices, avg_dims, lost_dims
+            )
 
         return erlab.utils.array.sort_coord_order(
             out, keys=coord_order, dims_first=True
         )
 
-    def average(self, dim: str | Collection[Hashable]) -> xr.DataArray:
+    def average(self, dim: str | Sequence[Hashable]) -> xr.DataArray:
         """Average the data along the specified dimension(s).
 
         The difference between this method and :meth:`xarray.DataArray.mean` is that
@@ -670,12 +697,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             dim = (dim,)
 
         qsel_kwargs: dict[Hashable, float] = {}
-
         for d in dim:
             qsel_kwargs[d] = 0.0
             qsel_kwargs[f"{d}_width"] = np.inf
 
-        return self.__call__(qsel_kwargs)
+        return self._obj.sortby(list(dim)).qsel(qsel_kwargs)
 
     def around(
         self,

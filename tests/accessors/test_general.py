@@ -85,14 +85,39 @@ def test_ds_qshow_fit(plot_components: bool) -> None:
     [
         ({"x": 2.0}, (5,)),
         ({"x": slice(1.0, 3.0)}, (3, 5)),
-        ({"x": 2.0, "x_width": 1.0}, (5,)),
+        ({"x": 2.0, "x_width": 3.5}, (5,)),
         ({"x": slice(1.0, 3.0), "y": 2.0}, (3,)),
     ],
 )
 def test_qsel_shape(indexers, expected_shape) -> None:
-    dat = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
     result = dat.qsel(indexers)
     assert result.shape == expected_shape
+
+    if indexers.get("x_width", None) is not None:
+        result_rev = dat.sortby("x", ascending=False).qsel(indexers)
+        xr.testing.assert_identical(result, result_rev)
+
+
+def test_qsel_non_monotonic() -> None:
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={
+            "x": np.array([0, 2, 1, 4, 3], dtype=float),
+            "y": np.arange(5, dtype=float),
+        },
+    )
+    with pytest.raises(
+        ValueError,
+        match="Cannot average over dimension `x` because its coordinate is not "
+        "monotonic. Try sorting the data along the affected dimension.",
+    ):
+        dat.qsel({"x": 2.0, "x_width": 2.0})
 
 
 def test_qsel_invalid_dimension() -> None:
@@ -285,5 +310,5 @@ def test_qsel_average_invalid_dim() -> None:
     da = xr.DataArray(data, dims=("x",), coords={"x": x})
 
     # Averaging over an invalid dimension should raise a ValueError
-    with pytest.raises(ValueError, match="Dimension `z` not found in data"):
+    with pytest.raises(KeyError, match="No variable named 'z'"):
         _ = da.qsel.average("z")
