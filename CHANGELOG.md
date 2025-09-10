@@ -1,6 +1,8 @@
-## Unreleased
+## v3.14.1 (2025-09-10)
 
 ### 🐞 Bug Fixes
+
+- **qsel:** handle decreasing coordinates in width-based selection (#169) ([cff0bed](https://github.com/kmnhan/erlabpy/commit/cff0bed7d38c21e43ef27cc0d7d654c4e0199992))
 
 - **imagetool:** make ImageTool work with dask arrays ([73f8ad6](https://github.com/kmnhan/erlabpy/commit/73f8ad6a898b6e22a757d3cb9bda1d1f409482e8))
 
@@ -17,6 +19,10 @@
   Improves speed of k-space grid calculation using `numexpr`. Should also reduce memory usage during momentum conversion for large data.
 
 ### ♻️ Code Refactor
+
+- deprecate `DataArray.parallel_fit` in favor of `DataArray.xlm.modelfit` with dask (#167) ([385bfd2](https://github.com/kmnhan/erlabpy/commit/385bfd21cd55b7145e356ee915b079d76b74a436))
+
+  Deprecates the `DataArray.parallel_fit` method in favor of using `DataArray.xlm.modelfit` with dask for parallel fitting. For more details, see the updated documentation in the curve fitting user guide.
 
 - **io:** show current loader and data directory details in `erlab.io.loaders` representation ([63c4c50](https://github.com/kmnhan/erlabpy/commit/63c4c50a3da22aed063d4b0d8a1d7349e597cac4))
 
