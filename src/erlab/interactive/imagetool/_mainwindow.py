@@ -124,6 +124,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
                 "itool_title": self.windowTitle(),
                 "itool_name": name,
                 "itool_rect": self.geometry().getRect(),
+                "erlab_version": erlab.__version__,
             }
         )
 
@@ -153,6 +154,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
 
         """
+        saved_version = ds.attrs.get("erlab_version", "0.0.0")
+        if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
+            erlab.utils.misc.emit_user_level_warning(
+                f"This ImageTool was saved with a newer version of erlab "
+                f"({saved_version}) than the current version "
+                f"({erlab.__version__}). Some features may not be supported.",
+            )
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
