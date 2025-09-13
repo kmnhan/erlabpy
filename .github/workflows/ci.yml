@@ -54,10 +54,12 @@ jobs:
       - name: Test with pytest
         if: ${{ matrix.python-version != env.COV_VERSION || matrix.qt-api != env.COV_QT_API }}
         run: uv run pytest -v
+        timeout-minutes: 20
 
       - name: Test with pytest with coverage
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
         run: uv run pytest -v --cov erlab --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        timeout-minutes: 20
 
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
