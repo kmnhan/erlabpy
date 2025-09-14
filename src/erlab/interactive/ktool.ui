@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>MainWindow</class>
- <widget class="QMainWindow" name="MainWindow">
+ <widget class="ToolWindow" name="MainWindow">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -627,6 +627,11 @@
    <extends>QWidget</extends>
    <header>erlab.interactive.colors</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ToolWindow</class>
+   <extends>QMainWindow</extends>
+   <header>erlab.interactive.utils</header>
   </customwidget>
  </customwidgets>
  <resources/>

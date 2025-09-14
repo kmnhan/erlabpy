@@ -7,6 +7,7 @@ import time
 import typing
 
 import numpy as np
+import pydantic
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
@@ -641,6 +642,87 @@ class ResolutionTool(
 ):
     _sigTriggerFit = QtCore.Signal()
 
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        x0: float
+        x1: float
+        y0: float
+        y1: float
+        live_fit: bool
+        temp: float
+        fix_temp: bool
+        center: float
+        fix_center: bool
+        resolution: float
+        fix_resolution: bool
+        bkg_slope: bool
+        method: str
+        timeout: float
+        max_nfev: int
+        use_mev: bool
+        results: tuple[str, str, str, str]
+
+    @property
+    def tool_status(self) -> StateModel:
+        return self.StateModel(
+            data_name=self.data_name,
+            x0=self.x0_spin.value(),
+            x1=self.x1_spin.value(),
+            y0=self.y0_spin.value(),
+            y1=self.y1_spin.value(),
+            live_fit=self.live_check.isChecked(),
+            temp=self.temp_spin.value(),
+            fix_temp=self.fix_temp_check.isChecked(),
+            center=self.center_spin.value(),
+            fix_center=self.fix_center_check.isChecked(),
+            resolution=self.res_spin.value(),
+            fix_resolution=self.fix_res_check.isChecked(),
+            bkg_slope=self.slope_check.isChecked(),
+            method=self.method_combo.currentText(),
+            timeout=self.timeout_spin.value(),
+            max_nfev=self.nfev_spin.value(),
+            use_mev=self.mev_check.isChecked(),
+            results=(
+                self.temp_val.text(),
+                self.center_val.text(),
+                self.res_val.text(),
+                self.redchi_val.text(),
+            ),
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name: str = status.data_name
+        self.live_check.setChecked(False)
+
+        self.x0_spin.setValue(status.x0)
+        self.x1_spin.setValue(status.x1)
+        self.y0_spin.setValue(status.y0)
+        self.y1_spin.setValue(status.y1)
+        self.live_check.setChecked(status.live_fit)
+
+        self.temp_spin.setValue(status.temp)
+        self.fix_temp_check.setChecked(status.fix_temp)
+        self.center_spin.setValue(status.center)
+        self.fix_center_check.setChecked(status.fix_center)
+        self.res_spin.setValue(status.resolution)
+        self.fix_res_check.setChecked(status.fix_resolution)
+        self.slope_check.setChecked(status.bkg_slope)
+        method_index = LMFIT_METHODS.index(status.method)
+        self.method_combo.setCurrentIndex(method_index)
+        self.timeout_spin.setValue(status.timeout)
+        self.nfev_spin.setValue(status.max_nfev)
+        self.mev_check.setChecked(status.use_mev)
+
+        self.temp_val.setText(status.results[0])
+        self.center_val.setText(status.results[1])
+        self.res_val.setText(status.results[2])
+        self.redchi_val.setText(status.results[3])
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
@@ -688,7 +770,7 @@ class ResolutionTool(
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
-        self.data_name: str = data_name
+        self.data_name = data_name
 
         self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
         self.plot1 = self.graphics_layout.addPlot(row=1, col=0)

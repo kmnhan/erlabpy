@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import importlib
 import inspect
 import itertools
 import keyword
@@ -33,6 +34,7 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping
 
+    import pydantic
     import pyperclip
     import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
@@ -55,6 +57,7 @@ __all__ = [
     "KeyboardEventFilter",
     "ParameterGroup",
     "RotatableLine",
+    "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
     "format_kwargs",
@@ -1793,7 +1796,145 @@ class ROIControls(ParameterGroup):
         vb.mouseDragEvent = mouseDragEventCustom  # set to modified mouseDragEvent
 
 
-class AnalysisWindow(QtWidgets.QMainWindow):
+class ToolWindow(QtWidgets.QMainWindow):
+    """A window that can be saved and restored from a netcdf file.
+
+    Mainly for interactive tools used in the ImageTool manager.
+
+    For the saving and restoring to work, subclasses must follow some rules:
+
+    - Subclasses must have single positional argument ``data`` in their constructor,
+      which is an :class:`xarray.DataArray` containing the main data to be analyzed.
+      Additional arguments can be added as needed.
+
+    - Subclasses must implement a pydantic model which contains all the information
+      needed to restore the state of the tool. The model should be assigned to the class
+      attribute `StateModel`.
+
+    - The property `tool_status` must be implemented so that its getter returns an
+      instance of `StateModel` by gathering the current state of child widgets, and its
+      setter applies a given instance of `StateModel` to set the state of child widgets.
+
+    - The property `tool_data` must be implemented to return the main
+      :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
+      of the subclass when restoring from a file.
+
+    """
+
+    StateModel: type[pydantic.BaseModel]
+
+    @property
+    def tool_status(self) -> pydantic.BaseModel:
+        raise NotImplementedError(
+            "Subclasses of ToolWindow must implement the tool_status property."
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: pydantic.BaseModel) -> None:
+        raise NotImplementedError(
+            "Subclasses of ToolWindow must implement the tool_status property."
+        )
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        raise NotImplementedError(
+            "Subclasses of ToolWindow must implement the tool_data property."
+        )
+
+    @classmethod
+    def _qual_name(cls) -> str:
+        """Get the full qualified name of the class."""
+        return f"{cls.__module__}:{cls.__qualname__}"
+
+    @property
+    def _saved_tool_attrs(self) -> dict:
+        return {
+            "tool_state": self.tool_status.model_dump_json(),
+            "tool_title": self.windowTitle(),
+            "tool_rect": self.geometry().getRect(),
+            "tool_cls_qualname": self._qual_name(),
+            "erlab_version": erlab.__version__,
+        }
+
+    def to_dataset(self) -> xr.Dataset:
+        """Get the :class:`xarray.Dataset` representation of the tool window.
+
+        Returns
+        -------
+        Dataset
+            A dataset containing the data and attributes needed to restore the tool.
+
+        """
+        return self.tool_data.to_dataset(
+            name="<saved-tool-data>", promote_attrs=False
+        ).assign_attrs(self._saved_tool_attrs)
+
+    @classmethod
+    def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
+        """Restore a tool window from a :class:`xarray.Dataset`.
+
+        Parameters
+        ----------
+        ds
+            The dataset containing the saved tool data and attributes, as created by
+            :meth:`to_dataset`.
+        **kwargs
+            Additional keyword arguments passed to the constructor.
+        """
+        saved_version = ds.attrs.get("erlab_version", "0.0.0")
+        if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
+            erlab.utils.misc.emit_user_level_warning(
+                f"This tool was saved with a newer version of erlab "
+                f"({saved_version}) than the current version "
+                f"({erlab.__version__}). Some features may not be supported.",
+            )
+
+        # Get the class object from the saved qualname
+        mod_name, qual = ds.attrs["tool_cls_qualname"].split(":")
+        mod = importlib.import_module(mod_name)
+        cls_obj = mod
+        for attr in qual.split("."):
+            cls_obj = getattr(cls_obj, attr)
+        cls_obj = typing.cast("type[typing.Self]", cls_obj)
+
+        # Instantiate the class and set the status
+        tool = cls_obj(ds["<saved-tool-data>"], **kwargs)  # type: ignore[arg-type]
+        tool.tool_status = cls_obj.StateModel.model_validate_json(
+            ds.attrs["tool_state"]
+        )
+        tool.setWindowTitle(ds.attrs["tool_title"])
+        tool.setGeometry(*ds.attrs["tool_rect"])
+        return tool
+
+    def to_file(self, filename: str | os.PathLike) -> None:
+        """Save the data, state, title, and geometry of the tool to a file.
+
+        The saved netcdf dataset can be used to recreate the ImageTool with the class
+        method :meth:`from_file`.
+
+        Parameters
+        ----------
+        filename
+            The name of the target netcdf file.
+
+        """
+        self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+
+    @classmethod
+    def from_file(cls, filename: str | os.PathLike, **kwargs) -> typing.Self:
+        """Restore a window from a file saved using :meth:`to_file`.
+
+        Parameters
+        ----------
+        filename
+            The name of the file.
+        **kwargs
+            Additional keyword arguments passed to the constructor.
+        """
+        return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
+
+
+class AnalysisWindow(ToolWindow):
     def __init__(
         self,
         data,

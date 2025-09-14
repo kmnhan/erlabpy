@@ -124,19 +124,20 @@ class BaseImageTool(QtWidgets.QMainWindow):
                 "itool_title": self.windowTitle(),
                 "itool_name": name,
                 "itool_rect": self.geometry().getRect(),
+                "erlab_version": erlab.__version__,
             }
         )
 
     def to_file(self, filename: str | os.PathLike) -> None:
         """Save the data, state, title, and geometry of the tool to a file.
 
-        The saved pickle file can be used to recreate the ImageTool with the class
-        method :meth:`from_pickle`.
+        The saved netcdf dataset can be used to recreate the ImageTool with the class
+        method :meth:`from_file`.
 
         Parameters
         ----------
         filename
-            The name of the pickle file.
+            The name of the target netcdf file.
 
         """
         self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
@@ -153,6 +154,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
 
         """
+        saved_version = ds.attrs.get("erlab_version", "0.0.0")
+        if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
+            erlab.utils.misc.emit_user_level_warning(
+                f"This ImageTool was saved with a newer version of erlab "
+                f"({saved_version}) than the current version "
+                f"({erlab.__version__}). Some features may not be supported.",
+            )
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(

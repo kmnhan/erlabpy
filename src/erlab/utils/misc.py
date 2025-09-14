@@ -4,6 +4,7 @@ __all__ = [
     "LazyImport",
     "emit_user_level_warning",
     "is_interactive",
+    "is_newer_version",
     "is_sequence_of",
     "open_in_file_manager",
 ]
@@ -205,3 +206,14 @@ def open_in_file_manager(path: str | os.PathLike) -> None:  # pragma: no cover
         else:
             # We can't do this reliably on Linux, so we just open the folder
             subprocess.call(["xdg-open", str(path.parent)])
+
+
+def is_newer_version(version_str: str) -> bool:  # pragma: no cover
+    """Check if a version string is newer than the current installed erlab version."""
+    import packaging.version
+
+    import erlab
+
+    return packaging.version.Version(version_str) > packaging.version.Version(
+        erlab.__version__
+    )
