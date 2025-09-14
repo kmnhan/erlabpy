@@ -1845,13 +1845,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 new_title += f" - {old_title}"
             widget.setWindowTitle(new_title)
 
-        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-
         if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
                 manager.add_widget(widget)
                 return
+
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         uid: str = str(uuid.uuid4())
         self._associated_tools[uid] = widget  # Store reference to prevent gc

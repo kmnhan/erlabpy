@@ -391,12 +391,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @property
     def ntools(self) -> int:
-        """Number of ImageTool windows being handled by the manager."""
+        """Number of windows being handled by the manager."""
         return len(self._tool_wrappers)
 
     @property
     def next_idx(self) -> int:
-        """Index for the next ImageTool window."""
+        """Index for the next window."""
         return max(self._tool_wrappers.keys(), default=-1) + 1
 
     @property

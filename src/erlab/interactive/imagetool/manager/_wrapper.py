@@ -90,7 +90,7 @@ class _ImageToolWrapper(QtCore.QObject):
                 ],
             )
 
-        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
+        if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
             # Accent color is available from Qt 6.6
             accent_color = QtWidgets.QApplication.palette().accent().color().name()
             text = text.replace(

@@ -24,6 +24,7 @@ import warnings
 
 import numpy as np
 import numpy.typing as npt
+import pydantic
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
@@ -280,6 +281,160 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        center: float
+        width: int
+        offsets: dict[str, float]
+        bounds_enabled: bool
+        bounds: dict[str, float]
+        resolution_enabled: bool
+        resolution: dict[str, float]
+        bz_enabled: bool
+        a: float
+        b: float
+        ang: float
+        rot: float
+        c: float
+        ab: float
+        n1: int
+        n2: int
+        reciprocal: bool
+        points: bool
+        circle_rois: list[tuple[float, float, float]]
+        cmap_name: str
+        cmap_gamma: float
+        cmap_invert: bool
+        cmap_highcontrast: bool
+        show_angle_plot: bool
+
+    @property
+    def tool_status(self) -> StateModel:
+        return self.StateModel(
+            data_name=self.data_name,
+            center=self.center_spin.value(),
+            width=self.width_spin.value(),
+            offsets={k: spin.value() for k, spin in self._offset_spins.items()},
+            bounds_enabled=self.bounds_supergroup.isChecked(),
+            bounds={k: spin.value() for k, spin in self._bound_spins.items()},
+            resolution_enabled=self.resolution_supergroup.isChecked(),
+            resolution={k: spin.value() for k, spin in self._resolution_spins.items()},
+            bz_enabled=self.bz_group.isChecked(),
+            a=self.a_spin.value(),
+            b=self.b_spin.value(),
+            ang=self.ang_spin.value(),
+            rot=self.rot_spin.value(),
+            c=self.c_spin.value(),
+            ab=self.ab_spin.value(),
+            n1=self.n1_spin.value(),
+            n2=self.n2_spin.value(),
+            reciprocal=self.reciprocal_check.isChecked(),
+            points=self.points_check.isChecked(),
+            circle_rois=[roi.get_position() for roi in self._roi_list],
+            cmap_name=self.cmap_combo.currentText(),
+            cmap_gamma=self.gamma_widget.value(),
+            cmap_invert=self.invert_check.isChecked(),
+            cmap_highcontrast=self.contrast_check.isChecked(),
+            show_angle_plot=self.angle_plot_check.isChecked(),
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name: str = status.data_name
+
+        self.center_spin.blockSignals(True)
+        self.center_spin.setValue(status.center)
+        self.center_spin.blockSignals(False)
+
+        self.width_spin.blockSignals(True)
+        self.width_spin.setValue(status.width)
+        self.width_spin.blockSignals(False)
+
+        for k, v in status.offsets.items():
+            self._offset_spins[k].blockSignals(True)
+            self._offset_spins[k].setValue(v)
+            self._offset_spins[k].blockSignals(False)
+
+        self.bounds_supergroup.blockSignals(True)
+        self.bounds_supergroup.setChecked(status.bounds_enabled)
+        self.bounds_supergroup.blockSignals(False)
+        for k, v in status.bounds.items():
+            self._bound_spins[k].blockSignals(True)
+            self._bound_spins[k].setValue(v)
+            self._bound_spins[k].blockSignals(False)
+
+        self.resolution_supergroup.blockSignals(True)
+        self.resolution_supergroup.setChecked(status.resolution_enabled)
+        self.resolution_supergroup.blockSignals(False)
+        for k, v in status.resolution.items():
+            self._resolution_spins[k].blockSignals(True)
+            self._resolution_spins[k].setValue(v)
+            self._resolution_spins[k].blockSignals(False)
+
+        # Restore BZ parameters
+        self.bz_group.blockSignals(True)
+        self.a_spin.blockSignals(True)
+        self.b_spin.blockSignals(True)
+        self.ang_spin.blockSignals(True)
+        self.rot_spin.blockSignals(True)
+        self.c_spin.blockSignals(True)
+        self.ab_spin.blockSignals(True)
+        self.n1_spin.blockSignals(True)
+        self.n2_spin.blockSignals(True)
+        self.reciprocal_check.blockSignals(True)
+        self.points_check.blockSignals(True)
+        self.bz_group.setChecked(status.bz_enabled)
+        self.a_spin.setValue(status.a)
+        self.b_spin.setValue(status.b)
+        self.ang_spin.setValue(status.ang)
+        self.rot_spin.setValue(status.rot)
+        self.c_spin.setValue(status.c)
+        self.ab_spin.setValue(status.ab)
+        self.n1_spin.setValue(status.n1)
+        self.n2_spin.setValue(status.n2)
+        self.reciprocal_check.setChecked(status.reciprocal)
+        self.points_check.setChecked(status.points)
+        self.bz_group.blockSignals(False)
+        self.a_spin.blockSignals(False)
+        self.b_spin.blockSignals(False)
+        self.ang_spin.blockSignals(False)
+        self.rot_spin.blockSignals(False)
+        self.c_spin.blockSignals(False)
+        self.ab_spin.blockSignals(False)
+        self.n1_spin.blockSignals(False)
+        self.n2_spin.blockSignals(False)
+        self.reciprocal_check.blockSignals(False)
+        self.points_check.blockSignals(False)
+
+        # Restore circle ROIs
+        for x0, y0, radius in status.circle_rois:
+            self._add_circle()
+            self._roi_list[-1].set_position((x0, y0), radius)
+
+        # Restore colormap
+        self.cmap_combo.blockSignals(True)
+        self.gamma_widget.blockSignals(True)
+        self.invert_check.blockSignals(True)
+        self.contrast_check.blockSignals(True)
+        self.cmap_combo.setCurrentText(status.cmap_name)
+        self.gamma_widget.setValue(status.cmap_gamma)
+        self.invert_check.setChecked(status.cmap_invert)
+        self.contrast_check.setChecked(status.cmap_highcontrast)
+        self.cmap_combo.blockSignals(False)
+        self.gamma_widget.blockSignals(False)
+        self.invert_check.blockSignals(False)
+        self.contrast_check.blockSignals(False)
+
+        self.update()
+        self.update_bz()
+        self.update_cmap()
+
+        self.angle_plot_check.setChecked(status.show_angle_plot)
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
     def __init__(
         self,
         data: xr.DataArray,
