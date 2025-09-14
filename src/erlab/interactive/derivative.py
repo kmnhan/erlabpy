@@ -21,6 +21,7 @@ import typing
 from collections.abc import Callable, Hashable
 
 import numpy as np
+import pydantic
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
@@ -40,6 +41,63 @@ class DerivativeTool(
         str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui"))
     )
 ):
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        interp: bool
+        nx: int
+        ny: int
+        smooth: bool
+        smooth_mode: typing.Literal[0, 1]
+        sx_value: float
+        sy_value: float
+        sn_value: int
+        process_mode: typing.Literal[0, 1, 2, 3, 4]
+        mode_kwargs: dict[str, typing.Any]
+
+    @property
+    def tool_status(self) -> StateModel:
+        return self.StateModel(
+            data_name=self.data_name,
+            interp=self.interp_group.isChecked(),
+            nx=self.nx_spin.value(),
+            ny=self.ny_spin.value(),
+            smooth=self.smooth_group.isChecked(),
+            smooth_mode=self.smooth_combo.currentIndex(),
+            sx_value=self.sx_spin.value(),
+            sy_value=self.sy_spin.value(),
+            sn_value=self.sn_spin.value(),
+            process_mode=self.tab_widget.currentIndex(),
+            mode_kwargs=self.process_kwargs,
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name: str = status.data_name
+        self.interp_group.setChecked(status.interp)
+        self.nx_spin.setValue(status.nx)
+        self.ny_spin.setValue(status.ny)
+        self.smooth_group.setChecked(status.smooth)
+        self.smooth_combo.setCurrentIndex(status.smooth_mode)
+        self.sx_spin.setValue(status.sx_value)
+        self.sy_spin.setValue(status.sy_value)
+        self.sn_spin.setValue(status.sn_value)
+        self.tab_widget.setCurrentIndex(status.process_mode)
+        match self.tab_widget.currentIndex():
+            case 0:
+                self.x_radio.setChecked(status.mode_kwargs["coord"] == self.xdim)
+            case 1:
+                self.lapl_factor_spin.setValue(status.mode_kwargs["factor"])
+            case 2:
+                self.x_radio_curv1d.setChecked(status.mode_kwargs["along"] == self.xdim)
+                self.curv1d_a0_spin.setValue(status.mode_kwargs["a0"])
+            case 3:
+                self.curv_a0_spin.setValue(status.mode_kwargs["a0"])
+                self.curv_factor_spin.setValue(status.mode_kwargs["factor"])
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
             try:
@@ -50,7 +108,7 @@ class DerivativeTool(
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
-        self.data_name: str = data_name
+        self.data_name = data_name
 
         # Initialize UI
         super().__init__()
