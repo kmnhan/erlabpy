@@ -25,7 +25,6 @@ from collections.abc import Iterable
 
 import numpy as np
 import numpy.typing as npt
-import pydantic
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
@@ -35,6 +34,7 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterator, Mapping
 
+    import pydantic
     import pyperclip
     import qtawesome
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
@@ -1807,9 +1807,9 @@ class ToolWindow(QtWidgets.QMainWindow):
       which is an :class:`xarray.DataArray` containing the main data to be analyzed.
       Additional arguments can be added as needed.
 
-    - Subclasses must implement a pydantic model `StateModel` as a nested class, which
-      contains all the information needed to restore the state of the tool. The model
-      must be JSON serializable.
+    - Subclasses must implement a pydantic model which contains all the information
+      needed to restore the state of the tool. The model should be assigned to the class
+      attribute `StateModel`.
 
     - The property `tool_status` must be implemented so that its getter returns an
       instance of `StateModel` by gathering the current state of child widgets, and its
@@ -1821,20 +1821,16 @@ class ToolWindow(QtWidgets.QMainWindow):
 
     """
 
-    class StateModel(pydantic.BaseModel):
-        """A pydantic model that represents the state of the tool.
-
-        Must be implemented by subclasses.
-        """
+    StateModel: type[pydantic.BaseModel]
 
     @property
-    def tool_status(self) -> StateModel:
+    def tool_status(self) -> pydantic.BaseModel:
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement the tool_status property."
         )
 
     @tool_status.setter
-    def tool_status(self, status: StateModel) -> None:
+    def tool_status(self, status: pydantic.BaseModel) -> None:
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement the tool_status property."
         )
