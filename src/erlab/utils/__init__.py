@@ -16,6 +16,7 @@ package.
    array
    parallel
    formatting
+   hashing
    misc
 
 """

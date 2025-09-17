@@ -1,3 +1,3 @@
-__all__ = ["array", "formatting", "misc", "parallel"]
+__all__ = ["array", "formatting", "hashing", "misc", "parallel"]
 
-from . import array, formatting, misc, parallel
+from . import array, formatting, hashing, misc, parallel
