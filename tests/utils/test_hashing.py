@@ -96,3 +96,22 @@ def test_fingerprint_dataarray() -> None:
         d2[0, 0] += 1
         d_da3 = xr.DataArray(da.from_array(d2, chunks=(5, 5)), dims=("x", "y"))
         assert fingerprint_dataarray(d_da3) != dfp1
+
+
+def test_fingerprint_dataarray_large() -> None:
+    rng = np.random.default_rng(0)
+    xvals = np.linspace(0, 1, 1000)
+    yvals = np.linspace(0, 10, 2000)
+    darr = xr.DataArray(
+        rng.normal(size=(1000, 2000)).astype(np.float64),
+        dims=("x", "y"),
+        coords={"x": xvals, "y": yvals},
+    )
+
+    # Fingerprint for large array
+    fp = fingerprint_dataarray(darr)
+
+    # Fingerprint for different values
+    fp_new = fingerprint_dataarray(darr.copy(data=darr.values * 2))
+
+    assert fp != fp_new
