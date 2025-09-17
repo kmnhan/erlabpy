@@ -1,7 +1,6 @@
 """Utilities that don't fit in any other category."""
 
 __all__ = [
-    "LazyImport",
     "emit_user_level_warning",
     "is_interactive",
     "is_newer_version",
@@ -9,8 +8,6 @@ __all__ = [
     "open_in_file_manager",
 ]
 
-import functools
-import importlib
 import inspect
 import os
 import pathlib
@@ -19,7 +16,6 @@ import sys
 import typing
 import warnings
 from collections.abc import Sequence
-from types import ModuleType
 
 import numpy as np
 
@@ -92,44 +88,6 @@ def emit_user_level_warning(message, category=None) -> None:
     """Emit a warning at the user level by inspecting the stack trace."""
     stacklevel = _find_stack_level()
     return warnings.warn(message, category=category, stacklevel=stacklevel)
-
-
-class LazyImport:
-    """Lazily import a module when an attribute is accessed.
-
-    Used to delay the import of a module until it is actually needed.
-
-    Parameters
-    ----------
-    module_name : str
-        The name of the module to be imported lazily.
-    err_msg : str, optional
-        If present, this message will be displayed in the ImportError raised when the
-        accessed module is not found.
-
-    Examples
-    --------
-    >>> np = LazyImport("numpy")
-    >>> np.array([1, 2, 3])
-    array([1, 2, 3])
-
-    """
-
-    def __init__(self, module_name: str, err_msg: str | None = None) -> None:
-        self._module_name = module_name
-        self._err_msg = err_msg
-
-    def __getattr__(self, item: str) -> typing.Any:
-        return getattr(self._module, item)
-
-    @functools.cached_property
-    def _module(self) -> ModuleType:
-        if (self._err_msg is not None) and (
-            not importlib.util.find_spec(self._module_name)
-        ):
-            raise ImportError(self._err_msg)
-
-        return importlib.import_module(self._module_name)
 
 
 _T = typing.TypeVar("_T")

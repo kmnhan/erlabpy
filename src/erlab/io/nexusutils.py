@@ -15,19 +15,17 @@ import xarray as xr
 
 if typing.TYPE_CHECKING:
     import h5py
-    from nexusformat import nexus
-
 else:
     import lazy_loader as _lazy
 
-    import erlab
-
     h5py = _lazy.load("h5py")
 
-    nexus = erlab.utils.misc.LazyImport(
-        "nexusformat.nexus",
-        err_msg="The `nexusformat` package is required to read NeXus files",
-    )
+try:
+    from nexusformat import nexus
+except ImportError as e:
+    raise ImportError(
+        "The `nexusformat` package is required to read NeXus files"
+    ) from e
 
 
 def _parse_value(value):
