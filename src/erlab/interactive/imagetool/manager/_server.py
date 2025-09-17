@@ -3,40 +3,45 @@
 from __future__ import annotations
 
 __all__ = [
+    "HOST_IP",
     "PORT",
+    "PORT_WATCH",
+    "fetch",
     "is_running",
     "load_in_manager",
     "replace_data",
     "show_in_manager",
+    "unwatch_data",
+    "watch_data",
 ]
 
-import concurrent.futures
-import contextlib
 import errno
+import functools
+import io
 import logging
 import os
 import pathlib
 import pickle
 import socket
-import struct
-import tempfile
 import threading
 import typing
-import uuid
 
+import pydantic
 import xarray as xr
+import zmq
 from qtpy import QtCore
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Callable, Collection, Iterable
 
     import numpy.typing as npt
 
 
 logger = logging.getLogger(__name__)
+
 
 PORT: int = int(os.getenv("ITOOL_MANAGER_PORT", "45555"))
 """Port number for the manager server.
@@ -45,173 +50,321 @@ The default port number 45555 can be overridden by setting the environment varia
 ``ITOOL_MANAGER_PORT``.
 """
 
+PORT_WATCH: int = int(os.getenv("ITOOL_MANAGER_PORT_WATCH", "45556"))
+"""Port number for the manager server's watch channel.
 
-def _save_pickle(obj: typing.Any, filename: str) -> None:
-    with open(filename, "wb") as file:
-        pickle.dump(obj, file, protocol=-1)
+The default port number 45556 can be overridden by setting the environment variable
+``ITOOL_MANAGER_PORT_WATCH``.
+"""
+
+HOST_IP: str = str(os.getenv("ITOOL_MANAGER_HOST", "localhost"))
+"""Host IP address for the manager server.
+
+The default host IP address "localhost" can be overridden by setting the environment
+variable ``ITOOL_MANAGER_HOST``, enabling remote connections.
+"""
 
 
-def _load_pickle(filename: str) -> typing.Any:
-    with open(filename, "rb") as file:
-        return pickle.load(file)
+class _BasePacket(pydantic.BaseModel):
+    """Base class for packets sent to the server."""
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
-def _recv_all(conn, size):
-    data = b""
-    while len(data) < size:
-        part = conn.recv(size - len(data))
-        data += part
-    return data
+class AddDataPacket(_BasePacket):
+    """Packet structure for adding new data to the manager."""
+
+    packet_type: typing.Literal["add"]
+    data_list: list[xr.DataArray] | list[xr.Dataset]
+    arguments: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+
+class OpenFilesPacket(_BasePacket):
+    """Packet structure for opening files in the manager."""
+
+    packet_type: typing.Literal["open"]
+    filename_list: list[str]
+    loader_name: str
+    arguments: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+
+class ReplacePacket(_BasePacket):
+    """Packet structure for replacing data in existing ImageTool windows."""
+
+    packet_type: typing.Literal["replace"]
+    data_list: list[xr.DataArray]
+    replace_idxs: list[int]
+
+
+class WatchPacket(_BasePacket):
+    """Packet structure for watching a variable."""
+
+    packet_type: typing.Literal["watch"]
+    watched_info: tuple[str, str]
+    watched_data: xr.DataArray
+
+
+class CommandPacket(_BasePacket):
+    """Packet structure for sending commands to the server."""
+
+    packet_type: typing.Literal["command"]
+    command: typing.Literal[
+        "get-data", "remove-idx", "show-idx", "remove-uid", "show-uid", "unwatch-uid"
+    ]
+    command_arg: str | int | None = None
+
+
+PacketVariant = typing.Annotated[
+    AddDataPacket | OpenFilesPacket | ReplacePacket | WatchPacket | CommandPacket,
+    pydantic.Field(discriminator="packet_type"),
+]
+
+Packet: pydantic.TypeAdapter = pydantic.TypeAdapter(PacketVariant)
+
+
+class Response(pydantic.BaseModel):
+    """Response for server replies."""
+
+    status: typing.Literal["ok", "error"]
+    data: xr.DataArray | None = None
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+def _send_multipart(sock: zmq.Socket, obj: typing.Any, **kwargs) -> None:
+    """Send a Python object as a multipart ZeroMQ message using pickle protocol 5."""
+    buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
+    bio = io.BytesIO()
+    p = pickle.Pickler(bio, protocol=5, buffer_callback=buffers.append)
+    p.dump(obj)
+    header = memoryview(bio.getbuffer())
+    frames = [header] + [memoryview(b) for b in buffers]
+    sock.send_multipart(frames, copy=False, **kwargs)
+
+
+def _recv_multipart(sock: zmq.Socket, **kwargs) -> typing.Any:
+    """Receive a multipart ZeroMQ message and reconstruct the Python object."""
+    parts = sock.recv_multipart(copy=False, **kwargs)
+    return pickle.loads(parts[0].buffer, buffers=[f.buffer for f in parts[1:]])
+
+
+def _query_zmq(payload: PacketVariant) -> Response:
+    """Client side function to send a packet to the server and receive a response.
+
+    Parameters
+    ----------
+    payload
+        The packet to send to the server. The packet formats are defined as pydantic
+        models.
+
+    """
+    ctx = zmq.Context.instance()
+
+    sock: zmq.Socket = ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.SNDHWM, 0)
+    sock.setsockopt(zmq.RCVHWM, 0)
+    try:
+        logger.info("Connecting to server...")
+        sock.connect(f"tcp://{HOST_IP}:{PORT}")
+    except Exception:
+        logger.exception("Failed to connect to server")
+    else:
+        logger.debug("Sending request %s", payload)
+        _send_multipart(sock, payload.model_dump(exclude_unset=True))
+        # Wait for a response
+        try:
+            response = Response(**_recv_multipart(sock))
+        except Exception:
+            logger.exception("Failed to receive response from server")
+            response = Response(status="error")
+    finally:
+        sock.close()
+
+    return response
+
+
+_UNSET = object()
+
+
+class _WatcherServer(QtCore.QThread):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stopped = threading.Event()
+
+        self._ret_val: typing.Any = _UNSET
+        self._mutex = QtCore.QMutex()
+        self._cv = QtCore.QWaitCondition()
+
+    @QtCore.Slot(str, str, str)
+    def send_parameters(
+        self,
+        varname: str,
+        uid: str,
+        event: typing.Literal["updated", "removed", "shutdown"],
+    ) -> None:
+        with QtCore.QMutexLocker(self._mutex):
+            self._ret_val = (varname, uid, event)
+            self._cv.wakeAll()
+
+    def run(self) -> None:
+        self.stopped.clear()
+        logger.debug("Starting watcher server...")
+
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.PUB)
+
+        try:
+            sock.bind(f"tcp://*:{PORT_WATCH}")
+            logger.info("Watcher server is listening...")
+
+            while not self.stopped.is_set():
+                with QtCore.QMutexLocker(self._mutex):
+                    while self._ret_val is _UNSET:
+                        self._cv.wait(self._mutex)
+                    varname, uid, event = self._ret_val
+                    self._ret_val = _UNSET
+
+                if event == "shutdown":
+                    break
+
+                logger.debug(
+                    "Sending watched variable update for %s:%s[%s]", varname, uid, event
+                )
+                sock.send_json({"varname": varname, "uid": uid, "event": event})
+
+        except Exception:
+            logger.exception("Watcher server encountered an error")
+        finally:
+            sock.close()
+            logger.debug("Watcher socket closed")
 
 
 class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
     sigLoadRequested = QtCore.Signal(list, str, dict)
     sigReplaceRequested = QtCore.Signal(list, list)
+    sigWatchedVarChanged = QtCore.Signal(str, str, object)
+
+    sigDataRequested = QtCore.Signal(object)
+    sigRemoveIndex = QtCore.Signal(int)
+    sigShowIndex = QtCore.Signal(int)
+    sigRemoveUID = QtCore.Signal(str)
+    sigShowUID = QtCore.Signal(str)
+    sigUnwatchUID = QtCore.Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         self.stopped = threading.Event()
 
-    def _handle_client(self, conn: socket.socket) -> None:
-        with conn:
-            # If no data is received in 2 seconds, close the connection
-            conn.settimeout(2.0)
+        self._ret_val: typing.Any = _UNSET
+        self._mutex = QtCore.QMutex()
+        self._cv = QtCore.QWaitCondition()
 
-            # Receive the size of the data first
-            data_size_bytes = _recv_all(conn, 4)
-            data_size = struct.unpack(">L", data_size_bytes)[0]
-
-            # Receive the actual data
-            kwargs_bytes = _recv_all(conn, data_size)
-
-            try:
-                kwargs: dict = pickle.loads(kwargs_bytes)
-                logger.debug("Received data: %s", kwargs)
-
-                if "__ping" in kwargs:
-                    logger.debug("Received ping")
-                    return
-
-                # kwargs["__filename"] contains the list of paths to pickled data
-
-                # If "__loader_name" key is present, kwargs["__filename"] will be a list
-                # of paths to raw data files instead
-
-                files = kwargs.pop("__filename")
-                loader_name = kwargs.pop("__loader_name", None)
-
-                # If key "__replace_idxs" is present, replaces data in existing tools
-                # instead of adding new ones. Other kwargs are ignored.
-
-                replace_index_list = kwargs.pop("__replace_idxs", None)
-
-                if loader_name is not None:
-                    self.sigLoadRequested.emit(files, loader_name, kwargs)
-                    logger.debug("Emitted file and loader info")
-                else:
-                    if replace_index_list:
-                        self.sigReplaceRequested.emit(
-                            [_load_pickle(f) for f in files], replace_index_list
-                        )
-                    else:
-                        self.sigReceived.emit([_load_pickle(f) for f in files], kwargs)
-                    logger.debug("Emitted loaded data")
-                    # Clean up temporary files
-                    for f in files:
-                        os.remove(f)
-                        dirname = os.path.dirname(f)
-                        if os.path.isdir(dirname):
-                            with contextlib.suppress(OSError):
-                                os.rmdir(dirname)
-                    logger.debug("Cleaned up temporary files")
-
-            except (
-                pickle.UnpicklingError,
-                AttributeError,
-                EOFError,
-                ImportError,
-                IndexError,
-            ):
-                logger.exception("Failed to unpickle received data")
+    @QtCore.Slot(object)
+    def set_return_value(self, value: typing.Any) -> None:
+        with QtCore.QMutexLocker(self._mutex):
+            self._ret_val = value
+            self._cv.wakeAll()
 
     def run(self) -> None:
         self.stopped.clear()
         logger.debug("Starting server...")
 
-        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.REP)
+        sock.setsockopt(zmq.SNDHWM, 0)
+        sock.setsockopt(zmq.RCVHWM, 0)
 
         try:
-            soc.bind(("127.0.0.1", PORT))
-            soc.listen()
+            sock.bind(f"tcp://*:{PORT}")
             logger.info("Server is listening...")
 
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                while not self.stopped.is_set():
-                    try:
-                        soc.settimeout(1.0)
-                        conn, addr = soc.accept()
-                        logger.debug("Connection accepted from %s", addr)
-                        executor.submit(self._handle_client, conn)
-                    except TimeoutError:
-                        # Timeout occurred, continue to accept new connections
-                        continue
-                    except Exception:
-                        if not self.stopped.is_set():
-                            logger.exception(
-                                "Unexpected error while accepting connection"
-                            )
-                        break
+            while not self.stopped.is_set():
+                try:
+                    payload = Packet.validate_python(
+                        _recv_multipart(sock, flags=zmq.NOBLOCK)
+                    )
+                except zmq.Again:
+                    self.msleep(10)
+                    continue
+
+                logger.debug("Received payload with type %s", payload.packet_type)
+                match payload.packet_type:
+                    case "add":
+                        self.sigReceived.emit(payload.data_list, payload.arguments)
+                    case "open":
+                        self.sigLoadRequested.emit(
+                            payload.filename_list,
+                            payload.loader_name,
+                            payload.arguments,
+                        )
+                    case "watch":
+                        self.sigWatchedVarChanged.emit(
+                            *payload.watched_info, payload.watched_data
+                        )
+                    case "replace":
+                        self.sigReplaceRequested.emit(
+                            payload.data_list, payload.replace_idxs
+                        )
+                    case "command":
+                        logger.info("Processing command: %s", payload.command)
+                        match payload.command:
+                            case "get-data":
+                                self.sigDataRequested.emit(payload.command_arg)
+                                logger.info("Getting data...")
+                                with QtCore.QMutexLocker(self._mutex):
+                                    while self._ret_val is _UNSET:
+                                        self._cv.wait(self._mutex)
+                                    data = self._ret_val
+                                    self._ret_val = _UNSET
+
+                                logger.info("Data obtained, sending response...")
+                                _send_multipart(sock, {"status": "ok", "data": data})
+                                logger.debug("Response sent")
+
+                                continue
+                            case "remove-idx":
+                                self.sigRemoveIndex.emit(int(payload.command_arg))
+                            case "show-idx":
+                                self.sigShowIndex.emit(int(payload.command_arg))
+                            case "remove-uid":
+                                self.sigRemoveUID.emit(str(payload.command_arg))
+                            case "show-uid":
+                                self.sigShowUID.emit(str(payload.command_arg))
+                            case "unwatch-uid":
+                                self.sigUnwatchUID.emit(str(payload.command_arg))
+
+                logger.debug("Sending response...")
+                _send_multipart(sock, {"status": "ok"})
+                logger.debug("Response sent")
+
         except Exception:
             logger.exception("Server encountered an error")
         finally:
-            soc.close()
+            sock.close()
             logger.debug("Socket closed")
 
 
-def _send_dict(contents: dict[str, typing.Any]) -> None:
-    contents = pickle.dumps(contents, protocol=-1)
-
-    logger.debug("Connecting to server")
-    client_socket = socket.socket()
-
-    try:
-        client_socket.connect(("localhost", PORT))
-    except Exception:
-        logger.exception("Failed to connect to server")
-    else:
-        # Send the size of the data first
-        logger.debug("Sending data")
-        client_socket.sendall(struct.pack(">L", len(contents)))
-        client_socket.sendall(contents)
-    finally:
-        client_socket.close()
-
-    logger.debug("Data sent successfully")
-
-
-def _ping_server() -> bool:
+def _ping_server(timeout=1.0) -> bool:
     """Ping the ImageToolManager server.
+
+    Checks if the server is running by attempting to establish a TCP connection.
+
+    Parameters
+    ----------
+    timeout : float
+        Timeout in seconds to wait for the ping response.
 
     Returns
     -------
     bool
         True if the ping was successful, False otherwise.
     """
-    client_socket = socket.socket()
-
-    to_send = pickle.dumps({"__ping": True}, protocol=-1)
     try:
-        client_socket.connect(("localhost", PORT))
+        with socket.create_connection((HOST_IP, PORT), timeout=timeout):
+            return True  # TCP handshake succeeded
     except (TimeoutError, ConnectionRefusedError):
         return False
-    else:
-        client_socket.sendall(struct.pack(">L", len(to_send)))
-        client_socket.sendall(to_send)
-    finally:
-        client_socket.close()
-    return True
 
 
 def is_running() -> bool:
@@ -227,9 +380,25 @@ def is_running() -> bool:
     return _ping_server()
 
 
+def _manager_running(func: Callable) -> Callable:
+    """Decorate a function to ensure that the ImageToolManager is running."""
+
+    @functools.wraps(func)
+    def _wrapper(*args, **kwargs):
+        if not erlab.interactive.imagetool.manager.is_running():
+            raise RuntimeError(
+                "ImageToolManager is not running. Please start the ImageToolManager "
+                "application before using this function"
+            )
+        return func(*args, **kwargs)
+
+    return _wrapper
+
+
+@_manager_running
 def load_in_manager(
     paths: Iterable[str | os.PathLike], loader_name: str, **load_kwargs
-) -> None:
+) -> Response | None:
     """Load and display data in the ImageToolManager.
 
     Parameters
@@ -242,12 +411,6 @@ def load_in_manager(
     **load_kwargs
         Additional keyword arguments passed onto the load method of the loader.
     """
-    if not erlab.interactive.imagetool.manager.is_running():
-        raise RuntimeError(
-            "ImageToolManager is not running. Please start the ImageToolManager "
-            "application before using this function"
-        )
-
     path_list: list[str] = []
     for p in paths:
         path = pathlib.Path(p)
@@ -267,22 +430,28 @@ def load_in_manager(
         erlab.interactive.imagetool.manager._manager_instance._data_load(
             path_list, loader, load_kwargs
         )
-        return
+        return None
 
-    load_kwargs["__filename"] = path_list
-    load_kwargs["__loader_name"] = loader
+    return _query_zmq(
+        OpenFilesPacket(
+            packet_type="open",
+            filename_list=path_list,
+            loader_name=loader,
+            arguments=load_kwargs,
+        )
+    )
 
-    _send_dict(load_kwargs)
 
-
+@_manager_running
 def show_in_manager(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
-    | xr.DataTree,
+    | xr.DataTree
+    | None,
     **kwargs,
-) -> None:
+) -> Response | None:
     """Create and display ImageTool windows in the ImageToolManager.
 
     Parameters
@@ -301,17 +470,13 @@ def show_in_manager(
         <erlab.interactive.imagetool.ImageTool>`.
 
     """
-    if not erlab.interactive.imagetool.manager.is_running():
-        raise RuntimeError(
-            "ImageToolManager is not running. Please start the ImageToolManager "
-            "application before using this function"
-        )
-
     logger.debug("Parsing input data into DataArrays")
 
     if isinstance(data, xr.Dataset) and _ITOOL_DATA_NAME in data:
         # Dataset created with ImageTool.to_dataset()
         input_data: list[xr.DataArray] | list[xr.Dataset] = [data]
+    elif data is None:
+        input_data = []
     else:
         input_data = erlab.interactive.imagetool.core._parse_input(data)
 
@@ -323,25 +488,14 @@ def show_in_manager(
         erlab.interactive.imagetool.manager._manager_instance._data_recv(
             input_data, kwargs
         )
-        return
+        return None
 
-    # Save the data to a temporary file
-    logger.debug("Pickling data to temporary files")
-    tmp_dir = tempfile.mkdtemp(prefix="erlab_manager_")
-
-    files: list[str] = []
-
-    for dat in input_data:
-        fname = str(uuid.uuid4())
-        fname = os.path.join(tmp_dir, fname)
-        _save_pickle(dat.load(), fname)
-        files.append(fname)
-
-    kwargs["__filename"] = files
-
-    _send_dict(kwargs)
+    return _query_zmq(
+        AddDataPacket(packet_type="add", data_list=input_data, arguments=kwargs)
+    )
 
 
+@_manager_running
 def replace_data(
     index: int | Collection[int],
     data: Collection[xr.DataArray | npt.NDArray]
@@ -349,7 +503,7 @@ def replace_data(
     | npt.NDArray
     | xr.Dataset
     | xr.DataTree,
-) -> None:
+) -> Response:
     """Replace data in existing ImageTool windows.
 
     Parameters
@@ -376,4 +530,107 @@ def replace_data(
             f"and provided indices ({len(index)})"
         )
 
-    show_in_manager(data_list, __replace_idxs=index)
+    return _query_zmq(
+        ReplacePacket(
+            packet_type="replace", data_list=data_list, replace_idxs=list(index)
+        )
+    )
+
+
+@_manager_running
+def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:
+    """Add or update a watched variable in the ImageToolManager.
+
+    Parameters
+    ----------
+    varname
+        Name of the watched variable.
+    uid
+        Unique identifier for the watched variable.
+    data
+        New data for the watched variable.
+    show
+        If `True`, bring the corresponding ImageTool window to the front. Default is
+        `False`. If this is a new variable being watched, a new ImageTool window will be
+        created and shown regardless of this parameter.
+    """
+    _query_zmq(
+        WatchPacket(packet_type="watch", watched_info=(varname, uid), watched_data=data)
+    )
+    if show:
+        _query_zmq(
+            CommandPacket(packet_type="command", command="show-uid", command_arg=uid)
+        )
+
+
+@_manager_running
+def unwatch_data(uid: str, remove: bool = False) -> Response:
+    """Cancel watching a variable in the ImageToolManager.
+
+    Parameters
+    ----------
+    uid
+        Unique identifier for the watched variable.
+    remove
+        Whether to remove the corresponding ImageTool window when unwatching. Default is
+        `False`.
+    """
+    if remove:
+        return _query_zmq(
+            CommandPacket(packet_type="command", command="remove-uid", command_arg=uid)
+        )
+    return _query_zmq(
+        CommandPacket(packet_type="command", command="unwatch-uid", command_arg=uid)
+    )
+
+
+def _remove_idx(index: int) -> Response:
+    """Remove the ImageTool window at the given index.
+
+    Parameters
+    ----------
+    index
+        Index of the ImageTool window to close.
+    """
+    return _query_zmq(
+        CommandPacket(packet_type="command", command="remove-idx", command_arg=index)
+    )
+
+
+def _show_idx(index: int) -> Response:
+    """Show the ImageTool window at the given index.
+
+    Parameters
+    ----------
+    index
+        Index of the ImageTool window to show.
+    """
+    return _query_zmq(
+        CommandPacket(packet_type="command", command="show-idx", command_arg=index)
+    )
+
+
+@_manager_running
+def fetch(index: int | str) -> xr.DataArray | None:
+    """Get data from the ImageTool window at the given index.
+
+    Parameters
+    ----------
+    index
+        Index of the ImageTool window to get data from, or the unique identifier (UID)
+        of a watched variable (used internally).
+
+    Returns
+    -------
+    xr.DataArray or None
+        The data in the ImageTool window at the given index, or `None` if the index is
+        invalid or the data cannot be retrieved.
+    """
+    if (
+        erlab.interactive.imagetool.manager._manager_instance is not None
+        and not erlab.interactive.imagetool.manager._always_use_socket
+    ):
+        return erlab.interactive.imagetool.manager._manager_instance._get_data(index)
+    return _query_zmq(
+        CommandPacket(packet_type="command", command="get-data", command_arg=index)
+    ).data

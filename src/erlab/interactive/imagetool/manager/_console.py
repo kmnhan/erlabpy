@@ -64,6 +64,7 @@ class ToolNamespace:
     @data.setter
     def data(self, value: xr.DataArray) -> None:
         self.tool.slicer_area.set_data(value)
+        self.tool.slicer_area.sigDataEdited.emit()
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):

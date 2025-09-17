@@ -18,7 +18,7 @@ This module provides a GUI application for managing multiple ImageTool windows. 
 application can be started by running the script `itool-manager` from the command line
 in the environment where the package is installed.
 
-Python scripts communicate with the manager using a socket connection with the default
+Python scripts communicate with the manager using a ZeroMQ connection with the default
 port number 45555. The port number can be changed by setting the environment variable
 ``ITOOL_MANAGER_PORT``.
 
@@ -27,13 +27,18 @@ port number 45555. The port number can be changed by setting the environment var
 from __future__ import annotations
 
 __all__ = [
+    "HOST_IP",
     "PORT",
+    "PORT_WATCH",
     "ImageToolManager",
+    "fetch",
     "is_running",
     "load_in_manager",
     "main",
     "replace_data",
     "show_in_manager",
+    "unwatch_data",
+    "watch_data",
 ]
 
 
@@ -46,11 +51,16 @@ from qtpy import QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool.manager._mainwindow import _ICON_PATH, ImageToolManager
 from erlab.interactive.imagetool.manager._server import (
+    HOST_IP,
     PORT,
+    PORT_WATCH,
+    fetch,
     is_running,
     load_in_manager,
     replace_data,
     show_in_manager,
+    unwatch_data,
+    watch_data,
 )
 
 logger = logging.getLogger(__name__)

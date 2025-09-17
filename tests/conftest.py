@@ -33,7 +33,7 @@ DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 # Headless mode for Qt
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 # Limit numexpr to a single thread; this reduces probability of segfaults
 numexpr.set_num_threads(1)
