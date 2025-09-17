@@ -31,12 +31,10 @@ import erlab
 
 if typing.TYPE_CHECKING:
     import joblib
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
     joblib = _lazy.load("joblib")
-    tqdm = erlab.utils.misc.LazyImport("tqdm.auto")
 
 
 def correct_with_edge(
@@ -321,6 +319,8 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
+        import tqdm.auto as tqdm
+
         fit_result = tqdm.tqdm(
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])

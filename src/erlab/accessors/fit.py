@@ -1,8 +1,13 @@
-"""Defines accessors for curve fitting."""
+"""Defines accessors for curve fitting.
+
+All accessors in this module have been deprecated in favor of using `xarray-lmfit
+<https://xarray-lmfit.readthedocs.io/stable/>`_ directly.
+
+"""
 
 from __future__ import annotations
 
-__all__ = ["ParallelFitDataArrayAccessor"]
+__all__ = []
 
 import typing
 import warnings
@@ -14,14 +19,10 @@ from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 if typing.TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
     import lmfit
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
-    from erlab.utils.misc import LazyImport
-
     lmfit = _lazy.load("lmfit")
-    tqdm = LazyImport("tqdm.auto")
 
 
 @xr.register_dataset_accessor("modelfit")

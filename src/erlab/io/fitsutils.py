@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 __all__ = ["fits_to_xarray", "load_fits7"]
+
 import typing
 
 import numpy as np
@@ -13,12 +14,11 @@ if typing.TYPE_CHECKING:
     import os
     from collections.abc import Hashable
 
+
+try:
     from astropy.io import fits
-else:
-    fits = erlab.utils.misc.LazyImport(
-        "astropy.io.fits",
-        err_msg="The `astropy` package is required to handle FITS files",
-    )
+except ImportError as e:
+    raise ImportError("The `astropy` package is required to handle FITS files") from e
 
 
 class AxisInfo(typing.TypedDict):

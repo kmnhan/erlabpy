@@ -51,14 +51,10 @@ if typing.TYPE_CHECKING:
     )
 
     import joblib
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
-    from erlab.utils.misc import LazyImport
-
     joblib = _lazy.load("joblib")
-    tqdm = LazyImport("tqdm.auto")
 
 
 class ValidationWarning(UserWarning):
@@ -2023,6 +2019,7 @@ class LoaderBase(metaclass=_Loader):
                 return joblib.Parallel(**self.parallel_kwargs)(
                     joblib.delayed(_load_func)(f) for f in file_paths
                 )
+        import tqdm.auto as tqdm
 
         return [_load_func(f) for f in tqdm.tqdm(file_paths, **tqdm_kw)]
 
