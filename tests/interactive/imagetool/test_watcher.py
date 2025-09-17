@@ -282,9 +282,9 @@ def test_watcher_real(qtbot):
     manager.show()
 
     # Start IPython session
-    from IPython.testing.globalipapp import get_ipython
+    from IPython.testing.globalipapp import start_ipython
 
-    ip_session: IPython.InteractiveShell = get_ipython()
+    ip_session: IPython.InteractiveShell = start_ipython()
 
     # Load extension
     ip_session.run_line_magic("load_ext", "erlab.interactive")
@@ -364,3 +364,4 @@ def test_watcher_real(qtbot):
     ip_session.user_ns.clear()  # Clear the user namespace
 
     ip_session.clear_instance()
+    del start_ipython.already_called
