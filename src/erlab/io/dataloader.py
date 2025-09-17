@@ -1910,9 +1910,7 @@ class LoaderBase(metaclass=_Loader):
             )
 
         if isinstance(data, xr.DataTree):
-            return typing.cast(
-                "xr.DataTree", data.map_over_datasets(self.post_process_general)
-            )
+            return data.map_over_datasets(self.post_process_general)
 
         raise TypeError(
             "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
