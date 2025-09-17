@@ -101,6 +101,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     icon_border_width: float = 1.5
     icon_corner_radius: float = 5.0
 
+    info_rect_hpad: int = 5
+
     def __init__(
         self, manager: ImageToolManager, parent: _ImageToolWrapperListView
     ) -> None:
@@ -200,6 +202,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         else:
             painter.fillRect(option.rect, option.palette.base())
 
+        # Get tool wrapper
+        tool_wrapper: _ImageToolWrapper = self.manager._tool_wrappers[
+            index.data(role=_WrapperItemDataRole.ToolIndexRole)
+        ]
+
         # Draw text only if not editing
         view = typing.cast("_ImageToolWrapperListView", self.parent())
         is_editing: bool = (
@@ -231,12 +238,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 elided_text,
             )
 
-        tool_wrapper: _ImageToolWrapper = self.manager._tool_wrappers[
-            index.data(role=_WrapperItemDataRole.ToolIndexRole)
-        ]
+        is_linked: bool = (
+            not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked
+        )
+
+        is_watched: bool = tool_wrapper._watched_varname is not None
 
         # Draw icon for linked tools
-        if not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked:
+        if is_linked:
             icon_x = option.rect.right() - self.icon_width - self.icon_right_pad
             icon_y = option.rect.center().y() - self.icon_height // 2
 
@@ -267,6 +276,54 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 QtCore.QRect(icon_x, icon_y, self.icon_width, self.icon_height),
                 QtCore.Qt.AlignmentFlag.AlignRight
                 | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            )
+
+        # Draw indicator for watched variables
+        if is_watched:
+            font: QtGui.QFont = option.font
+            font.setPointSizeF(self._font_size * 0.9)
+            painter.setFont(font)
+
+            info_text: str = typing.cast("str", tool_wrapper._watched_varname)
+            metrics = QtGui.QFontMetrics(font)
+            bounding_rect = metrics.boundingRect(info_text)
+
+            info_width = bounding_rect.width() + self.info_rect_hpad * 2
+            info_height = self.icon_height + 2 * self.icon_inner_pad
+
+            left = option.rect.right() - self.icon_inner_pad - info_width - 3.0
+            if is_linked:
+                left -= self.icon_width + self.icon_right_pad
+
+            info_rect = QtCore.QRectF(
+                left,
+                option.rect.center().y() - info_height / 2,
+                info_width,
+                info_height,
+            )
+
+            color = option.palette.color(QtGui.QPalette.ColorRole.Highlight)
+            if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
+                # Accent color is available from Qt 6.6
+                color = option.palette.color(QtGui.QPalette.ColorRole.Accent)
+
+            # Draw rounded rectangle
+            _fill_rounded_rect(
+                painter,
+                info_rect,
+                facecolor=option.palette.base(),
+                edgecolor=color,
+                linewidth=self.icon_border_width,
+                radius=self.icon_corner_radius,
+            )
+
+            # Draw text
+            painter.setPen(color)
+            painter.drawText(
+                info_rect.toRect(),
+                QtCore.Qt.AlignmentFlag.AlignCenter
+                | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                info_text,
             )
 
         # Show preview on hover
@@ -581,6 +638,7 @@ class _ImageToolWrapperListView(QtWidgets.QListView):
         self._menu.addAction(manager.hide_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.remove_action)
+        self._menu.addAction(manager.unwatch_action)
         self._menu.addAction(manager.archive_action)
         self._menu.addAction(manager.unarchive_action)
         self._menu.addAction(manager.reload_action)

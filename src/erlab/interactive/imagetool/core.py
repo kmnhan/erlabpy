@@ -525,6 +525,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigCursorColorsChanged()
 
+    sigDataEdited()
+        Signal to track when the data has been modified by user actions.
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -563,6 +565,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigHistoryChanged = QtCore.Signal()  #: :meta private:
     sigWriteHistory = QtCore.Signal()  #: :meta private:
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
+    sigDataEdited = QtCore.Signal()  #: :meta private:
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:

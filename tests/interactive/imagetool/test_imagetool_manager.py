@@ -4,12 +4,13 @@ import numpy as np
 import pytest
 import xarray as xr
 import xarray.testing
+from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager import ImageToolManager, fetch
 from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _RenameDialog,
@@ -56,6 +57,31 @@ def make_drop_event(filename: str) -> QtGui.QDropEvent:
     )
 
 
+class ZmqRequester(QtCore.QObject):
+    finished = QtCore.Signal(object)
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+
+    @QtCore.Slot()
+    def run(self):
+        self.finished.emit(self._fn(*self._args, **self._kwargs))
+
+
+def query(parent, fn, *args, **kwargs):
+    # Run a function in a separate thread and return the thread and a signal that emits
+    # when the function is done
+    parent._query_thread = QtCore.QThread(parent)  # keep refs!
+    parent._query_worker = ZmqRequester(fn, *args, **kwargs)
+    parent._query_worker.moveToThread(parent._query_thread)
+    parent._query_thread.started.connect(parent._query_worker.run)
+    parent._query_worker.finished.connect(parent._query_thread.quit)
+    return parent._query_thread, parent._query_worker.finished
+
+
 @pytest.mark.parametrize("use_socket", [True, False], ids=["socket", "no_socket"])
 def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     erlab.interactive.imagetool.manager._always_use_socket = use_socket
@@ -70,6 +96,11 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    th, sig = query(manager, fetch, 0)
+    with qtbot.waitSignal(sig) as blocker:
+        th.start()
+    xr.testing.assert_identical(blocker.args[0], test_data)
 
     # Add two tools
     for tool in itool([test_data, test_data], link=False, execute=False, manager=False):
@@ -546,6 +577,10 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     manager.console._console_widget.execute(r"%itool example_data --cmap viridis")
     qtbot.wait_until(lambda: manager.ntools == 1)
     assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+
+    # Destroy console
+    manager.console._console_widget.shutdown_kernel()
+    InteractiveShell.clear_instance()
 
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)

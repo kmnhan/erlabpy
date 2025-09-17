@@ -28,7 +28,7 @@ from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperListView
 from erlab.interactive.imagetool.manager._server import (
     _ManagerServer,
-    _ping_server,
+    _WatcherServer,
     show_in_manager,
 )
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
@@ -131,13 +131,32 @@ class ImageToolManager(QtWidgets.QMainWindow):
     _sigDataReplaced = QtCore.Signal()  #: :meta private:
     # Signal emitted when data is replaced in the manager, for testing purposes.
 
+    _sigReplyData = QtCore.Signal(object)  #: :meta private:
+    # Signal emitted to reply data requests.
+
+    _sigWatchedDataEdited = QtCore.Signal(str, str, str)  #: :meta private:
+    # Signal emitted to notify ipython watchers of data changes.
+
     def __init__(self) -> None:
         super().__init__()
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
         self.server.sigReplaceRequested.connect(self._data_replace)
+
+        self.server.sigDataRequested.connect(self._send_data)
+        self._sigReplyData.connect(self.server.set_return_value)
+        self.server.sigRemoveIndex.connect(self.remove_tool)
+        self.server.sigShowIndex.connect(self.show_tool)
+        self.server.sigRemoveUID.connect(self._remove_uid)
+        self.server.sigShowUID.connect(self._show_uid)
+        self.server.sigUnwatchUID.connect(self._data_unwatch)
+        self.server.sigWatchedVarChanged.connect(self._data_watched_update)
         self.server.start()
+
+        self.watcher_server: _WatcherServer = _WatcherServer()
+        self._sigWatchedDataEdited.connect(self.watcher_server.send_parameters)
+        self.watcher_server.start()
 
         # Shared memory for detecting multiple instances
         # No longer used starting from v3.8.2, but kept for backward compatibility
@@ -249,6 +268,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.reload_action.triggered.connect(self.reload_selected)
         self.reload_action.setToolTip("Reload data from file for selected windows")
         self.reload_action.setVisible(False)
+
+        self.unwatch_action = QtWidgets.QAction("Unwatch", self)
+        self.unwatch_action.triggered.connect(self.unwatch_selected)
+        self.unwatch_action.setToolTip("Unwatch selected windows")
+        self.unwatch_action.setVisible(False)
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
@@ -467,7 +491,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         idx = self._linkers.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
-    def add_tool(self, tool: ImageTool, activate: bool = False) -> int:
+    def add_tool(
+        self,
+        tool: ImageTool,
+        activate: bool = False,
+        *,
+        watched_var: tuple[str, str] | None = None,
+    ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
         Parameters
@@ -476,6 +506,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ImageTool object to be added.
         activate
             Whether to focus on the window after adding, by default `False`.
+        watched_var
+            If the tool is created from a watched variable, this should be a tuple of
+            the variable name and its unique ID.
 
         Returns
         -------
@@ -483,7 +516,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             Index of the added ImageTool window.
         """
         index = int(self.next_idx)
-        wrapper = _ImageToolWrapper(self, index, tool)
+        wrapper = _ImageToolWrapper(self, index, tool, watched_var=watched_var)
         self._tool_wrappers[index] = wrapper
         wrapper.update_title()
 
@@ -522,11 +555,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Update the state of the actions based on the current selection."""
         selection_archived: list[int] = []
         selection_unarchived: list[int] = []
+        selection_watched: list[int] = []
         for s in self.list_view.selected_tool_indices:
-            if self._tool_wrappers[s].archived:
+            wrapper = self._tool_wrappers[s]
+            if wrapper.archived:
                 selection_archived.append(s)
             else:
                 selection_unarchived.append(s)
+            if wrapper.watched:
+                selection_watched.append(s)
 
         selection_all = selection_archived + selection_unarchived
 
@@ -539,6 +576,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.hide_action.setEnabled(something_selected)
         self.remove_action.setEnabled(something_selected)
         self.rename_action.setEnabled(something_selected and only_unarchived)
+        self.duplicate_action.setEnabled(something_selected)
         self.archive_action.setEnabled(something_selected and only_unarchived)
         self.unarchive_action.setEnabled(something_selected and only_archived)
         self.concat_action.setEnabled(multiple_selected)
@@ -551,6 +589,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 self._tool_wrappers[s].slicer_area.reloadable
                 for s in selection_unarchived
             )
+        )
+        self.unwatch_action.setVisible(
+            something_selected and len(selection_watched) == len(selection_all)
         )
 
         self.link_action.setDisabled(only_archived)
@@ -581,6 +622,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 if all(p == proxies[0] for p in proxies):  # pragma: no branch
                     self.link_action.setEnabled(False)
 
+    @QtCore.Slot(int)
     def remove_tool(self, index: int) -> None:
         """Remove the ImageTool window corresponding to the given index."""
         self.list_view.tool_removed(index)
@@ -595,6 +637,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Remove all ImageTool windows."""
         for index in tuple(self._tool_wrappers.keys()):
             self.remove_tool(index)
+
+    @QtCore.Slot(int)
+    def show_tool(self, index: int) -> None:
+        """Show the ImageTool window corresponding to the given index."""
+        if index in self._tool_wrappers:
+            self._tool_wrappers[index].show()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -618,7 +666,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.unarchive_selected()
 
         for index in index_list:
-            self._tool_wrappers[index].show()
+            self.show_tool(index)
 
     @QtCore.Slot()
     def hide_selected(self) -> None:
@@ -762,6 +810,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.ensure_console_initialized()
         dialog = _StoreDialog(self, self.list_view.selected_tool_indices)
         dialog.exec()
+
+    @QtCore.Slot()
+    def unwatch_selected(self) -> None:
+        """Unwatch selected ImageTool windows."""
+        for index in self.list_view.selected_tool_indices:
+            self._tool_wrappers[index].unwatch()
 
     def rename_tool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
@@ -940,7 +994,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot(list, dict)
     def _data_recv(
-        self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, typing.Any]
+        self,
+        data: list[xr.DataArray] | list[xr.Dataset],
+        kwargs: dict[str, typing.Any],
+        *,
+        watched_var: tuple[str, str] | None = None,
     ) -> list[bool]:
         """Slot function to receive data from the server.
 
@@ -953,9 +1011,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             A list of xarray.DataArray objects representing the data.
 
             Also accepts a list of xarray.Dataset objects created with
-            ``ImageTool.to_dataset()``, in which case `kwargs` is ignored.
+            ``ImageTool.to_dataset()``, in which case all other parameters are ignored.
         kwargs
-            Additional keyword arguments.
+            Additional keyword arguments to be passed to the ImageTool.
+        watched_var
+            If the tool is created from a watched variable, this should be a tuple of
+            the variable name and its unique ID.
 
         Returns
         -------
@@ -983,7 +1044,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         for d in data:
             try:
-                indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
+                indices.append(
+                    self.add_tool(
+                        ImageTool(d, **kwargs), activate=True, watched_var=watched_var
+                    )
+                )
             except Exception as e:
                 flags.append(False)
                 self._error_creating_tool(e)
@@ -1014,7 +1079,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Replace data in the ImageTool windows with the given data."""
         for darr, idx in zip(data_list, indices, strict=True):
             if idx < 0:
-                # Replace newest index
+                # Negative index counts from the end
                 idx = sorted(self._tool_wrappers.keys())[idx]
             elif idx == self.next_idx:
                 # If not yet created, add new tool
@@ -1022,6 +1087,62 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 continue
             self.get_tool(idx).slicer_area.set_data(darr)
         self._sigDataReplaced.emit()
+
+    def _find_tool_with_uid(self, uid: str) -> int | None:
+        """Find the index of the watched tool corresponding to the given UID."""
+        for k, v in self._tool_wrappers.items():
+            if v._watched_uid == uid:
+                return k
+        return None
+
+    @QtCore.Slot(str)
+    def _remove_uid(self, uid: str) -> None:
+        """Remove the ImageTool corresponding to the given watched variable UID."""
+        idx = self._find_tool_with_uid(uid)
+        if idx is not None:  # pragma: no branch
+            self.remove_tool(idx)
+
+    @QtCore.Slot(str)
+    def _show_uid(self, uid: str) -> None:
+        """Show the ImageTool corresponding to the given watched variable UID."""
+        idx = self._find_tool_with_uid(uid)
+        if idx is not None:
+            self.show_tool(idx)
+
+    @QtCore.Slot(str, str, object)
+    def _data_watched_update(self, varname: str, uid: str, darr: xr.DataArray) -> None:
+        """Update ImageTool window corresponding to the given watched variable."""
+        idx = self._find_tool_with_uid(uid)
+        if idx is None:
+            # If the tool does not exist, create a new one
+            self._data_recv([darr], {}, watched_var=(varname, uid))
+        else:
+            # Update data in the existing tool
+            self.get_tool(idx).slicer_area.set_data(darr)
+
+    @QtCore.Slot(str)
+    def _data_unwatch(self, uid: str) -> None:
+        idx = self._find_tool_with_uid(uid)
+        if idx is not None:
+            # Convert the tool to a normal one
+            self._tool_wrappers[idx].unwatch()
+
+    @QtCore.Slot(object)
+    def _get_data(self, index_or_uid: int | str) -> xr.DataArray | None:
+        """Request data from the ImageTool window corresponding to the given index."""
+        if isinstance(index_or_uid, str):
+            index = self._find_tool_with_uid(index_or_uid)
+        else:
+            index = index_or_uid
+
+        if index not in self._tool_wrappers:
+            return None
+        return self.get_tool(index).slicer_area._data
+
+    @QtCore.Slot(object)
+    def _send_data(self, index_or_uid: int | str) -> None:
+        """Send data from the ImageTool window corresponding to the given index."""
+        self._sigReplyData.emit(self._get_data(index_or_uid))
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
@@ -1316,8 +1437,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Stop the server thread properly."""
         if self.server.isRunning():  # pragma: no branch
             self.server.stopped.set()
-            _ping_server()
             self.server.wait()
+        if self.watcher_server.isRunning():  # pragma: no branch
+            self.watcher_server.stopped.set()
+            self._sigWatchedDataEdited.emit("", "", "shutdown")
+            self.watcher_server.wait()
 
     # def __del__(self):
     # """Ensure proper cleanup of server thread when the manager is deleted."""

@@ -28,7 +28,13 @@ class _ImageToolWrapper(QtCore.QObject):
     manager such as archiving and unarchiving and window geometry tracking.
     """
 
-    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        index: int,
+        tool: ImageTool,
+        watched_var: tuple[str, str] | None = None,
+    ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
         self._index: int = index
@@ -37,6 +43,12 @@ class _ImageToolWrapper(QtCore.QObject):
         self._name: str = tool.windowTitle()
         self._archived_fname: str | None = None
         self._created_time: datetime.datetime = datetime.datetime.now()
+
+        # Information about the watched variable
+        self._watched_varname: str | None = None
+        self._watched_uid: str | None = None
+        if watched_var is not None:
+            self._watched_varname, self._watched_uid = watched_var
 
         self._info_text_archived: str = ""
 
@@ -137,6 +149,9 @@ class _ImageToolWrapper(QtCore.QObject):
             self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             self._tool.removeEventFilter(self)
             self._tool.sigTitleChanged.disconnect(self.update_title)
+            self._tool.slicer_area.sigDataEdited.disconnect(
+                self._trigger_watched_update
+            )
             self._tool.destroyed.connect(self._destroyed_callback)
             self._tool.close()
 
@@ -144,6 +159,7 @@ class _ImageToolWrapper(QtCore.QObject):
             # Install event filter to detect visibility changes
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
+            value.slicer_area.sigDataEdited.connect(self._trigger_watched_update)
             value.slicer_area._in_manager = True
 
         self._tool = value
@@ -167,6 +183,11 @@ class _ImageToolWrapper(QtCore.QObject):
         self._name = name
         typing.cast("ImageTool", self.tool).setWindowTitle(self.label_text)
         self.manager.list_view.refresh(self.index)
+
+    @property
+    def watched(self) -> bool:
+        """Whether the tool is synchronized to a variable in an IPython kernel."""
+        return self._watched_varname is not None and self._watched_uid is not None
 
     @property
     def label_text(self) -> str:
@@ -209,6 +230,34 @@ class _ImageToolWrapper(QtCore.QObject):
             if title is None:
                 title = typing.cast("ImageTool", self.tool).windowTitle()
             self.name = title
+
+    @QtCore.Slot()
+    def unwatch(self) -> None:
+        if self.watched:
+            self.manager._sigWatchedDataEdited.emit(
+                self._watched_varname, self._watched_uid, "removed"
+            )
+            self._watched_varname = None
+            self._watched_uid = None
+
+    @QtCore.Slot()
+    def _trigger_watched_update(self) -> None:
+        """Trigger an update for a watched variable in the manager.
+
+        This function notifies the listening IPython kernel to fetch the latest data for
+        the specified watched variable.
+
+        Parameters
+        ----------
+        varname
+            Name of the watched variable.
+        uid
+            Unique identifier for the watched variable.
+        """
+        if self.watched:
+            self.manager._sigWatchedDataEdited.emit(
+                self._watched_varname, self._watched_uid, "updated"
+            )
 
     @QtCore.Slot()
     def visibility_changed(self) -> None:
@@ -254,12 +303,20 @@ class _ImageToolWrapper(QtCore.QObject):
             self.tool.close()
 
     @QtCore.Slot()
-    def dispose(self) -> None:
+    def dispose(self, unwatch: bool = True) -> None:
         """Dispose the tool object.
 
         This method closes the tool window and destroys the tool object. The tool object
         is not recoverable after this operation.
+
+        Parameters
+        ----------
+        unwatch
+            If `True`, the watched variable is unwatched before disposing the tool.
+            Default is `True`.
         """
+        if unwatch and self.watched:
+            self.unwatch()
         self.tool = None
 
     @QtCore.Slot()
@@ -282,7 +339,7 @@ class _ImageToolWrapper(QtCore.QObject):
 
             self._info_text_archived = self.info_text
             self._box_ratio_archived, self._pixmap_archived = self._preview_image
-            self.dispose()
+            self.dispose(unwatch=False)
 
     @QtCore.Slot()
     def unarchive(self) -> None:

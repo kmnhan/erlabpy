@@ -221,6 +221,7 @@ class DataTransformDialog(_DataManipulationDialog):
                 erlab.interactive.itool(**itool_kw)
             else:
                 self.slicer_area.set_data(processed)
+                self.slicer_area.sigDataEdited.emit()
 
             del processed
 
