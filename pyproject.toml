@@ -49,7 +49,7 @@ dependencies = [
 complete = ["erlab[viz,io,perf,misc]"]
 viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
 io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
-perf = ["numbagg>=0.8.1"]
+perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
 misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask[distributed]>=2024.4.1"]
 
 [dependency-groups]
