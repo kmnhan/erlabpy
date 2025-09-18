@@ -387,9 +387,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
             reverse=self._sort_order == QtCore.Qt.SortOrder.DescendingOrder,
         )
 
-    def _get_sort_key_func(
-        self, column: int
-    ) -> typing.Callable[[_FileSystem], typing.Any]:
+    def _get_sort_key_func(self, column: int) -> Callable[[_FileSystem], typing.Any]:
         def name_key(item: _FileSystem) -> str:
             return item.path.name.casefold()
 
