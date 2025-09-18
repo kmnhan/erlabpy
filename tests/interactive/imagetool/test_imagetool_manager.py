@@ -282,6 +282,32 @@ def test_manager_replace(qtbot, test_data) -> None:
     manager.close()
 
 
+def test_manager_reindex(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool([test_data, test_data, test_data], manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 3)
+
+    assert manager._displayed_indices == [0, 1, 2]
+
+    # Remove tool at index 1
+    manager.remove_tool(1)
+    qtbot.wait_until(lambda: manager.ntools == 2)
+
+    assert manager._displayed_indices == [0, 2]
+
+    # Reindex
+    manager.reindex_action.trigger()
+    qtbot.wait_until(lambda: manager._displayed_indices == [0, 1], timeout=5000)
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
 def test_manager_duplicate(qtbot, test_data) -> None:
     manager = ImageToolManager()
     qtbot.addWidget(manager)

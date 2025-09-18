@@ -239,6 +239,7 @@ class _ImageToolWrapper(QtCore.QObject):
             )
             self._watched_varname = None
             self._watched_uid = None
+            self.manager.list_view.refresh(self.index)
 
     @QtCore.Slot()
     def _trigger_watched_update(self) -> None:
