@@ -66,6 +66,9 @@ def _sample_ndarray(arr: npt.NDArray, *, sample_max: int, blocks: int) -> npt.ND
 
 def _hash_numeric_array(arr: npt.NDArray, *, sample_max: int, blocks: int) -> int:
     sample = _sample_ndarray(arr, sample_max=sample_max, blocks=blocks)
+    if sample.dtype.kind in ("M", "m"):
+        # datetime, timedelta
+        return _digest_bytes(memoryview(sample.tobytes()).cast("B"))
     return _digest_bytes(memoryview(sample).cast("B"))
 
 
@@ -80,6 +83,7 @@ def _hash_object_array(arr: npt.NDArray, *, sample_max: int) -> int:
 
 def _hash_array(arr: npt.NDArray, *, sample_max: int, blocks: int) -> int:
     if arr.dtype.kind in ("O", "U", "S", "V"):
+        # object, unicode, bytes, void
         return _hash_object_array(arr, sample_max=sample_max)
     return _hash_numeric_array(arr, sample_max=sample_max, blocks=blocks)
 
@@ -147,6 +151,14 @@ def fingerprint_dataarray(
     -------
     str
         A string representing the fingerprint of the DataArray.
+
+    Note
+    ----
+    - Different python processes will produce different fingerprints for the same data
+      due to the use of the built-in :func:`hash`. Use only for comparisons within a
+      single process.
+    - This function is not cryptographically secure and should not be used for security
+      purposes.
 
     """
     if darr.chunks is not None:

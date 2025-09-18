@@ -115,3 +115,35 @@ def test_fingerprint_dataarray_large() -> None:
     fp_new = fingerprint_dataarray(darr.copy(data=darr.values * 2))
 
     assert fp != fp_new
+
+
+def test_datetime_timedelta_hashing() -> None:
+    times = np.array(
+        ["2023-01-01", "2023-01-02", "2023-01-03", "2023-01-04"], dtype="datetime64"
+    )
+    deltas = np.array([1, 2, 3, 4], dtype="timedelta64[D]")
+
+    darr_time = xr.DataArray(
+        times,
+        dims=("t",),
+        coords={"t": np.arange(len(times))},
+        name="times",
+    )
+    darr_delta = xr.DataArray(
+        deltas,
+        dims=("t",),
+        coords={"t": np.arange(len(deltas))},
+        name="deltas",
+    )
+
+    fp_time = fingerprint_dataarray(darr_time)
+    fp_delta = fingerprint_dataarray(darr_delta)
+
+    # Changing a value should change fingerprint
+    darr_time2 = darr_time.copy(deep=True)
+    darr_time2.data[0] += np.timedelta64(1, "D")
+    assert fingerprint_dataarray(darr_time2) != fp_time
+
+    darr_delta2 = darr_delta.copy(deep=True)
+    darr_delta2.data[0] += np.timedelta64(1, "D")
+    assert fingerprint_dataarray(darr_delta2) != fp_delta
