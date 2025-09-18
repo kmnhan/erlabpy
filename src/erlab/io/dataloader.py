@@ -1648,9 +1648,11 @@ class LoaderBase(metaclass=_Loader):
                         typing.cast(
                             "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
                         ),
-                        combine_attrs=self.combine_attrs,
-                        data_vars="all",
+                        compat="no_conflicts",
+                        data_vars=None,
+                        coords="all",
                         join="exact",
+                        combine_attrs=self.combine_attrs,
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -1715,7 +1717,9 @@ class LoaderBase(metaclass=_Loader):
             # Magically combine the data
             combined = xr.combine_by_coords(
                 processed,
-                data_vars="all",
+                compat="no_conflicts",
+                data_vars=None,
+                coords="different",
                 join="outer",
                 combine_attrs=self.combine_attrs,
             )
