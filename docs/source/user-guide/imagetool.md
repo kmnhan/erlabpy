@@ -242,6 +242,19 @@ To use this feature, first load the IPython extension in a notebook:
 %load_ext erlab.interactive
 ```
 
+:::{note}
+If you want to load the extension automatically when starting a Jupyter notebook, you can add `erlab.interactive` to the list of IPython extensions in your IPython configuration file. See the [IPython documentation](https://ipython.readthedocs.io/en/stable/config/intro.html) for more information.
+
+If you are using VS Code with the Jupyter extension, you can add the following line to your workspace or user `settings.json`:
+
+```json
+"jupyter.runStartupCommands": [
+    "%load_ext erlab.interactive"
+]
+```
+
+:::
+
 Then, use the `%watch` magic command to watch a variable (e.g., `my_data`) for changes:
 
 ```python
@@ -250,11 +263,11 @@ Then, use the `%watch` magic command to watch a variable (e.g., `my_data`) for c
 
 This will open a new ImageTool window in the manager displaying `my_data`. Whenever `my_data` is modified in the notebook, the ImageTool window will automatically update to reflect the changes. A label indicating the variable name will be shown next to the tool in the manager, making it easy to identify which variable is being watched.
 
-If data transformations are applied in the ImageTool window (e.g., rotation, symmetrization, cropping), the changes will be reflected back in the notebook variable `my_data`. A message will be printed in the notebook indicating that `my_data` has been updated.
-
 :::{note}
 This works by checking the variable for changes every time a notebook cell is executed. Comparing all values of large arrays is slow, so only a reasonable subset of the data is checked for changes. If you find that changes to your variable are not being reflected in the ImageTool window, a manual update can be triggered by re-running `%watch my_data`.
 :::
+
+If data transformations are applied in the ImageTool window (e.g., rotation, symmetrization, cropping), the changes will be reflected back in the notebook variable `my_data`. A message will be printed in the notebook indicating that `my_data` has been updated.
 
 You can also start watching multiple variables at once:
 
