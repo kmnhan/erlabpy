@@ -468,7 +468,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.perform_fit()
 
     @property
-    def edge_func(self) -> typing.Callable:
+    def edge_func(self) -> "Callable":
         """Returns the edge function."""
         if self.params_tab.currentIndex() == 0:
             return self._perform_poly_fit()
