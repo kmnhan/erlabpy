@@ -1,3 +1,17 @@
+## Unreleased
+
+### ✨ Features
+
+- **manager:** enhance integration with Jupyter notebooks ([69ef2af](https://github.com/kmnhan/erlabpy/commit/69ef2affb0bec022cb01527e99e8edd2773f1264))
+
+  Adds a new magic command `%watch` to monitor and sync data between ImageTool manager and Jupyter notebooks. This feature allows users to easily update data in the notebook when changes are made in the ImageTool window and vice versa, facilitating a smoother workflow for data analysis and visualization.
+
+  Also adds a new function, `erlab.interactive.imagetool.manager.fetch` which allows users to fetch a copy of the data in a specific ImageTool window in the manager by its index.
+
+- **utils.hashing:** add utilities for hashing xarray DataArrays (#172) ([4fc1f5f](https://github.com/kmnhan/erlabpy/commit/4fc1f5fdfd9d5823e2d1ab707557e400c1588113))
+
+  Adds a new module that provides `fingerprint_dataarray`, a function to generate a unique fingerprint for xarray DataArrays. This is useful for quickly comparing data and checking for changes.
+
 ## v3.14.1 (2025-09-10)
 
 ### 🐞 Bug Fixes
