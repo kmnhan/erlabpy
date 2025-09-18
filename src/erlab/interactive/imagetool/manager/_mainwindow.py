@@ -7,6 +7,7 @@ import pathlib
 import platform
 import sys
 import tempfile
+import threading
 import traceback
 import typing
 import uuid
@@ -219,6 +220,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.duplicate_action.triggered.connect(self.duplicate_selected)
         self.duplicate_action.setToolTip("Duplicate selected windows")
 
+        self.reindex_action = QtWidgets.QAction("Reset Index", self)
+        self.reindex_action.triggered.connect(self.reindex_tools)
+        self.reindex_action.setToolTip("Reset indices of all windows")
+
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
@@ -295,6 +300,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
         )
+        edit_menu.addAction(self.reindex_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.concat_action)
         edit_menu.addAction(self.duplicate_action)
         edit_menu.addSeparator()
@@ -456,6 +463,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
             cb = QtWidgets.QApplication.clipboard()
             if cb:
                 cb.setText(msg_box.informativeText())
+
+    @QtCore.Slot()
+    def reindex_tools(self) -> None:
+        """Reset indices of all tools to be consecutive in displayed order."""
+        lock = getattr(self, "_reindex_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._reindex_lock = lock
+
+        with lock:
+            new_tool_wrappers: dict[int, _ImageToolWrapper] = {}
+            displayed_indices = list(self._displayed_indices)
+            for row_idx, tool_idx in enumerate(displayed_indices):
+                self._displayed_indices[row_idx] = row_idx
+                self._tool_wrappers[tool_idx]._index = row_idx
+                new_tool_wrappers[row_idx] = self._tool_wrappers[tool_idx]
+            self._tool_wrappers = new_tool_wrappers
+
+        self.list_view.refresh()
 
     def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
@@ -1433,7 +1459,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
-    def _stop_server(self) -> None:
+    def _stop_servers(self) -> None:
         """Stop the server thread properly."""
         if self.server.isRunning():  # pragma: no branch
             self.server.stopped.set()
@@ -1496,6 +1522,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._tmp_dir.cleanup()
 
         # Properly close the server
-        self._stop_server()
+        self._stop_servers()
 
         super().closeEvent(event)
