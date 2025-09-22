@@ -22,10 +22,10 @@ import logging
 import os
 import pathlib
 import pickle
-import socket
 import threading
 import typing
 
+import numpy as np
 import pydantic
 import xarray as xr
 import zmq
@@ -35,10 +35,37 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 
 if typing.TYPE_CHECKING:
+    import types
     from collections.abc import Callable, Collection, Iterable
 
     import numpy.typing as npt
 
+
+if np.lib.NumpyVersion(np.__version__) < "2.3.0":  # pragma: no cover
+    # Patch numpy to add compatibility for cases where ImageToolManager is running on
+    # numpy <2.3 and the client is using numpy >=2.3.
+
+    # This whole block can be removed when we drop support for numpy <2.3
+
+    import importlib
+
+    if np.lib.NumpyVersion(np.__version__) >= "2.0.0":
+        _numeric: types.ModuleType = importlib.import_module("numpy._core.numeric")
+    else:
+        _numeric = importlib.import_module("numpy.core.numeric")
+
+    _orig_frombuffer = _numeric._frombuffer
+
+    def _frombuffer_compat(buf, dtype, shape, order, axis_order=None):
+        if order == "K" and axis_order is not None:
+            return (
+                np.frombuffer(buf, dtype=dtype)
+                .reshape(shape, order="C")
+                .transpose(axis_order)
+            )
+        return _orig_frombuffer(buf, dtype, shape, order)
+
+    _numeric._frombuffer = _frombuffer_compat  # type: ignore[attr-defined]
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +136,13 @@ class CommandPacket(_BasePacket):
 
     packet_type: typing.Literal["command"]
     command: typing.Literal[
-        "get-data", "remove-idx", "show-idx", "remove-uid", "show-uid", "unwatch-uid"
+        "ping",
+        "get-data",
+        "remove-idx",
+        "show-idx",
+        "remove-uid",
+        "show-uid",
+        "unwatch-uid",
     ]
     command_arg: str | int | None = None
 
@@ -145,7 +178,7 @@ def _send_multipart(sock: zmq.Socket, obj: typing.Any, **kwargs) -> None:
 def _recv_multipart(sock: zmq.Socket, **kwargs) -> typing.Any:
     """Receive a multipart ZeroMQ message and reconstruct the Python object."""
     parts = sock.recv_multipart(copy=False, **kwargs)
-    return pickle.loads(parts[0].buffer, buffers=[f.buffer for f in parts[1:]])
+    return pickle.loads(parts[0].buffer, buffers=(p.buffer for p in parts[1:]))
 
 
 def _query_zmq(payload: PacketVariant) -> Response:
@@ -287,6 +320,10 @@ class _ManagerServer(QtCore.QThread):
                 except zmq.Again:
                     self.msleep(10)
                     continue
+                except Exception:
+                    logger.exception("Failed to parse incoming packet")
+                    _send_multipart(sock, {"status": "error"})
+                    continue
 
                 logger.debug("Received payload with type %s", payload.packet_type)
                 match payload.packet_type:
@@ -309,6 +346,8 @@ class _ManagerServer(QtCore.QThread):
                     case "command":
                         logger.info("Processing command: %s", payload.command)
                         match payload.command:
+                            case "ping":
+                                pass
                             case "get-data":
                                 self.sigDataRequested.emit(payload.command_arg)
                                 logger.info("Getting data...")
@@ -317,6 +356,9 @@ class _ManagerServer(QtCore.QThread):
                                         self._cv.wait(self._mutex)
                                     data = self._ret_val
                                     self._ret_val = _UNSET
+
+                                if data.chunks is not None:
+                                    data = data.compute()
 
                                 logger.info("Data obtained, sending response...")
                                 _send_multipart(sock, {"status": "ok", "data": data})
@@ -345,26 +387,26 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(timeout=1.0) -> bool:
-    """Ping the ImageToolManager server.
+def _ping_server(timeout_ms=100) -> bool:
+    """Ping the ImageToolManager server using a lightweight ZMQ ping.
 
-    Checks if the server is running by attempting to establish a TCP connection.
-
-    Parameters
-    ----------
-    timeout : float
-        Timeout in seconds to wait for the ping response.
-
-    Returns
-    -------
-    bool
-        True if the ping was successful, False otherwise.
+    This avoids triggering non-ZMTP handshake warnings while providing a real liveness
+    check.
     """
+    ctx = zmq.Context.instance()
+    sock: zmq.Socket = ctx.socket(zmq.REQ)
+    # Timeouts in milliseconds
+    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
+    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
     try:
-        with socket.create_connection((HOST_IP, PORT), timeout=timeout):
-            return True  # TCP handshake succeeded
-    except (TimeoutError, ConnectionRefusedError):
+        sock.connect(f"tcp://{HOST_IP}:{PORT}")
+        # Send a minimal ping command and expect an OK
+        _send_multipart(sock, {"packet_type": "command", "command": "ping"})
+        return Response(**_recv_multipart(sock)).status == "ok"
+    except Exception:
         return False
+    finally:
+        sock.close()
 
 
 def is_running() -> bool:
@@ -554,6 +596,11 @@ def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -
         `False`. If this is a new variable being watched, a new ImageTool window will be
         created and shown regardless of this parameter.
     """
+    if data.chunks is not None:
+        # TODO: there might be a better way to handle this like directly serializing as
+        # dask, but for now just compute to numpy
+        data = data.compute()
+
     _query_zmq(
         WatchPacket(packet_type="watch", watched_info=(varname, uid), watched_data=data)
     )
