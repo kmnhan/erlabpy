@@ -1062,14 +1062,18 @@ def sizebar(
     value
         Length of the size bar in terms of `unit`.
     unit
-        An SI unit string without prefixes. For example, 'm' for meters.
+        An SI unit string without any prefixes. For example, 'm' for meters.
     si
-        Exponents that have a corresponding SI prefix
+        Exponents that have a corresponding SI prefix. This determines the unit of the
+        label that is shown next to the size bar. For example, if the ``value`` is
+        ``200e-6`` and the unit is ``"m"``, setting ``si=-6`` will result in a label of
+        ``"200 μm"``, and ``si=-3`` will result in ``"0.2 mm"`` (assuming ``decimals``
+        is set appropriately).
     resolution
         Scale of the current axes coordinates. For example, if the plot axes values are
         given in μm, the resolution should be 1e-6.
     decimals
-        Number of decimals on the size bar label.
+        Number of decimals displayed on the size bar label.
     label
         When provided, overrides the automatically generated label string.
     loc
@@ -1089,7 +1093,7 @@ def sizebar(
     Example
     -------
     >>> # Plot a size bar with a length of 200 μm on an axes given in mm
-    >>> eplt.sizebar(ax, value=2e-6, unit="m", si=-6, resolution=1e-3)
+    >>> eplt.sizebar(ax, value=200e-6, unit="m", si=-6, resolution=1e-3)
 
     """
     from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
