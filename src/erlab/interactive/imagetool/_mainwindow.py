@@ -234,7 +234,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.docks[index].setFloating(floating)
         self.docks[index].blockSignals(False)
 
-    # !TODO: this is ugly and temporary, fix it
+    # TODO: this is ugly and temporary, fix it
     def widget_box(self, widget: QtWidgets.QWidget, **kwargs) -> QtWidgets.QGroupBox:
         """Create a box that surrounds the given widget.
 

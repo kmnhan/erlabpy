@@ -1916,7 +1916,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         invalid: list[int] = []  # axes to hide.
         r0, r1, r2, r3 = r
 
-        # !TODO: automate this based on ItoolPlotItem.display_axis
+        # TODO: automate this based on ItoolPlotItem.display_axis
         if self.data.ndim == 2:
             invalid = [4, 5, 6, 7]
             r1 = r0 / 6
