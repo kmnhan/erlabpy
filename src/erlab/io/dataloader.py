@@ -1156,7 +1156,7 @@ class LoaderBase(metaclass=_Loader):
 
         # Temporary variable to store loaded data
         self._temp_data: xr.DataArray | None = None
-        # !TODO: properly GC this variable
+        # TODO: properly GC this variable
 
         def _format_data_info(series: pandas.Series) -> str:
             # Format data info as HTML table

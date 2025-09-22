@@ -933,7 +933,7 @@ class ArraySlicer(QtCore.QObject):
         binned_coords_averaged: dict[str, xr.DataArray] = {
             str(k): self._obj[k][isel_kw[str(k)]].mean() for k in binned_dims
         }
-        # !TODO: we may lose some coords here, like dims that depend on the binned dims
+        # TODO: we may lose some coords here, like dims that depend on the binned dims
         sliced = (
             self._obj.isel(isel_kw)
             .mean(binned_dims)
