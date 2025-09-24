@@ -2015,7 +2015,23 @@ class ToolWindow(QtWidgets.QMainWindow):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
+    For full compatibility with the ImageTool manager, the following optional attributs
+    or properties can also be set:
+
+    - The class attribute `tool_name` should be set to a short string identifying the
+      tool. For example, `"dtool"`, `"ktool"`, etc.
+
+    - The property `preview_imageitem` can be implemented to return a
+      :class:`pyqtgraph.ImageItem` which will be used to generate a preview image in the
+      ImageTool manager.
+
+    - The property `info_text` can be implemented to return a HTML string that describes
+      the current state of the tool, which will be shown in the ImageTool manager.
+
     """
+
+    tool_name: str = "tool"
+    __tool_display_name: str = ""
 
     StateModel: type[pydantic.BaseModel]
 
@@ -2037,6 +2053,16 @@ class ToolWindow(QtWidgets.QMainWindow):
             "Subclasses of ToolWindow must implement the tool_data property."
         )
 
+    @property
+    def preview_imageitem(self) -> pg.ImageItem | None:
+        """Get the ImageItem to be used for preview in the ImageTool manager."""
+        return None
+
+    @property
+    def info_text(self) -> str:
+        """Get the HTML text to be shown in the ImageTool manager."""
+        return ""
+
     @classmethod
     def _qual_name(cls) -> str:
         """Get the full qualified name of the class."""
@@ -2049,6 +2075,7 @@ class ToolWindow(QtWidgets.QMainWindow):
             "tool_title": self.windowTitle(),
             "tool_rect": self.geometry().getRect(),
             "tool_cls_qualname": self._qual_name(),
+            "tool_display_name": self._tool_display_name,
             "erlab_version": erlab.__version__,
         }
 
@@ -2098,6 +2125,7 @@ class ToolWindow(QtWidgets.QMainWindow):
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
+        tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool
@@ -2128,6 +2156,20 @@ class ToolWindow(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
+
+    @property
+    def _tool_display_name(self) -> str:
+        """Display name of the tool, used in the ImageTool manager."""
+        return self.__tool_display_name
+
+    @_tool_display_name.setter
+    def _tool_display_name(self, name: str) -> None:
+        self.__tool_display_name = name
+
+        if self.__tool_display_name:
+            self.setWindowTitle(f"{self.tool_name}: {self.__tool_display_name}")
+        else:
+            self.setWindowTitle(self.tool_name)
 
 
 class AnalysisWindow(ToolWindow):
