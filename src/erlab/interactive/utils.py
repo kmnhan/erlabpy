@@ -66,6 +66,7 @@ __all__ = [
     "make_crosshairs",
     "parse_data",
     "save_fit_ui",
+    "show_traceback",
     "wait_dialog",
     "xImageItem",
 ]
@@ -214,6 +215,201 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
         yield dialog
     finally:
         dialog.close()
+
+
+def _format_traceback(exc_text: str, dark: bool) -> str:
+    """Format a traceback string with syntax highlighting if possible.
+
+    If the `pygments` package is installed, the traceback will be formatted into an HTML
+    string with syntax highlighting. If `pygments` is not installed, the traceback will
+    be returned as a plain text string wrapped in `<pre>` tags.
+    """
+    try:
+        import pygments
+    except ImportError:  # pragma: no branch
+        return f"<pre>{exc_text}</pre>"
+    else:
+        from pygments.formatters import HtmlFormatter
+        from pygments.lexers.python import PythonTracebackLexer
+
+        formatter = HtmlFormatter(
+            style="github-dark" if dark else "default", noclasses=True
+        )
+        return pygments.highlight(exc_text, PythonTracebackLexer(), formatter)
+
+
+class _TracebackDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent=None,
+        title: str = "",
+        text: str = "",
+        informative_text: str = "",
+        buttons: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+        default_button: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+        icon_pixmap: QtWidgets.QStyle.StandardPixmap | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        if buttons is None:
+            buttons = QtWidgets.QDialogButtonBox.StandardButton.Ok
+
+        if default_button is None:
+            default_button = QtWidgets.QDialogButtonBox.StandardButton.NoButton
+
+        if icon_pixmap is None:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
+
+        e = sys.exception()
+        if e is None:  # pragma: no branch
+            details_visible: bool = False
+        else:
+            details_visible = True
+            is_dark: bool = (
+                parent.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
+            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
+            traceback_str = _format_traceback(traceback.format_exc(), dark=is_dark)
+
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setSizeGripEnabled(details_visible)
+
+        style = self.style()
+        if style is not None:  # pragma: no branch
+            icon_size = (
+                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
+                or 48
+            )
+            icon = style.standardIcon(icon_pixmap)
+            pm = icon.pixmap(icon_size, icon_size)
+
+        icon_label = QtWidgets.QLabel()
+        icon_label.setPixmap(pm)
+        icon_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
+        )
+
+        self._text_label = QtWidgets.QLabel(text)
+        self._text_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        font = self._text_label.font()
+        font.setBold(True)
+        self._text_label.setFont(font)
+        self._text_label.setWordWrap(True)
+
+        self._info_label = QtWidgets.QLabel(informative_text)
+        self._info_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._info_label.setWordWrap(True)
+
+        # Buttons
+        self._button_box = QtWidgets.QDialogButtonBox(self)
+        self._button_box.setStandardButtons(buttons)
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+
+        # Default button (if any)
+        if default_button != QtWidgets.QDialogButtonBox.StandardButton.NoButton:
+            default_btn = self._button_box.button(default_button)
+            if default_btn:
+                default_btn.setDefault(True)
+                default_btn.setAutoDefault(True)
+
+        # "Show Details…" toggle button
+        self._details_toggle = QtWidgets.QToolButton()
+        self._details_toggle.setCheckable(True)
+        self._details_toggle.setChecked(False)
+        self._details_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self._details_toggle.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._details_toggle.setAutoRaise(True)
+        self._details_toggle.setText("Show Details…")
+        self._details_toggle.setVisible(details_visible)
+        self._details_toggle.toggled.connect(self._toggle_details)
+
+        # Details (HTML)
+        self._details = QtWidgets.QPlainTextEdit()
+        self._details.setReadOnly(True)
+        if details_visible:
+            self._details.appendHtml(traceback_str)
+        else:
+            self._details.hide()
+
+        _hline = QtWidgets.QFrame()
+        _hline.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        _hline.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+
+        self._details_container = QtWidgets.QWidget()
+
+        v_details = QtWidgets.QVBoxLayout(self._details_container)
+        v_details.setContentsMargins(0, 0, 0, 0)
+        v_details.addWidget(_hline)
+        v_details.addWidget(self._details)
+        self._details_container.setVisible(details_visible)
+
+        # Layouts
+        text_layout = QtWidgets.QVBoxLayout()
+        text_layout.addWidget(self._text_label)
+        text_layout.addWidget(self._info_label)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(icon_label, 0)
+        top_row.addLayout(text_layout, 1)
+
+        main = QtWidgets.QVBoxLayout(self)
+        main.addLayout(top_row)
+        main.addWidget(self._button_box)
+        main.addWidget(self._details_toggle)
+        main.addWidget(self._details_container)
+
+        # Reasonable minimum sizes
+        self._info_label.setMinimumWidth(360)
+        self._details.setMinimumHeight(160)
+
+        if details_visible:
+            # Start collapsed
+            self._details_container.hide()
+
+        self._result_button = QtWidgets.QDialogButtonBox.StandardButton.NoButton
+
+    @QtCore.Slot(bool)
+    def _toggle_details(self, checked: bool) -> None:
+        self._details_container.setVisible(checked)
+        self._details_toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
+        )
+        self._details_toggle.setText("Hide Details" if checked else "Show Details…")
+        self.adjustSize()
+
+
+def show_traceback(
+    parent: QtWidgets.QWidget,
+    title: str,
+    text: str,
+    informative_text: str = "",
+    buttons: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+) -> int:
+    """Show an exception in a message box.
+
+    Works like :meth:`QtWidgets.QMessageBox.critical` when showing an error message.
+    Automatically adds the traceback to the informative text. Must be only called from
+    within an exception handler.
+
+    """
+    dialog = _TracebackDialog(
+        parent=parent,
+        title=title,
+        text=text,
+        informative_text=informative_text,
+        buttons=buttons,
+        icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+    )
+    dialog.adjustSize()
+
+    return dialog.exec()
 
 
 def array_rect(data):
