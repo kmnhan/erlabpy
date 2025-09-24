@@ -2078,6 +2078,17 @@ class ToolWindow(QtWidgets.QMainWindow):
             "erlab_version": erlab.__version__,
         }
 
+    @classmethod
+    def can_save_and_load(cls) -> bool:
+        """Check if this tool can be saved and restored."""
+        has_data = hasattr(cls, "tool_data") and isinstance(cls.tool_data, property)
+        has_status = (
+            hasattr(cls, "StateModel")
+            and hasattr(cls, "tool_status")
+            and isinstance(cls.tool_status, property)
+        )
+        return has_data and has_status
+
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
 

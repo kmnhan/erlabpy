@@ -134,6 +134,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         Signal emitted when all fitting steps are finished and plots are updated.
     """
 
+    tool_name = "goldtool"
+
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
     sigUpdated = QtCore.Signal()  #: :meta private:
@@ -640,7 +642,7 @@ class ResolutionTool(
         str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
     )
 ):
-    _sigTriggerFit = QtCore.Signal()
+    tool_name = "restool"
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -722,6 +724,8 @@ class ResolutionTool(
     @property
     def tool_data(self) -> xr.DataArray:
         return self.data
+
+    _sigTriggerFit = QtCore.Signal()
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):

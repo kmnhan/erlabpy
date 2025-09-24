@@ -677,7 +677,11 @@ def fetch(index: int | str) -> xr.DataArray | None:
         erlab.interactive.imagetool.manager._manager_instance is not None
         and not erlab.interactive.imagetool.manager._always_use_socket
     ):
-        return erlab.interactive.imagetool.manager._manager_instance._get_data(index)
+        return (
+            erlab.interactive.imagetool.manager._manager_instance._get_imagetool_data(
+                index
+            )
+        )
     return _query_zmq(
         CommandPacket(packet_type="command", command="get-data", command_arg=index)
     ).data

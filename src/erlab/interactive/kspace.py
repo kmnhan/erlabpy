@@ -281,6 +281,8 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
+    tool_name = "ktool"
+
     class StateModel(pydantic.BaseModel):
         data_name: str
         center: float

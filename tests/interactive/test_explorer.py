@@ -117,23 +117,23 @@ def test_explorer_general(
 
     # Reload data in manager
     # Choose tool 3
-    qmodelindex = manager.list_view._model._row_index(3)
-    manager.list_view.selectionModel().select(
+    qmodelindex = manager.tree_view._model._row_index(3)
+    manager.tree_view.selectionModel().select(
         QtCore.QItemSelection(qmodelindex, qmodelindex),
         QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
 
     # Lock levels to check if they are preserved after reloading
-    manager.get_tool(3).slicer_area.lock_levels(True)
-    manager.get_tool(3).slicer_area.levels = (1.0, 23.0)
+    manager.get_imagetool(3).slicer_area.lock_levels(True)
+    manager.get_imagetool(3).slicer_area.levels = (1.0, 23.0)
 
-    old_state = manager.get_tool(3).slicer_area.state.copy()
+    old_state = manager.get_imagetool(3).slicer_area.state.copy()
 
-    with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
+    with qtbot.wait_signal(manager.get_imagetool(3).slicer_area.sigDataChanged):
         manager.reload_action.trigger()
     qtbot.wait(200)
 
-    assert manager.get_tool(3).slicer_area.state == old_state
+    assert manager.get_imagetool(3).slicer_area.state == old_state
 
     # Clear selection
     select_files([2], deselect=True)

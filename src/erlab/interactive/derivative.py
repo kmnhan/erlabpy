@@ -41,6 +41,12 @@ class DerivativeTool(
         str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui"))
     )
 ):
+    tool_name = "dtool"
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.images[1]
+
     class StateModel(pydantic.BaseModel):
         data_name: str
         interp: bool

@@ -1851,7 +1851,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
-                manager.add_widget(widget)
+                if isinstance(widget, erlab.interactive.utils.ToolWindow):
+                    manager.add_childtool(widget, self)
+                else:
+                    manager.add_widget(widget)
                 return
 
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)

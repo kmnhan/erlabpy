@@ -1,4 +1,6 @@
+import json
 import tempfile
+import typing
 
 import numpy as np
 import pytest
@@ -16,8 +18,9 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _RenameDialog,
 )
 from erlab.interactive.imagetool.manager._modelview import (
+    _MIME,
     _ImageToolWrapperItemDelegate,
-    _ImageToolWrapperListModel,
+    _ImageToolWrapperItemModel,
 )
 
 
@@ -33,10 +36,10 @@ def test_data():
 def select_tools(
     manager: ImageToolManager, indices: list[int], deselect: bool = False
 ) -> None:
-    selection_model = manager.list_view.selectionModel()
+    selection_model = manager.tree_view.selectionModel()
 
     for index in indices:
-        qmodelindex = manager.list_view._model._row_index(index)
+        qmodelindex = manager.tree_view._model._row_index(index)
         selection_model.select(
             QtCore.QItemSelection(qmodelindex, qmodelindex),
             QtCore.QItemSelectionModel.SelectionFlag.Deselect
@@ -95,7 +98,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     test_data.qshow(manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+    assert manager.get_imagetool(0).array_slicer.point_value(0) == 12.0
 
     th, sig = query(manager, fetch, 0)
     with qtbot.waitSignal(sig) as blocker:
@@ -111,39 +114,39 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Linking
     select_tools(manager, [1, 2])
     manager.link_selected()
-    manager.list_view.refresh(None)
+    manager.tree_view.refresh(None)
 
     # Unlinking one unlinks both
     select_tools(manager, [1])
     manager.unlink_selected()
-    manager.list_view.refresh(None)
-    assert not manager.get_tool(1).slicer_area.is_linked
-    assert not manager.get_tool(2).slicer_area.is_linked
+    manager.tree_view.refresh(None)
+    assert not manager.get_imagetool(1).slicer_area.is_linked
+    assert not manager.get_imagetool(2).slicer_area.is_linked
 
     # Linking again
     select_tools(manager, [1, 2])
     manager.link_selected()
-    manager.list_view.refresh(None)
-    assert manager.get_tool(1).slicer_area.is_linked
-    assert manager.get_tool(2).slicer_area.is_linked
+    manager.tree_view.refresh(None)
+    assert manager.get_imagetool(1).slicer_area.is_linked
+    assert manager.get_imagetool(2).slicer_area.is_linked
 
     # Archiving and unarchiving
-    manager._tool_wrappers[1].archive()
-    manager._tool_wrappers[1].touch_archive()
-    assert manager._tool_wrappers[1].archived
-    manager._tool_wrappers[1].unarchive()
-    assert not manager._tool_wrappers[1].archived
+    manager._imagetool_wrappers[1].archive()
+    manager._imagetool_wrappers[1].touch_archive()
+    assert manager._imagetool_wrappers[1].archived
+    manager._imagetool_wrappers[1].unarchive()
+    assert not manager._imagetool_wrappers[1].archived
 
     # Toggle visibility
-    geometry = manager.get_tool(1).geometry()
-    manager._tool_wrappers[1].close()
-    assert not manager.get_tool(1).isVisible()
-    manager._tool_wrappers[1].show()
-    assert manager.get_tool(1).geometry() == geometry
+    geometry = manager.get_imagetool(1).geometry()
+    manager._imagetool_wrappers[1].close()
+    assert not manager.get_imagetool(1).isVisible()
+    manager._imagetool_wrappers[1].show()
+    assert manager.get_imagetool(1).geometry() == geometry
 
     # Removing archived tool
-    manager._tool_wrappers[0].archive()
-    manager.remove_tool(0)
+    manager._imagetool_wrappers[0].archive()
+    manager.remove_imagetool(0)
     qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     # Batch renaming
@@ -154,8 +157,8 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         dialog._new_name_lines[1].setText("new_name_2")
 
     accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
-    assert manager._tool_wrappers[1].name == "new_name_1"
-    assert manager._tool_wrappers[2].name == "new_name_2"
+    assert manager._imagetool_wrappers[1].name == "new_name_1"
+    assert manager._imagetool_wrappers[2].name == "new_name_2"
 
     # Rename single
     select_tools(manager, [2], deselect=True)
@@ -163,23 +166,23 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     manager.rename_action.trigger()
 
     qtbot.wait_until(
-        lambda: manager.list_view.state()
+        lambda: manager.tree_view.state()
         == QtWidgets.QAbstractItemView.State.EditingState,
         timeout=5000,
     )
-    delegate = manager.list_view.itemDelegate()
+    delegate = manager.tree_view.itemDelegate()
     assert isinstance(delegate, _ImageToolWrapperItemDelegate)
     assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
     delegate._current_editor().setText("new_name_1_single")
     qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
     qtbot.wait_until(
-        lambda: manager._tool_wrappers[1].name == "new_name_1_single", timeout=5000
+        lambda: manager._imagetool_wrappers[1].name == "new_name_1_single", timeout=5000
     )
 
     # Batch archiving
     select_tools(manager, [1])
     manager.archive_action.trigger()
-    manager._tool_wrappers[1].unarchive()
+    manager._imagetool_wrappers[1].unarchive()
 
     # Show and hide windows including archived ones
     select_tools(manager, [1])
@@ -189,10 +192,10 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     manager.hide_action.trigger()  # Hide non-archived window, does nothing to archived
     manager.show_action.trigger()  # Unarchive the archived one and show both
 
-    assert not manager._tool_wrappers[1].archived
-    assert not manager._tool_wrappers[2].archived
-    assert manager.get_tool(1).isVisible()
-    assert manager.get_tool(2).isVisible()
+    assert not manager._imagetool_wrappers[1].archived
+    assert not manager._imagetool_wrappers[2].archived
+    assert manager.get_imagetool(1).isVisible()
+    assert manager.get_imagetool(2).isVisible()
 
     # Select tools
     select_tools(manager, [1, 2])
@@ -200,22 +203,29 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
     xr.testing.assert_identical(
-        manager.get_tool(3).slicer_area._data,
+        manager.get_imagetool(3).slicer_area._data,
         xr.concat(
             [
-                manager.get_tool(1).slicer_area._data,
-                manager.get_tool(2).slicer_area._data,
+                manager.get_imagetool(1).slicer_area._data,
+                manager.get_imagetool(2).slicer_area._data,
             ],
             "concat_dim",
         ),
     )
 
     # Show goldtool
-    manager.get_tool(3).slicer_area.images[2].open_in_goldtool()
-    assert isinstance(next(iter(manager._additional_windows.values())), GoldTool)
+    manager.get_imagetool(3).slicer_area.images[2].open_in_goldtool()
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
+    )
+    assert isinstance(
+        next(iter(manager._imagetool_wrappers[3]._childtools.values())), GoldTool
+    )
 
     # Close goldtool
-    next(iter(manager._additional_windows.values())).close()
+    manager._remove_childtool(
+        next(iter(manager._imagetool_wrappers[3]._childtools.keys()))
+    )
 
     # Bring manager to top
     with qtbot.waitExposed(manager):
@@ -228,14 +238,14 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # This may not work on all systems due to the way the mouse events are generated
     delegate._force_hover = True
 
-    first_index = manager.list_view.model().index(0)
-    first_rect_center = manager.list_view.visualRect(first_index).center()
-    qtbot.mouseMove(manager.list_view.viewport())
-    qtbot.mouseMove(manager.list_view.viewport(), first_rect_center)
+    first_index = manager.tree_view.model().index(0, 0)
+    first_rect_center = manager.tree_view.visualRect(first_index).center()
+    qtbot.mouseMove(manager.tree_view.viewport())
+    qtbot.mouseMove(manager.tree_view.viewport(), first_rect_center)
     qtbot.mouseMove(
-        manager.list_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
+        manager.tree_view.viewport(), first_rect_center - QtCore.QPoint(10, 10)
     )
-    qtbot.mouseMove(manager.list_view.viewport())  # move to blank should hide popup
+    qtbot.mouseMove(manager.tree_view.viewport())  # move to blank should hide popup
 
     # Remove all selected
     select_tools(manager, [1, 2, 3])
@@ -258,24 +268,24 @@ def test_manager_replace(qtbot, test_data) -> None:
     # Open a tool with the manager
     itool(test_data, manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+    assert manager.get_imagetool(0).array_slicer.point_value(0) == 12.0
 
     # Replace data in the tool
     with qtbot.wait_signal(manager._sigDataReplaced):
         itool(test_data**2, manager=True, replace=0)
 
-    assert manager.get_tool(0).array_slicer.point_value(0) == 144.0
+    assert manager.get_imagetool(0).array_slicer.point_value(0) == 144.0
 
     # Replacing 1 should create a new tool
     itool(test_data**2, manager=True, replace=1)
     qtbot.wait_until(lambda: manager.ntools == 2)
-    assert manager.get_tool(1).array_slicer.point_value(0) == 144.0
+    assert manager.get_imagetool(1).array_slicer.point_value(0) == 144.0
 
     # Negative indexing
     with qtbot.wait_signal(manager._sigDataReplaced):
         itool(test_data, manager=True, replace=-1)
 
-    assert manager.get_tool(1).array_slicer.point_value(0) == 12.0
+    assert manager.get_imagetool(1).array_slicer.point_value(0) == 12.0
 
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
@@ -294,7 +304,7 @@ def test_manager_reindex(qtbot, test_data) -> None:
     assert manager._displayed_indices == [0, 1, 2]
 
     # Remove tool at index 1
-    manager.remove_tool(1)
+    manager.remove_imagetool(1)
     qtbot.wait_until(lambda: manager.ntools == 2)
 
     assert manager._displayed_indices == [0, 2]
@@ -323,11 +333,14 @@ def test_manager_duplicate(qtbot, test_data) -> None:
 
     # Check if the duplicated tools have the same data
     for i in range(2):
-        original_tool = manager.get_tool(i)
-        duplicated_tool = manager.get_tool(i + 2)
+        original_tool = manager.get_imagetool(i)
+        duplicated_tool = manager.get_imagetool(i + 2)
 
         assert original_tool.slicer_area._data.equals(duplicated_tool.slicer_area._data)
-        assert manager._tool_wrappers[i].name == manager._tool_wrappers[i + 2].name
+        assert (
+            manager._imagetool_wrappers[i].name
+            == manager._imagetool_wrappers[i + 2].name
+        )
 
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
@@ -343,7 +356,7 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
     qtbot.wait_until(lambda: manager.ntools == 2)
 
-    win0, win1 = manager.get_tool(0), manager.get_tool(1)
+    win0, win1 = manager.get_imagetool(0), manager.get_imagetool(1)
 
     win1.slicer_area.set_colormap("RdYlBu", gamma=1.5)
     assert (
@@ -379,10 +392,12 @@ def test_manager_sync(qtbot, move_and_compare_values, test_data) -> None:
 
 
 def test_manager_workspace_io(qtbot, accept_dialog) -> None:
-    manager = ImageToolManager()
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
 
     qtbot.addWidget(manager)
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
@@ -390,6 +405,13 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
     itool([data, data], link=False, manager=True)
     qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
+    # Open dtool for first tool
+    manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+    )
+
+    # Save and load workspace
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/workspace.h5"
 
@@ -401,34 +423,124 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
             focused.setText("workspace.h5")
 
     # Save workspace
-    accept_dialog(lambda: manager.save(native=False), pre_call=_go_to_file)
+    accept_dialog(
+        lambda: manager.save(native=False), pre_call=_go_to_file, chained_dialogs=2
+    )
 
     # Load workspace
-    accept_dialog(lambda: manager.load(native=False), pre_call=_go_to_file)
+    accept_dialog(
+        lambda: manager.load(native=False), pre_call=_go_to_file, chained_dialogs=2
+    )
 
     # Check if the data is loaded
     assert manager.ntools == 4
 
-    select_tools(manager, list(manager._tool_wrappers.keys()))
+    # Check if the child dtool is also loaded
+    assert len(manager._imagetool_wrappers[2]._childtools) == 1
+
+    select_tools(manager, list(manager._imagetool_wrappers.keys()))
     accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
     tmp_dir.cleanup()
 
 
-def test_can_drop_mime_data(qtbot) -> None:
-    manager = ImageToolManager()
-    model = _ImageToolWrapperListModel(manager)
+def test_manager_workspace_load_legacy(
+    qtbot, accept_dialog, datadir, test_data
+) -> None:
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
 
-    mime_data = QtCore.QMimeData()
-    mime_data.setData("application/json", QtCore.QByteArray())
-    assert model.canDropMimeData(
-        mime_data, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog):
+        dialog.setDirectory(str(datadir))
+        dialog.selectFile(str(datadir / "manager_workspace_legacy.h5"))
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("manager_workspace_legacy.h5")
+
+    # Load workspace
+    accept_dialog(
+        lambda: manager.load(native=False), pre_call=_go_to_file, chained_dialogs=2
     )
+
+    # Check if the data is loaded
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+    # Check data
+    xr.testing.assert_identical(
+        manager.get_imagetool(0).slicer_area._data,
+        test_data,
+    )
+
+    select_tools(manager, list(manager._imagetool_wrappers.keys()))
+    accept_dialog(manager.remove_action.trigger)
+    qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+    manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
+
+
+def test_can_drop_mime_data(qtbot, accept_dialog) -> None:
+    manager = ImageToolManager()
+
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+    # Add two tools
+    itool([data, data], link=False, manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+    # Check mimedata
+
+    model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+
+    # Test single selection
+    mime_single = model.mimeData([model.index(0, 0)])
+    assert model.canDropMimeData(
+        mime_single, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+    model.dropMimeData(
+        mime_single, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    # Test multiple selection
+    mime_multiple = model.mimeData([model.index(0, 0), model.index(0, 1)])
+    assert model.canDropMimeData(
+        mime_multiple, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+    model.dropMimeData(
+        mime_multiple, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    # Test invalid mimedata
+    invalid_mime = QtCore.QMimeData()
+    invalid_mime.setData(
+        _MIME,
+        QtCore.QByteArray(json.dumps({"invalid": "dictionary"}).encode("utf-8")),
+    )
+    assert model._decode_mime(invalid_mime) is None
+
+    invalid_mime = QtCore.QMimeData()
+    invalid_mime.setData(
+        _MIME,
+        QtCore.QByteArray(json.dumps("not a dict").encode("utf-8")),
+    )
+    assert model._decode_mime(invalid_mime) is None
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
 
 
-def test_listview(qtbot, accept_dialog, test_data) -> None:
+def test_treeview(qtbot, accept_dialog, test_data) -> None:
     manager = ImageToolManager()
 
     qtbot.addWidget(manager)
@@ -446,21 +558,21 @@ def test_listview(qtbot, accept_dialog, test_data) -> None:
     manager.raise_()
     manager.activateWindow()
 
-    model = manager.list_view._model
+    model = manager.tree_view._model
     assert model.supportedDropActions() == QtCore.Qt.DropAction.MoveAction
-    first_row_rect = manager.list_view.rectForIndex(model.index(0))
+    first_row_rect = manager.tree_view.visualRect(model.index(0, 0))
 
     # Click on first row
-    qtbot.mouseMove(manager.list_view.viewport(), first_row_rect.center())
+    qtbot.mouseMove(manager.tree_view.viewport(), first_row_rect.center())
     qtbot.mousePress(
-        manager.list_view.viewport(),
+        manager.tree_view.viewport(),
         QtCore.Qt.MouseButton.LeftButton,
         pos=first_row_rect.center(),
     )
-    assert manager.list_view.selected_tool_indices == [0]
+    assert manager.tree_view.selected_imagetool_indices == [0]
 
     # Show context menu
-    manager.list_view._show_menu(first_row_rect.center())
+    manager.tree_view._show_menu(first_row_rect.center())
     menu = None
     for tl in QtWidgets.QApplication.topLevelWidgets():
         if isinstance(tl, QtWidgets.QMenu):
@@ -497,7 +609,9 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
     # Simulate drag and drop
     accept_dialog(lambda: manager.dropEvent(evt))
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-    xarray.testing.assert_identical(manager.get_tool(0).slicer_area.data, test_data)
+    xarray.testing.assert_identical(
+        manager.get_imagetool(0).slicer_area.data, test_data
+    )
 
     # Simulate drag and drop with wrong filter, retry with correct filter
     # Dialogs created are:
@@ -515,7 +629,9 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
         chained_dialogs=4,
     )
     qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-    xarray.testing.assert_identical(manager.get_tool(1).slicer_area.data, test_data)
+    xarray.testing.assert_identical(
+        manager.get_imagetool(1).slicer_area.data, test_data
+    )
 
     # Cleanup
     manager.remove_all_tools()
@@ -559,10 +675,11 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     manager.console._console_widget.execute("tools[0]")
 
     # Select all
-    select_tools(manager, list(manager._tool_wrappers.keys()))
+    select_tools(manager, list(manager._imagetool_wrappers.keys()))
     manager.console._console_widget.execute("tools.selected_data")
     assert _get_last_output_contents() == [
-        wrapper.tool.slicer_area._data for wrapper in manager._tool_wrappers.values()
+        wrapper.imagetool.slicer_area._data
+        for wrapper in manager._imagetool_wrappers.values()
     ]
 
     # Test storing with ipython
@@ -571,7 +688,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
 
     # Test calling wrapped methods
     manager.console._console_widget.execute("tools[0].archive()")
-    qtbot.wait_until(lambda: manager._tool_wrappers[0].archived, timeout=5000)
+    qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
 
     # Test setting data
     manager.console._console_widget.execute(
@@ -581,10 +698,10 @@ def test_manager_console(qtbot, accept_dialog) -> None:
         "coords={'x': np.arange(5), 'y': np.arange(5)}"
         ")",
     )
-    xr.testing.assert_identical(manager.get_tool(1).slicer_area.data, data * 2)
+    xr.testing.assert_identical(manager.get_imagetool(1).slicer_area.data, data * 2)
 
     # Remove all tools
-    select_tools(manager, list(manager._tool_wrappers.keys()))
+    select_tools(manager, list(manager._imagetool_wrappers.keys()))
     accept_dialog(manager.remove_action.trigger)
     qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -602,7 +719,7 @@ def test_manager_console(qtbot, accept_dialog) -> None:
     )
     manager.console._console_widget.execute(r"%itool example_data --cmap viridis")
     qtbot.wait_until(lambda: manager.ntools == 1)
-    assert manager.get_tool(0).array_slicer.point_value(0) == 12.0
+    assert manager.get_imagetool(0).array_slicer.point_value(0) == 12.0
 
     # Destroy console
     manager.console._console_widget.shutdown_kernel()
