@@ -425,6 +425,7 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragOnly)
         self.setSortingEnabled(True)
         self.setUniformRowHeights(True)
+        self.setAnimated(True)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
