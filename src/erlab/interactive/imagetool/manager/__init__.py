@@ -114,8 +114,8 @@ def main(execute: bool = True) -> None:
     )
     if not qapp:
         qapp = QtWidgets.QApplication(sys.argv)
+        qapp.setStyle("Fusion")
 
-    qapp.setStyle("Fusion")
     qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
     qapp.setApplicationName("imagetool-manager")
     qapp.setApplicationDisplayName("ImageTool Manager")

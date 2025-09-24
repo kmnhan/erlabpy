@@ -152,7 +152,6 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
         qapp = QtWidgets.QApplication.instance()
         if not qapp:
             qapp = QtWidgets.QApplication(sys.argv)
-        if isinstance(qapp, QtWidgets.QApplication):
             qapp.setStyle("Fusion")
 
         is_ipython: bool = False
@@ -2188,7 +2187,7 @@ class AnalysisWindow(ToolWindow):
         )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        self.qapp.setStyle("Fusion")
+            self.qapp.setStyle("Fusion")
 
         super().__init__()
 
