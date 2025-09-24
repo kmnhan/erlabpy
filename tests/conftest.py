@@ -201,22 +201,32 @@ class _DialogHandler(QtCore.QObject):
     Parameters
     ----------
     dialog_trigger
-        Callable that triggers the dialog creation.
+        Callable that triggers the dialog creation. Takes no arguments.
     timeout
-        Maximum time (seconds) to wait for the dialog creation.
+        Maximum time in seconds to wait for the dialog creation.
     pre_call
         Callable that takes the dialog as a single argument. If provided, it is executed
-        before calling ``.accept()`` on the dialog. If a sequence of callables of length
-        equal to ``chained_dialog`` is provided, each callable will be called before
-        each dialog is accepted.
+        prior to calling ``.accept()`` on the dialog. This is useful if some dialog
+        elements need to be interacted with before accepting the dialog.
+
+        If a sequence of callables of length equal to ``chained_dialogs`` is provided,
+        each callable will be called before each dialog is accepted.
     accept_call
         If provided, it is called instead of ``.accept()`` on the dialog. If a sequence
-        of callables of length equal to ``chained_dialog`` is provided, each callable
-        will be called instead of ``.accept()`` on each dialog.
-    chained_dialog
-        If 2, a new dialog is expected to be created right after the dialog is accepted.
-        The new dialog will also be accepted. Numbers greater than 1 will accept
-        multiple dialogs.
+        of callables of length equal to ``chained_dialogs`` is provided, each callable
+        will be called instead of ``.accept()`` on each dialog. When a sequence is
+        provided, the first callable is called for the second dialog, and so on.
+        Elements of the sequence can be ``None``, in which case ``.accept()`` is called
+        for that dialog.
+
+        If the dialog is a ``QMessageBox``, ``.defaultButton().click()`` is called
+        instead of ``.accept()``.
+    chained_dialogs
+        Number of dialogs expected to be created in a chain. The first dialog is created
+        by calling ``dialog_trigger``. When that dialog is accepted, a second dialog is
+        expected to be created, and so on. For example, if 2, a second dialog is
+        expected to be created right after the first dialog is accepted. The new dialog
+        will also be automatically accepted.
     """
 
     sigFinished = QtCore.Signal()
