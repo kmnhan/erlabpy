@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-__all__ = ["format_darr_html", "format_html_table", "format_nbytes", "format_value"]
+__all__ = [
+    "format_darr_html",
+    "format_darr_shape_html",
+    "format_html_accent",
+    "format_html_table",
+    "format_nbytes",
+    "format_value",
+]
 
 import datetime
 import itertools
@@ -64,6 +71,34 @@ def format_html_table(
     table += "</table>"
     table += "</div>"
     return table
+
+
+def format_html_accent(
+    text: Hashable, bold: bool = False, em_space: bool = False
+) -> str:
+    """Return an HTML string with the text colored with the accent color.
+
+    Parameters
+    ----------
+    text
+        The text to apply the accent color to.
+    bold
+        Whether to make the text bold.
+    em_space
+        Whether to add an em space after the text.
+
+    Returns
+    -------
+    str
+        The text with the accent color applied in HTML.
+    """
+    style = f"color: {_DEFAULT_ACCENT_COLOR};"
+    if bold:
+        style += " font-weight: bold;"
+    out = f"<span style='{style}'>{text}</span>"
+    if em_space:  # pragma: no branch
+        out += "&emsp;"
+    return out
 
 
 def format_nbytes(value: float | str, fmt: str = "%.1f", sep: str = " ") -> str:
@@ -353,15 +388,40 @@ def _format_array_values(val: npt.NDArray) -> str:
 
 
 def _format_coord_key(key: Hashable, is_dim: bool) -> str:
-    style = f"color: {_DEFAULT_ACCENT_COLOR}; "
-    if is_dim:
-        style += "font-weight: bold; "
-    return f"<span style='{style}'>{key}</span>&emsp;"
+    return format_html_accent(key, bold=is_dim, em_space=True)
 
 
 def _format_attr_key(key: Hashable) -> str:
-    style = f"color: {_DEFAULT_ACCENT_COLOR};"
-    return f"<span style='{style}'>{key}</span>&emsp;"
+    return format_html_accent(key, bold=False, em_space=True)
+
+
+def format_darr_shape_html(darr: xr.DataArray, show_size: bool = False) -> str:
+    """Make a simple HTML representation of a DataArray's shape.
+
+    Parameters
+    ----------
+    darr
+        The DataArray to represent.
+    show_size
+        Whether to include the size of the DataArray in the representation.
+
+    Returns
+    -------
+    str
+        The HTML representation of the DataArray's size.
+    """
+    out = ""
+    name = ""
+    if darr.name is not None and str(darr.name).strip() != "":
+        print(f"|{darr.name}|")
+        name = f"'{darr.name}'&emsp;"
+
+    out += _format_dim_sizes(darr, name)
+
+    if show_size:
+        out += rf"<p>Size {format_nbytes(darr.nbytes)}</p>"
+
+    return out
 
 
 def format_darr_html(
@@ -387,18 +447,10 @@ def format_darr_html(
     str
         The HTML representation of the DataArray.
     """
-    out = ""
     if additional_info is None:
         additional_info = []
 
-    name = ""
-    if darr.name is not None and darr.name != "":
-        name = f"'{darr.name}'&emsp;"
-
-    out += _format_dim_sizes(darr, name)
-
-    if show_size:
-        out += rf"<p>Size {format_nbytes(darr.nbytes)}</p>"
+    out = format_darr_shape_html(darr, show_size=show_size)
 
     for info in additional_info:
         out += rf"<p>{info}</p>"
