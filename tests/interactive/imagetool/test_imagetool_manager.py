@@ -1,4 +1,5 @@
 import json
+import logging
 import tempfile
 import typing
 
@@ -10,6 +11,7 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch
@@ -22,6 +24,8 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(scope="module")
@@ -46,6 +50,20 @@ def select_tools(
             if deselect
             else QtCore.QItemSelectionModel.SelectionFlag.Select,
         )
+
+
+def select_child_tool(
+    manager: ImageToolManager, uid: str, deselect: bool = False
+) -> None:
+    selection_model = manager.tree_view.selectionModel()
+
+    qmodelindex = manager.tree_view._model._row_index(uid)
+    selection_model.select(
+        QtCore.QItemSelection(qmodelindex, qmodelindex),
+        QtCore.QItemSelectionModel.SelectionFlag.Deselect
+        if deselect
+        else QtCore.QItemSelectionModel.SelectionFlag.Select,
+    )
 
 
 def make_drop_event(filename: str) -> QtGui.QDropEvent:
@@ -91,20 +109,24 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     erlab.interactive.imagetool.manager.main(execute=False)
     manager = erlab.interactive.imagetool.manager._manager_instance
-
     qtbot.addWidget(manager)
+    manager.show()
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
+    logger.info("Manager is running, adding test data")
     test_data.qshow(manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
+    logger.info("Confirmed tool is added, checking data")
     assert manager.get_imagetool(0).array_slicer.point_value(0) == 12.0
 
+    logger.info("Checking data retrieval via fetch")
     th, sig = query(manager, fetch, 0)
     with qtbot.waitSignal(sig) as blocker:
         th.start()
     xr.testing.assert_identical(blocker.args[0], test_data)
 
+    logger.info("Confirmed fetch works, adding more tools")
     # Add two tools
     for tool in itool([test_data, test_data], link=False, execute=False, manager=False):
         tool.move_to_manager()
@@ -214,6 +236,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     )
 
     # Show goldtool
+    logger.info("Opening goldtool")
     manager.get_imagetool(3).slicer_area.images[2].open_in_goldtool()
     qtbot.wait_until(
         lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
@@ -221,13 +244,76 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert isinstance(
         next(iter(manager._imagetool_wrappers[3]._childtools.values())), GoldTool
     )
+    logger.info("Confirmed goldtool is added")
+
+    # Trigger paint event
+    manager.tree_view.expandAll()
 
     # Close goldtool
+    logger.info("Closing goldtool")
     manager._remove_childtool(
         next(iter(manager._imagetool_wrappers[3]._childtools.keys()))
     )
 
+    # Show dtool
+    logger.info("Opening dtool")
+    manager.get_imagetool(3).slicer_area.images[2].open_in_dtool()
+
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
+    )
+    assert isinstance(
+        next(iter(manager._imagetool_wrappers[3]._childtools.values())), DerivativeTool
+    )
+    logger.info("Confirmed dtool is added")
+
+    manager.tree_view.expandAll()
+    tool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
+
+    # Show dtool
+    manager.show_childtool(tool_uid)
+
+    # Tool and parent
+    logger.info("Checking parent and childtool retrieval")
+    tool, idx = manager._get_childtool_and_parent(tool_uid)
+    assert isinstance(tool, DerivativeTool)
+    assert idx == 3
+
+    # Duplicate dtool
+    logger.info("Duplicating dtool")
+    select_child_tool(manager, tool_uid)
+    manager.duplicate_selected()
+    manager.tree_view.refresh(None)
+
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[3]._childtools) == 2, timeout=5000
+    )
+
+    # Check calling invalid indices
+    logger.info("Checking invalid index handling")
+    parent_qindex = manager.tree_view._model._row_index(3)
+    assert manager.tree_view._model.index(1, 0, parent_qindex).isValid()
+    assert not manager.tree_view._model.index(4, 0, parent_qindex).isValid()
+
+    valid_but_wrong_pointer_type = manager.tree_view._model.createIndex(
+        parent_qindex.row(), parent_qindex.column(), "invalid data"
+    )
+    assert not manager.tree_view._model.index(
+        1, 0, valid_but_wrong_pointer_type
+    ).isValid()
+
+    # Close dtools
+    logger.info("Closing dtools")
+    for uid in list(manager._imagetool_wrappers[3]._childtools.keys()):
+        manager._remove_childtool(uid)
+
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[3]._childtools) == 0, timeout=5000
+    )
+    logger.info("Confirmed dtools are removed")
+
     # Bring manager to top
+    logger.info("Testing mouse events")
     with qtbot.waitExposed(manager):
         manager.hide_all()  # Prevent windows from obstructing the manager
         manager.preview_action.setChecked(True)

@@ -376,7 +376,7 @@ class _ManagerServer(QtCore.QThread):
                             case "unwatch-uid":
                                 self.sigUnwatchUID.emit(str(payload.command_arg))
 
-                logger.debug("Sending response...")
+                logger.info("Sending response...")
                 _send_multipart(sock, {"status": "ok"})
                 logger.debug("Response sent")
 

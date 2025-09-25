@@ -139,14 +139,14 @@ def test_identifier_validator_fixup(input_str, expected):
     assert validator.fixup(input_str) == expected
 
 
-class TestException(Exception):
+class CustomException(Exception):
     pass
 
 
 @pytest.fixture
 def raise_exception():
     def _func():
-        raise TestException("Dialog test error")
+        raise CustomException("Dialog test error")
 
     return _func
 
@@ -158,7 +158,7 @@ def test_traceback_dialog_basic(qtbot, raise_exception, informative_text):
     # Simulate an exception for traceback
     try:
         raise_exception()
-    except TestException:
+    except CustomException:
         parent = QtWidgets.QWidget()
         qtbot.addWidget(parent)
         parent.show()
@@ -211,7 +211,7 @@ def test_traceback_dialog_no_exception(qtbot):
 def test_traceback_dialog_default_buttons_and_icon(qtbot, raise_exception):
     try:
         raise_exception()
-    except TestException:
+    except CustomException:
         parent = QtWidgets.QWidget()
         dialog = _TracebackDialog(
             parent=parent,
@@ -229,7 +229,7 @@ def test_traceback_dialog_default_buttons_and_icon(qtbot, raise_exception):
 def test_show_traceback(qtbot, raise_exception, accept_dialog):
     try:
         raise_exception()
-    except TestException:
+    except CustomException:
         parent = QtWidgets.QWidget()
         qtbot.addWidget(parent)
         parent.show()

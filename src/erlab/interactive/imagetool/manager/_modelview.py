@@ -513,7 +513,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if parent is None:
             parent = QtCore.QModelIndex()
 
-        if not parent.isValid():
+        if not parent.isValid():  # pragma: no branch
             # Top-level; ImageTool
             if row >= len(self.manager._displayed_indices):
                 return QtCore.QModelIndex()
@@ -1092,10 +1092,6 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             for index in self.selectedIndexes()
             if isinstance(index.internalPointer(), str)
         ]
-
-    @QtCore.Slot()
-    def select_all(self) -> None:
-        self.selectAll()
 
     @QtCore.Slot()
     def deselect_all(self) -> None:
