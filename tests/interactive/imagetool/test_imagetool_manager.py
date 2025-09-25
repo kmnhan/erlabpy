@@ -10,6 +10,7 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch
@@ -46,6 +47,20 @@ def select_tools(
             if deselect
             else QtCore.QItemSelectionModel.SelectionFlag.Select,
         )
+
+
+def select_child_tool(
+    manager: ImageToolManager, uid: str, deselect: bool = False
+) -> None:
+    selection_model = manager.tree_view.selectionModel()
+
+    qmodelindex = manager.tree_view._model._row_index(uid)
+    selection_model.select(
+        QtCore.QItemSelection(qmodelindex, qmodelindex),
+        QtCore.QItemSelectionModel.SelectionFlag.Deselect
+        if deselect
+        else QtCore.QItemSelectionModel.SelectionFlag.Select,
+    )
 
 
 def make_drop_event(filename: str) -> QtGui.QDropEvent:
@@ -94,6 +109,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     qtbot.addWidget(manager)
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
 
     test_data.qshow(manager=True)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
@@ -222,10 +238,57 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         next(iter(manager._imagetool_wrappers[3]._childtools.values())), GoldTool
     )
 
+    # Trigger paint event
+    manager.tree_view.expandAll()
+
     # Close goldtool
     manager._remove_childtool(
         next(iter(manager._imagetool_wrappers[3]._childtools.keys()))
     )
+
+    # Show dtool
+    manager.get_imagetool(3).slicer_area.images[2].open_in_dtool()
+
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
+    )
+    assert isinstance(
+        next(iter(manager._imagetool_wrappers[3]._childtools.values())), DerivativeTool
+    )
+
+    manager.tree_view.expandAll()
+    tool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
+
+    # Show dtool
+    manager.show_childtool(tool_uid)
+
+    # Tool and parent
+    tool, idx = manager._get_childtool_and_parent(tool_uid)
+    assert isinstance(tool, DerivativeTool)
+    assert idx == 3
+
+    # Duplicate dtool
+    select_child_tool(manager, tool_uid)
+    manager.duplicate_selected()
+    manager.tree_view.refresh(None)
+
+    assert len(manager._imagetool_wrappers[3]._childtools) == 2
+
+    # Check calling invalid indices
+    parent_qindex = manager.tree_view._model._row_index(3)
+    assert manager.tree_view._model.index(1, 0, parent_qindex).isValid()
+    assert not manager.tree_view._model.index(4, 0, parent_qindex).isValid()
+
+    valid_but_wrong_pointer_type = manager.tree_view._model.createIndex(
+        parent_qindex.row(), parent_qindex.column(), "invalid data"
+    )
+    assert not manager.tree_view._model.index(
+        1, 0, valid_but_wrong_pointer_type
+    ).isValid()
+
+    # Close dtools
+    for uid in list(manager._imagetool_wrappers[3]._childtools.keys()):
+        manager._remove_childtool(uid)
 
     # Bring manager to top
     with qtbot.waitExposed(manager):

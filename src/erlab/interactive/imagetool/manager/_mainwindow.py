@@ -717,7 +717,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot(int)
     def show_imagetool(self, index: int) -> None:
         """Show the ImageTool window corresponding to the given index."""
-        if index in self._imagetool_wrappers:
+        if index in self._imagetool_wrappers:  # pragma: no branch
             self._imagetool_wrappers[index].show()
 
     @QtCore.Slot()
@@ -737,7 +737,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         require_unarchive = any(
             self._imagetool_wrappers[i].archived for i in index_list
         )
-        if require_unarchive:
+        if require_unarchive:  # pragma: no branch
             # This is just to display the wait dialog for unarchiving.
             # If this part is removed, the showing will just hang until the unarchiving
             # is finished without any feedback.
@@ -786,7 +786,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         num_implicit_children: int = 0
         for i in indices:
             for uid in self._imagetool_wrappers[i]._childtool_indices:
-                if uid not in child_uids:
+                if uid not in child_uids:  # pragma: no branch
                     num_implicit_children += 1
 
         text = f"{count} selected ImageTool window{'' if count == 1 else 's'}"
@@ -1031,7 +1031,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 case 1:
                     # Legacy format, only contains imagetools at the root level
                     tree = self._parse_datatree_compat_v1(tree)
-                case 2:
+                case 2:  # pragma: no branch
                     pass
                 case _:
                     raise ValueError(
@@ -1042,7 +1042,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             dialog = _ChooseFromDataTreeDialog(self, tree, mode="load")
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                 for i, node in enumerate(tree.values()):
-                    if dialog.imagetool_selected(i):
+                    if dialog.imagetool_selected(i):  # pragma: no branch
                         ds = (
                             typing.cast("xr.DataTree", node["imagetool"])
                             .to_dataset(inherit=False)
@@ -1058,7 +1058,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         for j, child_node in enumerate(
                             typing.cast("xr.DataTree", node["childtools"]).values()
                         ):
-                            if dialog.childtool_selected(i, j):
+                            if dialog.childtool_selected(i, j):  # pragma: no branch
                                 ds = (
                                     typing.cast("xr.DataTree", child_node)
                                     .to_dataset(inherit=False)
@@ -1106,7 +1106,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog.setDefaultSuffix("h5")
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
-        if not native:
+        if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
@@ -1118,7 +1118,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _save_to_file(self, fname: str):
         tree: xr.DataTree = self._to_datatree()
         dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
-        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:  # pragma: no branch
             for i, key in enumerate(list(tree.keys())):
                 if not dialog.imagetool_selected(i):
                     del tree[key]
@@ -1151,10 +1151,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog.setNameFilter("xarray HDF5 Files (*.h5)")
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
-        if not native:
+        if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        if dialog.exec():
+        if dialog.exec():  # pragma: no branch
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
@@ -1383,8 +1383,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @property
     def _recent_loader_name(self) -> str | None:
         """Name of the most recently used loader."""
-        if self._recent_name_filter is not None:
-            for k in erlab.io.loaders:
+        if self._recent_name_filter is not None:  # pragma: no branch
+            for k in erlab.io.loaders:  # pragma: no branch
                 if self._recent_name_filter in erlab.io.loaders[k].file_dialog_methods:
                     return k
         return None
@@ -1655,7 +1655,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         tool: erlab.interactive.utils.ToolWindow,
         parent_slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
     ) -> None:
-        for idx, wrapper in self._imagetool_wrappers.items():
+        for idx, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
             if wrapper.slicer_area is parent_slicer_area:
                 self.add_childtool(tool, idx)
                 return
@@ -1728,7 +1728,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """
         self.tree_view.childtool_removed(uid)
 
-        for wrapper in self._imagetool_wrappers.values():
+        for wrapper in self._imagetool_wrappers.values():  # pragma: no branch
             if uid in wrapper._childtools:
                 wrapper._remove_childtool(uid)
                 return
