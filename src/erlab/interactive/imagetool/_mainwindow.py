@@ -407,13 +407,12 @@ class ImageTool(BaseImageTool):
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
                     self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
+            except Exception:
+                erlab.interactive.utils.show_traceback(
                     self,
                     "Error",
-                    f"An error occurred while loading the file: {e}"
-                    "\n\nTry again with a different loader.",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+                    "An error occurred while loading the file.",
+                    "Try again with a different loader.",
                 )
                 self._open_file()
             else:

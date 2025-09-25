@@ -385,7 +385,7 @@ class _TracebackDialog(QtWidgets.QDialog):
 
 
 def show_traceback(
-    parent: QtWidgets.QWidget,
+    parent: QtWidgets.QWidget | None,
     title: str,
     text: str,
     informative_text: str = "",
@@ -845,12 +845,11 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
                     return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
                 case _:
                     return xarray_lmfit.load_fit(file_name)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
+        except Exception:
+            erlab.interactive.utils.show_traceback(
                 None,
                 "Error",
-                "An error occurred while loading the fit result:\n\n"
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                f"Could not load fit result from file '{file_name}'.",
             )
 
     return None

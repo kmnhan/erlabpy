@@ -1581,7 +1581,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         erlab.interactive.utils.show_traceback(
             self,
             "Error",
-            "An error occurred while creating the ImageTool window. ",
+            "An error occurred while creating the ImageTool window.",
             "The data may be incompatible with ImageTool.",
         )
 
