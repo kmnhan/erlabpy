@@ -151,16 +151,31 @@ class _NameFilterDialog(QtWidgets.QDialog):
 
 
 class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager, tree: xarray.DataTree) -> None:
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        tree: xarray.DataTree,
+        mode: typing.Literal["save", "load"],
+    ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
+
+        self._saving: bool = mode == "save"
+
+        if self._saving:
+            self.setWindowTitle("Select tools to save")
+        else:
+            self.setWindowTitle("Select tools to add")
 
         layout = QtWidgets.QHBoxLayout(self)
 
         self._tree_widget = QtWidgets.QTreeWidget(self)
         self._tree_widget.setColumnCount(1)
+        self._tree_widget.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self._tree_widget.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
         )
         self._tree_widget.setUniformRowHeights(True)
         self._tree_widget.setAlternatingRowColors(True)
@@ -255,18 +270,21 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
 
     def _populate_tree(self, tree: xarray.DataTree) -> None:
         root: QtWidgets.QTreeWidgetItem | None = self._tree_widget.invisibleRootItem()
-        if root is not None:  # pragma: no branch
-            for key, node in tree.items():
+        manager = self._manager()
+
+        if root is not None and manager is not None:  # pragma: no branch
+            start = int(manager.next_idx)
+            for i, (key, node) in enumerate(tree.items()):
                 title = node["imagetool"].attrs["itool_title"]
-                name = str(key)
+
+                # Use candidate if loading, current index if saving
+                name = str(key) if self._saving else str(start + i)
                 if title:
                     name = f"{name}: {title}"
 
                 item = QtWidgets.QTreeWidgetItem(root, [name])
                 item.setFlags(
-                    item.flags()
-                    | QtCore.Qt.ItemFlag.ItemIsSelectable
-                    | QtCore.Qt.ItemFlag.ItemIsEnabled
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
                     | QtCore.Qt.ItemFlag.ItemIsUserCheckable
                 )
 
@@ -278,9 +296,7 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
                             item, [cnode.attrs["tool_title"]]
                         )
                         citem.setFlags(
-                            citem.flags()
-                            | QtCore.Qt.ItemFlag.ItemIsSelectable
-                            | QtCore.Qt.ItemFlag.ItemIsEnabled
+                            QtCore.Qt.ItemFlag.ItemIsEnabled
                             | QtCore.Qt.ItemFlag.ItemIsUserCheckable
                         )
                         citem.setCheckState(0, QtCore.Qt.CheckState.Checked)
@@ -290,6 +306,7 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
             self._tree_widget.expandAll()
 
     def imagetool_selected(self, index: int) -> bool:
+        """Return whether the ImageTool at the given index is selected."""
         out = False
         item = self._tree_widget.topLevelItem(index)
         if item is not None:  # pragma: no branch
@@ -297,6 +314,7 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
         return out
 
     def childtool_selected(self, parent_index: int, child_index: int) -> bool:
+        """Return whether the child tool at the given indices is selected."""
         out = False
         parent_item = self._tree_widget.topLevelItem(parent_index)
         if parent_item is not None:  # pragma: no branch

@@ -1852,7 +1852,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             manager = self._manager_instance
             if manager:  # pragma: no branch
                 if isinstance(widget, erlab.interactive.utils.ToolWindow):
-                    manager.add_childtool(widget, self)
+                    manager._add_childtool_from_slicerarea(widget, self)
                 else:
                     manager.add_widget(widget)
                 return

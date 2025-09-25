@@ -50,8 +50,9 @@ class DerivativeTool(
     class StateModel(pydantic.BaseModel):
         data_name: str
         interp: bool
-        nx: int
-        ny: int
+        nx_value: int
+        ny_value: int
+        cutoffs: tuple[float, float]
         smooth: bool
         smooth_mode: typing.Literal[0, 1]
         sx_value: float
@@ -61,12 +62,63 @@ class DerivativeTool(
         mode_kwargs: dict[str, typing.Any]
 
     @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(
+            self.tool_data.T
+        )
+        info += "<b>Preprocessing</b><br>"
+        if self.interp_group.isChecked():
+            info += f"Interpolate to ({status.nx_value}, {status.ny_value})<br>"
+        else:
+            info += "No interpolation<br>"
+
+        if status.smooth:
+            info += (
+                f"Smoothing: {self.smooth_combo.currentText()} "
+                f"({status.sx_value}, {status.sy_value}), "
+                f"{status.sn_value} times<br>"
+            )
+        else:
+            info += "No smoothing<br>"
+
+        info += "<br>"
+        info += "<b>Method</b><br>"
+
+        method_strings = (
+            "Second derivative",
+            "Scaled Laplace",
+            "1D Curvature",
+            "2D Curvature",
+            "Minimum Gradient",
+        )
+        info += method_strings[status.process_mode]
+
+        info += "<br>Parameters:"
+
+        info += format_html_table(
+            [
+                [format_html_accent(k, em_space=True), v]
+                for k, v in status.mode_kwargs.items()
+            ]
+        )
+
+        return info
+
+    @property
     def tool_status(self) -> StateModel:
         return self.StateModel(
             data_name=self.data_name,
             interp=self.interp_group.isChecked(),
-            nx=self.nx_spin.value(),
-            ny=self.ny_spin.value(),
+            nx_value=self.nx_spin.value(),
+            ny_value=self.ny_spin.value(),
+            cutoffs=(self.lo_spin.value(), self.hi_spin.value()),
             smooth=self.smooth_group.isChecked(),
             smooth_mode=self.smooth_combo.currentIndex(),
             sx_value=self.sx_spin.value(),
@@ -78,10 +130,14 @@ class DerivativeTool(
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
+        self._pause_update = True
+
         self.data_name: str = status.data_name
         self.interp_group.setChecked(status.interp)
-        self.nx_spin.setValue(status.nx)
-        self.ny_spin.setValue(status.ny)
+        self.nx_spin.setValue(status.nx_value)
+        self.ny_spin.setValue(status.ny_value)
+        self.lo_spin.setValue(status.cutoffs[0])
+        self.hi_spin.setValue(status.cutoffs[1])
         self.smooth_group.setChecked(status.smooth)
         self.smooth_combo.setCurrentIndex(status.smooth_mode)
         self.sx_spin.setValue(status.sx_value)
@@ -90,15 +146,24 @@ class DerivativeTool(
         self.tab_widget.setCurrentIndex(status.process_mode)
         match self.tab_widget.currentIndex():
             case 0:
-                self.x_radio.setChecked(status.mode_kwargs["coord"] == self.xdim)
+                if status.mode_kwargs["coord"] == self.xdim:
+                    self.x_radio.setChecked(True)
+                else:
+                    self.y_radio.setChecked(True)
             case 1:
                 self.lapl_factor_spin.setValue(status.mode_kwargs["factor"])
             case 2:
-                self.x_radio_curv1d.setChecked(status.mode_kwargs["along"] == self.xdim)
+                if status.mode_kwargs["along"] == self.xdim:
+                    self.x_radio_curv1d.setChecked(True)
+                else:
+                    self.y_radio_curv1d.setChecked(True)
                 self.curv1d_a0_spin.setValue(status.mode_kwargs["a0"])
             case 3:
                 self.curv_a0_spin.setValue(status.mode_kwargs["a0"])
                 self.curv_factor_spin.setValue(status.mode_kwargs["factor"])
+
+        self._pause_update = False
+        self.update_preprocess()
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -120,6 +185,8 @@ class DerivativeTool(
         super().__init__()
         self.setupUi(self)
         self.setWindowTitle("")
+
+        self._pause_update = False  # To temporarily pause updates during state changes
 
         self.data_has_nan: bool = False
 
@@ -296,9 +363,10 @@ class DerivativeTool(
 
     @QtCore.Slot()
     def update_image(self) -> None:
-        self.images[1].setDataArray(
-            self.result, levels=self.get_levels(self.result.values)
-        )
+        if not self._pause_update:
+            self.images[1].setDataArray(
+                self.result, levels=self.get_levels(self.result.values)
+            )
 
     def get_levels(self, data, cutoff=None) -> tuple[float, float]:
         if cutoff is None:
@@ -314,8 +382,9 @@ class DerivativeTool(
 
     @QtCore.Slot()
     def update_preprocess(self) -> None:
-        self.__dict__.pop("processed_data", None)
-        self.update_result()
+        if not self._pause_update:
+            self.__dict__.pop("processed_data", None)
+            self.update_result()
 
     @property
     def process_func(self) -> Callable:
@@ -368,7 +437,9 @@ class DerivativeTool(
 
     @QtCore.Slot()
     def update_result(self) -> None:
-        self.result = self.process_func(self.processed_data, **self.process_kwargs)
+        if not self._pause_update:
+            self.result = self.process_func(self.processed_data, **self.process_kwargs)
+            self.sigInfoChanged.emit()
 
     def copy_code(self) -> str:
         lines: list[str] = []

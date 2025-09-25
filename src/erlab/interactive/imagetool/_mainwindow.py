@@ -116,14 +116,16 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = self.slicer_area._data.name
         if name is None:
             name = ""
+
         return self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
             {
                 "itool_state": json.dumps(self.slicer_area.state),
                 "itool_title": self.windowTitle(),
-                "itool_name": name,
+                "itool_name": str(name),
                 "itool_rect": self.geometry().getRect(),
+                "itool_visible": bool(self.isVisible()),
                 "erlab_version": erlab.__version__,
             }
         )

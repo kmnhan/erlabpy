@@ -94,12 +94,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         Custom paint method for rendering items in the list view.
     """
 
-    icon_width: int = 16
-    icon_height: int = 16
-    icon_right_pad: int = 5
+    icon_width: int = 12
+    icon_height: int = 12
+    icon_right_pad: int = 3
     icon_inner_pad: float = 1.5
     icon_border_width: float = 1.5
-    icon_corner_radius: float = 5.0
+    icon_corner_radius: float = 3.0
 
     info_rect_hpad: int = 5
 
@@ -406,7 +406,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         ):
             child_tool = self.manager.get_childtool(index.internalPointer())
             image_item = child_tool.preview_imageitem
-            if image_item is not None:
+            if image_item is None:
+                self.preview_popup.hide()
+            else:
                 vb_rect = image_item.getViewBox().rect()
                 self._show_popup(
                     vb_rect.height() / vb_rect.width(),
@@ -487,8 +489,18 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             self._childtool_uid(row_index, parent_wrapper)
         ]
 
-    def _row_index(self, imagetool_index: int) -> QtCore.QModelIndex:
-        return self.index(self.manager._displayed_indices.index(imagetool_index), 0)
+    def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
+        """Get the corresponding QModelIndex for an parent index or child UID."""
+        if isinstance(index_or_uid, str):
+            for tool_idx, wrapper in self.manager._imagetool_wrappers.items():
+                if index_or_uid in wrapper._childtools:
+                    return self.index(
+                        wrapper._childtool_indices.index(index_or_uid),
+                        0,
+                        self._row_index(tool_idx),
+                    )
+            return QtCore.QModelIndex()
+        return self.index(self.manager._displayed_indices.index(index_or_uid), 0)
 
     def _is_archived(self, row_index: QtCore.QModelIndex) -> bool:
         return self._imagetool_wrapper(row_index).archived
@@ -596,7 +608,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return self.manager.name_of_imagetool(tool_idx)
 
             case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 30)
+                return QtCore.QSize(100, 20)
 
         return None
 
@@ -613,7 +625,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return self._childtool(index, parent_wrapper)._tool_display_name
 
             case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 30)
+                return QtCore.QSize(100, 20)
 
     def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlag:
         if not index.isValid():
@@ -1015,6 +1027,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self.setDragDropOverwriteMode(False)
         self.setUniformRowHeights(True)
         self.setAnimated(True)
+        self.setExpandsOnDoubleClick(False)
 
         self.setEditTriggers(
             self.EditTrigger.EditKeyPressed
@@ -1022,8 +1035,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
         self.setWordWrap(True)  # Ellide text when width is too small
         self.setMouseTracking(True)  # Enable hover detection
-
-        typing.cast("QtWidgets.QHeaderView", self.header()).hide()  # Hide header
+        self.setHeaderHidden(True)  # Hide header
 
         # Show tool on double-click
         self.doubleClicked.connect(self._model.manager.show_selected)

@@ -274,9 +274,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.reload_action.setToolTip("Reload data from file for selected windows")
         self.reload_action.setVisible(False)
 
-        self.unwatch_action = QtWidgets.QAction("Unwatch", self)
+        self.unwatch_action = QtWidgets.QAction("Stop Watching", self)
         self.unwatch_action.triggered.connect(self.unwatch_selected)
-        self.unwatch_action.setToolTip("Unwatch selected windows")
+        self.unwatch_action.setToolTip("Stop watching selected windows")
         self.unwatch_action.setVisible(False)
 
         # Populate menu bar
@@ -350,10 +350,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Construct left side of splitter
         left_container = QtWidgets.QWidget()
-        left_layout = QtWidgets.QHBoxLayout()
+        left_layout = QtWidgets.QHBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
-        left_container.setLayout(left_layout)
         main_splitter.addWidget(left_container)
 
         titlebar = QtWidgets.QWidget()
@@ -561,22 +560,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return index
 
     @QtCore.Slot()
-    def _update_info(self) -> None:
-        """Update the information text box."""
+    @QtCore.Slot(str)
+    def _update_info(self, uid: str | None = None) -> None:
+        """Update the information text box.
+
+        If a string ``uid`` is provided, the function will update the info box only if
+        the given ``uid`` is the only selected child tool.
+        """
         selected_imagetools = self.tree_view.selected_imagetool_indices
         selected_childtools = self.tree_view.selected_childtool_uids
 
-        match len(selected_imagetools) + len(selected_childtools):
+        n_itool: int = len(selected_imagetools)
+        n_total: int = n_itool + len(selected_childtools)
+
+        if (uid is not None) and ((n_total != 1) or (uid not in selected_childtools)):
+            return
+
+        match n_total:
+            case 0:
+                self.text_box.setPlainText("Select a window to view its information.")
+                self.preview_widget.setVisible(False)
+
             case 1:
-                if len(selected_imagetools) > 0:
+                if n_itool > 0:
                     wrapper = self._imagetool_wrappers[selected_imagetools[0]]
                     self.text_box.setHtml(wrapper.info_text)
                     self.preview_widget.setPixmap(wrapper._preview_image[1])
-                    self.text_box.setVisible(True)
                     self.preview_widget.setVisible(True)
                 else:
                     childtool = self.get_childtool(selected_childtools[0])
-                    info: str = childtool.info_text
+                    info: str = erlab.interactive.utils._apply_qt_accent_color(
+                        childtool.info_text
+                    )
                     self.text_box.setHtml(info)
                     image_item = childtool.preview_imageitem
                     if image_item is None:
@@ -589,13 +604,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         )
                         self.preview_widget.setVisible(True)
 
-                    if self.preview_widget.isVisible():
-                        self.text_box.setVisible(True)
-                    else:
-                        self.text_box.setVisible(info.strip() != "")
-
             case _:
-                self.text_box.setVisible(False)
+                self.text_box.setHtml(
+                    "<p><b>Selected ImageTool windows</b></p>"
+                    + "<br>".join(
+                        self._imagetool_wrappers[i].label_text
+                        for i in selected_imagetools
+                    )
+                )
                 self.preview_widget.setVisible(False)
 
     @QtCore.Slot()
@@ -651,6 +667,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.show_action.setEnabled(True)
             self.hide_action.setEnabled(True)
             self.remove_action.setEnabled(True)
+            self.duplicate_action.setEnabled(True)
 
         if only_unarchived:
             match len(selection_unarchived):
@@ -740,7 +757,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for index in self.tree_view.selected_imagetool_indices:
             self._imagetool_wrappers[index].close()
         for uid in self.tree_view.selected_childtool_uids:
-            self.get_childtool(uid).close()
+            self.get_childtool(uid).hide()
 
     @QtCore.Slot()
     def hide_all(self) -> None:
@@ -812,17 +829,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def duplicate_selected(self) -> None:
-        """Duplicate selected ImageTool windows."""
-        selected: list[int] = list(self.tree_view.selected_imagetool_indices)
+        """Duplicate selected windows."""
+        indices = list(self.tree_view.selected_imagetool_indices)
+        child_uids = list(self.tree_view.selected_childtool_uids)
         self.tree_view.deselect_all()
 
         selection_model = typing.cast(
             "QtCore.QItemSelectionModel", self.tree_view.selectionModel()
         )
-        for index in selected:
+        for index in indices:
             new_index = self.duplicate_imagetool(index)
 
             qmodelindex = self.tree_view._model._row_index(new_index)
+
+            selection_model.select(
+                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+        for uid in child_uids:
+            new_uid = self.duplicate_childtool(uid)
+
+            qmodelindex = self.tree_view._model._row_index(new_uid)
 
             selection_model.select(
                 QtCore.QItemSelection(qmodelindex, qmodelindex),
@@ -929,6 +957,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.get_imagetool(index).duplicate(_in_manager=True), activate=True
         )
 
+    def duplicate_childtool(self, uid: str) -> str:
+        """Duplicate the child tool corresponding to the given UID.
+
+        Parameters
+        ----------
+        uid
+            UID of the child tool to duplicate.
+
+        Returns
+        -------
+        str
+            UID of the newly created child tool.
+        """
+        tool, idx = self._get_childtool_and_parent(uid)
+        return self.add_childtool(tool.duplicate(), idx)
+
     def link_imagetools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
         linker = erlab.interactive.imagetool.core.SlicerLinkProxy(
@@ -995,27 +1039,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         "file may be from a newer version of erlab"
                     )
 
-            dialog = _ChooseFromDataTreeDialog(self, tree)
-            dialog.setWindowTitle("Select tools to add")
+            dialog = _ChooseFromDataTreeDialog(self, tree, mode="load")
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                 for i, node in enumerate(tree.values()):
                     if dialog.imagetool_selected(i):
-                        new_idx: int = self.add_imagetool(
-                            ImageTool.from_dataset(
-                                node["imagetool"].dataset, _in_manager=True
-                            )
+                        ds = (
+                            typing.cast("xr.DataTree", node["imagetool"])
+                            .to_dataset(inherit=False)
+                            .compute()
                         )
+                        new_idx: int = self.add_imagetool(
+                            ImageTool.from_dataset(ds, _in_manager=True)
+                        )
+                        if not ds.attrs.get("itool_visible", True):
+                            self.get_imagetool(new_idx).hide()
+
                     if "childtools" in node:
                         for j, child_node in enumerate(
                             typing.cast("xr.DataTree", node["childtools"]).values()
                         ):
                             if dialog.childtool_selected(i, j):
-                                self._add_childtool_with_index(
-                                    erlab.interactive.utils.ToolWindow.from_dataset(
-                                        child_node.dataset
-                                    ),
+                                ds = (
+                                    typing.cast("xr.DataTree", child_node)
+                                    .to_dataset(inherit=False)
+                                    .compute()
+                                )
+                                uid = self.add_childtool(
+                                    erlab.interactive.utils.ToolWindow.from_dataset(ds),
                                     new_idx,
                                 )
+                                if not ds.attrs.get("tool_visible", True):
+                                    self.get_childtool(uid).hide()
+            tree.close()
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
         """Restore the state of the manager from a DataTree object.
@@ -1026,21 +1081,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return xr.DataTree.from_dict(
             {f"{i}/imagetool": node.dataset for i, node in tree.items()}
         )
-
-    # def _to_datatree(self, close: bool = False) -> xr.DataTree:
-    #     """Convert the current state of the manager to a DataTree object."""
-    #     constructor: dict[str, xr.Dataset] = {}
-    #     for index in tuple(self._imagetool_wrappers.keys()):
-    #         ds = self.get_imagetool(index).to_dataset()
-    #         ds.attrs["itool_title"] = (
-    #             ds.attrs["itool_title"].removeprefix(f"{index}").removeprefix(": ")
-    #         )
-    #         constructor[str(index)] = ds
-    #         if close:
-    #             self.remove_imagetool(index)
-    #     tree = xr.DataTree.from_dict(constructor)
-    #     tree.attrs["is_itool_workspace"] = 1
-    #     return tree
 
     def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
         """Check if the given DataTree object is a valid workspace file."""
@@ -1076,9 +1116,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 self._save_to_file(fname)
 
     def _save_to_file(self, fname: str):
-        tree = self._to_datatree()
-        dialog = _ChooseFromDataTreeDialog(self, tree)
-        dialog.setWindowTitle("Select tools to save")
+        tree: xr.DataTree = self._to_datatree()
+        dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             for i, key in enumerate(list(tree.keys())):
                 if not dialog.imagetool_selected(i):
@@ -1592,19 +1631,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         widget.destroyed.connect(lambda: self._additional_windows.pop(uid, None))
         widget.show()
 
-    def _add_childtool_with_index(
+    def add_childtool(
         self, tool: erlab.interactive.utils.ToolWindow, index: int
     ) -> str:
-        """Register a child tool window to the ImageTool at the given index."""
-        uid = self._imagetool_wrappers[index]._add_childtool(tool)
-        self.tree_view.childtool_added(uid, index)
-        return uid
-
-    def add_childtool(
-        self,
-        tool: erlab.interactive.utils.ToolWindow,
-        parent_slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
-    ) -> None:
         """Register a child tool window.
 
         This is mainly used for handling tool windows such as goldtool and dtool opened
@@ -1614,18 +1643,47 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ----------
         tool
             The tool window to add.
-        parent_slicer_area
-            The parent ImageSlicerArea that opened the tool.
+        index
+            Index of the parent ImageTool window.
         """
-        # Assume not archived since we got the signal
+        uid = self._imagetool_wrappers[index]._add_childtool(tool)
+        self.tree_view.childtool_added(uid, index)
+        return uid
+
+    def _add_childtool_from_slicerarea(
+        self,
+        tool: erlab.interactive.utils.ToolWindow,
+        parent_slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
+    ) -> None:
         for idx, wrapper in self._imagetool_wrappers.items():
             if wrapper.slicer_area is parent_slicer_area:
-                uid = wrapper._add_childtool(tool)
-                self.tree_view.childtool_added(uid, idx)
+                self.add_childtool(tool, idx)
                 return
 
         # The parent slicer area is not owned by this manager; just keep track of it
         self.add_widget(tool)
+
+    def _get_childtool_and_parent(
+        self, uid: str
+    ) -> tuple[erlab.interactive.utils.ToolWindow, int]:
+        """Get the child tool window and parent index corresponding to the given UID.
+
+        Parameters
+        ----------
+        uid
+            The unique ID of the child tool to get.
+
+        Returns
+        -------
+        ToolWindow
+            The child tool window corresponding to the given UID.
+        int
+            The index of the parent ImageTool window.
+        """
+        for idx, wrapper in self._imagetool_wrappers.items():
+            if uid in wrapper._childtool_indices:
+                return wrapper._childtools[uid], idx
+        raise KeyError(f"No child tool with UID {uid} found")
 
     def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
         """Get the child tool window corresponding to the given UID.
@@ -1640,10 +1698,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ToolWindow
             The child tool window corresponding to the given UID.
         """
-        for wrapper in self._imagetool_wrappers.values():
-            if uid in wrapper._childtool_indices:
-                return wrapper._childtools[uid]
-        raise KeyError(f"No child tool with UID {uid} found")
+        return self._get_childtool_and_parent(uid)[0]
 
     def show_childtool(self, uid: str) -> None:
         """Show the child tool window corresponding to the given UID."""

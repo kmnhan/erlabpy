@@ -2027,12 +2027,17 @@ class ToolWindow(QtWidgets.QMainWindow):
     - The property `info_text` can be implemented to return a HTML string that describes
       the current state of the tool, which will be shown in the ImageTool manager.
 
+    - If you implement `preview_imageitem` or `info_text`, you should emit the signal
+      ``sigInfoChanged`` without any arguments whenever the content of these properties
+      changes. This will ensure that the ImageTool manager updates its display.
     """
 
     tool_name: str = "tool"
     __tool_display_name: str = ""
 
     StateModel: type[pydantic.BaseModel]
+
+    sigInfoChanged = QtCore.Signal()
 
     @property
     def tool_status(self) -> pydantic.BaseModel:
@@ -2069,12 +2074,17 @@ class ToolWindow(QtWidgets.QMainWindow):
 
     @property
     def _saved_tool_attrs(self) -> dict:
+        data_name = self.tool_data.name
+        if data_name is None:
+            data_name = ""
         return {
             "tool_state": self.tool_status.model_dump_json(),
+            "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
-            "tool_rect": self.geometry().getRect(),
             "tool_cls_qualname": self._qual_name(),
             "tool_display_name": self._tool_display_name,
+            "tool_rect": self.geometry().getRect(),
+            "tool_visible": bool(self.isVisible()),
             "erlab_version": erlab.__version__,
         }
 
@@ -2131,7 +2141,10 @@ class ToolWindow(QtWidgets.QMainWindow):
         cls_obj = typing.cast("type[typing.Self]", cls_obj)
 
         # Instantiate the class and set the status
-        tool = cls_obj(ds["<saved-tool-data>"], **kwargs)  # type: ignore[arg-type]
+        tool = cls_obj(
+            ds["<saved-tool-data>"].rename(ds.attrs.get("tool_data_name", "")),  # type: ignore[arg-type]
+            **kwargs,
+        )
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
@@ -2166,6 +2179,25 @@ class ToolWindow(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
+
+    def duplicate(self, **kwargs) -> typing.Self:
+        """Create a duplicate of the current tool window.
+
+        This method creates a new instance of the tool with the same data and state as
+        the current one.
+
+        Parameters
+        ----------
+        kwargs
+            Additional keyword arguments passed to the constructor of the new tool.
+
+        Returns
+        -------
+        tool
+            The duplicated tool window.
+
+        """
+        return self.from_dataset(self.to_dataset(), **kwargs)
 
     @property
     def _tool_display_name(self) -> str:
