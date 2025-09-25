@@ -2036,7 +2036,7 @@ class ToolWindow(QtWidgets.QMainWindow):
 
     StateModel: type[pydantic.BaseModel]
 
-    sigInfoChanged = QtCore.Signal()  # :meta private:
+    sigInfoChanged = QtCore.Signal()  #: :meta private:
 
     @property
     def tool_status(self) -> pydantic.BaseModel:
