@@ -2907,3 +2907,20 @@ def make_crosshairs(
         l0.link(l1)
 
     return [*lines, target]
+
+
+def _apply_qt_accent_color(html_string) -> str:
+    """Replace accent colors in an HTML string with the system accent color.
+
+    The formatting module uses a placeholder color for accent colors in HTML strings. If
+    the Qt version supports it (Qt 6.6 or later), this function replaces the placeholder
+    with the actual accent color of the system.
+
+    """
+    if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
+        # Accent color is available from Qt 6.6
+        accent_color = QtWidgets.QApplication.palette().accent().color().name()
+        html_string = html_string.replace(
+            erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
+        )
+    return html_string

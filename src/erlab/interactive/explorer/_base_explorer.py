@@ -1134,7 +1134,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 "QtWidgets.QScrollBar", self._text_edit.verticalScrollBar()
             )
             scroll_bar.blockSignals(True)
-            self._text_edit.setHtml(self._parse_file_info(text))
+
+            self._text_edit.setHtml(
+                erlab.interactive.utils._apply_qt_accent_color(text)
+            )
             self._load_slider_pos()
             scroll_bar.blockSignals(False)
 
@@ -1142,15 +1145,6 @@ class _DataExplorer(QtWidgets.QMainWindow):
             self._preview.set_data(data)
 
             self._displayed_selection = selected_files
-
-    @staticmethod
-    def _parse_file_info(text: str) -> str:
-        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
-            accent_color = QtWidgets.QApplication.palette().accent().color().name()
-            text = text.replace(
-                erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
-            )
-        return text
 
     @QtCore.Slot()
     def to_manager(self, **kwargs) -> None:

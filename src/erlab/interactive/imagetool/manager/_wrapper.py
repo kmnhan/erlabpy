@@ -104,15 +104,7 @@ class _ImageToolWrapper(QtCore.QObject):
                     f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
                 ],
             )
-
-        if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
-            # Accent color is available from Qt 6.6
-            accent_color = QtWidgets.QApplication.palette().accent().color().name()
-            text = text.replace(
-                erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
-            )
-
-        return text
+        return erlab.interactive.utils._apply_qt_accent_color(text)
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
@@ -370,7 +362,15 @@ class _ImageToolWrapper(QtCore.QObject):
         """Add a child tool window to the current tool."""
         uid = str(uuid.uuid4())
         self._childtools[uid] = tool
-        tool._tool_display_name = ""  # Reset to default title
+        if not tool._tool_display_name:
+            tool._tool_display_name = str(self.name)
+
+        tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(u))
+
+        # Enable closing with keyboard shortcut
+        tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]
+            QtGui.QKeySequence.StandardKey.Close, tool, tool.hide
+        )
         tool.show()
         return uid
 
