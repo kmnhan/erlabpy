@@ -92,7 +92,7 @@ def _hash_array(arr: npt.NDArray, *, sample_max: int, blocks: int) -> int:
 def _coords_signature(
     darr: xr.DataArray,
     *,
-    coord_sample_max: int = 256,
+    coord_sample_max: int = 1024,
     blocks: int = 2,
 ) -> int:
     pieces: list[int] = []
@@ -121,7 +121,7 @@ def fingerprint_dataarray(
     *,
     sample_max: int = 4096,
     blocks: int = 3,
-    coord_sample_max: int = 256,
+    coord_sample_max: int = 1024,
 ) -> str:
     """Fast, approximate hash including data, coordinates, and attributes.
 
@@ -144,8 +144,7 @@ def fingerprint_dataarray(
         computation time. Default is 3, which provides a good balance for most cases.
     coord_sample_max : int, optional
         Maximum number of elements to sample from each coordinate array for hashing.
-        Default is 256. In ARPES data, all values in a single coordinate array are often
-        modified together, so a smaller sample size is usually sufficient.
+        Default is 1024.
 
     Returns
     -------

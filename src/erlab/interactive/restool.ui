@@ -577,7 +577,7 @@
           <item row="4" column="1">
            <widget class="QCheckBox" name="mev_check">
             <property name="text">
-             <string>Show resolution in meV</string>
+             <string>Energy in meV</string>
             </property>
             <property name="checked">
              <bool>true</bool>

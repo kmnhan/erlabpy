@@ -15,7 +15,10 @@ def test_explorer_general(
 ) -> None:
     erlab.interactive.imagetool.manager.main(execute=False)
     manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.add_widget(manager)
+
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
 
     # Set the recent directory and name filter
     manager._recent_directory = str(example_data_dir)
@@ -39,8 +42,8 @@ def test_explorer_general(
     explorer: _DataExplorer = tabbed_explorer.get_explorer(0)
 
     # Show data explorer
-    manager.show_explorer()
-    qtbot.wait_exposed(explorer)
+    with qtbot.wait_exposed(tabbed_explorer):
+        manager.show_explorer()
 
     # Enable preview
     explorer._preview_check.setChecked(True)
@@ -117,23 +120,23 @@ def test_explorer_general(
 
     # Reload data in manager
     # Choose tool 3
-    qmodelindex = manager.list_view._model._row_index(3)
-    manager.list_view.selectionModel().select(
+    qmodelindex = manager.tree_view._model._row_index(3)
+    manager.tree_view.selectionModel().select(
         QtCore.QItemSelection(qmodelindex, qmodelindex),
         QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
 
     # Lock levels to check if they are preserved after reloading
-    manager.get_tool(3).slicer_area.lock_levels(True)
-    manager.get_tool(3).slicer_area.levels = (1.0, 23.0)
+    manager.get_imagetool(3).slicer_area.lock_levels(True)
+    manager.get_imagetool(3).slicer_area.levels = (1.0, 23.0)
 
-    old_state = manager.get_tool(3).slicer_area.state.copy()
+    old_state = manager.get_imagetool(3).slicer_area.state.copy()
 
-    with qtbot.wait_signal(manager.get_tool(3).slicer_area.sigDataChanged):
+    with qtbot.wait_signal(manager.get_imagetool(3).slicer_area.sigDataChanged):
         manager.reload_action.trigger()
     qtbot.wait(200)
 
-    assert manager.get_tool(3).slicer_area.state == old_state
+    assert manager.get_imagetool(3).slicer_area.state == old_state
 
     # Clear selection
     select_files([2], deselect=True)

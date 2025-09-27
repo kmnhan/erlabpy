@@ -64,6 +64,9 @@ class _Watcher:
         self._last_send: float = 0.0
         self._lock: threading.RLock = threading.RLock()
 
+        # Unique ID for this watcher instance
+        self._uid = str(uuid.uuid4())
+
         # Flags for thread receiving updates from GUI
         self._stop = threading.Event()
         self._thread_started: bool = False
@@ -85,7 +88,7 @@ class _Watcher:
                 uid = self.watched_vars[varname]["uid"]
                 show = True
             else:
-                uid = str(uuid.uuid4())
+                uid = f"{varname} {self._uid}"
 
         fingerprint = erlab.utils.hashing.fingerprint_dataarray(obj)
         with self._lock:
@@ -179,10 +182,12 @@ class _Watcher:
                 logger.debug("Watcher received message: %s", info)
                 varname, uid, event = info["varname"], info["uid"], info["event"]
 
+                if not uid.endswith(self._uid):
+                    continue  # Not for this watcher instance
+
                 with self._lock:
-                    state = self.watched_vars.get(varname)
-                    if not state or state["uid"] != uid:
-                        continue  # Not watching or UID mismatch
+                    if varname not in self.watched_vars:
+                        continue  # Not watching
                 match event:
                     case "updated":
                         # Schedule update on kernel thread
@@ -198,7 +203,7 @@ class _Watcher:
                             self._apply_update_now(varname, uid)
                     case "removed":  # pragma: no branch
                         with self._lock:
-                            state = self.watched_vars.pop(varname, None)
+                            self.watched_vars.pop(varname, None)
                         _stopped_watching_message(varname, "removed from ImageTool")
         except Exception:
             logger.exception("Error in watcher recv loop")

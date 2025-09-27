@@ -134,6 +134,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         Signal emitted when all fitting steps are finished and plots are updated.
     """
 
+    tool_name = "goldtool"
+
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
     sigUpdated = QtCore.Signal()  #: :meta private:
@@ -640,7 +642,7 @@ class ResolutionTool(
         str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
     )
 ):
-    _sigTriggerFit = QtCore.Signal()
+    tool_name = "restool"
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -660,7 +662,52 @@ class ResolutionTool(
         timeout: float
         max_nfev: int
         use_mev: bool
-        results: tuple[str, str, str, str]
+        results: tuple[str, str, str, str, str]
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+
+        info += "<b>Initial Parameters</b>"
+
+        param_dict: dict[str, str] = {
+            "eV range": f"{status.x0} to {status.x1}",
+            f"{self.y_dim} range": f"{status.y0} to {status.y1}",
+            "<i>T</i>": f"{status.temp} K"
+            + f" ({'fixed' if status.fix_temp else 'varied'})",
+            "<i>E</i><sub>F</sub>": f"{status.center} eV"
+            + f" ({'fixed' if status.fix_center else 'varied'})",
+            "Δ<i>E</i>": f"{status.resolution} eV"
+            + f" ({'fixed' if status.fix_resolution else 'varied'})",
+            "Background above <i>E</i><sub>F</sub>": "linear"
+            if status.bkg_slope
+            else "constant",
+            "Fitting method": status.method,
+        }
+
+        info += format_html_table(
+            [[format_html_accent(k), v] for k, v in param_dict.items()]
+        )
+
+        info += "<br><b>Fit Result</b>"
+        info += f"<br>{status.results[0]}"
+        result_dict: dict[str, str] = {
+            "Temperature": status.results[1],
+            "Edge center": status.results[2],
+            "Resolution": status.results[3],
+            "Reduced chi-squared": status.results[4],
+        }
+        info += format_html_table(
+            [[format_html_accent(k), v] for k, v in result_dict.items()]
+        )
+        return info
 
     @property
     def tool_status(self) -> StateModel:
@@ -683,6 +730,7 @@ class ResolutionTool(
             max_nfev=self.nfev_spin.value(),
             use_mev=self.mev_check.isChecked(),
             results=(
+                self.overview_label.text(),
                 self.temp_val.text(),
                 self.center_val.text(),
                 self.res_val.text(),
@@ -714,14 +762,17 @@ class ResolutionTool(
         self.nfev_spin.setValue(status.max_nfev)
         self.mev_check.setChecked(status.use_mev)
 
-        self.temp_val.setText(status.results[0])
-        self.center_val.setText(status.results[1])
-        self.res_val.setText(status.results[2])
-        self.redchi_val.setText(status.results[3])
+        self.overview_label.setText(status.results[0])
+        self.temp_val.setText(status.results[1])
+        self.center_val.setText(status.results[2])
+        self.res_val.setText(status.results[3])
+        self.redchi_val.setText(status.results[4])
 
     @property
     def tool_data(self) -> xr.DataArray:
         return self.data
+
+    _sigTriggerFit = QtCore.Signal()
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
@@ -924,12 +975,15 @@ class ResolutionTool(
 
         def _get_param_text(param: str) -> str:
             """Get the string representation of a parameter value."""
-            factor = (
-                1e3 if (param == "resolution" and self.mev_check.isChecked()) else 1
+            factor = 1e3 if (param != "temp" and self.mev_check.isChecked()) else 1
+            unit: str = (
+                "K"
+                if param == "temp"
+                else ("meV" if self.mev_check.isChecked() else "eV")
             )
             if hasattr(modelresult, "uvars") and modelresult.uvars is not None:
-                return f"{modelresult.uvars[param] * factor:P}"
-            return f"{modelresult.params[param].value * factor:.4f}"
+                return f"{modelresult.uvars[param] * factor:P} {unit}"
+            return f"{modelresult.params[param].value * factor:.4f} {unit}"
 
         for param, textedit in zip(
             ("temp", "center", "resolution"),

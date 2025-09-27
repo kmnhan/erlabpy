@@ -101,8 +101,8 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     qtbot.wait_until(lambda: manager.ntools == 1)
 
     # Archive nd remove
-    manager._tool_wrappers[0].archive()
-    manager.remove_tool(0)
+    manager._imagetool_wrappers[0].archive()
+    manager.remove_imagetool(0)
     qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
     erlab.interactive.imagetool.manager._manager_instance = None

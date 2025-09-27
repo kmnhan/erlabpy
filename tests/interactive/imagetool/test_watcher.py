@@ -303,7 +303,7 @@ def test_watcher_real(qtbot):
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
     # Check watched
-    assert manager._tool_wrappers[0].watched
+    assert manager._imagetool_wrappers[0].watched
 
     # Update data
     ip_session.user_ns["darr"] = darr**2
@@ -311,26 +311,26 @@ def test_watcher_real(qtbot):
         watcher._maybe_push()
 
     xr.testing.assert_equal(
-        manager.get_tool(0).slicer_area._data, ip_session.user_ns["darr"]
+        manager.get_imagetool(0).slicer_area._data, ip_session.user_ns["darr"]
     )
 
     # Modify data from manager side
-    manager.get_tool(0).slicer_area.set_data(darr + 10)
+    manager.get_imagetool(0).slicer_area.set_data(darr + 10)
 
     with qtbot.wait_signal(manager._sigWatchedDataEdited):
-        manager._tool_wrappers[0]._trigger_watched_update()
+        manager._imagetool_wrappers[0]._trigger_watched_update()
 
     qtbot.wait(1000)  # wait for async update to complete
     xr.testing.assert_equal(ip_session.user_ns["darr"], darr + 10)
 
     # Unwatch
     ip_session.run_line_magic("watch", "-d darr")
-    qtbot.wait_until(lambda: not manager._tool_wrappers[0].watched)
+    qtbot.wait_until(lambda: not manager._imagetool_wrappers[0].watched)
 
     # Watch again
     ip_session.run_line_magic("watch", "darr")
     qtbot.wait_until(lambda: manager.ntools == 2)
-    assert manager._tool_wrappers[1].watched
+    assert manager._imagetool_wrappers[1].watched
 
     # Remove watched
     ip_session.run_line_magic("watch", "-x darr")
@@ -339,16 +339,16 @@ def test_watcher_real(qtbot):
     # Watch again
     ip_session.run_line_magic("watch", "darr")
     qtbot.wait_until(lambda: manager.ntools == 2)
-    assert manager._tool_wrappers[1].watched
+    assert manager._imagetool_wrappers[1].watched
 
     # Stop watching all
     ip_session.run_line_magic("watch", "-z")
-    qtbot.wait_until(lambda: not manager._tool_wrappers[1].watched)
+    qtbot.wait_until(lambda: not manager._imagetool_wrappers[1].watched)
 
     # Watch again
     ip_session.run_line_magic("watch", "darr")
     qtbot.wait_until(lambda: manager.ntools == 3)
-    assert manager._tool_wrappers[2].watched
+    assert manager._imagetool_wrappers[2].watched
 
     # Stop watching and close all watched
     ip_session.run_line_magic("watch", "-xz")

@@ -1,5 +1,9 @@
 # ImageTool
 
+The interactive image viewer and analyzer for ARPES spectra and other image-like data.
+
+Workflow mainly involves a single ImageTool window for quick interactive exploration, with optional use of the ImageTool manager to organize and manage multiple ImageTool windows.
+
 ## The ImageTool window
 
 ```{image} ../images/imagetool_light.png
@@ -18,59 +22,59 @@
 
 :::
 
-Inspired by *Image Tool* for Igor Pro written by the Advanced Light Source at Lawrence Berkeley National Laboratory, {class}`ImageTool <erlab.interactive.imagetool.ImageTool>` is a simple tool exploring images interactively.
+Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at Lawrence Berkeley National Laboratory, {class}`ImageTool <erlab.interactive.imagetool.ImageTool>` is a simple yet powerful tool for interactive image exploration.
 
 ### Features
 
 - Zoom and pan
-- Real-time slicing & binning
+- Real-time slicing and binning
 - Multiple cursors
 - Easy size adjustment
-- Advanced colormap control
-- Interactive editing like rotation, normalization, cropping, momentum conversion, and more
+- Advanced colormap controls
+- Interactive editing: rotation, normalization, cropping, momentum conversion, and more
 
 ### Displaying data in ImageTool
 
-ImageTool supports *image-like* {class}`xarray.DataArray`s from 2 to 4 dimensions. Non-uniform coordinates are converted to index arrays automatically, and are suffixed with `_idx`.
+ImageTool supports *image-like* {class}`xarray.DataArray` objects with 2 to 4 dimensions. Non-uniform coordinates are automatically converted to index arrays, which are suffixed with `_idx`.
 
-There are three ways to display data in ImageTool:
+There are several ways to display data in ImageTool:
 
-- {func}`itool <erlab.interactive.imagetool.itool>`:
+- Using {func}`itool() <erlab.interactive.imagetool.itool>`:
 
   ```python
   import erlab.interactive as eri
   eri.itool(data)
   ```
 
-- The {meth}`xarray.DataArray.qshow` accessor:
+- Using the {meth}`xarray.DataArray.qshow` accessor:
 
   ```python
   data.qshow()
   ```
 
-  Note that `data` must be an *image-like* {class}`xarray.DataArray`.
+- In an interactive session, use the IPython magic command `%itool`:
 
-- (In an interactive session) Use the IPython magic command `%itool`:
-
-  If you are in an interactive session such as IPython and Jupyter notebook, you can use the `%itool` magic command to display an object in ImageTool. Before using this command, you must first load the IPython extension:
+  If you are working in IPython or a Jupyter notebook, you can use the `%itool` magic command to display data in ImageTool. First, load the IPython extension:
 
   ```python
   %load_ext erlab.interactive
   ```
 
-  Then, you can use the `%itool` command to display data in ImageTool:
+  Then, display your data:
 
   ```python
   %itool data
   ```
 
-  This command is equivalent to calling {func}`itool <erlab.interactive.imagetool.itool>`. Many arguments to {func}`itool <erlab.interactive.imagetool.itool>` are also available as options. For example, you can specify to open the data in the ImageTool manager by using the `--manager` option (or `-m` for short):
+  This command is equivalent to calling {func}`itool() <erlab.interactive.imagetool.itool>`. Many arguments to {func}`itool() <erlab.interactive.imagetool.itool>` are also available as options. For example, to open the data in the ImageTool manager, use the `--manager` option (or `-m` for short):
 
   ```python
   %itool -m data
   ```
 
-  For all supported arguments, display the help message by running `%itool?` in an IPython session.
+  To see all supported arguments, run `%itool?` in an IPython session.
+
+- Working with the ImageTool manager: see the [next section](#imagetool-manager).
 
 ### Tips
 
@@ -134,9 +138,9 @@ Some shortcuts that are not shown in the menu bar. Mac users must replace {kbd}`
 
 Rule of thumb: hold {kbd}`Alt` to apply actions to all cursors. Shortcuts for 'shifting' a cursor involves the {kbd}`Shift` key.
 
-(imagetool-manager-guide)=
+(imagetool-manager)=
 
-## Using the ImageTool manager
+## ImageTool manager
 
 ImageTools can also be used as a standalone application with {class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`.
 
@@ -178,11 +182,21 @@ Run `itool-manager` in a terminal or command prompt window in an environment whe
 
 When the manager is running, new data can be opened in the manager by:
 
-- Invoking ImageTool from {func}`itool <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow` with `manager=True` from any script or notebook.
+- Invoking ImageTool from {func}`itool() <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow` with `manager=True`.
 
   ```python
   darr.qshow(manager=True)
   ```
+
+- Using the `%itool` magic command with the `--manager` (or `-m`) option in an IPython session or Jupyter notebook.
+
+  ```python
+  %itool -m darr
+  ```
+
+- Watching a variable in a Jupyter notebook with the `%watch` magic command.
+
+  See [Working with notebooks](#working-with-notebooks) below for more information.
 
 - The `Move to Manager` ({kbd}`Ctrl+Shift+M`) action in the `File` menu from an ImageTool window opened without specifying `manager=True`. This action moves the active ImageTool to the manager.
 
@@ -196,15 +210,19 @@ When the manager is running, new data can be opened in the manager by:
   For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with "Single File" in the dialog.
   :::
 
+### Saving and loading workspaces
+
+You can save all open ImageTool windows to an HDF5 file using the `Save Workspace As...` menu item in the manager. Later, restore your workspace with `Open Workspace...` or by dragging and dropping the workspace file into the manager. Colormaps, cursor positions, window sizes, and other settings are preserved. Workspace files are portable and can be shared with others, who can open them in their own ImageTool manager.
+
 ### Additional features
 
-- Replace data in already opened ImageTool windows by supplying the `replace` argument to {func}`itool <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow`.
+- Replace data in an existing ImageTool window by supplying the `replace` argument to {func}`itool() <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow`:
 
   ```python
   data.qshow(manager=True, replace=1)
   ```
 
-  To replace multiple windows at once:
+  To replace data in multiple windows at once:
 
   ```python
   eri.itool([data1, data2], manager=True, replace=[1, 2])
@@ -214,38 +232,45 @@ When the manager is running, new data can be opened in the manager by:
 
   The saved windows can be restored later with `Open Workspace...` or by dragging and dropping the file into the manager.
 
-- The manager has a built-in iPython console to manipulate ImageTool windows and data, and run Python code.
+- The manager includes a built-in IPython console for manipulating ImageTool windows and data, and running Python code.
 
-  Toggle the console with {kbd}`` ⌃+` `` (Mac) or {kbd}`` Ctrl+` `` (Windows/Linux) or through the `View` menu.
+  Toggle the console with {kbd}`⌃+` (Mac) or {kbd}`Ctrl+` (Windows/Linux), or use the `View` menu.
 
-- Toggle the `Preview on Hover` option in the `View` menu to show a preview of the main image when hovering over each tool.
+  :::{hint}
+  The console provides access to the `tools` list, which contains all open ImageTool windows. You can manipulate each window’s data via the `data` attribute, e.g., `tools[0].data`.
+  The console is a full-featured IPython environment, supporting tab completion, magic commands, and other IPython features. For example, use the `?` operator to view function signatures and docstrings, e.g., `xr.concat?`.
+  :::
+
+- Enable the `Preview on Hover` option in the `View` menu to show a preview of the main image when hovering over each tool.
 
 - After selecting multiple tools, you can perform actions on all selected tools at once using the right-click context menu.
 
-- Selecting `Concatenate` from the right-click context menu will concatenate the data from all selected tools and open a new ImageTool window with the concatenated data. See {func}`xarray.concat <xarray.concat>` for more information on concatenation.
+- Use the `Concatenate` option in the right-click context menu to combine data from all selected tools and open a new ImageTool window with the concatenated data. See {func}`xarray.concat <xarray.concat>` for details.
 
-- The manager has an integrated file browser to browse and preview data files. It can be invoked from the `File` menu of the manager, or with the keyboard shortcut {kbd}`Ctrl+E`.
+- The manager features an integrated file browser for browsing and previewing data files. Access it from the `File` menu or with the keyboard shortcut {kbd}`Ctrl+E`.
 
   See {mod}`erlab.interactive.explorer` for more information.
 
-- Explore the menu bar for more features!
+- Explore the menu bar for additional features!
+
+(working-with-notebooks)=
 
 ### Working with notebooks
 
 #### Synchronization
 
-ImageTool manager provides a way to automatically synchronize data in a Jupyter notebook with an ImageTool window in the manager. This is done by "watching" a variable in the notebook. Whenever the variable is modified, the corresponding ImageTool window will update to reflect the changes, and if additional processing is done in the ImageTool, the changes will be reflected back in the notebook variable.
+The ImageTool manager can automatically synchronize a Jupyter notebook variable with an ImageTool window. When the variable changes, the window updates automatically. If you transform the data in ImageTool (e.g., rotate, symmetrize, crop), the notebook variable is updated as well. We call this feature *watching* a variable.
 
-To use this feature, first load the IPython extension in a notebook:
+First, load the IPython extension in your notebook:
 
 ```python
 %load_ext erlab.interactive
 ```
 
 :::{note}
-If you want to load the extension automatically when starting a Jupyter notebook, you can add `erlab.interactive` to the list of IPython extensions in your IPython configuration file. See the [IPython documentation](https://ipython.readthedocs.io/en/stable/config/intro.html) for more information.
+To load the extension automatically in new notebooks, add `erlab.interactive` to your IPython config. See the [IPython documentation](https://ipython.readthedocs.io/en/stable/config/intro.html) for details.
 
-If you are using VS Code with the Jupyter extension, you can add the following line to your workspace or user `settings.json`:
+If you use VS Code with the Jupyter extension, add this to your workspace or user `settings.json`:
 
 ```json
 "jupyter.runStartupCommands": [
@@ -255,79 +280,83 @@ If you are using VS Code with the Jupyter extension, you can add the following l
 
 :::
 
-Then, use the `%watch` magic command to watch a variable (e.g., `my_data`) for changes:
+Then watch a variable (e.g., `my_data`):
 
 ```python
 %watch my_data
 ```
 
-This will open a new ImageTool window in the manager displaying `my_data`. Whenever `my_data` is modified in the notebook, the ImageTool window will automatically update to reflect the changes. A label indicating the variable name will be shown next to the tool in the manager, making it easy to identify which variable is being watched.
+This opens a new ImageTool window in the manager displaying `my_data`. When `my_data` changes, the window updates automatically. A label with the variable name appears next to the tool in the manager.
 
 :::{note}
-This works by checking the variable for changes every time a notebook cell is executed. Comparing all values of large arrays is slow, so only a reasonable subset of the data is checked for changes. If you find that changes to your variable are not being reflected in the ImageTool window, a manual update can be triggered by re-running `%watch my_data`.
+Change detection runs after each cell execution. To avoid slow comparisons, only a subset of large arrays is checked. If an update is missed, force a refresh by re-running `%watch my_data`.
 :::
 
-If data transformations are applied in the ImageTool window (e.g., rotation, symmetrization, cropping), the changes will be reflected back in the notebook variable `my_data`. A message will be printed in the notebook indicating that `my_data` has been updated.
-
-You can also start watching multiple variables at once:
+You can watch multiple variables:
 
 ```python
 %watch data1 data2 data3
 ```
 
-To see which variables are currently being watched, you can list them with:
+List watched variables:
 
 ```python
 %watch
 ```
 
-To stop watching variables, use the `-d` option:
+Stop watching specific variables:
 
 ```python
 %watch -d data1 data2
 ```
 
-You can also stop watching variables from the right-click context menu of the corresponding ImageTool window in the manager.
+You can also stop watching from the tool’s right-click context menu in the manager.
 
-If a variable is deleted from the notebook or set to a different type, it will also stop being watched.
+If a variable is deleted or changed to a non-compatible type, it stops being watched:
 
 ```python
 del data1
 data2 = "not a DataArray anymore"
 ```
 
-The corresponding ImageTool windows will be converted into regular ones that do not update automatically.
+The corresponding ImageTool windows become regular windows and no longer update automatically.
 
-If you not only want to stop watching the variables but also delete the corresponding ImageTool windows from the manager, use the `-x` option:
+To stop watching and also close the corresponding windows:
 
 ```python
 %watch -x data1 data2
 ```
 
-If you want to stop watching all variables, you can use the `-z` option:
+Stop watching all variables:
 
 ```python
 %watch -z
 ```
 
-This can also be combined with `-x` to stop watching all variables and delete all corresponding ImageTool windows:
+Combine with `-x` to also close all corresponding windows:
 
 ```python
 %watch -xz
 ```
 
+:::{note}
+If you close the notebook or restart the kernel, watched variables remain in the manager but are no longer synchronized with the notebook. The corresponding windows keep their labels, but they no longer update automatically. You can remove the labels by right-clicking the tools and choosing "Stop Watching". To avoid confusion, stop watching all variables before closing the notebook or restarting the kernel.
+:::
+
 #### Accessing data from a notebook
 
-Any data displayed in an ImageTool window in the manager can be accessed from a notebook by using {func}`erlab.interactive.imagetool.manager.fetch`:
+Fetch data from a manager window by index with {func}`erlab.interactive.imagetool.manager.fetch`:
 
 ```python
 from erlab.interactive.imagetool.manager import fetch
+```
 
-data = fetch(0)  # Fetch data from the ImageTool window with index 0
+```python
+data = fetch(0)
 ```
 
 :::{note}
-The fetched data is a copy of the data in the ImageTool window. Modifying it will not affect the displayed data.
+The fetched data is a copy. Modifying it does not affect the displayed data.
 :::
 
 #### Integration with `%store` magic command
