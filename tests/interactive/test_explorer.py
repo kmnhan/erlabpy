@@ -15,7 +15,10 @@ def test_explorer_general(
 ) -> None:
     erlab.interactive.imagetool.manager.main(execute=False)
     manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.add_widget(manager)
+
+    qtbot.addWidget(manager)
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
 
     # Set the recent directory and name filter
     manager._recent_directory = str(example_data_dir)
@@ -39,8 +42,8 @@ def test_explorer_general(
     explorer: _DataExplorer = tabbed_explorer.get_explorer(0)
 
     # Show data explorer
-    manager.show_explorer()
-    qtbot.wait_exposed(explorer)
+    with qtbot.wait_exposed(tabbed_explorer):
+        manager.show_explorer()
 
     # Enable preview
     explorer._preview_check.setChecked(True)
