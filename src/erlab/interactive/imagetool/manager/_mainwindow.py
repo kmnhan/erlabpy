@@ -753,7 +753,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def hide_selected(self) -> None:
-        """Hide selected ImageTool windows."""
+        """Hide selected windows."""
         for index in self.tree_view.selected_imagetool_indices:
             self._imagetool_wrappers[index].close()
         for uid in self.tree_view.selected_childtool_uids:
@@ -761,9 +761,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def hide_all(self) -> None:
-        """Hide all ImageTool windows."""
-        for tool in self._imagetool_wrappers.values():
-            tool.close()
+        """Hide all windows."""
+        for wrapper in self._imagetool_wrappers.values():
+            wrapper.close()
+            for childtool in wrapper._childtools.values():
+                childtool.hide()
 
     @QtCore.Slot()
     def reload_selected(self) -> None:

@@ -492,7 +492,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
         """Get the corresponding QModelIndex for an parent index or child UID."""
         if isinstance(index_or_uid, str):
-            for tool_idx, wrapper in self.manager._imagetool_wrappers.items():
+            for (
+                tool_idx,
+                wrapper,
+            ) in self.manager._imagetool_wrappers.items():  # pragma: no branch
                 if index_or_uid in wrapper._childtools:
                     return self.index(
                         wrapper._childtool_indices.index(index_or_uid),
@@ -539,10 +542,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def parent(
         self, child: QtCore.QModelIndex | None = None
     ) -> QtCore.QModelIndex | QtCore.QObject | None:
-        if child is None:
+        if child is None:  # pragma: no branch
             return super().parent()
 
-        if not child.isValid():
+        if not child.isValid():  # pragma: no branch
             return QtCore.QModelIndex()
 
         uid = child.internalPointer()
@@ -598,13 +601,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         match role:
             case QtCore.Qt.ItemDataRole.DisplayRole:
-                if tool_idx < 0:
-                    return ""
                 return self.manager.label_of_imagetool(tool_idx)
 
             case QtCore.Qt.ItemDataRole.EditRole:
-                if tool_idx < 0:
-                    return ""
                 return self.manager.name_of_imagetool(tool_idx)
 
             case QtCore.Qt.ItemDataRole.SizeHintRole:
@@ -686,10 +685,11 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
     def remove_rows(
         self, row: int, count: int, parent: QtCore.QModelIndex | None = None
-    ) -> bool:
+    ) -> None:
         """Remove rows from the model.
 
-        Has the same signature as :meth:`QtCore.QAbstractItemModel.removeRows`.
+        Has the same signature as :meth:`QtCore.QAbstractItemModel.removeRows`, but
+        without a return value.
 
         We do not implement this as `removeRows()` in order to avoid Qt automatically
         calling it after drag-and-drop.
@@ -703,16 +703,14 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             self.beginRemoveRows(parent, row, row + count - 1)
             del self.manager._displayed_indices[row : row + count]
             self.endRemoveRows()
-            return True
+            return
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
             self.beginRemoveRows(parent, row, row + count - 1)
             del ptr._childtool_indices[row : row + count]
             self.endRemoveRows()
-            return True
-
-        return False
+            return
 
     def setData(
         self,
@@ -799,16 +797,20 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     @staticmethod
     def _decode_mime(mime: QtCore.QMimeData) -> dict[str, typing.Any] | None:
         raw: bytes = mime.data(_MIME).data()
-        payload = json.loads(raw.decode("utf-8"))
-        if not isinstance(payload, dict):
-            return None
-        if not {"level", "parent_id", "rows"} <= payload.keys():
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            if not {"level", "parent_id", "rows"} <= payload.keys():
+                return None
+        except Exception:
             return None
         return payload
 
     @staticmethod
     def _contiguous_runs(rows: list[int]) -> list[tuple[int, int]]:
-        """Convert sorted rows to list of (start, length)."""
+        """Convert sorted rows to list of (start, length).
+
+        Example: [2,3,4,7,8] -> [(2,3), (7,2)]
+        """
         runs: list[tuple[int, int]] = []
         if not rows:
             return runs
@@ -821,13 +823,6 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             start = prev = r
         runs.append((start, prev - start + 1))
         return runs
-
-    @staticmethod
-    def _drop_is_noop(rows: list[int], dest: int) -> bool:
-        """Check if dropping rows at dest is a no-op."""
-        if not rows:
-            return True
-        return dest == rows[0] or dest == rows[-1] + 1
 
     def canDropMimeData(
         self,
@@ -874,28 +869,43 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return False
         return True
 
-    def _apply_target(
+    def _apply_moves(
         self,
         level: typing.Literal[0, 1],
-        values: list[int] | list[str],
-        parent: QtCore.QModelIndex,
+        moves: list[tuple[int, int]],
+        source_parent: QtCore.QModelIndex,
+        destination_parent: QtCore.QModelIndex,
     ) -> None:
-        """Apply the newly ordered list.
-
-        Parameters
-        ----------
-        level
-            0 for top-level ImageTool, 1 for child tools.
-        values
-            The new ordered list (int for ImageTool, str for child tools).
-        parent
-            The parent index, unused for level 0. If level is 1, this is the QModelIndex
-            of the wrapper containing the child tools.
-        """
         if level == 0:
-            self.manager._displayed_indices = values  # type: ignore[assignment]
+            result = self.manager._displayed_indices.copy()
         else:
-            parent.internalPointer()._childtool_indices = values
+            result = destination_parent.internalPointer()._childtool_indices.copy()
+
+        for src, dest in moves:
+            result.insert(dest, result.pop(src))
+            self.beginMoveRows(source_parent, src, src, destination_parent, dest)
+            if level == 0:
+                self.manager._displayed_indices = result
+            else:
+                destination_parent.internalPointer()._childtool_indices = result
+            self.endMoveRows()
+
+    @staticmethod
+    def _get_moves(list_original: list, list_shuffled: list) -> list[tuple[int, int]]:
+        """Get list of (from, to) moves to convert list_original to list_shuffled.
+
+        This ensures that ``from`` is larger than ``to``.
+        """
+        actions: list[tuple[int, int]] = []
+        current = list_original[:]
+        for target_idx, value in enumerate(list_shuffled):
+            curr_idx = current.index(value)
+            if curr_idx != target_idx:
+                # Move value from curr_idx to target_idx
+                actions.append((curr_idx, target_idx))
+                item = current.pop(curr_idx)
+                current.insert(target_idx, item)
+        return actions
 
     def dropMimeData(
         self,
@@ -919,81 +929,41 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         # Destination list and parent index
         if level == 0:
             parent_index = QtCore.QModelIndex()
-            target: list[str] | list[int] = list(self.manager._displayed_indices)
+            original: list[str] | list[int] = self.manager._displayed_indices.copy()
             if parent.isValid():
                 # Dropping on a parent, adjust row to be relative to that item
                 row = parent.row() + 1
         else:
             destination_parent = parent.internalPointer()
             parent_index = parent
-            target = list(destination_parent._childtool_indices)
+            original = destination_parent._childtool_indices.copy()
 
-        if not target or not source_rows:
+        if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
             return False
 
         # Compute insertion position
-        dest = len(target) if row < 0 or row > len(target) else row
+        dest: int = len(original) if row < 0 or row > len(original) else row
         logger.debug("dropMimeData: level=%s, rows=%s -> %s", level, source_rows, dest)
 
-        # # Early exit if dropping doesn't change anything
-        if self._drop_is_noop(source_rows, dest):
-            logger.debug("dropMimeData: no-op")
-            return True
+        # Create modified list by removing source rows and inserting them at dest
+        dest_adjusted = dest - sum(1 for r in source_rows if r < dest)
+        modified = [v for i, v in enumerate(original) if i not in source_rows]
+        for source in source_rows:
+            modified.insert(dest_adjusted, original[source])
+            dest_adjusted += 1
 
-        # Build contiguous runs from source rows
-        runs: list[tuple[int, int]] = self._contiguous_runs(sorted(source_rows))
+        logger.debug("dropMimeData: original=%s, modified=%s", original, modified)
 
-        first_start: int = runs[0][0]
-        moving_up: bool = dest <= first_start
+        # Get list of moves to convert original → modified
+        moves = self._get_moves(original, modified)
+        logger.debug("dropMimeData: moves=%s", moves)
 
-        if moving_up:
-            # Process from the top, change dest for each iteration
-            # Keep runs updated as we move them
-            mutable_runs: list[list[int]] = [list(r) for r in runs]
-            for i in range(len(mutable_runs)):
-                start, length = mutable_runs[i]
-                logger.debug(
-                    "dropMimeData: start=%s, length=%s, dest=%s", start, length, dest
-                )
-                self.beginMoveRows(
-                    parent_index, start, start + length - 1, parent_index, dest
-                )
+        if not moves:
+            logger.debug("dropMimeData: invalid moves")
+            return False
 
-                logger.debug("dropMimeData: original %s", target)
-                block = target[start : start + length]
-                del target[start : start + length]
-                for j in range(i + 1, len(mutable_runs)):
-                    # Subsequent starts shift left if they were after the removed block
-                    if mutable_runs[j][0] > start:
-                        mutable_runs[j][0] -= length
-                target[dest:dest] = block  # type: ignore[assignment]
-                logger.debug("dropMimeData: modified %s", target)
-                self._apply_target(level, target, parent_index)
-
-                self.endMoveRows()
-                dest += length  # Next block goes after the previous
-
-        else:
-            # Process from bottom, keep dest constant
-            for start, length in reversed(runs):
-                logger.debug(
-                    "dropMimeData: start=%s, length=%s, dest=%s", start, length, dest
-                )
-                self.beginMoveRows(
-                    parent_index, start, start + length - 1, parent_index, dest
-                )
-
-                logger.debug("dropMimeData: original %s", target)
-                block = target[start : start + length]
-                del target[start : start + length]
-                target[dest:dest] = block  # type: ignore[assignment]
-                logger.debug("dropMimeData: modified %s", target)
-                self._apply_target(level, target, parent_index)
-
-                self.endMoveRows()
-
-        logger.debug("dropMimeData: success")
+        self._apply_moves(level, moves, parent_index, parent_index)
         return True
 
 
@@ -1144,10 +1114,15 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
         This must be called before the child tool is removed from the manager.
         """
-        for tool_idx, wrapper in self._model.manager._imagetool_wrappers.items():
+        for (
+            tool_idx,
+            wrapper,
+        ) in self._model.manager._imagetool_wrappers.items():  # pragma: no branch
             if uid in wrapper._childtool_indices:
                 parent_index = self._model._row_index(tool_idx)
-                for i, child_uid in enumerate(wrapper._childtool_indices):
+                for i, child_uid in enumerate(
+                    wrapper._childtool_indices
+                ):  # pragma: no branch
                     if child_uid == uid:  # pragma: no branch
                         self._model.remove_rows(i, 1, parent_index)
                         return

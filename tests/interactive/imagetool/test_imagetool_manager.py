@@ -24,6 +24,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
+from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,13 @@ def query(parent, fn, *args, **kwargs):
     parent._query_thread.started.connect(parent._query_worker.run)
     parent._query_worker.finished.connect(parent._query_thread.quit)
     return parent._query_thread, parent._query_worker.finished
+
+
+def bring_manager_to_top(bot, manager):
+    with bot.waitExposed(manager):
+        manager.hide_all()  # Prevent windows from obstructing the manager
+        manager.activateWindow()
+        manager.raise_()
 
 
 @pytest.mark.parametrize("use_socket", [True, False], ids=["socket", "no_socket"])
@@ -249,6 +257,32 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Trigger paint event
     manager.tree_view.expandAll()
 
+    # Test rename goldtool
+    goldtool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
+
+    # Bring manager to top
+    bring_manager_to_top(qtbot, manager)
+    select_child_tool(manager, goldtool_uid)
+
+    manager.tree_view.edit(manager.tree_view._model._row_index(goldtool_uid))
+    qtbot.wait_until(
+        lambda: manager.tree_view.state()
+        == QtWidgets.QAbstractItemView.State.EditingState,
+        timeout=5000,
+    )
+    delegate = manager.tree_view.itemDelegate()
+    assert isinstance(delegate, _ImageToolWrapperItemDelegate)
+    assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
+    delegate._current_editor().setText("new_goldtool_name")
+    qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
+    qtbot.wait_until(
+        lambda: next(
+            iter(manager._imagetool_wrappers[3]._childtools.values())
+        )._tool_display_name
+        == "new_goldtool_name",
+        timeout=5000,
+    )
+
     # Close goldtool
     logger.info("Closing goldtool")
     manager._remove_childtool(
@@ -258,7 +292,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     # Show dtool
     logger.info("Opening dtool")
     manager.get_imagetool(3).slicer_area.images[2].open_in_dtool()
-
     qtbot.wait_until(
         lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
     )
@@ -266,7 +299,6 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         next(iter(manager._imagetool_wrappers[3]._childtools.values())), DerivativeTool
     )
     logger.info("Confirmed dtool is added")
-
     manager.tree_view.expandAll()
     tool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
 
@@ -281,6 +313,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
 
     # Duplicate dtool
     logger.info("Duplicating dtool")
+    bring_manager_to_top(qtbot, manager)
     select_child_tool(manager, tool_uid)
     manager.duplicate_selected()
     manager.tree_view.refresh(None)
@@ -398,6 +431,28 @@ def test_manager_reindex(qtbot, test_data) -> None:
     # Reindex
     manager.reindex_action.trigger()
     qtbot.wait_until(lambda: manager._displayed_indices == [0, 1], timeout=5000)
+
+    manager.remove_all_tools()
+    qtbot.wait_until(lambda: manager.ntools == 0)
+    manager.close()
+
+
+def test_manager_server_show_remove(qtbot, test_data) -> None:
+    manager = ImageToolManager()
+    qtbot.addWidget(manager)
+    manager.show()
+    qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+    # Open a tool with the manager
+    itool([test_data, test_data], manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+    # Show tool at index 0
+    _show_idx(0)
+
+    # Remove tool at index 0
+    _remove_idx(0)
+    qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
@@ -572,30 +627,138 @@ def test_manager_workspace_load_legacy(
     erlab.interactive.imagetool.manager._always_use_socket = False
 
 
-def test_can_drop_mime_data(qtbot, accept_dialog) -> None:
-    manager = ImageToolManager()
-
+def test_drop_mimedata(qtbot, accept_dialog) -> None:
+    erlab.interactive.imagetool.manager.main(execute=False)
+    manager = erlab.interactive.imagetool.manager._manager_instance
     qtbot.addWidget(manager)
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+    manager.show()
 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
-    # Add two tools
-    itool([data, data], link=False, manager=True)
-    qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+    # Add three tools
+    itool([data, data, data], link=False, manager=True)
+    qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+    # Add three childtools to the first tool
+    manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+    )
+    manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[0]._childtools) == 2, timeout=5000
+    )
+    manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
+    qtbot.wait_until(
+        lambda: len(manager._imagetool_wrappers[0]._childtools) == 3, timeout=5000
+    )
+    manager.hide_all()  # Prevent windows from obstructing the manager
 
     # Check mimedata
-
     model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
 
-    # Test single selection
+    # Drop None
+    assert not model.canDropMimeData(None, 0, 0, 0, QtCore.QModelIndex())
+
+    # Drop invalid mime type
+    mime = QtCore.QMimeData()
+    mime.setData("wrong/type", QtCore.QByteArray(b"{}"))
+    assert not model.dropMimeData(
+        mime, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    # Drop invalid payload (not json)
+    mime = QtCore.QMimeData()
+    mime.setData(_MIME, QtCore.QByteArray(b"not json"))
+    assert not model.dropMimeData(
+        mime, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    mime = QtCore.QMimeData()
+
+    # Drop invalid payload (missing keys)
+    mime.setData(
+        _MIME,
+        QtCore.QByteArray(json.dumps({"invalid_key": "invalid_value"}).encode("utf-8")),
+    )
+    assert not model.dropMimeData(
+        mime, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    # Drop with invalid action
+    assert not model.dropMimeData(
+        model.mimeData([model.index(0, 0)]),  # valid mimedata
+        QtCore.Qt.DropAction.CopyAction,  # invalid action
+        0,
+        0,
+        QtCore.QModelIndex(),
+    )
+
+    # Test single selection, top-level drops
     mime_single = model.mimeData([model.index(0, 0)])
     assert model.canDropMimeData(
         mime_single, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
     )
-    model.dropMimeData(
+    # No-op drop
+    assert not model.dropMimeData(
         mime_single, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
     )
+
+    # Drop at the end
+    assert model.dropMimeData(
+        mime_single,
+        QtCore.Qt.DropAction.MoveAction,
+        model.rowCount(),
+        0,
+        QtCore.QModelIndex(),
+    )
+
+    # Check new order
+    assert manager._displayed_indices == [1, 2, 0]
+
+    # No-op drop (drop on itself)
+    assert not model.dropMimeData(
+        model.mimeData([model.index(0, 0)]),
+        QtCore.Qt.DropAction.MoveAction,
+        0,
+        0,
+        model.index(0, 0),
+    )
+
+    # Check unchanged
+    assert manager._displayed_indices == [1, 2, 0]
+
+    # Test move child tool
+    parent_wrapper = model.manager._imagetool_wrappers[0]
+    child_uid: str = parent_wrapper._childtool_indices[0]
+    old_order = list(parent_wrapper._childtool_indices)
+    parent_index: QtCore.QModelIndex = model._row_index(0)
+    child_index: QtCore.QModelIndex = model._row_index(child_uid)
+
+    # Drop to different parent
+    assert not model.dropMimeData(
+        model.mimeData([child_index]),
+        QtCore.Qt.DropAction.MoveAction,
+        0,
+        0,
+        model._row_index(1),  # Different parent
+    )
+
+    # Drop to different position in the same parent
+    assert model.dropMimeData(
+        model.mimeData([child_index]),
+        QtCore.Qt.DropAction.MoveAction,
+        2,
+        0,
+        parent_index,
+    )
+
+    assert list(parent_wrapper._childtool_indices) == [
+        old_order[1],
+        old_order[0],
+        old_order[2],
+    ]
 
     # Test multiple selection
     mime_multiple = model.mimeData([model.index(0, 0), model.index(0, 1)])
@@ -604,6 +767,14 @@ def test_can_drop_mime_data(qtbot, accept_dialog) -> None:
     )
     model.dropMimeData(
         mime_multiple, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
+    )
+
+    # Test mixed top-level and childtool selection (should be rejected)
+    parent_wrapper = model.manager._imagetool_wrappers[0]
+    child_uid: str = parent_wrapper._childtool_indices[0]
+    mime_mixed = model.mimeData([model._row_index(0), model._row_index(child_uid)])
+    assert not model.dropMimeData(
+        mime_mixed, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
     )
 
     # Test invalid mimedata
@@ -624,6 +795,8 @@ def test_can_drop_mime_data(qtbot, accept_dialog) -> None:
     manager.remove_all_tools()
     qtbot.wait_until(lambda: manager.ntools == 0)
     manager.close()
+    erlab.interactive.imagetool.manager._manager_instance = None
+    erlab.interactive.imagetool.manager._always_use_socket = False
 
 
 def test_treeview(qtbot, accept_dialog, test_data) -> None:

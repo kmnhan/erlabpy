@@ -387,12 +387,8 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(timeout_ms=100) -> bool:
-    """Ping the ImageToolManager server using a lightweight ZMQ ping.
-
-    This avoids triggering non-ZMTP handshake warnings while providing a real liveness
-    check.
-    """
+def _ping_server(timeout_ms: int = 100) -> bool:
+    """Ping the ImageToolManager server to check if it is running."""
     ctx = zmq.Context.instance()
     sock: zmq.Socket = ctx.socket(zmq.REQ)
     # Timeouts in milliseconds
