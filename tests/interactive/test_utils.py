@@ -9,8 +9,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.utils import (
     IconActionButton,
     IdentifierValidator,
+    _TracebackDialog,
     load_fit_ui,
     save_fit_ui,
+    show_traceback,
 )
 
 
@@ -135,3 +137,109 @@ def test_identifier_validator_validate(input_str, expected_state):
 def test_identifier_validator_fixup(input_str, expected):
     validator = IdentifierValidator()
     assert validator.fixup(input_str) == expected
+
+
+class CustomException(Exception):
+    pass
+
+
+@pytest.fixture
+def raise_exception():
+    def _func():
+        raise CustomException("Dialog test error")
+
+    return _func
+
+
+@pytest.mark.parametrize(
+    "informative_text", ["Additional info", ""], ids=["with_info", "no_info"]
+)
+def test_traceback_dialog_basic(qtbot, raise_exception, informative_text):
+    # Simulate an exception for traceback
+    try:
+        raise_exception()
+    except CustomException:
+        parent = QtWidgets.QWidget()
+        qtbot.addWidget(parent)
+        parent.show()
+
+        dialog = _TracebackDialog(
+            parent=parent,
+            title="Error Title",
+            text="Error occurred",
+            informative_text=informative_text,
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+        )
+        qtbot.addWidget(dialog)
+        dialog.show()
+
+        assert dialog.windowTitle() == "Error Title"
+        assert dialog._text_label.text() == "Error occurred"
+        assert dialog._info_label.text() == informative_text
+        # Details container should be hidden initially if details_visible
+        assert not dialog._details_container.isVisible()
+
+        dialog._details_toggle.setChecked(True)
+        qtbot.wait_until(lambda: dialog._details_container.isVisible(), timeout=100)
+        dialog._details_toggle.setChecked(False)
+        qtbot.wait_until(lambda: not dialog._details_container.isVisible(), timeout=100)
+
+        # Accept dialog
+        dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+        assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_traceback_dialog_no_exception(qtbot):
+    # sys.exception() returns None, so details should be hidden
+    parent = QtWidgets.QWidget()
+    dialog = _TracebackDialog(
+        parent=parent,
+        title="No Exception",
+        text="No error",
+        informative_text="",
+        buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation,
+    )
+    qtbot.addWidget(dialog)
+    assert not dialog._details_toggle.isVisible()
+    assert not dialog._details_container.isVisible()
+    dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+    assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_traceback_dialog_default_buttons_and_icon(qtbot, raise_exception):
+    try:
+        raise_exception()
+    except CustomException:
+        parent = QtWidgets.QWidget()
+        dialog = _TracebackDialog(
+            parent=parent,
+            title="Default Buttons",
+            text="Default test",
+        )
+        qtbot.addWidget(dialog)
+        # Should default to Ok button and critical icon
+        ok_btn = dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert ok_btn is not None
+        ok_btn.click()
+        assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_show_traceback(qtbot, raise_exception, accept_dialog):
+    try:
+        raise_exception()
+    except CustomException:
+        parent = QtWidgets.QWidget()
+        qtbot.addWidget(parent)
+        parent.show()
+
+        def _call_show_traceback():
+            show_traceback(
+                parent=parent,
+                title="Show Traceback",
+                text="An error occurred",
+                informative_text="Some info",
+            )
+
+        accept_dialog(_call_show_traceback)

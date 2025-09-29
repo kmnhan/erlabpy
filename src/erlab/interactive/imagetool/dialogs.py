@@ -228,8 +228,10 @@ class DataTransformDialog(_DataManipulationDialog):
             if applied_func is not None:
                 self.slicer_area.apply_func(applied_func)
 
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+        except Exception:
+            erlab.interactive.utils.show_traceback(
+                self, "Error", "An error occurred while processing data."
+            )
             return
 
         super().accept()
@@ -286,8 +288,10 @@ class DataFilterDialog(_DataManipulationDialog):
     def accept(self) -> None:
         try:
             self.slicer_area.apply_func(self.process_data)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+        except Exception:
+            erlab.interactive.utils.show_traceback(
+                self, "Error", "An error occurred while processing data."
+            )
             return
         super().accept()
 

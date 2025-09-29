@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return typing.cast("ImageTool", self._wrapper.tool)
+        return typing.cast("ImageTool", self._wrapper.imagetool)
 
     @property
     def data(self) -> xr.DataArray:
@@ -115,21 +115,21 @@ class ToolsNamespace:
     def selected_data(self) -> list[xr.DataArray]:
         """Get a list of DataArrays from the selected windows."""
         return [
-            self._manager.get_tool(idx).slicer_area._data
-            for idx in self._manager.list_view.selected_tool_indices
+            self._manager.get_imagetool(idx).slicer_area._data
+            for idx in self._manager.tree_view.selected_imagetool_indices
         ]
 
     def __getitem__(self, index: int) -> ToolNamespace | None:
         """Access a specific ImageTool object by its index."""
-        if index not in self._manager._tool_wrappers:
+        if index not in self._manager._imagetool_wrappers:
             print(f"Tool {index} not found")
             return None
 
-        return ToolNamespace(self._manager._tool_wrappers[index])
+        return ToolNamespace(self._manager._imagetool_wrappers[index])
 
     def __repr__(self) -> str:
         output = []
-        for index, wrapper in self._manager._tool_wrappers.items():
+        for index, wrapper in self._manager._imagetool_wrappers.items():
             output.append(f"{index}: {wrapper.name}")
         if not output:
             return "No tools"

@@ -1,6 +1,5 @@
 import copy
 import sys
-import typing
 
 import lmfit
 import pyqtgraph as pg
@@ -202,7 +201,7 @@ class edctool(QtWidgets.QMainWindow):
         self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        typing.cast("QtWidgets.QApplication", self.qapp).setStyle("Fusion")
+            self.qapp.setStyle("Fusion")
         super().__init__()
         self.resize(720, 360)
 
@@ -458,7 +457,7 @@ class mdctool(QtWidgets.QMainWindow):
         self.qapp = QtWidgets.QApplication.instance()
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        typing.cast("QtWidgets.QApplication", self.qapp).setStyle("Fusion")
+            self.qapp.setStyle("Fusion")
         super().__init__()
         self.resize(720, 360)
 

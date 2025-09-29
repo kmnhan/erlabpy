@@ -17,7 +17,6 @@ import logging
 import os
 import pathlib
 import time
-import traceback
 import typing
 import uuid
 import weakref
@@ -1371,16 +1370,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
                     erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
                 )
-        except Exception as e:
+        except Exception:
             if self._in_manager:
                 # Let the manager handle the exception
                 raise
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Error",
-                "An error occurred while setting data:\n\n"
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
-                QtWidgets.QMessageBox.StandardButton.Ok,
+            erlab.interactive.utils.show_traceback(
+                self, "Error", "An error occurred while setting data"
             )
             self.set_data(xr.DataArray(np.zeros((2, 2))))
             return
@@ -1454,15 +1449,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.reloadable:  # pragma: no branch
             try:
                 self.set_data(self._fetch_for_reload(), file_path=self._file_path)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "Error",
-                    "An error occurred while reloading data:\n\n"
-                    f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+            except Exception:
+                erlab.interactive.utils.show_traceback(
+                    self, "Error", "An error occurred while reloading data."
                 )
-                return
 
     def update_values(
         self, values: npt.NDArray | xr.DataArray, update: bool = True
@@ -1851,7 +1841,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
-                manager.add_widget(widget)
+                if isinstance(widget, erlab.interactive.utils.ToolWindow):
+                    manager._add_childtool_from_slicerarea(widget, self)
+                else:
+                    manager.add_widget(widget)
                 return
 
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -2705,7 +2698,7 @@ class ItoolPlotItem(pg.PlotItem):
                 QtWidgets.QMessageBox.critical(
                     None,
                     "Error",
-                    "Data must have 'alpha' and 'eV' dimensions"
+                    "Data must have 'alpha' and 'eV' dimensions "
                     "to be opened in goldtool.",
                 )
                 return

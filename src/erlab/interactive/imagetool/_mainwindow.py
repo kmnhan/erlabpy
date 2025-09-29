@@ -116,14 +116,16 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = self.slicer_area._data.name
         if name is None:
             name = ""
+
         return self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
             {
                 "itool_state": json.dumps(self.slicer_area.state),
                 "itool_title": self.windowTitle(),
-                "itool_name": name,
+                "itool_name": str(name),
                 "itool_rect": self.geometry().getRect(),
+                "itool_visible": bool(self.isVisible()),
                 "erlab_version": erlab.__version__,
             }
         )
@@ -405,13 +407,12 @@ class ImageTool(BaseImageTool):
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
                     self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
+            except Exception:
+                erlab.interactive.utils.show_traceback(
                     self,
                     "Error",
-                    f"An error occurred while loading the file: {e}"
-                    "\n\nTry again with a different loader.",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+                    "An error occurred while loading the file.",
+                    "Try again with a different loader.",
                 )
                 self._open_file()
             else:

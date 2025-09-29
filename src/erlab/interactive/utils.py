@@ -66,6 +66,7 @@ __all__ = [
     "make_crosshairs",
     "parse_data",
     "save_fit_ui",
+    "show_traceback",
     "wait_dialog",
     "xImageItem",
 ]
@@ -151,7 +152,6 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
         qapp = QtWidgets.QApplication.instance()
         if not qapp:
             qapp = QtWidgets.QApplication(sys.argv)
-        if isinstance(qapp, QtWidgets.QApplication):
             qapp.setStyle("Fusion")
 
         is_ipython: bool = False
@@ -214,6 +214,201 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
         yield dialog
     finally:
         dialog.close()
+
+
+def _format_traceback(exc_text: str, dark: bool) -> str:
+    """Format a traceback string with syntax highlighting if possible.
+
+    If the `pygments` package is installed, the traceback will be formatted into an HTML
+    string with syntax highlighting. If `pygments` is not installed, the traceback will
+    be returned as a plain text string wrapped in `<pre>` tags.
+    """
+    try:
+        import pygments
+    except ImportError:  # pragma: no branch
+        return f"<pre>{exc_text}</pre>"
+    else:
+        from pygments.formatters import HtmlFormatter
+        from pygments.lexers.python import PythonTracebackLexer
+
+        formatter = HtmlFormatter(
+            style="github-dark" if dark else "default", noclasses=True
+        )
+        return pygments.highlight(exc_text, PythonTracebackLexer(), formatter)
+
+
+class _TracebackDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent=None,
+        title: str = "",
+        text: str = "",
+        informative_text: str = "",
+        buttons: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+        default_button: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+        icon_pixmap: QtWidgets.QStyle.StandardPixmap | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        if buttons is None:
+            buttons = QtWidgets.QDialogButtonBox.StandardButton.Ok
+
+        if default_button is None:
+            default_button = QtWidgets.QDialogButtonBox.StandardButton.NoButton
+
+        if icon_pixmap is None:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
+
+        e = sys.exception()
+        if e is None:  # pragma: no branch
+            details_visible: bool = False
+        else:
+            details_visible = True
+            is_dark: bool = (
+                parent.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
+            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
+            traceback_str = _format_traceback(traceback.format_exc(), dark=is_dark)
+
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setSizeGripEnabled(details_visible)
+
+        style = self.style()
+        if style is not None:  # pragma: no branch
+            icon_size = (
+                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
+                or 48
+            )
+            icon = style.standardIcon(icon_pixmap)
+            pm = icon.pixmap(icon_size, icon_size)
+
+        icon_label = QtWidgets.QLabel()
+        icon_label.setPixmap(pm)
+        icon_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
+        )
+
+        self._text_label = QtWidgets.QLabel(text)
+        self._text_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        font = self._text_label.font()
+        font.setBold(True)
+        self._text_label.setFont(font)
+        self._text_label.setWordWrap(True)
+
+        self._info_label = QtWidgets.QLabel(informative_text)
+        self._info_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._info_label.setWordWrap(True)
+
+        # Buttons
+        self._button_box = QtWidgets.QDialogButtonBox(self)
+        self._button_box.setStandardButtons(buttons)
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+
+        # Default button (if any)
+        if default_button != QtWidgets.QDialogButtonBox.StandardButton.NoButton:
+            default_btn = self._button_box.button(default_button)
+            if default_btn:
+                default_btn.setDefault(True)
+                default_btn.setAutoDefault(True)
+
+        # "Show Details…" toggle button
+        self._details_toggle = QtWidgets.QToolButton()
+        self._details_toggle.setCheckable(True)
+        self._details_toggle.setChecked(False)
+        self._details_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self._details_toggle.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._details_toggle.setAutoRaise(True)
+        self._details_toggle.setText("Show Details…")
+        self._details_toggle.setVisible(details_visible)
+        self._details_toggle.toggled.connect(self._toggle_details)
+
+        # Details (HTML)
+        self._details = QtWidgets.QPlainTextEdit()
+        self._details.setReadOnly(True)
+        if details_visible:
+            self._details.appendHtml(traceback_str)
+        else:
+            self._details.hide()
+
+        _hline = QtWidgets.QFrame()
+        _hline.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        _hline.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+
+        self._details_container = QtWidgets.QWidget()
+
+        v_details = QtWidgets.QVBoxLayout(self._details_container)
+        v_details.setContentsMargins(0, 0, 0, 0)
+        v_details.addWidget(_hline)
+        v_details.addWidget(self._details)
+        self._details_container.setVisible(details_visible)
+
+        # Layouts
+        text_layout = QtWidgets.QVBoxLayout()
+        text_layout.addWidget(self._text_label)
+        text_layout.addWidget(self._info_label)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(icon_label, 0)
+        top_row.addLayout(text_layout, 1)
+
+        main = QtWidgets.QVBoxLayout(self)
+        main.addLayout(top_row)
+        main.addWidget(self._button_box)
+        main.addWidget(self._details_toggle)
+        main.addWidget(self._details_container)
+
+        # Reasonable minimum sizes
+        self._info_label.setMinimumWidth(360)
+        self._details.setMinimumHeight(160)
+
+        if details_visible:
+            # Start collapsed
+            self._details_container.hide()
+
+        self._result_button = QtWidgets.QDialogButtonBox.StandardButton.NoButton
+
+    @QtCore.Slot(bool)
+    def _toggle_details(self, checked: bool) -> None:
+        self._details_container.setVisible(checked)
+        self._details_toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if checked else QtCore.Qt.ArrowType.RightArrow
+        )
+        self._details_toggle.setText("Hide Details" if checked else "Show Details…")
+        self.adjustSize()
+
+
+def show_traceback(
+    parent: QtWidgets.QWidget | None,
+    title: str,
+    text: str,
+    informative_text: str = "",
+    buttons: QtWidgets.QDialogButtonBox.StandardButton | None = None,
+) -> int:
+    """Show an exception in a message box.
+
+    Works like :meth:`QtWidgets.QMessageBox.critical` when showing an error message.
+    Automatically adds the traceback to the informative text. Must be only called from
+    within an exception handler.
+
+    """
+    dialog = _TracebackDialog(
+        parent=parent,
+        title=title,
+        text=text,
+        informative_text=informative_text,
+        buttons=buttons,
+        icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+    )
+    dialog.adjustSize()
+
+    return dialog.exec()
 
 
 def array_rect(data):
@@ -650,12 +845,11 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
                     return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
                 case _:
                     return xarray_lmfit.load_fit(file_name)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
+        except Exception:
+            erlab.interactive.utils.show_traceback(
                 None,
                 "Error",
-                "An error occurred while loading the fit result:\n\n"
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                f"Could not load fit result from file '{file_name}'.",
             )
 
     return None
@@ -1819,9 +2013,30 @@ class ToolWindow(QtWidgets.QMainWindow):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
+    For full compatibility with the ImageTool manager, the following optional attributs
+    or properties can also be set:
+
+    - The class attribute `tool_name` should be set to a short string identifying the
+      tool. For example, `"dtool"`, `"ktool"`, etc.
+
+    - The property `preview_imageitem` can be implemented to return a
+      :class:`pyqtgraph.ImageItem` which will be used to generate a preview image in the
+      ImageTool manager.
+
+    - The property `info_text` can be implemented to return a HTML string that describes
+      the current state of the tool, which will be shown in the ImageTool manager.
+
+    - If you implement `preview_imageitem` or `info_text`, you should emit the signal
+      ``sigInfoChanged`` without any arguments whenever the content of these properties
+      changes. This will ensure that the ImageTool manager updates its display.
     """
 
+    tool_name: str = "tool"
+    __tool_display_name: str = ""
+
     StateModel: type[pydantic.BaseModel]
+
+    sigInfoChanged = QtCore.Signal()  #: :meta private:
 
     @property
     def tool_status(self) -> pydantic.BaseModel:
@@ -1841,6 +2056,16 @@ class ToolWindow(QtWidgets.QMainWindow):
             "Subclasses of ToolWindow must implement the tool_data property."
         )
 
+    @property
+    def preview_imageitem(self) -> pg.ImageItem | None:
+        """Get the ImageItem to be used for preview in the ImageTool manager."""
+        return None
+
+    @property
+    def info_text(self) -> str:
+        """Get the HTML text to be shown in the ImageTool manager."""
+        return ""
+
     @classmethod
     def _qual_name(cls) -> str:
         """Get the full qualified name of the class."""
@@ -1848,13 +2073,30 @@ class ToolWindow(QtWidgets.QMainWindow):
 
     @property
     def _saved_tool_attrs(self) -> dict:
+        data_name = self.tool_data.name
+        if data_name is None:
+            data_name = "<none-value>"
         return {
             "tool_state": self.tool_status.model_dump_json(),
+            "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
-            "tool_rect": self.geometry().getRect(),
             "tool_cls_qualname": self._qual_name(),
+            "tool_display_name": self._tool_display_name,
+            "tool_rect": self.geometry().getRect(),
+            "tool_visible": bool(self.isVisible()),
             "erlab_version": erlab.__version__,
         }
+
+    @classmethod
+    def can_save_and_load(cls) -> bool:
+        """Check if this tool can be saved and restored."""
+        has_data = hasattr(cls, "tool_data") and isinstance(cls.tool_data, property)
+        has_status = (
+            hasattr(cls, "StateModel")
+            and hasattr(cls, "tool_status")
+            and isinstance(cls.tool_status, property)
+        )
+        return has_data and has_status
 
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
@@ -1898,10 +2140,17 @@ class ToolWindow(QtWidgets.QMainWindow):
         cls_obj = typing.cast("type[typing.Self]", cls_obj)
 
         # Instantiate the class and set the status
-        tool = cls_obj(ds["<saved-tool-data>"], **kwargs)  # type: ignore[arg-type]
+        tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
+        if tool_data_name == "<none-value>":
+            tool_data_name = None
+        tool = cls_obj(
+            ds["<saved-tool-data>"].rename(tool_data_name),  # type: ignore[arg-type]
+            **kwargs,
+        )
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
+        tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool
@@ -1933,6 +2182,39 @@ class ToolWindow(QtWidgets.QMainWindow):
         """
         return cls.from_dataset(xr.load_dataset(filename, engine="h5netcdf"), **kwargs)
 
+    def duplicate(self, **kwargs) -> typing.Self:
+        """Create a duplicate of the current tool window.
+
+        This method creates a new instance of the tool with the same data and state as
+        the current one.
+
+        Parameters
+        ----------
+        kwargs
+            Additional keyword arguments passed to the constructor of the new tool.
+
+        Returns
+        -------
+        tool
+            The duplicated tool window.
+
+        """
+        return self.from_dataset(self.to_dataset(), **kwargs)
+
+    @property
+    def _tool_display_name(self) -> str:
+        """Display name of the tool, used in the ImageTool manager."""
+        return self.__tool_display_name
+
+    @_tool_display_name.setter
+    def _tool_display_name(self, name: str) -> None:
+        self.__tool_display_name = name
+
+        if self.__tool_display_name:
+            self.setWindowTitle(f"{self.tool_name}: {self.__tool_display_name}")
+        else:
+            self.setWindowTitle(self.tool_name)
+
 
 class AnalysisWindow(ToolWindow):
     def __init__(
@@ -1950,7 +2232,7 @@ class AnalysisWindow(ToolWindow):
         )
         if not self.qapp:
             self.qapp = QtWidgets.QApplication(sys.argv)
-        self.qapp.setStyle("Fusion")
+            self.qapp.setStyle("Fusion")
 
         super().__init__()
 
@@ -2659,3 +2941,20 @@ def make_crosshairs(
         l0.link(l1)
 
     return [*lines, target]
+
+
+def _apply_qt_accent_color(html_string) -> str:
+    """Replace accent colors in an HTML string with the system accent color.
+
+    The formatting module uses a placeholder color for accent colors in HTML strings. If
+    the Qt version supports it (Qt 6.6 or later), this function replaces the placeholder
+    with the actual accent color of the system.
+
+    """
+    if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
+        # Accent color is available from Qt 6.6
+        accent_color = QtWidgets.QApplication.palette().accent().color().name()
+        html_string = html_string.replace(
+            erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
+        )
+    return html_string

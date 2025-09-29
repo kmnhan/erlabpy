@@ -376,7 +376,7 @@ class _ManagerServer(QtCore.QThread):
                             case "unwatch-uid":
                                 self.sigUnwatchUID.emit(str(payload.command_arg))
 
-                logger.debug("Sending response...")
+                logger.info("Sending response...")
                 _send_multipart(sock, {"status": "ok"})
                 logger.debug("Response sent")
 
@@ -387,12 +387,8 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(timeout_ms=100) -> bool:
-    """Ping the ImageToolManager server using a lightweight ZMQ ping.
-
-    This avoids triggering non-ZMTP handshake warnings while providing a real liveness
-    check.
-    """
+def _ping_server(timeout_ms: int = 100) -> bool:
+    """Ping the ImageToolManager server to check if it is running."""
     ctx = zmq.Context.instance()
     sock: zmq.Socket = ctx.socket(zmq.REQ)
     # Timeouts in milliseconds
@@ -677,7 +673,11 @@ def fetch(index: int | str) -> xr.DataArray | None:
         erlab.interactive.imagetool.manager._manager_instance is not None
         and not erlab.interactive.imagetool.manager._always_use_socket
     ):
-        return erlab.interactive.imagetool.manager._manager_instance._get_data(index)
+        return (
+            erlab.interactive.imagetool.manager._manager_instance._get_imagetool_data(
+                index
+            )
+        )
     return _query_zmq(
         CommandPacket(packet_type="command", command="get-data", command_arg=index)
     ).data

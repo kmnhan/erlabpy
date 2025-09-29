@@ -281,6 +281,12 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
+    tool_name = "ktool"
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.images[1]
+
     class StateModel(pydantic.BaseModel):
         data_name: str
         center: float
@@ -309,12 +315,72 @@ class KspaceTool(KspaceToolGUI):
         show_angle_plot: bool
 
     @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(
+            self.tool_data.T
+        )
+        info += "<b>" + self.config_label.text() + "</b><br>"
+        info += "<br><b>Angle Offsets:</b>"
+
+        offsets = self.offset_dict.copy()
+        offsets["φ"] = self._work_function
+        if self.data.kspace._has_hv:
+            offsets["V₀"] = self._inner_potential
+
+        info += format_html_table(
+            [
+                [
+                    format_html_accent(self._OFFSET_LABELS[k], em_space=True),
+                    f"{v}{self._OFFSET_UNITS[k]}",
+                ]
+                for k, v in status.offsets.items()
+            ]
+        )
+        angstrom: str = " Å<sup>−1</sup>"
+
+        bounds = self.bounds
+        if bounds:
+            info += "<br><b>Bounds:</b>"
+            info += format_html_table(
+                [
+                    [
+                        format_html_accent(k, em_space=True),
+                        f"{mn}{angstrom}&emsp;",
+                        "to&emsp;",
+                        f"{mx}{angstrom}",
+                    ]
+                    for k, (mn, mx) in bounds.items()
+                ]
+            )
+
+        resolution = self.resolution
+        if resolution:
+            info += "<br><b>Resolution:</b>"
+            info += format_html_table(
+                [
+                    [format_html_accent(k, em_space=True), f"{v}{angstrom}"]
+                    for k, v in resolution.items()
+                ]
+            )
+        return info
+
+    @property
     def tool_status(self) -> StateModel:
         return self.StateModel(
-            data_name=self.data_name,
+            data_name=self._argnames["data"],
             center=self.center_spin.value(),
             width=self.width_spin.value(),
-            offsets={k: spin.value() for k, spin in self._offset_spins.items()},
+            offsets={
+                k: round(spin.value(), spin.decimals())
+                for k, spin in self._offset_spins.items()
+            },
             bounds_enabled=self.bounds_supergroup.isChecked(),
             bounds={k: spin.value() for k, spin in self._bound_spins.items()},
             resolution_enabled=self.resolution_supergroup.isChecked(),
@@ -340,7 +406,7 @@ class KspaceTool(KspaceToolGUI):
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
-        self.data_name: str = status.data_name
+        self._argnames["data"] = status.data_name
 
         self.center_spin.blockSignals(True)
         self.center_spin.setValue(status.center)
@@ -435,6 +501,24 @@ class KspaceTool(KspaceToolGUI):
     def tool_data(self) -> xr.DataArray:
         return self.data
 
+    _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {
+        "delta": "𝛿",
+        "chi": "𝜒₀",
+        "xi": "𝜉₀",
+        "beta": "𝛽₀",
+        "V0": "V₀",
+        "wf": "𝜙",
+    }
+
+    _OFFSET_UNITS: typing.ClassVar[dict[str, str]] = {
+        "delta": "°",
+        "chi": "°",
+        "xi": "°",
+        "beta": "°",
+        "V0": " eV",
+        "wf": " eV",
+    }
+
     def __init__(
         self,
         data: xr.DataArray,
@@ -447,16 +531,19 @@ class KspaceTool(KspaceToolGUI):
     ) -> None:
         super().__init__(avec=avec, rotate_bz=rotate_bz, cmap=cmap, gamma=gamma)
 
-        self._argnames = {}
+        self._argnames: dict[str, str] = {}
 
         self._itool: QtWidgets.QWidget | None = None
 
         if data_name is None:
             try:
-                self._argnames["data"] = varname.argname(
-                    "data",
-                    func=self.__init__,  # type: ignore[misc]
-                    vars_only=False,
+                self._argnames["data"] = typing.cast(
+                    "str",
+                    varname.argname(
+                        "data",
+                        func=self.__init__,  # type: ignore[misc]
+                        vars_only=False,
+                    ),
                 )
             except varname.VarnameRetrievingError:
                 self._argnames["data"] = "data"
@@ -492,7 +579,7 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.toggled.connect(self.update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
+
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-360, 360)
@@ -507,20 +594,24 @@ class KspaceTool(KspaceToolGUI):
                 self._offset_spins[k].setValue(float(self.data[k].mean()))
 
             self._offset_spins[k].valueChanged.connect(self.update)
-            self._offset_spins[k].setSuffix("°")
-            self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
+            self._offset_spins[k].setSuffix(self._OFFSET_UNITS[k])
+            self.offsets_group.layout().addRow(
+                self._OFFSET_LABELS[k], self._offset_spins[k]
+            )
 
         if self.data.kspace._has_hv:
             self._offset_spins["V0"] = QtWidgets.QDoubleSpinBox()
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
             self._offset_spins["V0"].setDecimals(1)
-            self._offset_spins["V0"].setSuffix(" eV")
+            self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS[k])
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
             with warnings.catch_warnings(action="ignore", category=UserWarning):
                 self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
             self._offset_spins["V0"].valueChanged.connect(self.update)
-            self.offsets_group.layout().addRow("V₀", self._offset_spins["V0"])
+            self.offsets_group.layout().addRow(
+                self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
+            )
 
             for i in range(8):
                 self.bz_form.setRowVisible(i, i not in (0, 1, 2))
@@ -533,13 +624,15 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setRange(0.0, 9.999)
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
-        self._offset_spins["wf"].setSuffix(" eV")
+        self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS[k])
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
         self._offset_spins["wf"].valueChanged.connect(self.update)
 
-        self.offsets_group.layout().addRow("𝜙", self._offset_spins["wf"])
+        self.offsets_group.layout().addRow(
+            self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
+        )
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -778,6 +871,7 @@ class KspaceTool(KspaceToolGUI):
         ang, k = self.get_data()
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
+        self.sigInfoChanged.emit()
 
     def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
         if self.data.kspace._has_hv:
