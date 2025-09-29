@@ -111,4 +111,17 @@ def test_restool(qtbot) -> None:
         )
 
     check_generated_code(win)
-    win.close()
+
+    # Test tool save & restore
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/tool_save.h5"
+    win.to_file(filename)
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, ResolutionTool)
+
+    assert win.tool_status == win_restored.tool_status
+    assert str(win_restored.info_text) == str(win.info_text)
+
+    tmp_dir.cleanup()

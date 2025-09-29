@@ -2075,7 +2075,7 @@ class ToolWindow(QtWidgets.QMainWindow):
     def _saved_tool_attrs(self) -> dict:
         data_name = self.tool_data.name
         if data_name is None:
-            data_name = ""
+            data_name = "<none-value>"
         return {
             "tool_state": self.tool_status.model_dump_json(),
             "tool_data_name": str(data_name),
@@ -2140,8 +2140,11 @@ class ToolWindow(QtWidgets.QMainWindow):
         cls_obj = typing.cast("type[typing.Self]", cls_obj)
 
         # Instantiate the class and set the status
+        tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
+        if tool_data_name == "<none-value>":
+            tool_data_name = None
         tool = cls_obj(
-            ds["<saved-tool-data>"].rename(ds.attrs.get("tool_data_name", "")),  # type: ignore[arg-type]
+            ds["<saved-tool-data>"].rename(tool_data_name),  # type: ignore[arg-type]
             **kwargs,
         )
         tool.tool_status = cls_obj.StateModel.model_validate_json(

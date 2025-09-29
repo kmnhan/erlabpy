@@ -209,12 +209,24 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         lambda: manager._imagetool_wrappers[1].name == "new_name_1_single", timeout=5000
     )
 
-    # Batch archiving
+    # Select single tool
     select_tools(manager, [1])
+
+    # Update info panel
+    bring_manager_to_top(qtbot, manager)
+    manager._update_info()
+
+    # Archive & unarchive single
     manager.archive_action.trigger()
+    qtbot.wait_until(lambda: manager._imagetool_wrappers[1].archived, timeout=5000)
+
+    # Update info panel
+    bring_manager_to_top(qtbot, manager)
+    manager._update_info()
+
     manager._imagetool_wrappers[1].unarchive()
 
-    # Show and hide windows including archived ones
+    # Batch archiving with show/hide
     select_tools(manager, [1])
     manager.archive_action.trigger()
 
@@ -243,6 +255,12 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
         ),
     )
 
+    # Update info panel
+    bring_manager_to_top(qtbot, manager)
+    manager.tree_view.clearSelection()
+    select_tools(manager, [1, 2, 3])
+    manager._update_info()
+
     # Show goldtool
     logger.info("Opening goldtool")
     manager.get_imagetool(3).slicer_area.images[2].open_in_goldtool()
@@ -261,6 +279,7 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     goldtool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
 
     # Bring manager to top
+    manager.tree_view.clearSelection()
     bring_manager_to_top(qtbot, manager)
     select_child_tool(manager, goldtool_uid)
 
@@ -311,9 +330,16 @@ def test_manager(qtbot, accept_dialog, test_data, use_socket) -> None:
     assert isinstance(tool, DerivativeTool)
     assert idx == 3
 
+    # Check dtool info printing
+    bring_manager_to_top(qtbot, manager)
+    manager.tree_view.clearSelection()
+    select_child_tool(manager, tool_uid)
+    manager._update_info(tool_uid)
+
     # Duplicate dtool
     logger.info("Duplicating dtool")
     bring_manager_to_top(qtbot, manager)
+    manager.tree_view.clearSelection()
     select_child_tool(manager, tool_uid)
     manager.duplicate_selected()
     manager.tree_view.refresh(None)

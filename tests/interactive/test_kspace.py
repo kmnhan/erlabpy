@@ -1,3 +1,5 @@
+import tempfile
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -86,4 +88,17 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     win.show_converted()
     xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
     win._itool.close()
-    win.close()
+
+    # Test save & restore
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/tool_save.h5"
+    win.to_file(filename)
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, KspaceTool)
+
+    assert win.tool_status == win_restored.tool_status
+    assert str(win_restored.info_text) == str(win.info_text)
+
+    tmp_dir.cleanup()

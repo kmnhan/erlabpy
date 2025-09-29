@@ -589,10 +589,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.preview_widget.setVisible(True)
                 else:
                     childtool = self.get_childtool(selected_childtools[0])
-                    info: str = erlab.interactive.utils._apply_qt_accent_color(
-                        childtool.info_text
+                    self.text_box.setHtml(
+                        erlab.interactive.utils._apply_qt_accent_color(
+                            childtool.info_text
+                        )
                     )
-                    self.text_box.setHtml(info)
                     image_item = childtool.preview_imageitem
                     if image_item is None:
                         self.preview_widget.setVisible(False)
