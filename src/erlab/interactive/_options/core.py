@@ -6,19 +6,20 @@ accessed as `options`. The settings are stored in a QSettings object, allowing f
 persistent storage across application runs.
 """
 
+import threading
 import typing
 
 from qtpy import QtCore
 
-from erlab.interactive._options.defaults import DEFAULT_OPTIONS, _as_bool, _as_float
+from erlab.interactive._options.schema import AppOptions
 
 
-def read_settings(
+def _qsettings_to_dict(
     qsettings: QtCore.QSettings, defaults: dict, prefix: str = ""
 ) -> dict[str, dict[str, typing.Any]]:
-    """Parse QSettings into a dictionary with a structure matching `defaults`.
+    """Read QSettings into a dictionary.
 
-    This function reads settings recursively from a QSettings object, using the provided
+    This function reads settings recursively from a QSettings object, using a provided
     defaults dictionary to fill in any missing values.
 
     Parameters
@@ -42,19 +43,13 @@ def read_settings(
     for k, v in defaults.items():
         key = f"{prefix}/{k}" if prefix else k
         if isinstance(v, dict):
-            result[k] = read_settings(qsettings, v, key)
+            result[k] = _qsettings_to_dict(qsettings, v, key)
         else:
-            # Convert to appropriate type based on the default value
-            if isinstance(v, bool):
-                result[k] = _as_bool(qsettings.value(key, v))
-            elif isinstance(v, float):
-                result[k] = _as_float(qsettings.value(key, v))
-            else:
-                result[k] = qsettings.value(key, v)
+            result[k] = qsettings.value(key, v)
     return result
 
 
-def write_settings(d: dict, qsettings: QtCore.QSettings, prefix: str = "") -> None:
+def _dict_to_qsettings(d: dict, qsettings: QtCore.QSettings, prefix: str = "") -> None:
     """Write QSettings from a dictionary.
 
     This function writes settings recursively to a QSettings object, using the provided
@@ -76,18 +71,48 @@ def write_settings(d: dict, qsettings: QtCore.QSettings, prefix: str = "") -> No
     for k, v in d.items():
         key = f"{prefix}/{k}" if prefix else k
         if isinstance(v, dict):
-            write_settings(v, qsettings, key)
+            _dict_to_qsettings(v, qsettings, key)
         else:
             qsettings.setValue(key, v)
 
 
-class OptionManager:
-    """Manager for application settings using QSettings.
+def read_settings(qsettings: QtCore.QSettings) -> AppOptions:
+    """Read settings from QSettings into a pydantic model.
 
-    This class provides an interface to read and write settings as a dictionary. The
-    settings are stored in a QSettings object, which allows for persistent storage
-    across application runs. The settings can be restored to defaults.
+    Parameters
+    ----------
+    qsettings : QtCore.QSettings
+        The QSettings object to read from.
+
+    Returns
+    -------
+    AppOptions
+        An instance of AppOptions populated with values from QSettings.
+
     """
+    return AppOptions.model_validate(
+        _qsettings_to_dict(qsettings, AppOptions().model_dump())
+    )
+
+
+def write_settings(opts: AppOptions, qsettings: QtCore.QSettings) -> None:
+    """Write settings from a pydantic model to QSettings.
+
+    Parameters
+    ----------
+    opts : AppOptions
+        An instance of AppOptions containing the settings to write.
+    qsettings : QtCore.QSettings
+        The QSettings object to write to.
+    """
+    _dict_to_qsettings(opts.model_dump(), qsettings)
+
+
+class OptionManager:
+    """Manager for application settings using QSettings."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
 
     @property
     def qsettings(self) -> QtCore.QSettings:
@@ -100,25 +125,29 @@ class OptionManager:
         )
 
     @property
-    def option_dict(self) -> dict:
-        """Get the current settings as a dictionary."""
-        return read_settings(self.qsettings, DEFAULT_OPTIONS)
+    def model(self) -> AppOptions:
+        with self._lock:
+            return read_settings(self.qsettings)
 
-    @option_dict.setter
-    def option_dict(self, d: dict) -> None:
-        """Set the settings from a dictionary."""
-        write_settings(d, self.qsettings)
-        self.qsettings.sync()
+    @model.setter
+    def model(self, opt: AppOptions) -> None:
+        with self._lock:
+            qsettings = self.qsettings
+            write_settings(opt, qsettings)
+            qsettings.sync()
 
     def restore(self) -> None:
-        """Restore the settings to defaults."""
-        self.qsettings.clear()
-        self.option_dict = DEFAULT_OPTIONS
+        """Restore settings to default values."""
+        with self._lock:
+            qsettings = self.qsettings
+            qsettings.clear()
+            write_settings(AppOptions(), qsettings)
+            qsettings.sync()
 
     def get(self, name: str) -> typing.Any:
         """Get settings by name."""
         keys = name.split("/")
-        option: typing.Any = self.option_dict
+        option: typing.Any = self.model.model_dump()
         for key in keys:
             if isinstance(option, dict) and key in option:
                 option = option[key]
@@ -128,14 +157,16 @@ class OptionManager:
         return option
 
     def set(self, name: str, value: typing.Any) -> None:
-        """Set settings by name."""
-        self.qsettings.setValue(name, value)
+        """Set settings by name and value."""
+        with self._lock:
+            qsettings = self.qsettings
+            qsettings.setValue(name, value)
+            qsettings.sync()
 
     def __getitem__(self, name: str) -> typing.Any:
         return self.get(name)
 
     def __setitem__(self, name: str, value: typing.Any) -> None:
-        """Set settings by name."""
         self.set(name, value)
 
 

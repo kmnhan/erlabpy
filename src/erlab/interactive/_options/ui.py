@@ -2,11 +2,8 @@ import pyqtgraph.parametertree
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive._options.defaults import (
-    DEFAULT_OPTIONS,
-    make_parameter,
-    parameter_to_dict,
-)
+from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._options.tree import make_parameter, parameter_to_options
 
 
 class _CustomParameterTree(pyqtgraph.parametertree.ParameterTree):
@@ -63,33 +60,33 @@ class OptionDialog(QtWidgets.QDialog):
         self.setLayout(layout)
 
     @property
-    def current_options(self) -> dict:
+    def current_options(self) -> AppOptions:
         """Get the currently displayed settings from the parameter tree."""
         if self.tree.parameter is None:
-            return {}
-        return parameter_to_dict(self.tree.parameter)
+            return AppOptions()
+        return parameter_to_options(self.tree.parameter)
 
     @property
     def modified(self) -> bool:
         """Check if the current settings differ from the saved settings."""
-        return self.current_options != erlab.interactive.options.option_dict
+        return self.current_options != erlab.interactive.options.model
 
     @property
     def is_default(self) -> bool:
         """Check if the current settings are the default settings."""
-        return self.current_options == DEFAULT_OPTIONS
+        return self.current_options.model_dump() == AppOptions().model_dump()
 
     @QtCore.Slot()
     def apply(self):
-        erlab.interactive.options.option_dict = dict(self.current_options)
+        erlab.interactive.options.model = self.current_options
         self.update()
 
-    def _set_parameters(self, d: dict) -> None:
+    def _set_parameters(self, opts: AppOptions) -> None:
         """Update the parameter tree with the given options dictionary."""
         if self.tree.parameter is not None:
             self.tree.parameter.sigTreeStateChanged.disconnect(self._tree_changed)
 
-        parameter: pyqtgraph.parametertree.Parameter = make_parameter(d)
+        parameter: pyqtgraph.parametertree.Parameter = make_parameter(opts)
         parameter.sigTreeStateChanged.connect(self._tree_changed)
         self.tree.setParameters(parameter, showTop=False)
         self._tree_changed()
@@ -97,7 +94,7 @@ class OptionDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def update(self):
         """Update the parameter tree with current settings."""
-        self._set_parameters(erlab.interactive.options.option_dict)
+        self._set_parameters(erlab.interactive.options.model)
 
     @QtCore.Slot()
     def _tree_changed(self):
@@ -113,7 +110,7 @@ class OptionDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def restore(self):
         """Populate the parameter tree with default settings."""
-        self._set_parameters(DEFAULT_OPTIONS)
+        self._set_parameters(AppOptions())
 
     def accept(self):
         """Apply changes and close the dialog."""
