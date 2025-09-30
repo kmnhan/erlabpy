@@ -413,7 +413,6 @@ def format_darr_shape_html(darr: xr.DataArray, show_size: bool = False) -> str:
     out = ""
     name = ""
     if darr.name is not None and str(darr.name).strip() != "":
-        print(f"|{darr.name}|")
         name = f"'{darr.name}'&emsp;"
 
     out += _format_dim_sizes(darr, name)

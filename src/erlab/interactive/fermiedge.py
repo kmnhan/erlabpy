@@ -873,6 +873,12 @@ class ResolutionTool(
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
+        self.destroyed.connect(
+            lambda *, executor=self._executor: executor.shutdown(
+                wait=False, cancel_futures=True
+            )
+        )
+
     @property
     def x_range(self) -> tuple[float, float]:
         """Currently selected x range (eV) for the fit."""
@@ -1089,10 +1095,6 @@ class ResolutionTool(
         self._update_edc()
         if self.live_check.isChecked():
             self._sigTriggerFit.emit()
-
-    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        return super().closeEvent(event)
 
 
 def goldtool(
