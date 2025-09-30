@@ -43,10 +43,11 @@ __all__ = [
 
 
 import logging
+import pathlib
 import sys
 import typing
 
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager._mainwindow import _ICON_PATH, ImageToolManager
@@ -94,6 +95,31 @@ class _InitDialog(QtWidgets.QDialog):
         layout.addWidget(self.buttonBox)
 
 
+class _ManagerApp(QtWidgets.QApplication):
+    def __init__(self, argv: list[str]) -> None:
+        super().__init__(argv)
+        self._pending_files: list[pathlib.Path] = []
+
+    def event(self, e):
+        if e.type() == QtCore.QEvent.Type.FileOpen:
+            # Happens both at first launch (before your window shows)
+            # and when the app is already running
+
+            file_event = typing.cast("QtGui.QFileOpenEvent", e)
+            if file_event.url().isLocalFile():
+                self._handle_open_file(pathlib.Path(file_event.url().toLocalFile()))
+                return True
+        return super().event(e)
+
+    def _handle_open_file(self, path: pathlib.Path) -> None:
+        if _manager_instance:
+            _manager_instance.open_multiple_files(
+                [path], try_workspace=(path.suffix == "h5")
+            )
+        else:
+            self._pending_files.append(path)
+
+
 def main(execute: bool = True) -> None:
     """Start the ImageToolManager application.
 
@@ -109,17 +135,32 @@ def main(execute: bool = True) -> None:
             "erlab.imagetool.manager"
         )
 
+    file_args = [pathlib.Path(f) for f in sys.argv[1:] if pathlib.Path(f).exists()]
+    # Files passed as command-line arguments
+    # This also handles opening files from Windows
+
+    if file_args and is_running():  # pragma: no cover
+        load_in_manager(file_args)
+        return
+
     qapp = typing.cast(
         "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
     )
     if not qapp:
-        qapp = QtWidgets.QApplication(sys.argv)
+        qapp = _ManagerApp(sys.argv)
         qapp.setStyle("Fusion")
 
-    qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
-    qapp.setApplicationName("imagetool-manager")
-    qapp.setApplicationDisplayName("ImageTool Manager")
-    qapp.setApplicationVersion(erlab.__version__)
+        if file_args:
+            qapp._pending_files.extend(file_args)
+
+    if not getattr(sys, "frozen", False) or not hasattr(
+        sys, "_MEIPASS"
+    ):  # pragma: no branch
+        # Ignore if running in a PyInstaller bundle
+        qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
+        qapp.setApplicationName("imagetool-manager")
+        qapp.setApplicationDisplayName("ImageTool Manager")
+        qapp.setApplicationVersion(erlab.__version__)
 
     while is_running():  # pragma: no branch
         dialog = _InitDialog()
@@ -129,6 +170,16 @@ def main(execute: bool = True) -> None:
         _manager_instance = ImageToolManager()
         _manager_instance.show()
         _manager_instance.activateWindow()
+
+        if isinstance(qapp, _ManagerApp) and qapp._pending_files:
+            _manager_instance.open_multiple_files(
+                qapp._pending_files,
+                try_workspace=all(
+                    file_path.suffix == ".h5" for file_path in qapp._pending_files
+                ),
+            )
+            qapp._pending_files.clear()
+
         if execute:
             qapp.exec()
             _manager_instance = None
