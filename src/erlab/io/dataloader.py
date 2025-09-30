@@ -725,15 +725,16 @@ class LoaderBase(metaclass=_Loader):
                     new_kwargs.setdefault("load_kwargs", load_kwargs)
                     try:
                         return self.load(new_identifier, new_dir, **new_kwargs)
-                    except Exception as e:
+                    except Exception:
                         warning_message = (
                             f"Loading {basename_no_ext} with inferred index "
-                            f"{new_identifier} resulted in an error:\n"
-                            f"{type(e).__name__}: {e}\n"
+                            f"{new_identifier} resulted in an error. The data will be "
+                            "loaded as a single file instead.\n"
                             "Possible causes:\n"
                             "- The inferred index may be incorrect.\n"
                             "- The file may be corrupted or in an unsupported format.\n"
-                            "The data will be loaded as a single file."
+                            "Full traceback:\n"
+                            f"{traceback.format_exc()}"
                         )
                         erlab.utils.misc.emit_user_level_warning(warning_message)
 

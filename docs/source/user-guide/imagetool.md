@@ -142,7 +142,7 @@ Rule of thumb: hold {kbd}`Alt` to apply actions to all cursors. Shortcuts for 's
 
 ## ImageTool manager
 
-ImageTools can also be used as a standalone application with {class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`.
+ImageTools can also be opened in a manager window for organizing and managing multiple ImageTool windows, called {class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`.
 
 ```{image} ../images/manager_light.png
 :align: center
@@ -175,7 +175,11 @@ Run `itool-manager` in a terminal or command prompt window in an environment whe
 :::{note}
 
 - Only one manager can run per machine.
-- Sending data to the manager has slight overhead, noticeable for large data.
+
+- Opening an ImageTool window for the very first time may take a couple of minutes. Subsequent openings will be much faster.
+
+- The manager can be installed as a standalone application, which enables some convenient features. See [Installing as a standalone application](#installing-as-a-standalone-application) below for more information.
+
 :::
 
 ### Adding ImageTool windows
@@ -382,3 +386,75 @@ Now, in any notebook, you can retrieve the data by running:
 ```
 
 after which the data will be available as `my_data` in the notebook.
+
+(installing-as-a-standalone-application)=
+
+### Installing as a standalone application
+
+The ImageTool manager can be installed as a standalone application, which enables launching it without setting up a Python environment. It also enables some additional features:
+
+- Double-clicking supported files in your file explorer to open them in the manager.
+
+  :::{note}
+  On macOS, this also includes drag-and-dropping supported files onto the application icon in the Dock.
+  :::
+
+- Liquid glass icon on macOS 26 and later.
+
+Builds for Windows and macOS can be downloaded from the [releases page](https://github.com/kmnhan/erlabpy/releases). Follow the instructions below to install the application.
+
+For other platforms, build the application from source as described [below](#build-from-source).
+
+#### Windows
+
+1. Download the latest Windows build (a `.zip` file) from the [releases page](https://github.com/kmnhan/erlabpy/releases).
+
+2. Extract the contents of the `.zip` file and double click on the extracted `.exe` file to run the installer. Follow the prompts to complete the installation.
+
+#### macOS
+
+1. Download the latest macOS build `.zip` file from the [releases page](https://github.com/kmnhan/erlabpy/releases) corresponding to your platform.
+
+2. Extract the contents of the `.zip` file. This will create an `ImageTool Manager.app` file.
+
+3. Move `ImageTool Manager.app` to your `Applications` folder, or any desired location.
+
+(build-from-source)=
+
+#### Build from source
+
+If you want to build the standalone application from source due to platform compatibility or other reasons, follow these steps:
+
+1. Clone the repository:
+
+    ```bash
+    git clone https://github.com/kmnhan/erlabpy.git
+    ```
+
+2. Navigate to the `erlabpy` directory:
+
+    ```bash
+    cd erlabpy
+    ```
+
+3. Install the required dependencies (assuming you have uv installed):
+
+    ```bash
+    uv sync --all-extras --group pyinstaller --group pyqt6
+    ```
+
+4. Build the standalone application using PyInstaller:
+
+    ```bash
+    uv run pyinstaller manager.spec
+    ```
+
+5. The built application will be located in `dist/ImageTool Manager`.
+
+6. (Optional, Windows only) To create an installer, install [Inno Setup](https://jrsoftware.org/isinfo.php) and add to your system PATH. Then run:
+
+    ```bash
+    iscc manager.iss
+    ```
+
+    The installer will be located in `dist`.
