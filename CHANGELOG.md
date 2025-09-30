@@ -2,6 +2,20 @@
 
 ### ✨ Features
 
+- **manager:** show child tools ([ff1f9b1](https://github.com/kmnhan/erlabpy/commit/ff1f9b18721865b553c8c13df6500586e7ef00a6))
+
+  When opening analysis tools (e.g., `dtool`, `ktool`, ...) from an imagetool in the manager, the child tools are now displayed in the manager as well. When saving and loading the workspace, the state of these child tools is also preserved.
+
+  This change also enables the user to cherry-pick which tools to save when saving the workspace, or to load only a subset of tools from a saved workspace.
+
+  Note that this change accompanies many changes across the whole interactive module under the hood. Although workspaces saved with older versions should still be loadable, workspaces saved with this version will not be loadable in older versions, with ambiguous error messages.
+
+- **interactive:** add `show_traceback` utility function that displays error messages with highlighted tracebacks ([6798f83](https://github.com/kmnhan/erlabpy/commit/6798f83e54c3afcb6027630a40d07de3342f1912))
+
+- **manager:** enable reindexing tools ([62b41a4](https://github.com/kmnhan/erlabpy/commit/62b41a47b5d2a60f156e234bbf633c036b8797ef))
+
+  Adds a new action to reset all indices of ImageTools in the manager in the order they appear.
+
 - **manager:** enhance integration with Jupyter notebooks ([69ef2af](https://github.com/kmnhan/erlabpy/commit/69ef2affb0bec022cb01527e99e8edd2773f1264))
 
   Adds a new magic command `%watch` to monitor and sync data between ImageTool manager and Jupyter notebooks. This feature allows users to easily update data in the notebook when changes are made in the ImageTool window and vice versa, facilitating a smoother workflow for data analysis and visualization.
@@ -11,6 +25,26 @@
 - **utils.hashing:** add utilities for hashing xarray DataArrays (#172) ([4fc1f5f](https://github.com/kmnhan/erlabpy/commit/4fc1f5fdfd9d5823e2d1ab707557e400c1588113))
 
   Adds a new module that provides `fingerprint_dataarray`, a function to generate a unique fingerprint for xarray DataArrays. This is useful for quickly comparing data and checking for changes.
+
+### 🐞 Bug Fixes
+
+- **manager:** improve compatibility with numpy <2.3 ([9019613](https://github.com/kmnhan/erlabpy/commit/901961371a58202ece5b8bdd3ed251f1acc17565))
+
+  Note that from this version, the ImageTool manager is no longer compatible with previous versions of `erlab`.
+
+- **io:** suppress xarray warnings due to new defaults introduced in pydata/xarray#10062 (#175) ([2f1cd64](https://github.com/kmnhan/erlabpy/commit/2f1cd6476b433fe958a1668395a28ff4886cd9e3))
+
+### ⚡️ Performance
+
+- **explorer:** micro-optimization for data explorer rendering, might be effective on windows ([0f6ef67](https://github.com/kmnhan/erlabpy/commit/0f6ef67c3251701cb02cb5e144be6903cdde3a78))
+
+### ♻️ Code Refactor
+
+- use pydantic for user configuration handling (#179) ([252bf14](https://github.com/kmnhan/erlabpy/commit/252bf1409363f89221615487d9a24bb3ecfb6d6d))
+
+  Changed the internal implementation of ImageTool user configuration handling, making future maintenance easier.
+
+- **utils.formatting:** make some private formatting functions public ([da28dd5](https://github.com/kmnhan/erlabpy/commit/da28dd59ac8d82f1d502a2d36f50631b2aa3d4bf))
 
 ## v3.14.1 (2025-09-10)
 
