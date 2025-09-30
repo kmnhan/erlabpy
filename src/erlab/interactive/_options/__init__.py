@@ -1,8 +1,9 @@
 """User customization options for interactive tools, mainly ImageTool.
 
-When implementing new options or modifying existing ones, ensure that the attribute
-`DEFAULT_OPTIONS` and the functions `make_parameter` and `parameter_to_dict` in
-`defaults.py` are updated accordingly.
+To implement new options or modify existing ones, modify the pydantic schema in
+`schema.py`. The options UI is automatically generated from the schema. Metadata for the
+UI like grouping, titles, descriptions, and some types that need special handling can be
+defined in the schema using the `json_schema_extra` field attribute.
 """
 
 import lazy_loader as _lazy
