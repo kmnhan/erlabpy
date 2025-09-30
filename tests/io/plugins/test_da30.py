@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import xarray as xr
 
@@ -30,9 +31,22 @@ def expected_dir(data_dir):
 def test_load(expected_dir, args, expected) -> None:
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
-    xr.testing.assert_identical(
-        loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
-    )
+    expected_darr = xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
+
+    xr.testing.assert_equal(loaded, expected_darr)
+    assert loaded.name == expected_darr.name
+
+    if loaded.attrs != expected_darr.attrs:
+        # Attrs may be np.float('nan'), which do not compare equal
+        for key in list(expected_darr.attrs.keys()):
+            if isinstance(expected_darr.attrs[key], np.floating) and np.isnan(
+                expected_darr.attrs[key]
+            ):
+                assert np.isnan(loaded.attrs.get(key, None))
+                del loaded.attrs[key]
+                del expected_darr.attrs[key]
+
+    assert loaded.attrs == expected_darr.attrs
 
 
 def test_zip_libarchive(data_dir):
