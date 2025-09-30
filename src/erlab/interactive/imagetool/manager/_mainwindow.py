@@ -253,9 +253,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.preview_action.setCheckable(True)
         self.preview_action.setToolTip("Show preview on hover")
 
-        self.about_action = QtWidgets.QAction("About", self)
-        self.about_action.triggered.connect(self.about)
-
         self.store_action = QtWidgets.QAction("Store with IPython", self)
         self.store_action.triggered.connect(self.store_selected)
         self.store_action.setToolTip("Store selected data with IPython")
@@ -279,6 +276,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unwatch_action.setToolTip("Stop watching selected windows")
         self.unwatch_action.setVisible(False)
 
+        self.about_action = QtWidgets.QAction("About", self)
+        self.about_action.triggered.connect(self.about)
+
+        self.check_update_action = QtWidgets.QAction("Check for Updates", self)
+        self.check_update_action.setMenuRole(
+            QtWidgets.QAction.MenuRole.ApplicationSpecificRole
+        )
+        self.check_update_action.triggered.connect(self.check_for_updates)
+        # self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
+
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&File")
@@ -294,7 +301,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
         file_menu.addSeparator()
-        file_menu.addAction(self.about_action)
         file_menu.addAction(self.settings_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
@@ -323,6 +329,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
+
+        help_menu: QtWidgets.QMenu = typing.cast(
+            "QtWidgets.QMenu", menu_bar.addMenu("&Help")
+        )
+        help_menu.addAction(self.about_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.check_update_action)
 
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
@@ -438,7 +451,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def about(self) -> None:
         """Show the about dialog."""
         msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setIconPixmap(QtGui.QIcon(_ICON_PATH).pixmap(64, 64))
+        style = self.style()
+        if style is not None:  # pragma: no branch
+            icon_size = (
+                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
+                or 48
+            )
+            msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         msg_box.setText("About ImageTool Manager")
 
         version_info = {
@@ -1283,6 +1302,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
         """Load data from the given files using the specified loader."""
+        if loader_name == "ask":
+            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            return
+
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
@@ -1438,7 +1461,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     return
 
                 self.open_multiple_files(
-                    file_paths, try_workspace=extensions == {".h5"}
+                    file_paths, try_workspace=(extensions == {".h5"})
                 )
 
     def _show_loaded_info(
@@ -1778,6 +1801,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Open the settings dialog for the ImageTool manager."""
         dialog = erlab.interactive._options.OptionDialog(self)
         dialog.exec()
+
+    @QtCore.Slot()
+    def check_for_updates(self) -> None:
+        from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater
+
+        updater = AutoUpdater()
+        updater.check_for_updates(self)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""

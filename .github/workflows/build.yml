@@ -1,0 +1,99 @@
+name: Build ImageTool Manager
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag to update (leave blank to use latest)"
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  build:
+    name: Build (${{ matrix.SUFFIX }})
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'release' && github.repository == 'kmnhan/erlabpy')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            SUFFIX: windows
+          - os: macos-15
+            SUFFIX: macos-arm
+          - os: macos-15-intel
+            SUFFIX: macos-intel
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.13"
+
+      - name: Install project with all optional deps and pyinstaller
+        run: uv sync --no-editable --all-extras --group pyqt6 --group pyinstaller --upgrade
+
+      - name: Get package version and make zip name
+        id: info
+        shell: bash
+        run: |
+          uv run python -c "import erlab; print(erlab.__version__)" > version.txt
+          echo "VERSION=$(cat version.txt)" >> $GITHUB_OUTPUT
+          echo "FILENAME=ImageTool-Manager-$(cat version.txt)-${{ matrix.SUFFIX }}" >> $GITHUB_OUTPUT
+
+      - name: Build ImageTool Manager
+        run: uv run --no-editable pyinstaller manager.spec
+
+      - name: Build installer (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          winget install --id JRSoftware.InnoSetup -e -s winget
+          $env:path += ";$env:LOCALAPPDATA/Programs/Inno Setup 6"
+          iscc manager.iss /O+ /F"Setup-${{ steps.info.outputs.FILENAME }}"
+
+      - name: Create archive (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/ImageTool Manager.app" "${{ steps.info.outputs.FILENAME }}.zip"
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Compress-Archive -Path dist\* -DestinationPath $zipName -Force
+        run: |
+          $exeName = "dist/Setup-${{ steps.info.outputs.FILENAME }}.exe"
+          $zipName = "${{ steps.info.outputs.FILENAME }}.zip"
+          Compress-Archive -Path $exeName -DestinationPath $zipName -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageTool Manager (${{ matrix.SUFFIX }})
+          path: ${{ steps.info.outputs.FILENAME }}.zip
+
+      - name: Upload asset to release (overwrite if exists)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v${{ steps.info.outputs.VERSION }}" "${{ steps.info.outputs.FILENAME }}.zip" --clobber

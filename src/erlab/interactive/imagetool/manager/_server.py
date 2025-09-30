@@ -435,7 +435,7 @@ def _manager_running(func: Callable) -> Callable:
 
 @_manager_running
 def load_in_manager(
-    paths: Iterable[str | os.PathLike], loader_name: str, **load_kwargs
+    paths: Iterable[str | os.PathLike], loader_name: str | None = None, **load_kwargs
 ) -> Response | None:
     """Load and display data in the ImageToolManager.
 
@@ -456,9 +456,12 @@ def load_in_manager(
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
         path_list.append(str(path))
 
-    loader: str = erlab.io.loaders[
-        loader_name
-    ].name  # Trigger exception if loader_name is not registered
+    if loader_name is None:
+        loader: str = "ask"
+    else:
+        loader = erlab.io.loaders[
+            loader_name
+        ].name  # Trigger exception if loader_name is not registered
 
     if (
         erlab.interactive.imagetool.manager._manager_instance is not None
