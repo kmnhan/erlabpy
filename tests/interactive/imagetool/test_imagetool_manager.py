@@ -14,7 +14,7 @@ import erlab
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import ImageToolManager, fetch
+from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
 from erlab.interactive.imagetool.manager._dialogs import (
     _NameFilterDialog,
     _RenameDialog,
@@ -869,7 +869,8 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
 
-def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
+@pytest.mark.parametrize("mode", ["dragdrop", "ask"])
+def test_manager_open_files(qtbot, accept_dialog, test_data, mode) -> None:
     tmp_dir = tempfile.TemporaryDirectory()
     filename = f"{tmp_dir.name}/data.h5"
     test_data.to_netcdf(filename, engine="h5netcdf")
@@ -881,18 +882,26 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
         manager.show()
         manager.activateWindow()
 
-    mime_data = QtCore.QMimeData()
-    mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
-    evt = QtGui.QDropEvent(
-        QtCore.QPointF(0.0, 0.0),
-        QtCore.Qt.DropAction.CopyAction,
-        mime_data,
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
+    if mode == "dragdrop":
+        mime_data = QtCore.QMimeData()
+        mime_data.setUrls([QtCore.QUrl.fromLocalFile(filename)])
+        evt = QtGui.QDropEvent(
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.Qt.DropAction.CopyAction,
+            mime_data,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
 
-    # Simulate drag and drop
-    accept_dialog(lambda: manager.dropEvent(evt))
+        # Simulate drag and drop
+        def trigger_drop():
+            return manager.dropEvent(evt)
+    else:
+
+        def trigger_drop():
+            return load_in_manager([filename], loader_name=None)
+
+    accept_dialog(trigger_drop)
     qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
     xarray.testing.assert_identical(
         manager.get_imagetool(0).slicer_area.data, test_data
@@ -909,7 +918,7 @@ def test_manager_drag_drop_files(qtbot, accept_dialog, test_data) -> None:
         dialog._button_group.buttons()[0].setChecked(True)
 
     accept_dialog(
-        lambda: manager.dropEvent(evt),
+        trigger_drop,
         pre_call=[_choose_wrong_filter, None, None, _choose_correct_filter],
         chained_dialogs=4,
     )

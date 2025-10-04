@@ -58,8 +58,13 @@ class IgorBackendEntrypoint(BackendEntrypoint):
 
     """
 
-    description = "Open Igor Pro files (.pxt, .pxp, .ibw, and .itx) in Xarray"
-    url = "https://erlabpy.readthedocs.io/en/stable/generated/erlab.io.igor.html"
+    description: typing.ClassVar[str] = (
+        "Open Igor Pro files (.pxt, .pxp, .ibw, and .itx) in Xarray"
+    )
+    url: typing.ClassVar[str] = (
+        "https://erlabpy.readthedocs.io/en/stable/generated/erlab.io.igor.html"
+    )
+    supports_groups: typing.ClassVar[bool] = True
 
     def open_dataset(
         self,

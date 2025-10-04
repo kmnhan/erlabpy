@@ -86,6 +86,14 @@ docs = [
     "sphinxcontrib-bibtex>=2.6.3",
     "sphinxcontrib-googleanalytics>=0.4",
 ]
+pyinstaller = [
+    "cmasher>=1.9.2",
+    "cmcrameri>=1.9",
+    "cmocean>=4.0.3",
+    "colorcet>=3.1.0",
+    "pyinstaller>=6.16.0",
+    "seaborn>=0.13.2",
+]
 pyqt6 = ["pyqt6>=6.8.0"]
 pyside6 = ["pyside6>=6.8.1.1,!=6.9.1"]
 
