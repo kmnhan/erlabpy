@@ -11,7 +11,7 @@ import weakref
 import numpy as np
 import qtconsole.inprocess
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 
@@ -239,10 +239,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     def _update_colors(self) -> None:
         """Detect dark mode and update the console colors accordingly."""
         if self.kernel_manager.kernel:
-            is_dark: bool = (
-                self.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
-            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
-            colors = "linux" if is_dark else "lightbg"
+            colors = "linux" if erlab.interactive.colors.is_dark_mode() else "lightbg"
             self.set_default_style(colors)
             self._syntax_style_changed()
             self._style_sheet_changed()

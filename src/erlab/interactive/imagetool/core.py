@@ -1374,7 +1374,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if self._in_manager:
                 # Let the manager handle the exception
                 raise
-            erlab.interactive.utils.show_traceback(
+            erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while setting data"
             )
             self.set_data(xr.DataArray(np.zeros((2, 2))))
@@ -1450,7 +1450,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             try:
                 self.set_data(self._fetch_for_reload(), file_path=self._file_path)
             except Exception:
-                erlab.interactive.utils.show_traceback(
+                erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."
                 )
 
