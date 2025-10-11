@@ -438,7 +438,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def about(self) -> None:
         """Show the about dialog."""
         msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setIconPixmap(QtGui.QIcon(_ICON_PATH).pixmap(64, 64))
+        style = self.style()
+        if style is not None:  # pragma: no branch
+            icon_size = (
+                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
+                or 48
+            )
+            msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         msg_box.setText("About ImageTool Manager")
 
         version_info = {
@@ -920,7 +926,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
             except Exception:
                 logger.exception("Error while concatenating data")
-                erlab.interactive.utils.show_traceback(
+                erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
                     "An error occurred while concatenating data.",
@@ -1164,7 +1170,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
             except Exception:
                 logger.exception("Error while loading workspace")
-                erlab.interactive.utils.show_traceback(
+                erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
                     "An error occurred while loading the workspace file.",
@@ -1283,6 +1289,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
         """Load data from the given files using the specified loader."""
+        if loader_name == "ask":
+            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            return
+
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
@@ -1438,7 +1448,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     return
 
                 self.open_multiple_files(
-                    file_paths, try_workspace=extensions == {".h5"}
+                    file_paths, try_workspace=(extensions == {".h5"})
                 )
 
     def _show_loaded_info(
@@ -1532,7 +1542,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                             self._from_datatree(dt)
                         except Exception:
                             logger.exception("Error while loading workspace")
-                            erlab.interactive.utils.show_traceback(
+                            erlab.interactive.utils.MessageDialog.critical(
                                 self,
                                 "Error",
                                 "An error occurred while loading the workspace file.",
@@ -1581,7 +1591,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _error_creating_imagetool(self, e: Exception) -> None:
         logger.exception("Error creating ImageTool window")
-        erlab.interactive.utils.show_traceback(
+        erlab.interactive.utils.MessageDialog.critical(
             self,
             "Error",
             "An error occurred while creating the ImageTool window.",

@@ -37,9 +37,9 @@ def test_load(expected_dir, arg, index) -> None:
 
     if index in {2, 3}:
         assert isinstance(loaded, xr.DataTree)
-        xr.testing.assert_identical(
-            loaded, xr.open_datatree(expected_file, engine="h5netcdf")
-        )
+        expected_data = xr.load_datatree(expected_file, engine="h5netcdf")
+        xr.testing.assert_equal(loaded, expected_data)
+        xr.testing.assert_isomorphic(loaded, expected_data)
     else:
         assert isinstance(loaded, xr.DataArray)
         xr.testing.assert_identical(

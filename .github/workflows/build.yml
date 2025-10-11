@@ -1,0 +1,107 @@
+name: Build ImageTool Manager
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag to update (leave blank to use latest)"
+        required: false
+        default: ""
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  build:
+    name: Build (${{ matrix.SUFFIX }})
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'release' && github.repository == 'kmnhan/erlabpy')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            SUFFIX: Windows
+          - os: macos-14
+            SUFFIX: macOS-arm
+          - os: macos-13
+            SUFFIX: macOS-intel
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.13"
+
+      - name: Install project with all optional deps and pyinstaller
+        run: uv sync --no-editable --all-extras --group pyqt6 --group pyinstaller --upgrade
+
+      - name: Build ImageTool Manager
+        run: uv run --no-editable pyinstaller manager.spec
+
+      - name: Create archive (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          zip_name="ImageTool-Manager-${{ matrix.SUFFIX }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/ImageTool Manager.app" "$zip_name"
+
+      - name: Create archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zipName = "ImageTool-Manager-${{ matrix.SUFFIX }}.zip"
+          Compress-Archive -Path dist\* -DestinationPath $zipName -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageTool Manager (${{ matrix.SUFFIX }})
+          path: ImageTool-Manager-${{ matrix.SUFFIX }}.zip
+
+      - name: Determine release tag
+        id: rel
+        shell: bash
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            if [ -n "${{ inputs.tag }}" ]; then
+              tag="${{ inputs.tag }}"
+            else
+              tag="$(gh release view --json tagName -q .tagName || true)"
+              if [ -z "$tag" ]; then
+                echo "No existing release found (create one or provide a tag input)."
+                exit 1
+              fi
+            fi
+          fi
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+          echo "Using release tag: $tag"
+
+      - name: Upload asset to release (overwrite if exists)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.rel.outputs.tag }}" "ImageTool-Manager-${{ matrix.SUFFIX }}.zip" --clobber
