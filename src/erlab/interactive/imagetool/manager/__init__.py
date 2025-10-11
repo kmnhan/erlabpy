@@ -63,6 +63,7 @@ from erlab.interactive.imagetool.manager._server import (
     unwatch_data,
     watch_data,
 )
+from erlab.interactive.utils import MessageDialog
 
 logger = logging.getLogger(__name__)
 
@@ -72,27 +73,6 @@ _manager_instance: ImageToolManager | None = None
 
 _always_use_socket: bool = False
 """Internal flag to use sockets within same process for test coverage."""
-
-
-class _InitDialog(QtWidgets.QDialog):
-    def __init__(self) -> None:
-        super().__init__()
-        layout = QtWidgets.QVBoxLayout()
-        self.setLayout(layout)
-
-        self.label = QtWidgets.QLabel(
-            "An instance of ImageToolManager is already running.\n"
-            "Retry after closing the existing instance."
-        )
-        self.buttonBox = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttonBox.accepted.connect(self.accept)
-        self.buttonBox.rejected.connect(self.reject)
-
-        layout.addWidget(self.label)
-        layout.addWidget(self.buttonBox)
 
 
 class _ManagerApp(QtWidgets.QApplication):
@@ -163,7 +143,15 @@ def main(execute: bool = True) -> None:
         qapp.setApplicationVersion(erlab.__version__)
 
     while is_running():  # pragma: no branch
-        dialog = _InitDialog()
+        dialog = MessageDialog(
+            parent=None,
+            title="",
+            text="An instance of ImageToolManager is already running.",
+            informative_text="Retry after closing the existing instance.",
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
     else:

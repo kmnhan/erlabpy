@@ -492,11 +492,8 @@ class _ReprFetcher(QtCore.QRunnable):
                 single=True,
                 load_kwargs={"without_values": not self.include_values},
             )
-        except Exception as e:
-            text = (
-                "Error loading file:\n"
-                + f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-            )
+        except Exception:
+            text = erlab.interactive.utils._format_traceback(traceback.format_exc())
         else:
             text = erlab.utils.formatting.format_darr_html(
                 dat, additional_info=[], show_size=self.include_values
