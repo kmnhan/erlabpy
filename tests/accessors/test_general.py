@@ -114,8 +114,8 @@ def test_qsel_non_monotonic() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="Cannot average over dimension `x` because its coordinate is not "
-        "monotonic. Try sorting the data along the affected dimension.",
+        match=r"Cannot average over dimension `x` because its coordinate is not "
+        r"monotonic. Try sorting the data along the affected dimension.",
     ):
         dat.qsel({"x": 2.0, "x_width": 2.0})
 
