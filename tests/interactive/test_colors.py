@@ -1,5 +1,7 @@
+import pytest
 from qtpy import QtGui
 
+import erlab
 from erlab.interactive.colors import ColorCycleDialog
 
 
@@ -61,3 +63,70 @@ def test_ColorCycleDialog_preview(qtbot):
     dialog.color_btns[0].setColor(new_color)
     dialog._update_color()
     assert dialog.curves[0].opts["pen"].color().name() == new_color.name()
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_is_dark_mode(monkeypatch, qtbot, dark):
+    colors_mod = erlab.interactive.colors
+
+    # Stub QtCore.Qt.ColorScheme with distinct sentinels
+    class _Dark: ...
+
+    class _Light: ...
+
+    class _ColorScheme:
+        Dark = _Dark()
+        Light = _Light()
+
+    class _Qt:
+        ColorScheme = _ColorScheme()
+
+    class _QtCore:
+        Qt = _Qt()
+
+    monkeypatch.setattr(colors_mod, "QtCore", _QtCore, raising=False)
+
+    # Stub styleHints to return Light
+    class DummyHints:
+        def colorScheme(self):
+            return _ColorScheme.Dark if dark else _ColorScheme.Light
+
+    monkeypatch.setattr(
+        colors_mod.QtGui.QGuiApplication,
+        "styleHints",
+        lambda: DummyHints(),
+        raising=True,
+    )
+
+    assert colors_mod.is_dark_mode() == dark
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_is_dark_mode_fallback(monkeypatch, qtbot, dark):
+    colors_mod = erlab.interactive.colors
+    # Force fallback path
+    monkeypatch.setattr(
+        colors_mod.QtGui.QGuiApplication, "styleHints", lambda: None, raising=True
+    )
+
+    # Stub QPalette to control lightness
+    class DummyColor:
+        def __init__(self, lightness):
+            self._l = lightness
+
+        def lightness(self):
+            return self._l
+
+    class DummyPalette:
+        class ColorRole:
+            WindowText = object()
+            Window = object()
+
+        def color(self, role):
+            if role is self.ColorRole.WindowText:
+                return DummyColor(200) if dark else DummyColor(100)
+            return DummyColor(100) if dark else DummyColor(200)
+
+    monkeypatch.setattr(colors_mod.QtGui, "QPalette", DummyPalette, raising=True)
+
+    assert colors_mod.is_dark_mode() == dark

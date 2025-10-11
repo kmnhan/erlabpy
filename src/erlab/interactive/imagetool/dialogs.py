@@ -229,7 +229,7 @@ class DataTransformDialog(_DataManipulationDialog):
                 self.slicer_area.apply_func(applied_func)
 
         except Exception:
-            erlab.interactive.utils.show_traceback(
+            erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
             return
@@ -289,7 +289,7 @@ class DataFilterDialog(_DataManipulationDialog):
         try:
             self.slicer_area.apply_func(self.process_data)
         except Exception:
-            erlab.interactive.utils.show_traceback(
+            erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
             return

@@ -9,6 +9,7 @@ __all__ = [
     "ColorMapComboBox",
     "ColorMapGammaWidget",
     "color_to_QColor",
+    "is_dark_mode",
     "pg_colormap_from_name",
     "pg_colormap_names",
     "pg_colormap_powernorm",
@@ -663,6 +664,26 @@ class BetterColorBarItem(pg.PlotItem):
 
     def mouseDragEvent(self, ev) -> None:
         ev.ignore()
+
+
+def is_dark_mode() -> bool:
+    """Check if the system is in dark mode.
+
+    If a QApplication is not running, this will always return False.
+    """
+    hints = QtGui.QGuiApplication.styleHints()
+    if (
+        hints is not None
+        and hasattr(hints, "colorScheme")
+        and hasattr(QtCore.Qt, "ColorScheme")
+    ):
+        return hints.colorScheme() == QtCore.Qt.ColorScheme.Dark
+
+    # Fallback for Qt < 6.5
+    default_palette = QtGui.QPalette()
+    text = default_palette.color(QtGui.QPalette.ColorRole.WindowText)
+    window = default_palette.color(QtGui.QPalette.ColorRole.Window)
+    return text.lightness() > window.lightness()
 
 
 def color_to_QColor(c: ColorType, alpha: float | None = None) -> QtGui.QColor:

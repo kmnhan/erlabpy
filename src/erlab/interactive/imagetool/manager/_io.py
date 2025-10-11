@@ -69,11 +69,9 @@ class _DataLoader(QtCore.QRunnable):
                     self._func(self._file_path, **self._kwargs)
                 )
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Error loading data from %s", self._file_path)
-            self.signals.sigFailed.emit(
-                self._file_path, f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-            )
+            self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)
 
@@ -183,20 +181,18 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._status_bar.showMessage("")
         self.failed.append(file_path)
 
-        msg_box = QtWidgets.QMessageBox(self.manager)
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setText(f"Failed to load {file_path.name}")
-        msg_box.setInformativeText(
-            "Do you want to skip this file and continue loading?"
+        dialog = erlab.interactive.utils.MessageDialog(
+            self.manager,
+            text=f"Failed to load {file_path.name}",
+            informative_text="Do you want to skip this file and continue loading?",
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Abort
+            | QtWidgets.QDialogButtonBox.StandardButton.Yes,
+            default_button=QtWidgets.QDialogButtonBox.StandardButton.Yes,
         )
-        msg_box.setStandardButtons(
-            QtWidgets.QMessageBox.StandardButton.Abort
-            | QtWidgets.QMessageBox.StandardButton.Yes
-        )
-        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-        msg_box.setDetailedText(exc_str)
-        match msg_box.exec():
-            case QtWidgets.QMessageBox.StandardButton.Yes:
+        dialog.setDetailedText(erlab.interactive.utils._format_traceback(exc_str))
+        dialog.adjustSize()
+        match dialog.exec():
+            case QtWidgets.QDialog.DialogCode.Accepted:
                 self._load_next()
-            case QtWidgets.QMessageBox.StandardButton.Abort:
+            case _:
                 self.sigFinished.emit()
