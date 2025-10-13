@@ -121,6 +121,7 @@ def main(execute: bool = True) -> None:
     if not qapp:
         qapp = _ManagerApp(sys.argv)
         qapp.setStyle("Fusion")
+        qapp.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
 
         if file_args:
             qapp._pending_files.extend(file_args)

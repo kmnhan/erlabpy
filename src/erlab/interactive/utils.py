@@ -2693,17 +2693,17 @@ class ExclusiveComboGroup(QtCore.QObject):
 
 
 class IconButton(QtWidgets.QPushButton):
-    """Convenience class for creating a QPushButton with a qtawesome icon.
+    """Convenience class for creating a QPushButton with a qtawesome icon (or a QIcon).
 
     This button adapts to dark mode changes by resetting the qtawesome cache when a
     color palette change is detected.
 
     Parameters
     ----------
-    on : str, optional
+    on : str or QIcon, optional
         The icon to display when the button is in the "on" state. If `off` is not
         provided, this will be the only icon displayed.
-    off : str, optional
+    off : str or QIcon, optional
         The icon to display when the button is in the "off" state. If provided, the
         button will be checkable, and the icon will change when the button is toggled.
     icon_kw : dict, optional
@@ -2716,8 +2716,8 @@ class IconButton(QtWidgets.QPushButton):
 
     def __init__(
         self,
-        on: str | None = None,
-        off: str | None = None,
+        on: str | QtGui.QIcon | None = None,
+        off: str | QtGui.QIcon | None = None,
         *,
         icon_kw: dict[str, typing.Any] | None = None,
         **kwargs,
@@ -2743,8 +2743,8 @@ class IconButton(QtWidgets.QPushButton):
         super().setChecked(value)
         self.refresh_icons()
 
-    def get_icon(self, icon: str) -> QtGui.QIcon:
-        return qtawesome.icon(icon, **self._icon_kw)
+    def get_icon(self, icon: str | QtGui.QIcon) -> QtGui.QIcon:
+        return qtawesome.icon(icon, **self._icon_kw) if isinstance(icon, str) else icon
 
     def refresh_icons(self) -> None:
         if self.icon_key_off is not None and self.isChecked():
@@ -2767,9 +2767,9 @@ class IconActionButton(IconButton):
     ----------
     action : QtGui.QAction
         The QAction to be associated with this button.
-    on : str, optional
+    on : str or QIcon, optional
         The icon to display when the button is in the "on" state.
-    off : str, optional
+    off : str or QIcon, optional
         The icon to display when the button is in the "off" state. If `action` is not
         toggleable, this icon will never be displayed.
     text_from_action : bool, optional
@@ -2783,8 +2783,8 @@ class IconActionButton(IconButton):
     def __init__(
         self,
         action: QtGui.QAction,
-        on: str | None = None,
-        off: str | None = None,
+        on: str | QtGui.QIcon | None = None,
+        off: str | QtGui.QIcon | None = None,
         text_from_action: bool = False,
         **kwargs,
     ):
@@ -2795,6 +2795,7 @@ class IconActionButton(IconButton):
         self.setAction(action)
 
     def setAction(self, action: QtGui.QAction) -> None:
+        """Associate a QAction with this button."""
         if self._action:
             self._action.changed.disconnect(self._update_from_action)
             self.clicked.disconnect(self._action.trigger)
@@ -2805,7 +2806,15 @@ class IconActionButton(IconButton):
             action.changed.connect(self._update_from_action)
             self.clicked.connect(action.trigger)
 
+    def _update_action_icon(self) -> None:
+        """Update the icon of the associated QAction to match the button's icon."""
+        if self._action:  # pragma: no branch
+            self._action.blockSignals(True)
+            self._action.setIcon(self.icon())
+            self._action.blockSignals(False)
+
     def _update_from_action(self) -> None:
+        """Update the button's properties based on the associated QAction."""
         if not self._action:
             return
 
@@ -2815,9 +2824,11 @@ class IconActionButton(IconButton):
         self.setCheckable(self._action.isCheckable())
         self.setChecked(self._action.isChecked())
         self.setToolTip(self._action.toolTip())
-        self._action.blockSignals(True)
-        self._action.setIcon(self.icon())
-        self._action.blockSignals(False)
+        self._update_action_icon()
+
+    def refresh_icons(self) -> None:
+        super().refresh_icons()
+        self._update_action_icon()
 
 
 class IdentifierValidator(QtGui.QValidator):
