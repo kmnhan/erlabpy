@@ -216,7 +216,13 @@ When the manager is running, new data can be opened in the manager by:
 
 ### Saving and loading workspaces
 
-You can save all open ImageTool windows to an HDF5 file using the `Save Workspace As...` menu item in the manager. Later, restore your workspace with `Open Workspace...` or by dragging and dropping the workspace file into the manager. Colormaps, cursor positions, window sizes, and other settings are preserved. Workspace files are portable and can be shared with others, who can open them in their own ImageTool manager.
+You can save all open ImageTool windows to a file using the `Save Workspace As...` menu item in the manager. The workspace is saved as a single file with the `.itws` extension.
+
+Later, restore your workspace with `Open Workspace...` or by dragging and dropping the workspace file into the manager.
+
+Colormaps, cursor positions, window sizes, and other settings are preserved.
+
+Workspace files are portable and can be shared with others, who can open them in their own ImageTool manager.
 
 ### Additional features
 

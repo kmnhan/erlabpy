@@ -107,14 +107,6 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    if sys.platform == "win32":  # pragma: no cover
-        import ctypes
-
-        # Set the AppUserModelID for Windows taskbar grouping
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "erlab.imagetool.manager"
-        )
-
     file_args = [pathlib.Path(f) for f in sys.argv[1:] if pathlib.Path(f).exists()]
     # Files passed as command-line arguments
     # This also handles opening files from Windows
@@ -133,10 +125,10 @@ def main(execute: bool = True) -> None:
         if file_args:
             qapp._pending_files.extend(file_args)
 
-    if not getattr(sys, "frozen", False) or not hasattr(
-        sys, "_MEIPASS"
-    ):  # pragma: no branch
-        # Ignore if running in a PyInstaller bundle
+    is_packaged: bool = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+    if sys.platform != "darwin" or not is_packaged:  # pragma: no branch
+        # Ignore if running in a PyInstaller bundle on macOS
         qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
         qapp.setApplicationName("imagetool-manager")
         qapp.setApplicationDisplayName("ImageTool Manager")
