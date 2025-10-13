@@ -417,9 +417,10 @@ class MessageDialog(QtWidgets.QDialog):
     ) -> int:
         """Show a critical message dialog.
 
-        Works like :meth:`QtWidgets.QMessageBox.critical` when showing an error message.
-        Automatically adds the traceback to the informative text. Must be only called
-        from within an exception handler.
+        Works like :meth:`QtWidgets.QMessageBox.critical` when showing an error message,
+        but automatically adds the traceback to the informative text if called from
+        within an exception handler (i.e., :func:`sys.exception` does not return
+        `None`).
 
         Parameters
         ----------
@@ -442,7 +443,7 @@ class MessageDialog(QtWidgets.QDialog):
         Returns
         -------
         int
-            The standard button that was clicked.
+            Result of the dialog (e.g., `QDialog.Accepted` or `QDialog.Rejected`).
 
         """
         dialog = MessageDialog(
