@@ -999,9 +999,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self.setAnimated(True)
         self.setExpandsOnDoubleClick(False)
 
-        self.setEditTriggers(
-            self.EditTrigger.EditKeyPressed
-        )  # Only allow editing on edit key press (depends on platform)
+        self.setEditTriggers(self.EditTrigger.SelectedClicked)
 
         self.setWordWrap(True)  # Ellide text when width is too small
         self.setMouseTracking(True)  # Enable hover detection

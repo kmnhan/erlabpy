@@ -183,6 +183,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
+        self.show_action.setShortcut(
+            "Return"
+            if sys.platform == "darwin"
+            else QtGui.QKeySequence.StandardKey.InsertParagraphSeparator
+        )
         self.show_action.setToolTip("Show selected windows")
 
         self.hide_action = QtWidgets.QAction("Hide", self)
