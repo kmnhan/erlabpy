@@ -1124,8 +1124,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
-        dialog.setDefaultSuffix("h5")
+        dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
+        dialog.setDefaultSuffix("itws")
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
         if not native:  # pragma: no branch
@@ -1170,7 +1170,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog.setNameFilters(
+            ["ImageTool Workspace Files (*.itws)", "xarray HDF5 Files (*.h5)"]
+        )
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
         if not native:  # pragma: no branch
@@ -1459,9 +1461,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         "drag-and-drop operation.",
                     )
                     return
-
                 self.open_multiple_files(
-                    file_paths, try_workspace=(extensions == {".h5"})
+                    file_paths,
+                    try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
                 )
 
     def _show_loaded_info(

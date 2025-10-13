@@ -580,14 +580,14 @@ def test_manager_workspace_io(qtbot, accept_dialog) -> None:
 
     # Save and load workspace
     tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/workspace.h5"
+    filename = f"{tmp_dir.name}/workspace.itws"
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
         dialog.selectFile(filename)
         focused = dialog.focusWidget()
         if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("workspace.h5")
+            focused.setText("workspace.itws")
 
     # Save workspace
     accept_dialog(

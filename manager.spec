@@ -105,17 +105,23 @@ if sys.platform == "darwin":
             "CFBundleIconName": "icon",  # macOS 26+ liquid glass icon
             "CFBundleVersion": f"{erlab.__version__}.{build_number}",
             "CFBundleDocumentTypes": [
+                {  # ImageTool workspace (.itws)
+                    "CFBundleTypeName": "ImageTool Workspace",
+                    "LSItemContentTypes": ["dev.kmnhan.erlabpy.itoolworkspace"],
+                    "CFBundleTypeRole": "Viewer",
+                    "LSHandlerRank": "Default",
+                },
                 {  # HDF5 (.h5)
                     "CFBundleTypeName": "HDF5 Data",
                     "LSItemContentTypes": ["dev.kmnhan.erlabpy.hdf5"],
-                    "CFBundleTypeRole": "Viewer",  # or "Editor"
-                    "LSHandlerRank": "Default",
+                    "CFBundleTypeRole": "Viewer",
+                    "LSHandlerRank": "Alternate",
                 },
                 {  # NetCDF (.nc)
                     "CFBundleTypeName": "NetCDF Data",
                     "LSItemContentTypes": ["dev.kmnhan.erlabpy.netcdf"],
                     "CFBundleTypeRole": "Viewer",
-                    "LSHandlerRank": "Default",
+                    "LSHandlerRank": "Alternate",
                 },
                 {  # NeXus (.nxs) — HDF5-based container
                     "CFBundleTypeName": "NeXus Data",
@@ -226,6 +232,20 @@ if sys.platform == "darwin":
                     "UTTypeTagSpecification": {
                         "public.filename-extension": ["itx", "ITX", "awav", "AWAV"],
                         "com.apple.ostype": ["IGTX"],
+                    },
+                },
+            ],
+            "UTExportedTypeDeclarations": [
+                {  # HDF5-based NeXus files
+                    "UTTypeIdentifier": "dev.kmnhan.erlabpy.itoolworkspace",
+                    "UTTypeDescription": "ImageTool Workspace",
+                    "UTTypeConformsTo": ["public.data", "dev.kmnhan.erlabpy.hdf5"],
+                    "UTTypeTagSpecification": {
+                        "public.filename-extension": ["itws"],
+                        "public.mime-type": [
+                            "application/x-hdf5",
+                            "application/x-hdf",
+                        ],
                     },
                 },
             ],
