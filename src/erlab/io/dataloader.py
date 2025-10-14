@@ -50,12 +50,6 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
-    import joblib
-else:
-    import lazy_loader as _lazy
-
-    joblib = _lazy.load("joblib")
-
 
 class ValidationWarning(UserWarning):
     """Issued when the loaded data fails validation checks."""
@@ -325,16 +319,6 @@ class LoaderBase(metaclass=_Loader):
     is `False`.
     """
 
-    parallel_kwargs: typing.ClassVar[dict[str, typing.Any]] = {"n_jobs": -1}
-    """
-    Additional keyword arguments to be passed to :class:`joblib.Parallel` when loading
-    files in parallel. The default is to use all available CPU cores.
-
-    Set this attribute to configure the default behavior per loader.
-
-    .. versionadded:: 3.9.0
-    """
-
     skip_validate: bool = False
     """
     If `True`, validation checks will be skipped. If `False`, data will be checked with
@@ -584,8 +568,8 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel using the `joblib` library. For
-            possible values, see :meth:`load_multiple_parallel
+            Whether to load multiple files in parallel using `dask`. For possible
+            values, see :meth:`load_multiple_parallel
             <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
 
             This argument is only used when `single` is `False`.
@@ -626,9 +610,7 @@ class LoaderBase(metaclass=_Loader):
 
           .. code-block:: none
 
-            cwd/
-            ├── data/
-            └── example.txt
+            cwd/ ├── data/ └── example.txt
 
           The following code will load ``./example.txt`` instead of raising an error
           that ``./data/example.txt`` is missing:
@@ -1979,7 +1961,7 @@ class LoaderBase(metaclass=_Loader):
         file_paths
             A list of file paths to load.
         parallel
-            Whether to load data in parallel using `joblib`.
+            Whether to load data in parallel using `dask`.
 
             - If `None`, parallel loading is enabled only if the number of files is
               greater than the loader's :attr:`parallel_threshold
@@ -2020,17 +2002,14 @@ class LoaderBase(metaclass=_Loader):
         }
 
         if parallel:
-            with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
-                if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
-                    # Loky does not work in PyInstaller executables
-                    # https://github.com/joblib/loky/pull/375
-                    backend = self.parallel_kwargs.get("backend", None)
-                    if backend is None or backend == "loky":
-                        self.parallel_kwargs["backend"] = "multiprocessing"
+            import dask
+            import tqdm.dask
 
-                return joblib.Parallel(**self.parallel_kwargs)(
-                    joblib.delayed(_load_func)(f) for f in file_paths
+            with tqdm.dask.TqdmCallback(**tqdm_kw):
+                return dask.compute(
+                    *[dask.delayed(_load_func)(f) for f in file_paths],
                 )
+
         import tqdm.auto as tqdm
 
         return [_load_func(f) for f in tqdm.tqdm(file_paths, **tqdm_kw)]
