@@ -111,8 +111,6 @@ class MERLINLoader(LoaderBase):
 
     always_single = False
 
-    parallel_kwargs: typing.ClassVar[dict] = {"n_jobs": -1, "prefer": "threads"}
-
     @property
     def file_dialog_methods(self):
         return {
