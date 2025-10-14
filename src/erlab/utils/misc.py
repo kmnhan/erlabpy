@@ -2,6 +2,7 @@
 
 __all__ = [
     "emit_user_level_warning",
+    "get_tqdm",
     "is_interactive",
     "is_newer_version",
     "is_sequence_of",
@@ -18,6 +19,9 @@ import warnings
 from collections.abc import Sequence
 
 import numpy as np
+
+if typing.TYPE_CHECKING:
+    import tqdm
 
 _IS_PACKAGED: bool = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
 
@@ -178,3 +182,17 @@ def is_newer_version(version_str: str) -> bool:  # pragma: no cover
     return packaging.version.Version(version_str) > packaging.version.Version(
         erlab.__version__
     )
+
+
+def get_tqdm() -> type["tqdm.tqdm"]:
+    """Get the appropriate tqdm module.
+
+    For frozen packages, we cannot use `tqdm.auto` since it causes issues with
+    incomplete IPython installations.
+    """
+    if _IS_PACKAGED:
+        import tqdm
+    else:
+        import tqdm.auto as tqdm
+
+    return tqdm.tqdm

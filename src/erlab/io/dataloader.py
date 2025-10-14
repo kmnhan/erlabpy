@@ -22,6 +22,7 @@ __all__ = [
 ]
 import contextlib
 import errno
+import functools
 import importlib
 import itertools
 import os
@@ -2003,16 +2004,51 @@ class LoaderBase(metaclass=_Loader):
 
         if parallel:
             import dask
-            import tqdm.dask
+            import dask.callbacks
 
-            with tqdm.dask.TqdmCallback(**tqdm_kw):
+            # Copy tqdm.dask.TqdmCallback here to avoid importing tqdm.notebook
+            # TODO: submit PR to tqdm to set default of tqdm_class to None
+            class TqdmCallback(dask.callbacks.Callback):  # pragma: no cover
+                def __init__(
+                    self, start=None, pretask=None, tqdm_class=None, **tqdm_kwargs
+                ):
+                    super().__init__(start=start, pretask=pretask)
+                    if tqdm_class is None:
+                        tqdm_class = erlab.utils.misc.get_tqdm()
+                    if tqdm_kwargs:
+                        tqdm_class = functools.partial(tqdm_class, **tqdm_kwargs)
+                    self.tqdm_class = tqdm_class
+
+                def _start_state(self, _, state):
+                    self.pbar = self.tqdm_class(
+                        total=sum(
+                            len(state[k])
+                            for k in ["ready", "waiting", "running", "finished"]
+                        )
+                    )
+
+                def _posttask(self, *_, **__):
+                    self.pbar.update()
+
+                def _finish(self, *_, **__):
+                    self.pbar.close()
+
+                def display(self):
+                    container = getattr(self.bar, "container", None)
+                    if container is None:
+                        return
+                    from tqdm.notebook import display
+
+                    display(container)
+
+            with TqdmCallback(**tqdm_kw):
                 return dask.compute(
                     *[dask.delayed(_load_func)(f) for f in file_paths],
                 )
 
-        import tqdm.auto as tqdm
+        tqdm = erlab.utils.misc.get_tqdm()
 
-        return [_load_func(f) for f in tqdm.tqdm(file_paths, **tqdm_kw)]
+        return [_load_func(f) for f in tqdm(file_paths, **tqdm_kw)]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
