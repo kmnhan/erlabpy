@@ -6,6 +6,8 @@ import contextlib
 import sys
 import typing
 
+import erlab
+
 if typing.TYPE_CHECKING:
     import joblib
 else:
@@ -17,12 +19,12 @@ else:
 @contextlib.contextmanager
 def joblib_progress(file=None, **kwargs):
     """Patches joblib to report into a tqdm progress bar."""
-    import tqdm.auto as tqdm
+    tqdm = erlab.utils.misc.get_tqdm()
 
     if file is None:
         file = sys.stdout
 
-    tqdm_object = tqdm.tqdm(iterable=None, file=file, **kwargs)
+    tqdm_object = tqdm(iterable=None, file=file, **kwargs)
 
     def tqdm_print_progress(self) -> None:
         if self.n_completed_tasks > tqdm_object.n:
