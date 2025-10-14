@@ -292,6 +292,9 @@ def edge(
         parallel_kw.setdefault("max_nbytes", None)
         parallel_kw.setdefault("return_as", "generator")
         parallel_kw.setdefault("pre_dispatch", "n_jobs")
+        parallel_kw.setdefault(
+            "backend", "multiprocessing" if erlab.utils.misc._IS_PACKAGED else "loky"
+        )
 
         parallel_obj = joblib.Parallel(**parallel_kw)
 

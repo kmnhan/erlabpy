@@ -126,9 +126,9 @@ def main(execute: bool = True) -> None:
         if file_args:
             qapp._pending_files.extend(file_args)
 
-    is_packaged: bool = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
-
-    if sys.platform != "darwin" or not is_packaged:  # pragma: no branch
+    if (
+        sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED
+    ):  # pragma: no branch
         # Ignore if running in a PyInstaller bundle on macOS
         qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
         qapp.setApplicationName("imagetool-manager")
