@@ -69,6 +69,7 @@ class EdgeFitter(QtCore.QThread):
             max_nbytes=None,
             return_as="generator",
             pre_dispatch="n_jobs",
+            backend="multiprocessing" if erlab.utils.misc._IS_PACKAGED else "loky",
         )
         self.edge_center: xr.DataArray | None = None
         self.edge_stderr: xr.DataArray | None = None

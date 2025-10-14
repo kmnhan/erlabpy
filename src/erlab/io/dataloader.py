@@ -2021,6 +2021,13 @@ class LoaderBase(metaclass=_Loader):
 
         if parallel:
             with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
+                if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+                    # Loky does not work in PyInstaller executables
+                    # https://github.com/joblib/loky/pull/375
+                    backend = self.parallel_kwargs.get("backend", None)
+                    if backend is None or backend == "loky":
+                        self.parallel_kwargs["backend"] = "multiprocessing"
+
                 return joblib.Parallel(**self.parallel_kwargs)(
                     joblib.delayed(_load_func)(f) for f in file_paths
                 )

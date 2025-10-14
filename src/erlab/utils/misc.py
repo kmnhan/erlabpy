@@ -19,6 +19,9 @@ from collections.abc import Sequence
 
 import numpy as np
 
+_IS_PACKAGED: bool = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
+
 _NestedGeneric = np.generic | list["_NestedGeneric"] | typing.Any
 
 
