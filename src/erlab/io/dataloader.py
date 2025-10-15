@@ -1633,7 +1633,7 @@ class LoaderBase(metaclass=_Loader):
                             "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
                         ),
                         compat="no_conflicts",
-                        data_vars=None,
+                        data_vars="all",
                         coords="all",
                         join="exact",
                         combine_attrs=self.combine_attrs,
@@ -1702,7 +1702,7 @@ class LoaderBase(metaclass=_Loader):
             combined = xr.combine_by_coords(
                 processed,
                 compat="no_conflicts",
-                data_vars=None,
+                data_vars="all",
                 coords="different",
                 join="outer",
                 combine_attrs=self.combine_attrs,
