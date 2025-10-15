@@ -474,6 +474,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "Python": platform.python_version(),
             "OS": platform.platform(),
         }
+        if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+            version_info["Location"] = os.path.dirname(sys.executable)
         msg_box.setInformativeText(
             "\n".join(f"{k}: {v}" for k, v in version_info.items())
         )
@@ -1268,38 +1270,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
             List of flags indicating whether the data was successfully received.
         """
         flags: list[bool] = []
+        indices: list[int] = []
+
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 try:
-                    self.add_imagetool(
+                    idx = self.add_imagetool(
                         ImageTool.from_dataset(ds, _in_manager=True), activate=True
                     )
-                except Exception as e:
+                except Exception:
                     flags.append(False)
-                    self._error_creating_imagetool(e)
+                    self._error_creating_imagetool()
                 else:
                     flags.append(True)
-            return flags
+                    indices.append(idx)
+        else:
+            link = kwargs.pop("link", False)
+            link_colors = kwargs.pop("link_colors", True)
+            kwargs["_in_manager"] = True
 
-        link = kwargs.pop("link", False)
-        link_colors = kwargs.pop("link_colors", True)
-        indices: list[int] = []
-        kwargs["_in_manager"] = True
-
-        for d in data:
-            try:
-                indices.append(
-                    self.add_imagetool(
+            for d in data:
+                try:
+                    idx = self.add_imagetool(
                         ImageTool(d, **kwargs), activate=True, watched_var=watched_var
                     )
-                )
-            except Exception as e:
-                flags.append(False)
-                self._error_creating_imagetool(e)
-            else:
-                flags.append(True)
+                except Exception:
+                    flags.append(False)
+                    self._error_creating_imagetool()
+                else:
+                    flags.append(True)
+                    indices.append(idx)
 
-        if link:
+        if link and indices:
             self.link_imagetools(*indices, link_colors=link_colors)
 
         return flags
@@ -1609,7 +1611,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             loaded, queued, failed, func, kargs, self.open_multiple_files
         )
 
-    def _error_creating_imagetool(self, e: Exception) -> None:
+    def _error_creating_imagetool(self) -> None:
+        """Show an error message when an ImageTool window could not be created."""
         logger.exception("Error creating ImageTool window")
         erlab.interactive.utils.MessageDialog.critical(
             self,
@@ -1630,11 +1633,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         handler = _MultiFileHandler(self, queued, func, kwargs)
         self._file_handlers.add(handler)
 
-        def _finished_callback() -> None:
+        def _finished_callback(loaded_new, aborted, failed_new) -> None:
             self._show_loaded_info(
-                loaded + handler.loaded,
-                handler.queued,
-                failed + handler.failed,
+                loaded + loaded_new,
+                aborted,
+                failed + failed_new,
                 retry_callback=retry_callback,
             )
             self._file_handlers.remove(handler)
@@ -1837,6 +1840,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 if event:
                     event.ignore()
                 return
+
+        # Wait for file handlers to finish
+        if len(self._file_handlers) > 0:  # pragma: no cover
+            with erlab.interactive.utils.wait_dialog(
+                self, "Waiting for file operations to finish..."
+            ):
+                for handler in list(self._file_handlers):
+                    handler.wait()
 
         # Remove all ImageTool windows
         self.remove_all_tools()
