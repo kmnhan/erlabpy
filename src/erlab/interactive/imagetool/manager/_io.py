@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = ["_MultiFileHandler"]
 
 import collections
+import contextlib
 import logging
 import pathlib
 import traceback
@@ -99,13 +100,14 @@ class _MultiFileHandler(QtCore.QObject):
 
     Signals
     -------
-    sigFinished()
+    sigFinished(loaded, aborted, failed)
         Emitted when the loading process has finished. The signal is emitted even if the
-        loading process was aborted due to an error.
+        loading process was stopped prematurely using the ``abort`` method or due to an
+        unexpected error.
 
     """
 
-    sigFinished = QtCore.Signal()  #: :meta private:
+    sigFinished = QtCore.Signal(object, object, object)  #: :meta private:
 
     def __init__(
         self,
@@ -123,6 +125,8 @@ class _MultiFileHandler(QtCore.QObject):
 
         self.loaded: list[pathlib.Path] = []
         self.failed: list[pathlib.Path] = []
+
+        self._abort: bool = False
 
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
@@ -148,10 +152,11 @@ class _MultiFileHandler(QtCore.QObject):
         """
         self._load_next()
 
+    @QtCore.Slot()
     def _load_next(self) -> None:
         """Load the next file in the queue."""
-        if len(self._queue) == 0:
-            self.sigFinished.emit()
+        if len(self._queue) == 0 or self._abort:
+            self.sigFinished.emit(self.loaded, self.queued, self.failed)
             return
 
         file_path = self._queue.popleft()
@@ -168,18 +173,25 @@ class _MultiFileHandler(QtCore.QObject):
         self, file_path: pathlib.Path, data_list: list[xr.DataArray]
     ) -> None:
         self.manager._status_bar.showMessage("")
+        self.loaded.append(file_path)
+        self.manager._recent_directory = str(file_path.parent)
+        QtCore.QTimer.singleShot(
+            0, lambda: self._deliver_and_queue(file_path, data_list)
+        )
+
+    def _deliver_and_queue(
+        self, file_path: pathlib.Path, data_list: list[xr.DataArray]
+    ) -> None:
         self.manager._data_recv(
             data_list,
             kwargs={"file_path": file_path, "_disable_reload": len(data_list) > 1},
         )
-        self.loaded.append(file_path)
-        self.manager._recent_directory = str(file_path.parent)
-        self._load_next()
+        QtCore.QTimer.singleShot(0, self._load_next)
 
     @QtCore.Slot(pathlib.Path, str)
     def _on_failed(self, file_path: pathlib.Path, exc_str: str) -> None:
-        self.manager._status_bar.showMessage("")
         self.failed.append(file_path)
+        self.manager._status_bar.showMessage("")
 
         dialog = erlab.interactive.utils.MessageDialog(
             self.manager,
@@ -195,4 +207,21 @@ class _MultiFileHandler(QtCore.QObject):
             case QtWidgets.QDialog.DialogCode.Accepted:
                 self._load_next()
             case _:
-                self.sigFinished.emit()
+                self.sigFinished.emit(self.loaded, self.queued, self.failed)
+
+    def abort(self) -> None:
+        """Abort the loading process.
+
+        Files that are already being loaded will be completed, but no further files
+        will be loaded.
+        """
+        self._abort = True
+
+    def wait(self) -> None:
+        """Block until all files are loaded or the loading process is aborted."""
+        if hasattr(self._threadpool, "waitForDone"):  # Qt 6.8+
+            self._threadpool.waitForDone()
+        else:  # pragma: no cover
+            with contextlib.suppress(KeyboardInterrupt):
+                while self._threadpool.activeThreadCount() > 0:
+                    QtCore.QThread.msleep(100)
