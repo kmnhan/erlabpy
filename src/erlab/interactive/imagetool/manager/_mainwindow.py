@@ -289,7 +289,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             QtWidgets.QAction.MenuRole.ApplicationSpecificRole
         )
         self.check_update_action.triggered.connect(self.check_for_updates)
-        # self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
+        self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
