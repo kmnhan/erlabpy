@@ -192,4 +192,4 @@ For a full list of dependencies and optional dependency groups, check the `[proj
 ## Notes on compatibility
 
 - ERLabPy supports Python 3.11 and later.
-- There are some [known compatibility issues](https://github.com/kmnhan/erlabpy/issues/17) with PyQt5 and PySide2. It is recommended to use PyQt6 or PySide6 if possible.
+- Qt5 bindings (PyQt5 and PySide2) are not supported. Use Qt6 bindings, such as PyQt6 or PySide6.
