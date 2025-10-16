@@ -33,7 +33,7 @@ interactive tools.
 """
 
 try:
-    import qtpy  # noqa: F401
+    import qtpy
 except ImportError as e:
     raise ImportError(
         "A Qt binding is required for interactive tools. "
@@ -42,6 +42,12 @@ except ImportError as e:
         "  - PyQt6: 'pip install PyQt6'\n"
         "For more information, visit the official documentation of these packages."
     ) from e
+else:
+    if qtpy.QT5:
+        raise ImportError(
+            f"{qtpy.API_NAME} is no longer supported by erlabpy. "
+            f"Please install PySide6 or PyQt6 and uninstall {qtpy.API_NAME}."
+        )
 
 import lazy_loader as _lazy
 
