@@ -10,6 +10,7 @@
 
 __all__ = ["MAESTROMicroLoader"]
 
+import contextlib
 import datetime
 import os
 import re
@@ -53,7 +54,8 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
     writable: bool = os.access(cache_file.parent.parent, os.W_OK)
 
     if writable and not cache_file.parent.is_dir():
-        cache_file.parent.mkdir(parents=True)
+        with contextlib.suppress(FileExistsError):
+            cache_file.parent.mkdir(parents=True)
 
     if len(data.data_vars) > 1:
         erlab.utils.misc.emit_user_level_warning(
