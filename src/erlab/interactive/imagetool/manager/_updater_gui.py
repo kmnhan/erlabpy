@@ -15,7 +15,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager._updater_core import (
-    OWNER,
     REPO,
     fetch_latest_release,
     verify_sha256,
@@ -192,6 +191,18 @@ class AutoUpdater(QtCore.QObject):
             case _:
                 pass
 
+        if sys.platform == "darwin":
+            match QtWidgets.QMessageBox.critical(
+                parent,
+                "Update",
+                "Auto-update is not supported yet on macOS. Open the download link?",
+                QtWidgets.QMessageBox.StandardButton.Ok
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+            ):
+                case QtWidgets.QMessageBox.StandardButton.Ok:
+                    QtGui.QDesktopServices.openUrl(QtCore.QUrl(info.asset.download_url))
+            return
+
         # Choose temp zip path
         tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="imagetool-manager-update-"))
         zippath = tmpdir / info.asset.name
@@ -250,11 +261,11 @@ class AutoUpdater(QtCore.QObject):
     def _apply_with_helper(
         self, zip_path: pathlib.Path, parent: QtWidgets.QWidget | None
     ):
-        if not is_frozen():
-            # Running from source: open releases page instead
-            url = f"https://github.com/{OWNER}/{REPO}/releases"
-            QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
-            return
+        # if not is_frozen():
+        #     # Running from source: open releases page instead
+        #     url = f"https://github.com/{OWNER}/{REPO}/releases"
+        #     QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
+        #     return
 
         install_root = get_install_root()
         pid = os.getpid()
