@@ -1270,12 +1270,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             List of flags indicating whether the data was successfully received.
         """
         flags: list[bool] = []
-        indices: list[int] = []
-
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 try:
-                    idx = self.add_imagetool(
+                    self.add_imagetool(
                         ImageTool.from_dataset(ds, _in_manager=True), activate=True
                     )
                 except Exception:
@@ -1283,25 +1281,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self._error_creating_imagetool()
                 else:
                     flags.append(True)
-                    indices.append(idx)
-        else:
-            link = kwargs.pop("link", False)
-            link_colors = kwargs.pop("link_colors", True)
-            kwargs["_in_manager"] = True
+            return flags
 
-            for d in data:
-                try:
-                    idx = self.add_imagetool(
+        link = kwargs.pop("link", False)
+        link_colors = kwargs.pop("link_colors", True)
+        indices: list[int] = []
+        kwargs["_in_manager"] = True
+
+        for d in data:
+            try:
+                indices.append(
+                    self.add_imagetool(
                         ImageTool(d, **kwargs), activate=True, watched_var=watched_var
                     )
-                except Exception:
-                    flags.append(False)
-                    self._error_creating_imagetool()
-                else:
-                    flags.append(True)
-                    indices.append(idx)
+                )
+            except Exception:
+                flags.append(False)
+                self._error_creating_imagetool()
+            else:
+                flags.append(True)
 
-        if link and indices:
+        if link:
             self.link_imagetools(*indices, link_colors=link_colors)
 
         return flags
