@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **imagetool:** auto-compute small dask arrays ([4b10312](https://github.com/kmnhan/erlabpy/commit/4b103128dcd0ff1944bd3bdd6f3a7e347fb01c35))
+
+  When loading data into the imagetool, if the data is a dask array and its size is below a certain threshold (configurable via `erlab.interactive.options["io/compute_threshold"]` or the settings GUI), the data will be automatically computed into memory. Default threshold is 2048 MB.
+
+  Additionally, adds a "Load Into Memory" action to the `File` menu in ImageTool only visible for chunked arrays which calls `.compute()` on the data when triggered.
+
+- **io.plugins.erpes:** cache .zip files as HDF5 files for faster loading ([412fdc4](https://github.com/kmnhan/erlabpy/commit/412fdc44e31911521733cb995499fb0e896b28a4))
+
+  When loading a `.zip` file, cache it as an `.h5` file in a hidden cache directory. This speeds up subsequent loads of the same file. Also, DA maps are now always loaded as chunked (dask) arrays, improving scalability for large data.
+
 - **manager:** show child tools ([ff1f9b1](https://github.com/kmnhan/erlabpy/commit/ff1f9b18721865b553c8c13df6500586e7ef00a6))
 
   When opening analysis tools (e.g., `dtool`, `ktool`, ...) from an imagetool in the manager, the child tools are now displayed in the manager as well. When saving and loading the workspace, the state of these child tools is also preserved.
@@ -28,6 +38,12 @@
 
 ### 🐞 Bug Fixes
 
+- **io.plugins.maestro:** fix concurrent access to cache dir ([21f5df8](https://github.com/kmnhan/erlabpy/commit/21f5df8f4c0704c92716bd6548717f4469a57f92))
+
+- **manager:** update icons in menubar on system appearance change ([eb357a3](https://github.com/kmnhan/erlabpy/commit/eb357a3cfd37a50452d7e74f897391f9ffc0268a))
+
+- **io:** make igor datatree backend compatible with xarray 2025.9.1 ([8d8eab5](https://github.com/kmnhan/erlabpy/commit/8d8eab5765b5b8fe3aace706c949cb3e916a7a23))
+
 - **manager:** improve compatibility with numpy <2.3 ([9019613](https://github.com/kmnhan/erlabpy/commit/901961371a58202ece5b8bdd3ed251f1acc17565))
 
   Note that from this version, the ImageTool manager is no longer compatible with previous versions of `erlab`.
@@ -36,9 +52,27 @@
 
 ### ⚡️ Performance
 
+- **manager:** micro-optimizations to file loading mechanism ([be1c624](https://github.com/kmnhan/erlabpy/commit/be1c62435fcb9ba10ad27955b8423bfac5a25b2a))
+
 - **explorer:** micro-optimization for data explorer rendering, might be effective on windows ([0f6ef67](https://github.com/kmnhan/erlabpy/commit/0f6ef67c3251701cb02cb5e144be6903cdde3a78))
 
 ### ♻️ Code Refactor
+
+- **imagetool:** add icons for some menu actions and buttons ([b232640](https://github.com/kmnhan/erlabpy/commit/b232640121cdd240c139decc3d44ef5e974eda3c))
+
+- explicitly remove support for Qt5 ([995c96b](https://github.com/kmnhan/erlabpy/commit/995c96bdba9dd1b079807b39ef3b26a40294a3aa))
+
+- **io:** use dask for parallel loading ([081c706](https://github.com/kmnhan/erlabpy/commit/081c706b05fe51d6df849f25f0e547d5e8701236))
+
+  This commit changes the parallel loading mechanism from `joblib` to `dask`. The `parallel_kwargs` attribute for loaders are now ignored. In order to configure parallel loading, users should set up the `dask` client accordingly.
+
+- **manager:** allow using the `Enter` key (`Return` on macOS) to open selected items ([83ef7bc](https://github.com/kmnhan/erlabpy/commit/83ef7bcf26153c6a094701d6bdc7c262a3dffef3))
+
+- **manager:** set workspace file default extension to `.itws` to avoid confusion with regular HDF5 files ([6455528](https://github.com/kmnhan/erlabpy/commit/6455528944972dea5d03181711f8ff38b4991900))
+
+- new ImageTool Manager icon for macOS ([c15ce26](https://github.com/kmnhan/erlabpy/commit/c15ce268ac5f9bd1b4d17ac15e32d7660339db8f))
+
+- **io.plugins.erpes:** add new temperature sensors ([b56f2b0](https://github.com/kmnhan/erlabpy/commit/b56f2b0aeaadf915a22021f5b0b5e67fdc36a1c6))
 
 - use pydantic for user configuration handling (#179) ([252bf14](https://github.com/kmnhan/erlabpy/commit/252bf1409363f89221615487d9a24bb3ecfb6d6d))
 
