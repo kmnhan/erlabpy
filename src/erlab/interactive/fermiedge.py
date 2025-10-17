@@ -67,7 +67,7 @@ class EdgeFitter(QtCore.QThread):
         self.parallel_obj = joblib.Parallel(
             n_jobs=self.params["# CPU"],
             max_nbytes=None,
-            return_as="generator",
+            return_as="generator" if not erlab.utils.misc._IS_PACKAGED else "list",
             pre_dispatch="n_jobs",
             backend="multiprocessing" if erlab.utils.misc._IS_PACKAGED else "loky",
         )

@@ -911,7 +911,7 @@ requires-dist = [
     { name = "dask", extras = ["distributed"], marker = "extra == 'misc'", specifier = ">=2024.4.1" },
     { name = "erlab", extras = ["viz", "io", "perf", "misc"], marker = "extra == 'complete'" },
     { name = "findiff", specifier = ">=0.12.0" },
-    { name = "h5netcdf", specifier = ">=1.2.0" },
+    { name = "h5netcdf", specifier = ">=1.7.1" },
     { name = "hvplot", marker = "extra == 'viz'", specifier = ">=0.11.0,!=0.12.0" },
     { name = "igor2", specifier = ">=0.5.12" },
     { name = "igorwriter", specifier = ">=0.6.1" },
@@ -1150,15 +1150,15 @@ wheels = [
 
 [[package]]
 name = "h5netcdf"
-version = "1.6.4"
+version = "1.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h5py" },
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5a/a1/e3ca842fd0895fcfb21c754a18fd8cd7362d1625b3a93408c982c38f4ec1/h5netcdf-1.6.4.tar.gz", hash = "sha256:83db7e5eb9b822bed2c79050d6cf8f36ecbd1039f4252bd90fab200edcaaf67d", size = 65832, upload-time = "2025-08-05T06:26:56.707Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/cb/9b2ad1b14734bce8f28e74b635a67952fac095264aa48e2aa92fa6108971/h5netcdf-1.7.2.tar.gz", hash = "sha256:c2b35a5c2f9d6f0df3dcd1bf43ff6945af284d234bf74a12ed3fec7c0156d644", size = 71100, upload-time = "2025-10-17T07:58:15.324Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/f5/ac71e692aad076d50a0f5f073204346d5f5577daffd21bb4b72c485f8959/h5netcdf-1.6.4-py3-none-any.whl", hash = "sha256:e0018e6a918f2bef2a4aa7b470a952b8a0b5d16a5893d59bea56524cc6207fcf", size = 50683, upload-time = "2025-08-05T06:26:55.644Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/6f/b9f2dbdded31b56ed5fcd03b9f0e468a0e9d582afbf961f3371bd6449a14/h5netcdf-1.7.2-py3-none-any.whl", hash = "sha256:7b8d4323630ebbce56983f59855bf45b71a2f3016435e736140b4a99d750db9c", size = 56135, upload-time = "2025-10-17T07:58:13.892Z" },
 ]
 
 [[package]]
