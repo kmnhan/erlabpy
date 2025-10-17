@@ -338,13 +338,8 @@ class AutoUpdater(QtCore.QObject):
             if not exe:
                 raise RuntimeError("Installer .exe not found in extracted zip.")
 
-            # Inno typical silent flags; log to temp
-            log_path = tmpdir / "install.log"
-            args = f'/verysilent /norestart /sp- /log="{log_path}"'
-            # Optionally close/restart running app if your Inno script supports it:
-            # args += " /closeapplications /restartapplications"
-
-            subprocess.Popen([str(exe), *args.split()], cwd=str(extract_dir))
+            # Start installer
+            subprocess.Popen([str(exe), "/log"], cwd=str(extract_dir))
         else:
             QtWidgets.QMessageBox.critical(
                 parent,

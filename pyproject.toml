@@ -270,7 +270,7 @@ DISPLAY = ":99.0"
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["*/_deprecated/*"]
+omit = ["*/_deprecated/*", "*/_updater_gui.py", "*/_updater_core.py"]
 branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
