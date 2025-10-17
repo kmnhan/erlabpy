@@ -156,6 +156,19 @@ class IOOptions(BaseModel):
         },
     )
 
+    compute_threshold: int = Field(
+        default=2048,
+        title="Dask Computation Threshold (MB)",
+        description=(
+            "Threshold in megabytes for automatically loading dask arrays into memory "
+            "when showing dask-backed data in ImageTool."
+            "\n\nData smaller than this threshold will be automatically "
+            "computed and loaded into memory to improve interactivity."
+        ),
+        ge=0,
+        le=1000000,
+    )
+
     @field_validator("default_loader", mode="before")
     @classmethod
     def loader_exists(cls, v: str | None):

@@ -1152,6 +1152,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.associated_coords_act.triggered.connect(self._choose_associated_coords)
         self.associated_coords_act.setToolTip("Plot associated coordinates")
 
+        self.compute_act = QtWidgets.QAction("Load Into Memory", self)
+        self.compute_act.triggered.connect(self._compute_chunked)
+        self.compute_act.setToolTip("Load the entire data into memory")
+
     @QtCore.Slot()
     def edit_cursor_colors(self) -> None:
         """Open a dialog to edit cursor colors."""
@@ -1352,6 +1356,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     if d in data.dims
                 ]
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
+
+        if (
+            self._data.chunks is not None
+            and (self._data.nbytes * 1e-6)
+            < erlab.interactive.options["io/compute_threshold"]
+        ):
+            self._data = self._data.compute()
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -1561,6 +1572,27 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.axes:
             if ax is not axes:
                 ax.update_manual_range()
+
+    @property
+    def data_chunked(self) -> bool:
+        """Check if the data is chunked (backed by dask).
+
+        Returns
+        -------
+        bool
+            `True` if the data is chunked, `False` otherwise.
+        """
+        return self._data.chunks is not None
+
+    @QtCore.Slot()
+    def _compute_chunked(self) -> None:
+        """Load chunked data into memory.
+
+        This method computes the entire data array and loads it into memory if the data
+        is chunked.
+        """
+        if self._data.chunks is not None:
+            self.set_data(self._data.compute())
 
     @QtCore.Slot(int, int)
     @link_slicer
