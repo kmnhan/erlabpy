@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "findiff>=0.12.0",
-    "h5netcdf>=1.2.0",
+    "h5netcdf>=1.7.1",
     "igor2>=0.5.12",
     "igorwriter>=0.6.1",
     "joblib>=1.3.2",
