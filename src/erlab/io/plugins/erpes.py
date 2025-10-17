@@ -210,7 +210,11 @@ class ERPESLoader(DA30Loader):
                 use_libarchive=use_libarchive,
             )
             if writable:
-                data.to_netcdf(cache_file, engine="h5netcdf", invalid_netcdf=True)
+                try:
+                    data.to_netcdf(cache_file, engine="h5netcdf", invalid_netcdf=True)
+                except Exception:  # pragma: no cover
+                    # Incomplete write; remove cache file
+                    cache_file.unlink(missing_ok=True)
             return data.chunk()
         return super().load_single(
             file_path, without_values=without_values, use_libarchive=use_libarchive
