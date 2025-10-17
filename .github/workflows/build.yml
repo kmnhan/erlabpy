@@ -1,13 +1,7 @@
 name: Build ImageTool Manager
 
 on:
-  pull_request:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Optional release tag to update (leave blank to use latest)"
-        required: false
-        default: ""
   release:
     types: [published]
 
@@ -26,7 +20,6 @@ jobs:
     name: Build (${{ matrix.SUFFIX }})
     if: |
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'pull_request' ||
       (github.event_name == 'release' && github.repository == 'kmnhan/erlabpy')
     strategy:
       fail-fast: false
