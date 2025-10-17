@@ -491,6 +491,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "saveAsAct": self.image_tool.save_act,
                     "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
+                    "computeAct": self.slicer_area.compute_act,
                     "sep1": {"separator": True},
                     "moveToManagerAct": {
                         "text": "Move to Manager",
@@ -658,6 +659,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
             visible = is_running()
 
+        self.action_dict["computeAct"].setVisible(self.slicer_area.data_chunked)
         self.action_dict["moveToManagerAct"].setVisible(visible)
 
     @QtCore.Slot()

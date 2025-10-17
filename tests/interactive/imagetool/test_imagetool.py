@@ -75,10 +75,24 @@ def test_itool_dtypes(
     )
     if use_dask:
         data = data.chunk("auto")
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
 
-    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+        old_threshold = erlab.interactive.options["io/compute_threshold"]
+        erlab.interactive.options["io/compute_threshold"] = 0  # force compute for dask
+
+    try:
+        win = itool(data, execute=False)
+        qtbot.addWidget(win)
+
+        move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+
+        if use_dask:
+            win.slicer_area.compute_act.trigger()
+            qtbot.wait_until(lambda: not win.slicer_area.data_chunked, timeout=2000)
+
+    finally:
+        if use_dask:
+            erlab.interactive.options["io/compute_threshold"] = old_threshold
+
     win.close()
 
 
