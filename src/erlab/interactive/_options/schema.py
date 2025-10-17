@@ -148,7 +148,7 @@ class IOOptions(BaseModel):
 
     default_loader: str = Field(
         default="None",
-        title="Default Loader",
+        title="Default loader",
         description="Loader to pre-select in the data explorer.",
         json_schema_extra={
             "ui_type": "list",
@@ -158,7 +158,7 @@ class IOOptions(BaseModel):
 
     compute_threshold: int = Field(
         default=2048,
-        title="Dask Computation Threshold (MB)",
+        title="Dask computation threshold (MB)",
         description=(
             "Threshold in megabytes for automatically loading dask arrays into memory "
             "when showing dask-backed data in ImageTool."

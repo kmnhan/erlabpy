@@ -54,7 +54,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install project with all optional deps and pyinstaller
-        run: uv sync --no-editable --all-extras --group pyqt6 --group pyinstaller --upgrade
+        run: uv sync --no-editable --all-extras --group pyqt6 --group pyinstaller
 
       - name: Get package version and make zip name
         id: info

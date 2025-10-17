@@ -11,7 +11,7 @@ import zipfile
 
 import packaging.version
 import requests
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager._updater_core import (
@@ -109,7 +109,7 @@ class AutoUpdater(QtCore.QObject):
             current_version = erlab.__version__
         self.current_version = current_version
 
-    def check_for_updates(self, parent: QtWidgets.QWidget | None = None):
+    def check_for_updates(self, parent: QtWidgets.QWidget):
         try:
             info = fetch_latest_release()
         except Exception:
@@ -124,14 +124,13 @@ class AutoUpdater(QtCore.QObject):
             )
             return
 
-        # if new <= cur:
-        if packaging.version.Version(info.tag) < packaging.version.Version(
-            self.current_version
-        ):
+        new = packaging.version.Version(info.tag)
+        cur = packaging.version.Version(self.current_version)
+        if new <= cur:
             QtWidgets.QMessageBox.information(
                 parent,
                 "Up to date",
-                f"You are on {self.current_version}. Latest is {info.tag}.",
+                f"You are running the latest version (v{self.current_version}).",
             )
             return
 
@@ -191,18 +190,6 @@ class AutoUpdater(QtCore.QObject):
             case _:
                 pass
 
-        if sys.platform == "darwin":
-            match QtWidgets.QMessageBox.critical(
-                parent,
-                "Update",
-                "Auto-update is not supported yet on macOS. Open the download link?",
-                QtWidgets.QMessageBox.StandardButton.Ok
-                | QtWidgets.QMessageBox.StandardButton.Cancel,
-            ):
-                case QtWidgets.QMessageBox.StandardButton.Ok:
-                    QtGui.QDesktopServices.openUrl(QtCore.QUrl(info.asset.download_url))
-            return
-
         # Choose temp zip path
         tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="imagetool-manager-update-"))
         zippath = tmpdir / info.asset.name
@@ -246,7 +233,7 @@ class AutoUpdater(QtCore.QObject):
                     parent, "Integrity error", "SHA256 mismatch. Aborting."
                 )
                 return
-            self._apply_with_helper(pathlib.Path(path), parent)
+            self._extract_and_update(pathlib.Path(path), parent)
 
         dl.progress.connect(_on_prog)
         dl.failed.connect(_on_fail)
@@ -258,17 +245,8 @@ class AutoUpdater(QtCore.QObject):
         progress.canceled.connect(on_cancel)
         dl.start()
 
-    def _apply_with_helper(
-        self, zip_path: pathlib.Path, parent: QtWidgets.QWidget | None
-    ):
-        # if not is_frozen():
-        #     # Running from source: open releases page instead
-        #     url = f"https://github.com/{OWNER}/{REPO}/releases"
-        #     QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
-        #     return
-
+    def _extract_and_update(self, zip_path: pathlib.Path, parent: QtWidgets.QWidget):
         install_root = get_install_root()
-        pid = os.getpid()
 
         tmpdir = zip_path.parent
 
@@ -276,18 +254,32 @@ class AutoUpdater(QtCore.QObject):
         extract_dir = tmpdir / "extracted"
         extract_dir.mkdir(parents=True, exist_ok=True)
 
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(extract_dir)
+        with erlab.interactive.utils.wait_dialog(parent, "Extracting…"):
+            if sys.platform == "darwin":
+                subprocess.run(
+                    ["/usr/bin/ditto", "-x", "-k", zip_path, str(extract_dir)],
+                    check=True,
+                )
+            else:
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(extract_dir)
 
-        print(f"Extracted update to {extract_dir}")
+        self._apply_update(extract_dir, install_root, parent)
 
+    def _apply_update(
+        self,
+        extract_dir: pathlib.Path,
+        install_root: pathlib.Path,
+        parent: QtWidgets.QWidget | None,
+    ):
+        pid = os.getpid()
+        tmpdir = extract_dir.parent
         if sys.platform == "darwin":
             new_app = None
             for p in extract_dir.glob("*.app"):
                 new_app = p
                 break
             if not new_app:
-                # Sometimes zips contain a top-level folder wrapping the .app
                 for p in extract_dir.iterdir():
                     if p.is_dir():
                         candidate = next(p.glob("*.app"), None)
@@ -299,13 +291,9 @@ class AutoUpdater(QtCore.QObject):
 
             # Set executable permissions on extracted files
             app_binary = new_app / "Contents" / "MacOS" / new_app.stem
-            if app_binary.exists():
-                st = app_binary.stat()
-                app_binary.chmod(st.st_mode | stat.S_IEXEC)
-                print(f"Set executable permissions on {app_binary}")
-            print(
-                f"Preparing macOS self-replace script for {new_app} -> {install_root}"
-            )
+            st = app_binary.stat()
+            app_binary.chmod(st.st_mode | stat.S_IEXEC)
+            print(f"Set executable permissions on {app_binary}")
 
             script = _macos_helper_script(
                 new_app=new_app.resolve(),

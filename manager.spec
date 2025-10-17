@@ -7,12 +7,10 @@ from PyInstaller.utils.hooks import collect_all
 
 import erlab
 
-build_number = 0  # Increment this when making changes to the spec file
-
 if sys.platform == "win32":
     pyinstaller_versionfile.create_versionfile(
         output_file="versionfile.txt",
-        version=f"{erlab.__version__}.{build_number}",
+        version=erlab.__version__,
         company_name="kmnhan",
         file_description="ImageTool Manager",
         internal_name="ImageTool Manager",
@@ -103,7 +101,7 @@ if sys.platform == "darwin":
         version=str(erlab.__version__),
         info_plist={
             "CFBundleIconName": "icon",  # macOS 26+ liquid glass icon
-            "CFBundleVersion": f"{erlab.__version__}.{build_number}",
+            "CFBundleVersion": str(erlab.__version__),
             "CFBundleDocumentTypes": [
                 {  # ImageTool workspace (.itws)
                     "CFBundleTypeName": "ImageTool Workspace",
