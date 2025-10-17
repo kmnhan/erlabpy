@@ -72,7 +72,10 @@ class ColorListWidget(QtWidgets.QWidget):
         self.layout_.setSpacing(2)
 
         self.layout_.addStretch()
-        self.add_button = erlab.interactive.utils.IconButton("mdi6.plus")
+        self.add_button = erlab.interactive.utils.IconButton(
+            QtGui.QIcon.fromTheme("list-add"), on_fallback="ph.plus"
+        )
+        self.add_button.setFlat(True)
         self.add_button.setFixedSize(20, 20)
         self.add_button.setToolTip("Add Color")
         self.add_button.clicked.connect(self.add_color)

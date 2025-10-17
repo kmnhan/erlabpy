@@ -1070,6 +1070,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.view_all_act.setShortcut("Ctrl+A")
         self.view_all_act.triggered.connect(self.view_all)
         self.view_all_act.setToolTip("Reset view limits for all axes")
+        self.view_all_act.setIcon(QtGui.QIcon.fromTheme("zoom-fit-best"))
 
         self.transpose_act = QtWidgets.QAction("&Transpose Main Image", self)
         self.transpose_act.setShortcut("T")
@@ -1080,12 +1081,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.add_cursor_act.setShortcut("Shift+A")
         self.add_cursor_act.triggered.connect(self.add_cursor)
         self.add_cursor_act.setToolTip("Add a new cursor")
+        self.add_cursor_act.setIcon(QtGui.QIcon.fromTheme("list-add"))
 
         self.rem_cursor_act = QtWidgets.QAction("&Remove Cursor", self)
         self.rem_cursor_act.setShortcut("Shift+R")
         self.rem_cursor_act.setDisabled(True)
         self.rem_cursor_act.triggered.connect(self.remove_current_cursor)
         self.rem_cursor_act.setToolTip("Remove the current cursor")
+        self.rem_cursor_act.setIcon(QtGui.QIcon.fromTheme("list-remove"))
 
         self.toggle_cursor_act = QtWidgets.QAction("Cursor Visibility", self)
         self.toggle_cursor_act.setShortcut("Shift+V")
@@ -1102,12 +1105,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.undo_act.setDisabled(True)
         self.undo_act.triggered.connect(self.undo)
         self.undo_act.setToolTip("Undo the last action")
+        self.undo_act.setIcon(QtGui.QIcon.fromTheme("edit-undo"))
 
         self.redo_act = QtWidgets.QAction("&Redo", self)
         self.redo_act.setShortcut(QtGui.QKeySequence.StandardKey.Redo)
         self.redo_act.setDisabled(True)
         self.redo_act.triggered.connect(self.redo)
         self.redo_act.setToolTip("Redo the last undone action")
+        self.redo_act.setIcon(QtGui.QIcon.fromTheme("edit-redo"))
 
         self.center_act = QtWidgets.QAction("&Center Current Cursor", self)
         self.center_act.setShortcut("Shift+C")

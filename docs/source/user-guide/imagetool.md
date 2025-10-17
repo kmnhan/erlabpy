@@ -425,6 +425,10 @@ For other platforms, build the application from source as described [below](#bui
 
 3. Move `ImageTool Manager.app` to your `Applications` folder, or any desired location.
 
+#### Updating the application
+
+Updates can be checked and installed from within the application itself. Select `Check for Updates...` in the menu bar under `ImageTool Manager` (macOS) or `Help` (Windows) and follow the prompts.
+
 (build-from-source)=
 
 #### Build from source

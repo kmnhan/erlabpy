@@ -2706,6 +2706,10 @@ class IconButton(QtWidgets.QPushButton):
     off : str or QIcon, optional
         The icon to display when the button is in the "off" state. If provided, the
         button will be checkable, and the icon will change when the button is toggled.
+    on_fallback : str or QIcon, optional
+        Fallback icon for the "on" state if ``on`` is a null QIcon.
+    off_fallback : str or QIcon, optional
+        Fallback icon for the "off" state if ``off`` is a null QIcon.
     icon_kw : dict, optional
         Additional keyword arguments to pass to `qtawesome.icon()`. This can be used to
         customize the icon's appearance, such as size or color.
@@ -2719,12 +2723,21 @@ class IconButton(QtWidgets.QPushButton):
         on: str | QtGui.QIcon | None = None,
         off: str | QtGui.QIcon | None = None,
         *,
+        on_fallback: str | QtGui.QIcon | None = None,
+        off_fallback: str | QtGui.QIcon | None = None,
         icon_kw: dict[str, typing.Any] | None = None,
         **kwargs,
     ) -> None:
         self.icon_key_on = None
         self.icon_key_off = None
         self._icon_kw = icon_kw or {}
+
+        if isinstance(on_fallback, QtGui.QIcon) and on_fallback.isNull():
+            raise ValueError("Fallback icon for `on` state cannot be a null QIcon.")
+        if isinstance(off_fallback, QtGui.QIcon) and off_fallback.isNull():
+            raise ValueError("Fallback icon for `off` state cannot be a null QIcon.")
+        self._on_fallback = on_fallback
+        self._off_fallback = off_fallback
 
         if on is not None:
             self.icon_key_on = on
@@ -2744,6 +2757,11 @@ class IconButton(QtWidgets.QPushButton):
         self.refresh_icons()
 
     def get_icon(self, icon: str | QtGui.QIcon) -> QtGui.QIcon:
+        if isinstance(icon, QtGui.QIcon) and icon.isNull():
+            if icon == self.icon_key_on and self._on_fallback is not None:
+                return self.get_icon(self._on_fallback)
+            if icon == self.icon_key_off and self._off_fallback is not None:
+                return self.get_icon(self._off_fallback)
         return qtawesome.icon(icon, **self._icon_kw) if isinstance(icon, str) else icon
 
     def refresh_icons(self) -> None:
@@ -2775,6 +2793,10 @@ class IconActionButton(IconButton):
     text_from_action : bool, optional
         If True, the button's text will be set from the QAction's text. Otherwise, the
         text will be left empty.
+    on_fallback : str or QIcon, optional
+        Fallback icon for the "on" state if ``on`` is a null QIcon.
+    off_fallback : str or QIcon, optional
+        Fallback icon for the "off" state if ``off`` is a null QIcon.
     **kwargs
         Additional keyword arguments passed to the IconButton constructor.
 
@@ -2786,9 +2808,14 @@ class IconActionButton(IconButton):
         on: str | QtGui.QIcon | None = None,
         off: str | QtGui.QIcon | None = None,
         text_from_action: bool = False,
+        *,
+        on_fallback: str | QtGui.QIcon | None = None,
+        off_fallback: str | QtGui.QIcon | None = None,
         **kwargs,
     ):
-        super().__init__(on=on, off=off, **kwargs)
+        super().__init__(
+            on=on, off=off, on_fallback=on_fallback, off_fallback=off_fallback, **kwargs
+        )
 
         self._action: QtGui.QAction | None = None
         self.text_from_action = text_from_action

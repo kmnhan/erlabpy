@@ -198,6 +198,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
         self.gc_action.triggered.connect(self.garbage_collect)
         self.gc_action.setToolTip("Run garbage collection to free up memory")
+        self.gc_action.setIcon(QtGui.QIcon.fromTheme("user-trash"))
 
         self.open_action = QtWidgets.QAction("&Open File...", self)
         self.open_action.triggered.connect(self.open)
@@ -253,6 +254,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Meta+`" if sys.platform == "darwin" else "Ctrl+`")
         )
         self.console_action.setToolTip("Toggle console window")
+        self.console_action.setIcon(QtGui.QIcon.fromTheme("utilities-terminal"))
 
         self.preview_action = QtWidgets.QAction("Preview on Hover", self)
         self.preview_action.setCheckable(True)
@@ -266,6 +268,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.explorer_action.triggered.connect(self.show_explorer)
         self.explorer_action.setShortcut(QtGui.QKeySequence("Ctrl+E"))
         self.explorer_action.setToolTip("Show the data explorer window")
+        self.explorer_action.setIcon(QtGui.QIcon.fromTheme("drive-harddisk"))
 
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
@@ -282,6 +285,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unwatch_action.setVisible(False)
 
         self.about_action = QtWidgets.QAction("About", self)
+        self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
         self.about_action.triggered.connect(self.about)
 
         self.check_update_action = QtWidgets.QAction("Check for Updates", self)
@@ -359,7 +363,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.unlink_action, "mdi6.link-variant-off"
         )
         self.preview_button = erlab.interactive.utils.IconActionButton(
-            self.preview_action, on="mdi6.eye", off="mdi6.eye-off"
+            self.preview_action, on="ph.eye", off="ph.eye-slash"
         )
 
         # Initialize GUI

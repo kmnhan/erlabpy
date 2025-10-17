@@ -81,7 +81,6 @@ jobs:
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        # Compress-Archive -Path dist\* -DestinationPath $zipName -Force
         run: |
           $exeName = "dist/Setup-${{ steps.info.outputs.FILENAME }}.exe"
           $zipName = "${{ steps.info.outputs.FILENAME }}.zip"
