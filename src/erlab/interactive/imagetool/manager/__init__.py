@@ -80,8 +80,8 @@ class _ManagerApp(QtWidgets.QApplication):
         super().__init__(argv)
         self._pending_files: list[pathlib.Path] = []
 
-    def event(self, e):
-        if e.type() == QtCore.QEvent.Type.FileOpen:
+    def event(self, e: QtCore.QEvent | None) -> bool:  # pragma: no cover
+        if e and e.type() == QtCore.QEvent.Type.FileOpen:
             # Happens both at first launch (before your window shows)
             # and when the app is already running
 
@@ -91,7 +91,7 @@ class _ManagerApp(QtWidgets.QApplication):
                 return True
         return super().event(e)
 
-    def _handle_open_file(self, path: pathlib.Path) -> None:
+    def _handle_open_file(self, path: pathlib.Path) -> None:  # pragma: no cover
         if _manager_instance:
             _manager_instance.open_multiple_files(
                 [path], try_workspace=(path.suffix == "h5")
@@ -152,7 +152,7 @@ def main(execute: bool = True) -> None:
         _manager_instance.show()
         _manager_instance.activateWindow()
 
-        if isinstance(qapp, _ManagerApp) and qapp._pending_files:
+        if isinstance(qapp, _ManagerApp) and qapp._pending_files:  # pragma: no cover
             _manager_instance.open_multiple_files(
                 qapp._pending_files,
                 try_workspace=all(
