@@ -357,14 +357,17 @@ class ImageTool(BaseImageTool):
         self.open_act = QtWidgets.QAction("&Open...", self)
         self.open_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.open_act.triggered.connect(self._open_file)
+        self.open_act.setIcon(QtGui.QIcon.fromTheme("document-open"))
 
         self.save_act = QtWidgets.QAction("&Save As...", self)
         self.save_act.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
         self.save_act.triggered.connect(self._export_file)
+        self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
 
         self.close_act = QtWidgets.QAction("&Close", self)
         self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
         self.close_act.triggered.connect(self.close)
+        self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
     @property
     def mnb(self) -> ItoolMenuBar:
