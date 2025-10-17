@@ -113,6 +113,42 @@ def fetch_latest_release() -> ReleaseInfo | None:
     return None
 
 
+def get_full_changelog_from(version: str) -> str:
+    """Get changelog entries from releases newer than the given version."""
+    token = os.environ.get("ERLAB_GITHUB_TOKEN")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"{REPO}-updater",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    r = requests.get(
+        f"https://api.github.com/repos/{OWNER}/{REPO}/releases",
+        headers=headers,
+        timeout=20,
+    )
+
+    r.raise_for_status()
+    releases = r.json()
+    # Filter out drafts, maybe pre-releases
+    filtered = [x for x in releases if not x.get("draft")]
+    filtered = [x for x in filtered if not x.get("prerelease")]
+    if not filtered:
+        raise RuntimeError("No suitable releases found")
+    # Sort by creation date descending
+    filtered.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    changelog_entries = []
+    for rel in filtered:
+        tag = rel.get("tag_name", "v0.0.0")
+        if tag == f"v{version}":
+            break
+        changelog_entries.append(rel.get("body", ""))
+
+    return "\n\n".join(changelog_entries)
+
+
 def verify_sha256(path: pathlib.Path, expected_hex: str) -> bool:
     h = hashlib.sha256()
     with open(path, "rb") as f:

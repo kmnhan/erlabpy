@@ -17,6 +17,7 @@ import erlab
 from erlab.interactive.imagetool.manager._updater_core import (
     REPO,
     fetch_latest_release,
+    get_full_changelog_from,
     verify_sha256,
 )
 
@@ -158,7 +159,7 @@ class AutoUpdater(QtCore.QObject):
 
         browser = QtWidgets.QTextBrowser(dlg)
         browser.setOpenExternalLinks(True)
-        body_text = info.body or "*No release notes provided.*"
+        body_text = get_full_changelog_from(self.current_version)
         browser.setMarkdown(body_text)
         browser.setMinimumSize(500, 300)
         vbox.addWidget(browser, 1)
@@ -368,11 +369,6 @@ fi
 
 echo "[updater] Removing quarantine attribute from new app (if any)."
 xattr -dr com.apple.quarantine "$NEW_APP" 2>/dev/null || true
-
-BACKUP="$APP_PATH.old.$(date +%s)"
-# Replace atomically via move; keep backup for safety
-mv "$APP_PATH" "$BACKUP"
-# mv "$NEW_APP" "$APP_PATH"
 
 copy_bundle() {{
   src="$1"; dst="$2"
