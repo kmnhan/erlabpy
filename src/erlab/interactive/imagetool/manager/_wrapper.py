@@ -118,7 +118,7 @@ class _ImageToolWrapper(QtCore.QObject):
             vb_rect = main_image.getViewBox().rect()
 
             pixmap: QtGui.QPixmap = (
-                self.slicer_area.main_image.slicer_data_items[0]
+                main_image.slicer_data_items[0]
                 .getPixmap()
                 .transformed(QtGui.QTransform().scale(1.0, -1.0))
             )
@@ -291,14 +291,14 @@ class _ImageToolWrapper(QtCore.QObject):
             self.imagetool.raise_()
 
     @QtCore.Slot()
-    def close(self) -> None:
-        """Close the tool window.
+    def hide(self) -> None:
+        """Hide the tool window.
 
-        This method only closes the tool window. The tool object is not destroyed and
-        can be reopened later.
+        This method only hides the tool window. The tool object is not destroyed and can
+        be reopened later.
         """
         if self.imagetool is not None:
-            self.imagetool.close()
+            self.imagetool.hide()
 
     @QtCore.Slot()
     def dispose(self, unwatch: bool = True) -> None:

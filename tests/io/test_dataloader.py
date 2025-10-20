@@ -10,7 +10,9 @@ import erlab
 from erlab.io.dataloader import UnsupportedFileError
 
 
-def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
+def test_loader(
+    qtbot, example_loader, example_data_dir: pathlib.Path, manager_context
+) -> None:
     wrong_file = example_data_dir / "data_010.nc"
 
     with erlab.io.loader_context("example", example_data_dir):
@@ -88,23 +90,19 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     del box, btn_box
 
     # Interactive summary with imagetool manager
-    erlab.interactive.imagetool.manager.main(execute=False)
-    manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.addWidget(manager)
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
 
-    box = erlab.io.loaders.current_loader._isummarize(df)
-    btn_box = box.children[0].children[0]
-    assert len(btn_box.children) == 4  # prev, next, load full, imagetool
-    assert box.children[0].children[1].value == "data_001_S001"
-    btn_box.children[3].click()  # imagetool
+        box = erlab.io.loaders.current_loader._isummarize(df)
+        btn_box = box.children[0].children[0]
+        assert len(btn_box.children) == 4  # prev, next, load full, imagetool
+        assert box.children[0].children[1].value == "data_001_S001"
+        btn_box.children[3].click()  # imagetool
 
-    qtbot.wait_until(lambda: manager.ntools == 1)
+        qtbot.wait_until(lambda: manager.ntools == 1)
 
-    # Archive nd remove
-    manager._imagetool_wrappers[0].archive()
-    manager.remove_imagetool(0)
-    qtbot.wait_until(lambda: manager.ntools == 0)
-    manager.close()
-    erlab.interactive.imagetool.manager._manager_instance = None
-
-    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+        # Archive nd remove
+        manager._imagetool_wrappers[0].archive()
+        manager.remove_imagetool(0)
+        qtbot.wait_until(lambda: manager.ntools == 0)
+        manager.close()

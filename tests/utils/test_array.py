@@ -167,7 +167,7 @@ def test_sort_coord_order(use_dask) -> None:
     # Assert initial order of coordinates
     assert list(darr.coords.keys()) == ["a", "x", "b", "y"]
     if use_dask:
-        darr = darr.chunk("auto")
+        darr = darr.chunk()
 
     # keys=None and dims_first=False should return the same object unchanged
     result = sort_coord_order(darr, keys=None, dims_first=False)

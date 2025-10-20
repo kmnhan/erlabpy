@@ -4,7 +4,6 @@ import pytest
 import scipy
 import xarray as xr
 import xarray_lmfit as xlm
-from joblib import parallel_config
 from qtpy import QtWidgets
 
 import erlab
@@ -18,15 +17,11 @@ def test_goldtool(
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.params_edge.widgets["# CPU"].setValue(1)
     win.params_edge.widgets["Fast"].setChecked(fast)
 
     expected = gold_fit_res if fast else gold_fit_res_fd
 
-    with (
-        parallel_config(backend="threading"),
-        qtbot.wait_signal(win.sigUpdated, timeout=20000),
-    ):
+    with qtbot.wait_signal(win.sigUpdated, timeout=20000):
         win.params_edge.widgets["go"].click()
 
     def check_generated_code(w: GoldTool) -> None:

@@ -1240,7 +1240,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         )
         spin.setDisabled(True)
         spin.setVisible(False)
-        del spin
+        spin.deleteLater()
         return w
 
     def _updateWidth(self) -> None:

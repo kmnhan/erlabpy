@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import datetime
 import functools
@@ -11,6 +12,12 @@ import time
 import typing
 from collections.abc import Callable, Sequence
 
+import dask.distributed
+from dask.distributed import Client
+
+# Headless mode for Qt
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 import dask
 import lmfit
 import numexpr
@@ -18,6 +25,7 @@ import numpy as np
 import pooch
 import pytest
 import xarray as xr
+from dask.distributed import LocalCluster
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
@@ -32,8 +40,23 @@ DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
 DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
-# Headless mode for Qt
-# os.environ["QT_QPA_PLATFORM"] = "offscreen"
+log = logging.getLogger(__name__)
+
+
+def _qt_msg_filter(msg_type, context, message):
+    """Filter out some Qt warnings related to offscreen mode."""
+    if (
+        "This plugin does not support raise()" in message
+        or "This plugin does not support propagateSizeHints()" in message
+        or "This plugin does not support grabbing the keyboard" in message
+        or "Populating font family aliases took" in message
+    ):
+        return  # swallow
+    # forward others to stderr
+    sys.__stderr__.write(message + "\n")
+
+
+QtCore.qInstallMessageHandler(_qt_msg_filter)
 
 # Limit numexpr to a single thread; this reduces probability of segfaults
 numexpr.set_num_threads(1)
@@ -42,7 +65,23 @@ numexpr.set_num_threads(1)
 dask.config.set(scheduler="synchronous")
 
 
-log = logging.getLogger(__name__)
+@pytest.fixture(scope="session")
+def cluster():
+    with LocalCluster(
+        processes=False, n_workers=1, threads_per_worker=1, dashboard_address=None
+    ) as dask_cluster:
+        yield dask_cluster
+
+
+@pytest.fixture
+def client(cluster):
+    try:
+        dask_client = dask.distributed.default_client()
+    except ValueError:
+        with Client(cluster, direct_to_workers=True, asynchronous=True) as dask_client:
+            yield dask_client
+    else:
+        yield dask_client
 
 
 @pytest.fixture(scope="session")
@@ -107,22 +146,14 @@ def gold() -> xr.DataArray:
 @pytest.fixture(scope="session")
 def gold_fit_res(gold) -> xr.Dataset:
     return erlab.analysis.gold.poly(
-        gold,
-        angle_range=(-13.5, 13.5),
-        eV_range=(-0.204, 0.276),
-        fast=True,
-        parallel_kw={"n_jobs": 1, "backend": "threading"},
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=True
     )
 
 
 @pytest.fixture(scope="session")
 def gold_fit_res_fd(gold) -> xr.Dataset:
     return erlab.analysis.gold.poly(
-        gold,
-        angle_range=(-13.5, 13.5),
-        eV_range=(-0.204, 0.276),
-        fast=False,
-        parallel_kw={"n_jobs": 1, "backend": "threading"},
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=False
     )
 
 
@@ -131,6 +162,31 @@ def gold_fine():
     return generate_gold_edge(
         (400, 500), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
+
+
+@pytest.fixture(scope="session")
+def manager_context() -> Callable[
+    ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+]:
+    @contextlib.contextmanager
+    def _ctx(
+        use_socket: bool = False,
+    ):
+        erlab.interactive.imagetool.manager._always_use_socket = use_socket
+
+        erlab.interactive.imagetool.manager.main(execute=False)
+
+        try:
+            yield erlab.interactive.imagetool.manager._manager_instance
+        finally:
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.processEvents()
+            erlab.interactive.imagetool.manager._manager_instance.remove_all_tools()
+            erlab.interactive.imagetool.manager._manager_instance.close()
+            erlab.interactive.imagetool.manager._manager_instance = None
+            erlab.interactive.imagetool.manager._always_use_socket = False
+
+    return _ctx
 
 
 class _DialogDetectionThread(QtCore.QThread):
@@ -166,7 +222,7 @@ class _DialogDetectionThread(QtCore.QThread):
 
         dialog = None
 
-        log.info("looking for dialog %d...", self.index)
+        log.debug("looking for dialog %d...", self.index)
         while (
             dialog is None or isinstance(dialog, _WaitDialog)
         ) and time.perf_counter() - start_time < self.timeout:
@@ -174,20 +230,20 @@ class _DialogDetectionThread(QtCore.QThread):
             time.sleep(0.01)
 
         if dialog is None or isinstance(dialog, _WaitDialog):
-            log.info("emitting timeout %d", self.index)
+            log.debug("emitting timeout %d", self.index)
             self.sigTimeout.emit(self.index)
             return
 
-        log.info("dialog %d detected: %s", self.index, dialog)
+        log.debug("dialog %d detected: %s", self.index, dialog)
 
         if self.pre_call is not None:
-            log.info("pre_call %d...", self.index)
+            log.debug("pre_call %d...", self.index)
             self.sigPreCall.emit(self.index, dialog)
             while not self._precall_called.is_set():
                 time.sleep(0.01)
-            log.info("pre_call %d done", self.index)
+            log.debug("pre_call %d done", self.index)
 
-        log.info("emitting trigger for %d", self.index + 1)
+        log.debug("emitting trigger for %d", self.index + 1)
         self.sigTrigger.emit(self.index + 1, dialog)
 
 
@@ -260,7 +316,7 @@ class _DialogHandler(QtCore.QObject):
 
     @QtCore.Slot(int)
     def _timeout(self, index: int) -> None:
-        log.info("timeout %d", index)
+        log.debug("timeout %d", index)
         self._timed_out = True
         if hasattr(self, "_handler") and self._handler.isRunning():
             self._handler.wait()
@@ -285,7 +341,7 @@ class _DialogHandler(QtCore.QObject):
             The callable that triggers the dialog creation or a prviously created dialog
             which will create the next dialog upon acceptance.
         """
-        log.info("index %d triggered", index)
+        log.debug("index %d triggered", index)
 
         if index <= self._max_index:
             if hasattr(self, "_handler") and self._handler.isRunning():
@@ -313,10 +369,10 @@ class _DialogHandler(QtCore.QObject):
                     dialog_or_trigger.defaultButton().click()
                 else:
                     dialog_or_trigger.accept()
-            log.info("finished %d", index - 1)
+            log.debug("finished %d", index - 1)
 
             if index > self._max_index:
-                log.info("all dialogs finished, emitting sigFinished")
+                log.debug("all dialogs finished, emitting sigFinished")
                 self.sigFinished.emit()
 
         else:
@@ -324,9 +380,9 @@ class _DialogHandler(QtCore.QObject):
 
     @QtCore.Slot(int, object)
     def handle_pre_call(self, index: int, dialog: QtWidgets.QDialog) -> None:
-        log.info("pre-call callable received")
+        log.debug("pre-call callable received")
         self._pre_call_list[index](dialog)
-        log.info("pre-call successfully called")
+        log.debug("pre-call successfully called")
         self._handler.precall_called()
 
 

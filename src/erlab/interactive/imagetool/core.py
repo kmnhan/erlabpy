@@ -1601,7 +1601,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         is chunked.
         """
         if self._data.chunks is not None:
-            self.set_data(self._data.compute())
+            try:
+                self.set_data(self._data.compute())
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self, "Error", "An error occurred while loading data into memory."
+                )
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -2596,7 +2601,6 @@ class ItoolPlotItem(pg.PlotItem):
                 item = self.other_data_items.pop()
                 self.vb1.removeItem(item)
                 item.forgetViewBox()
-                del item
 
     @property
     def _serializable_state(self) -> PlotItemState:
@@ -3217,7 +3221,6 @@ class ItoolPlotItem(pg.PlotItem):
             for item in list(self._guidelines_items):
                 self.removeItem(item)
                 self._guidelines_items.remove(item)
-                del item
             self._guideline_angle = 0.0
             self._guideline_offset = [0.0, 0.0]
             self.setTitle(None)

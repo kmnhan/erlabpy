@@ -275,7 +275,7 @@ def test_stop_watching_all_with_remove(fake_shell, patch_manager, monkeypatch):
 
 def test_watcher_real(qtbot, manager_context):
     with manager_context() as manager:
-        qtbot.addWidget(manager)
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
 
         # Start IPython session
@@ -360,7 +360,6 @@ def test_watcher_real(qtbot, manager_context):
         watcher.shutdown()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0)
-        manager.close()
 
     # Unload the extension and clean up
     ip_session.run_line_magic("unload_ext", "erlab.interactive")

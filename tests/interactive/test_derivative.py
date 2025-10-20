@@ -51,16 +51,14 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     check_generated_code(win)
 
     # Test save & restore
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/tool_save.h5"
-    win.to_file(filename)
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
 
-    win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
-    qtbot.addWidget(win_restored)
-    assert isinstance(win_restored, DerivativeTool)
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, DerivativeTool)
 
-    assert win.tool_status == win_restored.tool_status
-    assert str(win_restored.info_text) == str(win.info_text)
-    check_generated_code(win_restored)
-
-    tmp_dir.cleanup()
+        assert win.tool_status == win_restored.tool_status
+        assert str(win_restored.info_text) == str(win.info_text)
+        check_generated_code(win_restored)

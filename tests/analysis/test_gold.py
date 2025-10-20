@@ -8,8 +8,8 @@ from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 
 @pytest.mark.parametrize(
     "parallel_kw",
-    [None, {"n_jobs": 1, "return_as": "list"}],
-    ids=["parallel_generator", "serial_list"],
+    [None, {"return_as": "list"}],
+    ids=["generator", "list"],
 )
 @pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
 def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
