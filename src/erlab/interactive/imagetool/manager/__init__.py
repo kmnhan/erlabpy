@@ -43,6 +43,7 @@ __all__ = [
 
 
 import logging
+import os
 import pathlib
 import sys
 import typing
@@ -145,6 +146,13 @@ def main(execute: bool = True) -> None:
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
         )
+        if os.environ.get("PYTEST_VERSION"):  # pragma: no cover
+            # Automatically confirm on test fail to avoid blocking
+            timer = QtCore.QTimer(dialog)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda dlg=dialog: dlg.reject())
+            timer.start(5000)
+
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
     else:

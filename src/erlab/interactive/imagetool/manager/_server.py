@@ -197,7 +197,7 @@ def _query_zmq(payload: PacketVariant) -> Response:
     sock.setsockopt(zmq.SNDHWM, 0)
     sock.setsockopt(zmq.RCVHWM, 0)
     try:
-        logger.info("Connecting to server...")
+        logger.debug("Connecting to server...")
         sock.connect(f"tcp://{HOST_IP}:{PORT}")
     except Exception:
         logger.exception("Failed to connect to server")
@@ -248,7 +248,7 @@ class _WatcherServer(QtCore.QThread):
 
         try:
             sock.bind(f"tcp://*:{PORT_WATCH}")
-            logger.info("Watcher server is listening...")
+            logger.debug("Watcher server is listening...")
 
             while not self.stopped.is_set():
                 with QtCore.QMutexLocker(self._mutex):
@@ -310,7 +310,7 @@ class _ManagerServer(QtCore.QThread):
 
         try:
             sock.bind(f"tcp://*:{PORT}")
-            logger.info("Server is listening...")
+            logger.debug("Server is listening...")
 
             while not self.stopped.is_set():
                 try:
@@ -344,13 +344,13 @@ class _ManagerServer(QtCore.QThread):
                             payload.data_list, payload.replace_idxs
                         )
                     case "command":
-                        logger.info("Processing command: %s", payload.command)
+                        logger.debug("Processing command: %s", payload.command)
                         match payload.command:
                             case "ping":
                                 pass
                             case "get-data":
                                 self.sigDataRequested.emit(payload.command_arg)
-                                logger.info("Getting data...")
+                                logger.debug("Getting data...")
                                 with QtCore.QMutexLocker(self._mutex):
                                     while self._ret_val is _UNSET:
                                         self._cv.wait(self._mutex)
@@ -360,7 +360,7 @@ class _ManagerServer(QtCore.QThread):
                                 if data.chunks is not None:
                                     data = data.compute()
 
-                                logger.info("Data obtained, sending response...")
+                                logger.debug("Data obtained, sending response...")
                                 _send_multipart(sock, {"status": "ok", "data": data})
                                 logger.debug("Response sent")
 
@@ -376,7 +376,7 @@ class _ManagerServer(QtCore.QThread):
                             case "unwatch-uid":
                                 self.sigUnwatchUID.emit(str(payload.command_arg))
 
-                logger.info("Sending response...")
+                logger.debug("Sending response...")
                 _send_multipart(sock, {"status": "ok"})
                 logger.debug("Response sent")
 

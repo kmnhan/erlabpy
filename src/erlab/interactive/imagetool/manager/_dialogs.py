@@ -16,38 +16,60 @@ if typing.TYPE_CHECKING:
 
 
 class _RenameDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager, original_names: list[str]) -> None:
+    def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
         self.setWindowTitle("Rename selected tools")
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self._manager = weakref.ref(manager)
 
-        self._layout = QtWidgets.QGridLayout()
-        self.setLayout(self._layout)
+        self._layout = QtWidgets.QGridLayout(self)
 
         self._new_name_lines: list[QtWidgets.QLineEdit] = []
 
-        for i, name in enumerate(original_names):
-            line_new = QtWidgets.QLineEdit(name)
-            line_new.setPlaceholderText("New name")
-            self._layout.addWidget(QtWidgets.QLabel(name), i, 0)
-            self._layout.addWidget(QtWidgets.QLabel("→"), i, 1)
-            self._layout.addWidget(line_new, i, 2)
-            self._new_name_lines.append(line_new)
-
-        fm = self._new_name_lines[0].fontMetrics()
-        max_width = max(
-            fm.boundingRect(line.text()).width() for line in self._new_name_lines
-        )
-        for line in self._new_name_lines:
-            line.setMinimumWidth(max_width + 10)
-
-        button_box = QtWidgets.QDialogButtonBox(
+        # Persistent button box; we re-add it when (re)building rows
+        self._button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        self._layout.addWidget(button_box, len(original_names), 0, 1, 3)
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+
+    def set_names(self, original_names: list[str]) -> None:
+        # Clear current rows but keep the button box object
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item:  # pragma: no branch
+                widget = item.widget()
+                if widget is not None and widget is not self._button_box:
+                    widget.deleteLater()
+
+        self._new_name_lines.clear()
+
+        # Rebuild rows
+        for i, name in enumerate(original_names):
+            lbl_from = QtWidgets.QLabel(name)
+            lbl_arrow = QtWidgets.QLabel("→")
+            line_new = QtWidgets.QLineEdit(name)
+            line_new.setPlaceholderText("New name")
+
+            self._layout.addWidget(lbl_from, i, 0)
+            self._layout.addWidget(lbl_arrow, i, 1)
+            self._layout.addWidget(line_new, i, 2)
+            self._new_name_lines.append(line_new)
+
+        # Resize inputs to longest current text
+        if self._new_name_lines:
+            fm = self._new_name_lines[0].fontMetrics()
+            max_width = max(
+                fm.boundingRect(line.text()).width() for line in self._new_name_lines
+            )
+            for line in self._new_name_lines:
+                line.setMinimumWidth(max_width + 10)
+
+        # Re-add button box at the last row
+        self._layout.addWidget(self._button_box, len(original_names), 0, 1, 3)
 
     def new_names(self) -> list[str]:
         return [w.text() for w in self._new_name_lines]

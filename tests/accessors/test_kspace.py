@@ -148,7 +148,7 @@ def test_kconv(
         data = data.expand_dims({f"extra{i}": 2 for i in range(extra_dims)})
 
     if use_dask:
-        data = data.chunk("auto")
+        data = data.chunk()
 
     data.attrs["configuration"] = configuration.value
 

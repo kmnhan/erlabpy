@@ -81,16 +81,14 @@ class ItoolManagerParseError(Exception):
 class _SingleImagePreview(QtWidgets.QGraphicsView):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setScene(QtWidgets.QGraphicsScene(self))
+        _scene = QtWidgets.QGraphicsScene(self)
+        self.setScene(_scene)
 
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._pixmapitem = typing.cast(
-            "QtWidgets.QGraphicsPixmapItem",
-            typing.cast("QtWidgets.QGraphicsScene", self.scene()).addPixmap(
-                QtGui.QPixmap()
-            ),
+            "QtWidgets.QGraphicsPixmapItem", _scene.addPixmap(QtGui.QPixmap())
         )
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -494,15 +492,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if cb:
                 cb.setText(msg_box.informativeText())
 
+    @property
+    def _reindex_lock(self) -> threading.Lock:
+        """Lock for reindexing operation."""
+        if not hasattr(self, "__reindex_lock"):
+            lock = threading.Lock()
+            self.__reindex_lock = lock
+        return self.__reindex_lock
+
     @QtCore.Slot()
     def reindex(self) -> None:
         """Reset indices of ImageTool windows to be consecutive in displayed order."""
-        lock = getattr(self, "_reindex_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._reindex_lock = lock
-
-        with lock:
+        with self._reindex_lock:
             new_imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
             displayed_indices = list(self._displayed_indices)
             for row_idx, tool_idx in enumerate(displayed_indices):
@@ -737,7 +738,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             typing.cast("ImageTool", wrapper.imagetool).removeEventFilter(wrapper)
 
         wrapper.dispose()
-        del wrapper
+        wrapper.deleteLater()
 
     def remove_all_tools(self) -> None:
         """Remove all ImageTool windows."""
@@ -785,7 +786,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def hide_selected(self) -> None:
         """Hide selected windows."""
         for index in self.tree_view.selected_imagetool_indices:
-            self._imagetool_wrappers[index].close()
+            self._imagetool_wrappers[index].hide()
         for uid in self.tree_view.selected_childtool_uids:
             self.get_childtool(uid).hide()
 
@@ -793,7 +794,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def hide_all(self) -> None:
         """Hide all windows."""
         for wrapper in self._imagetool_wrappers.values():
-            wrapper.close()
+            wrapper.hide()
             for childtool in wrapper._childtools.values():
                 childtool.hide()
 
@@ -847,6 +848,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for uid in child_uids:
                 self._remove_childtool(uid)
 
+    @property
+    def _rename_dialog(self) -> _RenameDialog:
+        if not hasattr(self, "__rename_dialog"):
+            self.__rename_dialog = _RenameDialog(self)
+        return self.__rename_dialog
+
     @QtCore.Slot()
     def rename_selected(self) -> None:
         """Rename selected ImageTool windows."""
@@ -854,10 +861,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if len(selected) == 1:
             self.tree_view.edit(self.tree_view._model._row_index(selected[0]))
             return
-        dialog = _RenameDialog(
-            self, [self._imagetool_wrappers[i].name for i in selected]
-        )
-        dialog.exec()
+
+        dlg = self._rename_dialog
+        dlg.set_names([self._imagetool_wrappers[i].name for i in selected])
+        dlg.open()
 
     @QtCore.Slot()
     def duplicate_selected(self) -> None:
@@ -1833,6 +1840,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
+        logger.debug("Closing ImageTool Manager...")
         if self.ntools != 0:
             msg_box = QtWidgets.QMessageBox(self)
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -1853,7 +1861,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-        # Wait for file handlers to finish
+        logger.debug("Waiting for file handlers to finish...")
         if len(self._file_handlers) > 0:  # pragma: no cover
             with erlab.interactive.utils.wait_dialog(
                 self, "Waiting for file operations to finish..."
@@ -1861,27 +1869,30 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 for handler in list(self._file_handlers):
                     handler.wait()
 
-        # Remove all ImageTool windows
+        logger.debug("Removing all ImageTool windows...")
         self.remove_all_tools()
 
+        logger.debug("Closing additional windows...")
         for widget in dict(self._additional_windows).values():
             widget.close()
 
-        # Remove event filters (problematic in CI)
+        logger.debug("Removing event filters...")
         self.text_box.removeEventFilter(self._kb_filter)
         self.tree_view._delegate._cleanup_filter()
 
         if hasattr(self, "console"):
+            logger.debug("Shutting down console kernel...")
             self.console._console_widget.shutdown_kernel()
             self.console.close()
 
         if hasattr(self, "explorer"):
+            logger.debug("Closing data explorer...")
             self.explorer.close()
 
-        # Clean up temporary directory
+        logger.debug("Cleaning up temporary directory...")
         self._tmp_dir.cleanup()
 
-        # Properly close the server
+        logger.debug("Stopping servers...")
         self._stop_servers()
 
         super().closeEvent(event)
