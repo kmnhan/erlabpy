@@ -7,7 +7,7 @@ from PyInstaller.utils.hooks import collect_all
 
 import erlab
 
-if sys.platform == "win32":
+if sys.platform.startswith("win"):
     pyinstaller_versionfile.create_versionfile(
         output_file="versionfile.txt",
         version=erlab.__version__,
@@ -48,7 +48,7 @@ if sys.platform == "darwin":
 else:
     icon_path = str(manager_dir / "icon.png")
 
-a = Analysis(
+a = Analysis(  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
     [str(manager_dir / "__main__.py")],
     pathex=[],
     binaries=binaries,
@@ -62,9 +62,9 @@ a = Analysis(
     optimize=0,
     module_collection_mode={"erlab": "pyz+py"},
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure)  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
 
-exe = EXE(
+exe = EXE(  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
     pyz,
     a.scripts,
     [],
@@ -74,16 +74,16 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=sys.platform == "win32",
+    console=sys.platform.startswith("win"),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
     icon=[icon_path],
-    version="versionfile.txt" if sys.platform == "win32" else None,
+    version="versionfile.txt" if sys.platform.startswith("win") else None,
 )
-coll = COLLECT(
+coll = COLLECT(  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
     exe,
     a.binaries,
     a.datas,
@@ -93,7 +93,7 @@ coll = COLLECT(
     name="ImageTool Manager",
 )
 if sys.platform == "darwin":
-    app = BUNDLE(
+    app = BUNDLE(  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
         coll,
         name="ImageTool Manager.app",
         icon=icon_path,
@@ -250,6 +250,6 @@ if sys.platform == "darwin":
         },
     )
 
-if sys.platform == "win32":
+if sys.platform.startswith("win"):
     # Cleanup versionfile.txt after the build
     os.remove("versionfile.txt")
