@@ -2,8 +2,10 @@ name: Build ImageTool Manager
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: [Release]
+    types:
+      - completed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
