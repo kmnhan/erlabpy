@@ -420,15 +420,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def iterated(self, n: int) -> None:
         if n == 0:
             self.progress.setLabelText("")
-        elif n == 1:
-            self.step_times = []
+        elif n == 2:
             self.start_time = time.perf_counter()
-        elif n > 1:
-            now = time.perf_counter()
-            self.step_times.append(now - self.start_time)
-            self.start_time = now
-            timeleft = (self.progress.maximum() - (n - 1)) * np.mean(self.step_times)
-            self.progress.setLabelText(f"{round(timeleft)} seconds left...")
+        elif n > 2:
+            step_time_avg = (time.perf_counter() - self.start_time) / (n - 2)
+            n_left = self.progress.maximum() - n
+            time_left = n_left * step_time_avg
+            self.progress.setLabelText(f"{round(time_left)} seconds left...")
 
         self.progress.setValue(n)
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
