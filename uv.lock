@@ -795,6 +795,7 @@ name = "erlab"
 version = "3.15.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dask", extra = ["distributed"] },
     { name = "findiff" },
     { name = "h5netcdf" },
     { name = "igor2" },
@@ -908,6 +909,7 @@ pyside6 = [
 requires-dist = [
     { name = "astropy", marker = "extra == 'io'", specifier = ">=5.1.1" },
     { name = "csaps", marker = "extra == 'misc'", specifier = ">=1.1.0" },
+    { name = "dask", extras = ["distributed"], specifier = ">=2025.9.1" },
     { name = "dask", extras = ["distributed"], marker = "extra == 'misc'", specifier = ">=2024.4.1" },
     { name = "erlab", extras = ["viz", "io", "perf", "misc"], marker = "extra == 'complete'" },
     { name = "findiff", specifier = ">=0.12.0" },
