@@ -1249,6 +1249,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def close_associated_windows(self) -> None:
         for tool in dict(self._associated_tools).values():
             tool.close()
+            tool.deleteLater()
 
     @QtCore.Slot()
     @QtCore.Slot(tuple)
@@ -2693,6 +2694,33 @@ class ItoolPlotItem(pg.PlotItem):
         )
 
     @property
+    def watched_data_name(self) -> str | None:
+        """Get the name of the watched data variable.
+
+        Only applicable if in an ImageTool Manager and the data is linked to a watched
+        variable in a notebook. Returns None if otherwise.
+        """
+        if self.slicer_area._in_manager:
+            manager = self.slicer_area._manager_instance
+            if manager:  # pragma: no branch
+                wrapper = manager.wrapper_from_slicer_area(self.slicer_area)
+                if wrapper:  # pragma: no branch
+                    return wrapper._watched_varname
+        return None
+
+    @property
+    def data_name_for_child(self) -> str:
+        """Get a data name for child tools based on watched variable name.
+
+        If the data is linked to a watched variable in a notebook, use that name.
+        Otherwise, uses "data" as a placeholder name.
+        """
+        data_name = self.watched_data_name
+        if not data_name:
+            data_name = "data"
+        return f"{data_name}{self.selection_code}"
+
+    @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
 
@@ -2746,7 +2774,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.goldtool(
-                    data, data_name="data" + self.selection_code, execute=False
+                    data, data_name=self.data_name_for_child, execute=False
                 )
             )
 
@@ -2765,7 +2793,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.restool(
-                    data, data_name="data" + self.selection_code, execute=False
+                    data, data_name=self.data_name_for_child, execute=False
                 )
             )
 
@@ -2775,7 +2803,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.add_tool_window(
                 erlab.interactive.dtool(
                     self.current_data.T,
-                    data_name="data" + self.selection_code,
+                    data_name=self.data_name_for_child,
                     execute=False,
                 )
             )
@@ -3287,7 +3315,10 @@ class ItoolPlotItem(pg.PlotItem):
                 "Selection code is unavailable for main image of 2D data.",
             )
             return
-        erlab.interactive.utils.copy_to_clipboard(self.selection_code)
+        data_name = self.watched_data_name
+        if data_name is None:
+            data_name = ""
+        erlab.interactive.utils.copy_to_clipboard(f"{data_name}{self.selection_code}")
 
     @property
     def display_axis(self) -> tuple[int, ...]:
