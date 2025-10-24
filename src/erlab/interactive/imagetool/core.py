@@ -1224,6 +1224,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigWriteHistory.connect(self.write_state)
+        logger.debug("Connected signals")
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)
@@ -1386,6 +1387,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
                     erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
                 )
+                logger.debug("Initialized ArraySlicer")
         except Exception:
             if self._in_manager:
                 # Let the manager handle the exception
@@ -1407,6 +1409,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.current_cursor > self.n_cursors - 1:
             self.set_current_cursor(self.n_cursors - 1, update=False)
         self.sigDataChanged.emit()
+        logger.debug("Data refresh triggered")
 
         # self.refresh_current()
         self.refresh_colormap()
@@ -1812,6 +1815,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def refresh_colormap(self) -> None:
         self.set_colormap(update=True)
+        logger.debug("Colormap refreshed")
 
     @QtCore.Slot(bool)
     def lock_levels(self, lock: bool) -> None:

@@ -365,7 +365,7 @@ class _ImageToolWrapper(QtCore.QObject):
         if not tool._tool_display_name:
             tool._tool_display_name = str(self.name)
 
-        tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(u))
+        tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
 
         # Enable closing with keyboard shortcut
         tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]

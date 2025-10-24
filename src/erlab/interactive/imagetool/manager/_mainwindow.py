@@ -590,8 +590,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return index
 
     @QtCore.Slot()
-    @QtCore.Slot(str)
-    def _update_info(self, uid: str | None = None) -> None:
+    def _update_info(self, *, uid: str | None = None) -> None:
         """Update the information text box.
 
         If a string ``uid`` is provided, the function will update the info box only if
