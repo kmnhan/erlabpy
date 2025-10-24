@@ -1689,6 +1689,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.childtool_added(uid, index)
         return uid
 
+    def wrapper_from_slicer_area(
+        self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
+    ) -> _ImageToolWrapper | None:
+        """Get the ImageTool wrapper corresponding to the given slicer area."""
+        for wrapper in self._imagetool_wrappers.values():  # pragma: no branch
+            if wrapper.slicer_area is slicer_area:
+                return wrapper
+        return None
+
     def _add_childtool_from_slicerarea(
         self,
         tool: erlab.interactive.utils.ToolWindow,
