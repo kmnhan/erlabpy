@@ -388,15 +388,13 @@ class ArraySlicer(QtCore.QObject):
             self._obj.dims[0],
         )
 
-    # Benchmarks result in 10~20x slower speeds for bottleneck and numbagg compared to
-    # numpy on arm64 mac with Accelerate BLAS. Needs confirmation on intel systems.
     @functools.cached_property
     def nanmax(self) -> float:
-        return float(np.nanmax(self._obj.values))
+        return float(self._obj.max(skipna=True))
 
     @functools.cached_property
     def nanmin(self) -> float:
-        return float(np.nanmin(self._obj.values))
+        return float(self._obj.min(skipna=True))
 
     @functools.cached_property
     def absnanmax(self) -> float:
@@ -762,7 +760,7 @@ class ArraySlicer(QtCore.QObject):
     ) -> npt.NDArray[np.floating] | np.floating:
         if binned:
             return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
-        return self._obj.values[tuple(self.get_indices(cursor))]
+        return self._obj[tuple(self.get_indices(cursor))].values
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int) -> None:
