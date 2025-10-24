@@ -62,7 +62,6 @@ class _DataLoader(QtCore.QRunnable):
         self._func = func
         self._kwargs = kwargs
 
-    @QtCore.Slot()
     def run(self) -> None:
         try:
             data_list: list[xr.DataArray] = (
