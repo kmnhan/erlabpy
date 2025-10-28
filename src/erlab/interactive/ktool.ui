@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>759</width>
-    <height>699</height>
+    <height>708</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -24,10 +24,10 @@
        </sizepolicy>
       </property>
       <property name="tabPosition">
-       <enum>QTabWidget::West</enum>
+       <enum>QTabWidget::TabPosition::West</enum>
       </property>
       <property name="tabShape">
-       <enum>QTabWidget::Rounded</enum>
+       <enum>QTabWidget::TabShape::Rounded</enum>
       </property>
       <property name="currentIndex">
        <number>0</number>
@@ -53,7 +53,7 @@
         <item>
          <widget class="Line" name="line">
           <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
          </widget>
         </item>
@@ -564,7 +564,7 @@
         <item>
          <spacer name="verticalSpacer">
           <property name="orientation">
-           <enum>Qt::Vertical</enum>
+           <enum>Qt::Orientation::Vertical</enum>
           </property>
           <property name="sizeHint" stdset="0">
            <size>
@@ -606,7 +606,7 @@
      <x>0</x>
      <y>0</y>
      <width>759</width>
-     <height>24</height>
+     <height>33</height>
     </rect>
    </property>
   </widget>
@@ -618,6 +618,12 @@
    <header>pyqtgraph</header>
   </customwidget>
   <customwidget>
+   <class>ToolWindow</class>
+   <extends>QMainWindow</extends>
+   <header>erlab.interactive.utils</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
    <class>ColorMapComboBox</class>
    <extends>QComboBox</extends>
    <header>erlab.interactive.colors</header>
@@ -627,11 +633,6 @@
    <extends>QWidget</extends>
    <header>erlab.interactive.colors</header>
    <container>1</container>
-  </customwidget>
-  <customwidget>
-   <class>ToolWindow</class>
-   <extends>QMainWindow</extends>
-   <header>erlab.interactive.utils</header>
   </customwidget>
  </customwidgets>
  <resources/>
