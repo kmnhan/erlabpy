@@ -2044,7 +2044,10 @@ class ROIControls(ParameterGroup):
         vb.mouseDragEvent = mouseDragEventCustom  # set to modified mouseDragEvent
 
 
-class ToolWindow(QtWidgets.QMainWindow):
+M = typing.TypeVar("M", bound="pydantic.BaseModel")
+
+
+class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     """A window that can be saved and restored from a netcdf file.
 
     Mainly for interactive tools used in the ImageTool manager.
@@ -2088,18 +2091,18 @@ class ToolWindow(QtWidgets.QMainWindow):
     tool_name: str = "tool"
     __tool_display_name: str = ""
 
-    StateModel: type[pydantic.BaseModel]
+    StateModel: type[M]
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
 
     @property
-    def tool_status(self) -> pydantic.BaseModel:
+    def tool_status(self) -> M:
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement the tool_status property."
         )
 
     @tool_status.setter
-    def tool_status(self, status: pydantic.BaseModel) -> None:
+    def tool_status(self, status: M) -> None:
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement the tool_status property."
         )
