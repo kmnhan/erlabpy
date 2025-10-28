@@ -16,6 +16,7 @@ import itertools
 import logging
 import os
 import pathlib
+import threading
 import time
 import typing
 import uuid
@@ -637,6 +638,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # Stores ktool, dtool, goldtool, etc.
         self._associated_tools: dict[str, QtWidgets.QWidget] = {}
+        self._assoc_tools_lock = threading.RLock()
 
         # Applied filter function
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
@@ -789,6 +791,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "QtWidgets.QApplication", QtWidgets.QApplication.instance()
         )
         # self.qapp.aboutToQuit.connect(self.on_close)
+
+    @property
+    def _associated_tools_list(self) -> list[QtWidgets.QWidget]:
+        with self._assoc_tools_lock:
+            return list(self._associated_tools.values())
 
     @property
     def parent_title(self) -> str:
@@ -1247,9 +1254,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def close_associated_windows(self) -> None:
-        for tool in dict(self._associated_tools).values():
-            tool.close()
-            tool.deleteLater()
+        with self._assoc_tools_lock:
+            for tool in dict(self._associated_tools).values():
+                tool.close()
+                tool.deleteLater()
 
     @QtCore.Slot()
     @QtCore.Slot(tuple)
@@ -1897,8 +1905,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
 
         uid: str = str(uuid.uuid4())
-        self._associated_tools[uid] = widget  # Store reference to prevent gc
-        widget.destroyed.connect(lambda: self._associated_tools.pop(uid, None))
+        with self._assoc_tools_lock:
+            self._associated_tools[uid] = widget  # Store reference to prevent gc
+
+        def _on_destroyed() -> None:
+            with self._assoc_tools_lock:
+                self._associated_tools.pop(uid, None)
+
+        widget.destroyed.connect(_on_destroyed)
         widget.show()
 
     @QtCore.Slot()
@@ -2794,12 +2808,10 @@ class ItoolPlotItem(pg.PlotItem):
                     "Data must have an 'eV' dimension to be opened in restool.",
                 )
                 return
-
-            self.slicer_area.add_tool_window(
-                erlab.interactive.restool(
-                    data, data_name=self.data_name_for_child, execute=False
-                )
+            tool = erlab.interactive.restool(
+                data, data_name=self.data_name_for_child, execute=False
             )
+            self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
