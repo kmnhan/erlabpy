@@ -138,11 +138,7 @@ class _MovableCircleROI(pg.CircleROI):
         self.setPos(center[0] - radius, center[1] - radius)
 
 
-class KspaceToolGUI(
-    *uic.loadUiType(  # type: ignore[misc]
-        str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui"))
-    )
-):
+class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     def __init__(
         self,
         avec: npt.NDArray | None = None,
@@ -152,7 +148,9 @@ class KspaceToolGUI(
     ) -> None:
         # Initialize UI
         super().__init__()
-        self.setupUi(self)
+        uic.loadUi(
+            str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui")), self
+        )
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())

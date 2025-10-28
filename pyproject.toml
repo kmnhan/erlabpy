@@ -319,3 +319,11 @@ exclude = [
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 disable_error_code = ["import-untyped"]
 pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "erlab.interactive.derivative",
+    "erlab.interactive.fermiedge",
+    "erlab.interactive.kspace",
+]
+disable_error_code = ["attr-defined"]

@@ -637,11 +637,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         super().closeEvent(event)
 
 
-class ResolutionTool(
-    *uic.loadUiType(  # type: ignore[misc]
-        str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
-    )
-):
+class ResolutionTool(erlab.interactive.utils.ToolWindow):
     tool_name = "restool"
 
     class StateModel(pydantic.BaseModel):
@@ -778,7 +774,10 @@ class ResolutionTool(
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
         super().__init__()
-        self.setupUi(self)
+        uic.loadUi(
+            str(importlib.resources.files(erlab.interactive).joinpath("restool.ui")),
+            self,
+        )
         self.setWindowTitle("")
 
         if data.dims.index("eV") != 1:
@@ -786,11 +785,15 @@ class ResolutionTool(
         self.data = data
 
         self.y_dim: str = str(data.dims[0])
-        self._x_range = data["eV"].values[[0, -1]]
-        self._y_range = data[self.y_dim].values[[0, -1]]
 
-        self._x_decimals = erlab.utils.array.effective_decimals(data["eV"].values)
-        self._y_decimals = erlab.utils.array.effective_decimals(data[self.y_dim].values)
+        x_coords = data["eV"].values
+        y_coords = data[self.y_dim].values
+
+        self._x_range = x_coords[[0, -1]]
+        self._y_range = y_coords[[0, -1]]
+
+        self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
+        self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
 
         self.x0_spin.setRange(*self._x_range)
         self.x1_spin.setRange(*self._x_range)
