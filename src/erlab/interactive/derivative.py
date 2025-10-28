@@ -36,11 +36,7 @@ else:
     varname = _lazy.load("varname")
 
 
-class DerivativeTool(
-    *uic.loadUiType(  # type: ignore[misc]
-        str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui"))
-    )
-):
+class DerivativeTool(erlab.interactive.utils.ToolWindow):
     tool_name = "dtool"
 
     @property
@@ -183,7 +179,10 @@ class DerivativeTool(
 
         # Initialize UI
         super().__init__()
-        self.setupUi(self)
+        uic.loadUi(
+            str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui")), self
+        )
+
         self.setWindowTitle("")
 
         self._pause_update = False  # To temporarily pause updates during state changes
@@ -294,8 +293,8 @@ class DerivativeTool(
 
     @property
     def smooth_args(self) -> dict[Hashable, float]:
-        sx_value = np.round(self.sx_spin.value(), self.sx_spin.decimals())
-        sy_value = np.round(self.sy_spin.value(), self.sy_spin.decimals())
+        sx_value = round(self.sx_spin.value(), self.sx_spin.decimals())
+        sy_value = round(self.sy_spin.value(), self.sy_spin.decimals())
         match self.smooth_combo.currentIndex():
             case 0:
                 xcoords, ycoords = (
