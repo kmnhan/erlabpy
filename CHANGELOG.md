@@ -1,3 +1,27 @@
+## v3.15.1 (2025-10-29)
+
+### 🐞 Bug Fixes
+
+- **io:** make dataloader thread-safe (#185) ([c31755c](https://github.com/kmnhan/erlabpy/commit/c31755c3bc936a246bf5f27f92218c4ef53e8ea1))
+
+  Ensure that the dataloader methods function as expected in multithreaded contexts. Especially, `current_loader` and `current_data_dir` are now context variables, meaning that they are now safe under multiple threads setting different values.
+
+- **imagetool:** make associated tool access thread-safe ([6dcddf5](https://github.com/kmnhan/erlabpy/commit/6dcddf5d08a979f63a91b6efd050e4822edb65ef))
+
+- **manager:** include real variable name when copying code for watched variables ([f6b6062](https://github.com/kmnhan/erlabpy/commit/f6b60625b81a2bd55fbd2ea0a044a4ba1f42be48))
+
+- **imagetool:** fix wrong slot handling in PySide ([c456b1f](https://github.com/kmnhan/erlabpy/commit/c456b1f1a852a19e04c5524ffb06d67d23863d6f))
+
+- add dask distributed to dependencies ([0c13ad4](https://github.com/kmnhan/erlabpy/commit/0c13ad410eb4640c3410e60131942579ccae8c34))
+
+- **io.plugins.erpes:** fixes an issue where empty files would be cached when viewing info of DA maps in the data explorer ([b328611](https://github.com/kmnhan/erlabpy/commit/b328611f00f150e4f7d7b066dcb5345a0e067a6d))
+
+- **goldtool:** better remaining time estimation ([495202d](https://github.com/kmnhan/erlabpy/commit/495202d92b0e8704a58f5b912df009a9e3a2bb28))
+
+### ⚡️ Performance
+
+- **imagetool:** improve performance with dask arrays ([9641043](https://github.com/kmnhan/erlabpy/commit/9641043046a9f8b187542bd21ac43cdffc3d5092))
+
 ## v3.15.0 (2025-10-18)
 
 ### ✨ Features
