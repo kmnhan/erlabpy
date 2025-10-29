@@ -2,12 +2,14 @@ import errno
 import os
 import pathlib
 import re
+import threading
+import time
 
 import numpy as np
 import pytest
 
 import erlab
-from erlab.io.dataloader import UnsupportedFileError
+from erlab.io.dataloader import LoaderNotFoundError, UnsupportedFileError
 
 
 def test_loader(
@@ -33,6 +35,24 @@ def test_loader(
     # Test if the reprs are working
     assert repr(erlab.io.loaders).startswith("Name")
     assert erlab.io.loaders._repr_html_().startswith("<div><style>")
+
+    # Test magic methods
+    assert len(erlab.io.loaders) > 0
+    assert "example" in erlab.io.loaders
+    assert isinstance(erlab.io.loaders["example"], example_loader)
+    for k, v in erlab.io.loaders.items():
+        assert erlab.io.loaders[k] is v
+
+    with pytest.raises(
+        LoaderNotFoundError,
+        match="Loader for name or alias nonexistent_loader not found in the registry",
+    ):
+        erlab.io.set_loader("nonexistent_loader")
+    with pytest.raises(
+        AttributeError,
+        match="Loader for name or alias nonexistent_loader not found in the registry",
+    ):
+        _ = erlab.io.loaders.nonexistent_loader
 
     # Set loader
     erlab.io.set_loader("example")
@@ -106,3 +126,26 @@ def test_loader(
         manager.remove_imagetool(0)
         qtbot.wait_until(lambda: manager.ntools == 0)
         manager.close()
+
+
+def test_thread_safety():
+    potential_loaders = list(erlab.io.loaders.keys())
+
+    def worker(loader_name, thread_id):
+        erlab.io.set_loader(loader_name)
+        time.sleep(0.1)
+        current = erlab.io.loaders.current_loader.name
+        if current != loader_name:
+            raise RuntimeError(
+                f"Thread {thread_id}: Expected loader '{loader_name}', "
+                f"but got '{current}'"
+            )
+
+    threads = []
+    for i, loader_name in enumerate(potential_loaders):
+        t = threading.Thread(target=worker, args=(loader_name, i))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
