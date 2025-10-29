@@ -116,27 +116,30 @@ class BaseImageTool(QtWidgets.QMainWindow):
         name = self.slicer_area._data.name
         if name is None:
             name = ""
+
         return self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(
             {
                 "itool_state": json.dumps(self.slicer_area.state),
                 "itool_title": self.windowTitle(),
-                "itool_name": name,
+                "itool_name": str(name),
                 "itool_rect": self.geometry().getRect(),
+                "itool_visible": bool(self.isVisible()),
+                "erlab_version": erlab.__version__,
             }
         )
 
     def to_file(self, filename: str | os.PathLike) -> None:
         """Save the data, state, title, and geometry of the tool to a file.
 
-        The saved pickle file can be used to recreate the ImageTool with the class
-        method :meth:`from_pickle`.
+        The saved netcdf dataset can be used to recreate the ImageTool with the class
+        method :meth:`from_file`.
 
         Parameters
         ----------
         filename
-            The name of the pickle file.
+            The name of the target netcdf file.
 
         """
         self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
@@ -153,6 +156,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
 
         """
+        saved_version = ds.attrs.get("erlab_version", "0.0.0")
+        if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
+            erlab.utils.misc.emit_user_level_warning(
+                f"This ImageTool was saved with a newer version of erlab "
+                f"({saved_version}) than the current version "
+                f"({erlab.__version__}). Some features may not be supported.",
+            )
         name = ds.attrs["itool_name"]
         name = None if name == "" else name
         tool = cls(
@@ -226,7 +236,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.docks[index].setFloating(floating)
         self.docks[index].blockSignals(False)
 
-    # !TODO: this is ugly and temporary, fix it
+    # TODO: this is ugly and temporary, fix it
     def widget_box(self, widget: QtWidgets.QWidget, **kwargs) -> QtWidgets.QGroupBox:
         """Create a box that surrounds the given widget.
 
@@ -347,14 +357,17 @@ class ImageTool(BaseImageTool):
         self.open_act = QtWidgets.QAction("&Open...", self)
         self.open_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.open_act.triggered.connect(self._open_file)
+        self.open_act.setIcon(QtGui.QIcon.fromTheme("document-open"))
 
         self.save_act = QtWidgets.QAction("&Save As...", self)
         self.save_act.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
         self.save_act.triggered.connect(self._export_file)
+        self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
 
         self.close_act = QtWidgets.QAction("&Close", self)
         self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
         self.close_act.triggered.connect(self.close)
+        self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
     @property
     def mnb(self) -> ItoolMenuBar:
@@ -397,13 +410,12 @@ class ImageTool(BaseImageTool):
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
                     self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
-                    f"An error occurred while loading the file: {e}"
-                    "\n\nTry again with a different loader.",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+                    "An error occurred while loading the file.",
+                    "Try again with a different loader.",
                 )
                 self._open_file()
             else:
@@ -473,7 +485,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         return self.slicer_area.array_slicer
 
     def _generate_menu_kwargs(self) -> dict:
-        _guideline_actions = self.slicer_area.main_image._guideline_actions
+        guideline_actions = self.slicer_area.main_image._guideline_actions
         menu_kwargs: dict[str, typing.Any] = {
             "fileMenu": {
                 "title": "&File",
@@ -482,6 +494,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "saveAsAct": self.image_tool.save_act,
                     "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
+                    "computeAct": self.slicer_area.compute_act,
                     "sep1": {"separator": True},
                     "moveToManagerAct": {
                         "text": "Move to Manager",
@@ -507,6 +520,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "addCursorAct": self.slicer_area.add_cursor_act,
                     "remCursorAct": self.slicer_area.rem_cursor_act,
                     "snapCursorAct": self.array_slicer.snap_act,
+                    "toggleCursorAct": self.slicer_area.toggle_cursor_act,
+                    "cursorColorAct": self.slicer_area.cursor_color_act,
                     "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
                     "sep2": {"separator": True},
                     "colorInvertAct": self.slicer_area.reverse_act,
@@ -544,7 +559,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Rotate": {"triggered": self._rotate},
                     "Rotation Guidelines": {
                         "actions": {
-                            f"guide{i}": act for i, act in enumerate(_guideline_actions)
+                            f"guide{i}": act for i, act in enumerate(guideline_actions)
                         },
                         "sep_after": True,
                     },
@@ -647,6 +662,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
             visible = is_running()
 
+        self.action_dict["computeAct"].setVisible(self.slicer_area.data_chunked)
         self.action_dict["moveToManagerAct"].setVisible(visible)
 
     @QtCore.Slot()
@@ -658,7 +674,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
         dialog = dialog_cls(self.slicer_area)
-        dialog.exec()
+        dialog.setModal(True)
+        self.slicer_area.add_tool_window(
+            dialog, update_title=False, transfer_to_manager=False
+        )
 
     @QtCore.Slot()
     def _settings(self) -> None:

@@ -2,15 +2,19 @@ import errno
 import os
 import pathlib
 import re
+import threading
+import time
 
 import numpy as np
 import pytest
 
 import erlab
-from erlab.io.dataloader import UnsupportedFileError
+from erlab.io.dataloader import LoaderNotFoundError, UnsupportedFileError
 
 
-def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
+def test_loader(
+    qtbot, example_loader, example_data_dir: pathlib.Path, manager_context
+) -> None:
     wrong_file = example_data_dir / "data_010.nc"
 
     with erlab.io.loader_context("example", example_data_dir):
@@ -31,6 +35,24 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     # Test if the reprs are working
     assert repr(erlab.io.loaders).startswith("Name")
     assert erlab.io.loaders._repr_html_().startswith("<div><style>")
+
+    # Test magic methods
+    assert len(erlab.io.loaders) > 0
+    assert "example" in erlab.io.loaders
+    assert isinstance(erlab.io.loaders["example"], example_loader)
+    for k, v in erlab.io.loaders.items():
+        assert erlab.io.loaders[k] is v
+
+    with pytest.raises(
+        LoaderNotFoundError,
+        match="Loader for name or alias nonexistent_loader not found in the registry",
+    ):
+        erlab.io.set_loader("nonexistent_loader")
+    with pytest.raises(
+        AttributeError,
+        match="Loader for name or alias nonexistent_loader not found in the registry",
+    ):
+        _ = erlab.io.loaders.nonexistent_loader
 
     # Set loader
     erlab.io.set_loader("example")
@@ -88,23 +110,42 @@ def test_loader(qtbot, example_loader, example_data_dir: pathlib.Path) -> None:
     del box, btn_box
 
     # Interactive summary with imagetool manager
-    erlab.interactive.imagetool.manager.main(execute=False)
-    manager = erlab.interactive.imagetool.manager._manager_instance
-    qtbot.addWidget(manager)
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
 
-    box = erlab.io.loaders.current_loader._isummarize(df)
-    btn_box = box.children[0].children[0]
-    assert len(btn_box.children) == 4  # prev, next, load full, imagetool
-    assert box.children[0].children[1].value == "data_001_S001"
-    btn_box.children[3].click()  # imagetool
+        box = erlab.io.loaders.current_loader._isummarize(df)
+        btn_box = box.children[0].children[0]
+        assert len(btn_box.children) == 4  # prev, next, load full, imagetool
+        assert box.children[0].children[1].value == "data_001_S001"
+        btn_box.children[3].click()  # imagetool
 
-    qtbot.wait_until(lambda: manager.ntools == 1)
+        qtbot.wait_until(lambda: manager.ntools == 1)
 
-    # Archive nd remove
-    manager._tool_wrappers[0].archive()
-    manager.remove_tool(0)
-    qtbot.wait_until(lambda: manager.ntools == 0)
-    manager.close()
-    erlab.interactive.imagetool.manager._manager_instance = None
+        # Archive nd remove
+        manager._imagetool_wrappers[0].archive()
+        manager.remove_imagetool(0)
+        qtbot.wait_until(lambda: manager.ntools == 0)
+        manager.close()
 
-    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+
+def test_thread_safety():
+    potential_loaders = list(erlab.io.loaders.keys())
+
+    def worker(loader_name, thread_id):
+        erlab.io.set_loader(loader_name)
+        time.sleep(0.1)
+        current = erlab.io.loaders.current_loader.name
+        if current != loader_name:
+            raise RuntimeError(
+                f"Thread {thread_id}: Expected loader '{loader_name}', "
+                f"but got '{current}'"
+            )
+
+    threads = []
+    for i, loader_name in enumerate(potential_loaders):
+        t = threading.Thread(target=worker, args=(loader_name, i))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()

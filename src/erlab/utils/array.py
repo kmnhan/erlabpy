@@ -86,12 +86,28 @@ def broadcast_args(func: Callable) -> Callable:
                 attrs=broadcast_ref.attrs,
             )
 
+        elif isinstance(result, tuple):  # pragma: no branch
+            # Support multiple return values
+            new_result = []
+            for r in result:
+                if (
+                    isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape
+                ):  # pragma: no branch
+                    r = xr.DataArray(
+                        r,
+                        coords=broadcast_ref.coords,
+                        dims=broadcast_ref.dims,
+                        attrs=broadcast_ref.attrs,
+                    )
+                new_result.append(r)
+            result = tuple(new_result)
+
         return result
 
     return _wrapper
 
 
-def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
+def is_uniform_spaced(arr: npt.NDArray, rtol=1.0e-5, atol=1.0e-8) -> bool:
     """Check if the given array is uniformly spaced.
 
     Constant arrays are also considered as uniformly spaced.
@@ -100,8 +116,10 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
     ----------
     arr : array-like
         The input array.
-    **kwargs
-        Additional keyword arguments passed to `numpy.isclose`.
+    rtol : float, optional
+        Relative tolerance passed to :func:`numpy.isclose`.
+    atol : float, optional
+        Absolute tolerance passed to :func:`numpy.isclose`.
 
     Returns
     -------
@@ -122,7 +140,7 @@ def is_uniform_spaced(arr: npt.NDArray, **kwargs) -> bool:
 
     from erlab.utils._array_jit import _check_uniform
 
-    return _check_uniform(np.ascontiguousarray(arr))
+    return _check_uniform(np.ascontiguousarray(arr), rtol, atol)
 
 
 def is_monotonic(arr: npt.NDArray, strict: bool = False) -> np.bool_:
@@ -382,7 +400,7 @@ def sort_coord_order(
         keys = []
 
     ordered_coords: dict[Hashable, typing.Any] = {}
-    coord_dict: dict[Hashable, typing.Any] = dict(darr.coords)
+    coord_dict: dict[Hashable, typing.Any] = darr._coords.copy()
 
     if dims_first:
         for d in darr.dims:
@@ -393,15 +411,10 @@ def sort_coord_order(
     for coord_name in keys:
         if coord_name in coord_dict:
             ordered_coords[coord_name] = coord_dict.pop(coord_name)
-    ordered_coords = ordered_coords | coord_dict
 
-    return xr.DataArray(
-        darr.values,
-        coords=ordered_coords,
-        dims=darr.dims,
-        name=darr.name,
-        attrs=darr.attrs,
-    )
+    out = darr.copy()
+    out._coords = ordered_coords | coord_dict
+    return out
 
 
 def to_native_endian(arr: npt.NDArray) -> npt.NDArray:

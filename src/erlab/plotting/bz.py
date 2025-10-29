@@ -1,14 +1,15 @@
 """Utilities for plotting Brillouin zones."""
 
-__all__ = ["get_bz_edge", "plot_hex_bz"]
+__all__ = ["plot_bz", "plot_hex_bz"]
 
-import itertools
 import typing
 
+import matplotlib.patches
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
+import erlab
 from erlab.plotting.colors import axes_textcolor
 
 abbrv_kws: dict[str, tuple[str, typing.Any]] = {
@@ -22,121 +23,122 @@ def get_bz_edge(
     basis: npt.NDArray[np.floating],
     reciprocal: bool = True,
     extend: tuple[int, ...] | None = None,
-) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:  # pragma: no cover
     """Calculate the edge of the first Brillouin zone (BZ) from lattice vectors.
+
+    .. deprecated:: 3.14.1
+
+        Use :func:`erlab.lattice.get_bz_edge` instead.
+
+    """
+    import warnings
+
+    warnings.warn(
+        "erlab.plotting.bz.get_bz_edge is deprecated, "
+        "use erlab.lattice.get_bz_edge instead",
+        FutureWarning,
+        stacklevel=1,
+    )
+    return erlab.lattice.get_bz_edge(basis, reciprocal=reciprocal, extend=extend)
+
+
+def plot_bz(
+    basis: npt.NDArray[np.floating],
+    *,
+    reciprocal: bool = False,
+    rotate: float = 0.0,
+    offset: tuple[float, float] = (0.0, 0.0),
+    ax: matplotlib.axes.Axes | None = None,
+    **kwargs,
+) -> matplotlib.patches.Polygon:
+    """Plot a Brillouin zone, given the basis vectors.
 
     Parameters
     ----------
     basis
-        ``(N, N)`` numpy array where ``N = 2``or ``3`` with each row containing the
-        lattice vectors.
+        A 2D or 3D numpy array with shape ``(N, N)`` where ``N = 2`` or ``3``,
+        containing the basis vectors of the lattice. If N is 3, only the upper left 2x2
+        submatrix is used.
     reciprocal
-        If `False`, the `basis` are given in real space lattice vectors.
-    extend
-        Tuple of positive integers specifying the number of times to extend the BZ in
-        each direction. If `None`, only the first BZ is returned (equivalent to ``(1,) *
-        N``).
-
-    Returns
-    -------
-    lines : array-like
-        ``(M, 2, N)`` array that specifies the endpoints of the ``M`` lines that make up
-        the BZ edge, where ``N = len(basis)``.
-    vertices : array-like
-        Vertices of the BZ.
+        If `True`, the basis vectors are interpreted as reciprocal lattice vectors.
+    rotate
+        Rotation angle in degrees to apply to the BZ.
+    offset
+        Offset for the Brillouin zone center in the form of a tuple ``(x, y)``.
+    ax
+        The axes to plot the BZ on. If `None`, the current axes are used.
+    **kwargs
+        Additional keyword arguments passed to :class:`matplotlib.patches.Polygon`.
 
     """
-    if basis.shape == (2, 2):
-        ndim = 2
-    elif basis.shape == (3, 3):
-        ndim = 3
-    else:
-        raise ValueError("Shape of `basis` must be (N, N) where N = 2 or 3.")
+    if ax is None:
+        ax = plt.gca()
 
-    if not reciprocal:
-        basis = 2 * np.pi * np.linalg.inv(basis).T
+    # Populate default keyword arguments
+    kwargs["edgecolor"] = kwargs.pop("edgecolor", kwargs.pop("ec", axes_textcolor(ax)))
+    kwargs.setdefault("zorder", 5)
+    kwargs.setdefault("closed", True)
+    kwargs.setdefault("fill", False)
+    for k, v in abbrv_kws.items():
+        kwargs[k] = kwargs.pop(k, kwargs.pop(*v))
 
-    if extend is None:
-        extend = (1,) * ndim
-
-    points = (
-        np.tensordot(basis, np.mgrid[[slice(-1, 2) for _ in range(ndim)]], axes=(0, 0))
-        .reshape((ndim, 3**ndim))
-        .T
+    patch = matplotlib.patches.Polygon(
+        erlab.lattice.get_2d_vertices(
+            basis, reciprocal=reciprocal, rotate=rotate, offset=offset
+        ),
+        **kwargs,
     )
-
-    # Get index of origin
-    zero_ind = np.where((points == 0).all(axis=1))[0][0]
-
-    import scipy.spatial
-
-    vor = scipy.spatial.Voronoi(points)
-
-    lines = []
-    vertices = []
-
-    for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices, strict=True):
-        simplex = np.asarray(simplex)
-        if zero_ind in pointidx:
-            # If the origin is included in the ridge, add the vertices
-            lines.append(vor.vertices[np.r_[simplex, simplex[0]]])
-            vertices.append(vor.vertices[simplex])
-
-    # Remove duplicates
-    lines_new: list[npt.NDArray] = []
-    vertices_new: list[npt.NDArray] = []
-
-    for line in lines:
-        for i in range(line.shape[0] - 1):
-            if not any(
-                np.allclose(line[i : i + 2], line_new)
-                or np.allclose(line[i : i + 2], np.flipud(line_new))
-                for line_new in lines_new
-            ):
-                lines_new.append(line[i : i + 2])
-
-    for v in np.concatenate(vertices):
-        if not any(np.allclose(v, vn) for vn in vertices_new):
-            vertices_new.append(v)
-
-    lines_arr = np.asarray(lines_new)
-    vertices_arr = np.asarray(vertices_new)
-
-    # Extend the BZ
-    additional_lines = []
-    additional_verts = []
-    for vals in itertools.product(*[range(-n + 1, n) for n in extend]):
-        if vals != (0,) * ndim:
-            displacement = np.dot(vals, basis)
-            additional_lines.append(lines_arr + displacement)
-            additional_verts.append(vertices_arr + displacement)
-    lines_arr = np.concatenate((lines_arr, *additional_lines))
-    vertices_arr = np.concatenate((vertices_arr, *additional_verts))
-
-    return lines_arr, vertices_arr
+    ax.add_patch(patch)
+    return patch
 
 
 def plot_hex_bz(
-    a=3.54, rotate=0.0, offset=(0.0, 0.0), reciprocal=True, ax=None, **kwargs
+    a: float = 3.54,
+    *,
+    reciprocal: bool = False,
+    rotate: float = 0.0,
+    offset: tuple[float, float] = (0.0, 0.0),
+    ax: matplotlib.axes.Axes | None = None,
+    **kwargs,
 ):
-    """Plot a 2D hexagonal BZ overlay on the specified axes."""
-    from matplotlib.patches import RegularPolygon
+    """Plot a 2D hexagonal BZ overlay on the specified axes.
 
+    Parameters
+    ----------
+    a
+        Lattice constant of the hexagonal lattice.
+    reciprocal
+        If `True`, ``a`` is interpreted as the periodicity of the reciprocal lattice.
+    rotate
+        Rotation angle in degrees to apply to the BZ.
+    offset
+        Offset for the Brillouin zone center in the form of a tuple ``(x, y)``.
+    ax
+        The axes to plot the BZ on. If `None`, the current axes are used.
+    **kwargs
+        Additional keyword arguments passed to
+        :class:`matplotlib.patches.RegularPolygon`.
+
+    """
     kwargs.setdefault("zorder", 5)
     for k, v in abbrv_kws.items():
         kwargs[k] = kwargs.pop(k, kwargs.pop(*v))
+
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
         return [
             plot_hex_bz(a=a, rotate=rotate, offset=offset, ax=x, **kwargs) for x in ax
         ]
+
     kwargs["edgecolor"] = kwargs.pop("edgecolor", kwargs.pop("ec", axes_textcolor(ax)))
 
-    r = 4 * np.pi / (a * 3) if reciprocal else 2 * a
+    r = a / np.sqrt(3) if reciprocal else 4 * np.pi / (a * 3)
 
     clip = kwargs.pop("clip_path", None)
-    poly = RegularPolygon(offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs)
+    poly = matplotlib.patches.RegularPolygon(
+        offset, 6, radius=r, orientation=np.deg2rad(rotate), **kwargs
+    )
     ax.add_patch(poly)
     if clip is not None:
         poly.set_clip_path(clip)

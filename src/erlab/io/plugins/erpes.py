@@ -2,6 +2,7 @@
 
 __all__ = ["ERPESLoader"]
 
+import contextlib
 import datetime
 import os
 import pathlib
@@ -29,26 +30,31 @@ def _determine_kind(data: xr.DataArray) -> str:
     return data_type
 
 
+def _make_iso(x: str) -> datetime.datetime | str:
+    """Convert a string to ISO format."""
+    return datetime.datetime.fromisoformat(x) if str(x) != "nan" else "NaT"
+
+
+def _make_iso_date_time(d, t) -> datetime.datetime | str:
+    """Convert a string to ISO format."""
+    if str(d) == "nan" or str(t) == "nan":
+        return "NaT"
+    return _make_iso(f"{d} {t}")
+
+
 def _get_start_time(data: xr.DataArray) -> xr.DataArray:
     """Get the start time from raw data."""
     return xr.apply_ufunc(
-        lambda x, y: datetime.datetime.fromisoformat(f"{x} {y}"),
-        data["Date"],
-        data["Time"],
-        vectorize=True,
+        _make_iso_date_time, data["Date"], data["Time"], vectorize=True
     )
 
 
 def _get_seq_start(data: xr.DataArray) -> xr.DataArray:
-    return xr.apply_ufunc(
-        lambda x: datetime.datetime.fromisoformat(x), data["seq_start"], vectorize=True
-    )
+    return xr.apply_ufunc(_make_iso, data["seq_start"], vectorize=True)
 
 
 def _get_attrs_time(data: xr.DataArray) -> xr.DataArray:
-    return xr.apply_ufunc(
-        lambda x: datetime.datetime.fromisoformat(x), data["attrs_time"], vectorize=True
-    )
+    return xr.apply_ufunc(_make_iso, data["attrs_time"], vectorize=True)
 
 
 def _emit_ambiguous_file_warning(num, file_to_use):
@@ -56,6 +62,13 @@ def _emit_ambiguous_file_warning(num, file_to_use):
         f"Multiple files found for scan {num}, using {file_to_use}. "
         "Try providing the `prefix` argument to specify."
     )
+
+
+def get_cache_file(file_path: str | os.PathLike) -> pathlib.Path:
+    file_path = pathlib.Path(file_path)
+    data_dir = file_path.parent
+    cache_dir = data_dir / ".da30_cache"
+    return cache_dir / f"{file_path.stem.removeprefix('_tmp_')}.h5"
 
 
 class ERPESLoader(DA30Loader):
@@ -81,6 +94,11 @@ class ERPESLoader(DA30Loader):
         "TA",
         "TC",
         "TD",
+        "TD1",
+        "TD2",
+        "TD3",
+        "TD4",
+        "TD5",
         "T1",
         "T2",
         "T3",
@@ -143,8 +161,6 @@ class ERPESLoader(DA30Loader):
 
     always_single = False
 
-    parallel_kwargs: typing.ClassVar[dict] = {"n_jobs": -1, "prefer": "threads"}
-
     _PATTERN_MULTIFILE = re.compile(r".*\d{4}_S\d{5}.(pxt|zip)")
     _PATTERN_PREFIX = re.compile(r"(.*?)\d{4}(?:_S\d{5})?.(pxt|zip)")
     _PATTERN_FILENO = re.compile(r".*?(\d{4})(?:_S\d{5})?")
@@ -156,6 +172,57 @@ class ERPESLoader(DA30Loader):
             "1KARPES Data (*.pxt *.zip)": (self.load, {}),
             "1KARPES Single File (*.pxt *.zip)": (self.load, {"single": True}),
         }
+
+    def load_single(
+        self,
+        file_path: str | os.PathLike,
+        without_values: bool = False,
+        use_libarchive: bool = True,
+    ) -> xr.DataArray | xr.DataTree:
+        """DA30 .zip files take a long time to load. Caches them as .da30 files."""
+        if pathlib.Path(file_path).suffix == ".zip":
+            cache_file = get_cache_file(file_path)
+
+            if cache_file.exists():
+                dt = xr.open_datatree(cache_file, chunks="auto")
+                if dt.groups == ("/",):
+                    # Single DataArray
+                    da = next(iter(dt.data_vars.values()))
+                    if without_values:
+                        return xr.DataArray(
+                            np.zeros(da.shape, dtype=np.uint8),
+                            dims=da.dims,
+                            attrs=da.attrs,
+                            name=da.name,
+                        )
+                    return da
+                return dt
+
+            writable: bool = os.access(cache_file.parent.parent, os.W_OK)
+
+            if writable and not cache_file.parent.is_dir():
+                with contextlib.suppress(FileExistsError):
+                    cache_file.parent.mkdir(parents=True)
+
+            if not without_values:
+                data = super().load_single(
+                    file_path,
+                    without_values=without_values,
+                    use_libarchive=use_libarchive,
+                )
+                if writable:
+                    try:
+                        data.to_netcdf(
+                            cache_file, engine="h5netcdf", invalid_netcdf=True
+                        )
+                    except Exception:  # pragma: no cover
+                        # Incomplete write; remove cache file
+                        cache_file.unlink(missing_ok=True)
+                return data.chunk()
+
+        return super().load_single(
+            file_path, without_values=without_values, use_libarchive=use_libarchive
+        )
 
     def identify(
         self, num: int, data_dir: str | os.PathLike, prefix: str | None = None

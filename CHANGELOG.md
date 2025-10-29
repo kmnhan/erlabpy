@@ -1,3 +1,173 @@
+## v3.15.0 (2025-10-18)
+
+### ✨ Features
+
+- **imagetool:** auto-compute small dask arrays ([4b10312](https://github.com/kmnhan/erlabpy/commit/4b103128dcd0ff1944bd3bdd6f3a7e347fb01c35))
+
+  When loading data into the imagetool, if the data is a dask array and its size is below a certain threshold (configurable via `erlab.interactive.options["io/compute_threshold"]` or the settings GUI), the data will be automatically computed into memory. Default threshold is 2048 MB.
+
+  Additionally, adds a "Load Into Memory" action to the `File` menu in ImageTool only visible for chunked arrays which calls `.compute()` on the data when triggered.
+
+- **io.plugins.erpes:** cache .zip files as HDF5 files for faster loading ([412fdc4](https://github.com/kmnhan/erlabpy/commit/412fdc44e31911521733cb995499fb0e896b28a4))
+
+  When loading a `.zip` file, cache it as an `.h5` file in a hidden cache directory. This speeds up subsequent loads of the same file. Also, DA maps are now always loaded as chunked (dask) arrays, improving scalability for large data.
+
+- **manager:** show child tools ([ff1f9b1](https://github.com/kmnhan/erlabpy/commit/ff1f9b18721865b553c8c13df6500586e7ef00a6))
+
+  When opening analysis tools (e.g., `dtool`, `ktool`, ...) from an imagetool in the manager, the child tools are now displayed in the manager as well. When saving and loading the workspace, the state of these child tools is also preserved.
+
+  This change also enables the user to cherry-pick which tools to save when saving the workspace, or to load only a subset of tools from a saved workspace.
+
+  Note that this change accompanies many changes across the whole interactive module under the hood. Although workspaces saved with older versions should still be loadable, workspaces saved with this version will not be loadable in older versions, with ambiguous error messages.
+
+- **interactive:** add `show_traceback` utility function that displays error messages with highlighted tracebacks ([6798f83](https://github.com/kmnhan/erlabpy/commit/6798f83e54c3afcb6027630a40d07de3342f1912))
+
+- **manager:** enable reindexing tools ([62b41a4](https://github.com/kmnhan/erlabpy/commit/62b41a47b5d2a60f156e234bbf633c036b8797ef))
+
+  Adds a new action to reset all indices of ImageTools in the manager in the order they appear.
+
+- **manager:** enhance integration with Jupyter notebooks ([69ef2af](https://github.com/kmnhan/erlabpy/commit/69ef2affb0bec022cb01527e99e8edd2773f1264))
+
+  Adds a new magic command `%watch` to monitor and sync data between ImageTool manager and Jupyter notebooks. This feature allows users to easily update data in the notebook when changes are made in the ImageTool window and vice versa, facilitating a smoother workflow for data analysis and visualization.
+
+  Also adds a new function, `erlab.interactive.imagetool.manager.fetch` which allows users to fetch a copy of the data in a specific ImageTool window in the manager by its index.
+
+- **utils.hashing:** add utilities for hashing xarray DataArrays (#172) ([4fc1f5f](https://github.com/kmnhan/erlabpy/commit/4fc1f5fdfd9d5823e2d1ab707557e400c1588113))
+
+  Adds a new module that provides `fingerprint_dataarray`, a function to generate a unique fingerprint for xarray DataArrays. This is useful for quickly comparing data and checking for changes.
+
+### 🐞 Bug Fixes
+
+- **io.plugins.maestro:** fix concurrent access to cache dir ([21f5df8](https://github.com/kmnhan/erlabpy/commit/21f5df8f4c0704c92716bd6548717f4469a57f92))
+
+- **manager:** update icons in menubar on system appearance change ([eb357a3](https://github.com/kmnhan/erlabpy/commit/eb357a3cfd37a50452d7e74f897391f9ffc0268a))
+
+- **io:** make igor datatree backend compatible with xarray 2025.9.1 ([8d8eab5](https://github.com/kmnhan/erlabpy/commit/8d8eab5765b5b8fe3aace706c949cb3e916a7a23))
+
+- **manager:** improve compatibility with numpy <2.3 ([9019613](https://github.com/kmnhan/erlabpy/commit/901961371a58202ece5b8bdd3ed251f1acc17565))
+
+  Note that from this version, the ImageTool manager is no longer compatible with previous versions of `erlab`.
+
+- **io:** suppress xarray warnings due to new defaults introduced in pydata/xarray#10062 (#175) ([2f1cd64](https://github.com/kmnhan/erlabpy/commit/2f1cd6476b433fe958a1668395a28ff4886cd9e3))
+
+### ⚡️ Performance
+
+- **manager:** micro-optimizations to file loading mechanism ([be1c624](https://github.com/kmnhan/erlabpy/commit/be1c62435fcb9ba10ad27955b8423bfac5a25b2a))
+
+- **explorer:** micro-optimization for data explorer rendering, might be effective on windows ([0f6ef67](https://github.com/kmnhan/erlabpy/commit/0f6ef67c3251701cb02cb5e144be6903cdde3a78))
+
+### ♻️ Code Refactor
+
+- **imagetool:** add icons for some menu actions and buttons ([b232640](https://github.com/kmnhan/erlabpy/commit/b232640121cdd240c139decc3d44ef5e974eda3c))
+
+- explicitly remove support for Qt5 ([995c96b](https://github.com/kmnhan/erlabpy/commit/995c96bdba9dd1b079807b39ef3b26a40294a3aa))
+
+- **io:** use dask for parallel loading ([081c706](https://github.com/kmnhan/erlabpy/commit/081c706b05fe51d6df849f25f0e547d5e8701236))
+
+  This commit changes the parallel loading mechanism from `joblib` to `dask`. The `parallel_kwargs` attribute for loaders are now ignored. In order to configure parallel loading, users should set up the `dask` client accordingly.
+
+- **manager:** allow using the `Enter` key (`Return` on macOS) to open selected items ([83ef7bc](https://github.com/kmnhan/erlabpy/commit/83ef7bcf26153c6a094701d6bdc7c262a3dffef3))
+
+- **manager:** set workspace file default extension to `.itws` to avoid confusion with regular HDF5 files ([6455528](https://github.com/kmnhan/erlabpy/commit/6455528944972dea5d03181711f8ff38b4991900))
+
+- new ImageTool Manager icon for macOS ([c15ce26](https://github.com/kmnhan/erlabpy/commit/c15ce268ac5f9bd1b4d17ac15e32d7660339db8f))
+
+- **io.plugins.erpes:** add new temperature sensors ([b56f2b0](https://github.com/kmnhan/erlabpy/commit/b56f2b0aeaadf915a22021f5b0b5e67fdc36a1c6))
+
+- use pydantic for user configuration handling (#179) ([252bf14](https://github.com/kmnhan/erlabpy/commit/252bf1409363f89221615487d9a24bb3ecfb6d6d))
+
+  Changed the internal implementation of ImageTool user configuration handling, making future maintenance easier.
+
+- **utils.formatting:** make some private formatting functions public ([da28dd5](https://github.com/kmnhan/erlabpy/commit/da28dd59ac8d82f1d502a2d36f50631b2aa3d4bf))
+
+## v3.14.1 (2025-09-10)
+
+### 🐞 Bug Fixes
+
+- **qsel:** handle decreasing coordinates in width-based selection (#169) ([cff0bed](https://github.com/kmnhan/erlabpy/commit/cff0bed7d38c21e43ef27cc0d7d654c4e0199992))
+
+- **imagetool:** make ImageTool work with dask arrays ([73f8ad6](https://github.com/kmnhan/erlabpy/commit/73f8ad6a898b6e22a757d3cb9bda1d1f409482e8))
+
+  Passing dask arrays to ImageTool used to load the entire array into memory. This commit fixes that by ensuring that the data is kept as a dask array and is indexed lazily. However, this makes the GUI much slower to respond, so it is recommended to use ImageTool with in-memory arrays when possible.
+
+- improve autoscaling behavior for `erlab.plotting.gradient_fill` ([fd065f2](https://github.com/kmnhan/erlabpy/commit/fd065f2eacf7bbf9e9ff8e5cc29c124423a8cdab))
+
+- **utils:** fixes uniform spacing check not applying tolerance ([1ba2483](https://github.com/kmnhan/erlabpy/commit/1ba24832f4d9a210f91618f68d55d3c507561607))
+
+### ⚡️ Performance
+
+- speed up momentum conversion grid calculation ([8da5bc0](https://github.com/kmnhan/erlabpy/commit/8da5bc093ec33bdc4079c9b06e2f5d7c717e42b0))
+
+  Improves speed of k-space grid calculation using `numexpr`. Should also reduce memory usage during momentum conversion for large data.
+
+### ♻️ Code Refactor
+
+- deprecate `DataArray.parallel_fit` in favor of `DataArray.xlm.modelfit` with dask (#167) ([385bfd2](https://github.com/kmnhan/erlabpy/commit/385bfd21cd55b7145e356ee915b079d76b74a436))
+
+  Deprecates the `DataArray.parallel_fit` method in favor of using `DataArray.xlm.modelfit` with dask for parallel fitting. For more details, see the updated documentation in the curve fitting user guide.
+
+- **io:** show current loader and data directory details in `erlab.io.loaders` representation ([63c4c50](https://github.com/kmnhan/erlabpy/commit/63c4c50a3da22aed063d4b0d8a1d7349e597cac4))
+
+- **io:** sort loader registry alphabetically instead of by registration order ([bb8dcc2](https://github.com/kmnhan/erlabpy/commit/bb8dcc2191acfbaae80a5c16b00849c28af8b111))
+
+- move `TINY` constant from `analysis.fit.functions.general` to `constants` ([b212062](https://github.com/kmnhan/erlabpy/commit/b212062f992e6a56013f878efd674ee775b60e85))
+
+- adjust top level mthods in `analysis.mask` module ([2c6f004](https://github.com/kmnhan/erlabpy/commit/2c6f004027940661f21141971a1964ed21ac2cec))
+
+- refactor 2D BZ vertices generation into `erlab.lattice.get_2d_vertices` function ([fa89077](https://github.com/kmnhan/erlabpy/commit/fa890779bb7fc8a1aee91111ef4b19b3160a3c39))
+
+- move `erlab.plotting.bz.get_bz_edge` to `erlab.lattice.get_bz_edge` ([9c1e78d](https://github.com/kmnhan/erlabpy/commit/9c1e78d9ad316429c8d4241458ea9f7a5431ccb6))
+
+- **plotting:** remove unused and undocumented functions from public API ([b2def4d](https://github.com/kmnhan/erlabpy/commit/b2def4d3450846f823052fdb3055cd6f13f8ac4c))
+
+## v3.14.0 (2025-08-12)
+
+### ✨ Features
+
+- **imagetool:** add cursor color customization ([c90b52d](https://github.com/kmnhan/erlabpy/commit/c90b52de2ac36d0007a297a943a983e4b1983aaf))
+
+  Adds a new dialog that can be used to customize the colors of cursors in the ImageTool. This allows users to set specific colors for each cursor, and also allows sampling cursor colors from colormaps.
+
+- **imagetool:** add toggle action for cursor visibility ([c2a6640](https://github.com/kmnhan/erlabpy/commit/c2a6640c6b3a80472f1420fdadc07c926896c498))
+
+  Allows users to toggle the visibility of cursors. The new action is located in the View menu, and can be accessed with the keyboard shortcut `Shift + V`.
+
+- **plotting.bz:** add `plot_bz` function for plotting arbitrary 2D Brillouin zones given the basis vectors ([11fa5a8](https://github.com/kmnhan/erlabpy/commit/11fa5a8c9bd619e0d22801e2c29076cd02d589de))
+
+- **interactive:** implement user customization options for interactive tools ([6af26f3](https://github.com/kmnhan/erlabpy/commit/6af26f398fff6d747cc5794c5bf35851f885b4be))
+
+  Users can now customize various default settings related to ImageTool, such as the default cursor color and colormap. The options can be modified from a new preference menu option in the menu bar of ImageTool and ImageTool manager. The changes are saved and restored across sessions.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** fixes cursor removal resulting in incorrect autorange behavior ([240c29e](https://github.com/kmnhan/erlabpy/commit/240c29e11eebdd59707a2004b0b6fb9529b1fcca))
+
+- **imagetool:** fix selection of cropped data with manual limits ([55cd311](https://github.com/kmnhan/erlabpy/commit/55cd31194ff62c4cb59fbfb8059eb0060f099d57))
+
+- **io.plugins.erpes:** fix loading incomplete 2-motor scan ([6de4558](https://github.com/kmnhan/erlabpy/commit/6de45585a4e61ba571c3a45db85f25793b3b0930))
+
+  Fixes an issue where incomplete 2-motor scans with nan values in datetime coordinates failed to load.
+
+- **interactive.colors:** automatically load all colormaps when given cmap is not found ([7bdf47d](https://github.com/kmnhan/erlabpy/commit/7bdf47df4bc8e2b775ae045f9680ac0afc604169))
+
+### ♻️ Code Refactor
+
+- **imagetool:** improve robustness of dialog management ([f23bfda](https://github.com/kmnhan/erlabpy/commit/f23bfda193726b68c6ebf00ee84903f6ab978386))
+
+  Contains some internal changes to dialog creation and garbage collection, avoiding `exec()`. Users should not notice any difference in functionality.
+
+- **plotting.annotations:** enhance `mark_points` function with additional options ([84e80a1](https://github.com/kmnhan/erlabpy/commit/84e80a19625ddd3f91b87d556af8938835b5d558))
+
+- **interactive:** include stack trace in error dialogs for better debugging ([1c59997](https://github.com/kmnhan/erlabpy/commit/1c599971382d9be95303f01372e8ab7f30a47794))
+
+- **plotting.annotations:** remove seldom used `label_subplots_nature` function ([28150fc](https://github.com/kmnhan/erlabpy/commit/28150fc19b1197aa151a0ee57b862b45528c88e5))
+
+- remove unused private functions ([59734d1](https://github.com/kmnhan/erlabpy/commit/59734d1a2b23a33b4dde8703a3c950d38041fb06))
+
+- **io.utils:** deprecate wrapper functions for xarray I/O ([a1d740b](https://github.com/kmnhan/erlabpy/commit/a1d740b3e6ee4597a3646e566585341e82e5b3ec))
+
+  Deprecates `open_hdf5`, `load_hdf5`, `save_as_hdf5`, and `save_as_netcdf` in favor of direct xarray methods. Use `xarray.open_dataarray` and `xarray.DataArray.to_netcdf` directly for better compatibility and performance.
+
 ## v3.13.0 (2025-07-18)
 
 ### ✨ Features

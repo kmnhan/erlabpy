@@ -28,22 +28,37 @@ class _ImageToolWrapper(QtCore.QObject):
     manager such as archiving and unarchiving and window geometry tracking.
     """
 
-    def __init__(self, manager: ImageToolManager, index: int, tool: ImageTool) -> None:
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        index: int,
+        tool: ImageTool,
+        watched_var: tuple[str, str] | None = None,
+    ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
         self._index: int = index
-        self._tool: ImageTool | None = None
+        self._imagetool: ImageTool | None = None
         self._recent_geometry: QtCore.QRect | None = None
         self._name: str = tool.windowTitle()
         self._archived_fname: str | None = None
         self._created_time: datetime.datetime = datetime.datetime.now()
+
+        self._childtools: dict[str, erlab.interactive.utils.ToolWindow] = {}
+        self._childtool_indices: list[str] = []
+
+        # Information about the watched variable
+        self._watched_varname: str | None = None
+        self._watched_uid: str | None = None
+        if watched_var is not None:
+            self._watched_varname, self._watched_uid = watched_var
 
         self._info_text_archived: str = ""
 
         self._box_ratio_archived: float = float("NaN")
         self._pixmap_archived: QtGui.QPixmap = QtGui.QPixmap()
 
-        self.tool = tool
+        self.imagetool = tool
 
         self.touch_timer = QtCore.QTimer(self)
         self.touch_timer.setInterval(12 * 60 * 60 * 1000)  # 12 hours
@@ -72,9 +87,9 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @property
     def manager(self) -> ImageToolManager:
-        _manager = self._manager()
-        if _manager:
-            return _manager
+        manager = self._manager()
+        if manager:
+            return manager
         raise LookupError("Parent was destroyed")
 
     @property
@@ -89,15 +104,7 @@ class _ImageToolWrapper(QtCore.QObject):
                     f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
                 ],
             )
-
-        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
-            # Accent color is available from Qt 6.6
-            accent_color = QtWidgets.QApplication.palette().accent().color().name()
-            text = text.replace(
-                erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
-            )
-
-        return text
+        return erlab.interactive.utils._apply_qt_accent_color(text)
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
@@ -106,12 +113,12 @@ class _ImageToolWrapper(QtCore.QObject):
         Retrieves the main image pixmap and flips it to match the image displayed in the
         tool. The box ratio is calculated from the view box size of the main image.
         """
-        if self.tool is not None:
+        if self.imagetool is not None:
             main_image = self.slicer_area.main_image
             vb_rect = main_image.getViewBox().rect()
 
             pixmap: QtGui.QPixmap = (
-                self.slicer_area.main_image.slicer_data_items[0]
+                main_image.slicer_data_items[0]
                 .getPixmap()
                 .transformed(QtGui.QTransform().scale(1.0, -1.0))
             )
@@ -121,42 +128,46 @@ class _ImageToolWrapper(QtCore.QObject):
         return self._box_ratio_archived, self._pixmap_archived
 
     @property
-    def tool(self) -> ImageTool | None:
-        return self._tool
+    def imagetool(self) -> ImageTool | None:
+        return self._imagetool
 
-    @tool.setter
-    def tool(self, value: ImageTool | None) -> None:
-        if self._tool is None:
+    @imagetool.setter
+    def imagetool(self, value: ImageTool | None) -> None:
+        if self._imagetool is None:
             if self._archived_fname is not None:
                 # Remove the archived file
                 os.remove(self._archived_fname)
                 self._archived_fname = None
         else:
             # Close and cleanup existing tool
-            self._tool.slicer_area.unlink()
-            self._tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            self._tool.removeEventFilter(self)
-            self._tool.sigTitleChanged.disconnect(self.update_title)
-            self._tool.destroyed.connect(self._destroyed_callback)
-            self._tool.close()
+            self._imagetool.slicer_area.unlink()
+            self._imagetool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._imagetool.removeEventFilter(self)
+            self._imagetool.sigTitleChanged.disconnect(self.update_title)
+            self._imagetool.slicer_area.sigDataEdited.disconnect(
+                self._trigger_watched_update
+            )
+            self._imagetool.destroyed.connect(self._destroyed_callback)
+            self._imagetool.close()
 
         if value is not None:
             # Install event filter to detect visibility changes
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
+            value.slicer_area.sigDataEdited.connect(self._trigger_watched_update)
             value.slicer_area._in_manager = True
 
-        self._tool = value
+        self._imagetool = value
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        if self.tool is None:
+        if self.imagetool is None:
             raise ValueError("ImageTool is not available")
-        return self.tool.slicer_area
+        return self.imagetool.slicer_area
 
     @property
     def archived(self) -> bool:
-        return self._tool is None
+        return self._imagetool is None
 
     @property
     def name(self) -> str:
@@ -165,8 +176,13 @@ class _ImageToolWrapper(QtCore.QObject):
     @name.setter
     def name(self, name: str) -> None:
         self._name = name
-        typing.cast("ImageTool", self.tool).setWindowTitle(self.label_text)
-        self.manager.list_view.refresh(self.index)
+        typing.cast("ImageTool", self.imagetool).setWindowTitle(self.label_text)
+        self.manager.tree_view.refresh(self.index)
+
+    @property
+    def watched(self) -> bool:
+        """Whether the tool is synchronized to a variable in an IPython kernel."""
+        return self._watched_varname is not None and self._watched_uid is not None
 
     @property
     def label_text(self) -> str:
@@ -188,7 +204,7 @@ class _ImageToolWrapper(QtCore.QObject):
         be restored when the tool is shown again.
         """
         if (
-            obj == self.tool
+            obj == self.imagetool
             and event is not None
             and (
                 event.type() == QtCore.QEvent.Type.Show
@@ -207,12 +223,41 @@ class _ImageToolWrapper(QtCore.QObject):
     def update_title(self, title: str | None = None) -> None:
         if not self.archived:
             if title is None:
-                title = typing.cast("ImageTool", self.tool).windowTitle()
+                title = typing.cast("ImageTool", self.imagetool).windowTitle()
             self.name = title
 
     @QtCore.Slot()
+    def unwatch(self) -> None:
+        if self.watched:
+            self.manager._sigWatchedDataEdited.emit(
+                self._watched_varname, self._watched_uid, "removed"
+            )
+            self._watched_varname = None
+            self._watched_uid = None
+            self.manager.tree_view.refresh(self.index)
+
+    @QtCore.Slot()
+    def _trigger_watched_update(self) -> None:
+        """Trigger an update for a watched variable in the manager.
+
+        This function notifies the listening IPython kernel to fetch the latest data for
+        the specified watched variable.
+
+        Parameters
+        ----------
+        varname
+            Name of the watched variable.
+        uid
+            Unique identifier for the watched variable.
+        """
+        if self.watched:
+            self.manager._sigWatchedDataEdited.emit(
+                self._watched_varname, self._watched_uid, "updated"
+            )
+
+    @QtCore.Slot()
     def visibility_changed(self) -> None:
-        tool = typing.cast("ImageTool", self.tool)
+        tool = typing.cast("ImageTool", self.imagetool)
         self._recent_geometry = tool.geometry()
 
     @QtCore.Slot()
@@ -222,45 +267,55 @@ class _ImageToolWrapper(QtCore.QObject):
         If the tool is not visible, it is shown and raised to the top. Archived tools
         are unarchived before being shown.
         """
-        if self.tool is None:
+        if self.imagetool is None:
             self.unarchive()
 
-        if self.tool is not None:
-            if not self.tool.isVisible() and self._recent_geometry is not None:
-                self.tool.setGeometry(self._recent_geometry)
+        if self.imagetool is not None:
+            if not self.imagetool.isVisible() and self._recent_geometry is not None:
+                self.imagetool.setGeometry(self._recent_geometry)
 
             if sys.platform == "win32":  # pragma: no cover
                 # On Windows, window flags must be set to bring the window to the top
-                self.tool.setWindowFlags(
-                    self.tool.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                self.imagetool.setWindowFlags(
+                    self.imagetool.windowFlags()
+                    | QtCore.Qt.WindowType.WindowStaysOnTopHint
                 )
-                self.tool.show()
-                self.tool.setWindowFlags(
-                    self.tool.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
+                self.imagetool.show()
+                self.imagetool.setWindowFlags(
+                    self.imagetool.windowFlags()
+                    & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
                 )
-            self.tool.show()
-            self.tool.show()
-            self.tool.activateWindow()
-            self.tool.raise_()
+            self.imagetool.show()
+            self.imagetool.show()
+            self.imagetool.activateWindow()
+            self.imagetool.raise_()
 
     @QtCore.Slot()
-    def close(self) -> None:
-        """Close the tool window.
+    def hide(self) -> None:
+        """Hide the tool window.
 
-        This method only closes the tool window. The tool object is not destroyed and
-        can be reopened later.
+        This method only hides the tool window. The tool object is not destroyed and can
+        be reopened later.
         """
-        if self.tool is not None:
-            self.tool.close()
+        if self.imagetool is not None:
+            self.imagetool.hide()
 
     @QtCore.Slot()
-    def dispose(self) -> None:
+    def dispose(self, unwatch: bool = True) -> None:
         """Dispose the tool object.
 
         This method closes the tool window and destroys the tool object. The tool object
         is not recoverable after this operation.
+
+        Parameters
+        ----------
+        unwatch
+            If `True`, the watched variable is unwatched before disposing the tool.
+            Default is `True`.
         """
-        self.tool = None
+        if unwatch and self.watched:
+            self.unwatch()
+        self.imagetool = None
 
     @QtCore.Slot()
     def archive(self) -> None:
@@ -276,13 +331,13 @@ class _ImageToolWrapper(QtCore.QObject):
             self._archived_fname = os.path.join(
                 self.manager.cache_dir, str(uuid.uuid4())
             )
-            tool = typing.cast("ImageTool", self.tool)
+            tool = typing.cast("ImageTool", self.imagetool)
             tool.to_file(self._archived_fname)
             self.touch_timer.start()
 
             self._info_text_archived = self.info_text
             self._box_ratio_archived, self._pixmap_archived = self._preview_image
-            self.dispose()
+            self.dispose(unwatch=False)
 
     @QtCore.Slot()
     def unarchive(self) -> None:
@@ -294,9 +349,34 @@ class _ImageToolWrapper(QtCore.QObject):
         """
         if self.archived:
             self.touch_timer.stop()
-            self.tool = ImageTool.from_file(typing.cast("str", self._archived_fname))
-            self.tool.show()
+            self.imagetool = ImageTool.from_file(
+                typing.cast("str", self._archived_fname)
+            )
+            self.imagetool.show()
             self._info_text_archived = ""
             self._box_ratio_archived = float("NaN")
             self._pixmap_archived = QtGui.QPixmap()
             self.manager._sigReloadLinkers.emit()
+
+    def _add_childtool(self, tool: erlab.interactive.utils.ToolWindow) -> str:
+        """Add a child tool window to the current tool."""
+        uid = str(uuid.uuid4())
+        self._childtools[uid] = tool
+        if not tool._tool_display_name:
+            tool._tool_display_name = str(self.name)
+
+        tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
+
+        # Enable closing with keyboard shortcut
+        tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]
+            QtGui.QKeySequence.StandardKey.Close, tool, tool.hide
+        )
+        tool.show()
+        return uid
+
+    def _remove_childtool(self, uid: str) -> None:
+        """Remove a child tool window from the current tool."""
+        if uid in self._childtools:
+            tool = self._childtools.pop(uid)
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            tool.close()

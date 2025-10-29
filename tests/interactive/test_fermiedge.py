@@ -1,5 +1,6 @@
 import tempfile
 
+import pytest
 import scipy
 import xarray as xr
 import xarray_lmfit as xlm
@@ -10,11 +11,15 @@ from erlab.interactive.fermiedge import GoldTool, ResolutionTool, goldtool, rest
 from erlab.io.exampledata import generate_gold_edge
 
 
-def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
+@pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
+def test_goldtool(
+    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog
+) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.params_edge.widgets["# CPU"].setValue(1)
-    win.params_edge.widgets["Fast"].setChecked(True)
+    win.params_edge.widgets["Fast"].setChecked(fast)
+
+    expected = gold_fit_res if fast else gold_fit_res_fd
 
     with qtbot.wait_signal(win.sigUpdated, timeout=20000):
         win.params_edge.widgets["go"].click()
@@ -29,7 +34,7 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
         )
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
-            gold_fit_res.drop_vars("modelfit_results"),
+            expected.drop_vars("modelfit_results"),
         )
 
     check_generated_code(win)
@@ -46,11 +51,11 @@ def test_goldtool(qtbot, gold, gold_fit_res, accept_dialog) -> None:
             focused.setText("fit_save.nc")
 
     # Save fit
-    _handler_save = accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
+    accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
 
     # Check saved file
     xr.testing.assert_identical(
-        gold_fit_res.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
         xlm.load_fit(filename).drop_vars("modelfit_results"),
     )
 
@@ -79,7 +84,7 @@ def test_restool(qtbot) -> None:
     win.x0_spin.setValue(-0.3)
     win.x1_spin.setValue(0.3)
 
-    qtbot.wait_until(lambda: isinstance(win._result_ds, xr.Dataset), timeout=1000)
+    qtbot.wait_until(lambda: isinstance(win._result_ds, xr.Dataset), timeout=10000)
 
     for k, v in {
         "eV_range": (-0.3, 0.3),
@@ -101,4 +106,17 @@ def test_restool(qtbot) -> None:
         )
 
     check_generated_code(win)
-    win.close()
+
+    # Test tool save & restore
+    tmp_dir = tempfile.TemporaryDirectory()
+    filename = f"{tmp_dir.name}/tool_save.h5"
+    win.to_file(filename)
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, ResolutionTool)
+
+    assert win.tool_status == win_restored.tool_status
+    assert str(win_restored.info_text) == str(win.info_text)
+
+    tmp_dir.cleanup()

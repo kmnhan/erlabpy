@@ -7,6 +7,7 @@ import pathlib
 import platform
 import sys
 import tempfile
+import threading
 import typing
 import uuid
 
@@ -19,21 +20,22 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
+    _ChooseFromDataTreeDialog,
     _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
-from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperListView
+from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._server import (
     _ManagerServer,
-    _ping_server,
+    _WatcherServer,
     show_in_manager,
 )
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, ValuesView
+    from collections.abc import Callable
 
 
 logger = logging.getLogger(__name__)
@@ -79,16 +81,14 @@ class ItoolManagerParseError(Exception):
 class _SingleImagePreview(QtWidgets.QGraphicsView):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setScene(QtWidgets.QGraphicsScene(self))
+        _scene = QtWidgets.QGraphicsScene(self)
+        self.setScene(_scene)
 
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._pixmapitem = typing.cast(
-            "QtWidgets.QGraphicsPixmapItem",
-            typing.cast("QtWidgets.QGraphicsScene", self.scene()).addPixmap(
-                QtGui.QPixmap()
-            ),
+            "QtWidgets.QGraphicsPixmapItem", _scene.addPixmap(QtGui.QPixmap())
         )
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -130,13 +130,32 @@ class ImageToolManager(QtWidgets.QMainWindow):
     _sigDataReplaced = QtCore.Signal()  #: :meta private:
     # Signal emitted when data is replaced in the manager, for testing purposes.
 
+    _sigReplyData = QtCore.Signal(object)  #: :meta private:
+    # Signal emitted to reply data requests.
+
+    _sigWatchedDataEdited = QtCore.Signal(str, str, str)  #: :meta private:
+    # Signal emitted to notify ipython watchers of data changes.
+
     def __init__(self) -> None:
         super().__init__()
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
         self.server.sigReplaceRequested.connect(self._data_replace)
+
+        self.server.sigDataRequested.connect(self._send_imagetool_data)
+        self._sigReplyData.connect(self.server.set_return_value)
+        self.server.sigRemoveIndex.connect(self.remove_imagetool)
+        self.server.sigShowIndex.connect(self.show_imagetool)
+        self.server.sigRemoveUID.connect(self._remove_watched)
+        self.server.sigShowUID.connect(self._show_watched)
+        self.server.sigUnwatchUID.connect(self._data_unwatch)
+        self.server.sigWatchedVarChanged.connect(self._data_watched_update)
         self.server.start()
+
+        self.watcher_server: _WatcherServer = _WatcherServer()
+        self._sigWatchedDataEdited.connect(self.watcher_server.send_parameters)
+        self.watcher_server.start()
 
         # Shared memory for detecting multiple instances
         # No longer used starting from v3.8.2, but kept for backward compatibility
@@ -147,7 +166,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         menu_bar: QtWidgets.QMenuBar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
 
-        self._tool_wrappers: dict[int, _ImageToolWrapper] = {}
+        self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
         self._linkers: list[erlab.interactive.imagetool.core.SlicerLinkProxy] = []
 
@@ -162,6 +181,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
+        self.show_action.setShortcut(
+            "Return"
+            if sys.platform == "darwin"
+            else QtGui.QKeySequence.StandardKey.InsertParagraphSeparator
+        )
         self.show_action.setToolTip("Show selected windows")
 
         self.hide_action = QtWidgets.QAction("Hide", self)
@@ -172,6 +196,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
         self.gc_action.triggered.connect(self.garbage_collect)
         self.gc_action.setToolTip("Run garbage collection to free up memory")
+        self.gc_action.setIcon(QtGui.QIcon.fromTheme("user-trash"))
 
         self.open_action = QtWidgets.QAction("&Open File...", self)
         self.open_action.triggered.connect(self.open)
@@ -199,6 +224,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.duplicate_action.triggered.connect(self.duplicate_selected)
         self.duplicate_action.setToolTip("Duplicate selected windows")
 
+        self.reindex_action = QtWidgets.QAction("Reset Index", self)
+        self.reindex_action.triggered.connect(self.reindex)
+        self.reindex_action.setToolTip("Reset indices of all windows")
+
         self.link_action = QtWidgets.QAction("Link", self)
         self.link_action.triggered.connect(self.link_selected)
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
@@ -223,13 +252,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Meta+`" if sys.platform == "darwin" else "Ctrl+`")
         )
         self.console_action.setToolTip("Toggle console window")
+        self.console_action.setIcon(QtGui.QIcon.fromTheme("utilities-terminal"))
 
         self.preview_action = QtWidgets.QAction("Preview on Hover", self)
         self.preview_action.setCheckable(True)
         self.preview_action.setToolTip("Show preview on hover")
-
-        self.about_action = QtWidgets.QAction("About", self)
-        self.about_action.triggered.connect(self.about)
 
         self.store_action = QtWidgets.QAction("Store with IPython", self)
         self.store_action.triggered.connect(self.store_selected)
@@ -239,6 +266,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.explorer_action.triggered.connect(self.show_explorer)
         self.explorer_action.setShortcut(QtGui.QKeySequence("Ctrl+E"))
         self.explorer_action.setToolTip("Show the data explorer window")
+        self.explorer_action.setIcon(QtGui.QIcon.fromTheme("drive-harddisk"))
 
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
@@ -248,6 +276,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.reload_action.triggered.connect(self.reload_selected)
         self.reload_action.setToolTip("Reload data from file for selected windows")
         self.reload_action.setVisible(False)
+
+        self.unwatch_action = QtWidgets.QAction("Stop Watching", self)
+        self.unwatch_action.triggered.connect(self.unwatch_selected)
+        self.unwatch_action.setToolTip("Stop watching selected windows")
+        self.unwatch_action.setVisible(False)
+
+        self.about_action = QtWidgets.QAction("About", self)
+        self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
+        self.about_action.triggered.connect(self.about)
+
+        self.check_update_action = QtWidgets.QAction("Check for Updates", self)
+        self.check_update_action.setMenuRole(
+            QtWidgets.QAction.MenuRole.ApplicationSpecificRole
+        )
+        self.check_update_action.triggered.connect(self.check_for_updates)
+        self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
@@ -264,12 +308,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.gc_action)
         file_menu.addSeparator()
-        file_menu.addAction(self.about_action)
         file_menu.addAction(self.settings_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
         )
+        edit_menu.addAction(self.reindex_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.concat_action)
         edit_menu.addAction(self.duplicate_action)
         edit_menu.addSeparator()
@@ -292,6 +337,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
 
+        help_menu: QtWidgets.QMenu = typing.cast(
+            "QtWidgets.QMenu", menu_bar.addMenu("&Help")
+        )
+        help_menu.addAction(self.about_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.check_update_action)
+
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
             self.open_action, "mdi6.folder-file"
@@ -309,7 +361,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.unlink_action, "mdi6.link-variant-off"
         )
         self.preview_button = erlab.interactive.utils.IconActionButton(
-            self.preview_action, on="mdi6.eye", off="mdi6.eye-off"
+            self.preview_action, on="ph.eye", off="ph.eye-slash"
         )
 
         # Initialize GUI
@@ -318,10 +370,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Construct left side of splitter
         left_container = QtWidgets.QWidget()
-        left_layout = QtWidgets.QHBoxLayout()
+        left_layout = QtWidgets.QHBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
-        left_container.setLayout(left_layout)
         main_splitter.addWidget(left_container)
 
         titlebar = QtWidgets.QWidget()
@@ -335,11 +386,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         titlebar_layout.addStretch()
         left_layout.addWidget(titlebar)
 
-        self.list_view = _ImageToolWrapperListView(self)
-        self.list_view._selection_model.selectionChanged.connect(self._update_actions)
-        self.list_view._selection_model.selectionChanged.connect(self._update_info)
-        self.list_view._model.dataChanged.connect(self._update_info)
-        left_layout.addWidget(self.list_view)
+        self.tree_view = _ImageToolWrapperTreeView(self)
+        self.tree_view._selection_model.selectionChanged.connect(self._update_actions)
+        self.tree_view._selection_model.selectionChanged.connect(self._update_info)
+        self.tree_view._model.dataChanged.connect(self._update_info)
+        left_layout.addWidget(self.tree_view)
 
         # Construct right side of splitter
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -364,7 +415,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_directory: str | None = None
 
         self.sigLinkersChanged.connect(self._update_actions)
-        self.sigLinkersChanged.connect(self.list_view.refresh)
+        self.sigLinkersChanged.connect(self.tree_view.refresh)
         self._sigReloadLinkers.connect(self._cleanup_linkers)
         self._update_actions()
         self._update_info()
@@ -372,6 +423,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Golden ratio :)
         self.setMinimumWidth(301)
         self.setMinimumHeight(487)
+        self.resize(487, 487)
 
         # Install event filter for keyboard shortcuts
         self._kb_filter = erlab.interactive.utils.KeyboardEventFilter(self)
@@ -391,12 +443,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @property
     def ntools(self) -> int:
         """Number of ImageTool windows being handled by the manager."""
-        return len(self._tool_wrappers)
+        return len(self._imagetool_wrappers)
 
     @property
     def next_idx(self) -> int:
-        """Index for the next ImageTool window."""
-        return max(self._tool_wrappers.keys(), default=-1) + 1
+        """Index for the next window."""
+        return max(self._imagetool_wrappers.keys(), default=-1) + 1
 
     @property
     def _status_bar(self) -> QtWidgets.QStatusBar:
@@ -406,7 +458,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def about(self) -> None:
         """Show the about dialog."""
         msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setIconPixmap(QtGui.QIcon(_ICON_PATH).pixmap(64, 64))
+        style = self.style()
+        if style is not None:  # pragma: no branch
+            icon_size = (
+                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
+                or 48
+            )
+            msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         msg_box.setText("About ImageTool Manager")
 
         version_info = {
@@ -418,6 +476,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "Python": platform.python_version(),
             "OS": platform.platform(),
         }
+        if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+            version_info["Location"] = os.path.dirname(sys.executable)
         msg_box.setInformativeText(
             "\n".join(f"{k}: {v}" for k, v in version_info.items())
         )
@@ -432,7 +492,29 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if cb:
                 cb.setText(msg_box.informativeText())
 
-    def get_tool(self, index: int, unarchive: bool = True) -> ImageTool:
+    @property
+    def _reindex_lock(self) -> threading.Lock:
+        """Lock for reindexing operation."""
+        if not hasattr(self, "__reindex_lock"):
+            lock = threading.Lock()
+            self.__reindex_lock = lock
+        return self.__reindex_lock
+
+    @QtCore.Slot()
+    def reindex(self) -> None:
+        """Reset indices of ImageTool windows to be consecutive in displayed order."""
+        with self._reindex_lock:
+            new_imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
+            displayed_indices = list(self._displayed_indices)
+            for row_idx, tool_idx in enumerate(displayed_indices):
+                self._displayed_indices[row_idx] = row_idx
+                self._imagetool_wrappers[tool_idx]._index = row_idx
+                new_imagetool_wrappers[row_idx] = self._imagetool_wrappers[tool_idx]
+            self._imagetool_wrappers = new_imagetool_wrappers
+
+        self.tree_view.refresh()
+
+    def get_imagetool(self, index: int, unarchive: bool = True) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
 
         Parameters
@@ -448,16 +530,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ImageTool
             The ImageTool object corresponding to the index.
         """
-        if index not in self._tool_wrappers:
+        if index not in self._imagetool_wrappers:
             raise KeyError(f"Tool of index '{index}' not found")
 
-        wrapper = self._tool_wrappers[index]
+        wrapper = self._imagetool_wrappers[index]
         if wrapper.archived:
             if unarchive:
                 wrapper.unarchive()
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
-        return typing.cast("ImageTool", wrapper.tool)
+        return typing.cast("ImageTool", wrapper.imagetool)
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
@@ -466,7 +548,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         idx = self._linkers.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
-    def add_tool(self, tool: ImageTool, activate: bool = False) -> int:
+    def add_imagetool(
+        self,
+        tool: ImageTool,
+        activate: bool = False,
+        *,
+        watched_var: tuple[str, str] | None = None,
+    ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
         Parameters
@@ -475,6 +563,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ImageTool object to be added.
         activate
             Whether to focus on the window after adding, by default `False`.
+        watched_var
+            If the tool is created from a watched variable, this should be a tuple of
+            the variable name and its unique ID.
 
         Returns
         -------
@@ -482,8 +573,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             Index of the added ImageTool window.
         """
         index = int(self.next_idx)
-        wrapper = _ImageToolWrapper(self, index, tool)
-        self._tool_wrappers[index] = wrapper
+        wrapper = _ImageToolWrapper(self, index, tool, watched_var=watched_var)
+        self._imagetool_wrappers[index] = wrapper
         wrapper.update_title()
 
         self._sigReloadLinkers.emit()
@@ -495,25 +586,63 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool.raise_()
 
         # Add to view after initialization
-        self.list_view.tool_added(index)
+        self.tree_view.imagetool_added(index)
 
         return index
 
     @QtCore.Slot()
-    def _update_info(self) -> None:
-        """Update the information text box."""
-        selection = self.list_view.selected_tool_indices
-        match len(selection):
+    def _update_info(self, *, uid: str | None = None) -> None:
+        """Update the information text box.
+
+        If a string ``uid`` is provided, the function will update the info box only if
+        the given ``uid`` is the only selected child tool.
+        """
+        selected_imagetools = self.tree_view.selected_imagetool_indices
+        selected_childtools = self.tree_view.selected_childtool_uids
+
+        n_itool: int = len(selected_imagetools)
+        n_total: int = n_itool + len(selected_childtools)
+
+        if (uid is not None) and ((n_total != 1) or (uid not in selected_childtools)):
+            return
+
+        match n_total:
             case 0:
                 self.text_box.setPlainText("Select a window to view its information.")
                 self.preview_widget.setVisible(False)
+
             case 1:
-                wrapper = self._tool_wrappers[selection[0]]
-                self.text_box.setHtml(wrapper.info_text)
-                self.preview_widget.setPixmap(wrapper._preview_image[1])
-                self.preview_widget.setVisible(True)
+                if n_itool > 0:
+                    wrapper = self._imagetool_wrappers[selected_imagetools[0]]
+                    self.text_box.setHtml(wrapper.info_text)
+                    self.preview_widget.setPixmap(wrapper._preview_image[1])
+                    self.preview_widget.setVisible(True)
+                else:
+                    childtool = self.get_childtool(selected_childtools[0])
+                    self.text_box.setHtml(
+                        erlab.interactive.utils._apply_qt_accent_color(
+                            childtool.info_text
+                        )
+                    )
+                    image_item = childtool.preview_imageitem
+                    if image_item is None:
+                        self.preview_widget.setVisible(False)
+                    else:
+                        self.preview_widget.setPixmap(
+                            image_item.getPixmap().transformed(
+                                QtGui.QTransform().scale(1.0, -1.0)
+                            )
+                        )
+                        self.preview_widget.setVisible(True)
+
             case _:
-                self.text_box.setPlainText(f"{len(selection)} selected")
+                self.text_box.setHtml(
+                    "<p><b>Selected ImageTool windows</b></p>"
+                    + "<br>".join(
+                        self._imagetool_wrappers[i].label_text
+                        for i in selected_imagetools
+                    )
+                )
                 self.preview_widget.setVisible(False)
 
     @QtCore.Slot()
@@ -521,11 +650,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Update the state of the actions based on the current selection."""
         selection_archived: list[int] = []
         selection_unarchived: list[int] = []
-        for s in self.list_view.selected_tool_indices:
-            if self._tool_wrappers[s].archived:
+        selection_watched: list[int] = []
+        selection_children: list[str] = list(self.tree_view.selected_childtool_uids)
+
+        for s in self.tree_view.selected_imagetool_indices:
+            wrapper = self._imagetool_wrappers[s]
+            if wrapper.archived:
                 selection_archived.append(s)
             else:
                 selection_unarchived.append(s)
+            if wrapper.watched:
+                selection_watched.append(s)
 
         selection_all = selection_archived + selection_unarchived
 
@@ -538,6 +673,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.hide_action.setEnabled(something_selected)
         self.remove_action.setEnabled(something_selected)
         self.rename_action.setEnabled(something_selected and only_unarchived)
+        self.duplicate_action.setEnabled(something_selected)
         self.archive_action.setEnabled(something_selected and only_unarchived)
         self.unarchive_action.setEnabled(something_selected and only_archived)
         self.concat_action.setEnabled(multiple_selected)
@@ -547,13 +683,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
             something_selected
             and only_unarchived
             and all(
-                self._tool_wrappers[s].slicer_area.reloadable
+                self._imagetool_wrappers[s].slicer_area.reloadable
                 for s in selection_unarchived
             )
+        )
+        self.unwatch_action.setVisible(
+            something_selected and len(selection_watched) == len(selection_all)
         )
 
         self.link_action.setDisabled(only_archived)
         self.unlink_action.setDisabled(only_archived)
+
+        if len(selection_children) != 0:
+            self.show_action.setEnabled(True)
+            self.hide_action.setEnabled(True)
+            self.remove_action.setEnabled(True)
+            self.duplicate_action.setEnabled(True)
 
         if only_unarchived:
             match len(selection_unarchived):
@@ -567,33 +712,44 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.link_action.setDisabled(False)
 
             is_linked: list[bool] = [
-                self.get_tool(index).slicer_area.is_linked
+                self.get_imagetool(index).slicer_area.is_linked
                 for index in selection_unarchived
             ]
             self.unlink_action.setEnabled(any(is_linked))
 
             if all(is_linked):
                 proxies = [
-                    self.get_tool(index).slicer_area._linking_proxy
+                    self.get_imagetool(index).slicer_area._linking_proxy
                     for index in selection_unarchived
                 ]
-                if all(p == proxies[0] for p in proxies):
+                if all(p == proxies[0] for p in proxies):  # pragma: no branch
                     self.link_action.setEnabled(False)
 
-    def remove_tool(self, index: int) -> None:
+    @QtCore.Slot(int)
+    def remove_imagetool(self, index: int) -> None:
         """Remove the ImageTool window corresponding to the given index."""
-        self.list_view.tool_removed(index)
+        # Remove all child tools first
+        for uid in list(self._imagetool_wrappers[index]._childtool_indices):
+            self._remove_childtool(uid)
 
-        wrapper = self._tool_wrappers.pop(index)
+        self.tree_view.imagetool_removed(index)
+        wrapper = self._imagetool_wrappers.pop(index)
         if not wrapper.archived:
-            typing.cast("ImageTool", wrapper.tool).removeEventFilter(wrapper)
+            typing.cast("ImageTool", wrapper.imagetool).removeEventFilter(wrapper)
+
         wrapper.dispose()
-        del wrapper
+        wrapper.deleteLater()
 
     def remove_all_tools(self) -> None:
         """Remove all ImageTool windows."""
-        for index in tuple(self._tool_wrappers.keys()):
-            self.remove_tool(index)
+        for index in tuple(self._imagetool_wrappers.keys()):
+            self.remove_imagetool(index)
+
+    @QtCore.Slot(int)
+    def show_imagetool(self, index: int) -> None:
+        """Show the ImageTool window corresponding to the given index."""
+        if index in self._imagetool_wrappers:  # pragma: no branch
+            self._imagetool_wrappers[index].show()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -606,50 +762,80 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def show_selected(self) -> None:
-        """Show selected ImageTool windows."""
-        index_list = self.list_view.selected_tool_indices
+        """Show selected windows."""
+        index_list = self.tree_view.selected_imagetool_indices
 
-        require_unarchive = any(self._tool_wrappers[i].archived for i in index_list)
-        if require_unarchive:
+        require_unarchive = any(
+            self._imagetool_wrappers[i].archived for i in index_list
+        )
+        if require_unarchive:  # pragma: no branch
             # This is just to display the wait dialog for unarchiving.
             # If this part is removed, the showing will just hang until the unarchiving
             # is finished without any feedback.
             self.unarchive_selected()
 
         for index in index_list:
-            self._tool_wrappers[index].show()
+            self.show_imagetool(index)
+
+        uid_list = self.tree_view.selected_childtool_uids
+
+        for uid in uid_list:
+            self.show_childtool(uid)
 
     @QtCore.Slot()
     def hide_selected(self) -> None:
-        """Hide selected ImageTool windows."""
-        for index in self.list_view.selected_tool_indices:
-            self._tool_wrappers[index].close()
+        """Hide selected windows."""
+        for index in self.tree_view.selected_imagetool_indices:
+            self._imagetool_wrappers[index].hide()
+        for uid in self.tree_view.selected_childtool_uids:
+            self.get_childtool(uid).hide()
 
     @QtCore.Slot()
     def hide_all(self) -> None:
-        """Hide all ImageTool windows."""
-        for tool in self._tool_wrappers.values():
-            tool.close()
+        """Hide all windows."""
+        for wrapper in self._imagetool_wrappers.values():
+            wrapper.hide()
+            for childtool in wrapper._childtools.values():
+                childtool.hide()
 
     @QtCore.Slot()
     def reload_selected(self) -> None:
         """Reload data in selected ImageTool windows."""
-        for index in self.list_view.selected_tool_indices:
-            self._tool_wrappers[index].slicer_area.reload()
+        for index in self.tree_view.selected_imagetool_indices:
+            self._imagetool_wrappers[index].slicer_area.reload()
 
     @QtCore.Slot()
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""
-        checked_names = self.list_view.selected_tool_indices
+        indices = list(self.tree_view.selected_imagetool_indices)
+        child_uids = list(self.tree_view.selected_childtool_uids)
 
         msg_box = QtWidgets.QMessageBox(self)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setText("Remove selected windows?")
-        msg_box.setInformativeText(
-            "1 selected window will be removed."
-            if len(checked_names) == 1
-            else f"{len(checked_names)} selected windows will be removed."
-        )
+
+        count: int = len(indices)
+        num_selected_children: int = len(child_uids)
+        num_implicit_children: int = 0
+        for i in indices:
+            for uid in self._imagetool_wrappers[i]._childtool_indices:
+                if uid not in child_uids:  # pragma: no branch
+                    num_implicit_children += 1
+
+        text = f"{count} selected ImageTool window{'' if count == 1 else 's'}"
+        if num_implicit_children > 0:
+            text += (
+                f", along with {num_implicit_children} associated child tool"
+                f"{'' if num_implicit_children == 1 else 's'}"
+            )
+        if num_selected_children > 0:
+            text += (
+                f" and {num_selected_children} selected child tool"
+                f"{'' if num_selected_children == 1 else 's'}"
+            )
+        text += " will be removed."
+
+        msg_box.setInformativeText(text)
         msg_box.setStandardButtons(
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.Cancel
@@ -657,32 +843,53 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
         if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-            for name in checked_names:
-                self.remove_tool(name)
+            for name in indices:
+                self.remove_imagetool(name)
+            for uid in child_uids:
+                self._remove_childtool(uid)
+
+    @property
+    def _rename_dialog(self) -> _RenameDialog:
+        if not hasattr(self, "__rename_dialog"):
+            self.__rename_dialog = _RenameDialog(self)
+        return self.__rename_dialog
 
     @QtCore.Slot()
     def rename_selected(self) -> None:
         """Rename selected ImageTool windows."""
-        selected = self.list_view.selected_tool_indices
+        selected = self.tree_view.selected_imagetool_indices
         if len(selected) == 1:
-            self.list_view.edit(self.list_view._model._row_index(selected[0]))
+            self.tree_view.edit(self.tree_view._model._row_index(selected[0]))
             return
-        dialog = _RenameDialog(self, [self._tool_wrappers[i].name for i in selected])
-        dialog.exec()
+
+        dlg = self._rename_dialog
+        dlg.set_names([self._imagetool_wrappers[i].name for i in selected])
+        dlg.open()
 
     @QtCore.Slot()
     def duplicate_selected(self) -> None:
-        """Duplicate selected ImageTool windows."""
-        selected: list[int] = list(self.list_view.selected_tool_indices)
-        self.list_view.deselect_all()
+        """Duplicate selected windows."""
+        indices = list(self.tree_view.selected_imagetool_indices)
+        child_uids = list(self.tree_view.selected_childtool_uids)
+        self.tree_view.deselect_all()
 
         selection_model = typing.cast(
-            "QtCore.QItemSelectionModel", self.list_view.selectionModel()
+            "QtCore.QItemSelectionModel", self.tree_view.selectionModel()
         )
-        for index in selected:
-            new_index = self.duplicate_tool(index)
+        for index in indices:
+            new_index = self.duplicate_imagetool(index)
 
-            qmodelindex = self.list_view._model._row_index(new_index)
+            qmodelindex = self.tree_view._model._row_index(new_index)
+
+            selection_model.select(
+                QtCore.QItemSelection(qmodelindex, qmodelindex),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+        for uid in child_uids:
+            new_uid = self.duplicate_childtool(uid)
+
+            qmodelindex = self.tree_view._model._row_index(new_uid)
 
             selection_model.select(
                 QtCore.QItemSelection(qmodelindex, qmodelindex),
@@ -695,33 +902,35 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
         """Link selected ImageTool windows."""
         self.unlink_selected(deselect=False)
-        self.link_tools(*self.list_view.selected_tool_indices, link_colors=link_colors)
+        self.link_imagetools(
+            *self.tree_view.selected_imagetool_indices, link_colors=link_colors
+        )
         if deselect:
-            self.list_view.deselect_all()
+            self.tree_view.deselect_all()
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
     def unlink_selected(self, deselect: bool = True) -> None:
         """Unlink selected ImageTool windows."""
-        for index in self.list_view.selected_tool_indices:
-            self.get_tool(index).slicer_area.unlink()
+        for index in self.tree_view.selected_imagetool_indices:
+            self.get_imagetool(index).slicer_area.unlink()
         self._sigReloadLinkers.emit()
         if deselect:
-            self.list_view.deselect_all()
+            self.tree_view.deselect_all()
 
     @QtCore.Slot()
     def archive_selected(self) -> None:
         """Archive selected ImageTool windows."""
         with erlab.interactive.utils.wait_dialog(self, "Archiving..."):
-            for index in self.list_view.selected_tool_indices:
-                self._tool_wrappers[index].archive()
+            for index in self.tree_view.selected_imagetool_indices:
+                self._imagetool_wrappers[index].archive()
 
     @QtCore.Slot()
     def unarchive_selected(self) -> None:
         """Unarchive selected ImageTool windows."""
         with erlab.interactive.utils.wait_dialog(self, "Unarchiving..."):
-            for index in self.list_view.selected_tool_indices:
-                self._tool_wrappers[index].unarchive()
+            for index in self.tree_view.selected_imagetool_indices:
+                self._imagetool_wrappers[index].unarchive()
 
     @QtCore.Slot()
     def concat_selected(self) -> None:
@@ -739,34 +948,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 show_in_manager(
                     xr.concat(
                         [
-                            self.get_tool(index).slicer_area._data
-                            for index in self.list_view.selected_tool_indices
+                            self.get_imagetool(index).slicer_area._data
+                            for index in self.tree_view.selected_imagetool_indices
                         ],
                         dim=text,
                     )
                 )
-            except Exception as e:
+            except Exception:
                 logger.exception("Error while concatenating data")
-                QtWidgets.QMessageBox.critical(
+                erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
-                    "An error occurred while concatenating data:\n\n"
-                    f"{type(e).__name__}: {e}",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+                    "An error occurred while concatenating data.",
                 )
                 return
 
     @QtCore.Slot()
     def store_selected(self) -> None:
         self.ensure_console_initialized()
-        dialog = _StoreDialog(self, self.list_view.selected_tool_indices)
+        dialog = _StoreDialog(self, self.tree_view.selected_imagetool_indices)
         dialog.exec()
 
-    def rename_tool(self, index: int, new_name: str) -> None:
-        """Rename the ImageTool window corresponding to the given index."""
-        self._tool_wrappers[index].name = new_name
+    @QtCore.Slot()
+    def unwatch_selected(self) -> None:
+        """Unwatch selected ImageTool windows."""
+        for index in self.tree_view.selected_imagetool_indices:
+            self._imagetool_wrappers[index].unwatch()
 
-    def duplicate_tool(self, index: int) -> int:
+    def rename_imagetool(self, index: int, new_name: str) -> None:
+        """Rename the ImageTool window corresponding to the given index."""
+        self._imagetool_wrappers[index].name = new_name
+
+    def duplicate_imagetool(self, index: int) -> int:
         """Duplicate the ImageTool window corresponding to the given index.
 
         Parameters
@@ -779,44 +992,71 @@ class ImageToolManager(QtWidgets.QMainWindow):
         int
             Index of the newly created ImageTool window.
         """
-        return self.add_tool(
-            self.get_tool(index).duplicate(_in_manager=True), activate=True
+        return self.add_imagetool(
+            self.get_imagetool(index).duplicate(_in_manager=True), activate=True
         )
 
-    def link_tools(self, *indices, link_colors: bool = True) -> None:
+    def duplicate_childtool(self, uid: str) -> str:
+        """Duplicate the child tool corresponding to the given UID.
+
+        Parameters
+        ----------
+        uid
+            UID of the child tool to duplicate.
+
+        Returns
+        -------
+        str
+            UID of the newly created child tool.
+        """
+        tool, idx = self._get_childtool_and_parent(uid)
+        return self.add_childtool(tool.duplicate(), idx)
+
+    def link_imagetools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
         linker = erlab.interactive.imagetool.core.SlicerLinkProxy(
-            *[self.get_tool(t).slicer_area for t in indices], link_colors=link_colors
+            *[self.get_imagetool(t).slicer_area for t in indices],
+            link_colors=link_colors,
         )
         self._linkers.append(linker)
         self._sigReloadLinkers.emit()
 
-    def name_of_tool(self, index: int) -> str:
+    def name_of_imagetool(self, index: int) -> str:
         """Get the name of the ImageTool window corresponding to the given index."""
-        return self._tool_wrappers[index].name
+        return self._imagetool_wrappers[index].name
 
-    def label_of_tool(self, index: int) -> str:
+    def label_of_imagetool(self, index: int) -> str:
         """Get the label of the ImageTool window corresponding to the given index."""
-        return self._tool_wrappers[index].label_text
+        return self._imagetool_wrappers[index].label_text
 
     @QtCore.Slot()
     def garbage_collect(self) -> None:
         """Run garbage collection to free up memory."""
         gc.collect()  # pragma: no cover
 
-    def _to_datatree(self, close: bool = False) -> xr.DataTree:
+    def _to_datatree(
+        self, close: bool = False, include_children: bool = True
+    ) -> xr.DataTree:
         """Convert the current state of the manager to a DataTree object."""
         constructor: dict[str, xr.Dataset] = {}
-        for index in tuple(self._tool_wrappers.keys()):
-            ds = self.get_tool(index).to_dataset()
+        for index in tuple(self._imagetool_wrappers.keys()):
+            ds = self.get_imagetool(index).to_dataset()
             ds.attrs["itool_title"] = (
                 ds.attrs["itool_title"].removeprefix(f"{index}").removeprefix(": ")
             )
-            constructor[str(index)] = ds
+            constructor[f"{index}/imagetool"] = ds
+            if include_children:
+                wrapper = self._imagetool_wrappers[index]
+                for i, uid in enumerate(wrapper._childtool_indices):
+                    childtool = wrapper._childtools[uid]
+                    if childtool.can_save_and_load():
+                        constructor[f"{index}/childtools/child{i}"] = (
+                            childtool.to_dataset()
+                        )
             if close:
-                self.remove_tool(index)
+                self.remove_imagetool(index)
         tree = xr.DataTree.from_dict(constructor)
-        tree.attrs["is_itool_workspace"] = 1
+        tree.attrs["imagetool_workspace_schema_version"] = 2
         return tree
 
     def _from_datatree(self, tree: xr.DataTree) -> None:
@@ -824,15 +1064,68 @@ class ImageToolManager(QtWidgets.QMainWindow):
         with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
-            for node in typing.cast("ValuesView[xr.DataTree]", (tree.values())):
-                self.add_tool(
-                    ImageTool.from_dataset(
-                        node.to_dataset(inherit=False), _in_manager=True
+
+            schema_version = tree.attrs.get("imagetool_workspace_schema_version", 1)
+            match schema_version:
+                case 1:
+                    # Legacy format, only contains imagetools at the root level
+                    tree = self._parse_datatree_compat_v1(tree)
+                case 2:  # pragma: no branch
+                    pass
+                case _:
+                    raise ValueError(
+                        f"Unsupported workspace schema version {schema_version}, "
+                        "file may be from a newer version of erlab"
                     )
-                )
+
+            dialog = _ChooseFromDataTreeDialog(self, tree, mode="load")
+            if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+                for i, node in enumerate(tree.values()):
+                    if dialog.imagetool_selected(i):  # pragma: no branch
+                        ds = (
+                            typing.cast("xr.DataTree", node["imagetool"])
+                            .to_dataset(inherit=False)
+                            .compute()
+                        )
+                        new_idx: int = self.add_imagetool(
+                            ImageTool.from_dataset(ds, _in_manager=True)
+                        )
+                        if not ds.attrs.get("itool_visible", True):
+                            self.get_imagetool(new_idx).hide()
+
+                    if "childtools" in node:
+                        for j, child_node in enumerate(
+                            typing.cast("xr.DataTree", node["childtools"]).values()
+                        ):
+                            if dialog.childtool_selected(i, j):  # pragma: no branch
+                                ds = (
+                                    typing.cast("xr.DataTree", child_node)
+                                    .to_dataset(inherit=False)
+                                    .compute()
+                                )
+                                uid = self.add_childtool(
+                                    erlab.interactive.utils.ToolWindow.from_dataset(ds),
+                                    new_idx,
+                                )
+                                if not ds.attrs.get("tool_visible", True):
+                                    self.get_childtool(uid).hide()
+            tree.close()
+
+    def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
+        """Restore the state of the manager from a DataTree object.
+
+        This is for the legacy format where only imagetools are stored at the root level
+        (saved from erlab v3.14.1 and earlier).
+        """
+        return xr.DataTree.from_dict(
+            {f"{i}/imagetool": node.dataset for i, node in tree.items()}
+        )
 
     def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
         """Check if the given DataTree object is a valid workspace file."""
+        if "imagetool_workspace_schema_version" in tree.attrs:
+            return True
+        # Legacy format
         return tree.attrs.get("is_itool_workspace", 0) == 1
 
     @QtCore.Slot()
@@ -848,20 +1141,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
-        dialog.setDefaultSuffix("h5")
+        dialog.setNameFilter("ImageTool Workspace Files (*.itws)")
+        dialog.setDefaultSuffix("itws")
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
-        if not native:
+        if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
-                self._to_datatree().to_netcdf(
-                    fname, engine="h5netcdf", invalid_netcdf=True
-                )
+                self._save_to_file(fname)
+
+    def _save_to_file(self, fname: str):
+        tree: xr.DataTree = self._to_datatree()
+        dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:  # pragma: no branch
+            for i, key in enumerate(list(tree.keys())):
+                if not dialog.imagetool_selected(i):
+                    del tree[key]
+                    continue
+
+                node = tree[key]
+                if "childtools" in node:
+                    for j, child_key in enumerate(
+                        list(typing.cast("xr.DataTree", node["childtools"]).keys())
+                    ):
+                        if not dialog.childtool_selected(i, j):
+                            del node["childtools"][child_key]
+                    if len(node["childtools"]) == 0:
+                        del node["childtools"]
+        tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
 
     @QtCore.Slot()
     def load(self, *, native: bool = True) -> None:
@@ -876,25 +1187,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-        dialog.setNameFilter("xarray HDF5 Files (*.h5)")
+        dialog.setNameFilters(
+            ["ImageTool Workspace Files (*.itws)", "xarray HDF5 Files (*.h5)"]
+        )
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
-        if not native:
+        if not native:  # pragma: no branch
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        if dialog.exec():
+        if dialog.exec():  # pragma: no branch
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
                 self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
-            except Exception as e:
+            except Exception:
                 logger.exception("Error while loading workspace")
-                QtWidgets.QMessageBox.critical(
+                erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
-                    "An error occurred while loading the workspace file:\n\n"
-                    f"{type(e).__name__}: {e}",
-                    QtWidgets.QMessageBox.StandardButton.Ok,
+                    "An error occurred while loading the workspace file.",
                 )
                 self.load()
 
@@ -939,7 +1250,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot(list, dict)
     def _data_recv(
-        self, data: list[xr.DataArray] | list[xr.Dataset], kwargs: dict[str, typing.Any]
+        self,
+        data: list[xr.DataArray] | list[xr.Dataset],
+        kwargs: dict[str, typing.Any],
+        *,
+        watched_var: tuple[str, str] | None = None,
     ) -> list[bool]:
         """Slot function to receive data from the server.
 
@@ -952,9 +1267,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             A list of xarray.DataArray objects representing the data.
 
             Also accepts a list of xarray.Dataset objects created with
-            ``ImageTool.to_dataset()``, in which case `kwargs` is ignored.
+            ``ImageTool.to_dataset()``, in which case all other parameters are ignored.
         kwargs
-            Additional keyword arguments.
+            Additional keyword arguments to be passed to the ImageTool.
+        watched_var
+            If the tool is created from a watched variable, this should be a tuple of
+            the variable name and its unique ID.
 
         Returns
         -------
@@ -965,12 +1283,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 try:
-                    self.add_tool(
+                    self.add_imagetool(
                         ImageTool.from_dataset(ds, _in_manager=True), activate=True
                     )
-                except Exception as e:
+                except Exception:
                     flags.append(False)
-                    self._error_creating_tool(e)
+                    self._error_creating_imagetool()
                 else:
                     flags.append(True)
             return flags
@@ -982,15 +1300,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         for d in data:
             try:
-                indices.append(self.add_tool(ImageTool(d, **kwargs), activate=True))
-            except Exception as e:
+                indices.append(
+                    self.add_imagetool(
+                        ImageTool(d, **kwargs), activate=True, watched_var=watched_var
+                    )
+                )
+            except Exception:
                 flags.append(False)
-                self._error_creating_tool(e)
+                self._error_creating_imagetool()
             else:
                 flags.append(True)
 
         if link:
-            self.link_tools(*indices, link_colors=link_colors)
+            self.link_imagetools(*indices, link_colors=link_colors)
 
         return flags
 
@@ -999,6 +1321,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
         """Load data from the given files using the specified loader."""
+        if loader_name == "ask":
+            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            return
+
         self._add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
@@ -1013,14 +1339,70 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Replace data in the ImageTool windows with the given data."""
         for darr, idx in zip(data_list, indices, strict=True):
             if idx < 0:
-                # Replace newest index
-                idx = sorted(self._tool_wrappers.keys())[idx]
+                # Negative index counts from the end
+                idx = sorted(self._imagetool_wrappers.keys())[idx]
             elif idx == self.next_idx:
                 # If not yet created, add new tool
                 self._data_recv([darr], {})
                 continue
-            self.get_tool(idx).slicer_area.set_data(darr)
+            self.get_imagetool(idx).slicer_area.set_data(darr)
         self._sigDataReplaced.emit()
+
+    def _find_watched_idx(self, uid: str) -> int | None:
+        """Find the index of the watched ImageTool corresponding to the given UID."""
+        for k, v in self._imagetool_wrappers.items():
+            if v._watched_uid == uid:
+                return k
+        return None
+
+    @QtCore.Slot(str)
+    def _remove_watched(self, uid: str) -> None:
+        """Remove the ImageTool corresponding to the given watched variable UID."""
+        idx = self._find_watched_idx(uid)
+        if idx is not None:  # pragma: no branch
+            self.remove_imagetool(idx)
+
+    @QtCore.Slot(str)
+    def _show_watched(self, uid: str) -> None:
+        """Show the ImageTool corresponding to the given watched variable UID."""
+        idx = self._find_watched_idx(uid)
+        if idx is not None:
+            self.show_imagetool(idx)
+
+    @QtCore.Slot(str, str, object)
+    def _data_watched_update(self, varname: str, uid: str, darr: xr.DataArray) -> None:
+        """Update ImageTool window corresponding to the given watched variable."""
+        idx = self._find_watched_idx(uid)
+        if idx is None:
+            # If the tool does not exist, create a new one
+            self._data_recv([darr], {}, watched_var=(varname, uid))
+        else:
+            # Update data in the existing tool
+            self.get_imagetool(idx).slicer_area.set_data(darr)
+
+    @QtCore.Slot(str)
+    def _data_unwatch(self, uid: str) -> None:
+        idx = self._find_watched_idx(uid)
+        if idx is not None:
+            # Convert the tool to a normal one
+            self._imagetool_wrappers[idx].unwatch()
+
+    @QtCore.Slot(object)
+    def _get_imagetool_data(self, index_or_uid: int | str) -> xr.DataArray | None:
+        """Request data from the ImageTool window corresponding to the given index."""
+        if isinstance(index_or_uid, str):
+            index = self._find_watched_idx(index_or_uid)
+        else:
+            index = index_or_uid
+
+        if index not in self._imagetool_wrappers:
+            return None
+        return self.get_imagetool(index).slicer_area._data
+
+    @QtCore.Slot(object)
+    def _send_imagetool_data(self, index_or_uid: int | str) -> None:
+        """Send data of the ImageTool window corresponding to the given index."""
+        self._sigReplyData.emit(self._get_imagetool_data(index_or_uid))
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
@@ -1046,8 +1428,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @property
     def _recent_loader_name(self) -> str | None:
         """Name of the most recently used loader."""
-        if self._recent_name_filter is not None:
-            for k in erlab.io.loaders:
+        if self._recent_name_filter is not None:  # pragma: no branch
+            for k in erlab.io.loaders:  # pragma: no branch
                 if self._recent_name_filter in erlab.io.loaders[k].file_dialog_methods:
                     return k
         return None
@@ -1096,9 +1478,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         "drag-and-drop operation.",
                     )
                     return
-
                 self.open_multiple_files(
-                    file_paths, try_workspace=extensions == {".h5"}
+                    file_paths,
+                    try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
                 )
 
     def _show_loaded_info(
@@ -1188,9 +1570,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     logger.debug("Failed to open %s as datatree workspace", p)
                 else:
                     if self._is_datatree_workspace(dt):
-                        self._from_datatree(dt)
-                        queued.remove(p)
-                        loaded.append(p)
+                        try:
+                            self._from_datatree(dt)
+                        except Exception:
+                            logger.exception("Error while loading workspace")
+                            erlab.interactive.utils.MessageDialog.critical(
+                                self,
+                                "Error",
+                                "An error occurred while loading the workspace file.",
+                            )
+                        finally:
+                            queued.remove(p)
+                            loaded.append(p)
 
         if len(queued) == 0:
             return
@@ -1230,14 +1621,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
             loaded, queued, failed, func, kargs, self.open_multiple_files
         )
 
-    def _error_creating_tool(self, e: Exception) -> None:
+    def _error_creating_imagetool(self) -> None:
+        """Show an error message when an ImageTool window could not be created."""
         logger.exception("Error creating ImageTool window")
-        msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Critical)
-        msg_box.setText("An error occurred while creating the ImageTool window.")
-        msg_box.setInformativeText("The data may be incompatible with ImageTool.")
-        msg_box.setDetailedText(f"{type(e).__name__}: {e}")
-        msg_box.exec()
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            "Error",
+            "An error occurred while creating the ImageTool window.",
+            "The data may be incompatible with ImageTool.",
+        )
 
     def _add_from_multiple_files(
         self,
@@ -1251,11 +1643,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         handler = _MultiFileHandler(self, queued, func, kwargs)
         self._file_handlers.add(handler)
 
-        def _finished_callback() -> None:
+        def _finished_callback(loaded_new, aborted, failed_new) -> None:
             self._show_loaded_info(
-                loaded + handler.loaded,
-                handler.queued,
-                failed + handler.failed,
+                loaded + loaded_new,
+                aborted,
+                failed + failed_new,
                 retry_callback=retry_callback,
             )
             self._file_handlers.remove(handler)
@@ -1282,8 +1674,119 @@ class ImageToolManager(QtWidgets.QMainWindow):
         uid = str(uuid.uuid4())
         widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         self._additional_windows[uid] = widget  # Store reference to prevent gc
-        widget.destroyed.connect(lambda: self._additional_windows.pop(uid))
+        widget.destroyed.connect(lambda: self._additional_windows.pop(uid, None))
         widget.show()
+
+    def add_childtool(
+        self, tool: erlab.interactive.utils.ToolWindow, index: int
+    ) -> str:
+        """Register a child tool window.
+
+        This is mainly used for handling tool windows such as goldtool and dtool opened
+        from child ImageTool windows.
+
+        Parameters
+        ----------
+        tool
+            The tool window to add.
+        index
+            Index of the parent ImageTool window.
+        """
+        uid = self._imagetool_wrappers[index]._add_childtool(tool)
+        self.tree_view.childtool_added(uid, index)
+        return uid
+
+    def wrapper_from_slicer_area(
+        self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
+    ) -> _ImageToolWrapper | None:
+        """Get the ImageTool wrapper corresponding to the given slicer area."""
+        for wrapper in self._imagetool_wrappers.values():  # pragma: no branch
+            if wrapper.slicer_area is slicer_area:
+                return wrapper
+        return None
+
+    def _add_childtool_from_slicerarea(
+        self,
+        tool: erlab.interactive.utils.ToolWindow,
+        parent_slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
+    ) -> None:
+        for idx, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
+            if wrapper.slicer_area is parent_slicer_area:
+                self.add_childtool(tool, idx)
+                return
+
+        # The parent slicer area is not owned by this manager; just keep track of it
+        self.add_widget(tool)
+
+    def _get_childtool_and_parent(
+        self, uid: str
+    ) -> tuple[erlab.interactive.utils.ToolWindow, int]:
+        """Get the child tool window and parent index corresponding to the given UID.
+
+        Parameters
+        ----------
+        uid
+            The unique ID of the child tool to get.
+
+        Returns
+        -------
+        ToolWindow
+            The child tool window corresponding to the given UID.
+        int
+            The index of the parent ImageTool window.
+        """
+        for idx, wrapper in self._imagetool_wrappers.items():
+            if uid in wrapper._childtool_indices:
+                return wrapper._childtools[uid], idx
+        raise KeyError(f"No child tool with UID {uid} found")
+
+    def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
+        """Get the child tool window corresponding to the given UID.
+
+        Parameters
+        ----------
+        uid
+            The unique ID of the child tool to get.
+
+        Returns
+        -------
+        ToolWindow
+            The child tool window corresponding to the given UID.
+        """
+        return self._get_childtool_and_parent(uid)[0]
+
+    def show_childtool(self, uid: str) -> None:
+        """Show the child tool window corresponding to the given UID."""
+        childtool = self.get_childtool(uid)
+
+        if sys.platform == "win32":  # pragma: no cover
+            # On Windows, window flags must be set to bring the window to the top
+            childtool.setWindowFlags(
+                childtool.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+            childtool.show()
+            childtool.setWindowFlags(
+                childtool.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+        childtool.show()
+        childtool.show()
+        childtool.activateWindow()
+        childtool.raise_()
+
+    def _remove_childtool(self, uid: str) -> None:
+        """Unregister a child tool window.
+
+        Parameters
+        ----------
+        uid
+            The unique ID of the child tool to remove.
+        """
+        self.tree_view.childtool_removed(uid)
+
+        for wrapper in self._imagetool_wrappers.values():  # pragma: no branch
+            if uid in wrapper._childtools:
+                wrapper._remove_childtool(uid)
+                return
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
@@ -1308,12 +1811,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
-    def _stop_server(self) -> None:
+    def _stop_servers(self) -> None:
         """Stop the server thread properly."""
-        if self.server.isRunning():
+        if self.server.isRunning():  # pragma: no branch
             self.server.stopped.set()
-            _ping_server()
             self.server.wait()
+        if self.watcher_server.isRunning():  # pragma: no branch
+            self.watcher_server.stopped.set()
+            self._sigWatchedDataEdited.emit("", "", "shutdown")
+            self.watcher_server.wait()
 
     # def __del__(self):
     # """Ensure proper cleanup of server thread when the manager is deleted."""
@@ -1325,8 +1831,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog = erlab.interactive._options.OptionDialog(self)
         dialog.exec()
 
+    @QtCore.Slot()
+    def check_for_updates(self) -> None:
+        from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater
+
+        updater = AutoUpdater()
+        updater.check_for_updates(self)
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
+        logger.debug("Closing ImageTool Manager...")
         if self.ntools != 0:
             msg_box = QtWidgets.QMessageBox(self)
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -1347,27 +1861,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     event.ignore()
                 return
 
-        # Remove all ImageTool windows
+        logger.debug("Waiting for file handlers to finish...")
+        if len(self._file_handlers) > 0:  # pragma: no cover
+            with erlab.interactive.utils.wait_dialog(
+                self, "Waiting for file operations to finish..."
+            ):
+                for handler in list(self._file_handlers):
+                    handler.wait()
+
+        logger.debug("Removing all ImageTool windows...")
         self.remove_all_tools()
 
+        logger.debug("Closing additional windows...")
         for widget in dict(self._additional_windows).values():
             widget.close()
 
-        # Remove event filters (problematic in CI)
+        logger.debug("Removing event filters...")
         self.text_box.removeEventFilter(self._kb_filter)
-        self.list_view._delegate._cleanup_filter()
+        self.tree_view._delegate._cleanup_filter()
 
         if hasattr(self, "console"):
+            logger.debug("Shutting down console kernel...")
             self.console._console_widget.shutdown_kernel()
             self.console.close()
 
         if hasattr(self, "explorer"):
+            logger.debug("Closing data explorer...")
             self.explorer.close()
 
-        # Clean up temporary directory
+        logger.debug("Cleaning up temporary directory...")
         self._tmp_dir.cleanup()
 
-        # Properly close the server
-        self._stop_server()
+        logger.debug("Stopping servers...")
+        self._stop_servers()
 
         super().closeEvent(event)

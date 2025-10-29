@@ -9,6 +9,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from erlab.interactive.utils import (
     IconActionButton,
     IdentifierValidator,
+    MessageDialog,
     load_fit_ui,
     save_fit_ui,
 )
@@ -91,12 +92,10 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
             focused.setText(f"fit_save.{file_ext}")
 
     # Save fit
-    _handler_save = accept_dialog(
-        lambda: save_fit_ui(fit_result_ds), pre_call=_go_to_file
-    )
+    accept_dialog(lambda: save_fit_ui(fit_result_ds), pre_call=_go_to_file)
 
     # Load fit
-    _handler_load = accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
+    accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
 
     tmp_dir.cleanup()
 
@@ -116,7 +115,7 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds, file_ext):
 )
 def test_identifier_validator_validate(input_str, expected_state):
     validator = IdentifierValidator()
-    state, out_str, pos = validator.validate(input_str, 0)
+    state, _, _ = validator.validate(input_str, 0)
     assert state == expected_state
 
 
@@ -137,3 +136,144 @@ def test_identifier_validator_validate(input_str, expected_state):
 def test_identifier_validator_fixup(input_str, expected):
     validator = IdentifierValidator()
     assert validator.fixup(input_str) == expected
+
+
+class CustomException(Exception):
+    pass
+
+
+@pytest.fixture
+def raise_exception():
+    def _func():
+        raise CustomException("Dialog test error")
+
+    return _func
+
+
+@pytest.mark.parametrize(
+    "informative_text", ["Additional info", ""], ids=["with_info", "no_info"]
+)
+def test_message_dialog_critical(
+    qtbot, raise_exception, accept_dialog, informative_text
+):
+    try:
+        raise_exception()
+    except CustomException:
+        parent = QtWidgets.QWidget()
+        qtbot.addWidget(parent)
+        parent.show()
+
+        def _call_messagebox_critical():
+            MessageDialog.critical(
+                parent=parent,
+                title="Show Traceback",
+                text="An error occurred",
+                informative_text=informative_text,
+            )
+
+        accept_dialog(_call_messagebox_critical)
+
+
+def test_message_dialog_with_details_toggle(qtbot):
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    parent.show()
+
+    dialog = MessageDialog(
+        parent=parent,
+        title="Title",
+        text="Main text",
+        informative_text="Info text",
+        detailed_text="<b>Details</b>",
+        buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.windowTitle() == "Title"
+    assert dialog.text() == "Main text"
+    assert dialog.informativeText() == "Info text"
+    assert dialog.detailedText() == "<b>Details</b>"
+
+    assert dialog._details_toggle.isVisible()
+    assert not dialog._details_container.isVisible()
+
+    dialog._details_toggle.setChecked(True)
+    qtbot.wait_until(lambda: dialog._details_container.isVisible(), timeout=200)
+    assert dialog._details_toggle.arrowType() == QtCore.Qt.ArrowType.DownArrow
+    assert dialog._details_toggle.text() == "Hide Details"
+
+    dialog._details_toggle.setChecked(False)
+    qtbot.wait_until(lambda: not dialog._details_container.isVisible(), timeout=200)
+    assert dialog._details_toggle.arrowType() == QtCore.Qt.ArrowType.RightArrow
+    assert dialog._details_toggle.text() == "Show Details…"
+
+    ok_btn = dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+    ok_btn.click()
+    assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_message_dialog_without_details(qtbot):
+    dialog = MessageDialog(
+        parent=None,
+        title="No Details",
+        text="Text",
+        informative_text="",
+        detailed_text="",
+        buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert not dialog._details_toggle.isVisible()
+    assert not dialog._details_container.isVisible()
+
+    dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+    assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_message_dialog_custom_buttons_and_default(qtbot):
+    dialog = MessageDialog(
+        parent=None,
+        title="Custom Buttons",
+        text="Choose",
+        informative_text="",
+        detailed_text="<p>detail</p>",
+        buttons=(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        ),
+        default_button=QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    ok_btn = dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+    cancel_btn = dialog._button_box.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Cancel
+    )
+    assert ok_btn is not None
+    assert cancel_btn is not None
+    assert cancel_btn.isDefault() or cancel_btn.autoDefault()
+
+    cancel_btn.click()
+    assert dialog.result() == QtWidgets.QDialog.Rejected
+
+
+def test_message_dialog_setters_update_labels(qtbot):
+    dialog = MessageDialog(parent=None)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog.setText("Hello")
+    dialog.setInformativeText("Info")
+    dialog.setDetailedText("<i>Details</i>")
+
+    assert dialog.text() == "Hello"
+    assert dialog.informativeText() == "Info"
+    assert dialog.detailedText() == "<i>Details</i>"
+    assert dialog._details_toggle.isVisible()
+
+    dialog._button_box.setStandardButtons(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+    dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+    assert dialog.result() == QtWidgets.QDialog.Accepted

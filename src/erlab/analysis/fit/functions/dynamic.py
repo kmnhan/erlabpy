@@ -21,7 +21,6 @@ import numpy.typing as npt
 import xarray as xr
 
 from erlab.analysis.fit.functions.general import (
-    TINY,
     do_convolve,
     do_convolve_2d,
     do_convolve_segments,
@@ -29,7 +28,7 @@ from erlab.analysis.fit.functions.general import (
     gaussian_wh,
     lorentzian_wh,
 )
-from erlab.constants import kb_eV
+from erlab.constants import TINY, kb_eV
 
 
 class PeakArgs(typing.TypedDict):

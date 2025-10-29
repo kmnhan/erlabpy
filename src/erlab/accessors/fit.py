@@ -1,29 +1,28 @@
-"""Defines accessors for curve fitting."""
+"""Defines accessors for curve fitting.
+
+All accessors in this module have been deprecated in favor of using `xarray-lmfit
+<https://xarray-lmfit.readthedocs.io/stable/>`_ directly.
+
+"""
 
 from __future__ import annotations
 
-__all__ = ["ParallelFitDataArrayAccessor"]
+__all__ = []
 
 import typing
 import warnings
-from collections.abc import Hashable, Mapping
 
 import xarray as xr
-import xarray_lmfit
 
 from erlab.accessors.utils import ERLabDataArrayAccessor, ERLabDatasetAccessor
 
 if typing.TYPE_CHECKING:
     # Avoid importing until runtime for initial import performance
     import lmfit
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
-    from erlab.utils.misc import LazyImport
-
     lmfit = _lazy.load("lmfit")
-    tqdm = LazyImport("tqdm.auto")
 
 
 @xr.register_dataset_accessor("modelfit")
@@ -86,6 +85,11 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
         """
         Fit the specified model to the data along the given dimension.
 
+        .. deprecated:: 3.14.1
+
+            Use :meth:`xarray.DataArray.xlm.modelfit` with ``dask`` instead.
+
+
         Parameters
         ----------
         dim : str
@@ -105,47 +109,12 @@ class ParallelFitDataArrayAccessor(ERLabDataArrayAccessor):
             :meth:`xarray.DataArray.xlm.modelfit` for details.
 
         """
-        if self._obj.chunks is not None:
-            raise ValueError(
-                "The input DataArray is chunked. Parallel fitting will not offer any "
-                "performance benefits. Use `DataArray.xlm.modelfit` instead"
-            )
-
-        ds = self._obj.to_dataset(dim, promote_attrs=True)
-
-        kwargs.setdefault("parallel", True)
-        kwargs.setdefault("progress", True)
-
-        if isinstance(kwargs.get("params"), Mapping):
-            kwargs["params"] = xarray_lmfit.modelfit._parse_params(
-                kwargs["params"], dask=False
-            )
-
-        if isinstance(kwargs.get("params"), xr.DataArray):
-            kwargs["params"] = kwargs["params"].to_dataset(dim, promote_attrs=True)
-
-        fitres = ds.xlm.modelfit(set(self._obj.dims) - {dim}, model, **kwargs)
-
-        drop_keys = []
-        concat_vars: dict[Hashable, list[xr.DataArray]] = {}
-        for k in ds.data_vars:
-            for var in self._VAR_KEYS:
-                key = f"{k}_{var}"
-                if key in fitres:
-                    if var not in concat_vars:
-                        concat_vars[var] = []
-                    concat_vars[var].append(fitres[key])
-                    drop_keys.append(key)
-
-        return (
-            fitres.drop_vars(drop_keys)
-            .assign(
-                {
-                    k: xr.concat(
-                        v, dim, coords="minimal", compat="override", join="override"
-                    )
-                    for k, v in concat_vars.items()
-                }
-            )
-            .assign_coords({dim: self._obj[dim]})
+        warnings.warn(
+            "`DataArray.parallel_fit` is deprecated, use "
+            "`DataArray.xlm.modelfit` after importing `xarray_lmfit` with dask",
+            FutureWarning,
+            stacklevel=1,
         )
+        chunked = self._obj.chunk({dim: 1})
+        fitres = chunked.xlm.modelfit(set(self._obj.dims) - {dim}, model, **kwargs)
+        return fitres.compute()

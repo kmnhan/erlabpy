@@ -41,7 +41,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     _sigCodeCopied = QtCore.Signal(str)
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__()
+        super().__init__(slicer_area)
         if self.title is not None:
             self.setWindowTitle(self.title)
 
@@ -79,9 +79,9 @@ class _DataManipulationDialog(QtWidgets.QDialog):
 
     @property
     def slicer_area(self) -> ImageSlicerArea:
-        _slicer_area = self._slicer_area()
-        if _slicer_area:
-            return _slicer_area
+        slicer_area = self._slicer_area()
+        if slicer_area:
+            return slicer_area
         raise LookupError("Parent was destroyed")
 
     @slicer_area.setter
@@ -101,6 +101,32 @@ class _DataManipulationDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, "Nothing to Copy", "Generated code is empty."
             )
+
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        """Run checks before opening the dialog.
+
+        Reimplement this method in subclasses to perform checks before showing the
+        dialog.
+
+        Returns
+        -------
+        QDialog.DialogCode
+            Anything other than `QDialog.DialogCode.Accepted` will prevent the dialog
+            from showing.
+        """
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    def show(self) -> None:
+        """Run checks and (asynchronously) open the dialog if they pass.
+
+        If checks fail, the dialog is never shown; reject() is scheduled so that
+        finished(Rejected) still fires (allowing uniform handling).
+        """
+        code = self._validate()
+        if code != QtWidgets.QDialog.DialogCode.Accepted:
+            QtCore.QTimer.singleShot(0, self.reject)
+            return
+        super().show()
 
     def setup_widgets(self) -> None:
         # Overridden by subclasses
@@ -195,14 +221,17 @@ class DataTransformDialog(_DataManipulationDialog):
                 erlab.interactive.itool(**itool_kw)
             else:
                 self.slicer_area.set_data(processed)
+                self.slicer_area.sigDataEdited.emit()
 
             del processed
 
             if applied_func is not None:
                 self.slicer_area.apply_func(applied_func)
 
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while processing data."
+            )
             return
 
         super().accept()
@@ -259,8 +288,10 @@ class DataFilterDialog(_DataManipulationDialog):
     def accept(self) -> None:
         try:
             self.slicer_area.apply_func(self.process_data)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while processing data."
+            )
             return
         super().accept()
 
@@ -531,7 +562,7 @@ class EdgeCorrectionDialog(DataTransformDialog):
             shift_coords=self.shift_coord_check.isChecked(),
         )
 
-    def exec(self) -> int:
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
         if "eV" not in self.slicer_area.data.dims:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -544,7 +575,7 @@ class EdgeCorrectionDialog(DataTransformDialog):
         if self._edge_fit is None:
             # User canceled the fit dialog
             return QtWidgets.QDialog.DialogCode.Rejected
-        return super().exec()
+        return super()._validate()
 
 
 class _BaseCropDialog(DataTransformDialog):
@@ -639,13 +670,13 @@ class CropToViewDialog(_BaseCropDialog):
             return
         super().accept()
 
-    def exec(self) -> int:
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
         if len(self.slicer_area.manual_limits) == 0:
             QtWidgets.QMessageBox.warning(
                 self, "Nothing to Crop", "Manually zoom in to define the crop area."
             )
             return QtWidgets.QDialog.DialogCode.Rejected
-        return super().exec()
+        return super()._validate()
 
 
 class CropDialog(_BaseCropDialog):
@@ -684,13 +715,13 @@ class CropDialog(_BaseCropDialog):
 
         return slice_dict
 
-    def exec(self) -> int:
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
         if self.slicer_area.n_cursors == 1:
             QtWidgets.QMessageBox.warning(
                 self, "Only 1 Cursor", "You need at least 2 cursors to crop the data."
             )
             return QtWidgets.QDialog.DialogCode.Rejected
-        return super().exec()
+        return super()._validate()
 
     @QtCore.Slot()
     def accept(self) -> None:

@@ -1,3 +1,4 @@
+import logging
 import tempfile
 import weakref
 
@@ -26,6 +27,8 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
     SymmetrizeDialog,
 )
+
+logger = logging.getLogger(__name__)
 
 _TEST_DATA: dict[str, xr.DataArray] = {
     "2D": xr.DataArray(
@@ -59,9 +62,124 @@ _TEST_DATA: dict[str, xr.DataArray] = {
 }
 
 
-@pytest.mark.parametrize("val_dtype", [np.float32, np.float64, np.int32, np.int64])
-@pytest.mark.parametrize("coord_dtype", [np.float32, np.float64, np.int32, np.int64])
-def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) -> None:
+@pytest.mark.parametrize(
+    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
+)
+@pytest.mark.parametrize("condition", ["unbinned", "binned"])
+def test_itool_tools(qtbot, test_data_type, condition) -> None:
+    data = _TEST_DATA[test_data_type].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.show()
+
+    main_image = win.slicer_area.images[0]
+
+    logger.info("Test code generation")
+    if data.ndim == 2:
+        assert main_image.selection_code == ""
+    else:
+        assert main_image.selection_code == ".qsel(beta=2.0)"
+
+    if condition == "binned":
+        logger.info("Set bins")
+        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+        win.array_slicer.set_bin(0, axis=1, value=2, update=data.ndim != 3)
+        if data.ndim == 3:
+            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+
+    logger.info("Test alt key menu")
+    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
+    main_image.vb.menu.eventFilter(
+        main_image.vb.menu,
+        QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
+        ),
+    )
+    for action in main_image.vb.menu.actions():
+        if action.text().startswith("goldtool"):
+            action.text().endswith("(Crop)")
+
+    logger.info("Check access to cropped data")
+    assert isinstance(main_image._current_data_cropped, xr.DataArray)
+
+    if not test_data_type.endswith("nonuniform"):
+        logger.info("Opening goldtool from main image")
+        main_image.open_in_goldtool()
+        qtbot.wait_until(
+            lambda: isinstance(win.slicer_area._associated_tools_list[-1], GoldTool),
+            timeout=2000,
+        )
+
+        logger.info("Opening restool from main image")
+        main_image.open_in_restool()
+        qtbot.wait_until(
+            lambda: isinstance(
+                win.slicer_area._associated_tools_list[-1], ResolutionTool
+            ),
+            timeout=2000,
+        )
+
+        logger.info("Opening dtool from main image")
+        main_image.open_in_dtool()
+        qtbot.wait_until(
+            lambda: isinstance(
+                win.slicer_area._associated_tools_list[-1], DerivativeTool
+            ),
+            timeout=2000,
+        )
+
+    logger.info("Open main image in new window")
+    main_image.open_in_new_window()
+    qtbot.wait_until(
+        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
+        timeout=2000,
+    )
+
+    logger.info("Closing ImageTool")
+    win.close()
+
+
+def test_itool_edit_cursor_colors(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+    assert win.slicer_area.n_cursors == 3
+
+    def parse_dialog(dialog: erlab.interactive.colors.ColorCycleDialog):
+        dialog.set_from_cmap()
+
+    accept_dialog(win.slicer_area.edit_cursor_colors, pre_call=parse_dialog)
+
+    assert [c.name() for c in win.slicer_area.cursor_colors] == [
+        "#5978e3",
+        "#dddddd",
+        "#d75344",
+    ]
+
+    for plot_item in win.slicer_area.profiles:
+        for cursor, plot_data_item in enumerate(plot_item.slicer_data_items):
+            assert (
+                plot_data_item.opts["pen"].color().name()
+                == win.slicer_area.cursor_colors[cursor].name()
+            )
+
+    win.close()
+
+
+@pytest.mark.parametrize("coord_dtype", [np.int32, np.int64, np.float32, np.float64])
+@pytest.mark.parametrize("val_dtype", [np.int32, np.int64, np.float32, np.float64])
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
+def test_itool_dtypes(
+    qtbot, move_and_compare_values, val_dtype, coord_dtype, use_dask
+) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(val_dtype),
         dims=["x", "y"],
@@ -70,18 +188,34 @@ def test_itool_dtypes(qtbot, move_and_compare_values, val_dtype, coord_dtype) ->
             "y": np.array([1, 3, 2, 7, 8], dtype=coord_dtype),  # non-uniform
         },
     )
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
+    if use_dask:
+        data = data.chunk()
 
-    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+        old_threshold = erlab.interactive.options["io/compute_threshold"]
+        erlab.interactive.options["io/compute_threshold"] = 0  # force compute for dask
+
+    try:
+        win = itool(data, execute=False)
+        qtbot.addWidget(win)
+
+        move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+
+        if use_dask:
+            win.slicer_area.compute_act.trigger()
+            qtbot.wait_until(lambda: not win.slicer_area.data_chunked, timeout=2000)
+
+    finally:
+        if use_dask:
+            erlab.interactive.options["io/compute_threshold"] = old_threshold
+
     win.close()
 
 
 def test_parse_data() -> None:
     with pytest.raises(
         TypeError,
-        match="Unsupported input type str. Expected DataArray, Dataset, DataTree, "
-        "numpy array, or a list of DataArray or numpy arrays.",
+        match=r"Unsupported input type str. Expected DataArray, Dataset, DataTree, "
+        r"numpy array, or a list of DataArray or numpy arrays.",
     ):
         erlab.interactive.imagetool.core._parse_input("string")
 
@@ -96,23 +230,21 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
     win = itool(np.zeros((2, 2)), execute=False)
     qtbot.addWidget(win)
 
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/data.h5"
-    data.to_netcdf(filename, engine="h5netcdf")
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/data.h5"
+        data.to_netcdf(filename, engine="h5netcdf")
 
-    def _go_to_file(dialog: QtWidgets.QFileDialog):
-        dialog.setDirectory(tmp_dir.name)
-        dialog.selectFile(filename)
-        focused = dialog.focusWidget()
-        if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("data.h5")
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.setDirectory(tmp_dir_name)
+            dialog.selectFile(filename)
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText("data.h5")
 
-    _handler = accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
-    move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
+        accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
+        move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
     win.close()
-
-    tmp_dir.cleanup()
 
 
 def test_itool_save(qtbot, accept_dialog) -> None:
@@ -120,28 +252,28 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/data.h5"
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/data.h5"
 
-    def _go_to_file(dialog: QtWidgets.QFileDialog):
-        dialog.setDirectory(tmp_dir.name)
-        dialog.selectFile(filename)
-        focused = dialog.focusWidget()
-        if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("data.h5")
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.setDirectory(tmp_dir_name)
+            dialog.selectFile(filename)
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText("data.h5")
 
-    _handler = accept_dialog(
-        lambda: win._export_file(native=False), pre_call=_go_to_file
-    )
+        accept_dialog(lambda: win._export_file(native=False), pre_call=_go_to_file)
+        xr.testing.assert_equal(data, xr.load_dataarray(filename, engine="h5netcdf"))
 
     win.close()
 
-    xr.testing.assert_equal(data, xr.load_dataarray(filename, engine="h5netcdf"))
-    tmp_dir.cleanup()
 
-
-def test_itool_general(qtbot, move_and_compare_values) -> None:
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
+def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    if use_dask:
+        data = data.chunk()
+
     win = itool(data, execute=False, cmap="terrain_r")
     qtbot.addWidget(win)
 
@@ -223,7 +355,7 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
             "twin_coord_names": (),
         },
         "current_cursor": 1,
-        "manual_limits": {},
+        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
@@ -251,6 +383,88 @@ def test_itool_general(qtbot, move_and_compare_values) -> None:
     cmap_ctrl.cb_colormap.load_all()
     cmap_ctrl.cb_colormap.showPopup()
 
+    # Toggle cursor visibility off
+    win.slicer_area.toggle_cursor_act.setChecked(False)
+    win.slicer_area.toggle_cursor_visibility()
+
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert not line_dict[ax].isVisible()
+            for span_dict in plot_item.cursor_spans:
+                assert not span_dict[ax].isVisible()
+
+    # Try setting bins
+    win.slicer_area.set_bin_all(axis=0, value=1, update=True)
+
+    # Check again if still hidden
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert not line_dict[ax].isVisible()
+            for span_dict in plot_item.cursor_spans:
+                assert not span_dict[ax].isVisible()
+
+    # Toggle cursor visibility on
+    win.slicer_area.toggle_cursor_act.setChecked(True)
+    win.slicer_area.toggle_cursor_visibility()
+
+    # Check if cursors are visible again
+    for plot_item in win.slicer_area.axes:
+        for ax in plot_item.display_axis:
+            for line_dict in plot_item.cursor_lines:
+                assert line_dict[ax].isVisible()
+            for cursor, span_dict in enumerate(plot_item.cursor_spans):
+                span_region = win.array_slicer.span_bounds(cursor, ax)
+                if span_region[0] == span_region[1]:
+                    assert not span_dict[ax].isVisible()
+                else:
+                    assert span_dict[ax].isVisible()
+
+    win.close()
+
+
+def test_image_slicer_area_history_and_manual_limits(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    # undoable/redoable
+    assert not area.undoable
+    assert not area.redoable
+
+    # history_suppressed context
+    with area.history_suppressed():
+        area._write_history = True
+
+    # set_manual_limits/propagate_limit_change
+    area.set_manual_limits({"x": [0, 4]})
+    area.propagate_limit_change(area.main_image)
+    # make_cursors with custom colors and error
+    area.make_cursors(["#ff0000", "#00ff00"])
+
+    # create colors with more cursors than COLORS
+    for _ in range(10):
+        area.color_for_cursor(_)
+    # apply_func with None and with a function
+    area.apply_func(None)
+    area.apply_func(lambda d: d + 1)
+
+    # reloadable/reload (simulate missing file/loader)
+    area._file_path = None
+    assert not area.reloadable
+
+    # add_tool_window (no manager)
+    w = QtWidgets.QWidget()
+    area.add_tool_window(w)
+    w.close()
+    qtbot.wait_until(lambda: len(area._associated_tools) == 0)
+
+    # state setter with partial state
+    s = dict(area.state)
+    s.pop("splitter_sizes", None)
+    area.state = s
     win.close()
 
 
@@ -282,6 +496,16 @@ def test_parse_input() -> None:
     ):
         _parse_input(
             xr.Dataset({"data1d": xr.DataArray(np.arange(5), dims=["x"]), "data0d": 1})
+        )
+
+    with pytest.raises(ValueError, match="No valid data for ImageTool found"):
+        _parse_input([])
+
+    with pytest.raises(ValueError, match="No valid data for ImageTool found"):
+        _parse_input(
+            xr.DataTree.from_dict(
+                {"dummy": xr.Dataset({"a": xr.DataArray(np.arange(5), dims=["x"])})}
+            )
         )
 
 
@@ -374,7 +598,7 @@ def test_value_update_errors(qtbot) -> None:
         win.slicer_area.update_values(
             xr.DataArray(np.arange(24).reshape((4, 6)), dims=["x", "y"])
         )
-    with pytest.raises(ValueError, match="^Data shape does not match.*"):
+    with pytest.raises(ValueError, match=r"^Data shape does not match.*"):
         win.slicer_area.update_values(np.arange(24).reshape((4, 6)))
 
     win.close()
@@ -391,7 +615,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
     xarray.testing.assert_allclose(
@@ -416,7 +640,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         dialog.reshape_check.setChecked(True)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
     # Check if the data is rotated
     xarray.testing.assert_allclose(
@@ -462,7 +686,7 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -516,7 +740,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _h0 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -537,7 +761,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _h1 = accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
@@ -567,7 +791,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
 
     assert pyperclip.paste() == '.qsel.average("x")'
@@ -596,7 +820,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
             dialog.copy_button.click()
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "z", center=2)
     )
@@ -625,7 +849,7 @@ def test_itool_assoc_coords(qtbot, accept_dialog) -> None:
         for check in dialog._checks.values():
             check.setChecked(True)
 
-    _handler = accept_dialog(
+    accept_dialog(
         win.slicer_area._choose_associated_coords, pre_call=_set_dialog_params
     )
 
@@ -646,36 +870,34 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
     win = itool(gold, execute=False)
     qtbot.addWidget(win)
 
-    tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/fit_res.nc"
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/fit_res.nc"
 
-    xarray_lmfit.save_fit(gold_fit_res, filename)
+        xarray_lmfit.save_fit(gold_fit_res, filename)
 
-    # Test dialog
-    def _set_dialog_params(dialog: EdgeCorrectionDialog) -> None:
-        dialog.shift_coord_check.setChecked(shift_coords)
-        dialog.new_window_check.setChecked(False)
+        # Test dialog
+        def _set_dialog_params(dialog: EdgeCorrectionDialog) -> None:
+            dialog.shift_coord_check.setChecked(shift_coords)
+            dialog.new_window_check.setChecked(False)
 
-    def _go_to_file(dialog: QtWidgets.QFileDialog):
-        dialog.setDirectory(tmp_dir.name)
-        dialog.selectFile(filename)
-        focused = dialog.focusWidget()
-        if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("fit_res.nc")
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.setDirectory(tmp_dir_name)
+            dialog.selectFile(filename)
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText("fit_res.nc")
 
-    _handler = accept_dialog(
-        win.mnb._correct_with_edge,
-        pre_call=[_go_to_file, _set_dialog_params],
-        chained_dialogs=2,
-    )
-    xarray.testing.assert_identical(
-        win.slicer_area._data,
-        erlab.analysis.gold.correct_with_edge(
-            gold, gold_fit_res, shift_coords=shift_coords
-        ),
-    )
-
-    tmp_dir.cleanup()
+        accept_dialog(
+            win.mnb._correct_with_edge,
+            pre_call=[_go_to_file, _set_dialog_params],
+            chained_dialogs=2,
+        )
+        xarray.testing.assert_identical(
+            win.slicer_area._data,
+            erlab.analysis.gold.correct_with_edge(
+                gold, gold_fit_res, shift_coords=shift_coords
+            ),
+        )
 
 
 def normalize(data, norm_dims, option):
@@ -715,7 +937,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog.coord_widget.spin0.setValue(1)
         dialog.new_window_check.setChecked(False)
 
-    _handler = accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 
@@ -737,7 +959,7 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         # Preview
         dialog._preview()
 
-    _handler = accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._normalize, pre_call=_set_dialog_params)
 
     # Check if the data is normalized
     xarray.testing.assert_identical(
@@ -749,89 +971,11 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
     # Check if canceling the dialog does not change the data
-    _handler = accept_dialog(
+    accept_dialog(
         win.mnb._normalize,
         pre_call=_set_dialog_params,
         accept_call=lambda d: d.reject(),
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
-
-    win.close()
-
-
-@pytest.mark.parametrize(
-    "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
-)
-@pytest.mark.parametrize("condition", ["unbinned", "binned"])
-def test_itool_tools(qtbot, test_data_type, condition) -> None:
-    data = _TEST_DATA[test_data_type].copy()
-    win = ImageTool(data)
-    qtbot.addWidget(win)
-    win.show()
-
-    main_image = win.slicer_area.images[0]
-
-    # Test code generation
-    if data.ndim == 2:
-        assert main_image.selection_code == ""
-    else:
-        assert main_image.selection_code == ".qsel(beta=2.0)"
-
-    if condition == "binned":
-        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-        win.array_slicer.set_bin(0, axis=1, value=2, update=True)
-        if data.ndim == 3:
-            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
-
-    # Test alt key menu
-    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
-    main_image.vb.menu.eventFilter(
-        main_image.vb.menu,
-        QtGui.QKeyEvent(
-            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
-        ),
-    )
-    for action in main_image.vb.menu.actions():
-        if action.text().startswith("goldtool"):
-            action.text().endswith("(Crop)")
-
-    # Test cropped image
-    assert isinstance(main_image._current_data_cropped, xr.DataArray)
-
-    # Open goldtool from main image
-    if not test_data_type.endswith("nonuniform"):
-        main_image.open_in_goldtool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), GoldTool
-        )
-
-        # Close associated windows
-        win.slicer_area.close_associated_windows()
-        qtbot.wait_until(
-            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
-        )
-
-        main_image.open_in_restool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), ResolutionTool
-        )
-
-        # Close associated windows
-        win.slicer_area.close_associated_windows()
-        qtbot.wait_until(
-            lambda w=win: len(w.slicer_area._associated_tools) == 0, timeout=1000
-        )
-
-        # Open dtool from main image
-        main_image.open_in_dtool()
-        assert isinstance(
-            next(iter(win.slicer_area._associated_tools.values())), DerivativeTool
-        )
-
-    # Open main image in new window
-    main_image.open_in_new_window()
-    assert isinstance(list(win.slicer_area._associated_tools.values())[-1], ImageTool)
-
-    win.slicer_area.close_associated_windows()
 
     win.close()

@@ -12,6 +12,7 @@ import os
 import pathlib
 import sys
 import time
+import traceback
 import typing
 import weakref
 
@@ -167,9 +168,9 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
     @property
     def file_browser(self) -> _DataExplorer:
         """Parent DataExplorer widget."""
-        _file_browser = self._file_browser()
-        if _file_browser:
-            return _file_browser
+        file_browser = self._file_browser()
+        if file_browser:
+            return file_browser
         raise LookupError("Parent was destroyed")
 
     def set_root_path(self, root_path: str | os.PathLike) -> None:
@@ -386,9 +387,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
             reverse=self._sort_order == QtCore.Qt.SortOrder.DescendingOrder,
         )
 
-    def _get_sort_key_func(
-        self, column: int
-    ) -> typing.Callable[[_FileSystem], typing.Any]:
+    def _get_sort_key_func(self, column: int) -> Callable[[_FileSystem], typing.Any]:
         def name_key(item: _FileSystem) -> str:
             return item.path.name.casefold()
 
@@ -425,6 +424,8 @@ class _DataExplorerTreeView(QtWidgets.QTreeView):
         self.setAcceptDrops(False)
         self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragOnly)
         self.setSortingEnabled(True)
+        self.setUniformRowHeights(True)
+        self.setAnimated(True)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
@@ -491,8 +492,8 @@ class _ReprFetcher(QtCore.QRunnable):
                 single=True,
                 load_kwargs={"without_values": not self.include_values},
             )
-        except Exception as e:
-            text = "Error loading file:\n" + f"{type(e).__name__}: {e}"
+        except Exception:
+            text = erlab.interactive.utils._format_traceback(traceback.format_exc())
         else:
             text = erlab.utils.formatting.format_darr_html(
                 dat, additional_info=[], show_size=self.include_values
@@ -586,9 +587,9 @@ class _DataPreviewSelectionWidget(QtWidgets.QWidget):
 
     @property
     def preview_widget(self) -> _DataPreviewWidget:
-        _preview_widget = self._preview_widget()
-        if _preview_widget:
-            return _preview_widget
+        preview_widget = self._preview_widget()
+        if preview_widget:
+            return preview_widget
         raise LookupError("Parent was destroyed")
 
     @property
@@ -808,7 +809,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setWindowTitle("Data Explorer")
-        root_path = root_path if root_path else os.getcwd()
+        root_path = root_path or os.getcwd()
         self._fs_model = _DataExplorerModel(root_path, self)
         self._fs_model.modelReset.connect(
             lambda: QtCore.QTimer.singleShot(1, self._dir_loaded)
@@ -1037,7 +1038,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         dir_path = self.current_directory
         self._current_dir_line.setText(str(dir_path))
         if self.isWindow():
-            dir_name = dir_path.name if dir_path.name else str(dir_path)
+            dir_name = dir_path.name or str(dir_path)
             self.setWindowTitle(f"Data Explorer — {dir_name}")
         self.sigDirectoryChanged.emit(str(dir_path))
 
@@ -1130,7 +1131,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 "QtWidgets.QScrollBar", self._text_edit.verticalScrollBar()
             )
             scroll_bar.blockSignals(True)
-            self._text_edit.setHtml(self._parse_file_info(text))
+
+            self._text_edit.setHtml(
+                erlab.interactive.utils._apply_qt_accent_color(text)
+            )
             self._load_slider_pos()
             scroll_bar.blockSignals(False)
 
@@ -1138,15 +1142,6 @@ class _DataExplorer(QtWidgets.QMainWindow):
             self._preview.set_data(data)
 
             self._displayed_selection = selected_files
-
-    @staticmethod
-    def _parse_file_info(text: str) -> str:
-        if hasattr(QtGui.QPalette.ColorRole, "Accent"):
-            accent_color = QtWidgets.QApplication.palette().accent().color().name()
-            text = text.replace(
-                erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
-            )
-        return text
 
     @QtCore.Slot()
     def to_manager(self, **kwargs) -> None:

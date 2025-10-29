@@ -17,42 +17,27 @@ Modules
 """
 
 __all__ = [
-    "hex_bz_mask_points",
+    "mask_with_bz",
     "mask_with_hex_bz",
     "mask_with_polygon",
-    "polygon_mask",
-    "polygon_mask_points",
-    "spherical_mask",
+    "mask_with_radius",
+    "mask_with_regular_polygon",
 ]
 
-from collections.abc import Hashable, Iterable
+import typing
+from collections.abc import Hashable
 
 import numba
 import numpy as np
 import numpy.typing as npt
 import xarray as xr
 
+import erlab
 from erlab.analysis.mask import polygon
 
 
-def mask_with_polygon(
-    arr: xr.DataArray,
-    vertices: npt.NDArray[np.floating],
-    dims: Iterable[Hashable] = ("kx", "ky"),
-    invert: bool = False,
-):
-    mask = xr.DataArray(
-        polygon_mask(
-            vertices.astype(np.float64), *(arr[d].values for d in dims), invert=invert
-        ),
-        dims=dims,
-        coords={d: arr.coords[d] for d in dims},
-    )
-    return arr.where(mask)
-
-
 @numba.njit(parallel=True, cache=True)
-def polygon_mask(
+def _polygon_mask(
     vertices: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64],
@@ -62,7 +47,7 @@ def polygon_mask(
 
     Parameters
     ----------
-    vertices
+    vertices : array-like of shape (N, 2)
         The vertices of the polygon. The shape should be (N, 2), where N is the number
         of vertices.
     x
@@ -110,7 +95,7 @@ def polygon_mask(
 
 
 @numba.njit(parallel=True, cache=True)
-def polygon_mask_points(
+def _polygon_mask_points(
     vertices: npt.NDArray[np.float64],
     x: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64],
@@ -158,7 +143,7 @@ def polygon_mask_points(
     return mask
 
 
-def spherical_mask(
+def _spherical_mask(
     darr: xr.DataArray,
     radius: float | dict[Hashable, float],
     boundary: bool = True,
@@ -240,55 +225,323 @@ def spherical_mask(
     return delta_squared < 1.0
 
 
-def mask_with_hex_bz(
-    kxymap: xr.DataArray, a: float = 3.54, rotate: float = 0.0, invert: bool = False
-) -> xr.DataArray:
-    """Mask an ARPES map with a hexagonal Brillouin zone.
+def mask_with_polygon(
+    darr: xr.DataArray,
+    vertices: npt.NDArray[np.floating],
+    *,
+    dims: tuple[Hashable, Hashable] | None = None,
+    invert: bool = False,
+    drop: bool = False,
+):
+    """Mask an :class:`xarray.DataArray` by a polygon in coordinate space.
+
+    Builds a boolean mask from a 2D polygon in the plane spanned by two coordinates
+    (specified by ``dims``) and returns a DataArray with values outside the polygon set
+    to NaN (or dropped if drop=True). If ``invert=True``, the selection is inverted so
+    that values inside the polygon are masked instead.
 
     Parameters
     ----------
-    kxymap
-        The input map to be masked.
-    a
-        The lattice constant of the hexagonal BZ. Default is 3.54.
-    rotate
-        The rotation angle of the BZ in degrees. Default is 0.0.
+    darr : DataArray
+        Input data to be masked. Must contain the coordinate variables named in dims.
+    vertices : array-like of shape (N, 2)
+        Polygon vertices as [x, y] pairs in the order as ``dims``. The polygon is
+        treated as closed; the last vertex will be implicitly connected to the first if
+        needed.
+    dims
+        Names of the two dimensions over which the polygon is defined. The column order
+        of vertices must correspond to (dims[0], dims[1]). If None (default), the first
+        two dimensions of the data are used.
     invert
-        Whether to invert the mask. Default is False.
+        If `True`, invert the mask so that points inside the polygon are masked and
+        points outside are kept.
+    drop
+        If `True`, drop coordinate labels along dims for which all values are masked.
+        This typically reduces the extent to a bounding rectangle of the polygon; masked
+        points inside that extent remain NaN.
 
     Returns
     -------
-    masked : xr.DataArray
-        The masked map.
+    DataArray
+        The masked DataArray.
 
     """
-    if "kx" in kxymap.dims or "qx" in kxymap.dims:
-        dims = ("kx", "ky")
+    if dims is None:
+        dims = typing.cast("tuple[Hashable, Hashable]", darr.dims[:2])
 
-    d = 2 * np.pi / (a * 3)
-    ang = rotate + np.array([0, 60, 120, 180, 240, 300])
-    vertices = np.array(
-        [[2 * d * np.cos(t), 2 * d * np.sin(t)] for t in np.deg2rad(ang)]
+    mask = xr.DataArray(
+        _polygon_mask(
+            vertices.astype(np.float64), *(darr[d].values for d in dims), invert=invert
+        ),
+        dims=dims,
+        coords={d: darr.coords[d] for d in dims},
     )
-    return mask_with_polygon(kxymap, vertices, dims, invert=invert)
+    return darr.where(mask, drop=drop)
 
 
-def hex_bz_mask_points(
-    x,
-    y,
-    a: float = 3.54,
-    rotate: float = 0,
+def mask_with_regular_polygon(
+    darr: xr.DataArray,
+    n_verts: int,
+    radius: float,
+    *,
+    rotate: float = 0.0,
     offset: tuple[float, float] = (0.0, 0.0),
-    reciprocal: bool = False,
+    dims: tuple[Hashable, Hashable] | None = None,
     invert: bool = False,
-) -> npt.NDArray[np.bool_]:
-    """Return a mask for given points."""
-    d = 2 * np.pi / (a * 3) if reciprocal else a
-    ang = rotate + np.array([0, 60, 120, 180, 240, 300])
-    vertices = np.array(
-        [
-            [2 * d * np.cos(t) + offset[0], 2 * d * np.sin(t) + offset[1]]
-            for t in np.deg2rad(ang)
-        ]
+    drop: bool = False,
+):
+    """Mask an xarray.DataArray by a regular polygon in coordinate space.
+
+    Builds a boolean mask from a regular 2D polygon in the plane spanned by two
+    coordinates (specified by ``dims``) and returns a DataArray with values outside the
+    polygon set to NaN (or dropped if drop=True). If ``invert=True``, the selection is
+    inverted so that values inside the polygon are masked instead. The polygon is
+    oriented so that a vertice is at the top (along the positive y-axis) when
+    ``rotate=0``.
+
+    Parameters
+    ----------
+    darr : DataArray
+        Input data to be masked. Must contain the coordinate variables named in dims.
+    n_verts : int
+        Number of vertices of the regular polygon.
+    radius : float
+        Distance from the polygon center to each vertex.
+    rotate : float
+        Rotation angle of the polygon in degrees. Default is 0.0.
+    offset : tuple of float
+        Offset for the polygon center in the form of a tuple. Default is (0.0, 0.0).
+    dims
+        Names of the two dimensions over which the polygon is defined. The column order
+        of vertices must correspond to (dims[0], dims[1]). If None (default), the first
+        two dimensions of the data are used.
+    invert
+        If `True`, invert the mask so that points inside the polygon are masked and
+        points outside are kept.
+    drop
+        If `True`, drop coordinate labels along dims for which all values are masked.
+        This typically reduces the extent to a bounding rectangle of the polygon; masked
+        points inside that extent remain NaN.
+
+    Returns
+    -------
+    DataArray
+        The masked DataArray.
+    """
+    # Align polygon so that a vertex is at the top
+    angles = (
+        (2 * np.pi / n_verts) * np.arange(n_verts + 1) + np.pi / 2 + np.deg2rad(rotate)
     )
-    return polygon_mask_points(vertices, x, y, invert)
+    vertices = np.column_stack(
+        (radius * np.cos(angles) + offset[0], radius * np.sin(angles) + offset[1])
+    )
+    return mask_with_polygon(darr, vertices, dims=dims, invert=invert, drop=drop)
+
+
+def mask_with_bz(
+    darr: xr.DataArray,
+    basis: npt.NDArray[np.floating],
+    *,
+    reciprocal: bool = False,
+    rotate: float = 0.0,
+    offset: tuple[float, float] = (0.0, 0.0),
+    dims: tuple[Hashable, Hashable] | None = None,
+    invert: bool = False,
+    drop: bool = False,
+) -> xr.DataArray:
+    """Mask an xarray.DataArray by a 2D Brillouin zone defined by lattice basis vectors.
+
+    The Brillouin zone is constructed from the provided lattice basis vectors. If
+    ``reciprocal=True``, the basis vectors are interpreted as those of the reciprocal
+    lattice; otherwise, they are the real space lattice basis vectors. The polygon is
+    oriented so that a vertex is at the top (along the positive y-axis) when
+    ``rotate=0``.
+
+    Parameters
+    ----------
+    darr : DataArray
+        Input data to be masked. Must contain the coordinate variables named in dims.
+    basis
+        A 2D or 3D numpy array with shape ``(N, N)`` where ``N = 2`` or ``3``,
+        containing the basis vectors of the lattice. If N is 3, only the upper left 2x2
+        submatrix is used.
+    reciprocal : bool
+        If `True`, the basis vectors are interpreted as those of the reciprocal lattice.
+        Default is `False`, i.e., the basis vectors are treated as real space lattice
+        vectors.
+    rotate : float
+        Rotation angle of the BZ in degrees. Default is 0.0.
+    offset : tuple of float
+        Offset for the zone center in the form of a tuple. Default is (0.0, 0.0).
+    dims
+        Names of the two dimensions over which the BZ is defined. The column order of
+        vertices must correspond to (dims[0], dims[1]). If None (default) and the
+        dimensions ``('kx', 'ky')`` exist in the data, those are used. Otherwise, the
+        first two dimensions of the data are used.
+    invert
+        If `True`, invert the mask so that points inside the BZ are masked and points
+        outside are kept.
+    drop
+        If `True`, drop coordinate labels along dims for which all values are masked.
+        This typically reduces the extent to a bounding rectangle of the BZ; masked
+        points inside that extent remain NaN.
+
+    Returns
+    -------
+    DataArray
+        The masked DataArray.
+    """
+    if dims is None and "kx" in darr.dims and "ky" in darr.dims:
+        dims = ("kx", "ky")
+    vertices = erlab.lattice.get_2d_vertices(
+        basis, reciprocal=reciprocal, rotate=rotate, offset=offset
+    )
+    return mask_with_polygon(darr, vertices, dims=dims, invert=invert, drop=drop)
+
+
+def mask_with_hex_bz(
+    darr: xr.DataArray,
+    a: float,
+    *,
+    reciprocal: bool = False,
+    rotate: float = 0.0,
+    offset: tuple[float, float] = (0.0, 0.0),
+    dims: tuple[Hashable, Hashable] | None = None,
+    invert: bool = False,
+    drop: bool = False,
+) -> xr.DataArray:
+    """Mask an xarray.DataArray by a 2D hexagon.
+
+    The hexagonal Brillouin zone is constructed from the lattice constant ``a``. If
+    ``reciprocal=True``, ``a`` is interpreted as the periodicity of the reciprocal
+    lattice; otherwise, it is the real space lattice constant.  The hexagon is oriented
+    so that a vertex is at the top (along the positive y-axis) when ``rotate=0``.
+
+    Parameters
+    ----------
+    darr : DataArray
+        Input data to be masked. Must contain the coordinate variables named in dims.
+    a : float
+        Lattice constant of the hexagonal lattice.
+    reciprocal : bool
+        If `True`, ``a`` is interpreted as the periodicity of the reciprocal lattice.
+        Default is `False`.
+    rotate : float
+        Rotation angle of the hexagon in degrees. Default is 0.0.
+    offset : tuple of float
+        Offset for the hexagon center in the form of a tuple. Default is (0.0, 0.0).
+    dims
+        Names of the two dimensions over which the BZ is defined. The column order of
+        vertices must correspond to (dims[0], dims[1]). If None (default) and the
+        dimensions ``('kx', 'ky')`` exist in the data, those are used. Otherwise, the
+        first two dimensions of the data are used.
+    invert
+        If `True`, invert the mask so that points inside the hexagon are masked and
+        points outside are kept.
+    drop
+        If `True`, drop coordinate labels along dims for which all values are masked.
+        This typically reduces the extent to a bounding rectangle of the hexagon; masked
+        points inside that extent remain NaN.
+
+    Returns
+    -------
+    DataArray
+        The masked DataArray.
+    """
+    if dims is None and "kx" in darr.dims and "ky" in darr.dims:
+        dims = ("kx", "ky")
+    return mask_with_regular_polygon(
+        darr,
+        n_verts=6,
+        radius=a / np.sqrt(3) if reciprocal else 4 * np.pi / (a * 3),
+        rotate=rotate,
+        offset=offset,
+        dims=dims,
+        invert=invert,
+        drop=drop,
+    )
+
+
+def mask_with_radius(
+    darr: xr.DataArray,
+    radius: float | dict[Hashable, float],
+    *,
+    boundary: bool = True,
+    invert: bool = False,
+    drop: bool = False,
+    **sel_kw,
+) -> xr.DataArray:
+    """
+    Average data within a specified radius of a specified point.
+
+    For instance, consider an ARPES map with dimensions ``'kx'``, ``'ky'``, and
+    ``'eV'``. Providing ``'kx'`` and ``'ky'`` points will average the data within a
+    cylindrical region centered at that point. The radius of the cylinder is specified
+    by ``radius``.
+
+    If different radii are given for ``kx`` and ``ky``, the region will be elliptic.
+
+    Parameters
+    ----------
+    radius
+        The radius of the region. If a single number, the same radius is used for all
+        dimensions. If a dictionary, keys must be valid dimension names and the values
+        are the radii for the corresponding dimensions.
+    boundary
+        Whether to consider points on the boundary to be inside the mask. Default is
+        `True`.
+    invert
+        If `True`, invert the mask so that points inside are masked and points outside
+        are kept. This is applied after the mask is created.
+    drop
+        If `True`, drop coordinate labels along dims for which all values are masked.
+    **sel_kw
+        The center of the spherical region. Must be a mapping of valid dimension names
+        to coordinate values.
+
+    Returns
+    -------
+    DataArray
+        The data masked to the specified region.
+
+    Note
+    ----
+    The region is defined by a spherical mask. Depending on the radius and dimensions
+    provided, the mask will be hyperellipsoid in the dimensions specified in ``sel_kw``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import xarray as xr
+    >>> from erlab.analysis.mask import spherical_mask
+    >>> darr = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
+    >>> darr
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[ 0,  1,  2,  3,  4],
+        [ 5,  6,  7,  8,  9],
+        [10, 11, 12, 13, 14],
+        [15, 16, 17, 18, 19],
+        [20, 21, 22, 23, 24]])
+    Dimensions without coordinates: x, y
+    >>> spherical_mask(darr, radius=2, x=2, y=2)
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[nan, nan,  2., nan, nan],
+        [nan,  6.,  7.,  8., nan],
+        [10., 11., 12., 13., 14.],
+        [nan, 16., 17., 18., nan],
+        [nan, nan, 22., nan, nan]])
+    Dimensions without coordinates: x, y
+    >>> spherical_mask(darr, radius=1, x=2)
+    <xarray.DataArray (x: 5, y: 5)> Size: 200B
+    array([[nan, nan, nan, nan, nan],
+        [ 5.,  6.,  7.,  8.,  9.],
+        [10., 11., 12., 13., 14.],
+        [15., 16., 17., 18., 19.],
+        [nan, nan, nan, nan, nan]])
+    Dimensions without coordinates: x, y
+
+    """
+    mask = _spherical_mask(darr, radius, boundary=boundary, **sel_kw)
+    if invert:
+        mask = mask.copy(data=~mask.data)
+    return darr.where(mask, drop=drop)

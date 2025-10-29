@@ -31,12 +31,10 @@ import erlab
 
 if typing.TYPE_CHECKING:
     import joblib
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
     joblib = _lazy.load("joblib")
-    tqdm = erlab.utils.misc.LazyImport("tqdm.auto")
 
 
 def correct_with_edge(
@@ -294,6 +292,10 @@ def edge(
         parallel_kw.setdefault("max_nbytes", None)
         parallel_kw.setdefault("return_as", "generator")
         parallel_kw.setdefault("pre_dispatch", "n_jobs")
+        parallel_kw.setdefault("return_as", "generator")
+        if erlab.utils.misc._IS_PACKAGED:
+            # https://github.com/joblib/joblib/issues/1002
+            parallel_kw["backend"] = "threading"
 
         parallel_obj = joblib.Parallel(**parallel_kw)
 
@@ -321,7 +323,9 @@ def edge(
     tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
     if parallel_obj.return_generator:
-        fit_result = tqdm.tqdm(
+        tqdm = erlab.utils.misc.get_tqdm()
+
+        fit_result = tqdm(
             parallel_obj(
                 joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
                 for i in range(n_fits)
@@ -485,8 +489,8 @@ def _plot_gold_fit(
         )
         ax2.plot(x_eval, res(x_eval), "-", label="best fit", **fit_kws)
         ax2.legend()
-        ax1.set_ylim(erlab.plotting.autoscale_to(residuals))
-        ax2.set_ylim(erlab.plotting.autoscale_to(center_arr.values))
+        ax1.relim()
+        ax2.relim()
     else:
         res.plot_residuals(ax=ax1, data_kws=data_kws, fit_kws=fit_kws)
         res.plot_fit(
@@ -495,9 +499,8 @@ def _plot_gold_fit(
             fit_kws=fit_kws,
             numpoints=3 * len(center_arr.alpha),
         )
-        ax1.set_ylim(erlab.plotting.autoscale_to(res.eval() - res.data))
-        ax2.set_ylim(erlab.plotting.autoscale_to(res.data))
-
+        ax1.relim()
+        ax2.relim()
     ax1.set_title("")
     ax2.set_title("")
 

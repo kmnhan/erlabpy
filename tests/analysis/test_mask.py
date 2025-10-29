@@ -1,7 +1,7 @@
 import numpy as np
 import xarray as xr
 
-from erlab.analysis.mask import mask_with_hex_bz, mask_with_polygon, spherical_mask
+from erlab.analysis.mask import _spherical_mask, mask_with_hex_bz, mask_with_polygon
 
 
 def test_mask_with_hex_bz() -> None:
@@ -55,7 +55,7 @@ def test_spherical_mask() -> None:
     darr = xr.DataArray(np.arange(25).reshape(5, 5), dims=("x", "y"))
 
     # Test case 1: Single radius, multiple dimensions
-    mask = spherical_mask(darr, radius=2, x=2, y=2)
+    mask = _spherical_mask(darr, radius=2, x=2, y=2)
     expected_mask = xr.DataArray(
         [
             [False, False, True, False, False],
@@ -69,12 +69,12 @@ def test_spherical_mask() -> None:
     xr.testing.assert_equal(mask, expected_mask)
 
     # Test case 2: Single radius, single dimension
-    mask = spherical_mask(darr, radius=1, x=2)
+    mask = _spherical_mask(darr, radius=1, x=2)
     expected_mask = xr.DataArray([False, True, True, True, False], dims=("x",))
     xr.testing.assert_equal(mask, expected_mask)
 
     # Test case 3: Dictionary of radii, multiple dimensions
-    mask = spherical_mask(darr, radius={"x": 2, "y": 1}, x=2, y=2)
+    mask = _spherical_mask(darr, radius={"x": 2, "y": 1}, x=2, y=2)
     expected_mask = xr.DataArray(
         [
             [False, False, True, False, False],

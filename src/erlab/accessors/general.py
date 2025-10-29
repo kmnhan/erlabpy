@@ -11,7 +11,7 @@ __all__ = [
 import functools
 import importlib
 import typing
-from collections.abc import Collection, Hashable, Mapping
+from collections.abc import Collection, Hashable, Mapping, Sequence
 
 import numpy as np
 import xarray as xr
@@ -465,9 +465,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         ]  # Unindexed dimensions, i.e. dimensions without coordinates
 
         if len(unindexed_dims) >= 1:
+            # Assign temporary coordinates to allow proper selection
             out = obj.assign_coords(
                 {k: np.arange(obj.sizes[k]) for k in unindexed_dims}
-            )  # Assign temporary coordinates
+            )
         else:
             out = obj
 
@@ -482,8 +483,28 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out = out.sel({str(k): v for k, v in scalars.items()}, method="nearest")
 
         if len(slices) >= 1:
+            for k, slice_obj in slices.copy().items():
+                if k in avg_dims:
+                    if not erlab.utils.array.is_monotonic(out[k].values):
+                        raise ValueError(
+                            f"Cannot average over dimension `{k}` because its "
+                            "coordinate is not monotonic. Try sorting the data along "
+                            "the affected dimension."
+                        )
+                    if out[k].values[0] > out[k].values[-1]:
+                        # Width-based selection: make slice direction match coordinate
+                        # order. If coordinate decreases (first > last), reverse the
+                        # slice.
+                        slices[k] = slice(
+                            slice_obj.stop,
+                            slice_obj.start,
+                            -slice_obj.step if slice_obj.step is not None else None,
+                        )
+
             out = out.sel(slices)
 
+            # Average coordinate values over the dimensions being averaged and add them
+            # back afterward
             lost_coords: dict[Hashable, xr.DataArray] = {
                 k: out[k].mean(
                     dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
@@ -589,6 +610,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             value = indexers[dim]
 
             if width == 0.0:
+                # Treat as point selection when width is zero
                 if isinstance(value, slice):
                     slices[dim] = value
                 else:
@@ -605,9 +627,12 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         slice(v - width / 2.0, v + width / 2.0) for v in value
                     ]
                 else:
+                    # Center and width given, single slice
                     slices[dim] = slice(value - width / 2.0, value + width / 2.0)
 
                     avg_dims.append(dim)
+
+                    # Store associated coordinate names that will be lost when averaging
                     for k, v in self._obj.coords.items():
                         if dim in v.dims:
                             lost_dims.append(k)
@@ -622,7 +647,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 )
             }
 
-            out = self._obj
+            out = self._obj.copy()
             for dim, slice_list in slice_collections.items():
                 lost_dims_extend: list[Hashable] = [
                     k for k, v in self._obj.coords.items() if dim in v.dims
@@ -632,23 +657,25 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     [
                         self._qsel_scalar(
                             out,
-                            scalars,
-                            slices | {dim: s},
-                            [*avg_dims, dim],
-                            lost_dims + lost_dims_extend,
+                            scalars=scalars,
+                            slices=slices | {dim: s},
+                            avg_dims=[*avg_dims, dim],
+                            lost_dims=lost_dims + lost_dims_extend,
                         )
                         for s in slice_list
                     ],
                     dim=dim,
                 )
         else:
-            out = self._qsel_scalar(self._obj, scalars, slices, avg_dims, lost_dims)
+            out = self._qsel_scalar(
+                self._obj.copy(), scalars, slices, avg_dims, lost_dims
+            )
 
         return erlab.utils.array.sort_coord_order(
             out, keys=coord_order, dims_first=True
         )
 
-    def average(self, dim: str | Collection[Hashable]) -> xr.DataArray:
+    def average(self, dim: str | Sequence[Hashable]) -> xr.DataArray:
         """Average the data along the specified dimension(s).
 
         The difference between this method and :meth:`xarray.DataArray.mean` is that
@@ -670,15 +697,21 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             dim = (dim,)
 
         qsel_kwargs: dict[Hashable, float] = {}
-
         for d in dim:
             qsel_kwargs[d] = 0.0
             qsel_kwargs[f"{d}_width"] = np.inf
 
-        return self.__call__(qsel_kwargs)
+        return self._obj.sortby(list(dim)).qsel(qsel_kwargs)
 
     def around(
-        self, radius: float | dict[Hashable, float], *, average: bool = True, **sel_kw
+        self,
+        radius: float | dict[Hashable, float],
+        *,
+        boundary: bool = True,
+        invert: bool = False,
+        drop: bool = False,
+        average: bool = True,
+        **sel_kw,
     ) -> xr.DataArray:
         """
         Average data within a specified radius of a specified point.
@@ -696,6 +729,15 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             The radius of the region. If a single number, the same radius is used for
             all dimensions. If a dictionary, keys must be valid dimension names and the
             values are the radii for the corresponding dimensions.
+        boundary
+            Whether to consider points on the boundary to be inside the mask. Default is
+            `True`.
+        invert
+            If `True`, invert the mask so that points inside are masked and points
+            outside are kept. This is applied after the mask is created.
+        drop
+            If `True`, drop coordinate labels along dims for which all values are
+            masked. This argument is ignored if ``average=True``.
         average
             If `True`, return the mean value of the data within the region. If `False`,
             return the masked data.
@@ -706,23 +748,23 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Returns
         -------
         DataArray
-            The mean value of the data within the region.
+            The mean value of the data within the region if ``average=True``, else the
+            masked data.
 
         Note
         ----
-        The region is defined by a spherical mask, which is generated with
-        :func:`erlab.analysis.mask.spherical_mask`. Depending on the radius and
-        dimensions provided, the mask will be hyperellipsoid in the dimensions specified
-        in ``sel_kw``.
+        Depending on the radius and dimensions provided, the mask will be hyperellipsoid
+        in the dimensions specified in ``sel_kw``.
 
         See Also
         --------
-        :func:`erlab.analysis.mask.spherical_mask`
+        :func:`erlab.analysis.mask.mask_with_radius`
 
         """
-        masked = self._obj.where(
-            erlab.analysis.mask.spherical_mask(self._obj, radius, **sel_kw),
-            drop=average,
+        if average:
+            drop = True
+        masked = erlab.analysis.mask.mask_with_radius(
+            self._obj, radius, boundary=boundary, invert=invert, drop=drop, **sel_kw
         )
         if average:
             return masked.qsel.average(sel_kw.keys())

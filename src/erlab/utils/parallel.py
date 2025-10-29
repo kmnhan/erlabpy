@@ -6,27 +6,25 @@ import contextlib
 import sys
 import typing
 
+import erlab
+
 if typing.TYPE_CHECKING:
     import joblib
-    import tqdm.auto as tqdm
 else:
     import lazy_loader as _lazy
 
-    from erlab.utils.misc import LazyImport
-
     joblib = _lazy.load("joblib")
-    tqdm = LazyImport("tqdm.auto")
 
 
 @contextlib.contextmanager
 def joblib_progress(file=None, **kwargs):
     """Patches joblib to report into a tqdm progress bar."""
-    import joblib
+    tqdm = erlab.utils.misc.get_tqdm()
 
     if file is None:
         file = sys.stdout
 
-    tqdm_object = tqdm.tqdm(iterable=None, file=file, **kwargs)
+    tqdm_object = tqdm(iterable=None, file=file, **kwargs)
 
     def tqdm_print_progress(self) -> None:
         if self.n_completed_tasks > tqdm_object.n:

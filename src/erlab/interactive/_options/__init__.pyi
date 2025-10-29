@@ -1,8 +1,8 @@
 __all__ = [
     "OptionDialog",
-    "defaults",
     "options",
+    "schema",
 ]
-from . import defaults
+from . import schema
 from .core import options
 from .ui import OptionDialog

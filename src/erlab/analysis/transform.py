@@ -107,7 +107,11 @@ def rotate(
 
     # Rotation center in pixel space before transformation
     in_pixel_center = np.array(
-        [(center_y - ycoords[0]) / dy, (center_x - xcoords[0]) / dx, 1.0]
+        [
+            (center_y - ycoords[0]) / dy,
+            (center_x - xcoords[0]) / dx,
+            1.0,
+        ]
     )
 
     # Build rotation matrix
@@ -343,11 +347,11 @@ def shift(
 
     for idxs in itertools.product(*[range(darr.shape[i]) for i in domain_indices]):
         # Construct slices for indexing
-        _slices: list[slice | int] = [slice(None)] * darr.ndim
+        slices_: list[slice | int] = [slice(None)] * darr.ndim
         for domain_index, i in zip(domain_indices, idxs, strict=True):
-            _slices[domain_index] = i
+            slices_[domain_index] = i
 
-        slices: tuple[slice | int, ...] = tuple(_slices)
+        slices: tuple[slice | int, ...] = tuple(slices_)
 
         # Initialize arguments to `scipy.ndimage.shift`
         arr = out[slices]
@@ -535,7 +539,7 @@ def symmetrize(
         return out
 
 
-def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
+def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):  # pragma: no cover
     """Rotate a 2D DataArray in the plane defined by the two dimensions.
 
     .. deprecated:: 2.9.0
@@ -557,7 +561,7 @@ def rotateinplane(data: xr.DataArray, rotate, **interp_kwargs):
     return data.interp({d0: x, d1: y}, **interp_kwargs)
 
 
-def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):
+def rotatestackinplane(data: xr.DataArray, rotate, **interp_kwargs):  # pragma: no cover
     """Rotate a 3D DataArray in the plane defined by the two dimensions.
 
     .. deprecated:: 2.9.0

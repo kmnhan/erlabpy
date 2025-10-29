@@ -1,6 +1,6 @@
 [project]
 name = "erlab"
-version = "3.13.0"
+version = "3.15.0"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
@@ -19,8 +19,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "dask[distributed]>=2024.4.1",
     "findiff>=0.12.0",
-    "h5netcdf>=1.2.0",
+    "h5netcdf>=1.7.1",
     "igor2>=0.5.12",
     "igorwriter>=0.6.1",
     "joblib>=1.3.2",
@@ -28,10 +29,14 @@ dependencies = [
     "lmfit>=1.3.2",
     "matplotlib>=3.8.0",
     "numba>=0.61.0",
+    "numexpr>=2.11.0",
     "numpy>=1.26.0",
+    "packaging>=24.0",
     "pickleshare>=0.7.5",
+    "pydantic>=2.11.7",
     "pyperclip>=1.8.2",
     "pyqtgraph>=0.13.1",
+    "pyzmq>=27.0.2",
     "qtawesome>=1.3.1",
     "qtconsole>=5.6.0",
     "qtpy>=2.4.1",
@@ -39,19 +44,20 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
-    "xarray-lmfit>=0.2.1",
+    "xarray-lmfit>=0.3.0",
 ]
 
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
-viz = ["hvplot", "ipywidgets"]
+viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
 io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
-perf = ["numbagg>=0.8.1"]
-misc = ["iminuit>=2.25.2", "csaps>=1.1.0", "dask>=2024.4.1"]
+perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
+misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0"]
 
 [dependency-groups]
 dev = [
     "commitizen>=4.3.0",
+    "coverage>=7.10.5",
     "cz-changeup>=1.1.2",
     "ipykernel>=6.29.5",
     "jupyter-bokeh>=4.0.5",
@@ -59,11 +65,11 @@ dev = [
     "pooch>=1.8.0",
     "pre-commit>=3.7.0",
     "pytest>=8.3.0",
-    "pytest-cov>=5.0.0",
+    "pytest-cov>=7.0.0",
     "pytest-datadir>=1.5.0",
     "pytest-env>=1.1.5",
     "pytest-qt>=4.4.0",
-    "ruff>=0.12.0",
+    "ruff>=0.12.7",
 ]
 docs = [
     "furo>=2024.8.6",
@@ -80,6 +86,16 @@ docs = [
     "sphinx-qt-documentation>=0.4.1",
     "sphinxcontrib-bibtex>=2.6.3",
     "sphinxcontrib-googleanalytics>=0.4",
+]
+pyinstaller = [
+    "cmasher>=1.9.2",
+    "cmcrameri>=1.9",
+    "cmocean>=4.0.3",
+    "colorcet>=3.1.0",
+    "pyinstaller>=6.16.0",
+    "pyinstaller-versionfile>=3.0.1",
+    "requests>=2.32.0",
+    "seaborn>=0.13.2",
 ]
 pyqt6 = ["pyqt6>=6.8.0"]
 pyside6 = ["pyside6>=6.8.1.1,!=6.9.1"]
@@ -98,8 +114,8 @@ Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.8.13"]
+build-backend = "uv_build"
 
 [tool.commitizen]
 change_type_map = { "BREAKING CHANGE" = "💥 Breaking Changes", "feat" = "✨ Features", "fix" = "🐞 Bug Fixes", "perf" = "⚡️ Performance", "refactor" = "♻️ Code Refactor" }
@@ -255,11 +271,12 @@ DISPLAY = ":99.0"
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["*/_deprecated/*"]
-branch = false
+omit = ["*/_deprecated/*", "*/_updater_gui.py", "*/_updater_core.py"]
+branch = true
 concurrency = ["multiprocessing", "thread"]
 parallel = true
 sigterm = true
+patch = ["subprocess", "execv", "_exit", "fork"]
 
 [tool.coverage.report]
 exclude_also = [
@@ -289,7 +306,7 @@ strict = false
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-warn_unreachable = true
+warn_unreachable = false
 allow_redefinition = true
 check_untyped_defs = false
 exclude = [
@@ -302,3 +319,11 @@ exclude = [
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 disable_error_code = ["import-untyped"]
 pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "erlab.interactive.derivative",
+    "erlab.interactive.fermiedge",
+    "erlab.interactive.kspace",
+]
+disable_error_code = ["attr-defined"]

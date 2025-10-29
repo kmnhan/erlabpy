@@ -34,18 +34,11 @@ import numpy as np
 import numpy.typing as npt
 import scipy.special
 
-from erlab.constants import kb_eV
+from erlab.constants import TINY, kb_eV
+from erlab.utils._array_jit import _clip_tiny
 from erlab.utils.array import broadcast_args
 
-#: From :mod:`lmfit.lineshapes`, equal to `numpy.finfo(numpy.float64).resolution`
-TINY: float = 1.0e-15
 S2PI = np.sqrt(2 * np.pi)
-
-
-@numba.vectorize(cache=True)
-def _clip_tiny(x: float) -> float:
-    """Clip small values to avoid division by zero."""
-    return max(x, TINY)
 
 
 @numba.njit(cache=True)

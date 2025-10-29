@@ -688,14 +688,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return self.best_kp_resolution
 
     def _forward_func(self, alpha, beta):
-        return erlab.analysis.kspace.get_kconv_func(
-            self._kinetic_energy, self.configuration, self.angle_params
-        )[0](alpha, beta)
+        return erlab.analysis.kspace.get_kconv_forward(self.configuration)(
+            alpha, beta, self._kinetic_energy, **self.angle_params
+        )
 
     def _inverse_func(self, kx, ky, kperp=None):
-        return erlab.analysis.kspace.get_kconv_func(
-            self._kinetic_energy, self.configuration, self.angle_params
-        )[1](kx, ky, kperp)
+        return erlab.analysis.kspace.get_kconv_inverse(self.configuration)(
+            kx, ky, kperp, self._kinetic_energy, **self.angle_params
+        )
 
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
@@ -1020,6 +1020,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         kinetic = hv - self.work_function + self._obj.eV
 
         # Get momentum conversion functions
+
         ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
             kinetic, self.configuration, self.angle_params
         )

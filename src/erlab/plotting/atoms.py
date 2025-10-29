@@ -7,7 +7,7 @@ Some of the projection code was adapted from kwant.
 
 """
 
-__all__ = ["Atom3DCollection", "Bond3DCollection", "CrystalProperty"]
+__all__ = ["CrystalProperty"]
 
 import contextlib
 import functools

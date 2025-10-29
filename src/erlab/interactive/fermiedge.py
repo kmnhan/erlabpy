@@ -7,6 +7,7 @@ import time
 import typing
 
 import numpy as np
+import pydantic
 import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets, uic
@@ -68,16 +69,23 @@ class EdgeFitter(QtCore.QThread):
             max_nbytes=None,
             return_as="generator",
             pre_dispatch="n_jobs",
+            # https://github.com/joblib/joblib/issues/1002
+            backend="threading" if erlab.utils.misc._IS_PACKAGED else "loky",
         )
         self.edge_center: xr.DataArray | None = None
         self.edge_stderr: xr.DataArray | None = None
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
+        if self.isRunning():
+            self.mutex.lock()
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
+        if self.isRunning():
+            self.mutex.unlock()
 
     def run(self) -> None:
+        self.mutex = QtCore.QMutex()
         self.sigIterated.emit(0)
         with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
             self.edge_center, self.edge_stderr = typing.cast(
@@ -127,6 +135,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     sigUpdated()
         Signal emitted when all fitting steps are finished and plots are updated.
     """
+
+    tool_name = "goldtool"
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
@@ -306,15 +316,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 },
             }
         )
-        _auto_check = typing.cast(
-            "QtWidgets.QCheckBox", self.params_spl.widgets["Auto"]
-        )
+        auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
         self.params_spl.widgets["lambda"].setDisabled(
-            _auto_check.checkState() == QtCore.Qt.CheckState.Checked
+            auto_check.checkState() == QtCore.Qt.CheckState.Checked
         )
-        _auto_check.toggled.connect(
+        auto_check.toggled.connect(
             lambda _: self.params_spl.widgets["lambda"].setDisabled(
-                _auto_check.checkState() == QtCore.Qt.CheckState.Checked
+                auto_check.checkState() == QtCore.Qt.CheckState.Checked
             )
         )
 
@@ -412,15 +420,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     def iterated(self, n: int) -> None:
         if n == 0:
             self.progress.setLabelText("")
-        elif n == 1:
-            self.step_times = []
+        elif n == 2:
             self.start_time = time.perf_counter()
-        elif n > 1:
-            now = time.perf_counter()
-            self.step_times.append(now - self.start_time)
-            self.start_time = now
-            timeleft = (self.progress.maximum() - (n - 1)) * np.mean(self.step_times)
-            self.progress.setLabelText(f"{round(timeleft)} seconds left...")
+        elif n > 2:
+            step_time_avg = (time.perf_counter() - self.start_time) / (n - 2)
+            n_left = self.progress.maximum() - n
+            time_left = n_left * step_time_avg
+            self.progress.setLabelText(f"{round(time_left)} seconds left...")
 
         self.progress.setValue(n)
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
@@ -464,7 +470,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.perform_fit()
 
     @property
-    def edge_func(self) -> typing.Callable:
+    def edge_func(self) -> "Callable":
         """Returns the edge function."""
         if self.params_tab.currentIndex() == 0:
             return self._perform_poly_fit()
@@ -631,18 +637,147 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         super().closeEvent(event)
 
 
-class ResolutionTool(
-    *uic.loadUiType(  # type: ignore[misc]
-        str(importlib.resources.files(erlab.interactive).joinpath("restool.ui"))
-    )
-):
+class ResolutionTool(erlab.interactive.utils.ToolWindow):
+    tool_name = "restool"
+
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        x0: float
+        x1: float
+        y0: float
+        y1: float
+        live_fit: bool
+        temp: float
+        fix_temp: bool
+        center: float
+        fix_center: bool
+        resolution: float
+        fix_resolution: bool
+        bkg_slope: bool
+        method: str
+        timeout: float
+        max_nfev: int
+        use_mev: bool
+        results: tuple[str, str, str, str, str]
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+
+        info += "<b>Initial Parameters</b>"
+
+        param_dict: dict[str, str] = {
+            "eV range": f"{status.x0} to {status.x1}",
+            f"{self.y_dim} range": f"{status.y0} to {status.y1}",
+            "<i>T</i>": f"{status.temp} K"
+            + f" ({'fixed' if status.fix_temp else 'varied'})",
+            "<i>E</i><sub>F</sub>": f"{status.center} eV"
+            + f" ({'fixed' if status.fix_center else 'varied'})",
+            "Δ<i>E</i>": f"{status.resolution} eV"
+            + f" ({'fixed' if status.fix_resolution else 'varied'})",
+            "Background above <i>E</i><sub>F</sub>": "linear"
+            if status.bkg_slope
+            else "constant",
+            "Fitting method": status.method,
+        }
+
+        info += format_html_table(
+            [[format_html_accent(k), v] for k, v in param_dict.items()]
+        )
+
+        info += "<br><b>Fit Result</b>"
+        info += f"<br>{status.results[0]}"
+        result_dict: dict[str, str] = {
+            "Temperature": status.results[1],
+            "Edge center": status.results[2],
+            "Resolution": status.results[3],
+            "Reduced chi-squared": status.results[4],
+        }
+        info += format_html_table(
+            [[format_html_accent(k), v] for k, v in result_dict.items()]
+        )
+        return info
+
+    @property
+    def tool_status(self) -> StateModel:
+        return self.StateModel(
+            data_name=self.data_name,
+            x0=self.x0_spin.value(),
+            x1=self.x1_spin.value(),
+            y0=self.y0_spin.value(),
+            y1=self.y1_spin.value(),
+            live_fit=self.live_check.isChecked(),
+            temp=self.temp_spin.value(),
+            fix_temp=self.fix_temp_check.isChecked(),
+            center=self.center_spin.value(),
+            fix_center=self.fix_center_check.isChecked(),
+            resolution=self.res_spin.value(),
+            fix_resolution=self.fix_res_check.isChecked(),
+            bkg_slope=self.slope_check.isChecked(),
+            method=self.method_combo.currentText(),
+            timeout=self.timeout_spin.value(),
+            max_nfev=self.nfev_spin.value(),
+            use_mev=self.mev_check.isChecked(),
+            results=(
+                self.overview_label.text(),
+                self.temp_val.text(),
+                self.center_val.text(),
+                self.res_val.text(),
+                self.redchi_val.text(),
+            ),
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name: str = status.data_name
+        self.live_check.setChecked(False)
+
+        self.x0_spin.setValue(status.x0)
+        self.x1_spin.setValue(status.x1)
+        self.y0_spin.setValue(status.y0)
+        self.y1_spin.setValue(status.y1)
+        self.live_check.setChecked(status.live_fit)
+
+        self.temp_spin.setValue(status.temp)
+        self.fix_temp_check.setChecked(status.fix_temp)
+        self.center_spin.setValue(status.center)
+        self.fix_center_check.setChecked(status.fix_center)
+        self.res_spin.setValue(status.resolution)
+        self.fix_res_check.setChecked(status.fix_resolution)
+        self.slope_check.setChecked(status.bkg_slope)
+        method_index = LMFIT_METHODS.index(status.method)
+        self.method_combo.setCurrentIndex(method_index)
+        self.timeout_spin.setValue(status.timeout)
+        self.nfev_spin.setValue(status.max_nfev)
+        self.mev_check.setChecked(status.use_mev)
+
+        self.overview_label.setText(status.results[0])
+        self.temp_val.setText(status.results[1])
+        self.center_val.setText(status.results[2])
+        self.res_val.setText(status.results[3])
+        self.redchi_val.setText(status.results[4])
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
     _sigTriggerFit = QtCore.Signal()
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
         super().__init__()
-        self.setupUi(self)
+        uic.loadUi(
+            str(importlib.resources.files(erlab.interactive).joinpath("restool.ui")),
+            self,
+        )
         self.setWindowTitle("")
 
         if data.dims.index("eV") != 1:
@@ -650,11 +785,15 @@ class ResolutionTool(
         self.data = data
 
         self.y_dim: str = str(data.dims[0])
-        self._x_range = data["eV"].values[[0, -1]]
-        self._y_range = data[self.y_dim].values[[0, -1]]
 
-        self._x_decimals = erlab.utils.array.effective_decimals(data["eV"].values)
-        self._y_decimals = erlab.utils.array.effective_decimals(data[self.y_dim].values)
+        x_coords = data["eV"].values
+        y_coords = data[self.y_dim].values
+
+        self._x_range = x_coords[[0, -1]]
+        self._y_range = y_coords[[0, -1]]
+
+        self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
+        self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
 
         self.x0_spin.setRange(*self._x_range)
         self.x1_spin.setRange(*self._x_range)
@@ -685,7 +824,7 @@ class ResolutionTool(
             except varname.VarnameRetrievingError:
                 data_name = "data"
 
-        self.data_name: str = data_name
+        self.data_name = data_name
 
         self.plot0 = self.graphics_layout.addPlot(row=0, col=0)
         self.plot1 = self.graphics_layout.addPlot(row=1, col=0)
@@ -736,6 +875,12 @@ class ResolutionTool(
         self._result_ds: xr.Dataset | None = None
 
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        self.destroyed.connect(
+            lambda *, executor=self._executor: executor.shutdown(
+                wait=False, cancel_futures=True
+            )
+        )
 
     @property
     def x_range(self) -> tuple[float, float]:
@@ -839,12 +984,15 @@ class ResolutionTool(
 
         def _get_param_text(param: str) -> str:
             """Get the string representation of a parameter value."""
-            factor = (
-                1e3 if (param == "resolution" and self.mev_check.isChecked()) else 1
+            factor = 1e3 if (param != "temp" and self.mev_check.isChecked()) else 1
+            unit: str = (
+                "K"
+                if param == "temp"
+                else ("meV" if self.mev_check.isChecked() else "eV")
             )
             if hasattr(modelresult, "uvars") and modelresult.uvars is not None:
-                return f"{modelresult.uvars[param] * factor:P}"
-            return f"{modelresult.params[param].value * factor:.4f}"
+                return f"{modelresult.uvars[param] * factor:P} {unit}"
+            return f"{modelresult.params[param].value * factor:.4f} {unit}"
 
         for param, textedit in zip(
             ("temp", "center", "resolution"),
@@ -950,10 +1098,6 @@ class ResolutionTool(
         self._update_edc()
         if self.live_check.isChecked():
             self._sigTriggerFit.emit()
-
-    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        return super().closeEvent(event)
 
 
 def goldtool(

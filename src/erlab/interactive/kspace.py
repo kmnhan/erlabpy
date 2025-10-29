@@ -24,6 +24,7 @@ import warnings
 
 import numpy as np
 import numpy.typing as npt
+import pydantic
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets, uic
 
@@ -137,11 +138,7 @@ class _MovableCircleROI(pg.CircleROI):
         self.setPos(center[0] - radius, center[1] - radius)
 
 
-class KspaceToolGUI(
-    *uic.loadUiType(  # type: ignore[misc]
-        str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui"))
-    )
-):
+class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     def __init__(
         self,
         avec: npt.NDArray | None = None,
@@ -151,7 +148,9 @@ class KspaceToolGUI(
     ) -> None:
         # Initialize UI
         super().__init__()
-        self.setupUi(self)
+        uic.loadUi(
+            str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui")), self
+        )
         self.setWindowTitle("Momentum Conversion")
 
         self.plotitems: tuple[pg.PlotItem, pg.PlotItem] = (pg.PlotItem(), pg.PlotItem())
@@ -280,6 +279,244 @@ class KspaceToolGUI(
 
 
 class KspaceTool(KspaceToolGUI):
+    tool_name = "ktool"
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.images[1]
+
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        center: float
+        width: int
+        offsets: dict[str, float]
+        bounds_enabled: bool
+        bounds: dict[str, float]
+        resolution_enabled: bool
+        resolution: dict[str, float]
+        bz_enabled: bool
+        a: float
+        b: float
+        ang: float
+        rot: float
+        c: float
+        ab: float
+        n1: int
+        n2: int
+        reciprocal: bool
+        points: bool
+        circle_rois: list[tuple[float, float, float]]
+        cmap_name: str
+        cmap_gamma: float
+        cmap_invert: bool
+        cmap_highcontrast: bool
+        show_angle_plot: bool
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        info: str = f"<b>{self.tool_name}</b>" + format_darr_shape_html(
+            self.tool_data.T
+        )
+        info += "<b>" + self.config_label.text() + "</b><br>"
+        info += "<br><b>Angle Offsets:</b>"
+
+        offsets = self.offset_dict.copy()
+        offsets["φ"] = self._work_function
+        if self.data.kspace._has_hv:
+            offsets["V₀"] = self._inner_potential
+
+        info += format_html_table(
+            [
+                [
+                    format_html_accent(self._OFFSET_LABELS[k], em_space=True),
+                    f"{v}{self._OFFSET_UNITS[k]}",
+                ]
+                for k, v in status.offsets.items()
+            ]
+        )
+        angstrom: str = " Å<sup>−1</sup>"
+
+        bounds = self.bounds
+        if bounds:
+            info += "<br><b>Bounds:</b>"
+            info += format_html_table(
+                [
+                    [
+                        format_html_accent(k, em_space=True),
+                        f"{mn}{angstrom}&emsp;",
+                        "to&emsp;",
+                        f"{mx}{angstrom}",
+                    ]
+                    for k, (mn, mx) in bounds.items()
+                ]
+            )
+
+        resolution = self.resolution
+        if resolution:
+            info += "<br><b>Resolution:</b>"
+            info += format_html_table(
+                [
+                    [format_html_accent(k, em_space=True), f"{v}{angstrom}"]
+                    for k, v in resolution.items()
+                ]
+            )
+        return info
+
+    @property
+    def tool_status(self) -> StateModel:
+        return self.StateModel(
+            data_name=self._argnames["data"],
+            center=self.center_spin.value(),
+            width=self.width_spin.value(),
+            offsets={
+                k: round(spin.value(), spin.decimals())
+                for k, spin in self._offset_spins.items()
+            },
+            bounds_enabled=self.bounds_supergroup.isChecked(),
+            bounds={k: spin.value() for k, spin in self._bound_spins.items()},
+            resolution_enabled=self.resolution_supergroup.isChecked(),
+            resolution={k: spin.value() for k, spin in self._resolution_spins.items()},
+            bz_enabled=self.bz_group.isChecked(),
+            a=self.a_spin.value(),
+            b=self.b_spin.value(),
+            ang=self.ang_spin.value(),
+            rot=self.rot_spin.value(),
+            c=self.c_spin.value(),
+            ab=self.ab_spin.value(),
+            n1=self.n1_spin.value(),
+            n2=self.n2_spin.value(),
+            reciprocal=self.reciprocal_check.isChecked(),
+            points=self.points_check.isChecked(),
+            circle_rois=[roi.get_position() for roi in self._roi_list],
+            cmap_name=self.cmap_combo.currentText(),
+            cmap_gamma=self.gamma_widget.value(),
+            cmap_invert=self.invert_check.isChecked(),
+            cmap_highcontrast=self.contrast_check.isChecked(),
+            show_angle_plot=self.angle_plot_check.isChecked(),
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self._argnames["data"] = status.data_name
+
+        self.center_spin.blockSignals(True)
+        self.center_spin.setValue(status.center)
+        self.center_spin.blockSignals(False)
+
+        self.width_spin.blockSignals(True)
+        self.width_spin.setValue(status.width)
+        self.width_spin.blockSignals(False)
+
+        for k, v in status.offsets.items():
+            self._offset_spins[k].blockSignals(True)
+            self._offset_spins[k].setValue(v)
+            self._offset_spins[k].blockSignals(False)
+
+        self.bounds_supergroup.blockSignals(True)
+        self.bounds_supergroup.setChecked(status.bounds_enabled)
+        self.bounds_supergroup.blockSignals(False)
+        for k, v in status.bounds.items():
+            self._bound_spins[k].blockSignals(True)
+            self._bound_spins[k].setValue(v)
+            self._bound_spins[k].blockSignals(False)
+
+        self.resolution_supergroup.blockSignals(True)
+        self.resolution_supergroup.setChecked(status.resolution_enabled)
+        self.resolution_supergroup.blockSignals(False)
+        for k, v in status.resolution.items():
+            self._resolution_spins[k].blockSignals(True)
+            self._resolution_spins[k].setValue(v)
+            self._resolution_spins[k].blockSignals(False)
+
+        # Restore BZ parameters
+        self.bz_group.blockSignals(True)
+        self.a_spin.blockSignals(True)
+        self.b_spin.blockSignals(True)
+        self.ang_spin.blockSignals(True)
+        self.rot_spin.blockSignals(True)
+        self.c_spin.blockSignals(True)
+        self.ab_spin.blockSignals(True)
+        self.n1_spin.blockSignals(True)
+        self.n2_spin.blockSignals(True)
+        self.reciprocal_check.blockSignals(True)
+        self.points_check.blockSignals(True)
+        self.bz_group.setChecked(status.bz_enabled)
+        self.a_spin.setValue(status.a)
+        self.b_spin.setValue(status.b)
+        self.ang_spin.setValue(status.ang)
+        self.rot_spin.setValue(status.rot)
+        self.c_spin.setValue(status.c)
+        self.ab_spin.setValue(status.ab)
+        self.n1_spin.setValue(status.n1)
+        self.n2_spin.setValue(status.n2)
+        self.reciprocal_check.setChecked(status.reciprocal)
+        self.points_check.setChecked(status.points)
+        self.bz_group.blockSignals(False)
+        self.a_spin.blockSignals(False)
+        self.b_spin.blockSignals(False)
+        self.ang_spin.blockSignals(False)
+        self.rot_spin.blockSignals(False)
+        self.c_spin.blockSignals(False)
+        self.ab_spin.blockSignals(False)
+        self.n1_spin.blockSignals(False)
+        self.n2_spin.blockSignals(False)
+        self.reciprocal_check.blockSignals(False)
+        self.points_check.blockSignals(False)
+
+        # Restore circle ROIs
+        for x0, y0, radius in status.circle_rois:
+            self._add_circle()
+            self._roi_list[-1].set_position((x0, y0), radius)
+
+        # Restore colormap
+        self.cmap_combo.blockSignals(True)
+        self.gamma_widget.blockSignals(True)
+        self.invert_check.blockSignals(True)
+        self.contrast_check.blockSignals(True)
+        self.cmap_combo.setCurrentText(status.cmap_name)
+        self.gamma_widget.setValue(status.cmap_gamma)
+        self.invert_check.setChecked(status.cmap_invert)
+        self.contrast_check.setChecked(status.cmap_highcontrast)
+        self.cmap_combo.blockSignals(False)
+        self.gamma_widget.blockSignals(False)
+        self.invert_check.blockSignals(False)
+        self.contrast_check.blockSignals(False)
+
+        self.update()
+        self.update_bz()
+        self.update_cmap()
+
+        self.angle_plot_check.setChecked(status.show_angle_plot)
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
+    _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {
+        "delta": "𝛿",
+        "chi": "𝜒₀",
+        "xi": "𝜉₀",
+        "beta": "𝛽₀",
+        "V0": "V₀",
+        "wf": "𝜙",
+    }
+
+    _OFFSET_UNITS: typing.ClassVar[dict[str, str]] = {
+        "delta": "°",
+        "chi": "°",
+        "xi": "°",
+        "beta": "°",
+        "V0": " eV",
+        "wf": " eV",
+    }
+
     def __init__(
         self,
         data: xr.DataArray,
@@ -292,16 +529,19 @@ class KspaceTool(KspaceToolGUI):
     ) -> None:
         super().__init__(avec=avec, rotate_bz=rotate_bz, cmap=cmap, gamma=gamma)
 
-        self._argnames = {}
+        self._argnames: dict[str, str] = {}
 
         self._itool: QtWidgets.QWidget | None = None
 
         if data_name is None:
             try:
-                self._argnames["data"] = varname.argname(
-                    "data",
-                    func=self.__init__,  # type: ignore[misc]
-                    vars_only=False,
+                self._argnames["data"] = typing.cast(
+                    "str",
+                    varname.argname(
+                        "data",
+                        func=self.__init__,  # type: ignore[misc]
+                        vars_only=False,
+                    ),
                 )
             except varname.VarnameRetrievingError:
                 self._argnames["data"] = "data"
@@ -337,7 +577,7 @@ class KspaceTool(KspaceToolGUI):
         self.resolution_supergroup.toggled.connect(self.update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
-        offset_labels = {"delta": "𝛿", "chi": "𝜒₀", "xi": "𝜉₀", "beta": "𝛽₀"}
+
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-360, 360)
@@ -352,20 +592,24 @@ class KspaceTool(KspaceToolGUI):
                 self._offset_spins[k].setValue(float(self.data[k].mean()))
 
             self._offset_spins[k].valueChanged.connect(self.update)
-            self._offset_spins[k].setSuffix("°")
-            self.offsets_group.layout().addRow(offset_labels[k], self._offset_spins[k])
+            self._offset_spins[k].setSuffix(self._OFFSET_UNITS[k])
+            self.offsets_group.layout().addRow(
+                self._OFFSET_LABELS[k], self._offset_spins[k]
+            )
 
         if self.data.kspace._has_hv:
             self._offset_spins["V0"] = QtWidgets.QDoubleSpinBox()
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
             self._offset_spins["V0"].setDecimals(1)
-            self._offset_spins["V0"].setSuffix(" eV")
+            self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS[k])
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
             with warnings.catch_warnings(action="ignore", category=UserWarning):
                 self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
             self._offset_spins["V0"].valueChanged.connect(self.update)
-            self.offsets_group.layout().addRow("V₀", self._offset_spins["V0"])
+            self.offsets_group.layout().addRow(
+                self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
+            )
 
             for i in range(8):
                 self.bz_form.setRowVisible(i, i not in (0, 1, 2))
@@ -378,13 +622,15 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setRange(0.0, 9.999)
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
-        self._offset_spins["wf"].setSuffix(" eV")
+        self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS[k])
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
         self._offset_spins["wf"].valueChanged.connect(self.update)
 
-        self.offsets_group.layout().addRow("𝜙", self._offset_spins["wf"])
+        self.offsets_group.layout().addRow(
+            self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
+        )
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -623,10 +869,9 @@ class KspaceTool(KspaceToolGUI):
         ang, k = self.get_data()
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
+        self.sigInfoChanged.emit()
 
     def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
-        from erlab.plotting.bz import get_bz_edge
-
         if self.data.kspace._has_hv:
             # Out-of-plane BZ
             a, c = self.ab_spin.value(), self.c_spin.value()
@@ -639,7 +884,7 @@ class KspaceTool(KspaceToolGUI):
             if rot != 0.0:
                 basis[0, :] *= np.cos(rot)
 
-            lines, vertices = get_bz_edge(
+            lines, vertices = erlab.lattice.get_bz_edge(
                 basis,
                 reciprocal=True,
                 extend=(self.n1_spin.value(), self.n2_spin.value()),
@@ -653,7 +898,7 @@ class KspaceTool(KspaceToolGUI):
 
             avec = np.array([[a, 0], [b * np.cos(ang), b * np.sin(ang)]])
 
-            lines, vertices = get_bz_edge(
+            lines, vertices = erlab.lattice.get_bz_edge(
                 avec,
                 reciprocal=self.reciprocal_check.isChecked(),
                 extend=(self.n1_spin.value(), self.n2_spin.value()),
@@ -661,7 +906,10 @@ class KspaceTool(KspaceToolGUI):
 
             if rot != 0.0:
                 rotmat = np.array(
-                    [[np.cos(rot), -np.sin(rot)], [np.sin(rot), np.cos(rot)]]
+                    [
+                        [np.cos(rot), -np.sin(rot)],
+                        [np.sin(rot), np.cos(rot)],
+                    ]
                 )
                 lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
                 vertices = (rotmat @ vertices.T).T

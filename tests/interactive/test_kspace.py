@@ -1,3 +1,5 @@
+import tempfile
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -13,7 +15,7 @@ def test_ktool_compatible(anglemap) -> None:
 
     for data in (cut, data_4d, data_3d_without_alpha):
         with pytest.raises(
-            ValueError, match="Data is not compatible with the interactive tool."
+            ValueError, match=r"Data is not compatible with the interactive tool."
         ):
             data.kspace.interactive()
 
@@ -86,4 +88,15 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     win.show_converted()
     xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
     win._itool.close()
-    win.close()
+
+    # Test save & restore
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, KspaceTool)
+
+        assert win.tool_status == win_restored.tool_status
+        assert str(win_restored.info_text) == str(win.info_text)

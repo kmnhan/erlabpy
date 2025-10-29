@@ -29,7 +29,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         self.tab_widget.currentChanged.connect(self.update_menubar)
 
         add_btn = erlab.interactive.utils.IconActionButton(
-            self._addtab_act, "mdi6.plus-box", icon_kw={"scale_factor": 1.3}
+            self._addtab_act, "mdi6.plus", icon_kw={"scale_factor": 1.2}
         )
         add_btn.setFlat(True)
         self.tab_widget.setCornerWidget(add_btn, QtCore.Qt.Corner.TopRightCorner)

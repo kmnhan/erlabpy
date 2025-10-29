@@ -1,15 +1,14 @@
 """Utilities that don't fit in any other category."""
 
 __all__ = [
-    "LazyImport",
     "emit_user_level_warning",
+    "get_tqdm",
     "is_interactive",
+    "is_newer_version",
     "is_sequence_of",
     "open_in_file_manager",
 ]
 
-import functools
-import importlib
 import inspect
 import os
 import pathlib
@@ -18,9 +17,14 @@ import sys
 import typing
 import warnings
 from collections.abc import Sequence
-from types import ModuleType
 
 import numpy as np
+
+if typing.TYPE_CHECKING:
+    import tqdm
+
+_IS_PACKAGED: bool = getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
+
 
 _NestedGeneric = np.generic | list["_NestedGeneric"] | typing.Any
 
@@ -91,44 +95,6 @@ def emit_user_level_warning(message, category=None) -> None:
     """Emit a warning at the user level by inspecting the stack trace."""
     stacklevel = _find_stack_level()
     return warnings.warn(message, category=category, stacklevel=stacklevel)
-
-
-class LazyImport:
-    """Lazily import a module when an attribute is accessed.
-
-    Used to delay the import of a module until it is actually needed.
-
-    Parameters
-    ----------
-    module_name : str
-        The name of the module to be imported lazily.
-    err_msg : str, optional
-        If present, this message will be displayed in the ImportError raised when the
-        accessed module is not found.
-
-    Examples
-    --------
-    >>> np = LazyImport("numpy")
-    >>> np.array([1, 2, 3])
-    array([1, 2, 3])
-
-    """
-
-    def __init__(self, module_name: str, err_msg: str | None = None) -> None:
-        self._module_name = module_name
-        self._err_msg = err_msg
-
-    def __getattr__(self, item: str) -> typing.Any:
-        return getattr(self._module, item)
-
-    @functools.cached_property
-    def _module(self) -> ModuleType:
-        if (self._err_msg is not None) and (
-            not importlib.util.find_spec(self._module_name)
-        ):
-            raise ImportError(self._err_msg)
-
-        return importlib.import_module(self._module_name)
 
 
 _T = typing.TypeVar("_T")
@@ -205,3 +171,28 @@ def open_in_file_manager(path: str | os.PathLike) -> None:  # pragma: no cover
         else:
             # We can't do this reliably on Linux, so we just open the folder
             subprocess.call(["xdg-open", str(path.parent)])
+
+
+def is_newer_version(version_str: str) -> bool:  # pragma: no cover
+    """Check if a version string is newer than the current installed erlab version."""
+    import packaging.version
+
+    import erlab
+
+    return packaging.version.Version(version_str) > packaging.version.Version(
+        erlab.__version__
+    )
+
+
+def get_tqdm() -> type["tqdm.tqdm"]:
+    """Get the appropriate tqdm module.
+
+    For frozen packages, we cannot use `tqdm.auto` since it causes issues with
+    incomplete IPython installations.
+    """
+    if _IS_PACKAGED:
+        import tqdm
+    else:
+        import tqdm.auto as tqdm
+
+    return tqdm.tqdm

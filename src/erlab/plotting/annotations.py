@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 __all__ = [
-    "SI_PREFIXES",
-    "SI_PREFIX_NAMES",
+    "PRETTY_NAMES",
+    "PRETTY_UNITS",
     "copy_mathtext",
     "fancy_labels",
     "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
-    "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
-    "plot_hv_text",
     "property_labels",
     "scale_units",
     "set_titles",
@@ -22,6 +20,7 @@ __all__ = [
     "sizebar",
 ]
 
+import contextlib
 import io
 import re
 import typing
@@ -43,10 +42,73 @@ if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pyperclip
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 else:
     import lazy_loader as _lazy
 
     pyperclip = _lazy.load("pyperclip")
+
+PRETTY_NAMES: dict[str, tuple[str, str]] = {
+    "temperature": ("Temperature", "Temperature"),
+    "T": (r"\ensuremath{T}", r"$T$"),
+    "sample_temp": (r"\ensuremath{T}", r"$T$"),
+    "t": (r"\ensuremath{t}", r"$t$"),
+    "beta": (r"\ensuremath{\beta}", r"$\beta$"),
+    "theta": (r"\ensuremath{\theta}", r"$\theta$"),
+    "chi": (r"\ensuremath{\chi}", r"$\chi$"),
+    "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
+    "psi": (r"\ensuremath{\psi}", r"$\psi$"),
+    "phi": (r"\ensuremath{\phi}", r"$\phi$"),
+    "xi": (r"\ensuremath{\xi}", r"$\xi$"),
+    "Eb": (r"\ensuremath{E}", r"$E$"),
+    "Ek": (r"\ensuremath{E_{\text{kin}}}", r"$E_{\text{kin}}$"),
+    "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
+    "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
+    "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
+    "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
+    "kp": (r"\ensuremath{k_{||}}", r"$k_{||}$"),
+    "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
+}
+"""Pretty names for automated labeling of plots.
+
+Contains a mapping from dimension names to tuples of strings. The first element of the
+tuple is used when matplotlib is configured to use LaTeX, and the second is used for
+`Mathtext <https://matplotlib.org/stable/users/explain/text/mathtext.html>`_. Unless you
+have explicitly set the ``text.usetex`` parameter in your matplotlib configuration, the
+second element will be used.
+
+"""
+
+PRETTY_UNITS: dict[str, tuple[str, str]] = {
+    "temperature": (r"K", r"K"),
+    "T": (r"K", r"K"),
+    "sample_temp": (r"K", r"K"),
+    "t": (r"s", r"s"),
+    "theta": (r"deg", r"deg"),
+    "beta": (r"deg", r"deg"),
+    "psi": (r"deg", r"deg"),
+    "chi": (r"deg", r"deg"),
+    "alpha": (r"deg", r"deg"),
+    "phi": (r"deg", r"deg"),
+    "xi": (r"deg", r"deg"),
+    "Eb": (r"eV", r"eV"),
+    "Ek": (r"eV", r"eV"),
+    "eV": (r"eV", r"eV"),
+    "hv": (r"eV", r"eV"),
+    "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+    "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
+}
+"""Pretty units for automated labeling of plots.
+
+Contains a mapping from dimension names to tuples of strings. The first element of the
+tuple is used when matplotlib is configured to use LaTeX, and the second is used for
+`Mathtext <https://matplotlib.org/stable/users/explain/text/mathtext.html>`_. Unless you
+have explicitly set the ``text.usetex`` parameter in your matplotlib configuration, the
+second element will be used.
+
+"""
 
 SI_PREFIXES: dict[int, str] = {
     24: "Y",
@@ -95,60 +157,6 @@ SI_PREFIX_NAMES: tuple[str, ...] = (
     "zepto",
     "yocto",
 )  #: Names of the SI prefixes.
-
-PRETTY_NAMES: dict[str, tuple[str, str]] = {
-    "temperature": ("Temperature", "Temperature"),
-    "T": (r"\ensuremath{T}", r"$T$"),
-    "sample_temp": (r"\ensuremath{T}", r"$T$"),
-    "t": (r"\ensuremath{t}", r"$t$"),
-    "beta": (r"\ensuremath{\beta}", r"$\beta$"),
-    "theta": (r"\ensuremath{\theta}", r"$\theta$"),
-    "chi": (r"\ensuremath{\chi}", r"$\chi$"),
-    "alpha": (r"\ensuremath{\alpha}", r"$\alpha$"),
-    "psi": (r"\ensuremath{\psi}", r"$\psi$"),
-    "phi": (r"\ensuremath{\phi}", r"$\phi$"),
-    "xi": (r"\ensuremath{\xi}", r"$\xi$"),
-    "Eb": (r"\ensuremath{E}", r"$E$"),
-    "Ek": (r"\ensuremath{E_{\text{kin}}}", r"$E_{\text{kin}}$"),
-    "eV": (r"\ensuremath{E-E_F}", r"$E-E_F$"),
-    "kx": (r"\ensuremath{k_{x}}", r"$k_x$"),
-    "ky": (r"\ensuremath{k_{y}}", r"$k_y$"),
-    "kz": (r"\ensuremath{k_{z}}", r"$k_z$"),
-    "kp": (r"\ensuremath{k_{||}}", r"$k_{||}$"),
-    "hv": (r"\ensuremath{h\nu}", r"$h\nu$"),
-}
-"""Pretty names for labeling plots.
-
-The first element is for LaTeX, and the second is for plain text.
-
-"""
-
-PRETTY_UNITS: dict[str, tuple[str, str]] = {
-    "temperature": (r"K", r"K"),
-    "T": (r"K", r"K"),
-    "sample_temp": (r"K", r"K"),
-    "t": (r"s", r"s"),
-    "theta": (r"deg", r"deg"),
-    "beta": (r"deg", r"deg"),
-    "psi": (r"deg", r"deg"),
-    "chi": (r"deg", r"deg"),
-    "alpha": (r"deg", r"deg"),
-    "phi": (r"deg", r"deg"),
-    "xi": (r"deg", r"deg"),
-    "Eb": (r"eV", r"eV"),
-    "Ek": (r"eV", r"eV"),
-    "eV": (r"eV", r"eV"),
-    "hv": (r"eV", r"eV"),
-    "kx": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "ky": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "kz": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-    "kp": (r"Å\ensuremath{{}^{-1}}", r"Å${}^{-1}$"),
-}
-"""Pretty units for labeling plots.
-
-The first element is for LaTeX, and the second is for plain text.
-
-"""
 
 
 def _alph_label(val, prefix, suffix, numeric, capital):
@@ -202,6 +210,7 @@ def get_si_str(si: int) -> str:
 
 
 def name_for_dim(dim_name: str, escaped: bool = True) -> str:
+    """Return the pretty name for a given dimension."""
     names: tuple[str, str] | None = PRETTY_NAMES.get(dim_name)
 
     if names is None:
@@ -214,7 +223,8 @@ def name_for_dim(dim_name: str, escaped: bool = True) -> str:
     return name
 
 
-def unit_for_dim(dim_name: str, deg2rad: bool = False) -> str:
+def unit_for_dim(dim_name: str, radians: bool = False) -> str:
+    """Return the pretty unit for a given dimension."""
     units: tuple[str, str] | None = PRETTY_UNITS.get(dim_name)
 
     if units is None:
@@ -222,14 +232,15 @@ def unit_for_dim(dim_name: str, deg2rad: bool = False) -> str:
     else:
         unit = units[0] if plt.rcParams["text.usetex"] else units[1]
 
-    if deg2rad:
+    if radians:
         unit = unit.replace("deg", "rad")
     return unit
 
 
-def label_for_dim(dim_name: str, deg2rad: bool = False, escaped: bool = True) -> str:
+def label_for_dim(dim_name: str, radians: bool = False, escaped: bool = True) -> str:
+    """Return the pretty label for a given dimension."""
     name = name_for_dim(dim_name, escaped=escaped)
-    unit = unit_for_dim(dim_name, deg2rad=deg2rad)
+    unit = unit_for_dim(dim_name, radians=radians)
     if unit == "":
         return name
     return f"{name} ({unit})"
@@ -272,10 +283,39 @@ def copy_mathtext(
     | None = None,
     fontproperties: matplotlib.font_manager.FontProperties | None = None,
     outline: bool = False,
-    svg: bool = True,
     rcparams: dict | None = None,
     **mathtext_rc,
 ) -> str:
+    """Copy math equations to the clipboard as SVG.
+
+    Parameters
+    ----------
+    s
+        The math text to convert to SVG.
+    fontsize
+        The font size to use for the math text. If None, the default font size is used.
+    fontproperties
+        The font properties to use for the math text. If None, the default font
+        properties are used.
+    outline
+        If True, the SVG will contain outlined paths instead of text.
+    rcparams
+        Additional rc parameters to use for the math text rendering. If None, the
+        default rc parameters are used.
+
+    Returns
+    -------
+    str
+        The SVG string representation of the math text.
+
+    Example
+    -------
+    >>> import erlab.plotting as eplt
+    >>> svg_str = eplt.copy_mathtext(r"$E = mc^2$", fontsize=12)
+
+    """
+    from matplotlib.backends.backend_svg import FigureCanvasSVG
+
     if fontproperties is None:
         fontproperties = matplotlib.font_manager.FontProperties(size=fontsize)
     else:
@@ -289,15 +329,7 @@ def copy_mathtext(
     fig.patch.set_facecolor("none")
     fig.text(0, depth / height, s, fontproperties=fontproperties)
 
-    if svg:
-        from matplotlib.backends.backend_svg import FigureCanvasSVG
-
-        FigureCanvasSVG(fig)
-
-    else:
-        from matplotlib.backends.backend_pdf import FigureCanvasPdf
-
-        FigureCanvasPdf(fig)
+    FigureCanvasSVG(fig)
 
     for k, v in mathtext_rc.items():
         if k in ["bf", "cal", "it", "rm", "sf", "tt"] and isinstance(
@@ -307,34 +339,64 @@ def copy_mathtext(
         rcparams[f"mathtext.{k}"] = v
 
     with io.BytesIO() as buffer:
-        if svg:
-            rcparams.setdefault("svg.fonttype", "path" if outline else "none")
-            rcparams.setdefault("svg.image_inline", True)
-            with plt.rc_context(rcparams):
-                fig.canvas.print_svg(buffer)  # type: ignore[attr-defined]
-        else:
-            rcparams.setdefault("pdf.fonttype", 3 if outline else 42)
-            with plt.rc_context(rcparams):
-                fig.canvas.print_pdf(buffer)  # type: ignore[attr-defined]
+        rcparams.setdefault("svg.fonttype", "path" if outline else "none")
+        rcparams.setdefault("svg.image_inline", True)
+        with plt.rc_context(rcparams):
+            fig.canvas.print_svg(buffer)  # type: ignore[attr-defined]
 
         buffer_str = buffer.getvalue().decode("utf-8")
 
-    pyperclip.copy(buffer_str)
+    with contextlib.suppress(pyperclip.PyperclipException):
+        # Try to copy to clipboard, if available
+        pyperclip.copy(buffer_str)
     return buffer_str
 
 
-def fancy_labels(ax=None, deg2rad=False) -> None:
+def fancy_labels(
+    ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    *,
+    radians: bool = False,
+) -> None:
+    """Apply pretty labels to Matplotlib axes based on their current label text.
+
+    This function converts plain dimension names already set on the axes into nicely
+    formatted labels (e.g., symbols and units). The labels are determined based on
+    :attr:`PRETTY_NAMES <erlab.plotting.annotations.PRETTY_NAMES>` and
+    :attr:`PRETTY_UNITS <erlab.plotting.annotations.PRETTY_UNITS>`.
+
+    Parameters
+    ----------
+    ax
+        The target axes or an iterable of axes. If None (default), the current axes is
+        used.
+    radians : bool, optional
+        If `True`, angle units will be displayed in radians instead of degrees.
+
+    Examples
+    --------
+    >>> import matplotlib.pyplot as plt
+    >>> import erlab.plotting as eplt
+    >>> fig, ax = plt.subplots()
+    >>> ax.set_xlabel("kx")
+    >>> ax.set_ylabel("eV")
+    >>> fancy_labels(ax)
+    >>> ax.get_xlabel()
+    '$k_x$ (Å${}^{-1}$)'
+    >>> ax.get_ylabel()
+    '$E-E_F$ (eV)'
+
+    """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
         for axi in ax:
-            fancy_labels(axi, deg2rad)
+            fancy_labels(axi, radians=radians)
         return
 
-    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), deg2rad=deg2rad))
-    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), deg2rad=deg2rad))
-    if hasattr(ax, "get_zlabel"):
-        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), deg2rad=deg2rad))
+    ax.set_xlabel(label_for_dim(dim_name=ax.get_xlabel(), radians=radians))
+    ax.set_ylabel(label_for_dim(dim_name=ax.get_ylabel(), radians=radians))
+    if hasattr(ax, "get_zlabel") and hasattr(ax, "set_zlabel"):
+        ax.set_zlabel(label_for_dim(dim_name=ax.get_zlabel(), radians=radians))
 
 
 def property_labels(
@@ -579,119 +641,10 @@ def label_subplots(
         ax.add_artist(at)
 
 
-def label_subplots_nature(
-    axes: matplotlib.axes.Axes | Sequence[matplotlib.axes.Axes],
-    values: Sequence[int | str] | None = None,
-    startfrom: int = 1,
-    order: typing.Literal["C", "F", "A", "K"] = "C",
-    offset: tuple[float, float] = (-20.0, 7.0),
-    prefix: str = "",
-    suffix: str = "",
-    numeric: bool = False,
-    capital: bool = False,
-    fontweight: typing.Literal[
-        "ultralight",
-        "light",
-        "normal",
-        "regular",
-        "book",
-        "medium",
-        "roman",
-        "semibold",
-        "demibold",
-        "demi",
-        "bold",
-        "heavy",
-        "extra bold",
-        "black",
-    ] = "black",
-    fontsize: (
-        float
-        | typing.Literal[
-            "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large"
-        ]
-    ) = "medium",
-    **kwargs,
-) -> None:
-    r"""Labels subplots with automatically generated labels.
-
-    Parameters
-    ----------
-    axes
-        `matplotlib.axes.Axes` to label. If an array is given, the order will be
-        determined by the flattening method given by `order`.
-    values
-        Integer or string labels corresponding to each Axes in `axes` for
-        manual labels.
-    startfrom
-        Start from this number when creating automatic labels. Has no
-        effect when `values` is not `None`.
-    order
-        Order in which to flatten `ax`. 'C' means to flatten in
-        row-major (C-style) order. 'F' means to flatten in column-major
-        (Fortran-style) order. 'A' means to flatten in column-major
-        order if a is Fortran contiguous in memory, row-major order
-        otherwise. 'K' means to flatten a in the order the elements
-        occur in memory. The default is 'C'.
-    offset
-        Values that are used to position the labels, given in points.
-    prefix
-        String to prepend to the alphabet label.
-    suffix
-        String to append to the alphabet label.
-    numeric
-        Use integer labels instead of alphabets.
-    capital
-        Capitalize automatically generated alphabetical labels.
-    fontweight
-        Set the font weight. The default is ``'normal'``.
-    fontsize
-        Set the font size. The default is ``'medium'`` for axes, and ``'large'`` for
-        figures.
-    **kwargs
-        Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
-        documentation for a list of all possible arguments.
-
-    """
-    kwargs["fontweight"] = fontweight
-    if plt.rcParams["text.usetex"] & (fontweight == "bold"):
-        prefix = "\\textbf{" + prefix
-        suffix = suffix + "}"
-        kwargs.pop("fontweight")
-
-    axlist = np.array(axes, dtype=object).flatten(order=order)
-    if values is None:
-        value_arr = np.array(
-            [i + startfrom for i in range(len(axlist))], dtype=np.int64
-        )
-    else:
-        value_arr = np.array(values).flatten(order=order)
-        if not (axlist.size == value_arr.size):
-            raise IndexError(
-                "The number of given values must match the number of given axes."
-            )
-
-    for i in range(len(axlist)):
-        label_str = _alph_label(value_arr[i], prefix, suffix, numeric, capital)
-        trans = matplotlib.transforms.ScaledTranslation(
-            offset[0] / 72, offset[1] / 72, axlist[i].get_figure().dpi_scale_trans
-        )
-        axlist[i].figure.text(
-            # axlist[i].text(
-            0.0,
-            1.0,
-            label_str,
-            transform=axlist[i].transAxes + trans,
-            fontsize=fontsize,
-            va="baseline",
-            clip_on=False,
-            **kwargs,
-        )
-
-
 def mark_points(
     points: Sequence[float],
     labels: Sequence[str],
+    *,
     y: float | Sequence[float] = 0.0,
     pad: tuple[float, float] = (0, 1.75),
     literal: bool = False,
@@ -710,19 +663,25 @@ def mark_points(
         Floats indicating the position of each label.
     labels
         Sequence of label strings indicating a high symmetry point. Must be the same
-        length as `points`.
+        length as ``points``.
     y
-        Position of the label in data coordinates
+        Position of the label in data coordinates. If a single float is given, it will
+        be used for all points. If a sequence is given, it must be the same length as
+        ``points``.
     pad
         Offset of the text in points.
     literal
         If `True`, take the input string literally.
     roman
-        If ``False``, *True*, itallic fonts are used.
+        If `False`, itallic fonts are used.
     bar
-        If ``True``, prints a bar over the label.
+        If `True`, prints a bar over the label.
     ax
-        `matplotlib.axes.Axes` to annotate.
+        `matplotlib.axes.Axes` to annotate. If `None`, the current axes is used.
+    **kwargs
+        Extra arguments to `matplotlib.axes.Axes.text`. By default, the horizontal
+        alignment is set to ``'center'`` and the vertical alignment is set to
+        ``'baseline'``. The text is not clipped to the axes limits.
 
     """
     if ax is None:
@@ -730,37 +689,54 @@ def mark_points(
 
     if np.iterable(ax):
         for a in np.asarray(ax, dtype=object).flatten():
-            mark_points(points, labels, y, pad, literal, roman, bar, a, **kwargs)
+            mark_points(
+                points,
+                labels,
+                y=y,
+                pad=pad,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=a,
+                **kwargs,
+            )
     else:
         fig = ax.get_figure()
 
         if fig is None:
             raise ValueError("Given axes does not belong to a figure")
-
-        for k, v in {"ha": "center", "va": "baseline", "fontsize": "small"}.items():
-            kwargs.setdefault(k, v)
+        kwargs.setdefault("ha", kwargs.pop("horizontalalignment", "center"))
+        kwargs.setdefault("va", kwargs.pop("verticalalignment", "baseline"))
+        kwargs.setdefault("clip_on", False)
 
         if not np.iterable(y):
             y = [y] * len(points)
 
-        with plt.rc_context({"font.family": "serif"}):
-            for xi, yi, label in zip(points, y, labels, strict=True):
-                ax.text(
-                    xi,
-                    yi,
-                    label if literal else parse_point_labels(label, roman, bar),
-                    transform=ax.transData
-                    + mtransforms.ScaledTranslation(
-                        pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
-                    ),
-                    **kwargs,
-                )
+        default_color = kwargs.pop("c", kwargs.pop("color", None))
+
+        for xi, yi, label in zip(points, y, labels, strict=True):
+            if default_color is None:
+                color = "k" if ax.get_ylim()[1] < yi else axes_textcolor(ax)
+            else:
+                color = default_color
+            ax.text(
+                xi,
+                yi,
+                label if literal else parse_point_labels(label, roman, bar),
+                transform=ax.transData
+                + mtransforms.ScaledTranslation(
+                    pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
+                ),
+                color=color,
+                **kwargs,
+            )
 
 
 def mark_points_outside(
     points: Sequence[float],
     labels: Sequence[str],
     axis: typing.Literal["x", "y"] = "x",
+    *,
     literal: bool = False,
     roman: bool = True,
     bar: bool = False,
@@ -792,13 +768,20 @@ def mark_points_outside(
     **kwargs
         Extra arguments to `matplotlib.text.Text`: refer to the `matplotlib`
         documentation for a list of all possible arguments.
-
     """
     if ax is None:
         ax = plt.gca()
     if np.iterable(ax):
-        for a in np.asarray(ax, dtype=object).flatten():
-            mark_points_outside(points, labels, axis, roman, bar, a)
+        for ax_i in np.asarray(ax, dtype=object).flat:
+            mark_points_outside(
+                points,
+                labels=labels,
+                axis=axis,
+                literal=literal,
+                roman=roman,
+                bar=bar,
+                ax=ax_i,
+            )
     else:
         if axis == "x":
             label_ax = ax.twiny()
@@ -823,55 +806,6 @@ def mark_points_outside(
                 **kwargs,
             )
         label_ax.set_frame_on(False)
-
-
-def mark_points_y(pts, labels, roman=True, bar=False, ax=None) -> None:
-    if ax is None:
-        ax = plt.gca()
-    if not isinstance(ax, tuple | list | np.ndarray):
-        ax = [ax]
-    for a in np.array(ax, dtype=object).flatten():
-        label_ax = a.twinx()
-        label_ax.set_ylim(a.get_ylim())
-        label_ax.set_yticks(pts)
-        # label_ax.set_xlabel('')
-        label_ax.set_yticklabels(
-            [parse_point_labels(lab, roman, bar) for lab in labels]
-        )
-        # label_ax.set_zorder(a.get_zorder())
-        label_ax.set_frame_on(False)
-
-
-def plot_hv_text(ax, val, x=0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="left",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
-
-
-def plot_hv_text_right(ax, val, x=1 - 0.025, y=0.975, **kwargs) -> None:
-    name = name_for_dim("hv", escaped=False)
-    unit = unit_for_dim("hv")
-    s = f"${name}={val}$ {unit}"
-    ax.text(
-        x,
-        y,
-        s,
-        family="serif",
-        horizontalalignment="right",
-        verticalalignment="top",
-        transform=ax.transAxes,
-        **kwargs,
-    )
 
 
 def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:
@@ -988,6 +922,9 @@ def scale_units(
 
 def integer_ticks(ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes]) -> None:
     """Set the ticks on the x and y axes to only display integer values.
+
+    Modifies the x and y ticks of the given axes to only show integer values that are
+    within the current limits of the axes.
 
     Parameters
     ----------
@@ -1115,7 +1052,7 @@ def sizebar(
     sep: float = 3.0,
     frameon: bool = False,
     **kwargs,
-):
+) -> AnchoredSizeBar:
     """Add a size bar to an axes.
 
     Parameters
@@ -1125,14 +1062,18 @@ def sizebar(
     value
         Length of the size bar in terms of `unit`.
     unit
-        An SI unit string without prefixes. For example, 'm' for meters.
+        An SI unit string without any prefixes. For example, 'm' for meters.
     si
-        Exponents that have a corresponding SI prefix
+        Exponents that have a corresponding SI prefix. This determines the unit of the
+        label that is shown next to the size bar. For example, if the ``value`` is
+        ``200e-6`` and the unit is ``"m"``, setting ``si=-6`` will result in a label of
+        ``"200 μm"``, and ``si=-3`` will result in ``"0.2 mm"`` (assuming ``decimals``
+        is set appropriately).
     resolution
         Scale of the current axes coordinates. For example, if the plot axes values are
         given in μm, the resolution should be 1e-6.
     decimals
-        Number of decimals on the size bar label.
+        Number of decimals displayed on the size bar label.
     label
         When provided, overrides the automatically generated label string.
     loc
@@ -1151,8 +1092,8 @@ def sizebar(
 
     Example
     -------
-    Plotting a size bar with a length of 200 μm on an axes given in mm:
-    >>> eplt.sizebar(ax, value=2e-6, unit="m", si=-6, resolution=1e-3)
+    >>> # Plot a size bar with a length of 200 μm on an axes given in mm
+    >>> eplt.sizebar(ax, value=200e-6, unit="m", si=-6, resolution=1e-3)
 
     """
     from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar

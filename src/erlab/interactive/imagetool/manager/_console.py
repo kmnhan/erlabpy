@@ -11,7 +11,7 @@ import weakref
 import numpy as np
 import qtconsole.inprocess
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab
 
@@ -54,7 +54,7 @@ class ToolNamespace:
         """The underlying ImageTool object."""
         if self._wrapper.archived:
             self._wrapper.unarchive()
-        return typing.cast("ImageTool", self._wrapper.tool)
+        return typing.cast("ImageTool", self._wrapper.imagetool)
 
     @property
     def data(self) -> xr.DataArray:
@@ -64,6 +64,7 @@ class ToolNamespace:
     @data.setter
     def data(self, value: xr.DataArray) -> None:
         self.tool.slicer_area.set_data(value)
+        self.tool.slicer_area.sigDataEdited.emit()
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
@@ -114,21 +115,21 @@ class ToolsNamespace:
     def selected_data(self) -> list[xr.DataArray]:
         """Get a list of DataArrays from the selected windows."""
         return [
-            self._manager.get_tool(idx).slicer_area._data
-            for idx in self._manager.list_view.selected_tool_indices
+            self._manager.get_imagetool(idx).slicer_area._data
+            for idx in self._manager.tree_view.selected_imagetool_indices
         ]
 
     def __getitem__(self, index: int) -> ToolNamespace | None:
         """Access a specific ImageTool object by its index."""
-        if index not in self._manager._tool_wrappers:
+        if index not in self._manager._imagetool_wrappers:
             print(f"Tool {index} not found")
             return None
 
-        return ToolNamespace(self._manager._tool_wrappers[index])
+        return ToolNamespace(self._manager._imagetool_wrappers[index])
 
     def __repr__(self) -> str:
         output = []
-        for index, wrapper in self._manager._tool_wrappers.items():
+        for index, wrapper in self._manager._imagetool_wrappers.items():
             output.append(f"{index}: {wrapper.name}")
         if not output:
             return "No tools"
@@ -238,10 +239,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     def _update_colors(self) -> None:
         """Detect dark mode and update the console colors accordingly."""
         if self.kernel_manager.kernel:
-            is_dark: bool = (
-                self.palette().color(QtGui.QPalette.ColorRole.Base).value() < 128
-            )  # dark detection based on base color, adapted from pyqtgraph ReplWidget
-            colors = "linux" if is_dark else "lightbg"
+            colors = "linux" if erlab.interactive.colors.is_dark_mode() else "lightbg"
             self.set_default_style(colors)
             self._syntax_style_changed()
             self._style_sheet_changed()

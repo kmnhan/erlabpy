@@ -6,21 +6,18 @@ __all__ = [
     "InversePowerNorm",
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
-    "autoscale_to",
     "clean_labels",
     "copy_mathtext",
     "fancy_labels",
     "fermiline",
     "figwh",
     "flatten_transparency",
-    "get_bz_edge",
     "get_mappable",
     "gradient_fill",
     "image_is_light",
     "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
-    "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
     "nice_colorbar",
@@ -28,7 +25,6 @@ __all__ = [
     "plot_array",
     "plot_array_2d",
     "plot_hex_bz",
-    "plot_hv_text",
     "plot_slices",
     "property_labels",
     "proportional_colorbar",
@@ -49,10 +45,8 @@ from erlab.plotting.annotations import (
     integer_ticks,
     label_subplot_properties,
     label_subplots,
-    label_subplots_nature,
     mark_points,
     mark_points_outside,
-    plot_hv_text,
     property_labels,
     scale_units,
     set_titles,
@@ -60,7 +54,7 @@ from erlab.plotting.annotations import (
     set_ylabels,
     sizebar,
 )
-from erlab.plotting.bz import get_bz_edge, plot_hex_bz
+from erlab.plotting.bz import plot_hex_bz
 from erlab.plotting.colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,
@@ -75,7 +69,6 @@ from erlab.plotting.colors import (
     unify_clim,
 )
 from erlab.plotting.general import (
-    autoscale_to,
     clean_labels,
     fermiline,
     figwh,

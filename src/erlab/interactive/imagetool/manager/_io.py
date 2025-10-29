@@ -5,8 +5,10 @@ from __future__ import annotations
 __all__ = ["_MultiFileHandler"]
 
 import collections
+import contextlib
 import logging
 import pathlib
+import traceback
 import typing
 import weakref
 
@@ -60,7 +62,6 @@ class _DataLoader(QtCore.QRunnable):
         self._func = func
         self._kwargs = kwargs
 
-    @QtCore.Slot()
     def run(self) -> None:
         try:
             data_list: list[xr.DataArray] = (
@@ -68,9 +69,9 @@ class _DataLoader(QtCore.QRunnable):
                     self._func(self._file_path, **self._kwargs)
                 )
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Error loading data from %s", self._file_path)
-            self.signals.sigFailed.emit(self._file_path, f"{type(e).__name__}: {e}")
+            self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)
 
@@ -98,13 +99,14 @@ class _MultiFileHandler(QtCore.QObject):
 
     Signals
     -------
-    sigFinished()
+    sigFinished(loaded, aborted, failed)
         Emitted when the loading process has finished. The signal is emitted even if the
-        loading process was aborted due to an error.
+        loading process was stopped prematurely using the ``abort`` method or due to an
+        unexpected error.
 
     """
 
-    sigFinished = QtCore.Signal()  #: :meta private:
+    sigFinished = QtCore.Signal(object, object, object)  #: :meta private:
 
     def __init__(
         self,
@@ -123,6 +125,8 @@ class _MultiFileHandler(QtCore.QObject):
         self.loaded: list[pathlib.Path] = []
         self.failed: list[pathlib.Path] = []
 
+        self._abort: bool = False
+
     @property
     def _threadpool(self) -> QtCore.QThreadPool:
         return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
@@ -130,10 +134,10 @@ class _MultiFileHandler(QtCore.QObject):
     @property
     def manager(self) -> ImageToolManager:
         """Access the parent manager instance."""
-        _manager = self._manager()
-        if _manager is None:
+        manager = self._manager()
+        if manager is None:
             raise LookupError("Parent was destroyed")
-        return _manager
+        return manager
 
     @property
     def queued(self) -> list[pathlib.Path]:
@@ -147,10 +151,11 @@ class _MultiFileHandler(QtCore.QObject):
         """
         self._load_next()
 
+    @QtCore.Slot()
     def _load_next(self) -> None:
         """Load the next file in the queue."""
-        if len(self._queue) == 0:
-            self.sigFinished.emit()
+        if len(self._queue) == 0 or self._abort:
+            self.sigFinished.emit(self.loaded, self.queued, self.failed)
             return
 
         file_path = self._queue.popleft()
@@ -167,33 +172,55 @@ class _MultiFileHandler(QtCore.QObject):
         self, file_path: pathlib.Path, data_list: list[xr.DataArray]
     ) -> None:
         self.manager._status_bar.showMessage("")
+        self.loaded.append(file_path)
+        self.manager._recent_directory = str(file_path.parent)
+        QtCore.QTimer.singleShot(
+            0, lambda: self._deliver_and_queue(file_path, data_list)
+        )
+
+    def _deliver_and_queue(
+        self, file_path: pathlib.Path, data_list: list[xr.DataArray]
+    ) -> None:
         self.manager._data_recv(
             data_list,
             kwargs={"file_path": file_path, "_disable_reload": len(data_list) > 1},
         )
-        self.loaded.append(file_path)
-        self.manager._recent_directory = str(file_path.parent)
-        self._load_next()
+        QtCore.QTimer.singleShot(0, self._load_next)
 
     @QtCore.Slot(pathlib.Path, str)
     def _on_failed(self, file_path: pathlib.Path, exc_str: str) -> None:
-        self.manager._status_bar.showMessage("")
         self.failed.append(file_path)
+        self.manager._status_bar.showMessage("")
 
-        msg_box = QtWidgets.QMessageBox(self.manager)
-        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
-        msg_box.setText(f"Failed to load {file_path.name}")
-        msg_box.setInformativeText(
-            "Do you want to skip this file and continue loading?"
+        dialog = erlab.interactive.utils.MessageDialog(
+            self.manager,
+            text=f"Failed to load {file_path.name}",
+            informative_text="Do you want to skip this file and continue loading?",
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Abort
+            | QtWidgets.QDialogButtonBox.StandardButton.Yes,
+            default_button=QtWidgets.QDialogButtonBox.StandardButton.Yes,
         )
-        msg_box.setStandardButtons(
-            QtWidgets.QMessageBox.StandardButton.Abort
-            | QtWidgets.QMessageBox.StandardButton.Yes
-        )
-        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
-        msg_box.setDetailedText(exc_str)
-        match msg_box.exec():
-            case QtWidgets.QMessageBox.StandardButton.Yes:
+        dialog.setDetailedText(erlab.interactive.utils._format_traceback(exc_str))
+        dialog.adjustSize()
+        match dialog.exec():
+            case QtWidgets.QDialog.DialogCode.Accepted:
                 self._load_next()
-            case QtWidgets.QMessageBox.StandardButton.Abort:
-                self.sigFinished.emit()
+            case _:
+                self.sigFinished.emit(self.loaded, self.queued, self.failed)
+
+    def abort(self) -> None:
+        """Abort the loading process.
+
+        Files that are already being loaded will be completed, but no further files
+        will be loaded.
+        """
+        self._abort = True
+
+    def wait(self) -> None:
+        """Block until all files are loaded or the loading process is aborted."""
+        if hasattr(self._threadpool, "waitForDone"):  # Qt 6.8+
+            self._threadpool.waitForDone()
+        else:  # pragma: no cover
+            with contextlib.suppress(KeyboardInterrupt):
+                while self._threadpool.activeThreadCount() > 0:
+                    QtCore.QThread.msleep(100)

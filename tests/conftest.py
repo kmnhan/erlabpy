@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import datetime
 import functools
@@ -11,11 +12,20 @@ import time
 import typing
 from collections.abc import Callable, Sequence
 
+import dask.distributed
+from dask.distributed import Client
+
+# Headless mode for Qt
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+import dask
 import lmfit
+import numexpr
 import numpy as np
 import pooch
 import pytest
 import xarray as xr
+from dask.distributed import LocalCluster
 from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
@@ -24,8 +34,6 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
-
 DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
@@ -33,6 +41,47 @@ DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
+
+
+def _qt_msg_filter(msg_type, context, message):
+    """Filter out some Qt warnings related to offscreen mode."""
+    if (
+        "This plugin does not support raise()" in message
+        or "This plugin does not support propagateSizeHints()" in message
+        or "This plugin does not support grabbing the keyboard" in message
+        or "Populating font family aliases took" in message
+    ):
+        return  # swallow
+    # forward others to stderr
+    sys.__stderr__.write(message + "\n")
+
+
+QtCore.qInstallMessageHandler(_qt_msg_filter)
+
+# Limit numexpr to a single thread; this reduces probability of segfaults
+numexpr.set_num_threads(1)
+
+# Limit dask to a single thread; this reduces probability of segfaults
+dask.config.set(scheduler="synchronous")
+
+
+@pytest.fixture(scope="session")
+def cluster():
+    with LocalCluster(
+        processes=False, n_workers=1, threads_per_worker=1, dashboard_address=None
+    ) as dask_cluster:
+        yield dask_cluster
+
+
+@pytest.fixture
+def client(cluster):
+    try:
+        dask_client = dask.distributed.default_client()
+    except ValueError:
+        with Client(cluster, direct_to_workers=True, asynchronous=True) as dask_client:
+            yield dask_client
+    else:
+        yield dask_client
 
 
 @pytest.fixture(scope="session")
@@ -102,10 +151,42 @@ def gold_fit_res(gold) -> xr.Dataset:
 
 
 @pytest.fixture(scope="session")
+def gold_fit_res_fd(gold) -> xr.Dataset:
+    return erlab.analysis.gold.poly(
+        gold, angle_range=(-13.5, 13.5), eV_range=(-0.204, 0.276), fast=False
+    )
+
+
+@pytest.fixture(scope="session")
 def gold_fine():
     return generate_gold_edge(
         (400, 500), temp=100, Eres=1e-2, edge_coeffs=(0.04, 1e-5, -3e-4), noise=False
     )
+
+
+@pytest.fixture(scope="session")
+def manager_context() -> Callable[
+    ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+]:
+    @contextlib.contextmanager
+    def _ctx(
+        use_socket: bool = False,
+    ):
+        erlab.interactive.imagetool.manager._always_use_socket = use_socket
+
+        erlab.interactive.imagetool.manager.main(execute=False)
+
+        try:
+            yield erlab.interactive.imagetool.manager._manager_instance
+        finally:
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.processEvents()
+            erlab.interactive.imagetool.manager._manager_instance.remove_all_tools()
+            erlab.interactive.imagetool.manager._manager_instance.close()
+            erlab.interactive.imagetool.manager._manager_instance = None
+            erlab.interactive.imagetool.manager._always_use_socket = False
+
+    return _ctx
 
 
 class _DialogDetectionThread(QtCore.QThread):
@@ -114,8 +195,14 @@ class _DialogDetectionThread(QtCore.QThread):
     sigTrigger = QtCore.Signal(int, object)
     sigPreCall = QtCore.Signal(int, object)
 
-    def __init__(self, index: int, pre_call: Callable | None, timeout: float) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        parent: QtCore.QObject | None,
+        index: int,
+        pre_call: Callable | None,
+        timeout: float,
+    ) -> None:
+        super().__init__(parent)
         self.pre_call = pre_call
         self.index = index
         self.timeout = timeout
@@ -170,25 +257,41 @@ class _DialogHandler(QtCore.QObject):
     Parameters
     ----------
     dialog_trigger
-        Callable that triggers the dialog creation.
+        Callable that triggers the dialog creation. Takes no arguments.
     timeout
-        Maximum time (seconds) to wait for the dialog creation.
+        Maximum time in seconds to wait for the dialog creation.
     pre_call
         Callable that takes the dialog as a single argument. If provided, it is executed
-        before calling ``.accept()`` on the dialog. If a sequence of callables of length
-        equal to ``chained_dialog`` is provided, each callable will be called before
-        each dialog is accepted.
+        prior to calling ``.accept()`` on the dialog. This is useful if some dialog
+        elements need to be interacted with before accepting the dialog.
+
+        If a sequence of callables of length equal to ``chained_dialogs`` is provided,
+        each callable will be called before each dialog is accepted.
     accept_call
         If provided, it is called instead of ``.accept()`` on the dialog. If a sequence
-        of callables of length equal to ``chained_dialog`` is provided, each callable
-        will be called instead of ``.accept()`` on each dialog.
-    chained_dialog
-        If 2, a new dialog is expected to be created right after the dialog is accepted.
-        The new dialog will also be accepted. Numbers greater than 1 will accept
-        multiple dialogs.
+        of callables of length equal to ``chained_dialogs`` is provided, each callable
+        will be called instead of ``.accept()`` on each dialog. When a sequence is
+        provided, the first callable is called for the second dialog, and so on.
+        Elements of the sequence can be ``None``, in which case ``.accept()`` is called
+        for that dialog.
+
+        If the dialog is a ``QMessageBox``, ``.defaultButton().click()`` is called
+        instead of ``.accept()``.
+    chained_dialogs
+        Number of dialogs expected to be created in a chain. The first dialog is created
+        by calling ``dialog_trigger``. When that dialog is accepted, a second dialog is
+        expected to be created, and so on. For example, if 2, a second dialog is
+        expected to be created right after the first dialog is accepted. The new dialog
+        will also be automatically accepted.
     """
 
-    def __init__(
+    sigFinished = QtCore.Signal()
+
+    def __init__(self, qtbot):
+        super().__init__()
+        self._qtbot = qtbot
+
+    def __call__(
         self,
         dialog_trigger: Callable,
         timeout: float = 5.0,
@@ -196,8 +299,6 @@ class _DialogHandler(QtCore.QObject):
         accept_call: Callable | Sequence[Callable | None] | None = None,
         chained_dialogs: int = 1,
     ):
-        super().__init__()
-
         self.timeout: float = timeout
         self._timed_out = False
 
@@ -210,7 +311,8 @@ class _DialogHandler(QtCore.QObject):
         self._accept_call_list = accept_call
         self._max_index = chained_dialogs - 1
 
-        self.trigger_index(0, dialog_trigger)
+        with self._qtbot.wait_signal(self.sigFinished, timeout=round(timeout * 1e3)):
+            self.trigger_index(0, dialog_trigger)
 
     @QtCore.Slot(int)
     def _timeout(self, index: int) -> None:
@@ -228,8 +330,7 @@ class _DialogHandler(QtCore.QObject):
     def trigger_index(
         self, index: int, dialog_or_trigger: QtWidgets.QDialog | Callable
     ) -> None:
-        """
-        Trigger the dialog creation.
+        """Trigger the dialog creation.
 
         Parameters
         ----------
@@ -248,7 +349,7 @@ class _DialogHandler(QtCore.QObject):
                 self._handler = None
 
             self._handler = _DialogDetectionThread(
-                index, self._pre_call_list[index], self.timeout
+                self, index, self._pre_call_list[index], self.timeout
             )
             self._handler.sigTimeout.connect(self._timeout)
             self._handler.sigTrigger.connect(self.trigger_index)
@@ -270,6 +371,10 @@ class _DialogHandler(QtCore.QObject):
                     dialog_or_trigger.accept()
             log.debug("finished %d", index - 1)
 
+            if index > self._max_index:
+                log.debug("all dialogs finished, emitting sigFinished")
+                self.sigFinished.emit()
+
         else:
             dialog_or_trigger()
 
@@ -280,15 +385,10 @@ class _DialogHandler(QtCore.QObject):
         log.debug("pre-call successfully called")
         self._handler.precall_called()
 
-    def __del__(self):
-        """Ensure the thread is stopped upon deletion."""
-        if hasattr(self, "_handler") and self._handler.isRunning():
-            self._handler.wait()
-
 
 @pytest.fixture
-def accept_dialog():
-    return _DialogHandler
+def accept_dialog(qtbot):
+    return _DialogHandler(qtbot=qtbot)
 
 
 def _move_and_compare_values(bot, win, expected, cursor=0, target_win=None):

@@ -4,7 +4,6 @@ __all__ = [
     "InversePowerNorm",
     "TwoSlopeInversePowerNorm",
     "TwoSlopePowerNorm",
-    "autoscale_to",
     "clean_labels",
     "copy_mathtext",
     "fancy_labels",
@@ -18,15 +17,14 @@ __all__ = [
     "integer_ticks",
     "label_subplot_properties",
     "label_subplots",
-    "label_subplots_nature",
     "mark_points",
     "mark_points_outside",
     "nice_colorbar",
     "place_inset",
     "plot_array",
     "plot_array_2d",
+    "plot_bz",
     "plot_hex_bz",
-    "plot_hv_text",
     "plot_slices",
     "property_labels",
     "proportional_colorbar",
@@ -44,10 +42,8 @@ from .annotations import (
     integer_ticks,
     label_subplot_properties,
     label_subplots,
-    label_subplots_nature,
     mark_points,
     mark_points_outside,
-    plot_hv_text,
     property_labels,
     scale_units,
     set_titles,
@@ -55,7 +51,7 @@ from .annotations import (
     set_ylabels,
     sizebar,
 )
-from .bz import get_bz_edge, plot_hex_bz
+from .bz import get_bz_edge, plot_bz, plot_hex_bz
 from .colors import (
     CenteredInversePowerNorm,
     CenteredPowerNorm,
@@ -70,7 +66,6 @@ from .colors import (
     unify_clim,
 )
 from .general import (
-    autoscale_to,
     clean_labels,
     fermiline,
     figwh,

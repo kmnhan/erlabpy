@@ -14,7 +14,7 @@ repos:
 
   # Security & credential scanning/alerting
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-ast
       - id: check-builtin-literals
@@ -39,17 +39,17 @@ repos:
   # Lint and format with ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.12.4
+    rev: v0.14.0
     hooks:
       # Run the linter.
-      - id: ruff
+      - id: ruff-check
         args: [--fix, --show-fixes]
       # Run the formatter.
       - id: ruff-format
 
   # Commitizen
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v4.8.3
+    rev: v4.9.1
     hooks:
       - id: commitizen
         additional_dependencies: [cz-changeup]

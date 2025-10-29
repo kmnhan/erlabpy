@@ -1,7 +1,12 @@
+from typing import TYPE_CHECKING
+
 import pytest
 import xarray as xr
 
 import erlab
+
+if TYPE_CHECKING:
+    import IPython
 
 
 @pytest.fixture(scope="module")
@@ -26,8 +31,16 @@ def expected_dir(data_dir):
     ],
 )
 def test_load(expected_dir, args, expected) -> None:
+    # Start IPython session to avoid astropy logging issues
+    from IPython.testing.globalipapp import start_ipython
+
+    ip_session: IPython.InteractiveShell = start_ipython()
+
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
 
     xr.testing.assert_identical(
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
     )
+    # Properly clean up the IPython session
+    ip_session.clear_instance()
+    del start_ipython.already_called

@@ -21,14 +21,18 @@ __all__ = [
     "ValidationWarning",
 ]
 import contextlib
+import contextvars
 import errno
+import functools
 import importlib
 import itertools
 import os
 import pathlib
+import threading
 import traceback
 import typing
 import warnings
+from collections.abc import ItemsView
 
 import numpy as np
 import numpy.typing as npt
@@ -42,23 +46,12 @@ if typing.TYPE_CHECKING:
     from collections.abc import (
         Callable,
         Hashable,
-        ItemsView,
         Iterable,
         Iterator,
         KeysView,
         Mapping,
         Sequence,
     )
-
-    import joblib
-    import tqdm.auto as tqdm
-else:
-    import lazy_loader as _lazy
-
-    from erlab.utils.misc import LazyImport
-
-    joblib = _lazy.load("joblib")
-    tqdm = LazyImport("tqdm.auto")
 
 
 class ValidationWarning(UserWarning):
@@ -102,8 +95,9 @@ class UnsupportedFileError(Exception):
 class _Loader(type):
     """Metaclass for data loaders.
 
-    This metaclass wraps the `identify` method to display informative warnings and error
-    messages for missing files or multiple files found for a single scan.
+    This metaclass wraps the `identify` and `load_single` method to display informative
+    warnings and error messages for missing files or multiple files found for a single
+    scan.
     """
 
     def __new__(cls, name, bases, dct):
@@ -326,16 +320,6 @@ class LoaderBase(metaclass=_Loader):
 
     Only used when :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`
     is `False`.
-    """
-
-    parallel_kwargs: typing.ClassVar[dict[str, typing.Any]] = {"n_jobs": -1}
-    """
-    Additional keyword arguments to be passed to :class:`joblib.Parallel` when loading
-    files in parallel. The default is to use all available CPU cores.
-
-    Set this attribute to configure the default behavior per loader.
-
-    .. versionadded:: 3.9.0
     """
 
     skip_validate: bool = False
@@ -587,8 +571,8 @@ class LoaderBase(metaclass=_Loader):
 
             This argument is only used when `single` is `False`.
         parallel
-            Whether to load multiple files in parallel using the `joblib` library. For
-            possible values, see :meth:`load_multiple_parallel
+            Whether to load multiple files in parallel using `dask`. For possible
+            values, see :meth:`load_multiple_parallel
             <erlab.io.dataloader.LoaderBase.load_multiple_parallel>`.
 
             This argument is only used when `single` is `False`.
@@ -629,9 +613,7 @@ class LoaderBase(metaclass=_Loader):
 
           .. code-block:: none
 
-            cwd/
-            ├── data/
-            └── example.txt
+            cwd/ ├── data/ └── example.txt
 
           The following code will load ``./example.txt`` instead of raising an error
           that ``./data/example.txt`` is missing:
@@ -656,15 +638,21 @@ class LoaderBase(metaclass=_Loader):
             load_kwargs = {}
 
         if isinstance(identifier, int):
+            # Scan number given
             if data_dir is None:
                 raise ValueError(
                     "data_dir must be specified when identifier is an integer"
                 )
+
+            # Identify all files corresponding to the scan number
             file_paths, coord_dict = typing.cast(
                 "tuple[list[str], dict[str, Sequence]]",
                 self.identify(identifier, data_dir, **kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
-            # file_paths: list of file paths with at least one element
+
+            # file_paths is a list of file paths with at least one element and
+            # coord_dict is a dictionary (can be empty), maps coordinate names to
+            # sequences of values.
 
             if len(file_paths) == 1 and len(coord_dict) == 0:
                 # Single file resolved
@@ -722,15 +710,16 @@ class LoaderBase(metaclass=_Loader):
                     new_kwargs.setdefault("load_kwargs", load_kwargs)
                     try:
                         return self.load(new_identifier, new_dir, **new_kwargs)
-                    except Exception as e:
+                    except Exception:
                         warning_message = (
                             f"Loading {basename_no_ext} with inferred index "
-                            f"{new_identifier} resulted in an error:\n"
-                            f"{type(e).__name__}: {e}\n"
+                            f"{new_identifier} resulted in an error. The data will be "
+                            "loaded as a single file instead.\n"
                             "Possible causes:\n"
                             "- The inferred index may be incorrect.\n"
                             "- The file may be corrupted or in an unsupported format.\n"
-                            "The data will be loaded as a single file."
+                            "Full traceback:\n"
+                            f"{traceback.format_exc()}"
                         )
                         erlab.utils.misc.emit_user_level_warning(warning_message)
 
@@ -1153,7 +1142,7 @@ class LoaderBase(metaclass=_Loader):
 
         # Temporary variable to store loaded data
         self._temp_data: xr.DataArray | None = None
-        # !TODO: properly GC this variable
+        # TODO: properly GC this variable
 
         def _format_data_info(series: pandas.Series) -> str:
             # Format data info as HTML table
@@ -1179,29 +1168,29 @@ class LoaderBase(metaclass=_Loader):
 
         def _update_data(
             _, *, full: bool = False, ret: bool = False
-        ) -> None | xr.DataArray | xr.Dataset:
+        ) -> xr.DataArray | xr.Dataset | None:
             # Load data for selected row
             series = df.loc[data_select.value]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
 
-                _path = pathlib.Path(series["Path"])
+                pth = pathlib.Path(series["Path"])
 
                 full_button.disabled = True
 
                 if not self.always_single:
-                    idx, _ = self.infer_index(_path.stem)
+                    idx, _ = self.infer_index(pth.stem)
                     if idx is not None:
-                        ident = self.identify(idx, _path.parents[0])
+                        ident = self.identify(idx, pth.parents[0])
                         if ident is not None:
                             n_scans = len(ident[0])
                             if n_scans > 1 and not full:
                                 full_button.disabled = False
 
-                out = self.load(_path, single=not full)
+                out = self.load(pth, single=not full)
                 if ret:
                     if isinstance(out, xr.DataArray):
-                        return out.rename(_path.stem)
+                        return out.rename(pth.stem)
                     if isinstance(out, xr.Dataset):
                         return out
                     raise ValueError("Unsupported data type for itool")
@@ -1645,9 +1634,11 @@ class LoaderBase(metaclass=_Loader):
                         typing.cast(
                             "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
                         ),
-                        combine_attrs=self.combine_attrs,
+                        compat="no_conflicts",
                         data_vars="all",
+                        coords="all",
                         join="exact",
+                        combine_attrs=self.combine_attrs,
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -1712,7 +1703,9 @@ class LoaderBase(metaclass=_Loader):
             # Magically combine the data
             combined = xr.combine_by_coords(
                 processed,
+                compat="no_conflicts",
                 data_vars="all",
+                coords="different",
                 join="outer",
                 combine_attrs=self.combine_attrs,
             )
@@ -1903,9 +1896,7 @@ class LoaderBase(metaclass=_Loader):
             )
 
         if isinstance(data, xr.DataTree):
-            return typing.cast(
-                "xr.DataTree", data.map_over_datasets(self.post_process_general)
-            )
+            return data.map_over_datasets(self.post_process_general)
 
         raise TypeError(
             "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
@@ -1973,7 +1964,7 @@ class LoaderBase(metaclass=_Loader):
         file_paths
             A list of file paths to load.
         parallel
-            Whether to load data in parallel using `joblib`.
+            Whether to load data in parallel using `dask`.
 
             - If `None`, parallel loading is enabled only if the number of files is
               greater than the loader's :attr:`parallel_threshold
@@ -2014,12 +2005,52 @@ class LoaderBase(metaclass=_Loader):
         }
 
         if parallel:
-            with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
-                return joblib.Parallel(**self.parallel_kwargs)(
-                    joblib.delayed(_load_func)(f) for f in file_paths
+            import dask
+            import dask.callbacks
+
+            # Copy tqdm.dask.TqdmCallback here to avoid importing tqdm.notebook
+            # TODO: submit PR to tqdm to set default of tqdm_class to None
+            class TqdmCallback(dask.callbacks.Callback):  # pragma: no cover
+                def __init__(
+                    self, start=None, pretask=None, tqdm_class=None, **tqdm_kwargs
+                ):
+                    super().__init__(start=start, pretask=pretask)
+                    if tqdm_class is None:
+                        tqdm_class = erlab.utils.misc.get_tqdm()
+                    if tqdm_kwargs:
+                        tqdm_class = functools.partial(tqdm_class, **tqdm_kwargs)
+                    self.tqdm_class = tqdm_class
+
+                def _start_state(self, _, state):
+                    self.pbar = self.tqdm_class(
+                        total=sum(
+                            len(state[k])
+                            for k in ["ready", "waiting", "running", "finished"]
+                        )
+                    )
+
+                def _posttask(self, *_, **__):
+                    self.pbar.update()
+
+                def _finish(self, *_, **__):
+                    self.pbar.close()
+
+                def display(self):
+                    container = getattr(self.bar, "container", None)
+                    if container is None:
+                        return
+                    from tqdm.notebook import display
+
+                    display(container)
+
+            with TqdmCallback(**tqdm_kw):
+                return dask.compute(
+                    *[dask.delayed(_load_func)(f) for f in file_paths],
                 )
 
-        return [_load_func(f) for f in tqdm.tqdm(file_paths, **tqdm_kw)]
+        tqdm = erlab.utils.misc.get_tqdm()
+
+        return [_load_func(f) for f in tqdm(file_paths, **tqdm_kw)]
 
     @classmethod
     def _raise_or_warn(cls, msg: str) -> None:
@@ -2035,12 +2066,19 @@ class _RegistryBase:
     registry is created and used throughout the application.
     """
 
-    __instance: _RegistryBase | None = None
+    _instances: typing.ClassVar[dict[type, _RegistryBase]] = {}
+    _instances_lock: typing.ClassVar[threading.Lock] = threading.Lock()
 
     def __new__(cls):
-        if not isinstance(cls.__instance, cls):
-            cls.__instance = super().__new__(cls)
-        return cls.__instance
+        inst = cls._instances.get(cls)
+        if inst is not None:
+            return inst
+        with cls._instances_lock:
+            inst = cls._instances.get(cls)
+            if inst is None:  # pragma: no branch
+                inst = super().__new__(cls)
+                cls._instances[cls] = inst
+        return inst
 
     @classmethod
     def instance(cls) -> typing.Self:
@@ -2051,12 +2089,26 @@ class _RegistryBase:
 class LoaderRegistry(_RegistryBase):
     """Registry of loader plugins.
 
-    Stores and manages data loaders. The loaders can be accessed by name or alias in a
-    dictionary-like manner.
+    Stores and manages data loaders. The loaders can be accessed by name in a
+    dictionary-like manner or as an attribute.
 
-    Most public methods of this class instance can be accessed through the `erlab.io`
-    namespace.
+    Most public methods of this class instance can be accessed through the
+    :mod:`erlab.io` namespace.
 
+
+    Examples
+    --------
+    >>> import erlab
+    >>> "merlin" in erlab.io.loaders  # Check if MERLIN loader is registered
+    True
+    >>> list(erlab.io.loaders.keys())  # List registered loader names
+    ['da30', 'erpes', ...]
+
+    Notes
+    -----
+    - Public methods are thread-safe.
+    - Per-context state (``current_loader`` and ``data_dir``) uses :mod:`contextvars` so
+      that concurrent threads/tasks do not step on each other.
     """
 
     _loaders: typing.ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
@@ -2065,22 +2117,112 @@ class LoaderRegistry(_RegistryBase):
     _alias_mapping: typing.ClassVar[dict[str, str]] = {}
     """Mapping of aliases to loader names."""
 
-    _current_loader: LoaderBase | None = None
-    _current_data_dir: pathlib.Path | None = None
+    _lock: typing.ClassVar[threading.RLock] = threading.RLock()
+    """Lock for thread-safe operations."""
+
+    _current_loader_var: typing.ClassVar[contextvars.ContextVar[LoaderBase | None]] = (
+        contextvars.ContextVar("erlab_io_current_loader", default=None)
+    )
+    """Context variable for the current loader."""
+
+    _current_data_dir_var: typing.ClassVar[
+        contextvars.ContextVar[pathlib.Path | None]
+    ] = contextvars.ContextVar("erlab_io_current_data_dir", default=None)
+    """Context variable for the current data directory."""
+
+    def keys(self) -> KeysView[str]:
+        with self._lock:
+            return self._loaders.copy().keys()
+
+    def items(self) -> ItemsView[str, LoaderBase | type[LoaderBase]]:
+        return ItemsView(self)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._loaders)
+
+    def __contains__(self, key: str) -> bool:
+        with self._lock:
+            return key in self._alias_mapping
+
+    def _register(self, loader_class: type[LoaderBase]) -> None:
+        with self._lock:
+            # Add class to loader
+            self._loaders[loader_class.name] = loader_class
+
+            # Sort loader registry alphabetically
+            for k in sorted(self._loaders):
+                self._loaders[k] = self._loaders.pop(k)
+
+            # Add aliases to mapping
+            self._alias_mapping[loader_class.name] = loader_class.name
+            if loader_class.aliases is not None:
+                if not loader_class.__module__.startswith("erlab.io.plugins"):
+                    warnings.warn(
+                        "Loader aliases are deprecated. Users are encouraged to use "
+                        "the name of the loader instead.",
+                        FutureWarning,
+                        stacklevel=1,
+                    )
+                for alias in loader_class.aliases:
+                    self._alias_mapping[alias] = loader_class.name
+
+    def __getitem__(self, key: str) -> LoaderBase:
+        return self.get(key)
+
+    def __getattr__(self, key: str) -> LoaderBase:
+        try:
+            return self.get(key)
+        except LoaderNotFoundError as e:
+            raise AttributeError(str(e)) from e
+
+    def get(self, key: str) -> LoaderBase:
+        """Get a loader instance by name or alias."""
+        # Resolve name under lock
+        with self._lock:
+            loader_name = self._alias_mapping.get(key)
+            if loader_name is None:
+                raise LoaderNotFoundError(key)
+            loader = self._loaders.get(loader_name)
+
+        if key != loader_name:
+            erlab.utils.misc.emit_user_level_warning(
+                "Loader aliases are deprecated. Access the loader with the loader name "
+                f"'{loader_name}' instead.",
+                FutureWarning,
+            )
+
+        if loader is None:
+            raise LoaderNotFoundError(key)
+
+        if not isinstance(loader, LoaderBase):
+            # If not an instance, create one
+            with self._lock:
+                current = self._loaders.get(loader_name)
+                if not isinstance(current, LoaderBase):
+                    loader = loader()
+                    self._loaders[loader_name] = loader
+                else:
+                    loader = current
+
+        return loader
 
     @property
     def current_loader(self) -> LoaderBase | None:
         """Current loader."""
-        return self._current_loader
+        return self._current_loader_var.get()
 
     @current_loader.setter
     def current_loader(self, loader: str | LoaderBase | None) -> None:
         self.set_loader(loader)
 
     @property
-    def current_data_dir(self) -> os.PathLike | None:
+    def current_data_dir(self) -> pathlib.Path | None:
         """Directory to search for data files."""
-        return self._current_data_dir
+        return self._current_data_dir_var.get()
 
     @current_data_dir.setter
     def current_data_dir(self, data_dir: str | os.PathLike | None) -> None:
@@ -2101,67 +2243,19 @@ class LoaderRegistry(_RegistryBase):
         )
         return self.current_data_dir
 
-    def _register(self, loader_class: type[LoaderBase]) -> None:
-        # Add class to loader
-        self._loaders[loader_class.name] = loader_class
+    def _set_loader(
+        self, loader: str | LoaderBase | None
+    ) -> contextvars.Token[LoaderBase | None]:
+        """Set the current data loader for the current context.
 
-        # Add aliases to mapping
-        self._alias_mapping[loader_class.name] = loader_class.name
-        if loader_class.aliases is not None:
-            if not loader_class.__module__.startswith("erlab.io.plugins"):
-                warnings.warn(
-                    "Loader aliases are deprecated. Users are encouraged to use the "
-                    "name of the loader instead.",
-                    FutureWarning,
-                    stacklevel=1,
-                )
-            for alias in loader_class.aliases:
-                self._alias_mapping[alias] = loader_class.name
-
-    def keys(self) -> KeysView[str]:
-        return self._loaders.keys()
-
-    def items(self) -> ItemsView[str, LoaderBase | type[LoaderBase]]:
-        return self._loaders.items()
-
-    def get(self, key: str) -> LoaderBase:
-        """Get a loader instance by name or alias."""
-        loader_name = self._alias_mapping.get(key)
-        if loader_name is None:
-            raise LoaderNotFoundError(key)
-
-        loader = self._loaders.get(loader_name)
-        if key != loader_name:
-            erlab.utils.misc.emit_user_level_warning(
-                "Loader aliases are deprecated. Access the loader with the loader name "
-                f"'{loader_name}' instead.",
-                FutureWarning,
-            )
-
-        if loader is None:
-            raise LoaderNotFoundError(key)
-
-        if not isinstance(loader, LoaderBase):
-            # If not an instance, create one
-            loader = loader()
-            self._loaders[loader_name] = loader
-
-        return loader
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._loaders)
-
-    def __getitem__(self, key: str) -> LoaderBase:
-        return self.get(key)
-
-    def __getattr__(self, key: str) -> LoaderBase:
-        try:
-            return self.get(key)
-        except LoaderNotFoundError as e:
-            raise AttributeError(str(e)) from e
+        Returns the token to reset the context variable.
+        """
+        if isinstance(loader, str):
+            loader = self.get(loader)
+        return self._current_loader_var.set(loader)
 
     def set_loader(self, loader: str | LoaderBase | None) -> None:
-        """Set the current data loader.
+        """Set the current data loader for the current context.
 
         All subsequent calls to `load` will use the provided loader.
 
@@ -2179,17 +2273,44 @@ class LoaderRegistry(_RegistryBase):
         >>> dat_merlin_2 = erlab.io.load(...)
 
         """
-        if isinstance(loader, str):
-            self._current_loader = self.get(loader)
-        else:
-            self._current_loader = loader
+        self._set_loader(loader)
+
+    def _set_data_dir(
+        self, data_dir: str | os.PathLike | None
+    ) -> contextvars.Token[pathlib.Path | None]:
+        """Set the default data directory for the current context.
+
+        Returns the token to reset the context variable.
+        """
+        if data_dir is not None:
+            data_dir = pathlib.Path(data_dir).resolve(strict=True)
+        return self._current_data_dir_var.set(data_dir)
+
+    def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
+        """Set the default data directory for the current context.
+
+        All subsequent calls to :func:`erlab.io.load` will use the provided `data_dir`
+        unless specified.
+
+        Parameters
+        ----------
+        data_dir
+            The default data directory to use.
+
+        Note
+        ----
+        This will only affect :func:`erlab.io.load`. If the loader's ``load`` method is
+        called directly, it will not use the default data directory.
+
+        """
+        self._set_data_dir(data_dir)
 
     @contextlib.contextmanager
     def loader_context(
         self, loader: str | None = None, data_dir: str | os.PathLike | None = None
     ) -> Iterator[LoaderBase]:
         """
-        Context manager for the current data loader and data directory.
+        Context manager that temporarily sets the current loader and data directory.
 
         Parameters
         ----------
@@ -2219,45 +2340,31 @@ class LoaderRegistry(_RegistryBase):
                 "At least one of loader or data_dir must be specified in the context"
             )
 
+        old_loader_token: contextvars.Token[LoaderBase | None] | None = None
+        old_data_dir_token: contextvars.Token[pathlib.Path | None] | None = None
+
         if loader is not None:
-            old_loader: LoaderBase | None = self.current_loader
-            self.set_loader(loader)
+            old_loader_token = self._set_loader(loader)
 
         if data_dir is not None:
-            old_data_dir = self.current_data_dir
-            self.set_data_dir(data_dir)
+            old_data_dir_token = self._set_data_dir(data_dir)
 
         try:
             yield typing.cast("LoaderBase", self.current_loader)
         finally:
-            if loader is not None:
-                self.set_loader(old_loader)
+            if old_loader_token is not None:
+                self._current_loader_var.reset(old_loader_token)
 
-            if data_dir is not None:
-                self.set_data_dir(old_data_dir)
+            if old_data_dir_token is not None:
+                self._current_data_dir_var.reset(old_data_dir_token)
 
-    def set_data_dir(self, data_dir: str | os.PathLike | None) -> None:
-        """Set the default data directory for the data loader.
-
-        All subsequent calls to :func:`erlab.io.load` will use the provided `data_dir`
-        unless specified.
-
-        Parameters
-        ----------
-        data_dir
-            The default data directory to use.
-
-        Note
-        ----
-        This will only affect :func:`erlab.io.load`. If the loader's ``load`` method is
-        called directly, it will not use the default data directory.
-
-        """
-        if data_dir is None:
-            self._current_data_dir = None
-            return
-
-        self._current_data_dir = pathlib.Path(data_dir).resolve(strict=True)
+    def _get_current_defaults(self) -> tuple[LoaderBase, pathlib.Path | None]:
+        loader = self.current_loader
+        if loader is None:
+            raise ValueError(
+                "No loader has been set. Set a loader with `erlab.io.set_loader` first"
+            )
+        return loader, self.current_data_dir
 
     def load(
         self,
@@ -2322,9 +2429,12 @@ class LoaderRegistry(_RegistryBase):
         additional_attrs: dict[str, str | float | Callable[[xr.DataArray], str | float]]
         | None = None,
         overridden_attrs: tuple[str, ...] | None = None,
-        additional_coords: dict[str, str | int | float] | None = None,
+        additional_coords: dict[
+            str, str | float | Callable[[xr.DataArray], str | float]
+        ]
+        | None = None,
         overridden_coords: tuple[str, ...] | None = None,
-    ) -> Iterator[LoaderBase]:
+    ) -> typing.ContextManager[LoaderBase]:
         loader, _ = self._get_current_defaults()
         return loader.extend_loader(
             name_map=name_map,
@@ -2349,33 +2459,33 @@ class LoaderRegistry(_RegistryBase):
 
         if data_dir is None:
             data_dir = default_dir
+            if data_dir is None:
+                raise ValueError(
+                    "No data directory specified. Provide a `data_dir` argument or set "
+                    "a default data directory with `erlab.io.set_data_dir`."
+                )
 
         return loader.summarize(
             data_dir=data_dir, exclude=exclude, cache=cache, display=display, rc=rc
         )
 
-    def _get_current_defaults(self):
-        if self.current_loader is None:
-            raise ValueError(
-                "No loader has been set. Set a loader with `erlab.io.set_loader` first"
-            )
-        return self.current_loader, self.current_data_dir
-
     def __repr__(self) -> str:
-        # Store string variables used when calculating the max len
-        descriptions = [
-            v.description if hasattr(v, "description") else "No description"
-            for v in self._loaders.values()
-        ]
-        class_names = [
-            f"{type(v).__module__}.{type(v).__qualname__}"
-            if isinstance(v, LoaderBase)
-            else f"{v.__module__}.{v.__qualname__}"
-            for v in self._loaders.values()
-        ]
+        with self._lock:
+            names: list[str] = list(self._loaders.keys())
+            # Store string variables used when calculating the max len
+            descriptions = [
+                v.description if hasattr(v, "description") else "No description"
+                for v in self._loaders.values()
+            ]
+            class_names = [
+                f"{type(v).__module__}.{type(v).__qualname__}"
+                if isinstance(v, LoaderBase)
+                else f"{v.__module__}.{v.__qualname__}"
+                for v in self._loaders.values()
+            ]
 
         # Calculate the maximum width for each column
-        max_name_len = max(len(k) for k in self._loaders)
+        max_name_len = max(len(k) for k in names)
         max_desc_len = max(len(desc) for desc in descriptions)
         max_cls_len = max(len(cls_name) for cls_name in class_names)
 
@@ -2391,31 +2501,59 @@ class LoaderRegistry(_RegistryBase):
 
         # Create the rows with dynamic padding
         rows = [header, separator]
-        for k, desc, cls_name in zip(
-            self._loaders.keys(), descriptions, class_names, strict=True
-        ):
+        for k, desc, cls_name in zip(names, descriptions, class_names, strict=True):
             rows.append(
                 f"{k:<{max_name_len}} | "
                 f"{desc:<{max_desc_len}} | "
                 f"{cls_name:<{max_cls_len}}"
             )
 
-        return "\n".join(rows)
+        all_loaders = "\n".join(rows)
+
+        current_loader_str = (
+            self.current_loader.name if self.current_loader else "Not set"
+        )
+        current_data_dir_str = (
+            self.current_data_dir if self.current_data_dir else "Not set"
+        )
+        current_settings = (
+            f"Current loader: {current_loader_str}\n"
+            f"Current data directory: {current_data_dir_str}"
+        )
+
+        return all_loaders + "\n\n" + current_settings
 
     def _repr_html_(self) -> str:
         rows: list[tuple[str, str, str]] = [("Name", "Description", "Loader class")]
 
-        for k, v in self._loaders.items():
-            desc: str = v.description if hasattr(v, "description") else ""
+        with self._lock:
+            for k, v in self._loaders.items():
+                desc: str = v.description if hasattr(v, "description") else ""
 
-            # May be either a class or an instance
-            if isinstance(v, LoaderBase):
-                v = type(v)
+                # May be either a class or an instance
+                if isinstance(v, LoaderBase):
+                    v = type(v)
 
-            cls_name = f"{v.__module__}.{v.__qualname__}"
-            rows.append((k, desc, cls_name))
+                cls_name = f"{v.__module__}.{v.__qualname__}"
+                rows.append((k, desc, cls_name))
 
-        return erlab.utils.formatting.format_html_table(rows, header_rows=1)
+        all_loaders = erlab.utils.formatting.format_html_table(rows, header_rows=1)
+
+        current_settings = erlab.utils.formatting.format_html_table(
+            [
+                [
+                    "Current loader",
+                    self.current_loader.name if self.current_loader else "Not set",
+                ],
+                [
+                    "Current data directory",
+                    str(self.current_data_dir) if self.current_data_dir else "Not set",
+                ],
+            ],
+            header_cols=1,
+        )
+
+        return all_loaders + "<br>" + current_settings
 
     load.__doc__ = LoaderBase.load.__doc__
     extend_loader.__doc__ = LoaderBase.extend_loader.__doc__

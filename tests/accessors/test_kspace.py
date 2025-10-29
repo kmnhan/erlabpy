@@ -100,7 +100,7 @@ def config_4_hvdep(hvdep):
     return data.assign_coords(chi=0.0).kspace.convert(silent=True)
 
 
-@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut", "hvdep"])
 def test_offsets(data_type, request) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
     data.kspace.offsets.reset()
@@ -148,18 +148,18 @@ def test_kconv(
         data = data.expand_dims({f"extra{i}": 2 for i in range(extra_dims)})
 
     if use_dask:
-        data = data.chunk("auto")
+        data = data.chunk()
 
     data.attrs["configuration"] = configuration.value
 
     for c in AxesConfiguration:
-        _data = data.kspace.as_configuration(c)
+        data_ = data.kspace.as_configuration(c)
         if c == configuration:
-            xarray.testing.assert_identical(_data, data)
+            xarray.testing.assert_identical(data_, data)
         else:
-            assert _data.attrs["configuration"] == c.value
+            assert data_.attrs["configuration"] == c.value
 
-    del _data
+    del data_
 
     match configuration:
         case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
@@ -172,8 +172,8 @@ def test_kconv(
         if data_type == "hvdep":
             with pytest.raises(
                 ValueError,
-                match="Energy axis of photon energy dependent data must be in "
-                "binding energy.",
+                match=r"Energy axis of photon energy dependent data must be in "
+                r"binding energy.",
             ):
                 kconv = data.kspace.convert(silent=False)
             return
@@ -255,7 +255,7 @@ def test_kspace_set_existing_configuration(anglemap):
 
     with pytest.raises(
         AttributeError,
-        match="Configuration is already set. To modify the experimental "
-        "configuration, use `DataArray.kspace.as_configuration`.",
+        match=r"Configuration is already set. To modify the experimental "
+        r"configuration, use `DataArray.kspace.as_configuration`.",
     ):
         data.kspace.configuration = 4
