@@ -185,9 +185,9 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
         self._saving: bool = mode == "save"
 
         if self._saving:
-            self.setWindowTitle("Select tools to save")
+            self.setWindowTitle("Select Tools to Save")
         else:
-            self.setWindowTitle("Select tools to add")
+            self.setWindowTitle("Select Tools to Add")
 
         layout = QtWidgets.QHBoxLayout(self)
 
