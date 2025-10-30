@@ -22,7 +22,7 @@ jobs:
     name: Build (${{ matrix.SUFFIX }})
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'release' && github.repository == 'kmnhan/erlabpy')
+      (github.event_name == 'workflow_run' && github.repository == 'kmnhan/erlabpy')
     strategy:
       fail-fast: false
       matrix:
