@@ -18,6 +18,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
@@ -336,6 +337,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
+
+        self._dask_menu = DaskMenu(self, "Dask")
+        menu_bar.addMenu(self._dask_menu)
 
         help_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", menu_bar.addMenu("&Help")
@@ -1894,5 +1898,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         logger.debug("Stopping servers...")
         self._stop_servers()
+
+        logger.debug("Closing dask client (if any)...")
+        self._dask_menu.close_client()
 
         super().closeEvent(event)

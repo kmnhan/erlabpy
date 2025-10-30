@@ -1,4 +1,5 @@
 __all__ = [
+    "_dask",
     "_options",
     "colors",
     "data_explorer",
@@ -17,6 +18,7 @@ __all__ = [
 ]
 
 from . import (
+    _dask,
     _options,
     colors,
     derivative,
