@@ -18,6 +18,7 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
 from erlab.interactive.imagetool.manager._dialogs import (
+    _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
 )
@@ -234,21 +235,15 @@ def test_manager(
         assert manager.get_imagetool(1).isVisible()
         assert manager.get_imagetool(2).isVisible()
 
-        # Select tools
-        select_tools(manager, [1, 2])
-        accept_dialog(manager.concat_action.trigger)
+        # Add third tool
+        xr.concat(
+            [
+                manager.get_imagetool(1).slicer_area._data,
+                manager.get_imagetool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        ).qshow(manager=True)
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
-
-        xr.testing.assert_identical(
-            manager.get_imagetool(3).slicer_area._data,
-            xr.concat(
-                [
-                    manager.get_imagetool(1).slicer_area._data,
-                    manager.get_imagetool(2).slicer_area._data,
-                ],
-                "concat_dim",
-            ),
-        )
 
         # Update info panel
         bring_manager_to_top(qtbot, manager)
@@ -388,8 +383,40 @@ def test_manager(
         )
         qtbot.mouseMove(manager.tree_view.viewport())  # move to blank should hide popup
 
+        # Remove third tool
+        select_tools(manager, [3])
+        accept_dialog(manager.remove_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        # Test concatenate
+        concat_data = xr.concat(
+            [
+                manager.get_imagetool(1).slicer_area._data,
+                manager.get_imagetool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        )
+        select_tools(manager, [1, 2])
+        accept_dialog(manager.concat_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(3).slicer_area._data, concat_data
+        )
+
+        # Test concatenate (remove originals)
+        select_tools(manager, [1, 2])
+
+        def _handle_concat(dialog: _ConcatDialog):
+            dialog._remove_original_check.setChecked(True)
+
+        accept_dialog(manager.concat_action.trigger, pre_call=_handle_concat)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(4).slicer_area._data, concat_data
+        )
+
         # Remove all selected
-        select_tools(manager, [1, 2, 3])
+        select_tools(manager, [3, 4])
         accept_dialog(manager.remove_action.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
