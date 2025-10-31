@@ -22,17 +22,14 @@ from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
+    _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
-from erlab.interactive.imagetool.manager._server import (
-    _ManagerServer,
-    _WatcherServer,
-    show_in_manager,
-)
+from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
@@ -867,7 +864,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
 
         dlg = self._rename_dialog
-        dlg.set_names([self._imagetool_wrappers[i].name for i in selected])
+        dlg.set_names(selected, [self._imagetool_wrappers[i].name for i in selected])
         dlg.open()
 
     @QtCore.Slot()
@@ -936,36 +933,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for index in self.tree_view.selected_imagetool_indices:
                 self._imagetool_wrappers[index].unarchive()
 
+    @property
+    def _concat_dialog(self) -> _ConcatDialog:
+        if not hasattr(self, "__concat_dialog"):
+            self.__concat_dialog = _ConcatDialog(self)
+        return self.__concat_dialog
+
     @QtCore.Slot()
     def concat_selected(self) -> None:
         """Concatenate the selected data using :func:`xarray.concat`."""
-        text, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Concatenate",
-            "Dimension name:",
-            QtWidgets.QLineEdit.EchoMode.Normal,
-            "concat_dim",
-        )
-
-        if ok and text:
-            try:
-                show_in_manager(
-                    xr.concat(
-                        [
-                            self.get_imagetool(index).slicer_area._data
-                            for index in self.tree_view.selected_imagetool_indices
-                        ],
-                        dim=text,
-                    )
-                )
-            except Exception:
-                logger.exception("Error while concatenating data")
-                erlab.interactive.utils.MessageDialog.critical(
-                    self,
-                    "Error",
-                    "An error occurred while concatenating data.",
-                )
-                return
+        dlg = self._concat_dialog
+        dlg.open()
 
     @QtCore.Slot()
     def store_selected(self) -> None:
@@ -1309,6 +1287,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         ImageTool(d, **kwargs), activate=True, watched_var=watched_var
                     )
                 )
+                if watched_var is not None:
+                    # Refresh title to include variable name
+                    self.get_imagetool(indices[-1])._update_title()
             except Exception:
                 flags.append(False)
                 self._error_creating_imagetool()
@@ -1326,7 +1307,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> None:
         """Load data from the given files using the specified loader."""
         if loader_name == "ask":
-            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            self._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
         self._add_from_multiple_files(
@@ -1470,22 +1451,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
             mime_data: QtCore.QMimeData | None = event.mimeData()
             if mime_data and mime_data.hasUrls():
                 urls = mime_data.urls()
-                file_paths: list[pathlib.Path] = [
-                    pathlib.Path(url.toLocalFile()) for url in urls
-                ]
-                extensions: set[str] = {file_path.suffix for file_path in file_paths}
-                if len(extensions) != 1:
-                    QtWidgets.QMessageBox.critical(
-                        self,
-                        "Error",
-                        "Multiple file types are not supported in a single "
-                        "drag-and-drop operation.",
-                    )
-                    return
-                self.open_multiple_files(
-                    file_paths,
-                    try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+                self._handle_dropped_files(
+                    [pathlib.Path(url.toLocalFile()) for url in urls]
                 )
+
+    def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
+        """Handle files dropped into the window."""
+        if file_paths:  # pragma: no branch
+            extensions: set[str] = {file_path.suffix for file_path in file_paths}
+            if len(extensions) != 1:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Multiple file types cannot be opened at the same time.",
+                )
+                return
+            self.open_multiple_files(
+                file_paths,
+                try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+            )
 
     def _show_loaded_info(
         self,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing
 import weakref
 
+import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
@@ -15,10 +16,116 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 
+class _ConcatDialog(QtWidgets.QDialog):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__(manager)
+        self.setWindowTitle("Concatenate Selected Tools")
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self._manager = weakref.ref(manager)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
+
+        # Initialize options group and layout
+        option_group = QtWidgets.QGroupBox("Options")
+        option_layout = QtWidgets.QFormLayout()
+        option_group.setLayout(option_layout)
+
+        self._dim_line = QtWidgets.QLineEdit()
+        self._dim_line.setText("concat_dim")
+        option_layout.addRow("dim", self._dim_line)
+
+        self._coords_combo = QtWidgets.QComboBox()
+        self._coords_combo.addItems(["minimal", "different", "all"])
+        self._coords_combo.setCurrentText("minimal")
+        option_layout.addRow("coords", self._coords_combo)
+
+        self._compat_combo = QtWidgets.QComboBox()
+        self._compat_combo.addItems(
+            ["identical", "equals", "broadcast_equals", "no_conflicts", "override"]
+        )
+        self._compat_combo.setCurrentText("override")
+        option_layout.addRow("compat", self._compat_combo)
+
+        self._join_combo = QtWidgets.QComboBox()
+        self._join_combo.addItems(
+            ["outer", "inner", "left", "right", "exact", "override"]
+        )
+        self._join_combo.setCurrentText("outer")
+        option_layout.addRow("join", self._join_combo)
+
+        self._combine_attrs_combo = QtWidgets.QComboBox()
+        self._combine_attrs_combo.addItems(
+            ["drop", "identical", "no_conflicts", "drop_conflicts", "override"]
+        )
+        self._combine_attrs_combo.setCurrentText("override")
+        option_layout.addRow("combine_attrs", self._combine_attrs_combo)
+
+        link = "https://docs.xarray.dev/en/stable/generated/xarray.concat.html"
+        docs_label = QtWidgets.QLabel(
+            f"<a href='{link}'>xarray.concat documentation</a>"
+        )
+        docs_label.setOpenExternalLinks(True)
+        option_layout.addRow(docs_label)
+
+        self._remove_original_check = QtWidgets.QCheckBox("Remove Originals")
+        self._remove_original_check.setChecked(False)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        # Populate layout
+        layout.addWidget(option_group)
+        layout.addWidget(self._remove_original_check)
+        layout.addWidget(button_box)
+
+    def concat_kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "dim": self._dim_line.text(),
+            "coords": self._coords_combo.currentText(),
+            "compat": self._compat_combo.currentText(),
+            "join": self._join_combo.currentText(),
+            "combine_attrs": self._combine_attrs_combo.currentText(),
+        }
+
+    def accept(self) -> None:
+        manager = self._manager()
+        if manager is not None:  # pragma: no branch
+            try:
+                selected = list(manager.tree_view.selected_imagetool_indices)
+                to_concat = [
+                    manager.get_imagetool(idx).slicer_area._data for idx in selected
+                ]
+                erlab.interactive.imagetool.manager.show_in_manager(
+                    xr.concat(to_concat, **self.concat_kwargs())
+                )
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self,
+                    "Error",
+                    "An error occurred while concatenating data.",
+                )
+            else:
+                if self._remove_original_check.isChecked():
+                    for index in sorted(
+                        selected,
+                        reverse=True,
+                    ):
+                        manager.remove_imagetool(index)
+        super().accept()
+
+
 class _RenameDialog(QtWidgets.QDialog):
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
-        self.setWindowTitle("Rename selected tools")
+        self.setWindowTitle("Rename Selected Tools")
         self.setModal(True)
         self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
@@ -26,17 +133,18 @@ class _RenameDialog(QtWidgets.QDialog):
 
         self._layout = QtWidgets.QGridLayout(self)
 
-        self._new_name_lines: list[QtWidgets.QLineEdit] = []
+        self._new_name_lines: dict[int, QtWidgets.QLineEdit] = {}
 
         # Persistent button box; we re-add it when (re)building rows
         self._button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
         )
         self._button_box.accepted.connect(self.accept)
         self._button_box.rejected.connect(self.reject)
 
-    def set_names(self, original_names: list[str]) -> None:
+    def set_names(self, indices: list[int], original_names: list[str]) -> None:
         # Clear current rows but keep the button box object
         while self._layout.count():
             item = self._layout.takeAt(0)
@@ -45,11 +153,13 @@ class _RenameDialog(QtWidgets.QDialog):
                 if widget is not None and widget is not self._button_box:
                     widget.deleteLater()
 
-        self._new_name_lines.clear()
+        for k, v in self._new_name_lines.copy().items():
+            self._new_name_lines.pop(k)
+            v.deleteLater()
 
         # Rebuild rows
-        for i, name in enumerate(original_names):
-            lbl_from = QtWidgets.QLabel(name)
+        for i, (tool_idx, name) in enumerate(zip(indices, original_names, strict=True)):
+            lbl_from = QtWidgets.QLabel(f"{tool_idx}: {name}")
             lbl_arrow = QtWidgets.QLabel("→")
             line_new = QtWidgets.QLineEdit(name)
             line_new.setPlaceholderText("New name")
@@ -57,31 +167,28 @@ class _RenameDialog(QtWidgets.QDialog):
             self._layout.addWidget(lbl_from, i, 0)
             self._layout.addWidget(lbl_arrow, i, 1)
             self._layout.addWidget(line_new, i, 2)
-            self._new_name_lines.append(line_new)
+            self._new_name_lines[tool_idx] = line_new
 
         # Resize inputs to longest current text
-        if self._new_name_lines:
-            fm = self._new_name_lines[0].fontMetrics()
+        if self._new_name_lines:  # pragma: no branch
+            fm = next(iter(self._new_name_lines.values())).fontMetrics()
             max_width = max(
-                fm.boundingRect(line.text()).width() for line in self._new_name_lines
+                fm.boundingRect(line.text()).width()
+                for line in self._new_name_lines.values()
             )
-            for line in self._new_name_lines:
+            for line in self._new_name_lines.values():
                 line.setMinimumWidth(max_width + 10)
 
         # Re-add button box at the last row
         self._layout.addWidget(self._button_box, len(original_names), 0, 1, 3)
 
-    def new_names(self) -> list[str]:
-        return [w.text() for w in self._new_name_lines]
+    def new_names(self) -> list[tuple[int, str]]:
+        return [(idx, w.text()) for idx, w in self._new_name_lines.items()]
 
     def accept(self) -> None:
         manager = self._manager()
-        if manager is not None:
-            for index, new_name in zip(
-                manager.tree_view.selected_imagetool_indices,
-                self.new_names(),
-                strict=True,
-            ):
+        if manager is not None:  # pragma: no branch
+            for index, new_name in self.new_names():
                 manager.rename_imagetool(index, new_name)
         super().accept()
 

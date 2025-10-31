@@ -527,8 +527,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "colorInvertAct": self.slicer_area.reverse_act,
                     "highContrastAct": self.slicer_area.high_contrast_act,
                     "zeroCenterAct": self.slicer_area.zero_centered_act,
-                    "ktoolAct": self.slicer_area.ktool_act,
                     "sep3": {"separator": True},
+                    "ktoolAct": self.slicer_area.ktool_act,
+                    "sep4": {"separator": True},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
                         "text": "Reset",

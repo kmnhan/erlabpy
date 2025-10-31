@@ -656,7 +656,7 @@ def generate_code(
     >>>     module="np.linalg",
     >>>     assign="value",
     >>> )
-    'value = numpy.linalg.norm(numpy.array([1, 2, 3]), ord=2)'
+    'value = np.linalg.norm(np.array([1, 2, 3]), ord=2)'
 
     """
     if remove_defaults:
