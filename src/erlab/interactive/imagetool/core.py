@@ -814,17 +814,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
         If nothing can be inferred, an empty string is returned.
         """
         name: str | None = typing.cast("str | None", self._data.name)
-        path: pathlib.Path | None = self._file_path
+        info: str | None = None
+        if self._file_path is not None:
+            info = self._file_path.stem
+        if self.watched_data_name is not None:
+            info = self.watched_data_name
+
         if name is not None and name.strip() == "":
             # Name contains only whitespace
             name = None
 
         if name is None:
-            disp_name = "" if path is None else path.stem
-        elif path is None or name == path.stem:
+            disp_name = "" if info is None else info
+        elif info is None or name == info:
             disp_name = f"{name}"
         else:
-            disp_name = f"{name} ({path.stem})"
+            disp_name = f"{name} ({info})"
+
         return disp_name
 
     @property
@@ -1373,7 +1379,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         if (
-            self._data.chunks is not None
+            self.data_chunked
             and (self._data.nbytes * 1e-6)
             < erlab.interactive.options["io/compute_threshold"]
         ):
@@ -1623,7 +1629,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         This method computes the entire data array and loads it into memory if the data
         is chunked.
         """
-        if self._data.chunks is not None:
+        if self.data_chunked:
             try:
                 self.set_data(self._data.compute())
             except Exception:
