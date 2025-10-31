@@ -867,7 +867,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
 
         dlg = self._rename_dialog
-        dlg.set_names([self._imagetool_wrappers[i].name for i in selected])
+        dlg.set_names(selected, [self._imagetool_wrappers[i].name for i in selected])
         dlg.open()
 
     @QtCore.Slot()
@@ -1326,7 +1326,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> None:
         """Load data from the given files using the specified loader."""
         if loader_name == "ask":
-            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            self._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
         self._add_from_multiple_files(
@@ -1470,22 +1470,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
             mime_data: QtCore.QMimeData | None = event.mimeData()
             if mime_data and mime_data.hasUrls():
                 urls = mime_data.urls()
-                file_paths: list[pathlib.Path] = [
-                    pathlib.Path(url.toLocalFile()) for url in urls
-                ]
-                extensions: set[str] = {file_path.suffix for file_path in file_paths}
-                if len(extensions) != 1:
-                    QtWidgets.QMessageBox.critical(
-                        self,
-                        "Error",
-                        "Multiple file types are not supported in a single "
-                        "drag-and-drop operation.",
-                    )
-                    return
-                self.open_multiple_files(
-                    file_paths,
-                    try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+                self._handle_dropped_files(
+                    [pathlib.Path(url.toLocalFile()) for url in urls]
                 )
+
+    def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
+        """Handle files dropped into the window."""
+        if file_paths:  # pragma: no branch
+            extensions: set[str] = {file_path.suffix for file_path in file_paths}
+            if len(extensions) != 1:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Multiple file types cannot be opened at the same time.",
+                )
+                return
+            self.open_multiple_files(
+                file_paths,
+                try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+            )
 
     def _show_loaded_info(
         self,
