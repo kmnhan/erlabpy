@@ -22,17 +22,14 @@ from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
+    _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
-from erlab.interactive.imagetool.manager._server import (
-    _ManagerServer,
-    _WatcherServer,
-    show_in_manager,
-)
+from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
@@ -936,36 +933,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for index in self.tree_view.selected_imagetool_indices:
                 self._imagetool_wrappers[index].unarchive()
 
+    @property
+    def _concat_dialog(self) -> _ConcatDialog:
+        if not hasattr(self, "__concat_dialog"):
+            self.__concat_dialog = _ConcatDialog(self)
+        return self.__concat_dialog
+
     @QtCore.Slot()
     def concat_selected(self) -> None:
         """Concatenate the selected data using :func:`xarray.concat`."""
-        text, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Concatenate",
-            "Dimension name:",
-            QtWidgets.QLineEdit.EchoMode.Normal,
-            "concat_dim",
-        )
-
-        if ok and text:
-            try:
-                show_in_manager(
-                    xr.concat(
-                        [
-                            self.get_imagetool(index).slicer_area._data
-                            for index in self.tree_view.selected_imagetool_indices
-                        ],
-                        dim=text,
-                    )
-                )
-            except Exception:
-                logger.exception("Error while concatenating data")
-                erlab.interactive.utils.MessageDialog.critical(
-                    self,
-                    "Error",
-                    "An error occurred while concatenating data.",
-                )
-                return
+        dlg = self._concat_dialog
+        dlg.open()
 
     @QtCore.Slot()
     def store_selected(self) -> None:
