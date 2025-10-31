@@ -76,9 +76,9 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
 
     logger.info("Test code generation")
     if data.ndim == 2:
-        assert main_image.selection_code == ""
+        assert main_image.get_selection_code(placeholder="") == ""
     else:
-        assert main_image.selection_code == ".qsel(beta=2.0)"
+        assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
 
     if condition == "binned":
         logger.info("Set bins")

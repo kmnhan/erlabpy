@@ -1,10 +1,12 @@
 import threading
 import typing
+from collections.abc import Callable
 
 import numpy as np
 import pytest
 import xarray as xr
 
+import erlab
 from erlab.interactive.imagetool.manager import _watcher as watcher_mod
 from erlab.interactive.imagetool.manager._watcher import _Watcher
 
@@ -273,7 +275,12 @@ def test_stop_watching_all_with_remove(fake_shell, patch_manager, monkeypatch):
     watcher.shutdown()
 
 
-def test_watcher_real(qtbot, manager_context):
+def test_watcher_real(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+):
     with manager_context() as manager:
         qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
@@ -304,8 +311,8 @@ def test_watcher_real(qtbot, manager_context):
 
         # Get selection code
         assert (
-            manager.get_imagetool(0).slicer_area.main_image.selection_code
-            == ".qsel(eV=2.0)"
+            manager.get_imagetool(0).slicer_area.main_image.get_selection_code()
+            == "darr.qsel(eV=2.0)"
         )
 
         # Update data

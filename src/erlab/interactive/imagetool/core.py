@@ -1591,6 +1591,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ax.update_manual_range()
 
     @property
+    def watched_data_name(self) -> str | None:
+        """Get the name of the watched data variable.
+
+        Only applicable if in an ImageTool Manager and the data is linked to a watched
+        variable in a notebook. Returns None if otherwise.
+        """
+        if self._in_manager:
+            manager = self._manager_instance
+            if manager:  # pragma: no branch
+                wrapper = manager.wrapper_from_slicer_area(self)
+                if wrapper:  # pragma: no branch
+                    return wrapper._watched_varname
+        return None
+
+    @property
     def data_chunked(self) -> bool:
         """Check if the data is chunked (backed by dask).
 
@@ -1929,7 +1944,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             gamma = 0.5
 
         self.add_tool_window(
-            erlab.interactive.ktool(self.data, cmap=cmap, gamma=gamma, execute=False)
+            erlab.interactive.ktool(
+                self.data,
+                cmap=cmap,
+                gamma=gamma,
+                data_name=self.watched_data_name,
+                execute=False,
+            )
         )
 
     def adjust_layout(
@@ -2711,31 +2732,18 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.current_cursor, self.display_axis
         )
 
-    @property
-    def watched_data_name(self) -> str | None:
-        """Get the name of the watched data variable.
+    def get_selection_code(self, placeholder: str = "data") -> str:
+        """Get selection code for the current cursor and display axis.
 
-        Only applicable if in an ImageTool Manager and the data is linked to a watched
-        variable in a notebook. Returns None if otherwise.
+        Parameters
+        ----------
+        placeholder : str, optional
+            Name to fall back to if the data is not linked to a watched variable in a
+            notebook. By default, uses "data".
         """
-        if self.slicer_area._in_manager:
-            manager = self.slicer_area._manager_instance
-            if manager:  # pragma: no branch
-                wrapper = manager.wrapper_from_slicer_area(self.slicer_area)
-                if wrapper:  # pragma: no branch
-                    return wrapper._watched_varname
-        return None
-
-    @property
-    def data_name_for_child(self) -> str:
-        """Get a data name for child tools based on watched variable name.
-
-        If the data is linked to a watched variable in a notebook, use that name.
-        Otherwise, uses "data" as a placeholder name.
-        """
-        data_name = self.watched_data_name
+        data_name = self.slicer_area.watched_data_name
         if not data_name:
-            data_name = "data"
+            data_name = placeholder
         return f"{data_name}{self.selection_code}"
 
     @property
@@ -2792,7 +2800,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.goldtool(
-                    data, data_name=self.data_name_for_child, execute=False
+                    data, data_name=self.get_selection_code(), execute=False
                 )
             )
 
@@ -2809,7 +2817,7 @@ class ItoolPlotItem(pg.PlotItem):
                 )
                 return
             tool = erlab.interactive.restool(
-                data, data_name=self.data_name_for_child, execute=False
+                data, data_name=self.get_selection_code(), execute=False
             )
             self.slicer_area.add_tool_window(tool)
 
@@ -2819,7 +2827,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.add_tool_window(
                 erlab.interactive.dtool(
                     self.current_data.T,
-                    data_name=self.data_name_for_child,
+                    data_name=self.get_selection_code(),
                     execute=False,
                 )
             )
@@ -3330,10 +3338,10 @@ class ItoolPlotItem(pg.PlotItem):
                 "Selection code is unavailable for main image of 2D data.",
             )
             return
-        data_name = self.watched_data_name
-        if data_name is None:
-            data_name = ""
-        erlab.interactive.utils.copy_to_clipboard(f"{data_name}{self.selection_code}")
+
+        erlab.interactive.utils.copy_to_clipboard(
+            self.get_selection_code(placeholder="")
+        )
 
     @property
     def display_axis(self) -> tuple[int, ...]:
