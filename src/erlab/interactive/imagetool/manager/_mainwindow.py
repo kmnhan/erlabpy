@@ -1309,6 +1309,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         ImageTool(d, **kwargs), activate=True, watched_var=watched_var
                     )
                 )
+                if watched_var is not None:
+                    # Refresh title to include variable name
+                    self.get_imagetool(indices[-1])._update_title()
             except Exception:
                 flags.append(False)
                 self._error_creating_imagetool()
