@@ -26,17 +26,18 @@ class _RenameDialog(QtWidgets.QDialog):
 
         self._layout = QtWidgets.QGridLayout(self)
 
-        self._new_name_lines: list[QtWidgets.QLineEdit] = []
+        self._new_name_lines: dict[int, QtWidgets.QLineEdit] = {}
 
         # Persistent button box; we re-add it when (re)building rows
         self._button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
         )
         self._button_box.accepted.connect(self.accept)
         self._button_box.rejected.connect(self.reject)
 
-    def set_names(self, original_names: list[str]) -> None:
+    def set_names(self, indices: list[int], original_names: list[str]) -> None:
         # Clear current rows but keep the button box object
         while self._layout.count():
             item = self._layout.takeAt(0)
@@ -45,11 +46,13 @@ class _RenameDialog(QtWidgets.QDialog):
                 if widget is not None and widget is not self._button_box:
                     widget.deleteLater()
 
-        self._new_name_lines.clear()
+        for k, v in self._new_name_lines.copy().items():
+            self._new_name_lines.pop(k)
+            v.deleteLater()
 
         # Rebuild rows
-        for i, name in enumerate(original_names):
-            lbl_from = QtWidgets.QLabel(name)
+        for i, (tool_idx, name) in enumerate(zip(indices, original_names, strict=True)):
+            lbl_from = QtWidgets.QLabel(f"{tool_idx}: {name}")
             lbl_arrow = QtWidgets.QLabel("→")
             line_new = QtWidgets.QLineEdit(name)
             line_new.setPlaceholderText("New name")
@@ -57,31 +60,28 @@ class _RenameDialog(QtWidgets.QDialog):
             self._layout.addWidget(lbl_from, i, 0)
             self._layout.addWidget(lbl_arrow, i, 1)
             self._layout.addWidget(line_new, i, 2)
-            self._new_name_lines.append(line_new)
+            self._new_name_lines[tool_idx] = line_new
 
         # Resize inputs to longest current text
-        if self._new_name_lines:
-            fm = self._new_name_lines[0].fontMetrics()
+        if self._new_name_lines:  # pragma: no branch
+            fm = next(iter(self._new_name_lines.values())).fontMetrics()
             max_width = max(
-                fm.boundingRect(line.text()).width() for line in self._new_name_lines
+                fm.boundingRect(line.text()).width()
+                for line in self._new_name_lines.values()
             )
-            for line in self._new_name_lines:
+            for line in self._new_name_lines.values():
                 line.setMinimumWidth(max_width + 10)
 
         # Re-add button box at the last row
         self._layout.addWidget(self._button_box, len(original_names), 0, 1, 3)
 
-    def new_names(self) -> list[str]:
-        return [w.text() for w in self._new_name_lines]
+    def new_names(self) -> list[tuple[int, str]]:
+        return [(idx, w.text()) for idx, w in self._new_name_lines.items()]
 
     def accept(self) -> None:
         manager = self._manager()
         if manager is not None:
-            for index, new_name in zip(
-                manager.tree_view.selected_imagetool_indices,
-                self.new_names(),
-                strict=True,
-            ):
+            for index, new_name in self.new_names():
                 manager.rename_imagetool(index, new_name)
         super().accept()
 

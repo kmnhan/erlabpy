@@ -174,8 +174,8 @@ def test_manager(
         select_tools(manager, [1, 2])
 
         def _handle_renaming(dialog: _RenameDialog):
-            dialog._new_name_lines[0].setText("new_name_1")
-            dialog._new_name_lines[1].setText("new_name_2")
+            dialog._new_name_lines[1].setText("new_name_1")
+            dialog._new_name_lines[2].setText("new_name_2")
 
         accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
         assert manager._imagetool_wrappers[1].name == "new_name_1"
