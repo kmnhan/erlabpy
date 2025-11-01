@@ -9,6 +9,7 @@ from erlab.utils.array import (
     is_dims_uniform,
     is_monotonic,
     is_uniform_spaced,
+    minmax_darr,
     sort_coord_order,
     trim_na,
     uniform_dims,
@@ -201,3 +202,43 @@ def test_sort_coord_order(use_dask) -> None:
     assert list(sorted_darr.coords.keys()) == ["b", "a", "x", "y"]
     if use_dask:
         assert result.chunks == darr.chunks
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_with_nan_skipna_true(use_dask) -> None:
+    arr = xr.DataArray(np.array([1, np.nan, 3, 4, 5]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=True)
+    assert mn == 1.0
+    assert mx == 5.0
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_with_nan_skipna_false(use_dask) -> None:
+    arr = xr.DataArray(np.array([1, np.nan, 3, 4, 5]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=False)
+    assert np.isnan(mn)
+    assert np.isnan(mx)
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_2d_array(use_dask) -> None:
+    arr = xr.DataArray(np.array([[1, 2], [3, 4]]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr)
+    assert mn == 1.0
+    assert mx == 4.0
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_all_nan(use_dask) -> None:
+    arr = xr.DataArray(np.array([np.nan, np.nan]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=True)
+    assert np.isnan(mn)
+    assert np.isnan(mx)

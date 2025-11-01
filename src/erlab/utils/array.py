@@ -9,6 +9,7 @@ __all__ = [
     "is_dims_uniform",
     "is_monotonic",
     "is_uniform_spaced",
+    "minmax_darr",
     "sort_coord_order",
     "to_native_endian",
     "trim_na",
@@ -105,6 +106,39 @@ def broadcast_args(func: Callable) -> Callable:
         return result
 
     return _wrapper
+
+
+def minmax_darr(darr: xr.DataArray, *, skipna: bool = True) -> tuple[float, float]:
+    """Return (min, max) for DataArrays, with efficient handling for dask.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    skipna
+        Whether to skip NaN values.
+
+    Returns
+    -------
+    mn
+        The minimum value of the DataArray as a float.
+    mx
+        The maximum value of the DataArray as a float.
+    """
+    if darr.chunks is not None:
+        import dask
+
+        mn, mx = darr.min(skipna=skipna), darr.max(skipna=skipna)
+        mn, mx = dask.compute(mn.data, mx.data)
+
+    else:
+        vals = darr.values
+        if skipna:
+            mn, mx = np.nanmin(vals), np.nanmax(vals)
+        else:
+            mn, mx = np.min(vals), np.max(vals)
+
+    return float(mn), float(mx)
 
 
 def is_uniform_spaced(arr: npt.NDArray, rtol=1.0e-5, atol=1.0e-8) -> bool:

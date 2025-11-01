@@ -388,22 +388,23 @@ class ArraySlicer(QtCore.QObject):
             self._obj.dims[0],
         )
 
-    @functools.cached_property
+    @property
     def nanmax(self) -> float:
-        return float(self._obj.max(skipna=True))
-
-    @functools.cached_property
-    def nanmin(self) -> float:
-        return float(self._obj.min(skipna=True))
-
-    @functools.cached_property
-    def absnanmax(self) -> float:
-        return max(abs(self.nanmin), abs(self.nanmax))
+        return self.limits[1]
 
     @property
+    def nanmin(self) -> float:
+        return self.limits[0]
+
+    @property
+    def absnanmax(self) -> float:
+        mn, mx = self.limits
+        return max(abs(mn), abs(mx))
+
+    @functools.cached_property
     def limits(self) -> tuple[float, float]:
-        """Return the global minima and maxima of the data."""
-        return self.nanmin, self.nanmax
+        """Return the global minimum and maximum of the data."""
+        return erlab.utils.array.minmax_darr(self._obj, skipna=True)
 
     @property
     def n_cursors(self) -> int:
@@ -542,8 +543,7 @@ class ArraySlicer(QtCore.QObject):
             Whether to clear the cache that contains the transposed data values.
 
         """
-        for prop in ("nanmax", "nanmin", "absnanmax"):
-            self._reset_property_cache(prop)
+        self._reset_property_cache("limits")
 
         if include_vals:
             self._reset_property_cache("data_vals_T")
