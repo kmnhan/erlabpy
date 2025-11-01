@@ -2944,6 +2944,7 @@ class ItoolPlotItem(pg.PlotItem):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
+            and self.isVisible()
         ):
             ev.accept()
             if isinstance(ev, mouseEvents.MouseDragEvent):
