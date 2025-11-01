@@ -614,6 +614,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
+        self.qapp = typing.cast(
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
+        )
 
         # Handle default values
         if cmap is None:
@@ -786,11 +789,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if transpose:
             self.transpose_main_image()
-
-        self.qapp = typing.cast(
-            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-        )
-        # self.qapp.aboutToQuit.connect(self.on_close)
 
     @property
     def _associated_tools_list(self) -> list[QtWidgets.QWidget]:
@@ -2460,8 +2458,13 @@ class ItoolPlotItem(pg.PlotItem):
         self.add_cursor(update=False)
 
         self.proxy = pg.SignalProxy(
-            self._sigDragged, delay=1 / 60, rateLimit=60, slot=self.process_drag
+            self._sigDragged, delay=1 / 120, rateLimit=120, slot=self.process_drag
         )
+        self.slicer_area.qapp.primaryScreenChanged.connect(
+            self._update_signal_refresh_rate
+        )
+        self._update_signal_refresh_rate()
+
         if self.slicer_area.bench:
             self._time_start: float | None = None
             self._time_end: float | None = None
@@ -2508,6 +2511,14 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
+
+    @QtCore.Slot()
+    def _update_signal_refresh_rate(self) -> None:
+        screen = self.slicer_area.qapp.primaryScreen()
+        if screen:
+            rate = screen.refreshRate()
+            self.proxy.rateLimit = rate if rate > 0 else 60
+            self.proxy.delay = 1 / (rate if rate > 0 else 60)
 
     def connect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
