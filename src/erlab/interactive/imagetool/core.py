@@ -1864,7 +1864,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 im.setLevels(levels, update=False)
             else:
                 im.levels = None
-            im.refresh_data()
+            im.updateImage()
 
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
