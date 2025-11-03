@@ -663,6 +663,32 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_normalize_to_view(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
+    # Adjust colors
+    win.slicer_area.main_image.normalize_to_current_view()
+
+    mn, mx = win.slicer_area.levels
+    np.testing.assert_allclose(mn, 5.0)
+    np.testing.assert_allclose(mx, 23.0)
+
+    win.close()
+
+
 def test_itool_crop_view(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),

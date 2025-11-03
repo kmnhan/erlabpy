@@ -2453,36 +2453,11 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        # List of actions that should have '(Crop)' appended when Alt is pressed
         croppable_actions: list[QtWidgets.QAction] = [save_action]
 
         if self.is_image:
-            itool_action = self.vb.menu.addAction("New Window")
-            itool_action.triggered.connect(self.open_in_new_window)
-
-            goldtool_action = self.vb.menu.addAction("goldtool")
-            goldtool_action.triggered.connect(self.open_in_goldtool)
-
-            restool_action = self.vb.menu.addAction("restool")
-            restool_action.triggered.connect(self.open_in_restool)
-
-            dtool_action = self.vb.menu.addAction("dtool")
-            dtool_action.triggered.connect(self.open_in_dtool)
-
-            def _set_icons():
-                for act in (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                ):
-                    act.setIcon(qtawesome.icon("mdi6.export"))
-                    act.setIconVisibleInMenu(True)
-
-            self._sigPaletteChanged.connect(_set_icons)
-            _set_icons()
-
-            self.vb.menu.addSeparator()
-
+            # Aspect ratio lock checkbox
             equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
             equal_aspect_action.setCheckable(True)
             equal_aspect_action.setChecked(False)
@@ -2497,6 +2472,29 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
 
+            # AdjustCT-like action
+            adjust_color_action = self.vb.menu.addAction("Normalize to View")
+            adjust_color_action.setToolTip(
+                "Set color limits from the currently visible area of this image.\n"
+                "Similar to 'AdjustCT' in Igor Pro."
+            )
+            adjust_color_action.triggered.connect(self.normalize_to_current_view)
+
+            self.vb.menu.addSeparator()
+
+            # Actions that open new windows
+            itool_action = self.vb.menu.addAction("New Window")
+            itool_action.triggered.connect(self.open_in_new_window)
+
+            goldtool_action = self.vb.menu.addAction("goldtool")
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            restool_action = self.vb.menu.addAction("restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
+            dtool_action = self.vb.menu.addAction("dtool")
+            dtool_action.triggered.connect(self.open_in_dtool)
+
             croppable_actions.extend(
                 (
                     itool_action,
@@ -2505,6 +2503,20 @@ class ItoolPlotItem(pg.PlotItem):
                     dtool_action,
                 )
             )
+
+            def _set_icons():
+                for act in (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                ):
+                    act.setIcon(qtawesome.icon("mdi6.export"))
+                    act.setIconVisibleInMenu(True)
+
+            self._sigPaletteChanged.connect(_set_icons)
+            _set_icons()
+
         else:
             norm_action = self.vb.menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
@@ -2724,6 +2736,21 @@ class ItoolPlotItem(pg.PlotItem):
         return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
 
     @property
+    def is_view_cropped(self) -> bool:
+        """Whether the current view limits are smaller than the full data range."""
+        manual_limits = dict(self.slicer_area.manual_limits)
+        for ax_idx in self.display_axis:
+            dim_name = str(self.slicer_area.data.dims[ax_idx])
+            if dim_name in manual_limits:
+                mn, mx = sorted(self.slicer_area.array_slicer.lims_uniform[ax_idx])
+                manual_mn, manual_mx = sorted(manual_limits[dim_name])
+
+                if manual_mn > mn or manual_mx < mx:
+                    return True
+
+        return False
+
+    @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
         darr: xr.DataArray = self._current_data
@@ -2868,6 +2895,21 @@ class ItoolPlotItem(pg.PlotItem):
                     data_name=self.get_selection_code(),
                     execute=False,
                 )
+            )
+
+    @QtCore.Slot()
+    def normalize_to_current_view(self) -> None:
+        """Adjust color limits to the currently visible area.
+
+        Only available for image plots.
+
+        Sets the color limits of the slicer area to the min and max of the currently
+        visible area of this image (similar to AdjustCT in ImageTool).
+        """
+        if self.is_image:  # pragma: no branch
+            self.slicer_area.lock_levels(True)
+            self.slicer_area.levels = erlab.utils.array.minmax_darr(
+                self._current_data_cropped
             )
 
     @QtCore.Slot()
