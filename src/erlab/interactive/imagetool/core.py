@@ -2354,93 +2354,15 @@ class ItoolPlotItem(pg.PlotItem):
         )
         self._axis_enabled = axis_enabled
 
-        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
-            self.setContextMenuActionVisible(act, False)
-
         self.vb.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
-
-        for i in (0, 1):
-            # Hide unnecessary menu items
-            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
-            self.vb.menu.ctrl[i].label.setVisible(False)
-
-        self.vb.menu.addSeparator()
-
-        save_action = self.vb.menu.addAction("Save data as HDF5")
-        save_action.triggered.connect(self.save_current_data)
-
-        copy_code_action = self.vb.menu.addAction("Copy selection code")
-        copy_code_action.triggered.connect(self.copy_selection_code)
-
-        self.vb.menu.addSeparator()
-
-        croppable_actions: list[QtWidgets.QAction] = [save_action]
-
-        if image:
-            itool_action = self.vb.menu.addAction("New Window")
-            itool_action.triggered.connect(self.open_in_new_window)
-
-            goldtool_action = self.vb.menu.addAction("goldtool")
-            goldtool_action.triggered.connect(self.open_in_goldtool)
-
-            restool_action = self.vb.menu.addAction("restool")
-            restool_action.triggered.connect(self.open_in_restool)
-
-            dtool_action = self.vb.menu.addAction("dtool")
-            dtool_action.triggered.connect(self.open_in_dtool)
-
-            def _set_icons():
-                for act in (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                ):
-                    act.setIcon(qtawesome.icon("mdi6.export"))
-                    act.setIconVisibleInMenu(True)
-
-            self._sigPaletteChanged.connect(_set_icons)
-            _set_icons()
-
-            self.vb.menu.addSeparator()
-
-            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
-            equal_aspect_action.setCheckable(True)
-            equal_aspect_action.setChecked(False)
-            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
-
-            def _update_aspect_lock_state() -> None:
-                locked: bool = self.getViewBox().state["aspectLocked"] is not False
-                if equal_aspect_action.isChecked() != locked:
-                    equal_aspect_action.blockSignals(True)
-                    equal_aspect_action.setChecked(locked)
-                    equal_aspect_action.blockSignals(False)
-
-            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
-
-            croppable_actions.extend(
-                (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                )
-            )
-        else:
-            norm_action = self.vb.menu.addAction("Normalize by mean")
-            norm_action.setCheckable(True)
-            norm_action.setChecked(False)
-            norm_action.toggled.connect(self.set_normalize)
-        self.vb.menu.addSeparator()
-
-        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
-        self.vb.menu.installEventFilter(self._menu_filter)
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
+
+        self.setup_actions()
 
         if image_cls is None:  # pragma: no branch
             self.image_cls = ItoolImageItem
@@ -2511,6 +2433,87 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
+
+    def setup_actions(self) -> None:
+        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
+            self.setContextMenuActionVisible(act, False)
+
+        for i in (0, 1):
+            # Hide unnecessary menu items
+            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
+            self.vb.menu.ctrl[i].label.setVisible(False)
+
+        self.vb.menu.addSeparator()
+
+        save_action = self.vb.menu.addAction("Save data as HDF5")
+        save_action.triggered.connect(self.save_current_data)
+
+        copy_code_action = self.vb.menu.addAction("Copy selection code")
+        copy_code_action.triggered.connect(self.copy_selection_code)
+
+        self.vb.menu.addSeparator()
+
+        croppable_actions: list[QtWidgets.QAction] = [save_action]
+
+        if self.is_image:
+            itool_action = self.vb.menu.addAction("New Window")
+            itool_action.triggered.connect(self.open_in_new_window)
+
+            goldtool_action = self.vb.menu.addAction("goldtool")
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            restool_action = self.vb.menu.addAction("restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
+            dtool_action = self.vb.menu.addAction("dtool")
+            dtool_action.triggered.connect(self.open_in_dtool)
+
+            def _set_icons():
+                for act in (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                ):
+                    act.setIcon(qtawesome.icon("mdi6.export"))
+                    act.setIconVisibleInMenu(True)
+
+            self._sigPaletteChanged.connect(_set_icons)
+            _set_icons()
+
+            self.vb.menu.addSeparator()
+
+            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
+            equal_aspect_action.setCheckable(True)
+            equal_aspect_action.setChecked(False)
+            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
+
+            def _update_aspect_lock_state() -> None:
+                locked: bool = self.getViewBox().state["aspectLocked"] is not False
+                if equal_aspect_action.isChecked() != locked:
+                    equal_aspect_action.blockSignals(True)
+                    equal_aspect_action.setChecked(locked)
+                    equal_aspect_action.blockSignals(False)
+
+            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
+
+            croppable_actions.extend(
+                (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                )
+            )
+        else:
+            norm_action = self.vb.menu.addAction("Normalize by mean")
+            norm_action.setCheckable(True)
+            norm_action.setChecked(False)
+            norm_action.toggled.connect(self.set_normalize)
+        self.vb.menu.addSeparator()
+
+        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
+        self.vb.menu.installEventFilter(self._menu_filter)
 
     @QtCore.Slot()
     def _update_signal_refresh_rate(self) -> None:
@@ -2697,10 +2700,18 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def axis_dims(self) -> tuple[str | None, str | None]:
+        """Get the names of the data dimensions plotted on each axis.
+
+        Removes '_idx' suffix for non-uniform axes.
+        """
         return self._get_axis_dims(uniform=False)
 
     @property
     def axis_dims_uniform(self) -> tuple[str | None, str | None]:
+        """Get the names of the data dimensions plotted on each axis.
+
+        Retains '_idx' suffix for non-uniform axes.
+        """
         return self._get_axis_dims(uniform=True)
 
     @property
