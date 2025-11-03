@@ -2739,7 +2739,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def current_data(self) -> xr.DataArray:
-        """Data in the current plot item, cropped or uncropped.
+        """Data in the current plot item, optionally cropped to view limits.
 
         If accessed while the Alt (Option) key is pressed, the data is cropped to the
         current axes view limits.
@@ -2756,12 +2756,22 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def selection_code(self) -> str:
+        """Get the selection code for the data.
+
+        Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
+        the current slice of data based on the current cursor location and bin size.
+        """
         return self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
 
     def get_selection_code(self, placeholder: str = "data") -> str:
         """Get selection code for the current cursor and display axis.
+
+        Adds a placeholder data name as a prefix to the selection code returned by
+        :attr:`selection_code`. If the data is linked to a watched variable in a
+        notebook through the ImageTool manager, the variable name in the notebook is
+        used instead.
 
         Parameters
         ----------
