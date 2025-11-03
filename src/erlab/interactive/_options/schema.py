@@ -12,9 +12,13 @@ The following trivial types have automatic GUI representations:
 - list: comma-separated text input
 
 For spinboxes, limits provided with `ge`, `le` are used to set the minimum and maximum
-values of the spinbox. `gt` and `lt` are not supported because validation would fail for
-values exactly at the limit. If only one limit is provided, the other limit is set to
-positive or negative infinity.
+values of the spinbox. If only one limit is provided, the other limit is set to positive
+or negative infinity.
+
+.. note::
+
+    `gt` and `lt` are not supported because validation would fail for values exactly at
+    the limit.
 
 For comma-separated lists, a custom validator must be implemented to split the string
 into a list of strings. See methods decorated with `@field_validator` below for
@@ -24,7 +28,20 @@ To bypass automatic detection of type or to provide a custom type, provide "ui_t
 the `json_schema_extra` dictionary, which will be directly used as `type` when creating
 the pyqtgraph Parameter tree.
 
-For comboboxes, provide "ui_type": "list" and "ui_limits": [...] in `json_schema_extra`.
+To pass additional options to the pyqtgraph Parameter tree, prefix the option name with
+"ui_" in the `json_schema_extra` dictionary. For example, to set the step size of a
+float parameter, you can do this:
+
+.. code-block:: python
+
+    my_value: float = Field(
+        default=1.0,
+        json_schema_extra={"ui_step": 0.1},
+    )
+
+See the `pyqtgraph Parameter Tree documentation
+<https://pyqtgraph.readthedocs.io/en/latest/api_reference/parametertree/>`_ for all
+available options.
 """
 
 from __future__ import annotations
@@ -143,8 +160,26 @@ class ColorOptions(BaseModel):
         return v
 
 
+class DaskOptions(BaseModel):
+    """Dask-related options."""
+
+    compute_threshold: int = Field(
+        default=2048,
+        title="Compute threshold",
+        description=(
+            "Threshold in megabytes for automatically loading dask arrays into memory "
+            "when showing dask-backed data in ImageTool."
+            "\n\nData smaller than this threshold will be automatically "
+            "computed and loaded into memory to improve interactivity."
+        ),
+        ge=0,
+        le=1000000,
+        json_schema_extra={"ui_step": 128, "ui_suffix": " MB"},
+    )
+
+
 class IOOptions(BaseModel):
-    """Input/output related options."""
+    """Top-level grouping of I/O-related options."""
 
     default_loader: str = Field(
         default="None",
@@ -156,18 +191,7 @@ class IOOptions(BaseModel):
         },
     )
 
-    compute_threshold: int = Field(
-        default=2048,
-        title="Dask computation threshold (MB)",
-        description=(
-            "Threshold in megabytes for automatically loading dask arrays into memory "
-            "when showing dask-backed data in ImageTool."
-            "\n\nData smaller than this threshold will be automatically "
-            "computed and loaded into memory to improve interactivity."
-        ),
-        ge=0,
-        le=1000000,
-    )
+    dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
 
     @field_validator("default_loader", mode="before")
     @classmethod

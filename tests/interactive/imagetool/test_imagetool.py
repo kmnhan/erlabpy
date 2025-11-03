@@ -191,8 +191,9 @@ def test_itool_dtypes(
     if use_dask:
         data = data.chunk()
 
-        old_threshold = erlab.interactive.options["io/compute_threshold"]
-        erlab.interactive.options["io/compute_threshold"] = 0  # force compute for dask
+        old_threshold = erlab.interactive.options["io/dask/compute_threshold"]
+        # force compute for dask
+        erlab.interactive.options["io/dask/compute_threshold"] = 0
 
     try:
         win = itool(data, execute=False)
@@ -206,7 +207,7 @@ def test_itool_dtypes(
 
     finally:
         if use_dask:
-            erlab.interactive.options["io/compute_threshold"] = old_threshold
+            erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     win.close()
 
