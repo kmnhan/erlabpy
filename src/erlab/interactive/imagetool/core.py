@@ -1379,7 +1379,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if (
             self.data_chunked
             and (self._data.nbytes * 1e-6)
-            < erlab.interactive.options["io/compute_threshold"]
+            < erlab.interactive.options["io/dask/compute_threshold"]
         ):
             self._data = self._data.compute()
 
