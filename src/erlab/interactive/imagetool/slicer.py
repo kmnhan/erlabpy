@@ -466,7 +466,8 @@ class ArraySlicer(QtCore.QObject):
         Returns
         -------
         xarray.DataArray
-            The converted data.
+            The converted data. Non-uniform dimensions are converted to be dependent on
+            uniform index dimensions, suffixed with ``'_idx'``.
 
         """
         data = data.copy().squeeze()
