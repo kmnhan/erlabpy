@@ -387,10 +387,7 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def update_region(self):
-        # Trigger region change start and finish signals to simulate drag
-        self.cb._span.sigRegionChangeStarted.emit(self.cb._span)
         self.cb.setSpanRegion((self.min_spin.value(), self.max_spin.value()))
-        self.cb._span.sigRegionChangeFinished.emit(self.cb._span)
 
     def setVisible(self, visible: bool) -> None:
         super().setVisible(visible)
@@ -519,7 +516,10 @@ class BetterColorBarItem(pg.PlotItem):
         return self._span.getRegion()
 
     def setSpanRegion(self, levels: tuple[float, float]) -> None:
+        # Trigger region change start and finish signals to simulate drag
+        self._span.sigRegionChangeStarted.emit(self._span)
         self._span.setRegion(levels)
+        self._span.sigRegionChangeFinished.emit(self._span)
 
     def setLimits(self, limits: tuple[float, float] | None) -> None:
         self._fixedlimits = limits
