@@ -1,3 +1,49 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool:** add normalize to view that adjusts color levels based on the currently visible data ([7be78c6](https://github.com/kmnhan/erlabpy/commit/7be78c6981a303ece9336625ac1fe013cede462b))
+
+  Adds a new action to the right-click context menu of ImageTool image panels that adjusts the color levels to span the data values currently visible in the view, like AdjustCT in Igor Pro.
+
+- **manager:** add more options to concat dialog ([8473728](https://github.com/kmnhan/erlabpy/commit/84737288f41f999c86209f8c672d180463c13210))
+
+  The concatenation dialog now allows users to specify keyword arguments to `xarray.concat` such as `coords`, `compat`, `join`, and `combine_attrs`. Also add a checkbox to remove original tools after concatenation.
+
+- **manager:** display watched variable name in tool title ([567e7cb](https://github.com/kmnhan/erlabpy/commit/567e7cb3cfaded5e3cf4f67abd60da996572c34e))
+
+  When creating an ImageTool for a watched variable, a label is added just like for data loaded from files. This makes it easier to identify which variable is being displayed.
+
+- **manager:** add menu for Dask client management ([aef4178](https://github.com/kmnhan/erlabpy/commit/aef41780d854a43465ae68d2f49a2e2c79089418))
+
+  Adds a Dask menu to the main window, allowing users to connect to existing Dask
+
+  clusters, create local clusters, and view client information.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** ignore mouse events from invisible plots ([b2e764a](https://github.com/kmnhan/erlabpy/commit/b2e764aeb7e3d385d823002a2dc800ea428166fd))
+
+- **manager:** properly include watched var name in ktool code generation ([f90cf0b](https://github.com/kmnhan/erlabpy/commit/f90cf0b525a86da2dc6c7d2776d96a4463a45fcf))
+
+- **manager:** fix workspace file explorer integration for standalone application ([93150ab](https://github.com/kmnhan/erlabpy/commit/93150ab0860f3e718ec53d4ec0434e10fea23ae1))
+
+  Also resolves a related issue where double-clicking a file in the system file explorer while another instance of the application is running would fail in macOS.
+
+### ⚡️ Performance
+
+- **imagetool:** avoid recomputing data when showing or hiding the colorbar ([b5c27e0](https://github.com/kmnhan/erlabpy/commit/b5c27e066b6ab47aea6a492ec4388a3886c57bf5))
+
+- **imagetool:** speed up initialization for dask arrays by optimizing global min/max calculation ([b9b08f6](https://github.com/kmnhan/erlabpy/commit/b9b08f6e91a1dbf9d9c09b8fabec3d57ffcd5eb6))
+
+- **imagetool:** match drag refresh rate to screen refresh rate ([22bb48c](https://github.com/kmnhan/erlabpy/commit/22bb48c2cda1c069ad235459c930fca6de7bd8bd))
+
+### ♻️ Code Refactor
+
+- **imagetool:** reorder some menu items for better grouping ([9cba0ac](https://github.com/kmnhan/erlabpy/commit/9cba0ac6422885c84ec5431bb09f42b1b65fe8dd))
+
+- **manager:** show tool indices in batch rename dialog ([e05a923](https://github.com/kmnhan/erlabpy/commit/e05a9233a2a695c6b50430d0cdb03cf5cbaae09d))
+
 ## v3.15.1 (2025-10-29)
 
 ### 🐞 Bug Fixes
