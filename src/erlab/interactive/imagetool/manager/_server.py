@@ -169,7 +169,10 @@ def _send_multipart(sock: zmq.Socket, obj: typing.Any, **kwargs) -> None:
     buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
     bio = io.BytesIO()
     p = pickle.Pickler(bio, protocol=5, buffer_callback=buffers.append)
-    p.dump(obj)
+    try:
+        p.dump(obj)
+    except Exception as e:
+        raise RuntimeError("Failed to serialize object to send to server") from e
     header = memoryview(bio.getbuffer())
     frames = [header] + [memoryview(b) for b in buffers]
     sock.send_multipart(frames, copy=False, **kwargs)
