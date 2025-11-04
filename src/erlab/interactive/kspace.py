@@ -622,7 +622,7 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setRange(0.0, 9.999)
         self._offset_spins["wf"].setSingleStep(0.01)
         self._offset_spins["wf"].setDecimals(4)
-        self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS[k])
+        self._offset_spins["wf"].setSuffix(self._OFFSET_UNITS["wf"])
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
