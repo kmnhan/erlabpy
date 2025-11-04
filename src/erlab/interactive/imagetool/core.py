@@ -3228,7 +3228,11 @@ class ItoolPlotItem(pg.PlotItem):
             strict=True,
         ):
             self.removeItem(line)
+            line.forgetViewBox()
+            line.deleteLater()
             self.removeItem(span)
+            span.forgetViewBox()
+            span.deleteLater()
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
 
@@ -3320,8 +3324,10 @@ class ItoolPlotItem(pg.PlotItem):
     def _remove_guidelines(self) -> None:
         if self.is_image:  # pragma: no branch
             for item in list(self._guidelines_items):
-                self.removeItem(item)
                 self._guidelines_items.remove(item)
+                self.removeItem(item)
+                item.forgetViewBox()
+                item.deleteLater()
             self._guideline_angle = 0.0
             self._guideline_offset = [0.0, 0.0]
             self.setTitle(None)
