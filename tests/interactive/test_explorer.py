@@ -40,8 +40,7 @@ def test_explorer_general(
         explorer: _DataExplorer = tabbed_explorer.get_explorer(0)
 
         # Show data explorer
-        with qtbot.wait_exposed(tabbed_explorer):
-            manager.show_explorer()
+        manager.show_explorer()
 
         # Enable preview
         explorer._preview_check.setChecked(True)
