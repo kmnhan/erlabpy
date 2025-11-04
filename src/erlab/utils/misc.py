@@ -167,7 +167,7 @@ def open_in_file_manager(path: str | os.PathLike) -> None:  # pragma: no cover
         if sys.platform == "darwin":
             subprocess.call(["open", "-R", str(path)])
         elif sys.platform == "win32":
-            subprocess.call(["explorer", f'/select,"{path}"'])
+            subprocess.call(["explorer", "/select,", str(path)])
         else:
             # We can't do this reliably on Linux, so we just open the folder
             subprocess.call(["xdg-open", str(path.parent)])
