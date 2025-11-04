@@ -390,22 +390,23 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(timeout_ms: int = 100) -> bool:
+def _ping_server() -> bool:
     """Ping the ImageToolManager server to check if it is running."""
     ctx = zmq.Context.instance()
+
     sock: zmq.Socket = ctx.socket(zmq.REQ)
-    # Timeouts in milliseconds
-    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    sock.setsockopt(zmq.SNDHWM, 0)
+    sock.setsockopt(zmq.RCVHWM, 0)
     try:
         sock.connect(f"tcp://{HOST_IP}:{PORT}")
-        # Send a minimal ping command and expect an OK
         _send_multipart(sock, {"packet_type": "command", "command": "ping"})
-        return Response(**_recv_multipart(sock)).status == "ok"
+        response = Response(**_recv_multipart(sock))
     except Exception:
-        return False
+        response = Response(status="error")
     finally:
         sock.close()
+
+    return response.status == "ok"
 
 
 def is_running() -> bool:
