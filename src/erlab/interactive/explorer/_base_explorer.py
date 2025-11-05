@@ -693,13 +693,13 @@ class _DataPreviewWidget(QtWidgets.QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout()
+        layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.setLayout(layout)
 
-        controls = QtWidgets.QWidget()
-        controls_layout = QtWidgets.QHBoxLayout()
+        controls = QtWidgets.QWidget(self)
+        controls_layout = QtWidgets.QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls.setLayout(controls_layout)
         layout.addWidget(controls)
@@ -707,7 +707,7 @@ class _DataPreviewWidget(QtWidgets.QWidget):
         controls_layout.addWidget(QtWidgets.QLabel("Preview:"))
         controls_layout.addStretch()
 
-        self.transpose_check = QtWidgets.QCheckBox("Transpose")
+        self.transpose_check = QtWidgets.QCheckBox("Transpose", self)
         self.transpose_check.toggled.connect(self.refresh)
         controls_layout.addWidget(self.transpose_check)
 
@@ -715,7 +715,7 @@ class _DataPreviewWidget(QtWidgets.QWidget):
         self._sel_widget.sigValueChanged.connect(self.refresh)
         controls_layout.addWidget(self._sel_widget)
 
-        graphics_layout = pg.GraphicsLayoutWidget()
+        graphics_layout = pg.GraphicsLayoutWidget(self)
         layout.addWidget(graphics_layout)
 
         self._image = erlab.interactive.utils.xImageItem()
