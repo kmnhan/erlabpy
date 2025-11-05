@@ -1580,12 +1580,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
 
         if len(valid_loaders) == 0:
+            if all(file_path.is_dir() for file_path in queued):
+                # If all dropped paths are directories, open them in the explorer
+                self.show_explorer()
+                for file_path in queued:
+                    self.explorer.add_tab(root_path=file_path)
+                return
+
+            singular: bool = n_files == 1
             QtWidgets.QMessageBox.critical(
                 self,
                 "Error",
-                f"The selected {'file' if n_files == 1 else 'files'} "
-                f"with extension '{queued[0].suffix}' is not supported by "
-                "any available plugin.",
+                f"The selected {'file' if singular else 'files'} "
+                f"with extension '{queued[0].suffix}' {'is' if singular else 'are'} "
+                "not supported by any available plugin.",
             )
             return
 
