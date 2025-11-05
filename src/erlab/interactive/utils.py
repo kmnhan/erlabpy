@@ -567,6 +567,10 @@ def file_loaders(
     """
     valid_loaders: dict[str, tuple[Callable, dict]] = {
         "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+        "xarray HDF5 Files Chunked (*.h5)": (
+            xr.open_dataarray,
+            {"engine": "h5netcdf", "chunks": "auto"},
+        ),
         "NetCDF Files (*.nc *.nc4 *.cdf)": (xr.load_dataarray, {}),
         "Igor Binary Waves (*.ibw)": (xr.load_dataarray, {"engine": "erlab-igor"}),
         "Igor Packed Experiment Templates (*.pxt)": (
