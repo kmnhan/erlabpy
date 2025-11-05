@@ -1398,7 +1398,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
-                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
+                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data, self)
                 )
                 logger.debug("Initialized ArraySlicer")
         except Exception:

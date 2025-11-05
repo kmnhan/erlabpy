@@ -170,8 +170,8 @@ class ArraySlicer(QtCore.QObject):
     sigShapeChanged = QtCore.Signal()  #: :meta private:
     sigTwinChanged = QtCore.Signal()  #: :meta private:
 
-    def __init__(self, xarray_obj: xr.DataArray) -> None:
-        super().__init__()
+    def __init__(self, xarray_obj: xr.DataArray, parent: QtCore.QObject) -> None:
+        super().__init__(parent)
         self.snap_act = QtWidgets.QAction("&Snap to Pixels", self)
         self.snap_act.setShortcut("S")
         self.snap_act.setCheckable(True)
