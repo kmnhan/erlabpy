@@ -976,7 +976,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._tree_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
         )
-        self._tree_view.doubleClicked.connect(self.to_manager)
+        self._tree_view.doubleClicked.connect(self.double_clicked)
         self._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
         left_layout.addWidget(self._tree_view)
 
@@ -1143,12 +1143,21 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
             self._displayed_selection = selected_files
 
-    @QtCore.Slot()
-    def to_manager(self, **kwargs) -> None:
+    @QtCore.Slot(QtCore.QModelIndex)
+    def double_clicked(self, index: QtCore.QModelIndex) -> None:
         """Open the selected files in ImageTool Manager."""
-        if len(self._current_selection) == 1 and self._current_selection[0].is_dir():
-            self._fs_model.set_root_path(self._current_selection[0])
-            return
+        if index.isValid():  # pragma: no branch
+            file_path = self._fs_model.get_fs(index).path
+            if file_path.is_dir():
+                self._fs_model.set_root_path(file_path)
+                return
+            self.to_manager(files=[file_path])
+
+    @QtCore.Slot()
+    def to_manager(self, *, files: list[pathlib.Path] | None = None, **kwargs) -> None:
+        """Open the given files in ImageTool Manager."""
+        if files is None:
+            files = list(self._current_selection)
 
         if not erlab.interactive.imagetool.manager.is_running():
             QtWidgets.QMessageBox.critical(
@@ -1159,7 +1168,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
             )
         else:
             erlab.interactive.imagetool.manager.load_in_manager(
-                self._current_selection, self.loader_name, **kwargs
+                files, self.loader_name, **kwargs
             )
 
     @QtCore.Slot()
