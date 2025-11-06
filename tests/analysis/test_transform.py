@@ -6,12 +6,15 @@ import xarray.testing
 from erlab.analysis.transform import rotate, shift, symmetrize
 
 
-def test_rotate() -> None:
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_rotate(use_dask) -> None:
     input_arr = xr.DataArray(
         np.arange(12).reshape((3, 4)).astype(float),
         dims=("y", "x"),
         coords={"y": [0.0, 1.0, 2.0], "x": [0.0, 1.0, 2.0, 3.0]},
     )
+    if use_dask:
+        input_arr = input_arr.chunk()
     expected_output = xr.DataArray(
         np.array([[3, 7, 11], [2, 6, 10], [1, 5, 9], [0, 4, 8]], dtype=float),
         dims=("y", "x"),
@@ -63,6 +66,8 @@ def test_rotate() -> None:
         dims=("y", "x", "z"),
         coords={"y": [0.0, 1.0, 2.0], "x": [0.0, 1.0, 2.0, 3.0], "z": [0.0, 1.0]},
     )
+    if use_dask:
+        input_arr = input_arr.chunk()
     xarray.testing.assert_allclose(
         rotate(input_arr, 90, reshape=True, order=1),
         xr.DataArray(
@@ -94,17 +99,17 @@ def test_rotate() -> None:
             "yy": ("y", [0.0, 1.0, 2.0]),
         },
     )
+    if use_dask:
+        input_arr = input_arr.chunk()
     expected_output = xr.DataArray(
         np.array([[3, 7, 11], [2, 6, 10], [1, 5, 9], [0, 4, 8]], dtype=float),
         dims=("y", "x"),
         coords={"y": [-3.0, -2.0, -1.0, 0.0], "x": [0.0, 1.0, 2.0]},
     )
 
-    # Catch exceptions
-    with pytest.raises(ValueError, match="input array should be at least 2D"):
-        rotate(xr.DataArray(np.arange(5)), 90)
-
-    with pytest.raises(ValueError, match="center must have keys that match axes"):
+    with pytest.raises(
+        ValueError, match="center must have keys matching the two rotation axes"
+    ):
         rotate(input_arr, 90, center={"x": 0, "z": 0})
 
     with pytest.raises(
@@ -120,11 +125,14 @@ def test_rotate() -> None:
         )
 
 
-def test_shift() -> None:
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_shift(use_dask) -> None:
     # Create a test input DataArray
     darr = xr.DataArray(
         np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]]).astype(float), dims=["x", "y"]
     )
+    if use_dask:
+        darr = darr.chunk()
 
     # Create a test shift DataArray
     shift_arr = xr.DataArray([1, 0, 2], dims=["x"])
@@ -139,7 +147,6 @@ def test_shift() -> None:
     )
 
     # Check if the shifted array matches the expected result
-
     assert np.allclose(shifted, expected, equal_nan=True)
 
 

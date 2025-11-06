@@ -2,10 +2,9 @@
 
 __all__ = ["rotate", "rotateinplane", "rotatestackinplane", "shift", "symmetrize"]
 
-import itertools
 import typing
 import warnings
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Hashable, Mapping
 
 import numpy as np
 import scipy
@@ -26,10 +25,10 @@ def rotate(
     *,
     reshape: bool = True,
     order: int = 1,
-    mode="constant",
-    cval=np.nan,
+    mode: str = "constant",
+    cval: float = np.nan,
     prefilter: bool = True,
-):
+) -> xr.DataArray:
     """Rotate an array in the plane defined by the two axes.
 
     Parameters
@@ -68,44 +67,62 @@ def rotate(
         Similar function that rotates a numpy array.
 
     """
-    input_arr = darr.values
-    ndim = input_arr.ndim
-
-    if ndim < 2:
-        raise ValueError("input array should be at least 2D")
-
+    # Resolve axes to dimension names and indices
     if isinstance(axes[0], int):
         axes_dims: list[Hashable] = [
-            darr.dims[a] for a in typing.cast("tuple[int, int]", axes)
+            darr.dims[a] for a in typing.cast("tuple[int, ...]", axes)
         ]
     else:
         axes_dims = list(axes)
-    axes = list(darr.get_axis_num(axes_dims))
 
-    if isinstance(center, Mapping):
-        if set(center.keys()) != set(axes_dims):
-            raise ValueError("center must have keys that match axes")
-        centers = [center[dim] for dim in axes_dims]
-    else:
-        centers = list(center)
+    if len(axes_dims) != 2:
+        raise ValueError("Exactly two axes must be specified for rotation")
 
     if not erlab.utils.array.uniform_dims(darr).issuperset(axes_dims):
         raise ValueError("all coordinates along axes must be evenly spaced")
 
-    # Sort with respect to axis index
-    axes, axes_dims, centers = map(
-        list, zip(*sorted(zip(axes, axes_dims, centers, strict=True)), strict=True)
+    ax_idx = list(darr.get_axis_num(axes_dims))
+
+    # Sort axes by index
+    ax_idx, axes_dims = map(
+        list, zip(*sorted(zip(ax_idx, axes_dims, strict=True)), strict=True)
     )
 
+    ydim, xdim = axes_dims
+    ycoords = darr[ydim].values
+    xcoords = darr[xdim].values
+
+    if ycoords.size < 2 or xcoords.size < 2:
+        raise ValueError("axes must have at least 2 points each")
+
     # Get pixel sizes
-    ycoords, xcoords = darr[axes_dims[0]].values, darr[axes_dims[1]].values
-    dy, dx = ycoords[1] - ycoords[0], xcoords[1] - xcoords[0]
-    pixel_ratio = np.abs(dy / dx)  # pixel aspect ratio
+    dy = ycoords[1] - ycoords[0]
+    dx = xcoords[1] - xcoords[0]
+    pixel_ratio = float(abs(dy / dx))
 
-    # Center in coordinate space
-    center_y, center_x = centers
+    # Interpret center in data coords
+    if isinstance(center, Mapping):
+        if set(center.keys()) != {ydim, xdim}:
+            raise ValueError("center must have keys matching the two rotation axes")
+        center_y = float(center[ydim])
+        center_x = float(center[xdim])
+    else:
+        center_y, center_x = center
 
-    # Rotation center in pixel space before transformation
+    # Build affine matrix in (y, x) pixel space
+    c, s = scipy.special.cosdg(angle), scipy.special.sindg(angle)
+    rot = np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    # Scale for non-square pixels
+    scale = np.diag([1.0 / pixel_ratio, 1.0, 1.0])
+    scale_inv = np.diag([pixel_ratio, 1.0, 1.0])
+    matrix = scale @ rot @ scale_inv
+
+    # Input shape and rotation plane shape
+    in_shape = np.array(darr.shape)
+    in_plane_shape = in_shape[ax_idx]  # (ny, nx)
+
+    # Center in pixel space (input)
     in_pixel_center = np.array(
         [
             (center_y - ycoords[0]) / dy,
@@ -114,120 +131,110 @@ def rotate(
         ]
     )
 
-    # Build rotation matrix
-    c, s = scipy.special.cosdg(angle), scipy.special.sindg(angle)
-    matrix = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
-
-    # Since rotation is applied in pixel space, scale for non-square pixels
-    scale_matrix = np.diag([1.0 / pixel_ratio, 1.0, 1.0])
-    scale_matrix_inverse = np.diag([pixel_ratio, 1.0, 1.0])
-    matrix = scale_matrix @ matrix @ scale_matrix_inverse
-
-    img_shape = np.asarray(input_arr.shape)
-    in_plane_shape = img_shape[axes]
-
     if reshape:
+        # Compute bounding box of rotated input to get output plane shape
         iy, ix = in_plane_shape
-        out_bounds = matrix @ [[0, 0, iy, iy], [0, ix, 0, ix], [1, 1, 1, 1]]
+        corners = np.array([[0, 0, iy, iy], [0, ix, 0, ix], [1, 1, 1, 1]])
+        out_bounds = matrix @ corners
         out_plane_shape = (np.ptp(out_bounds, axis=1) + 0.5).astype(int)
 
-        out_center = (matrix @ ((out_plane_shape - 1) / 2))[:2]
+        # We want output centered so that original center maps to output center
+        out_center = (matrix @ ((out_plane_shape - 1) / 2.0))[:2]
         out_plane_shape = out_plane_shape[:2]
-        in_center = (in_plane_shape - 1) / 2
-
+        in_center = (in_plane_shape - 1) / 2.0
     else:
-        out_plane_shape = img_shape[axes]
+        out_plane_shape = in_plane_shape.copy()
         out_center = (matrix @ in_pixel_center)[:2]
         in_center = in_pixel_center[:2]
 
+    # Translation to align centers
     offset = in_center - out_center
+    translation = np.array(
+        [
+            [1.0, 0.0, offset[0]],
+            [0.0, 1.0, offset[1]],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    matrix = translation @ matrix  # Final 3x3
 
-    # Build translation matrix
-    translation_matrix = np.array([[1, 0, offset[0]], [0, 1, offset[1]], [0, 0, 1]])
-    matrix = translation_matrix @ matrix
-
-    output_shape = img_shape
-    output_shape[axes] = out_plane_shape
-    output_shape = tuple(output_shape)
-
-    if np.iscomplexobj(input_arr):
-        output = np.zeros(
-            output_shape, dtype=np.promote_types(input_arr.dtype, np.complex64)
-        )
-    else:
-        output = np.zeros(output_shape, dtype=input_arr.dtype.name)
-
-    if ndim <= 2:
+    # Per-plane transform function
+    def _affine_2d(arr2d: np.ndarray) -> np.ndarray:
+        out = np.empty(tuple(out_plane_shape), dtype=arr2d.dtype)
         scipy.ndimage.affine_transform(
-            input_arr, matrix, 0.0, output_shape, output, order, mode, cval, prefilter
+            arr2d,
+            matrix,
+            output_shape=tuple(out_plane_shape),
+            output=out,
+            order=order,
+            mode=mode,
+            cval=cval,
+            prefilter=prefilter,
         )
-    else:
-        # If ndim > 2, the rotation is applied over all the planes parallel to axes
-        planes_coord = itertools.product(
-            *[
-                [slice(None)] if ax in axes else range(img_shape[ax])
-                for ax in range(ndim)
-            ]
-        )
-
-        for coordinates in typing.cast(
-            "Iterable[tuple[slice | int, ...]]", planes_coord
-        ):
-            ia = input_arr[coordinates]
-            oa = output[coordinates]
-            scipy.ndimage.affine_transform(
-                ia,
-                matrix,
-                0.0,
-                tuple(out_plane_shape),
-                oa,
-                order,
-                mode,
-                cval,
-                prefilter,
-            )
-
-    shape_diff = out_plane_shape - in_plane_shape
-
-    # Coords associated with rotated axes are meaningless after rotation
-    for dim, coord in dict(darr.coords).items():
-        if dim in axes_dims:
-            continue
-        for ax in axes_dims:
-            if ax in coord.dims:
-                darr = darr.copy().drop_vars((dim,))
-                break
+        return out
 
     if reshape:
-        # Adjust DataArray shape to match the output shape
-        for i, diff in zip(axes, shape_diff, strict=True):
-            if diff < 0:
-                darr = darr.isel({axes_dims[i]: slice(None, diff)})
-            elif diff > 0:
-                darr = darr.copy(deep=True).pad({axes_dims[i]: (0, diff)})
+        # Rename dims to temporary names to avoid conflicts
+        rot_ydim: Hashable = f"__rot_{ydim}"
+        rot_xdim: Hashable = f"__rot_{xdim}"
+        output_core_dims = [[rot_ydim, rot_xdim]]
+        output_sizes = {
+            rot_ydim: int(out_plane_shape[0]),
+            rot_xdim: int(out_plane_shape[1]),
+        }
+    else:
+        # We can keep original dim names if sizes don't change
+        rot_ydim = ydim
+        rot_xdim = xdim
+        output_core_dims = [[ydim, xdim]]
+        output_sizes = None
 
-        # Rotation center in pixel space after transformation
+    rotated: xr.DataArray = xr.apply_ufunc(
+        _affine_2d,
+        darr,
+        input_core_dims=[[ydim, xdim]],
+        output_core_dims=output_core_dims,
+        dask="parallelized",
+        output_dtypes=[darr.dtype],
+        dask_gufunc_kwargs={"output_sizes": output_sizes},
+        vectorize=True,
+        keep_attrs="no_conflicts",
+    )
+
+    if reshape:
+        # Rename rotated dims back to original names
+        rotated = rotated.rename({rot_ydim: ydim, rot_xdim: xdim})
+
+    # Coords associated with rotated axes are meaningless after rotation
+    for cname, coord in list(rotated.coords.items()):
+        if cname in axes_dims:
+            continue
+        if any(ax in coord.dims for ax in axes_dims):
+            rotated = rotated.drop_vars((cname,))
+
+    if reshape:
+        # Compute output coords in data space
+
+        # Solve for the output pixel center in original space
         out_pixel_center = np.linalg.lstsq(matrix, in_pixel_center, rcond=None)[0][:2]
 
-        start0 = -out_pixel_center[0] * dy + center_y
-        end0 = start0 + (out_plane_shape[0] - 1) * dy
+        start_y = -out_pixel_center[0] * dy + center_y
+        end_y = start_y + (out_plane_shape[0] - 1) * dy
 
-        start1 = -out_pixel_center[1] * dx + center_x
-        end1 = start1 + (out_plane_shape[1] - 1) * dx
+        start_x = -out_pixel_center[1] * dx + center_x
+        end_x = start_x + (out_plane_shape[1] - 1) * dx
 
-        darr = darr.assign_coords(
+        rotated = rotated.assign_coords(
             {
-                axes_dims[0]: np.linspace(start0, end0, out_plane_shape[0]),
-                axes_dims[1]: np.linspace(start1, end1, out_plane_shape[1]),
+                ydim: np.linspace(start_y, end_y, out_plane_shape[0]),
+                xdim: np.linspace(start_x, end_x, out_plane_shape[1]),
             }
         )
 
-    darr = darr.copy(data=output)
+        # Trim all-NaN edges
+        rotated = erlab.utils.array.trim_na(rotated, axes_dims)
 
-    if reshape:
-        darr = erlab.utils.array.trim_na(darr, axes_dims)
-
-    return darr
+    return rotated.transpose(*darr.dims)
 
 
 def shift(
