@@ -17,6 +17,8 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
+    import dask.array
+
 
 class ArraySlicerState(typing.TypedDict):
     """A dictionary containing the state of cursors in an :class:`ArraySlicer`."""
@@ -354,39 +356,43 @@ class ArraySlicer(QtCore.QObject):
         """Transposed data values.
 
         This property stores a transposed view of the data values for fast slicing. This
-        attribute is only used for in-memory arrays.
+        attribute is only used for in-memory (numpy-backed) arrays.
 
-        The :attr:`transposed_data` property returns this for in-memory arrays, and a
-        view of the original :class:`xarray.DataArray` for dask arrays.
+        The :attr:`transposed_data` property returns this for numpy-backed DataArrays,
+        and a dask array (which is transposed on-the-fly) for dask-backed DataArrays.
         """
         return erlab.interactive.imagetool.fastslicing._transposed(self._obj.values)
 
-    @property
-    def transposed_data(self) -> npt.NDArray[np.floating] | xr.DataArray:
-        """Transposed data values.
+    @functools.cached_property
+    def data_dask_T(self) -> dask.array.Array:
+        """Transposed dask array.
 
-        This property is used for fast slicing and binning operations. If the underlying
-        DataArray is a dask array, the transposed view of the original DataArray is
-        returned. Otherwise, the cached transposed data values are returned as a numpy
-        array.
+        This method returns a transposed view of the dask array for fast slicing. This
+        method is only used for dask-backed arrays.
         """
-        if self._obj.chunks is None:
-            # In-memory array, use cached transposed data
-            return self.data_vals_T
-
         match self._obj.ndim:
             case 2:
-                return self._obj.T
+                return self._obj.T.data
             case 3:
                 return self._obj.transpose(
                     self._obj.dims[1], self._obj.dims[2], self._obj.dims[0]
-                )
+                ).data
         return self._obj.transpose(
             self._obj.dims[1],
             self._obj.dims[2],
             self._obj.dims[3],
             self._obj.dims[0],
-        )
+        ).data
+
+    @property
+    def transposed_data(self) -> npt.NDArray[np.floating] | dask.array.Array:
+        """Transposed data values.
+
+        This property is used for fast slicing and binning operations. If the underlying
+        DataArray is a dask array, a transposed view of the dask array is returned.
+        Otherwise, the cached transposed data values are returned as a numpy array.
+        """
+        return self.data_vals_T if self._obj.chunks is None else self.data_dask_T
 
     @property
     def nanmax(self) -> float:
@@ -531,6 +537,7 @@ class ArraySlicer(QtCore.QObject):
 
         if include_vals:
             self._reset_property_cache("data_vals_T")
+            self._reset_property_cache("data_dask_T")
 
     def clear_val_cache(self, include_vals: bool = False) -> None:
         """Clear cached properties related to data values.
@@ -548,6 +555,7 @@ class ArraySlicer(QtCore.QObject):
 
         if include_vals:
             self._reset_property_cache("data_vals_T")
+            self._reset_property_cache("data_dask_T")
 
     def clear_cache(self) -> None:
         """Clear all cached properties."""
