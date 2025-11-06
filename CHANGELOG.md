@@ -2,6 +2,10 @@
 
 ### ✨ Features
 
+- **imagetool:** add file selector for loading HDF5 files with chunking ([5c5d53b](https://github.com/kmnhan/erlabpy/commit/5c5d53b9767f9ac9062419dd3afa7c3a8103baf0))
+
+  File dialogs in the imagetool manager now include an option to load HDF5 files with `chunks="auto"` using xarray's `open_dataarray` function. This allows for efficient handling of large datasets by enabling lazy loading and chunking.
+
 - **imagetool:** add normalize to view that adjusts color levels based on the currently visible data ([7be78c6](https://github.com/kmnhan/erlabpy/commit/7be78c6981a303ece9336625ac1fe013cede462b))
 
   Adds a new action to the right-click context menu of ImageTool image panels that adjusts the color levels to span the data values currently visible in the view, like AdjustCT in Igor Pro.
@@ -22,6 +26,18 @@
 
 ### 🐞 Bug Fixes
 
+- **explorer:** improve double click handling for directories and allow folders to be opened by plugins ([e5d795f](https://github.com/kmnhan/erlabpy/commit/e5d795f66bcaa6436d36d98fb44050a247c35ee2))
+
+- **explorer:** correct file manager open command on Windows ([0325010](https://github.com/kmnhan/erlabpy/commit/032501048f6ad8cca477461a1b0a5a185a316fe5))
+
+  Opening the current selection in the file manager on Windows was not working correctly due to an incorrect command format. This commit updates the command to use the proper syntax for selecting a file in Windows Explorer.
+
+- **manager:** fix occasional failure to detect running manager instance ([63319a1](https://github.com/kmnhan/erlabpy/commit/63319a1578dae41fd44327eb5ad4543c9cac6e62))
+
+- **ktool:** correct unit for work function spinbox ([384c4dc](https://github.com/kmnhan/erlabpy/commit/384c4dcf29c91f6373b5be90400061d52e345b08))
+
+- **manager:** improve error message for trying to open unpicklable objects in ImageTool manager ([15f2968](https://github.com/kmnhan/erlabpy/commit/15f296846f1c68a00fc93a4b2ef61052a530fc97))
+
 - **imagetool:** ignore mouse events from invisible plots ([b2e764a](https://github.com/kmnhan/erlabpy/commit/b2e764aeb7e3d385d823002a2dc800ea428166fd))
 
 - **manager:** properly include watched var name in ktool code generation ([f90cf0b](https://github.com/kmnhan/erlabpy/commit/f90cf0b525a86da2dc6c7d2776d96a4463a45fcf))
@@ -39,6 +55,10 @@
 - **imagetool:** match drag refresh rate to screen refresh rate ([22bb48c](https://github.com/kmnhan/erlabpy/commit/22bb48c2cda1c069ad235459c930fca6de7bd8bd))
 
 ### ♻️ Code Refactor
+
+- **imagetool:** open in explorer if dropped files are folders ([a2616fd](https://github.com/kmnhan/erlabpy/commit/a2616fdf650809b1466f2b344130537aa9b45a5d))
+
+  Previously, dropping folders into the imagetool would lead to an error message stating that files with extension '' are not supported. This commit changes the behavior so that if all dropped items are folders, they will open in a new tab of the tabbed explorer instead.
 
 - **imagetool:** reorder some menu items for better grouping ([9cba0ac](https://github.com/kmnhan/erlabpy/commit/9cba0ac6422885c84ec5431bb09f42b1b65fe8dd))
 
