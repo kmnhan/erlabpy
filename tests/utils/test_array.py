@@ -120,13 +120,16 @@ def test_check_arg_has_no_nans() -> None:
     assert decorated_func(arr) is None
 
 
-def test_trim_na() -> None:
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_trim_na(use_dask) -> None:
     # Test case 1: Trim along all dimensions
     darr = xr.DataArray(
         np.array([[np.nan, 2, 3], [np.nan, 5, 6], [np.nan, np.nan, np.nan]]),
         dims=("x", "y"),
         coords={"x": [1, 2, 3], "y": [1, 2, 3]},
     )
+    if use_dask:
+        darr = darr.chunk()
     expected_result = xr.DataArray(
         np.array([[2, 3], [5, 6]]), dims=("x", "y"), coords={"x": [1, 2], "y": [2, 3]}
     )
@@ -137,6 +140,8 @@ def test_trim_na() -> None:
         dims=("x", "y"),
         coords={"x": [1, 2, 3], "y": [1, 2, 3]},
     )
+    if use_dask:
+        darr = darr.chunk()
     expected_result = xr.DataArray(
         np.array([[2, 3], [5, 6], [8, 9]]),
         dims=("x", "y"),
@@ -153,6 +158,9 @@ def test_trim_na() -> None:
     # Test case 4: Size 1 and size 0 arrays
     darr1 = xr.DataArray(np.array([np.nan]), dims=("x",), coords={"x": [1]})
     darr0 = xr.DataArray(np.array([]), dims=("x",), coords={"x": []})
+    if use_dask:
+        darr0 = darr0.chunk()
+        darr1 = darr1.chunk()
     xarray.testing.assert_identical(trim_na(darr1), darr0)
     xarray.testing.assert_identical(trim_na(darr0), darr0)
 
