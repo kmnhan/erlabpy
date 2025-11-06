@@ -303,66 +303,80 @@ def shift(
     if not isinstance(shift, xr.DataArray):
         shift = xr.DataArray(float(shift))
 
+    # Check shift dims are valid
     for dim in shift.dims:
         if dim not in darr.dims:
             raise ValueError(f"Dimension {dim} in shift array not found in input array")
-        if darr[dim].size != shift[dim].size:
+        if darr.sizes[dim] != shift.sizes[dim]:
             raise ValueError(
                 f"Dimension {dim} in shift array has different size than input array"
             )
 
-    domain_indices: tuple[int, ...] = darr.get_axis_num(shift.dims)
+    if along in shift.dims:
+        raise ValueError("Dimension to shift along cannot be in shift DataArray")
 
-    # `along` must be evenly spaced and monotonic increasing
-    out = darr.sortby(along).copy()
+    # Sort along the target dimension
+    out = darr.sortby(along)
 
-    # Normalize shift values
-    along_step: float = out[along].values[1] - out[along].values[0]
-    shift = (shift.copy() / along_step).fillna(0.0)
+    # Get step along the dimension (must be evenly spaced, same as before)
+    coord = out[along].values
+    if coord.size < 2:
+        raise ValueError(f"Dimension {along} must have at least 2 points.")
+    along_step: float = float(coord[1] - coord[0])
+
+    # Normalize shift values to "index units" and fill NaNs
+    shift = (shift / along_step).fillna(0.0)
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        rigid_shift: float = float(np.round(shift.values.mean()))
+        shift_vals = shift.values
+        rigid_shift: float = float(np.round(shift_vals.mean()))
         shift = shift - rigid_shift
 
-        # Apply coordinate shift
+        # Apply rigid shift to coordinates
         out = out.assign_coords({along: out[along].values + rigid_shift * along_step})
 
-        # The bounds of the remaining shift values are used to pad the data
-        nshift_min, nshift_max = shift.values.min(), shift.values.max()
-        pads: tuple[int, int] = min(0, round(nshift_min)), max(0, round(nshift_max))
+        # Figure out padding needed from remaining shift range
+        nshift_min, nshift_max = float(shift_vals.min()), float(shift_vals.max())
+        pads: tuple[int, int] = (min(0, round(nshift_min)), max(0, round(nshift_max)))
 
         # Construct new coordinate array
         new_along = np.linspace(
             out[along].values[0] + pads[0] * along_step,
             out[along].values[-1] + pads[1] * along_step,
-            out[along].size + sum(np.abs(pads)),
+            out[along].sizes[along] + abs(pads[0]) + abs(pads[1]),
         )
 
-        # Pad the data and assign new coordinates
+        # Pad data and assign new coords
         out = out.pad(
-            {along: tuple(np.abs(pads))}, mode="constant", constant_values=np.nan
+            {along: (abs(pads[0]), abs(pads[1]))},
+            mode="constant",
+            constant_values=np.nan,
         )
         out = out.assign_coords({along: new_along})
 
-    for idxs in itertools.product(*[range(darr.shape[i]) for i in domain_indices]):
-        # Construct slices for indexing
-        slices_: list[slice | int] = [slice(None)] * darr.ndim
-        for domain_index, i in zip(domain_indices, idxs, strict=True):
-            slices_[domain_index] = i
+    # Broadcast shift array to match non-along dims of output array
+    shift_broadcast = shift.broadcast_like(out.isel({along: 0}, drop=True))
 
-        slices: tuple[slice | int, ...] = tuple(slices_)
+    # Core function to shift a 1D array
+    def _shift_1d(arr_1d: np.ndarray, shift_scalar: np.ndarray) -> np.ndarray:
+        # shift_scalar is 0-D here
+        s = float(shift_scalar)
+        return scipy.ndimage.shift(arr_1d, (s,), **shift_kwargs)
 
-        # Initialize arguments to `scipy.ndimage.shift`
-        arr = out[slices]
-        shifts: list[float] = [0.0] * arr.ndim
-        shift_val: float = float(shift.isel(dict(zip(shift.dims, idxs, strict=True))))
-        shifts[arr.get_axis_num(along)] = shift_val
-
-        # Apply shift
-        out[slices] = scipy.ndimage.shift(arr.values, shifts, **shift_kwargs)
-
-    return out
+    # Apply over the `along` axis, vectorized over the rest
+    # - arr has core dim [along]
+    # - shift has no core dims (scalar for each outer position)
+    return xr.apply_ufunc(
+        _shift_1d,
+        out,
+        shift_broadcast,
+        input_core_dims=[[along], []],
+        output_core_dims=[[along]],
+        vectorize=True,
+        dask="parallelized",
+        output_dtypes=[out.dtype],
+    ).transpose(*out.dims)
 
 
 def symmetrize(
