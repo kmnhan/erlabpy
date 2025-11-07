@@ -6,6 +6,7 @@ __all__ = ["_ImageToolWrapperTreeView"]
 
 import json
 import logging
+import os
 import typing
 import weakref
 
@@ -32,7 +33,10 @@ def _fill_rounded_rect(
     radius: float,
 ):
     painter.save()
-    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    painter.setRenderHints(
+        QtGui.QPainter.RenderHint.Antialiasing
+        | QtGui.QPainter.RenderHint.SmoothPixmapTransform
+    )
     rect = QtCore.QRectF(rect)
     rect.adjust(linewidth / 2, linewidth / 2, -linewidth / 2, -linewidth / 2)
     path = QtGui.QPainterPath()
@@ -96,12 +100,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
     icon_width: int = 12
     icon_height: int = 12
-    icon_right_pad: int = 3
-    icon_inner_pad: float = 1.5
-    icon_border_width: float = 1.5
+    icon_right_pad: int = 2
+    icon_inner_pad: int = 2
+    icon_border_width: float = 2.0
     icon_corner_radius: float = 3.0
 
-    info_rect_hpad: int = 5
+    watched_rect_hpad: int = 5
 
     def __init__(
         self, manager: ImageToolManager, parent: _ImageToolWrapperTreeView
@@ -224,6 +228,28 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             and view.currentIndex() == index
         )
 
+        is_linked: bool = (
+            not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked
+        )
+        is_watched: bool = tool_wrapper._watched_varname is not None
+        is_dask: bool = tool_wrapper.slicer_area.data_chunked
+
+        if is_watched:
+            watched_font: QtGui.QFont = option.font
+            watched_font.setPointSizeF(self._font_size * 0.9)
+            watched_text: str = typing.cast("str", tool_wrapper._watched_varname)
+            watched_rect = QtGui.QFontMetrics(watched_font).boundingRect(watched_text)
+            watched_width = watched_rect.width() + self.watched_rect_hpad * 2
+
+        icon_y = option.rect.center().y() - self.icon_height // 2
+        rect_y = icon_y - self.icon_inner_pad
+
+        rect_width = self.icon_width + 2 * self.icon_inner_pad
+        rect_height = self.icon_height + 2 * self.icon_inner_pad
+        rect_right = option.rect.right()
+        rect_dx = rect_width + self.icon_right_pad
+        first_rect_x = rect_right - rect_dx
+
         selected: bool = QtWidgets.QStyle.StateFlag.State_Selected in option.state
         if not is_editing:  # pragma: no branch
             if tool_wrapper.archived:
@@ -240,53 +266,36 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if selected
                 else QtGui.QPalette.ColorRole.Text
             )
-            painter.setPen(option.palette.color(group, role))
-
-            # Space for icon
-            right_pad = int(
-                self.icon_width + self.icon_right_pad * 2 + self.icon_inner_pad * 2
-            )
 
             # Elide text if necessary
+            n_icons = is_dask + is_watched + is_linked
+            icons_width = rect_dx * n_icons
+            if is_watched:
+                icons_width -= watched_width - rect_width
+
             elided_text = QtGui.QFontMetrics(option.font).elidedText(
                 index.data(role=QtCore.Qt.ItemDataRole.DisplayRole),  # Tool label
                 view.textElideMode(),
-                option.rect.width() - right_pad,
+                option.rect.width() - self.icon_right_pad - icons_width,
             )
+            painter.save()
+            painter.setPen(option.palette.color(group, role))
             painter.drawText(
                 option.rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
             )
+            painter.restore()
 
-        is_linked: bool = (
-            not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked
-        )
-
-        is_watched: bool = tool_wrapper._watched_varname is not None
-
-        # Draw icon for linked tools
-        if is_linked:
-            icon_x = option.rect.right() - self.icon_width - self.icon_right_pad
-            icon_y = option.rect.center().y() - self.icon_height // 2
-
-            icon = qta.icon(
-                "mdi6.link-variant",
-                color=self.manager.color_for_linker(
-                    typing.cast(
-                        "erlab.interactive.imagetool.core.SlicerLinkProxy",
-                        tool_wrapper.slicer_area._linking_proxy,
-                    )
-                ),
-            )
+        def draw_icon(x_pos: int, icon: QtGui.QIcon) -> None:
             _fill_rounded_rect(
                 painter,
                 QtCore.QRectF(
-                    icon_x - self.icon_inner_pad,
-                    icon_y - self.icon_inner_pad,
-                    self.icon_width + 2 * self.icon_inner_pad,
-                    self.icon_height + 2 * self.icon_inner_pad,
+                    x_pos,
+                    rect_y,
+                    rect_width,
+                    rect_height,
                 ),
                 facecolor=option.palette.base(),
                 edgecolor=option.palette.mid(),
@@ -295,34 +304,51 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
             icon.paint(
                 painter,
-                QtCore.QRect(icon_x, icon_y, self.icon_width, self.icon_height),
+                QtCore.QRect(
+                    x_pos + self.icon_inner_pad,
+                    icon_y,
+                    self.icon_width,
+                    self.icon_height,
+                ),
                 QtCore.Qt.AlignmentFlag.AlignRight
                 | QtCore.Qt.AlignmentFlag.AlignVCenter,
             )
 
+        # Draw dask icon for dask-backed data
+        if is_dask:
+            draw_icon(
+                first_rect_x,
+                QtGui.QIcon(os.path.join(os.path.dirname(__file__), "dask.png")),
+            )
+
+        # Draw icon for linked tools
+        if is_linked:
+            rect_x = first_rect_x
+            if is_dask:
+                rect_x -= rect_dx
+            draw_icon(
+                rect_x,
+                qta.icon(
+                    "mdi6.link-variant",
+                    color=self.manager.color_for_linker(
+                        typing.cast(
+                            "erlab.interactive.imagetool.core.SlicerLinkProxy",
+                            tool_wrapper.slicer_area._linking_proxy,
+                        )
+                    ),
+                ),
+            )
+
         # Draw indicator for watched variables
         if is_watched:
-            font: QtGui.QFont = option.font
-            font.setPointSizeF(self._font_size * 0.9)
-            painter.setFont(font)
-
-            info_text: str = typing.cast("str", tool_wrapper._watched_varname)
-            metrics = QtGui.QFontMetrics(font)
-            bounding_rect = metrics.boundingRect(info_text)
-
-            info_width = bounding_rect.width() + self.info_rect_hpad * 2
-            info_height = self.icon_height + 2 * self.icon_inner_pad
-
-            left = option.rect.right() - self.icon_inner_pad - info_width - 3.0
+            left = first_rect_x
             if is_linked:
-                left -= self.icon_width + self.icon_right_pad
+                left -= rect_dx
+            if is_dask:
+                left -= rect_dx
+            left -= watched_width - rect_width
 
-            info_rect = QtCore.QRectF(
-                left,
-                option.rect.center().y() - info_height / 2,
-                info_width,
-                info_height,
-            )
+            info_rect = QtCore.QRectF(left, rect_y, watched_width, rect_height)
 
             color = option.palette.color(QtGui.QPalette.ColorRole.Highlight)
             if hasattr(QtGui.QPalette.ColorRole, "Accent"):  # pragma: no branch
@@ -340,13 +366,16 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
 
             # Draw text
+            painter.save()
+            painter.setFont(watched_font)
             painter.setPen(color)
             painter.drawText(
                 info_rect.toRect(),
-                QtCore.Qt.AlignmentFlag.AlignCenter
-                | QtCore.Qt.AlignmentFlag.AlignVCenter,
-                info_text,
+                QtCore.Qt.AlignmentFlag.AlignVCenter
+                | QtCore.Qt.AlignmentFlag.AlignCenter,
+                watched_text,
             )
+            painter.restore()
 
         # Show preview on hover
         if (
@@ -607,7 +636,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return self.manager.name_of_imagetool(tool_idx)
 
             case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 20)
+                return QtCore.QSize(100, 25)
 
         return None
 
@@ -624,7 +653,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return self._childtool(index, parent_wrapper)._tool_display_name
 
             case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 20)
+                return QtCore.QSize(100, 25)
 
     def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlag:
         if not index.isValid():
