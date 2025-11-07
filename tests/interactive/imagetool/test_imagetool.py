@@ -1006,3 +1006,41 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
     win.close()
+
+
+def test_itool_auto_chunk(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(100).reshape((10, 10)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(10), "y": np.arange(10)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Auto chunk
+    win.slicer_area._auto_chunk()
+    assert win.slicer_area._data.chunks is not None
+
+
+def test_itool_chunk(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(100).reshape((10, 10)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(10), "y": np.arange(10)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test chunk dialog
+    def _set_dialog_params(dialog: erlab.interactive.utils.ChunkEditDialog) -> None:
+        dialog.table.item(0, 2).setText("4")
+        dialog.table.item(1, 2).setText("5")
+
+    with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+        accept_dialog(win.slicer_area._edit_chunks, pre_call=_set_dialog_params)
+
+    # Check if the data is chunked
+    assert win.slicer_area._data.chunks is not None
+    assert win.slicer_area._data.chunks == ((4, 4, 2), (5, 5))
+
+    win.close()

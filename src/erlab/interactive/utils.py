@@ -32,7 +32,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Mapping
+    from collections.abc import Callable, Collection, Hashable, Iterator, Mapping
 
     import pydantic
     import pyperclip
@@ -2582,7 +2582,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
     ) -> None:
         for name, opts in kwargs.items():
             menu = opts.pop("menu", None)
-            actions = opts.pop("actions")
+            actions = opts.pop("actions", {})
 
             if menu is None:
                 title = opts.pop("title", None)
@@ -3057,3 +3057,156 @@ def _apply_qt_accent_color(html_string) -> str:
             erlab.utils.formatting._DEFAULT_ACCENT_COLOR, accent_color
         )
     return html_string
+
+
+class ChunkEditDialog(QtWidgets.QDialog):
+    """Dialog to view and edit chunk sizes of a :class:`xarray.DataArray`."""
+
+    def __init__(self, darr: xr.DataArray, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Dask Chunks")
+        self._darr = darr
+        self.result_chunks: dict[
+            Hashable, tuple[int, ...] | int | typing.Literal["auto"] | None
+        ] = {}
+
+        self._build_ui()
+        self._populate_table()
+
+    def _build_ui(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+
+        info_label = QtWidgets.QLabel(
+            "Enter new chunk sizes as:"
+            + erlab.utils.formatting.format_html_table(
+                [
+                    ["-1", "&emsp;", "Do not chunk along that dimension"],
+                    ["None", "&emsp;", "Keep the current chunking"],
+                    ["auto", "&emsp;", "Let dask choose automatically"],
+                    ["single integer", "&emsp;", "Use fixed-size chunks of that size"],
+                    [
+                        "list of integers",
+                        "&emsp;",
+                        "Specify exact chunk sizes (comma-separated)",
+                    ],
+                ],
+                header_cols=1,
+            )
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.table = QtWidgets.QTableWidget(self)
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(
+            ["Dimension", "Current chunks", "New chunks"]
+        )
+        horiz_hdr = self.table.horizontalHeader()
+        vert_hdr = self.table.verticalHeader()
+        if horiz_hdr:  # pragma: no branch
+            horiz_hdr.setStretchLastSection(True)
+        if vert_hdr:  # pragma: no branch
+            vert_hdr.setVisible(False)
+        layout.addWidget(self.table)
+
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            QtCore.Qt.Orientation.Horizontal,
+            self,
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _populate_table(self) -> None:
+        dims = list(self._darr.dims)
+        self.table.setRowCount(len(dims))
+
+        for row, dim in enumerate(dims):
+            dim_item = QtWidgets.QTableWidgetItem(str(dim))
+            dim_item.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            self.table.setItem(row, 0, dim_item)
+
+            curr_chunks = self._darr.chunksizes.get(dim, None)
+            if curr_chunks is None:
+                current_str = "(not chunked)"
+                default_new = "auto"
+            else:
+                if all(c == curr_chunks[0] for c in curr_chunks):
+                    # All chunks are the same size
+                    current_str = str(curr_chunks[0])
+                else:
+                    current_str = ", ".join(str(c) for c in curr_chunks)
+                default_new = current_str
+
+            current_item = QtWidgets.QTableWidgetItem(current_str)
+            current_item.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            self.table.setItem(row, 1, current_item)
+
+            new_item = QtWidgets.QTableWidgetItem(default_new)
+            self.table.setItem(row, 2, new_item)
+
+        self.table.resizeColumnsToContents()
+
+    def _parse_chunk_string(
+        self, s: str
+    ) -> tuple[int, ...] | int | typing.Literal["auto"] | None:
+        """Parse a user-entered string like "50, 50 30" -> [50, 50, 30].
+
+        Also allow "auto", "None", and a single int.
+        """
+        s = s.strip()
+        if s == "auto":
+            return "auto"
+        if s.casefold() == "None".casefold():
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            pass
+
+        # Must be list of numbers (comma separated)
+        return tuple(int(p.strip()) for p in s.split(","))
+
+    def accept(self) -> None:
+        new_chunks: dict[
+            Hashable, tuple[int, ...] | int | typing.Literal["auto"] | None
+        ] = {}
+        errors: list[str] = []
+
+        for row, (dim, size) in enumerate(self._darr.sizes.items()):
+            new_item = self.table.item(row, 2)
+            text = new_item.text() if new_item is not None else ""
+            try:
+                parsed = self._parse_chunk_string(text)
+            except ValueError:
+                errors.append(f"{dim}: invalid input '{text}'.")
+                continue
+
+            if isinstance(parsed, tuple) and sum(parsed) != size:
+                errors.append(
+                    f"{dim}: chunk sizes sum to {sum(parsed)}, but the "
+                    f"dimension length is {size}."
+                )
+                continue
+
+            if not parsed:
+                continue
+
+            new_chunks[dim] = parsed
+
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid chunks",
+                "Some dimensions have invalid chunk specs:\n\n" + "\n".join(errors),
+            )
+            return
+
+        self.result_chunks = new_chunks
+        super().accept()

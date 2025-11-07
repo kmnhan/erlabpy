@@ -1172,6 +1172,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.compute_act.triggered.connect(self._compute_chunked)
         self.compute_act.setToolTip("Load the entire data into memory")
 
+        self.chunk_auto_act = QtWidgets.QAction("Auto Chunk", self)
+        self.chunk_auto_act.triggered.connect(self._auto_chunk)
+        self.chunk_auto_act.setToolTip(
+            "Automatically set the chunk size for dask-backed data"
+        )
+
+        self.chunk_act = QtWidgets.QAction("Chunk…", self)
+        self.chunk_act.triggered.connect(self._edit_chunks)
+        self.chunk_act.setToolTip("Set the chunk size for dask-backed data")
+
     @QtCore.Slot()
     def edit_cursor_colors(self) -> None:
         """Open a dialog to edit cursor colors."""
@@ -1322,14 +1332,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
+        auto_compute: bool = True,
     ) -> None:
         """Set the data to be displayed.
 
         Parameters
         ----------
         data
-            The data to be displayed. If a `xarray.DataArray` is given, the
-            dimensions and coordinates are used to determine the axes of the plots. If a
+            The data to be displayed. If a `xarray.DataArray` is given, the dimensions
+            and coordinates are used to determine the axes of the plots. If a
             :class:`xarray.Dataset` is given, the first data variable is used. If a
             :class:`numpy.ndarray` is given, it is converted to a `xarray.DataArray`
             with default dimensions.
@@ -1340,6 +1351,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         file_path
             Path to the file from which the data was loaded. If given, the file path is
             used to set the window title.
+        auto_compute
+            If `True` and the data is dask-backed, automatically compute the data if its
+            size is below the threshold defined in options.
 
         """
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
@@ -1377,7 +1391,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         if (
-            self.data_chunked
+            auto_compute
+            and self.data_chunked
             and (self._data.nbytes * 1e-6)
             < erlab.interactive.options["io/dask/compute_threshold"]
         ):
@@ -1634,6 +1649,29 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while loading data into memory."
                 )
+
+    @QtCore.Slot()
+    def _edit_chunks(self) -> None:
+        """Open a dialog to set chunk sizes."""
+        dlg = erlab.interactive.utils.ChunkEditDialog(self._data, parent=self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._set_chunks(dlg.result_chunks)
+
+    @QtCore.Slot()
+    def _auto_chunk(self) -> None:
+        """Call ``.chunk("auto")`` on the underlying DataArray."""
+        self._set_chunks("auto")
+
+    def _set_chunks(self, chunks) -> None:
+        """Set the chunk size of the underlying data.
+
+        Parameters
+        ----------
+        chunks
+            Chunk size to set. Passed to :meth:`xarray.DataArray.chunk`.
+        """
+        with erlab.interactive.utils.wait_dialog(self, "Setting Chunks…"):
+            self.set_data(self._data.chunk(chunks), auto_compute=False)
 
     @QtCore.Slot(int, int)
     @link_slicer
