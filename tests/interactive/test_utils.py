@@ -7,6 +7,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 from erlab.interactive.utils import (
+    ChunkEditDialog,
     IconActionButton,
     IdentifierValidator,
     MessageDialog,
@@ -276,4 +277,101 @@ def test_message_dialog_setters_update_labels(qtbot):
 
     dialog._button_box.setStandardButtons(QtWidgets.QDialogButtonBox.StandardButton.Ok)
     dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).click()
+
     assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+@pytest.mark.parametrize(
+    ("chunks", "inputs", "expected"),
+    [
+        (
+            {"x": (10, 10, 10), "y": (30, 30)},
+            ["auto", "None"],
+            {"x": "auto"},
+        ),
+        (
+            {"x": (15, 15), "y": (60,)},
+            ["15, 15", "60"],
+            {"x": (15, 15), "y": 60},
+        ),
+        (
+            {"x": (20, 20, 20), "y": (30, 30)},
+            ["10, 10, 10", "30, 30"],
+            {},  # invalid: sum does not match dimension size
+        ),
+        (
+            {"x": (10, 10, 10), "y": (30, 30)},
+            ["", ""],
+            {},  # empty input, should skip
+        ),
+    ],
+)
+def test_chunk_edit_dialog_accept(qtbot, chunks, inputs, expected, accept_dialog):
+    arr = xr.DataArray(
+        np.zeros((sum(chunks["x"]), sum(chunks["y"]))),
+        dims=("x", "y"),
+    ).chunk(chunks)
+    chunk_dialog = ChunkEditDialog(arr)
+    qtbot.addWidget(chunk_dialog)
+    chunk_dialog.show()
+    qtbot.waitExposed(chunk_dialog)
+
+    # Set user inputs
+    for row, val in enumerate(inputs):
+        item = chunk_dialog.table.item(row, 2)
+        item.setText(val)
+
+    # Patch QMessageBox to avoid actual dialogs
+    if expected:
+        chunk_dialog.accept()
+        assert chunk_dialog.result_chunks == expected
+    else:
+        accept_dialog(chunk_dialog.accept)
+        assert chunk_dialog.result_chunks == {}
+
+
+def test_chunk_edit_dialog_populate_and_parse(qtbot):
+    arr = xr.DataArray(np.zeros((20, 60)), dims=("x", "y")).chunk(
+        {"x": (10, 10), "y": (30, 30)}
+    )
+    dialog = ChunkEditDialog(arr)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    # Check table population
+    assert dialog.table.rowCount() == 2
+    assert dialog.table.item(0, 0).text() == "x"
+    assert dialog.table.item(1, 0).text() == "y"
+    assert dialog.table.item(0, 1).text() == "10"
+    assert dialog.table.item(1, 1).text() == "30"
+
+    # Test _parse_chunk_string
+    assert dialog._parse_chunk_string("auto") == "auto"
+    assert dialog._parse_chunk_string("None") is None
+    assert dialog._parse_chunk_string("  42 ") == 42
+    assert dialog._parse_chunk_string("5, 6, 7") == (5, 6, 7)
+
+
+def test_chunk_edit_dialog_invalid_input(qtbot, accept_dialog):
+    arr = xr.DataArray(np.zeros((10,)), dims=("x",)).chunk({"x": (10,)})
+    dialog = ChunkEditDialog(arr)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    # Set invalid input
+    dialog.table.item(0, 2).setText("notanumber")
+    accept_dialog(dialog.accept)
+    assert dialog.result_chunks == {}
+
+
+def test_chunk_edit_dialog_cancel(qtbot):
+    arr = xr.DataArray(np.zeros((10,)), dims=("x",)).chunk({"x": (10,)})
+    dialog = ChunkEditDialog(arr)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    # Simulate cancel
+    dialog.reject()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected

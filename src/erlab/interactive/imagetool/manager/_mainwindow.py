@@ -162,7 +162,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.setWindowTitle("ImageTool Manager")
 
-        menu_bar: QtWidgets.QMenuBar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
+        self.menu_bar: QtWidgets.QMenuBar = QtWidgets.QMenuBar()
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
@@ -293,7 +293,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&File")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
         )
         file_menu.addAction(self.open_action)
         file_menu.addSeparator()
@@ -309,7 +309,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.settings_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&Edit")
         )
         edit_menu.addAction(self.reindex_action)
         edit_menu.addSeparator()
@@ -328,7 +328,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.unlink_action)
 
         view_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&View")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&View")
         )
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
@@ -336,10 +336,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addSeparator()
 
         self._dask_menu = DaskMenu(self, "Dask")
-        menu_bar.addMenu(self._dask_menu)
+        self.menu_bar.addMenu(self._dask_menu)
 
         help_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&Help")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&Help")
         )
         help_menu.addAction(self.about_action)
         help_menu.addSeparator()
