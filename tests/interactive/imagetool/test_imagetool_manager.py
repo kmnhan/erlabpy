@@ -1073,3 +1073,75 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_hover_tooltip(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch,
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data, test_data], link=True, manager=True)
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.get_imagetool(0).slicer_area._auto_chunk()
+        manager.get_imagetool(1).slicer_area._auto_chunk()
+
+        view = manager.tree_view
+
+        model = view._model
+        delegate = view._delegate
+
+        index = model.index(0, 0)  # first tool
+        option = QtWidgets.QStyleOptionViewItem()
+        delegate.initStyleOption(option, index)
+        _, dask_rect, link_rect, _ = delegate._compute_icons_info(
+            option, index.internalPointer()
+        )
+
+        text = None
+
+        def fake_show_text(pos, s, *args, **kwargs):
+            nonlocal text
+            text = s
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
+
+        # Hover over dask icon
+        pos = dask_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+
+        assert handled
+        assert text == "Dask-backed data (chunked array)"
+
+        # Hover over link icon
+        text = None
+        pos = link_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+
+        assert handled
+        assert text == "Linked (#0)"
+
+        # Hover outside icons
+        text = None
+        pos = dask_rect.topRight() + QtCore.QPoint(2, 0)
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+        assert not handled
+        assert text is None

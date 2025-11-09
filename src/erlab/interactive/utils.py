@@ -2858,6 +2858,7 @@ class IconActionButton(IconButton):
         self.setCheckable(self._action.isCheckable())
         self.setChecked(self._action.isChecked())
         self.setToolTip(self._action.toolTip())
+        self.setWhatsThis(self._action.whatsThis())
         self._update_action_icon()
 
     def refresh_icons(self) -> None:

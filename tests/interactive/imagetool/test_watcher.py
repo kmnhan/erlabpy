@@ -5,6 +5,7 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.manager import _watcher as watcher_mod
@@ -280,6 +281,7 @@ def test_watcher_real(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    monkeypatch,
 ):
     with manager_context() as manager:
         qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
@@ -314,6 +316,34 @@ def test_watcher_real(
             manager.get_imagetool(0).slicer_area.main_image.get_selection_code()
             == "darr.qsel(eV=2.0)"
         )
+
+        # Watched tooltip
+        text = None
+
+        def fake_show_text(pos, s, *args, **kwargs):
+            nonlocal text
+            text = s
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
+
+        index = manager.tree_view._model.index(0, 0)  # first tool
+        option = QtWidgets.QStyleOptionViewItem()
+        manager.tree_view._delegate.initStyleOption(option, index)
+        _, _, _, watched_rect = manager.tree_view._delegate._compute_icons_info(
+            option, index.internalPointer()
+        )
+        pos = watched_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            pos,
+            manager.tree_view.viewport().mapToGlobal(pos),
+        )
+        handled = manager.tree_view._delegate.helpEvent(
+            event, manager.tree_view, option, index
+        )
+
+        assert handled
+        assert text == "Variable synced with IPython"
 
         # Update data
         ip_session.user_ns["darr"] = darr**2
