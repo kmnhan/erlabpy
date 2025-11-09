@@ -455,9 +455,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _status_bar(self) -> QtWidgets.QStatusBar:
         return typing.cast("QtWidgets.QStatusBar", self.statusBar())
 
-    @QtCore.Slot()
-    def about(self) -> None:
-        """Show the about dialog."""
+    def _make_icon_msgbox(self) -> QtWidgets.QMessageBox:
+        """Create a QMessageBox with the application icon."""
         msg_box = QtWidgets.QMessageBox(self)
         style = self.style()
         if style is not None:  # pragma: no branch
@@ -466,7 +465,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 or 48
             )
             msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
-        msg_box.setText("About ImageTool Manager")
+        return msg_box
+
+    @QtCore.Slot()
+    def about(self) -> None:
+        """Show the about dialog."""
+        msg_box = self._make_icon_msgbox()
 
         version_info = {
             "erlab": erlab.__version__,
@@ -492,6 +496,23 @@ class ImageToolManager(QtWidgets.QMainWindow):
             cb = QtWidgets.QApplication.clipboard()
             if cb:
                 cb.setText(msg_box.informativeText())
+
+    def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
+        """Notify the user that the application has been updated."""
+        msg_box = self._make_icon_msgbox()
+        msg_box.setText("ImageTool Manager Updated")
+        msg_box.setInformativeText(
+            "ImageTool Manager has been successfully updated from version "
+            f"{old_version} to {new_version}.",
+        )
+        msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg_box.exec()
+
+        from erlab.interactive.imagetool.manager._updater_core import (
+            cleanup_update_tmp_dirs,
+        )
+
+        cleanup_update_tmp_dirs()
 
     @property
     def _reindex_lock(self) -> threading.Lock:

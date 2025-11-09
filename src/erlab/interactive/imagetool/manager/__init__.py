@@ -99,6 +99,16 @@ class _ManagerApp(QtWidgets.QApplication):
             self._pending_files.append(path)
 
 
+def _get_updater_settings() -> QtCore.QSettings:  # pragma: no cover
+    """Get the QSettings object for the updater."""
+    return QtCore.QSettings(
+        QtCore.QSettings.Format.IniFormat,
+        QtCore.QSettings.Scope.UserScope,
+        "erlabpy",
+        "imagetool-manager-updater",
+    )
+
+
 def main(execute: bool = True) -> None:
     """Start the ImageToolManager application.
 
@@ -176,6 +186,14 @@ def main(execute: bool = True) -> None:
             if pending:
                 _manager_instance._handle_dropped_files(pending)
                 qapp._pending_files.clear()
+
+        if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+            updater_settings = _get_updater_settings()
+            new_version = str(erlab.__version__)
+            old_version = updater_settings.value("version_before_update", "")
+            if old_version != new_version:
+                _manager_instance.updated(old_version, new_version)
+                updater_settings.setValue("version_before_update", new_version)
 
         if execute:
             qapp.exec()
