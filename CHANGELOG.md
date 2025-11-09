@@ -2,6 +2,14 @@
 
 ### ✨ Features
 
+- **manager:** show Dask icon for chunked data ([a38780b](https://github.com/kmnhan/erlabpy/commit/a38780b805ec648adc72b14f3ee3a088017363ba))
+
+  Displays an icon for chunked (Dask) data in the ImageTool manager.
+
+- **imagetool:** add menu actions for editing dask chunk sizes ([925daec](https://github.com/kmnhan/erlabpy/commit/925daec6bbf5d697bbfbee0e512e734e7b21f126))
+
+  Adds a new Dask menu to the ImageTool that includes actions for editing the chunk sizes of dask-backed data arrays directly from the GUI.
+
 - **imagetool:** add file selector for loading HDF5 files with chunking ([5c5d53b](https://github.com/kmnhan/erlabpy/commit/5c5d53b9767f9ac9062419dd3afa7c3a8103baf0))
 
   File dialogs in the imagetool manager now include an option to load HDF5 files with `chunks="auto"` using xarray's `open_dataarray` function. This allows for efficient handling of large datasets by enabling lazy loading and chunking.
@@ -26,6 +34,18 @@
 
 ### 🐞 Bug Fixes
 
+- **analysis.image:** rewrite `gaussian_filter` to support dask ([7d691d3](https://github.com/kmnhan/erlabpy/commit/7d691d3a4574892160dfb66a36e682d5afc505f0))
+
+- **analysis.transform.rotate:** rewrite rotate function to support dask ([ea4ad00](https://github.com/kmnhan/erlabpy/commit/ea4ad0006f7360a0decf5984e3b679705b2e9246))
+
+  The rotate function has been rewritten to support chunked inputs. The input array must not be chunked along the rotation axes.
+
+- **utils.array.trim_na:** make trim_na work with dask ([ec267b3](https://github.com/kmnhan/erlabpy/commit/ec267b3468a8872034d7e6a6737b20a57ecb51a4))
+
+- **analysis.transform.shift:** rewrite shift function to support dask ([fec0cf1](https://github.com/kmnhan/erlabpy/commit/fec0cf124034e384f7621574f943fa1c99610b59))
+
+  The shift function has been rewritten to support chunked inputs.
+
 - **explorer:** improve double click handling for directories and allow folders to be opened by plugins ([e5d795f](https://github.com/kmnhan/erlabpy/commit/e5d795f66bcaa6436d36d98fb44050a247c35ee2))
 
 - **explorer:** correct file manager open command on Windows ([0325010](https://github.com/kmnhan/erlabpy/commit/032501048f6ad8cca477461a1b0a5a185a316fe5))
@@ -48,6 +68,14 @@
 
 ### ⚡️ Performance
 
+- **imagetool:** faster data slicing for dask arrays ([b215d2f](https://github.com/kmnhan/erlabpy/commit/b215d2f392deed4ea03a402a1cc7bbb82645a414))
+
+  Optimizes performance by caching transposed graphs.
+
+- **kspace:** do not allow dask rechunking for momentum conversion ([d42132e](https://github.com/kmnhan/erlabpy/commit/d42132e485a2131eb0fc0be5ea7d301d8c4e5d7f))
+
+  During momentum conversion, rechunking can lead to excessive memory usage and slow performance; therefore, rechunking has been disabled. Users should ensure that their input arrays are appropriately chunked or loaded into memory before performing momentum conversion operations.
+
 - **imagetool:** avoid recomputing data when showing or hiding the colorbar ([b5c27e0](https://github.com/kmnhan/erlabpy/commit/b5c27e066b6ab47aea6a492ec4388a3886c57bf5))
 
 - **imagetool:** speed up initialization for dask arrays by optimizing global min/max calculation ([b9b08f6](https://github.com/kmnhan/erlabpy/commit/b9b08f6e91a1dbf9d9c09b8fabec3d57ffcd5eb6))
@@ -55,6 +83,8 @@
 - **imagetool:** match drag refresh rate to screen refresh rate ([22bb48c](https://github.com/kmnhan/erlabpy/commit/22bb48c2cda1c069ad235459c930fca6de7bd8bd))
 
 ### ♻️ Code Refactor
+
+- **manager:** add tooltips to link, dask, and watched var name icons ([b43063f](https://github.com/kmnhan/erlabpy/commit/b43063f6f4c5e1ad6f61a03b3b2ea8ad0bdb0024))
 
 - **imagetool:** open in explorer if dropped files are folders ([a2616fd](https://github.com/kmnhan/erlabpy/commit/a2616fdf650809b1466f2b344130537aa9b45a5d))
 
