@@ -162,7 +162,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.setWindowTitle("ImageTool Manager")
 
-        self.menu_bar: QtWidgets.QMenuBar = QtWidgets.QMenuBar()
+        self.menu_bar: QtWidgets.QMenuBar = typing.cast(
+            "QtWidgets.QMenuBar", self.menuBar()
+        )
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
