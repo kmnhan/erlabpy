@@ -3,14 +3,16 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import pathlib
 import platform
 import re
-import typing
+import shutil
+import sys
 
 import requests
 
-if typing.TYPE_CHECKING:
-    import pathlib
+import erlab
+from erlab.interactive.imagetool.manager import _get_updater_settings
 
 OWNER = "kmnhan"
 REPO = "erlabpy"
@@ -34,7 +36,6 @@ class ReleaseAsset:
 @dataclasses.dataclass
 class ReleaseInfo:
     tag: str
-    is_prerelease: bool
     body: str
     asset: ReleaseAsset
 
@@ -106,7 +107,6 @@ def fetch_latest_release() -> ReleaseInfo | None:
 
         return ReleaseInfo(
             tag=rel.get("tag_name", "0.0.0"),
-            is_prerelease=bool(rel.get("prerelease")),
             body=rel.get("body", ""),
             asset=chosen,
         )
@@ -155,3 +155,38 @@ def verify_sha256(path: pathlib.Path, expected_hex: str) -> bool:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest().lower() == expected_hex.removeprefix("sha256:").lower()
+
+
+def get_install_root() -> pathlib.Path:
+    """Return the root directory where the current app is installed.
+
+    For macOS, this is the path to the .app bundle. For other platforms, the directory
+    of the executable is returned.
+    """
+    if not erlab.utils.misc._IS_PACKAGED:
+        return pathlib.Path("/Applications/ImageTool Manager.app").resolve()
+    exe = pathlib.Path(sys.executable).resolve()
+    if sys.platform == "darwin":
+        bundle = exe.parents[2]
+    else:
+        bundle = exe.parent
+    return bundle
+
+
+def add_update_tmp_dir(tmpdir: pathlib.Path) -> None:
+    """Add a temporary update directory to the QSettings for cleanup later."""
+    settings = _get_updater_settings()
+    dirs = settings.value("update_tmp_dirs", [])
+    dirs.append(str(tmpdir.resolve()))
+    settings.setValue("update_tmp_dirs", dirs)
+
+
+def cleanup_update_tmp_dirs() -> None:
+    """Clean up any leftover temporary update directories from previous runs."""
+    settings = _get_updater_settings()
+    dirs = settings.value("update_tmp_dirs", [])
+    for d in dirs:
+        p = pathlib.Path(d)
+        if p.exists() and p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+    settings.setValue("update_tmp_dirs", [])

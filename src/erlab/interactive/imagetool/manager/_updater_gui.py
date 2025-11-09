@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import platform
 import stat
 import subprocess
 import sys
@@ -14,50 +13,15 @@ import requests
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool.manager import _get_updater_settings
 from erlab.interactive.imagetool.manager._updater_core import (
     REPO,
+    add_update_tmp_dir,
     fetch_latest_release,
     get_full_changelog_from,
+    get_install_root,
     verify_sha256,
 )
-
-
-def is_frozen() -> bool:
-    return bool(getattr(sys, "frozen", False))
-
-
-def runtime_platform() -> str:
-    osname = platform.system()  # "Windows", "Darwin", "Linux"
-    machine = platform.machine() or platform.processor()
-    # Normalize a few common aliases
-    m = machine.lower()
-    if m in {"amd64", "x86_64"}:
-        if osname == "Darwin":
-            return "macos-intel"
-        if osname == "Windows":
-            return "windows-amd64"
-    elif m in {"aarch64", "arm64"}:
-        if osname == "Darwin":
-            return "macos-arm"
-        if osname == "Windows":
-            return "windows-arm"
-    return f"{osname}-{machine}"
-
-
-def get_install_root() -> pathlib.Path:
-    """Return the root directory where the current app is installed.
-
-    For macOS, this is the path to the .app bundle. For other platforms, the directory
-    of the executable is returned.
-    """
-    if not erlab.utils.misc._IS_PACKAGED:
-        return pathlib.Path("/Applications/ImageTool Manager.app").resolve()
-    exe = pathlib.Path(sys.executable).resolve()
-    if sys.platform == "darwin":
-        bundle = exe.parents[2]
-    else:
-        bundle = exe.parent
-    return bundle
 
 
 class Downloader(QtCore.QThread):
@@ -193,6 +157,8 @@ class AutoUpdater(QtCore.QObject):
 
         # Choose temp zip path
         tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="imagetool-manager-update-"))
+        add_update_tmp_dir(tmpdir)
+
         zippath = tmpdir / info.asset.name
 
         # Download with progress dialog
@@ -229,7 +195,9 @@ class AutoUpdater(QtCore.QObject):
 
         def _on_ok(path: str):
             progress.close()
-            if not verify_sha256(pathlib.Path(path), info.asset.digest):
+            with erlab.interactive.utils.wait_dialog(parent, "Verifying download…"):
+                verify_result = verify_sha256(pathlib.Path(path), info.asset.digest)
+            if not verify_result:
                 QtWidgets.QMessageBox.critical(
                     parent, "Integrity error", "SHA256 mismatch. Aborting."
                 )
@@ -251,7 +219,6 @@ class AutoUpdater(QtCore.QObject):
 
         tmpdir = zip_path.parent
 
-        print(f"Creating extraction dir in {tmpdir}")
         extract_dir = tmpdir / "extracted"
         extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -275,6 +242,9 @@ class AutoUpdater(QtCore.QObject):
     ):
         pid = os.getpid()
         tmpdir = extract_dir.parent
+        settings = _get_updater_settings()
+        settings.setValue("version_before_update", self.current_version)
+
         if sys.platform == "darwin":
             new_app = None
             for p in extract_dir.glob("*.app"):
@@ -294,24 +264,19 @@ class AutoUpdater(QtCore.QObject):
             app_binary = new_app / "Contents" / "MacOS" / new_app.stem
             st = app_binary.stat()
             app_binary.chmod(st.st_mode | stat.S_IEXEC)
-            print(f"Set executable permissions on {app_binary}")
 
             script = _macos_helper_script(
-                new_app=new_app.resolve(),
-                old_app=install_root.resolve(),
-                tmp_dir=tmpdir.resolve(),
-                pid=pid,
+                new_app=new_app.resolve(), old_app=install_root.resolve(), pid=pid
             )
 
-            script_dir = pathlib.Path(
-                tempfile.mkdtemp(prefix="imagetool-manager-update-script-")
-            )
-            script_path = pathlib.Path(script_dir) / "apply_update.sh"
+            script_path = tmpdir / "apply_update.sh"
             script_path.write_text(script, encoding="utf-8")
             script_path.chmod(0o755)
 
             try:
-                subprocess.Popen(["/bin/bash", str(script_path)], close_fds=True)
+                subprocess.Popen(
+                    ["/bin/bash", str(script_path.resolve())], close_fds=True
+                )
             except Exception as e:
                 QtWidgets.QMessageBox.critical(
                     parent, "Update", f"Failed to start updater: {e}"
@@ -349,22 +314,16 @@ class AutoUpdater(QtCore.QObject):
             qapp.quit()
 
 
-def _macos_helper_script(
-    new_app: pathlib.Path,
-    old_app: pathlib.Path,
-    tmp_dir: pathlib.Path,
-    pid: int,
-) -> str:
+def _macos_helper_script(new_app: pathlib.Path, old_app: pathlib.Path, pid: int) -> str:
     return f"""#!/bin/bash
 set -euo pipefail
 NEW_APP="{new_app}"
 APP_PATH="{old_app}"
-TMPDIR="{tmp_dir}"
 PID={pid}
 
 echo "[updater] Waiting for PID $PID to exit…"
 if [ "$PID" -gt 0 ]; then
-while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
+  while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
 fi
 
 echo "[updater] Removing quarantine attribute from new app (if any)."
@@ -382,11 +341,9 @@ copy_bundle() {{
 echo "[updater] Attempting in-place update: $APP_PATH"
 if copy_bundle "$NEW_APP" "$APP_PATH"; then
   echo "[updater] Updated in place."
-  {('/usr/bin/open -a "$APP_PATH"')}
+  /usr/bin/open -a "$APP_PATH"
   exit 0
 fi
 
-# Cleanup payloads
 echo "[updater] In-place failed (likely permissions)."
-
 """
