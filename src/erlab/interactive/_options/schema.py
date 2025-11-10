@@ -122,7 +122,7 @@ class DaskOptions(BaseModel):
     """Dask-related options."""
 
     compute_threshold: int = Field(
-        default=2048,
+        default=256,
         title="Compute threshold",
         description=(
             "Threshold in megabytes for automatically loading dask arrays into memory "
