@@ -66,6 +66,104 @@ def _unique_seq(seq: list[str]) -> list[str]:
     return out
 
 
+class KToolBZOptions(BaseModel):
+    default_a: float = Field(
+        default=3.54,
+        title="a",
+        description="Default lattice constant a in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_b: float = Field(
+        default=3.54,
+        title="b",
+        description="Default lattice constant b in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_c: float = Field(
+        default=6.01,
+        title="c",
+        description="Default lattice constant c in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_ang: float = Field(
+        default=120.0,
+        title="γ",
+        description="Default lattice angle γ in degrees.",
+        ge=1.0,
+        le=179.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+    default_rot: float = Field(
+        default=0.0,
+        title="rot",
+        description="Default rotation of the Brillouin zone in degrees.",
+        ge=-360.0,
+        le=360.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+
+
+class KToolOptions(BaseModel):
+    """Momentum conversion tool related options."""
+
+    bz: KToolBZOptions = Field(
+        default_factory=KToolBZOptions,
+        title="Brillouin zone",
+    )
+
+
+class DaskOptions(BaseModel):
+    """Dask-related options."""
+
+    compute_threshold: int = Field(
+        default=2048,
+        title="Compute threshold",
+        description=(
+            "Threshold in megabytes for automatically loading dask arrays into memory "
+            "when showing dask-backed data in ImageTool."
+            "\n\nData smaller than this threshold will be automatically "
+            "computed and loaded into memory to improve interactivity."
+        ),
+        ge=0,
+        le=1000000,
+        json_schema_extra={"ui_step": 128, "ui_suffix": "MB"},
+    )
+
+
+class IOOptions(BaseModel):
+    """Top-level grouping of I/O-related options."""
+
+    default_loader: str = Field(
+        default="None",
+        title="Default loader",
+        description="Loader to pre-select in the data explorer.",
+        json_schema_extra={
+            "ui_type": "list",
+            "ui_limits": ["None", *list(erlab.io.loaders.keys())],
+        },
+    )
+
+    dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
+
+    @field_validator("default_loader", mode="before")
+    @classmethod
+    def loader_exists(cls, v: str | None):
+        if not v or v == "None":
+            return "None"
+        if v not in erlab.io.loaders:
+            available = list(erlab.io.loaders.keys())
+            raise ValueError(
+                "Loader '" + v + "' not registered; available: " + str(available)
+            )
+        return v
+
+
 class ColorMapOptions(BaseModel):
     """Colormap related visualization options."""
 
@@ -160,52 +258,6 @@ class ColorOptions(BaseModel):
         return v
 
 
-class DaskOptions(BaseModel):
-    """Dask-related options."""
-
-    compute_threshold: int = Field(
-        default=2048,
-        title="Compute threshold",
-        description=(
-            "Threshold in megabytes for automatically loading dask arrays into memory "
-            "when showing dask-backed data in ImageTool."
-            "\n\nData smaller than this threshold will be automatically "
-            "computed and loaded into memory to improve interactivity."
-        ),
-        ge=0,
-        le=1000000,
-        json_schema_extra={"ui_step": 128, "ui_suffix": " MB"},
-    )
-
-
-class IOOptions(BaseModel):
-    """Top-level grouping of I/O-related options."""
-
-    default_loader: str = Field(
-        default="None",
-        title="Default loader",
-        description="Loader to pre-select in the data explorer.",
-        json_schema_extra={
-            "ui_type": "list",
-            "ui_limits": ["None", *list(erlab.io.loaders.keys())],
-        },
-    )
-
-    dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
-
-    @field_validator("default_loader", mode="before")
-    @classmethod
-    def loader_exists(cls, v: str | None):
-        if not v or v == "None":
-            return "None"
-        if v not in erlab.io.loaders:
-            available = list(erlab.io.loaders.keys())
-            raise ValueError(
-                "Loader '" + v + "' not registered; available: " + str(available)
-            )
-        return v
-
-
 class AppOptions(BaseModel):
     """Root configuration model for interactive tool options."""
 
@@ -218,4 +270,9 @@ class AppOptions(BaseModel):
         default_factory=IOOptions,
         title="I/O",
         description="Input/output defaults.",
+    )
+    ktool: KToolOptions = Field(
+        default_factory=KToolOptions,
+        title="ktool",
+        description="Momentum conversion tool defaults.",
     )
