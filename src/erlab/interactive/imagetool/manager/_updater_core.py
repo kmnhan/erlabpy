@@ -6,7 +6,6 @@ import os
 import pathlib
 import platform
 import re
-import shutil
 import sys
 
 import requests
@@ -176,17 +175,8 @@ def get_install_root() -> pathlib.Path:
 def add_update_tmp_dir(tmpdir: pathlib.Path) -> None:
     """Add a temporary update directory to the QSettings for cleanup later."""
     settings = _get_updater_settings()
-    dirs = settings.value("update_tmp_dirs", [])
-    dirs.append(str(tmpdir.resolve()))
-    settings.setValue("update_tmp_dirs", dirs)
-
-
-def cleanup_update_tmp_dirs() -> None:
-    """Clean up any leftover temporary update directories from previous runs."""
-    settings = _get_updater_settings()
-    dirs = settings.value("update_tmp_dirs", [])
-    for d in dirs:
-        p = pathlib.Path(d)
-        if p.exists() and p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
-    settings.setValue("update_tmp_dirs", [])
+    tmp_dirs = settings.value("update_tmp_dirs", "")
+    tmp_dir_list = tmp_dirs.strip().split(",") if tmp_dirs else []
+    tmp_dirs_new = ",".join([*tmp_dir_list, str(tmpdir.resolve())])
+    settings.setValue("update_tmp_dirs", tmp_dirs_new)
+    settings.sync()

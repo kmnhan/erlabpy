@@ -45,6 +45,7 @@ __all__ = [
 import logging
 import os
 import pathlib
+import shutil
 import sys
 import typing
 
@@ -107,6 +108,17 @@ def _get_updater_settings() -> QtCore.QSettings:  # pragma: no cover
         "erlabpy",
         "imagetool-manager-updater",
     )
+
+
+def _cleanup_update_tmp_dirs(settings) -> None:
+    """Clean up any leftover temporary update directories from previous runs."""
+    tmp_dirs = settings.value("update_tmp_dirs", "")
+    tmp_dir_list = tmp_dirs.strip().split(",") if tmp_dirs else []
+    for d in tmp_dir_list:
+        p = pathlib.Path(d)
+        if p.exists() and p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+    settings.setValue("update_tmp_dirs", "")
 
 
 def main(execute: bool = True) -> None:
@@ -193,7 +205,9 @@ def main(execute: bool = True) -> None:
             old_version = updater_settings.value("version_before_update", "")
             if old_version != new_version:
                 _manager_instance.updated(old_version, new_version)
+                _cleanup_update_tmp_dirs(updater_settings)
                 updater_settings.setValue("version_before_update", new_version)
+                updater_settings.sync()
 
         if execute:
             qapp.exec()
