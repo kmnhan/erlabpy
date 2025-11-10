@@ -828,7 +828,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._displayed_selection: list[pathlib.Path] = []
 
         if loader_name is None:
-            loader_name = erlab.interactive.options["io/default_loader"]
+            loader_name = erlab.interactive.options.model.io.default_loader
 
         if loader_name:
             self._loader_combo.setCurrentText(loader_name)

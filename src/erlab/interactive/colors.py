@@ -37,7 +37,7 @@ def load_all_colormaps() -> None:
     """Load all colormaps from additional sources."""
     import erlab.plotting
 
-    for package in erlab.interactive.options["colors/cmap/packages"]:
+    for package in erlab.interactive.options.model.colors.cmap.packages:
         if importlib.util.find_spec(package):
             importlib.import_module(package)
 
@@ -712,44 +712,54 @@ def pg_colormap_names(
     source: typing.Literal["local", "all", "matplotlib"] = "all",
     exclude_local: bool = False,
 ) -> list[str]:
-    """Get all valid :obj:`pyqtgraph` colormap names.
+    """
+    Get all valid pyqtgraph colormap names.
 
     Parameters
     ----------
     source
-        If ``'all'``, includes all colorcet colormaps.
+        - "local": only built-in/pyqtgraph colormaps
+        - "matplotlib": only matplotlib colormaps
+        - "all": local + colorcet + matplotlib
+    exclude_local
+        If True, drop local colormaps from the final list.
 
     Returns
     -------
     list of str
-
+        Ordered, de-duplicated list of colormap names.
     """
-    local = sorted(pg.colormap.listMaps())
-    if source == "local":
-        return local
-    mpl_ = sorted(pg.colormap.listMaps(source="matplotlib"))
-    for cmap in mpl_:
-        if (
-            cmap.startswith("cet_")
-            or cmap.endswith(("_r", "_r_i"))
-            or cmap in erlab.interactive.options["colors/cmap/exclude"]
-        ):
-            mpl_ = list(filter((cmap).__ne__, mpl_))
+    global_exclude: set[str] = set(erlab.interactive.options.model.colors.cmap.exclude)
+
+    all_cmaps: list[str] = []
+
+    if not exclude_local:
+        all_cmaps += sorted(pg.colormap.listMaps())
+
+    if source != "local":
+        all_cmaps += sorted(
+            cm
+            for cm in pg.colormap.listMaps(source="matplotlib")
+            if not cm.startswith("cet_") and not cm.endswith(("_r", "_r_i"))
+        )
+
     if source == "all":
-        cet = sorted(pg.colormap.listMaps(source="colorcet"))
-        for cmap in cet:
-            if cmap.startswith("glasbey"):
-                cet = list(filter((cmap).__ne__, cet))
+        all_cmaps += sorted(
+            cm
+            for cm in pg.colormap.listMaps(source="colorcet")
+            if not cm.startswith("glasbey")
+        )
 
-        # if (_mpl != []) and (cet != []):
-        # local = []
+    combined: list[str] = []
+    seen: set[str] = set()
+    for cm in all_cmaps:
+        if cm in global_exclude:
+            continue
+        if cm not in seen:
+            seen.add(cm)
+            combined.append(cm)
 
-        all_cmaps = cet + mpl_ if exclude_local else local + cet + mpl_
-    elif exclude_local:
-        all_cmaps = mpl_
-    else:
-        all_cmaps = local + mpl_
-    return list(dict.fromkeys(all_cmaps))
+    return combined
 
 
 def pg_colormap_from_name(
@@ -771,11 +781,11 @@ def pg_colormap_from_name(
 
     """
     try:
-        return pg.colormap.get(name, skipCache=skipCache)
-    except (FileNotFoundError, IndexError):
+        return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
+    except ValueError:
         try:
-            return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
-        except ValueError:
+            return pg.colormap.get(name, skipCache=skipCache)
+        except (FileNotFoundError, IndexError):
             try:
                 return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
             except KeyError:

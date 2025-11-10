@@ -544,7 +544,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
         return tuple(
-            QtGui.QColor(c) for c in erlab.interactive.options["colors/cursors"]
+            QtGui.QColor(c) for c in erlab.interactive.options.model.colors.cursors
         )
 
     TWIN_COLORS: tuple[QtGui.QColor, ...] = (
@@ -619,12 +619,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
         # Handle default values
+        opts = erlab.interactive.options.model
         if cmap is None:
-            cmap = erlab.interactive.options["colors/cmap/name"]
-            if erlab.interactive.options["colors/cmap/reverse"]:
+            cmap = opts.colors.cmap.name
+            if opts.colors.cmap.reverse:
                 cmap = f"{cmap}_r"
         if gamma is None:
-            gamma = erlab.interactive.options["colors/cmap/gamma"]
+            gamma = opts.colors.cmap.gamma
 
         self.initialize_actions()
 
@@ -1394,7 +1395,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             auto_compute
             and self.data_chunked
             and (self._data.nbytes * 1e-6)
-            < erlab.interactive.options["io/dask/compute_threshold"]
+            < erlab.interactive.options.model.io.dask.compute_threshold
         ):
             self._data = self._data.compute()
 
@@ -1644,7 +1645,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.data_chunked:
             try:
-                self.set_data(self._data.compute())
+                with erlab.interactive.utils.wait_dialog(self, "Computing…"):
+                    self.set_data(self._data.compute())
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while loading data into memory."
