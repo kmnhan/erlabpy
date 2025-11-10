@@ -358,7 +358,9 @@ class _ImageToolWrapper(QtCore.QObject):
             self._pixmap_archived = QtGui.QPixmap()
             self.manager._sigReloadLinkers.emit()
 
-    def _add_childtool(self, tool: erlab.interactive.utils.ToolWindow) -> str:
+    def _add_childtool(
+        self, tool: erlab.interactive.utils.ToolWindow, *, show: bool = True
+    ) -> str:
         """Add a child tool window to the current tool."""
         uid = str(uuid.uuid4())
         self._childtools[uid] = tool
@@ -371,7 +373,8 @@ class _ImageToolWrapper(QtCore.QObject):
         tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]
             QtGui.QKeySequence.StandardKey.Close, tool, tool.hide
         )
-        tool.show()
+        if show:
+            tool.show()
         return uid
 
     def _remove_childtool(self, uid: str) -> None:
