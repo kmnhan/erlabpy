@@ -179,6 +179,8 @@ For interactive plotting, a Qt library such as PyQt6 or PySide6 is required. ERL
 
 See the [user-guide](./user-guide/index) to get started with ERLabPy!
 
+(optional-dependencies)=
+
 ## Optional dependencies
 
 For a full list of dependencies and optional dependency groups, check the `[project]` and `[project.optional-dependencies]` sections in [pyproject.toml](https://github.com/kmnhan/erlabpy/blob/main/pyproject.toml):
