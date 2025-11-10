@@ -244,6 +244,7 @@ class AutoUpdater(QtCore.QObject):
         tmpdir = extract_dir.parent
         settings = _get_updater_settings()
         settings.setValue("version_before_update", self.current_version)
+        settings.sync()
 
         if sys.platform == "darwin":
             new_app = None

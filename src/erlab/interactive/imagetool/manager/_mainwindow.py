@@ -510,12 +510,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
         msg_box.exec()
 
-        from erlab.interactive.imagetool.manager._updater_core import (
-            cleanup_update_tmp_dirs,
-        )
-
-        cleanup_update_tmp_dirs()
-
     @property
     def _reindex_lock(self) -> threading.Lock:
         """Lock for reindexing operation."""
