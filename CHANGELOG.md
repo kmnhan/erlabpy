@@ -1,6 +1,8 @@
-## Unreleased
+## v3.16.0 (2025-11-10)
 
 ### ✨ Features
+
+- **ktool:** add BZ parameters to options ([ef4ae2e](https://github.com/kmnhan/erlabpy/commit/ef4ae2ed0c3d10bda42eaacc905522fd5ac3b088))
 
 - **manager:** show Dask icon for chunked data ([a38780b](https://github.com/kmnhan/erlabpy/commit/a38780b805ec648adc72b14f3ee3a088017363ba))
 
@@ -33,6 +35,8 @@
   clusters, create local clusters, and view client information.
 
 ### 🐞 Bug Fixes
+
+- **plotting.general.plot_array_2d:** allow supplying custom cax for 2D colorbar ([a7711f8](https://github.com/kmnhan/erlabpy/commit/a7711f8709e5b794e8b34ef442dd14195638a241))
 
 - **analysis.image:** rewrite `gaussian_filter` to support dask ([7d691d3](https://github.com/kmnhan/erlabpy/commit/7d691d3a4574892160dfb66a36e682d5afc505f0))
 
@@ -68,6 +72,8 @@
 
 ### ⚡️ Performance
 
+- **manager:** chunk by default when loading workspace ([4ee0a57](https://github.com/kmnhan/erlabpy/commit/4ee0a57f561045217389e4dc3c0630679d5beb79))
+
 - **imagetool:** faster data slicing for dask arrays ([b215d2f](https://github.com/kmnhan/erlabpy/commit/b215d2f392deed4ea03a402a1cc7bbb82645a414))
 
   Optimizes performance by caching transposed graphs.
@@ -83,6 +89,10 @@
 - **imagetool:** match drag refresh rate to screen refresh rate ([22bb48c](https://github.com/kmnhan/erlabpy/commit/22bb48c2cda1c069ad235459c930fca6de7bd8bd))
 
 ### ♻️ Code Refactor
+
+- **imagetool:** make controls unfloatable ([912cd0a](https://github.com/kmnhan/erlabpy/commit/912cd0ab5ac14242e9d2145bd55d1c7813ae89a8))
+
+- **interactive:** change default compute threshold to 256 instead of 2048 ([01c51f8](https://github.com/kmnhan/erlabpy/commit/01c51f81b6a3f31ec4819476e40261680b42b9d3))
 
 - **manager:** add tooltips to link, dask, and watched var name icons ([b43063f](https://github.com/kmnhan/erlabpy/commit/b43063f6f4c5e1ad6f61a03b3b2ea8ad0bdb0024))
 
