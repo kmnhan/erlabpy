@@ -3124,6 +3124,9 @@ class ChunkEditDialog(QtWidgets.QDialog):
         dims = list(self._darr.dims)
         self.table.setRowCount(len(dims))
 
+        chunks: tuple[tuple[int, ...] | None, ...] = (
+            self._darr.chunks or (None,) * self._darr.ndim
+        )
         for row, dim in enumerate(dims):
             dim_item = QtWidgets.QTableWidgetItem(str(dim))
             dim_item.setFlags(
@@ -3131,7 +3134,7 @@ class ChunkEditDialog(QtWidgets.QDialog):
             )
             self.table.setItem(row, 0, dim_item)
 
-            curr_chunks = self._darr.chunksizes.get(dim, None)
+            curr_chunks = chunks[row]
             if curr_chunks is None:
                 current_str = "(not chunked)"
                 default_new = "auto"
