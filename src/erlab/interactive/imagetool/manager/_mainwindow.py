@@ -575,8 +575,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def add_imagetool(
         self,
         tool: ImageTool,
-        activate: bool = False,
         *,
+        show: bool = True,
+        activate: bool = False,
         watched_var: tuple[str, str] | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
@@ -585,6 +586,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ----------
         tool
             ImageTool object to be added.
+        show
+            Whether to show the window after adding, by default `True`.
         activate
             Whether to focus on the window after adding, by default `False`.
         watched_var
@@ -603,7 +606,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._sigReloadLinkers.emit()
 
-        tool.show()
+        if show:
+            tool.show()
 
         if activate:
             tool.activateWindow()
@@ -1087,33 +1091,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                 for i, node in enumerate(tree.values()):
                     if dialog.imagetool_selected(i):  # pragma: no branch
-                        ds = (
-                            typing.cast("xr.DataTree", node["imagetool"])
-                            .to_dataset(inherit=False)
-                            .compute()
+                        ds = typing.cast("xr.DataTree", node["imagetool"]).to_dataset(
+                            inherit=False
                         )
                         new_idx: int = self.add_imagetool(
-                            ImageTool.from_dataset(ds, _in_manager=True)
+                            ImageTool.from_dataset(ds, _in_manager=True),
+                            show=ds.attrs.get("itool_visible", True),
                         )
-                        if not ds.attrs.get("itool_visible", True):
-                            self.get_imagetool(new_idx).hide()
 
                     if "childtools" in node:
                         for j, child_node in enumerate(
                             typing.cast("xr.DataTree", node["childtools"]).values()
                         ):
                             if dialog.childtool_selected(i, j):  # pragma: no branch
-                                ds = (
-                                    typing.cast("xr.DataTree", child_node)
-                                    .to_dataset(inherit=False)
-                                    .compute()
+                                ds = typing.cast("xr.DataTree", child_node).to_dataset(
+                                    inherit=False
                                 )
-                                uid = self.add_childtool(
+                                self.add_childtool(
                                     erlab.interactive.utils.ToolWindow.from_dataset(ds),
                                     new_idx,
+                                    show=ds.attrs.get("tool_visible", True),
                                 )
-                                if not ds.attrs.get("tool_visible", True):
-                                    self.get_childtool(uid).hide()
             tree.close()
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
@@ -1204,7 +1202,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
-                self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
+                self._from_datatree(
+                    xr.open_datatree(fname, engine="h5netcdf", chunks="auto")
+                )
             except Exception:
                 logger.exception("Error while loading workspace")
                 erlab.interactive.utils.MessageDialog.critical(
@@ -1576,7 +1576,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if try_workspace:
             for p in list(queued):
                 try:
-                    dt = xr.open_datatree(p, engine="h5netcdf")
+                    dt = xr.open_datatree(p, engine="h5netcdf", chunks="auto")
                 except Exception:
                     logger.debug("Failed to open %s as datatree workspace", p)
                 else:
@@ -1697,7 +1697,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         widget.show()
 
     def add_childtool(
-        self, tool: erlab.interactive.utils.ToolWindow, index: int
+        self, tool: erlab.interactive.utils.ToolWindow, index: int, *, show: bool = True
     ) -> str:
         """Register a child tool window.
 
@@ -1710,8 +1710,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             The tool window to add.
         index
             Index of the parent ImageTool window.
+        show
+            Whether to show the tool window after adding it, by default `True`.
         """
-        uid = self._imagetool_wrappers[index]._add_childtool(tool)
+        uid = self._imagetool_wrappers[index]._add_childtool(tool, show=show)
         self.tree_view.childtool_added(uid, index)
         return uid
 
