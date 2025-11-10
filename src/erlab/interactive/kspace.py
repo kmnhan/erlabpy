@@ -142,9 +142,9 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     def __init__(
         self,
         avec: npt.NDArray | None = None,
-        rotate_bz: float = 0.0,
+        rotate_bz: float | None = None,
         cmap: str | None = None,
-        gamma: float = 0.5,
+        gamma: float | None = None,
     ) -> None:
         # Initialize UI
         super().__init__()
@@ -166,11 +166,18 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
             plot.addItem(self.images[i])
             plot.showGrid(x=True, y=True, alpha=0.5)
 
+        opts = erlab.interactive.options.model
+
         if cmap is None:
-            cmap = matplotlib.rcParams["image.cmap"]
+            cmap = opts.colors.cmap.name
+            if opts.colors.cmap.reverse:
+                cmap = f"{cmap}_r"
+
+        if gamma is None:
+            gamma = opts.colors.cmap.gamma
 
         if cmap.endswith("_r"):
-            cmap = cmap[:-2]
+            cmap = cmap.removesuffix("_r")
             self.invert_check.setChecked(True)
 
         # Set up colormap controls
@@ -203,8 +210,17 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self._roi_list: list[_MovableCircleROI] = []
         self.add_circle_btn.clicked.connect(self._add_circle)
 
-        if avec is not None:
+        if avec is None:
+            self.a_spin.setValue(opts.ktool.bz.default_a)
+            self.b_spin.setValue(opts.ktool.bz.default_b)
+            self.c_spin.setValue(opts.ktool.bz.default_c)
+            self.ab_spin.setValue(opts.ktool.bz.default_a)
+            self.ang_spin.setValue(opts.ktool.bz.default_ang)
+        else:
             self._populate_bz(avec)
+        if rotate_bz is None:
+            rotate_bz = opts.ktool.bz.default_rot
+
         self.rot_spin.setValue(rotate_bz)
 
     def _populate_bz(self, avec) -> None:
@@ -521,9 +537,9 @@ class KspaceTool(KspaceToolGUI):
         self,
         data: xr.DataArray,
         avec: npt.NDArray | None = None,
-        rotate_bz: float = 0.0,
+        rotate_bz: float | None = None,
         cmap: str | None = None,
-        gamma: float = 0.5,
+        gamma: float | None = None,
         *,
         data_name: str | None = None,
     ) -> None:
@@ -581,7 +597,7 @@ class KspaceTool(KspaceToolGUI):
         for k in self.data.kspace._valid_offset_keys:
             self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
             self._offset_spins[k].setRange(-360, 360)
-            self._offset_spins[k].setSingleStep(0.01)
+            self._offset_spins[k].setSingleStep(0.05 if k == "delta" else 0.01)
             self._offset_spins[k].setDecimals(3)
             self._offset_spins[k].setValue(self.data.kspace.offsets[k])
             if (
@@ -920,9 +936,9 @@ class KspaceTool(KspaceToolGUI):
 def ktool(
     data: xr.DataArray,
     avec: npt.NDArray | None = None,
-    rotate_bz: float = 0.0,
+    rotate_bz: float | None = None,
     cmap: str | None = None,
-    gamma: float = 0.5,
+    gamma: float | None = None,
     *,
     data_name: str | None = None,
     execute: bool | None = None,
