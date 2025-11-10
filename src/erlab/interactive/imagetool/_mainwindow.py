@@ -64,11 +64,8 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
             QtWidgets.QDockWidget(name, self) for name in ("Cursor", "Color", "Binning")
         )
-        for i, d in enumerate(self.docks):
-            d.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-            d.topLevelChanged.connect(
-                lambda val, *, idx=i: self._sync_dock_float(val, idx)
-            )
+        for d in self.docks:
+            d.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
 
         self.docks[0].setWidget(
             self.widget_box(
@@ -215,26 +212,6 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
         show_in_manager(self.to_dataset())
         self.close()
-
-    def _sync_dock_float(self, floating: bool, index: int) -> None:
-        """Synchronize the floating state of the dock widgets.
-
-        Parameters
-        ----------
-        floating
-            The floating state.
-        index
-            The index of the dock widget.
-
-        """
-        for i in range(len(self.docks)):
-            if i != index:
-                self.docks[i].blockSignals(True)
-                self.docks[i].setFloating(floating)
-                self.docks[i].blockSignals(False)
-        self.docks[index].blockSignals(True)
-        self.docks[index].setFloating(floating)
-        self.docks[index].blockSignals(False)
 
     # TODO: this is ugly and temporary, fix it
     def widget_box(self, widget: QtWidgets.QWidget, **kwargs) -> QtWidgets.QGroupBox:
