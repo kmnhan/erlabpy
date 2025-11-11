@@ -332,26 +332,25 @@ def shift(
     along_step: float = float(coord[1] - coord[0])
 
     # Normalize shift values to "index units" and fill NaNs
-    shift = (shift / along_step).fillna(0.0)
+    shift = (shift.copy() / along_step).fillna(0.0)
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        shift_vals = shift.values
-        rigid_shift: float = float(np.round(shift_vals.mean()))
+        rigid_shift: float = float(np.round(shift.values.mean()))
         shift = shift - rigid_shift
 
         # Apply rigid shift to coordinates
         out = out.assign_coords({along: out[along].values + rigid_shift * along_step})
 
         # Figure out padding needed from remaining shift range
-        nshift_min, nshift_max = float(shift_vals.min()), float(shift_vals.max())
+        nshift_min, nshift_max = shift.values.min(), shift.values.max()
         pads: tuple[int, int] = (min(0, round(nshift_min)), max(0, round(nshift_max)))
 
         # Construct new coordinate array
         new_along = np.linspace(
             out[along].values[0] + pads[0] * along_step,
             out[along].values[-1] + pads[1] * along_step,
-            out[along].sizes[along] + abs(pads[0]) + abs(pads[1]),
+            out[along].size + abs(pads[0]) + abs(pads[1]),
         )
 
         # Pad data and assign new coords
