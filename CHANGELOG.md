@@ -1,3 +1,13 @@
+## v3.16.1 (2025-11-11)
+
+### 🐞 Bug Fixes
+
+- **manager:** update installer script to remove old files to prevent conflicts on windows (#194) ([f2269cf](https://github.com/kmnhan/erlabpy/commit/f2269cfcf46fb8a3caa67cf0adc3caf9f8e2dfec))
+
+- **manager:** fix missing win32com imports for numba on Windows standalone builds ([47142b2](https://github.com/kmnhan/erlabpy/commit/47142b241969a948fe9ac3c409c7f92a70a338bc))
+
+- **analysis.transform.shift:** fix wrong shifted coordinate calculation ([973f3e6](https://github.com/kmnhan/erlabpy/commit/973f3e68b70c9b0ca0e458d34e1dec7513e96d46))
+
 ## v3.16.0 (2025-11-10)
 
 ### ✨ Features
