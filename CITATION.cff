@@ -5,7 +5,7 @@ message: >-
 type: software
 authors:
   - given-names: Kimoon
-    family-names: Han
+    family-names: Higashihira Han
     email: khan@kaist.ac.kr
     affiliation: Korea Advanced Institute of Science and Technology
     orcid: 'https://orcid.org/0000-0002-0489-4940'

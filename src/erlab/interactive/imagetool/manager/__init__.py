@@ -45,6 +45,7 @@ __all__ = [
 import logging
 import os
 import pathlib
+import shutil
 import sys
 import typing
 
@@ -94,11 +95,30 @@ class _ManagerApp(QtWidgets.QApplication):
 
     def _handle_open_file(self, path: pathlib.Path) -> None:  # pragma: no cover
         if _manager_instance:
-            _manager_instance.open_multiple_files(
-                [path], try_workspace=(path.suffix == "h5")
-            )
+            _manager_instance._handle_dropped_files([path])
         else:
             self._pending_files.append(path)
+
+
+def _get_updater_settings() -> QtCore.QSettings:  # pragma: no cover
+    """Get the QSettings object for the updater."""
+    return QtCore.QSettings(
+        QtCore.QSettings.Format.IniFormat,
+        QtCore.QSettings.Scope.UserScope,
+        "erlabpy",
+        "imagetool-manager-updater",
+    )
+
+
+def _cleanup_update_tmp_dirs(settings) -> None:
+    """Clean up any leftover temporary update directories from previous runs."""
+    tmp_dirs = settings.value("update_tmp_dirs", "")
+    tmp_dir_list = tmp_dirs.strip().split(",") if tmp_dirs else []
+    for d in tmp_dir_list:
+        p = pathlib.Path(d)
+        if p.exists() and p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+    settings.setValue("update_tmp_dirs", "")
 
 
 def main(execute: bool = True) -> None:
@@ -110,7 +130,7 @@ def main(execute: bool = True) -> None:
 
     file_args = [pathlib.Path(f) for f in sys.argv[1:] if pathlib.Path(f).exists()]
     # Files passed as command-line arguments
-    # This also handles opening files from Windows
+    # Also handles opening files on Windows
 
     if file_args and is_running():  # pragma: no cover
         load_in_manager(file_args)
@@ -137,6 +157,19 @@ def main(execute: bool = True) -> None:
         qapp.setApplicationVersion(erlab.__version__)
 
     while is_running():  # pragma: no branch
+        if (
+            sys.platform == "darwin" and erlab.utils.misc._IS_PACKAGED
+        ):  # pragma: no cover
+            # If another instance is detected and a file event is queued, sends files to
+            # that instance (macOS packaged app only)
+
+            # Populate _pending_files if FileOpenEvent(s) occurred
+            qapp.processEvents()
+
+            if isinstance(qapp, _ManagerApp) and qapp._pending_files:
+                load_in_manager(qapp._pending_files)
+                return
+
         dialog = MessageDialog(
             parent=None,
             title="",
@@ -160,14 +193,21 @@ def main(execute: bool = True) -> None:
         _manager_instance.show()
         _manager_instance.activateWindow()
 
-        if isinstance(qapp, _ManagerApp) and qapp._pending_files:  # pragma: no cover
-            _manager_instance.open_multiple_files(
-                qapp._pending_files,
-                try_workspace=all(
-                    file_path.suffix == ".h5" for file_path in qapp._pending_files
-                ),
-            )
-            qapp._pending_files.clear()
+        if isinstance(qapp, _ManagerApp):  # pragma: no cover
+            pending = qapp._pending_files.copy()
+            if pending:
+                _manager_instance._handle_dropped_files(pending)
+                qapp._pending_files.clear()
+
+        if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+            updater_settings = _get_updater_settings()
+            new_version = str(erlab.__version__)
+            old_version = updater_settings.value("version_before_update", "")
+            if old_version != new_version:
+                _manager_instance.updated(old_version, new_version)
+                _cleanup_update_tmp_dirs(updater_settings)
+                updater_settings.setValue("version_before_update", new_version)
+                updater_settings.sync()
 
         if execute:
             qapp.exec()

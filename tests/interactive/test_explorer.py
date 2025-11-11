@@ -1,5 +1,6 @@
 import pathlib
 import typing
+from collections.abc import Callable
 
 from qtpy import QtCore
 
@@ -11,7 +12,12 @@ if typing.TYPE_CHECKING:
 
 
 def test_explorer_general(
-    qtbot, example_loader, example_data_dir: pathlib.Path, manager_context
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
 ) -> None:
     with manager_context() as manager:
         qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())

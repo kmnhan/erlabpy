@@ -169,7 +169,10 @@ def _send_multipart(sock: zmq.Socket, obj: typing.Any, **kwargs) -> None:
     buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
     bio = io.BytesIO()
     p = pickle.Pickler(bio, protocol=5, buffer_callback=buffers.append)
-    p.dump(obj)
+    try:
+        p.dump(obj)
+    except Exception as e:
+        raise RuntimeError("Failed to serialize object to send to server") from e
     header = memoryview(bio.getbuffer())
     frames = [header] + [memoryview(b) for b in buffers]
     sock.send_multipart(frames, copy=False, **kwargs)
@@ -387,22 +390,35 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(timeout_ms: int = 100) -> bool:
-    """Ping the ImageToolManager server to check if it is running."""
+def _ping_server(attempts: int = 3, per_attempt_ms: int = 100) -> bool:
+    """Ping the ImageToolManager server to check if it is running.
+
+    Parameters
+    ----------
+    attempts
+        Number of attempts to ping the server. Default is 3.
+    per_attempt_ms
+        Milliseconds to wait per attempt. Default is 100.
+    """
     ctx = zmq.Context.instance()
+
     sock: zmq.Socket = ctx.socket(zmq.REQ)
-    # Timeouts in milliseconds
-    sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-    sock.setsockopt(zmq.SNDTIMEO, timeout_ms)
+    sock.linger = 0
+    sock.connect(f"tcp://{HOST_IP}:{PORT}")
+    poller = zmq.Poller()
+    poller.register(sock, zmq.POLLIN)
     try:
-        sock.connect(f"tcp://{HOST_IP}:{PORT}")
-        # Send a minimal ping command and expect an OK
-        _send_multipart(sock, {"packet_type": "command", "command": "ping"})
-        return Response(**_recv_multipart(sock)).status == "ok"
+        for _ in range(attempts):
+            _send_multipart(sock, {"packet_type": "command", "command": "ping"})
+            if poller.poll(per_attempt_ms):
+                response = Response(**_recv_multipart(sock))
+                if response.status == "ok":
+                    return True
     except Exception:
         return False
     finally:
         sock.close()
+    return False
 
 
 def is_running() -> bool:

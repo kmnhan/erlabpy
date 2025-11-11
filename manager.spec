@@ -26,6 +26,11 @@ datas = []
 binaries = []
 hiddenimports = ["PyQt6", "dask", "distributed"]
 
+if sys.platform.startswith("win"):
+    # Required for numba cache directory resolution on Windows
+    # Used in numba.misc.appdirs._get_win_folder_with_pywin32
+    hiddenimports += ["win32com", "win32com.shell"]
+
 for module_name in (
     "erlab",
     "debugpy",  # Needed by qtconsole

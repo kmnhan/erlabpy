@@ -9,6 +9,7 @@ __all__ = [
     "is_dims_uniform",
     "is_monotonic",
     "is_uniform_spaced",
+    "minmax_darr",
     "sort_coord_order",
     "to_native_endian",
     "trim_na",
@@ -105,6 +106,39 @@ def broadcast_args(func: Callable) -> Callable:
         return result
 
     return _wrapper
+
+
+def minmax_darr(darr: xr.DataArray, *, skipna: bool = True) -> tuple[float, float]:
+    """Return (min, max) for DataArrays, with efficient handling for dask.
+
+    Parameters
+    ----------
+    darr
+        The input DataArray.
+    skipna
+        Whether to skip NaN values.
+
+    Returns
+    -------
+    mn
+        The minimum value of the DataArray as a float.
+    mx
+        The maximum value of the DataArray as a float.
+    """
+    if darr.chunks is not None:
+        import dask
+
+        mn, mx = darr.min(skipna=skipna), darr.max(skipna=skipna)
+        mn, mx = dask.compute(mn.data, mx.data)
+
+    else:
+        vals = darr.values
+        if skipna:
+            mn, mx = np.nanmin(vals), np.nanmax(vals)
+        else:
+            mn, mx = np.min(vals), np.max(vals)
+
+    return float(mn), float(mx)
 
 
 def is_uniform_spaced(arr: npt.NDArray, rtol=1.0e-5, atol=1.0e-8) -> bool:
@@ -310,21 +344,23 @@ def trim_na(darr: xr.DataArray, dims: Iterable[Hashable] | None = None) -> xr.Da
 
 
 def _trim_na_edges(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
-    return _trim_na_trailing_edge(_trim_na_leading_edge(darr, dim), dim)
+    # dims other than the one we're trimming
+    other_dims: list[Hashable] = [d for d in darr.dims if d != dim]
 
+    # Get 1D mask along 'dim' where all other dims are NaN
+    mask_1d = darr.isnull().all(dim=other_dims).values
 
-def _trim_na_leading_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
-    if darr[dim].size > 0 and np.isnan(darr.isel({dim: 0}).values).all():
-        darr = darr.isel({dim: slice(1, None)})
-        return _trim_na_leading_edge(darr, dim)
-    return darr
+    if mask_1d.all():
+        # If everything is NaN, just return an empty slice of that dim
+        return darr.isel({dim: slice(0, 0)})
 
+    # First index where line is NOT all-NaN
+    start = int(np.argmax(~mask_1d))
 
-def _trim_na_trailing_edge(darr: xr.DataArray, dim: Hashable) -> xr.DataArray:
-    if darr[dim].size > 0 and np.isnan(darr.isel({dim: -1}).values).all():
-        darr = darr.isel({dim: slice(None, -1)})
-        return _trim_na_trailing_edge(darr, dim)
-    return darr
+    # Last index: work from the end
+    end = int(len(mask_1d) - np.argmax(~mask_1d[::-1]))
+
+    return darr.isel({dim: slice(start, end)})
 
 
 def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:

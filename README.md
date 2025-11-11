@@ -11,7 +11,7 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)
 
-ERLabPy provides tools to handle, manipulate, and visualize data from angle-resolved photoemission spectroscopy (ARPES) experiments.
+`erlab` provides tools to handle, manipulate, and visualize data from angle-resolved photoemission spectroscopy (ARPES) experiments.
 
 Key elements are seamlessly integrated with popular scientific Python workflows. A fast native graphical user interface is provided for data exploration and manipulation, allowing users to get started quickly without needing to write code. The library is designed to be flexible and extensible, making it suitable for a wide range of data analysis tasks.
 
@@ -66,3 +66,9 @@ We welcome contributions. Report issues to the [issue tracker](https://github.co
 ## License
 
 Licensed under the [GPL-3.0 License](LICENSE).
+
+## Cite this software
+
+[![DOI](https://zenodo.org/badge/453256660.svg)](https://zenodo.org/badge/latestdoi/453256660)
+
+If you use `erlab` in your research, citation is appreciated! Citation information for each package version is available on [Zenodo](https://zenodo.org/records/16809480).

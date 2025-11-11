@@ -197,7 +197,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                 self._main_menubar.addAction(sub_action)
 
     @QtCore.Slot()
-    def update_title(self):
+    def update_title(self) -> None:
         """Update the tab and window title with the current directory name."""
         tab_idx = self.tab_widget.currentIndex()
         explorer = self.get_explorer(tab_idx)

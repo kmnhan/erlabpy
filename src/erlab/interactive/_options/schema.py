@@ -12,9 +12,13 @@ The following trivial types have automatic GUI representations:
 - list: comma-separated text input
 
 For spinboxes, limits provided with `ge`, `le` are used to set the minimum and maximum
-values of the spinbox. `gt` and `lt` are not supported because validation would fail for
-values exactly at the limit. If only one limit is provided, the other limit is set to
-positive or negative infinity.
+values of the spinbox. If only one limit is provided, the other limit is set to positive
+or negative infinity.
+
+.. note::
+
+    `gt` and `lt` are not supported because validation would fail for values exactly at
+    the limit.
 
 For comma-separated lists, a custom validator must be implemented to split the string
 into a list of strings. See methods decorated with `@field_validator` below for
@@ -24,7 +28,20 @@ To bypass automatic detection of type or to provide a custom type, provide "ui_t
 the `json_schema_extra` dictionary, which will be directly used as `type` when creating
 the pyqtgraph Parameter tree.
 
-For comboboxes, provide "ui_type": "list" and "ui_limits": [...] in `json_schema_extra`.
+To pass additional options to the pyqtgraph Parameter tree, prefix the option name with
+"ui_" in the `json_schema_extra` dictionary. For example, to set the step size of a
+float parameter, you can do this:
+
+.. code-block:: python
+
+    my_value: float = Field(
+        default=1.0,
+        json_schema_extra={"ui_step": 0.1},
+    )
+
+See the `pyqtgraph Parameter Tree documentation
+<https://pyqtgraph.readthedocs.io/en/latest/api_reference/parametertree/>`_ for all
+available options.
 """
 
 from __future__ import annotations
@@ -47,6 +64,104 @@ def _unique_seq(seq: list[str]) -> list[str]:
             seen.add(x)
             out.append(x)
     return out
+
+
+class KToolBZOptions(BaseModel):
+    default_a: float = Field(
+        default=3.54,
+        title="a",
+        description="Default lattice constant a in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_b: float = Field(
+        default=3.54,
+        title="b",
+        description="Default lattice constant b in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_c: float = Field(
+        default=6.01,
+        title="c",
+        description="Default lattice constant c in Ångström.",
+        ge=0.01,
+        le=99.99,
+        json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
+    )
+    default_ang: float = Field(
+        default=120.0,
+        title="γ",
+        description="Default lattice angle γ in degrees.",
+        ge=1.0,
+        le=179.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+    default_rot: float = Field(
+        default=0.0,
+        title="rot",
+        description="Default rotation of the Brillouin zone in degrees.",
+        ge=-360.0,
+        le=360.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+
+
+class KToolOptions(BaseModel):
+    """Momentum conversion tool related options."""
+
+    bz: KToolBZOptions = Field(
+        default_factory=KToolBZOptions,
+        title="Brillouin zone",
+    )
+
+
+class DaskOptions(BaseModel):
+    """Dask-related options."""
+
+    compute_threshold: int = Field(
+        default=256,
+        title="Compute threshold",
+        description=(
+            "Threshold in megabytes for automatically loading dask arrays into memory "
+            "when showing dask-backed data in ImageTool."
+            "\n\nData smaller than this threshold will be automatically "
+            "computed and loaded into memory to improve interactivity."
+        ),
+        ge=0,
+        le=1000000,
+        json_schema_extra={"ui_step": 128, "ui_suffix": "MB"},
+    )
+
+
+class IOOptions(BaseModel):
+    """Top-level grouping of I/O-related options."""
+
+    default_loader: str = Field(
+        default="None",
+        title="Default loader",
+        description="Loader to pre-select in the data explorer.",
+        json_schema_extra={
+            "ui_type": "list",
+            "ui_limits": ["None", *list(erlab.io.loaders.keys())],
+        },
+    )
+
+    dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
+
+    @field_validator("default_loader", mode="before")
+    @classmethod
+    def loader_exists(cls, v: str | None):
+        if not v or v == "None":
+            return "None"
+        if v not in erlab.io.loaders:
+            available = list(erlab.io.loaders.keys())
+            raise ValueError(
+                "Loader '" + v + "' not registered; available: " + str(available)
+            )
+        return v
 
 
 class ColorMapOptions(BaseModel):
@@ -143,45 +258,6 @@ class ColorOptions(BaseModel):
         return v
 
 
-class IOOptions(BaseModel):
-    """Input/output related options."""
-
-    default_loader: str = Field(
-        default="None",
-        title="Default loader",
-        description="Loader to pre-select in the data explorer.",
-        json_schema_extra={
-            "ui_type": "list",
-            "ui_limits": ["None", *list(erlab.io.loaders.keys())],
-        },
-    )
-
-    compute_threshold: int = Field(
-        default=2048,
-        title="Dask computation threshold (MB)",
-        description=(
-            "Threshold in megabytes for automatically loading dask arrays into memory "
-            "when showing dask-backed data in ImageTool."
-            "\n\nData smaller than this threshold will be automatically "
-            "computed and loaded into memory to improve interactivity."
-        ),
-        ge=0,
-        le=1000000,
-    )
-
-    @field_validator("default_loader", mode="before")
-    @classmethod
-    def loader_exists(cls, v: str | None):
-        if not v or v == "None":
-            return "None"
-        if v not in erlab.io.loaders:
-            available = list(erlab.io.loaders.keys())
-            raise ValueError(
-                "Loader '" + v + "' not registered; available: " + str(available)
-            )
-        return v
-
-
 class AppOptions(BaseModel):
     """Root configuration model for interactive tool options."""
 
@@ -194,4 +270,9 @@ class AppOptions(BaseModel):
         default_factory=IOOptions,
         title="I/O",
         description="Input/output defaults.",
+    )
+    ktool: KToolOptions = Field(
+        default_factory=KToolOptions,
+        title="ktool",
+        description="Momentum conversion tool defaults.",
     )

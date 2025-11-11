@@ -38,12 +38,7 @@ def angle_between(v1: npt.NDArray[np.floating], v2: npt.NDArray[np.floating]) ->
 
 
 def abc2avec(
-    a: np.floating,
-    b: np.floating,
-    c: np.floating,
-    alpha: np.floating,
-    beta: np.floating,
-    gamma: np.floating,
+    a: float, b: float, c: float, alpha: float, beta: float, gamma: float
 ) -> npt.NDArray[np.floating]:
     r"""Construct lattice vectors from lattice parameters.
 

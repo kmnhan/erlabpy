@@ -147,8 +147,8 @@ def itool(
 
     if (
         manager is None
-        and erlab.interactive.imagetool.manager.is_running()
         and erlab.interactive.imagetool.manager._manager_instance is not None
+        and erlab.interactive.imagetool.manager.is_running()
     ):
         # Called from the same process as the manager, using the manager by default
         manager = True

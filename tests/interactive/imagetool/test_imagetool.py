@@ -76,9 +76,9 @@ def test_itool_tools(qtbot, test_data_type, condition) -> None:
 
     logger.info("Test code generation")
     if data.ndim == 2:
-        assert main_image.selection_code == ""
+        assert main_image.get_selection_code(placeholder="") == ""
     else:
-        assert main_image.selection_code == ".qsel(beta=2.0)"
+        assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
 
     if condition == "binned":
         logger.info("Set bins")
@@ -191,8 +191,9 @@ def test_itool_dtypes(
     if use_dask:
         data = data.chunk()
 
-        old_threshold = erlab.interactive.options["io/compute_threshold"]
-        erlab.interactive.options["io/compute_threshold"] = 0  # force compute for dask
+        old_threshold = erlab.interactive.options["io/dask/compute_threshold"]
+        # force compute for dask
+        erlab.interactive.options["io/dask/compute_threshold"] = 0
 
     try:
         win = itool(data, execute=False)
@@ -206,7 +207,7 @@ def test_itool_dtypes(
 
     finally:
         if use_dask:
-            erlab.interactive.options["io/compute_threshold"] = old_threshold
+            erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     win.close()
 
@@ -662,6 +663,32 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_normalize_to_view(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Change limits
+    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
+    # Trigger manual range propagation
+    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
+        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    )
+
+    # Adjust colors
+    win.slicer_area.main_image.normalize_to_current_view()
+
+    mn, mx = win.slicer_area.levels
+    np.testing.assert_allclose(mn, 5.0)
+    np.testing.assert_allclose(mx, 23.0)
+
+    win.close()
+
+
 def test_itool_crop_view(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
@@ -977,5 +1004,43 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         accept_call=lambda d: d.reject(),
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+def test_itool_auto_chunk(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(100).reshape((10, 10)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(10), "y": np.arange(10)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Auto chunk
+    win.slicer_area._auto_chunk()
+    assert win.slicer_area._data.chunks is not None
+
+
+def test_itool_chunk(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(100).reshape((10, 10)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(10), "y": np.arange(10)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    # Test chunk dialog
+    def _set_dialog_params(dialog: erlab.interactive.utils.ChunkEditDialog) -> None:
+        dialog.table.item(0, 2).setText("4")
+        dialog.table.item(1, 2).setText("5")
+
+    with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+        accept_dialog(win.slicer_area._edit_chunks, pre_call=_set_dialog_params)
+
+    # Check if the data is chunked
+    assert win.slicer_area._data.chunks is not None
+    assert win.slicer_area._data.chunks == ((4, 4, 2), (5, 5))
 
     win.close()

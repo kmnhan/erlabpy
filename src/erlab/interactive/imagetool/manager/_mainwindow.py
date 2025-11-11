@@ -18,20 +18,18 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
+    _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
-from erlab.interactive.imagetool.manager._server import (
-    _ManagerServer,
-    _WatcherServer,
-    show_in_manager,
-)
+from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
@@ -164,7 +162,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.setWindowTitle("ImageTool Manager")
 
-        menu_bar: QtWidgets.QMenuBar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
+        self.menu_bar: QtWidgets.QMenuBar = typing.cast(
+            "QtWidgets.QMenuBar", self.menuBar()
+        )
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
@@ -295,7 +295,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&File")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
         )
         file_menu.addAction(self.open_action)
         file_menu.addSeparator()
@@ -311,7 +311,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.settings_action)
 
         edit_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&Edit")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&Edit")
         )
         edit_menu.addAction(self.reindex_action)
         edit_menu.addSeparator()
@@ -330,15 +330,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addAction(self.unlink_action)
 
         view_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&View")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&View")
         )
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
 
+        self._dask_menu = DaskMenu(self, "Dask")
+        self.menu_bar.addMenu(self._dask_menu)
+
         help_menu: QtWidgets.QMenu = typing.cast(
-            "QtWidgets.QMenu", menu_bar.addMenu("&Help")
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&Help")
         )
         help_menu.addAction(self.about_action)
         help_menu.addSeparator()
@@ -454,9 +457,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _status_bar(self) -> QtWidgets.QStatusBar:
         return typing.cast("QtWidgets.QStatusBar", self.statusBar())
 
-    @QtCore.Slot()
-    def about(self) -> None:
-        """Show the about dialog."""
+    def _make_icon_msgbox(self) -> QtWidgets.QMessageBox:
+        """Create a QMessageBox with the application icon."""
         msg_box = QtWidgets.QMessageBox(self)
         style = self.style()
         if style is not None:  # pragma: no branch
@@ -465,7 +467,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 or 48
             )
             msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
-        msg_box.setText("About ImageTool Manager")
+        return msg_box
+
+    @QtCore.Slot()
+    def about(self) -> None:
+        """Show the about dialog."""
+        msg_box = self._make_icon_msgbox()
 
         version_info = {
             "erlab": erlab.__version__,
@@ -491,6 +498,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             cb = QtWidgets.QApplication.clipboard()
             if cb:
                 cb.setText(msg_box.informativeText())
+
+    def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
+        """Notify the user that the application has been updated."""
+        msg_box = self._make_icon_msgbox()
+        msg_box.setText("ImageTool Manager Updated")
+        msg_box.setInformativeText(
+            "ImageTool Manager has been successfully updated from version "
+            f"{old_version} to {new_version}.",
+        )
+        msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
+        msg_box.exec()
 
     @property
     def _reindex_lock(self) -> threading.Lock:
@@ -551,8 +569,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def add_imagetool(
         self,
         tool: ImageTool,
-        activate: bool = False,
         *,
+        show: bool = True,
+        activate: bool = False,
         watched_var: tuple[str, str] | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
@@ -561,6 +580,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ----------
         tool
             ImageTool object to be added.
+        show
+            Whether to show the window after adding, by default `True`.
         activate
             Whether to focus on the window after adding, by default `False`.
         watched_var
@@ -579,7 +600,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._sigReloadLinkers.emit()
 
-        tool.show()
+        if show:
+            tool.show()
 
         if activate:
             tool.activateWindow()
@@ -863,7 +885,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
 
         dlg = self._rename_dialog
-        dlg.set_names([self._imagetool_wrappers[i].name for i in selected])
+        dlg.set_names(selected, [self._imagetool_wrappers[i].name for i in selected])
         dlg.open()
 
     @QtCore.Slot()
@@ -932,36 +954,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for index in self.tree_view.selected_imagetool_indices:
                 self._imagetool_wrappers[index].unarchive()
 
+    @property
+    def _concat_dialog(self) -> _ConcatDialog:
+        if not hasattr(self, "__concat_dialog"):
+            self.__concat_dialog = _ConcatDialog(self)
+        return self.__concat_dialog
+
     @QtCore.Slot()
     def concat_selected(self) -> None:
         """Concatenate the selected data using :func:`xarray.concat`."""
-        text, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Concatenate",
-            "Dimension name:",
-            QtWidgets.QLineEdit.EchoMode.Normal,
-            "concat_dim",
-        )
-
-        if ok and text:
-            try:
-                show_in_manager(
-                    xr.concat(
-                        [
-                            self.get_imagetool(index).slicer_area._data
-                            for index in self.tree_view.selected_imagetool_indices
-                        ],
-                        dim=text,
-                    )
-                )
-            except Exception:
-                logger.exception("Error while concatenating data")
-                erlab.interactive.utils.MessageDialog.critical(
-                    self,
-                    "Error",
-                    "An error occurred while concatenating data.",
-                )
-                return
+        dlg = self._concat_dialog
+        dlg.open()
 
     @QtCore.Slot()
     def store_selected(self) -> None:
@@ -1082,33 +1085,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                 for i, node in enumerate(tree.values()):
                     if dialog.imagetool_selected(i):  # pragma: no branch
-                        ds = (
-                            typing.cast("xr.DataTree", node["imagetool"])
-                            .to_dataset(inherit=False)
-                            .compute()
+                        ds = typing.cast("xr.DataTree", node["imagetool"]).to_dataset(
+                            inherit=False
                         )
                         new_idx: int = self.add_imagetool(
-                            ImageTool.from_dataset(ds, _in_manager=True)
+                            ImageTool.from_dataset(ds, _in_manager=True),
+                            show=ds.attrs.get("itool_visible", True),
                         )
-                        if not ds.attrs.get("itool_visible", True):
-                            self.get_imagetool(new_idx).hide()
 
                     if "childtools" in node:
                         for j, child_node in enumerate(
                             typing.cast("xr.DataTree", node["childtools"]).values()
                         ):
                             if dialog.childtool_selected(i, j):  # pragma: no branch
-                                ds = (
-                                    typing.cast("xr.DataTree", child_node)
-                                    .to_dataset(inherit=False)
-                                    .compute()
+                                ds = typing.cast("xr.DataTree", child_node).to_dataset(
+                                    inherit=False
                                 )
-                                uid = self.add_childtool(
+                                self.add_childtool(
                                     erlab.interactive.utils.ToolWindow.from_dataset(ds),
                                     new_idx,
+                                    show=ds.attrs.get("tool_visible", True),
                                 )
-                                if not ds.attrs.get("tool_visible", True):
-                                    self.get_childtool(uid).hide()
             tree.close()
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
@@ -1199,7 +1196,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
-                self._from_datatree(xr.open_datatree(fname, engine="h5netcdf"))
+                self._from_datatree(
+                    xr.open_datatree(fname, engine="h5netcdf", chunks="auto")
+                )
             except Exception:
                 logger.exception("Error while loading workspace")
                 erlab.interactive.utils.MessageDialog.critical(
@@ -1305,6 +1304,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         ImageTool(d, **kwargs), activate=True, watched_var=watched_var
                     )
                 )
+                if watched_var is not None:
+                    # Refresh title to include variable name
+                    self.get_imagetool(indices[-1])._update_title()
             except Exception:
                 flags.append(False)
                 self._error_creating_imagetool()
@@ -1322,7 +1324,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> None:
         """Load data from the given files using the specified loader."""
         if loader_name == "ask":
-            self.open_multiple_files([pathlib.Path(p) for p in paths])
+            self._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
         self._add_from_multiple_files(
@@ -1466,22 +1468,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
             mime_data: QtCore.QMimeData | None = event.mimeData()
             if mime_data and mime_data.hasUrls():
                 urls = mime_data.urls()
-                file_paths: list[pathlib.Path] = [
-                    pathlib.Path(url.toLocalFile()) for url in urls
-                ]
-                extensions: set[str] = {file_path.suffix for file_path in file_paths}
-                if len(extensions) != 1:
-                    QtWidgets.QMessageBox.critical(
-                        self,
-                        "Error",
-                        "Multiple file types are not supported in a single "
-                        "drag-and-drop operation.",
-                    )
-                    return
-                self.open_multiple_files(
-                    file_paths,
-                    try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+                self._handle_dropped_files(
+                    [pathlib.Path(url.toLocalFile()) for url in urls]
                 )
+
+    def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
+        """Handle files dropped into the window."""
+        if file_paths:  # pragma: no branch
+            extensions: set[str] = {file_path.suffix for file_path in file_paths}
+            if len(extensions) != 1:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Multiple file types cannot be opened at the same time.",
+                )
+                return
+            self.open_multiple_files(
+                file_paths,
+                try_workspace=(extensions == {".itws"} or extensions == {".h5"}),
+            )
 
     def _show_loaded_info(
         self,
@@ -1565,7 +1570,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if try_workspace:
             for p in list(queued):
                 try:
-                    dt = xr.open_datatree(p, engine="h5netcdf")
+                    dt = xr.open_datatree(p, engine="h5netcdf", chunks="auto")
                 except Exception:
                     logger.debug("Failed to open %s as datatree workspace", p)
                 else:
@@ -1592,12 +1597,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
 
         if len(valid_loaders) == 0:
+            if all(file_path.is_dir() for file_path in queued):
+                # If all dropped paths are directories, open them in the explorer
+                self.show_explorer()
+                for file_path in queued:
+                    self.explorer.add_tab(root_path=file_path)
+                return
+
+            singular: bool = n_files == 1
             QtWidgets.QMessageBox.critical(
                 self,
                 "Error",
-                f"The selected {'file' if n_files == 1 else 'files'} "
-                f"with extension '{queued[0].suffix}' is not supported by "
-                "any available plugin.",
+                f"The selected {'file' if singular else 'files'} "
+                f"with extension '{queued[0].suffix}' {'is' if singular else 'are'} "
+                "not supported by any available plugin.",
             )
             return
 
@@ -1678,7 +1691,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         widget.show()
 
     def add_childtool(
-        self, tool: erlab.interactive.utils.ToolWindow, index: int
+        self, tool: erlab.interactive.utils.ToolWindow, index: int, *, show: bool = True
     ) -> str:
         """Register a child tool window.
 
@@ -1691,8 +1704,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             The tool window to add.
         index
             Index of the parent ImageTool window.
+        show
+            Whether to show the tool window after adding it, by default `True`.
         """
-        uid = self._imagetool_wrappers[index]._add_childtool(tool)
+        uid = self._imagetool_wrappers[index]._add_childtool(tool, show=show)
         self.tree_view.childtool_added(uid, index)
         return uid
 
@@ -1894,5 +1909,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         logger.debug("Stopping servers...")
         self._stop_servers()
+
+        logger.debug("Closing dask client (if any)...")
+        self._dask_menu.close_client()
 
         super().closeEvent(event)

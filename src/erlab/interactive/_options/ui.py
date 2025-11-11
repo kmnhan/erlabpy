@@ -59,6 +59,8 @@ class OptionDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
         self.setLayout(layout)
 
+        self.setMinimumSize(487, 301)
+
     @property
     def current_options(self) -> AppOptions:
         """Get the currently displayed settings from the parameter tree."""

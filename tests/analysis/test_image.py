@@ -30,6 +30,50 @@ def test_gaussian_filter() -> None:
     xr.testing.assert_identical(result, expected_output)
 
 
+@pytest.fixture(scope="module")
+def gaussian_test_data():
+    return xr.DataArray(
+        np.arange(20000, step=2).reshape((4, 50, 50)), dims=["z", "x", "y"]
+    ).astype(float)
+
+
+@pytest.mark.parametrize("mode", ["reflect", "constant", "nearest"])
+@pytest.mark.parametrize(
+    "truncate", [2, 3, 4], ids=["truncate=2", "truncate=3", "truncate=4"]
+)
+@pytest.mark.parametrize(
+    "radius", [None, 3, 5], ids=["radius=None", "radius=3", "radius=5"]
+)
+@pytest.mark.parametrize("order", [0, 1, 2], ids=["order=0", "order=1", "order=2"])
+def test_gaussian_filter_dask(
+    truncate, radius, mode, order, gaussian_test_data
+) -> None:
+    # Create a test input DataArray
+    darr = gaussian_test_data
+    darr_chunked = gaussian_test_data.chunk({"x": 10, "y": 10})
+
+    # Apply the gaussian_filter function
+    result = era.image.gaussian_filter(
+        darr,
+        sigma={"x": 3.2, "y": 7.3},
+        truncate=truncate,
+        mode=mode,
+        order=order,
+        radius=radius,
+    )
+    result_chunked = era.image.gaussian_filter(
+        darr_chunked,
+        sigma={"x": 3.2, "y": 7.3},
+        truncate=truncate,
+        mode=mode,
+        order=order,
+        radius=radius,
+    ).compute()
+
+    # Check if the result matches the expected output
+    xr.testing.assert_identical(result, result_chunked)
+
+
 def test_gaussian_laplace() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])

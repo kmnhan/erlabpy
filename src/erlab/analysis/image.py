@@ -62,18 +62,14 @@ def _parse_dict_arg(
     """Parse the input argument to a dictionary with dimensions as keys."""
     if isinstance(arg_value, Mapping):
         arg_dict = dict(arg_value)
-
     elif np.isscalar(arg_value):
         arg_dict = dict.fromkeys(dims, arg_value)
-
     elif isinstance(arg_value, Collection):
         if len(arg_value) != len(dims):
             raise ValueError(
                 f"`{arg_name}` does not match dimensions of {reference_name}"
             )
-
         arg_dict = dict(zip(dims, arg_value, strict=True))
-
     else:
         raise TypeError(f"`{arg_name}` must be a scalar, sequence, or mapping")
 
@@ -185,15 +181,25 @@ def gaussian_filter(
         allow_subset=True,
     )
 
-    # Get the axis indices to apply the filter
+    # Axes in the order in which sigma/order/... will be passed to scipy
     axes = tuple(darr.get_axis_num(d) for d in sigma_dict)
+
+    # Check uniform spacing
+    for d in sigma_dict:
+        if not erlab.utils.array.is_uniform_spaced(darr[d].values):
+            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+
+    # Calculate sigma in pixels
+    sigma_pix: tuple[float, ...] = tuple(
+        sigma_dict[d] / (darr[d].values[1] - darr[d].values[0]) for d in sigma_dict
+    )
 
     # Convert arguments to tuples acceptable by scipy
     if isinstance(order, Mapping):
-        order = tuple(order.get(str(d), 0) for d in sigma_dict)
+        order = tuple(order.get(d, 0) for d in sigma_dict)
 
     if isinstance(mode, Mapping):
-        mode = tuple(mode[str(d)] for d in sigma_dict)
+        mode = tuple(mode[d] for d in sigma_dict)
 
     if radius is not None:
         radius_dict = _parse_dict_arg(
@@ -208,18 +214,40 @@ def gaussian_filter(
     else:
         radius_pix = None
 
-    for d in sigma_dict:
-        if not erlab.utils.array.is_uniform_spaced(darr[d].values):
-            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+    data = darr.data
 
-    # Calculate sigma in pixels
-    sigma_pix: tuple[float, ...] = tuple(
-        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma_dict.items()
-    )
+    if darr.chunks is None:
+        return darr.copy(
+            data=scipy.ndimage.gaussian_filter(
+                darr.values,
+                sigma=sigma_pix,
+                order=order,
+                mode=mode,
+                cval=cval,
+                truncate=truncate,
+                radius=radius_pix,
+                axes=axes,
+            )
+        )
+
+    # Dask array: handle with map_overlap
+
+    # Start with zero depth for all axes
+    depth: dict[int, int] = dict.fromkeys(range(data.ndim), 0)
+    if radius_pix is not None:
+        for ax, rad in zip(axes, radius_pix, strict=True):
+            depth[ax] = int(rad)
+    else:
+        for ax, s in zip(axes, sigma_pix, strict=True):
+            depth[ax] = int(np.ceil(truncate * s))
 
     return darr.copy(
-        data=scipy.ndimage.gaussian_filter(
-            darr.values,
+        data=data.map_overlap(
+            scipy.ndimage.gaussian_filter,
+            depth=depth,
+            boundary="none",
+            trim=True,
+            meta=data._meta,
             sigma=sigma_pix,
             order=order,
             mode=mode,

@@ -1,3 +1,133 @@
+## v3.16.0 (2025-11-10)
+
+### ✨ Features
+
+- **ktool:** add BZ parameters to options ([ef4ae2e](https://github.com/kmnhan/erlabpy/commit/ef4ae2ed0c3d10bda42eaacc905522fd5ac3b088))
+
+- **manager:** show Dask icon for chunked data ([a38780b](https://github.com/kmnhan/erlabpy/commit/a38780b805ec648adc72b14f3ee3a088017363ba))
+
+  Displays an icon for chunked (Dask) data in the ImageTool manager.
+
+- **imagetool:** add menu actions for editing dask chunk sizes ([925daec](https://github.com/kmnhan/erlabpy/commit/925daec6bbf5d697bbfbee0e512e734e7b21f126))
+
+  Adds a new Dask menu to the ImageTool that includes actions for editing the chunk sizes of dask-backed data arrays directly from the GUI.
+
+- **imagetool:** add file selector for loading HDF5 files with chunking ([5c5d53b](https://github.com/kmnhan/erlabpy/commit/5c5d53b9767f9ac9062419dd3afa7c3a8103baf0))
+
+  File dialogs in the imagetool manager now include an option to load HDF5 files with `chunks="auto"` using xarray's `open_dataarray` function. This allows for efficient handling of large datasets by enabling lazy loading and chunking.
+
+- **imagetool:** add normalize to view that adjusts color levels based on the currently visible data ([7be78c6](https://github.com/kmnhan/erlabpy/commit/7be78c6981a303ece9336625ac1fe013cede462b))
+
+  Adds a new action to the right-click context menu of ImageTool image panels that adjusts the color levels to span the data values currently visible in the view, like AdjustCT in Igor Pro.
+
+- **manager:** add more options to concat dialog ([8473728](https://github.com/kmnhan/erlabpy/commit/84737288f41f999c86209f8c672d180463c13210))
+
+  The concatenation dialog now allows users to specify keyword arguments to `xarray.concat` such as `coords`, `compat`, `join`, and `combine_attrs`. Also add a checkbox to remove original tools after concatenation.
+
+- **manager:** display watched variable name in tool title ([567e7cb](https://github.com/kmnhan/erlabpy/commit/567e7cb3cfaded5e3cf4f67abd60da996572c34e))
+
+  When creating an ImageTool for a watched variable, a label is added just like for data loaded from files. This makes it easier to identify which variable is being displayed.
+
+- **manager:** add menu for Dask client management ([aef4178](https://github.com/kmnhan/erlabpy/commit/aef41780d854a43465ae68d2f49a2e2c79089418))
+
+  Adds a Dask menu to the main window, allowing users to connect to existing Dask
+
+  clusters, create local clusters, and view client information.
+
+### 🐞 Bug Fixes
+
+- **plotting.general.plot_array_2d:** allow supplying custom cax for 2D colorbar ([a7711f8](https://github.com/kmnhan/erlabpy/commit/a7711f8709e5b794e8b34ef442dd14195638a241))
+
+- **analysis.image:** rewrite `gaussian_filter` to support dask ([7d691d3](https://github.com/kmnhan/erlabpy/commit/7d691d3a4574892160dfb66a36e682d5afc505f0))
+
+- **analysis.transform.rotate:** rewrite rotate function to support dask ([ea4ad00](https://github.com/kmnhan/erlabpy/commit/ea4ad0006f7360a0decf5984e3b679705b2e9246))
+
+  The rotate function has been rewritten to support chunked inputs. The input array must not be chunked along the rotation axes.
+
+- **utils.array.trim_na:** make trim_na work with dask ([ec267b3](https://github.com/kmnhan/erlabpy/commit/ec267b3468a8872034d7e6a6737b20a57ecb51a4))
+
+- **analysis.transform.shift:** rewrite shift function to support dask ([fec0cf1](https://github.com/kmnhan/erlabpy/commit/fec0cf124034e384f7621574f943fa1c99610b59))
+
+  The shift function has been rewritten to support chunked inputs.
+
+- **explorer:** improve double click handling for directories and allow folders to be opened by plugins ([e5d795f](https://github.com/kmnhan/erlabpy/commit/e5d795f66bcaa6436d36d98fb44050a247c35ee2))
+
+- **explorer:** correct file manager open command on Windows ([0325010](https://github.com/kmnhan/erlabpy/commit/032501048f6ad8cca477461a1b0a5a185a316fe5))
+
+  Opening the current selection in the file manager on Windows was not working correctly due to an incorrect command format. This commit updates the command to use the proper syntax for selecting a file in Windows Explorer.
+
+- **manager:** fix occasional failure to detect running manager instance ([63319a1](https://github.com/kmnhan/erlabpy/commit/63319a1578dae41fd44327eb5ad4543c9cac6e62))
+
+- **ktool:** correct unit for work function spinbox ([384c4dc](https://github.com/kmnhan/erlabpy/commit/384c4dcf29c91f6373b5be90400061d52e345b08))
+
+- **manager:** improve error message for trying to open unpicklable objects in ImageTool manager ([15f2968](https://github.com/kmnhan/erlabpy/commit/15f296846f1c68a00fc93a4b2ef61052a530fc97))
+
+- **imagetool:** ignore mouse events from invisible plots ([b2e764a](https://github.com/kmnhan/erlabpy/commit/b2e764aeb7e3d385d823002a2dc800ea428166fd))
+
+- **manager:** properly include watched var name in ktool code generation ([f90cf0b](https://github.com/kmnhan/erlabpy/commit/f90cf0b525a86da2dc6c7d2776d96a4463a45fcf))
+
+- **manager:** fix workspace file explorer integration for standalone application ([93150ab](https://github.com/kmnhan/erlabpy/commit/93150ab0860f3e718ec53d4ec0434e10fea23ae1))
+
+  Also resolves a related issue where double-clicking a file in the system file explorer while another instance of the application is running would fail in macOS.
+
+### ⚡️ Performance
+
+- **manager:** chunk by default when loading workspace ([4ee0a57](https://github.com/kmnhan/erlabpy/commit/4ee0a57f561045217389e4dc3c0630679d5beb79))
+
+- **imagetool:** faster data slicing for dask arrays ([b215d2f](https://github.com/kmnhan/erlabpy/commit/b215d2f392deed4ea03a402a1cc7bbb82645a414))
+
+  Optimizes performance by caching transposed graphs.
+
+- **kspace:** do not allow dask rechunking for momentum conversion ([d42132e](https://github.com/kmnhan/erlabpy/commit/d42132e485a2131eb0fc0be5ea7d301d8c4e5d7f))
+
+  During momentum conversion, rechunking can lead to excessive memory usage and slow performance; therefore, rechunking has been disabled. Users should ensure that their input arrays are appropriately chunked or loaded into memory before performing momentum conversion operations.
+
+- **imagetool:** avoid recomputing data when showing or hiding the colorbar ([b5c27e0](https://github.com/kmnhan/erlabpy/commit/b5c27e066b6ab47aea6a492ec4388a3886c57bf5))
+
+- **imagetool:** speed up initialization for dask arrays by optimizing global min/max calculation ([b9b08f6](https://github.com/kmnhan/erlabpy/commit/b9b08f6e91a1dbf9d9c09b8fabec3d57ffcd5eb6))
+
+- **imagetool:** match drag refresh rate to screen refresh rate ([22bb48c](https://github.com/kmnhan/erlabpy/commit/22bb48c2cda1c069ad235459c930fca6de7bd8bd))
+
+### ♻️ Code Refactor
+
+- **imagetool:** make controls unfloatable ([912cd0a](https://github.com/kmnhan/erlabpy/commit/912cd0ab5ac14242e9d2145bd55d1c7813ae89a8))
+
+- **interactive:** change default compute threshold to 256 instead of 2048 ([01c51f8](https://github.com/kmnhan/erlabpy/commit/01c51f81b6a3f31ec4819476e40261680b42b9d3))
+
+- **manager:** add tooltips to link, dask, and watched var name icons ([b43063f](https://github.com/kmnhan/erlabpy/commit/b43063f6f4c5e1ad6f61a03b3b2ea8ad0bdb0024))
+
+- **imagetool:** open in explorer if dropped files are folders ([a2616fd](https://github.com/kmnhan/erlabpy/commit/a2616fdf650809b1466f2b344130537aa9b45a5d))
+
+  Previously, dropping folders into the imagetool would lead to an error message stating that files with extension '' are not supported. This commit changes the behavior so that if all dropped items are folders, they will open in a new tab of the tabbed explorer instead.
+
+- **imagetool:** reorder some menu items for better grouping ([9cba0ac](https://github.com/kmnhan/erlabpy/commit/9cba0ac6422885c84ec5431bb09f42b1b65fe8dd))
+
+- **manager:** show tool indices in batch rename dialog ([e05a923](https://github.com/kmnhan/erlabpy/commit/e05a9233a2a695c6b50430d0cdb03cf5cbaae09d))
+
+## v3.15.1 (2025-10-29)
+
+### 🐞 Bug Fixes
+
+- **io:** make dataloader thread-safe (#185) ([c31755c](https://github.com/kmnhan/erlabpy/commit/c31755c3bc936a246bf5f27f92218c4ef53e8ea1))
+
+  Ensure that the dataloader methods function as expected in multithreaded contexts. Especially, `current_loader` and `current_data_dir` are now context variables, meaning that they are now safe under multiple threads setting different values.
+
+- **imagetool:** make associated tool access thread-safe ([6dcddf5](https://github.com/kmnhan/erlabpy/commit/6dcddf5d08a979f63a91b6efd050e4822edb65ef))
+
+- **manager:** include real variable name when copying code for watched variables ([f6b6062](https://github.com/kmnhan/erlabpy/commit/f6b60625b81a2bd55fbd2ea0a044a4ba1f42be48))
+
+- **imagetool:** fix wrong slot handling in PySide ([c456b1f](https://github.com/kmnhan/erlabpy/commit/c456b1f1a852a19e04c5524ffb06d67d23863d6f))
+
+- add dask distributed to dependencies ([0c13ad4](https://github.com/kmnhan/erlabpy/commit/0c13ad410eb4640c3410e60131942579ccae8c34))
+
+- **io.plugins.erpes:** fixes an issue where empty files would be cached when viewing info of DA maps in the data explorer ([b328611](https://github.com/kmnhan/erlabpy/commit/b328611f00f150e4f7d7b066dcb5345a0e067a6d))
+
+- **goldtool:** better remaining time estimation ([495202d](https://github.com/kmnhan/erlabpy/commit/495202d92b0e8704a58f5b912df009a9e3a2bb28))
+
+### ⚡️ Performance
+
+- **imagetool:** improve performance with dask arrays ([9641043](https://github.com/kmnhan/erlabpy/commit/9641043046a9f8b187542bd21ac43cdffc3d5092))
+
 ## v3.15.0 (2025-10-18)
 
 ### ✨ Features

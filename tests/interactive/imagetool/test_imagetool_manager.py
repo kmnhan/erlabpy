@@ -18,6 +18,7 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
 from erlab.interactive.imagetool.manager._dialogs import (
+    _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
 )
@@ -174,8 +175,8 @@ def test_manager(
         select_tools(manager, [1, 2])
 
         def _handle_renaming(dialog: _RenameDialog):
-            dialog._new_name_lines[0].setText("new_name_1")
-            dialog._new_name_lines[1].setText("new_name_2")
+            dialog._new_name_lines[1].setText("new_name_1")
+            dialog._new_name_lines[2].setText("new_name_2")
 
         accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
         assert manager._imagetool_wrappers[1].name == "new_name_1"
@@ -234,21 +235,15 @@ def test_manager(
         assert manager.get_imagetool(1).isVisible()
         assert manager.get_imagetool(2).isVisible()
 
-        # Select tools
-        select_tools(manager, [1, 2])
-        accept_dialog(manager.concat_action.trigger)
+        # Add third tool
+        xr.concat(
+            [
+                manager.get_imagetool(1).slicer_area._data,
+                manager.get_imagetool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        ).qshow(manager=True)
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
-
-        xr.testing.assert_identical(
-            manager.get_imagetool(3).slicer_area._data,
-            xr.concat(
-                [
-                    manager.get_imagetool(1).slicer_area._data,
-                    manager.get_imagetool(2).slicer_area._data,
-                ],
-                "concat_dim",
-            ),
-        )
 
         # Update info panel
         bring_manager_to_top(qtbot, manager)
@@ -388,8 +383,40 @@ def test_manager(
         )
         qtbot.mouseMove(manager.tree_view.viewport())  # move to blank should hide popup
 
+        # Remove third tool
+        select_tools(manager, [3])
+        accept_dialog(manager.remove_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        # Test concatenate
+        concat_data = xr.concat(
+            [
+                manager.get_imagetool(1).slicer_area._data,
+                manager.get_imagetool(2).slicer_area._data,
+            ],
+            "concat_dim",
+        )
+        select_tools(manager, [1, 2])
+        accept_dialog(manager.concat_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(3).slicer_area._data, concat_data
+        )
+
+        # Test concatenate (remove originals)
+        select_tools(manager, [1, 2])
+
+        def _handle_concat(dialog: _ConcatDialog):
+            dialog._remove_original_check.setChecked(True)
+
+        accept_dialog(manager.concat_action.trigger, pre_call=_handle_concat)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(4).slicer_area._data, concat_data
+        )
+
         # Remove all selected
-        select_tools(manager, [1, 2, 3])
+        select_tools(manager, [3, 4])
         accept_dialog(manager.remove_action.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -1046,3 +1073,75 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_manager_hover_tooltip(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch,
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data, test_data], link=True, manager=True)
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.get_imagetool(0).slicer_area._auto_chunk()
+        manager.get_imagetool(1).slicer_area._auto_chunk()
+
+        view = manager.tree_view
+
+        model = view._model
+        delegate = view._delegate
+
+        index = model.index(0, 0)  # first tool
+        option = QtWidgets.QStyleOptionViewItem()
+        delegate.initStyleOption(option, index)
+        _, dask_rect, link_rect, _ = delegate._compute_icons_info(
+            option, index.internalPointer()
+        )
+
+        text = None
+
+        def fake_show_text(pos, s, *args, **kwargs):
+            nonlocal text
+            text = s
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
+
+        # Hover over dask icon
+        pos = dask_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+
+        assert handled
+        assert text == "Dask-backed data (chunked array)"
+
+        # Hover over link icon
+        text = None
+        pos = link_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+
+        assert handled
+        assert text == "Linked (#0)"
+
+        # Hover outside icons
+        text = None
+        pos = dask_rect.topRight() + QtCore.QPoint(2, 0)
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+        assert not handled
+        assert text is None

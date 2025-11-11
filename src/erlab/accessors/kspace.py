@@ -948,7 +948,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             input_core_dims=input_core_dims,
             output_core_dims=[output_dims],
             dask_gufunc_kwargs={
-                "allow_rechunk": True,
                 "output_sizes": {d: coords_for_transform[d].size for d in output_dims},
             },
             keep_attrs=True,

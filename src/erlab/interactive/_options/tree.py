@@ -20,13 +20,6 @@ def _field_ui_type(field_info) -> str | None:
     return extra.get("ui_type") if isinstance(extra, dict) else None
 
 
-def _field_extra(field_info, key: str, default: typing.Any = None):
-    extra = getattr(field_info, "json_schema_extra", None) or {}
-    if isinstance(extra, dict):
-        return extra.get(key, default)
-    return default
-
-
 def _limits_from_schema(s: dict[str, typing.Any]) -> tuple[float, float] | None:
     lo = s.get("minimum")
     hi = s.get("maximum")
@@ -70,9 +63,6 @@ def _build_leaf_param(
                     if limits is not None:
                         opts["limits"] = limits
 
-                    step = _field_extra(field_info, "ui_step")
-                    if step is not None:
-                        opts["step"] = step
                 case "array":
                     # represent as CSV string unless ui_type specified
                     param_type = "str"
@@ -82,9 +72,11 @@ def _build_leaf_param(
                 case _:
                     param_type = "str"
 
-    list_limits = _field_extra(field_info, "ui_limits")
-    if list_limits is not None:
-        opts["limits"] = list_limits
+    extras = getattr(field_info, "json_schema_extra", None) or {}
+    if isinstance(extras, dict):
+        for k, v in extras.items():
+            if k.startswith("ui_") and k != "ui_type":
+                opts[k.removeprefix("ui_")] = v
 
     param: dict[str, typing.Any] = {
         "name": name,

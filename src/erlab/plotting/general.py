@@ -515,6 +515,8 @@ def plot_array_2d(
         N=N,
     )
 
+    cb = None
+
     if colorbar:
         if cax is None:
             fig = ax.get_figure()
@@ -549,9 +551,7 @@ def plot_array_2d(
     ax.set_ylabel(str(larr.dims[0]))
     fancy_labels(ax)
 
-    if colorbar:
-        return im, cb
-    return im, None
+    return im, cb
 
 
 def gradient_fill(

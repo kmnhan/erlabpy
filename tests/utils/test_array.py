@@ -9,6 +9,7 @@ from erlab.utils.array import (
     is_dims_uniform,
     is_monotonic,
     is_uniform_spaced,
+    minmax_darr,
     sort_coord_order,
     trim_na,
     uniform_dims,
@@ -119,13 +120,16 @@ def test_check_arg_has_no_nans() -> None:
     assert decorated_func(arr) is None
 
 
-def test_trim_na() -> None:
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_trim_na(use_dask) -> None:
     # Test case 1: Trim along all dimensions
     darr = xr.DataArray(
         np.array([[np.nan, 2, 3], [np.nan, 5, 6], [np.nan, np.nan, np.nan]]),
         dims=("x", "y"),
         coords={"x": [1, 2, 3], "y": [1, 2, 3]},
     )
+    if use_dask:
+        darr = darr.chunk()
     expected_result = xr.DataArray(
         np.array([[2, 3], [5, 6]]), dims=("x", "y"), coords={"x": [1, 2], "y": [2, 3]}
     )
@@ -136,6 +140,8 @@ def test_trim_na() -> None:
         dims=("x", "y"),
         coords={"x": [1, 2, 3], "y": [1, 2, 3]},
     )
+    if use_dask:
+        darr = darr.chunk()
     expected_result = xr.DataArray(
         np.array([[2, 3], [5, 6], [8, 9]]),
         dims=("x", "y"),
@@ -152,6 +158,9 @@ def test_trim_na() -> None:
     # Test case 4: Size 1 and size 0 arrays
     darr1 = xr.DataArray(np.array([np.nan]), dims=("x",), coords={"x": [1]})
     darr0 = xr.DataArray(np.array([]), dims=("x",), coords={"x": []})
+    if use_dask:
+        darr0 = darr0.chunk()
+        darr1 = darr1.chunk()
     xarray.testing.assert_identical(trim_na(darr1), darr0)
     xarray.testing.assert_identical(trim_na(darr0), darr0)
 
@@ -201,3 +210,43 @@ def test_sort_coord_order(use_dask) -> None:
     assert list(sorted_darr.coords.keys()) == ["b", "a", "x", "y"]
     if use_dask:
         assert result.chunks == darr.chunks
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_with_nan_skipna_true(use_dask) -> None:
+    arr = xr.DataArray(np.array([1, np.nan, 3, 4, 5]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=True)
+    assert mn == 1.0
+    assert mx == 5.0
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_with_nan_skipna_false(use_dask) -> None:
+    arr = xr.DataArray(np.array([1, np.nan, 3, 4, 5]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=False)
+    assert np.isnan(mn)
+    assert np.isnan(mx)
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_2d_array(use_dask) -> None:
+    arr = xr.DataArray(np.array([[1, 2], [3, 4]]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr)
+    assert mn == 1.0
+    assert mx == 4.0
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_minmax_darr_all_nan(use_dask) -> None:
+    arr = xr.DataArray(np.array([np.nan, np.nan]))
+    if use_dask:
+        arr = arr.chunk()
+    mn, mx = minmax_darr(arr, skipna=True)
+    assert np.isnan(mn)
+    assert np.isnan(mx)

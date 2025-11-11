@@ -64,11 +64,8 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
             QtWidgets.QDockWidget(name, self) for name in ("Cursor", "Color", "Binning")
         )
-        for i, d in enumerate(self.docks):
-            d.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-            d.topLevelChanged.connect(
-                lambda val, *, idx=i: self._sync_dock_float(val, idx)
-            )
+        for d in self.docks:
+            d.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
 
         self.docks[0].setWidget(
             self.widget_box(
@@ -216,26 +213,6 @@ class BaseImageTool(QtWidgets.QMainWindow):
         show_in_manager(self.to_dataset())
         self.close()
 
-    def _sync_dock_float(self, floating: bool, index: int) -> None:
-        """Synchronize the floating state of the dock widgets.
-
-        Parameters
-        ----------
-        floating
-            The floating state.
-        index
-            The index of the dock widget.
-
-        """
-        for i in range(len(self.docks)):
-            if i != index:
-                self.docks[i].blockSignals(True)
-                self.docks[i].setFloating(floating)
-                self.docks[i].blockSignals(False)
-        self.docks[index].blockSignals(True)
-        self.docks[index].setFloating(floating)
-        self.docks[index].blockSignals(False)
-
     # TODO: this is ugly and temporary, fix it
     def widget_box(self, widget: QtWidgets.QWidget, **kwargs) -> QtWidgets.QGroupBox:
         """Create a box that surrounds the given widget.
@@ -322,6 +299,7 @@ class ImageTool(BaseImageTool):
         self.__recent_name_filter: str | None = None
         self.__recent_directory: str | None = None
 
+        self._dask_menu = erlab.interactive._dask.DaskMenu(self, "Dask")
         self.initialize_actions()
         self.setMenuBar(ItoolMenuBar(self))
 
@@ -368,6 +346,11 @@ class ImageTool(BaseImageTool):
         self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
         self.close_act.triggered.connect(self.close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
+
+        self._dask_menu.addSeparator()
+        self._dask_menu.addAction(self.slicer_area.compute_act)
+        self._dask_menu.addAction(self.slicer_area.chunk_auto_act)
+        self._dask_menu.addAction(self.slicer_area.chunk_act)
 
     @property
     def mnb(self) -> ItoolMenuBar:
@@ -494,7 +477,6 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "saveAsAct": self.image_tool.save_act,
                     "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
-                    "computeAct": self.slicer_area.compute_act,
                     "sep1": {"separator": True},
                     "moveToManagerAct": {
                         "text": "Move to Manager",
@@ -505,34 +487,6 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "text": "Settings",
                         "triggered": self._settings,
                         "shortcut": QtGui.QKeySequence.StandardKey.Preferences,
-                        "sep_after": True,
-                    },
-                },
-            },
-            "viewMenu": {
-                "title": "&View",
-                "actions": {
-                    "viewAllAct": self.slicer_area.view_all_act,
-                    "transposeAct": self.slicer_area.transpose_act,
-                    "sep0": {"separator": True},
-                    "associatedAct": self.slicer_area.associated_coords_act,
-                    "sep1": {"separator": True},
-                    "addCursorAct": self.slicer_area.add_cursor_act,
-                    "remCursorAct": self.slicer_area.rem_cursor_act,
-                    "snapCursorAct": self.array_slicer.snap_act,
-                    "toggleCursorAct": self.slicer_area.toggle_cursor_act,
-                    "cursorColorAct": self.slicer_area.cursor_color_act,
-                    "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
-                    "sep2": {"separator": True},
-                    "colorInvertAct": self.slicer_area.reverse_act,
-                    "highContrastAct": self.slicer_area.high_contrast_act,
-                    "zeroCenterAct": self.slicer_area.zero_centered_act,
-                    "ktoolAct": self.slicer_area.ktool_act,
-                    "sep3": {"separator": True},
-                    "Normalize": {"triggered": self._normalize},
-                    "resetAct": {
-                        "text": "Reset",
-                        "triggered": self._reset_filters,
                         "sep_after": True,
                     },
                 },
@@ -573,6 +527,37 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
             },
+            "viewMenu": {
+                "title": "&View",
+                "actions": {
+                    "viewAllAct": self.slicer_area.view_all_act,
+                    "transposeAct": self.slicer_area.transpose_act,
+                    "sep0": {"separator": True},
+                    "associatedAct": self.slicer_area.associated_coords_act,
+                    "sep1": {"separator": True},
+                    "snapCursorAct": self.array_slicer.snap_act,
+                    "addCursorAct": self.slicer_area.add_cursor_act,
+                    "remCursorAct": self.slicer_area.rem_cursor_act,
+                    "toggleCursorAct": self.slicer_area.toggle_cursor_act,
+                    "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
+                    "cursorColorAct": self.slicer_area.cursor_color_act,
+                    "sep2": {"separator": True},
+                    "colorInvertAct": self.slicer_area.reverse_act,
+                    "highContrastAct": self.slicer_area.high_contrast_act,
+                    "zeroCenterAct": self.slicer_area.zero_centered_act,
+                    "lockLevelsAct": self.slicer_area.lock_levels_act,
+                    "sep3": {"separator": True},
+                    "ktoolAct": self.slicer_area.ktool_act,
+                    "sep4": {"separator": True},
+                    "Normalize": {"triggered": self._normalize},
+                    "resetAct": {
+                        "text": "Reset",
+                        "triggered": self._reset_filters,
+                        "sep_after": True,
+                    },
+                },
+            },
+            "daskMenu": {"menu": self.image_tool._dask_menu},
             "helpMenu": {
                 "title": "&Help",
                 "actions": {
@@ -662,7 +647,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
             visible = is_running()
 
-        self.action_dict["computeAct"].setVisible(self.slicer_area.data_chunked)
+        self.slicer_area.compute_act.setEnabled(self.slicer_area.data_chunked)
         self.action_dict["moveToManagerAct"].setVisible(visible)
 
     @QtCore.Slot()

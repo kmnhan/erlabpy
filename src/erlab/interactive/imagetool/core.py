@@ -544,7 +544,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
         return tuple(
-            QtGui.QColor(c) for c in erlab.interactive.options["colors/cursors"]
+            QtGui.QColor(c) for c in erlab.interactive.options.model.colors.cursors
         )
 
     TWIN_COLORS: tuple[QtGui.QColor, ...] = (
@@ -614,14 +614,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
         _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
+        self.qapp = typing.cast(
+            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
+        )
 
         # Handle default values
+        opts = erlab.interactive.options.model
         if cmap is None:
-            cmap = erlab.interactive.options["colors/cmap/name"]
-            if erlab.interactive.options["colors/cmap/reverse"]:
+            cmap = opts.colors.cmap.name
+            if opts.colors.cmap.reverse:
                 cmap = f"{cmap}_r"
         if gamma is None:
-            gamma = erlab.interactive.options["colors/cmap/gamma"]
+            gamma = opts.colors.cmap.gamma
 
         self.initialize_actions()
 
@@ -787,11 +791,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transpose:
             self.transpose_main_image()
 
-        self.qapp = typing.cast(
-            "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-        )
-        # self.qapp.aboutToQuit.connect(self.on_close)
-
     @property
     def _associated_tools_list(self) -> list[QtWidgets.QWidget]:
         with self._assoc_tools_lock:
@@ -814,17 +813,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
         If nothing can be inferred, an empty string is returned.
         """
         name: str | None = typing.cast("str | None", self._data.name)
-        path: pathlib.Path | None = self._file_path
+        info: str | None = None
+        if self._file_path is not None:
+            info = self._file_path.stem
+        if self.watched_data_name is not None:
+            info = self.watched_data_name
+
         if name is not None and name.strip() == "":
             # Name contains only whitespace
             name = None
 
         if name is None:
-            disp_name = "" if path is None else path.stem
-        elif path is None or name == path.stem:
+            disp_name = "" if info is None else info
+        elif info is None or name == info:
             disp_name = f"{name}"
         else:
-            disp_name = f"{name} ({path.stem})"
+            disp_name = f"{name} ({info})"
+
         return disp_name
 
     @property
@@ -1168,6 +1173,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.compute_act.triggered.connect(self._compute_chunked)
         self.compute_act.setToolTip("Load the entire data into memory")
 
+        self.chunk_auto_act = QtWidgets.QAction("Auto Chunk", self)
+        self.chunk_auto_act.triggered.connect(self._auto_chunk)
+        self.chunk_auto_act.setToolTip(
+            "Automatically set the chunk size for dask-backed data"
+        )
+
+        self.chunk_act = QtWidgets.QAction("Chunk…", self)
+        self.chunk_act.triggered.connect(self._edit_chunks)
+        self.chunk_act.setToolTip("Set the chunk size for dask-backed data")
+
     @QtCore.Slot()
     def edit_cursor_colors(self) -> None:
         """Open a dialog to edit cursor colors."""
@@ -1318,14 +1333,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
+        auto_compute: bool = True,
     ) -> None:
         """Set the data to be displayed.
 
         Parameters
         ----------
         data
-            The data to be displayed. If a `xarray.DataArray` is given, the
-            dimensions and coordinates are used to determine the axes of the plots. If a
+            The data to be displayed. If a `xarray.DataArray` is given, the dimensions
+            and coordinates are used to determine the axes of the plots. If a
             :class:`xarray.Dataset` is given, the first data variable is used. If a
             :class:`numpy.ndarray` is given, it is converted to a `xarray.DataArray`
             with default dimensions.
@@ -1336,6 +1352,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         file_path
             Path to the file from which the data was loaded. If given, the file path is
             used to set the window title.
+        auto_compute
+            If `True` and the data is dask-backed, automatically compute the data if its
+            size is below the threshold defined in options.
 
         """
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
@@ -1373,9 +1392,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         if (
-            self._data.chunks is not None
+            auto_compute
+            and self.data_chunked
             and (self._data.nbytes * 1e-6)
-            < erlab.interactive.options["io/compute_threshold"]
+            < erlab.interactive.options.model.io.dask.compute_threshold
         ):
             self._data = self._data.compute()
 
@@ -1394,7 +1414,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
             else:
                 self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
-                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data)
+                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data, self)
                 )
                 logger.debug("Initialized ArraySlicer")
         except Exception:
@@ -1591,6 +1611,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ax.update_manual_range()
 
     @property
+    def watched_data_name(self) -> str | None:
+        """Get the name of the watched data variable.
+
+        Only applicable if in an ImageTool Manager and the data is linked to a watched
+        variable in a notebook. Returns None if otherwise.
+        """
+        if self._in_manager:
+            manager = self._manager_instance
+            if manager:  # pragma: no branch
+                wrapper = manager.wrapper_from_slicer_area(self)
+                if wrapper:  # pragma: no branch
+                    return wrapper._watched_varname
+        return None
+
+    @property
     def data_chunked(self) -> bool:
         """Check if the data is chunked (backed by dask).
 
@@ -1608,13 +1643,37 @@ class ImageSlicerArea(QtWidgets.QWidget):
         This method computes the entire data array and loads it into memory if the data
         is chunked.
         """
-        if self._data.chunks is not None:
+        if self.data_chunked:
             try:
-                self.set_data(self._data.compute())
+                with erlab.interactive.utils.wait_dialog(self, "Computing…"):
+                    self.set_data(self._data.compute())
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while loading data into memory."
                 )
+
+    @QtCore.Slot()
+    def _edit_chunks(self) -> None:
+        """Open a dialog to set chunk sizes."""
+        dlg = erlab.interactive.utils.ChunkEditDialog(self._data, parent=self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._set_chunks(dlg.result_chunks)
+
+    @QtCore.Slot()
+    def _auto_chunk(self) -> None:
+        """Call ``.chunk("auto")`` on the underlying DataArray."""
+        self._set_chunks("auto")
+
+    def _set_chunks(self, chunks) -> None:
+        """Set the chunk size of the underlying data.
+
+        Parameters
+        ----------
+        chunks
+            Chunk size to set. Passed to :meth:`xarray.DataArray.chunk`.
+        """
+        with erlab.interactive.utils.wait_dialog(self, "Setting Chunks…"):
+            self.set_data(self._data.chunk(chunks), auto_compute=False)
 
     @QtCore.Slot(int, int)
     @link_slicer
@@ -1845,7 +1904,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 im.setLevels(levels, update=False)
             else:
                 im.levels = None
-            im.refresh_data()
+            im.updateImage()
 
         self._colorbar.setVisible(self.levels_locked)
         self.sigViewOptionChanged.emit()
@@ -1929,7 +1988,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             gamma = 0.5
 
         self.add_tool_window(
-            erlab.interactive.ktool(self.data, cmap=cmap, gamma=gamma, execute=False)
+            erlab.interactive.ktool(
+                self.data,
+                cmap=cmap,
+                gamma=gamma,
+                data_name=self.watched_data_name,
+                execute=False,
+            )
         )
 
     def adjust_layout(
@@ -2329,93 +2394,15 @@ class ItoolPlotItem(pg.PlotItem):
         )
         self._axis_enabled = axis_enabled
 
-        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
-            self.setContextMenuActionVisible(act, False)
-
         self.vb.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
-
-        for i in (0, 1):
-            # Hide unnecessary menu items
-            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
-            self.vb.menu.ctrl[i].label.setVisible(False)
-
-        self.vb.menu.addSeparator()
-
-        save_action = self.vb.menu.addAction("Save data as HDF5")
-        save_action.triggered.connect(self.save_current_data)
-
-        copy_code_action = self.vb.menu.addAction("Copy selection code")
-        copy_code_action.triggered.connect(self.copy_selection_code)
-
-        self.vb.menu.addSeparator()
-
-        croppable_actions: list[QtWidgets.QAction] = [save_action]
-
-        if image:
-            itool_action = self.vb.menu.addAction("New Window")
-            itool_action.triggered.connect(self.open_in_new_window)
-
-            goldtool_action = self.vb.menu.addAction("goldtool")
-            goldtool_action.triggered.connect(self.open_in_goldtool)
-
-            restool_action = self.vb.menu.addAction("restool")
-            restool_action.triggered.connect(self.open_in_restool)
-
-            dtool_action = self.vb.menu.addAction("dtool")
-            dtool_action.triggered.connect(self.open_in_dtool)
-
-            def _set_icons():
-                for act in (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                ):
-                    act.setIcon(qtawesome.icon("mdi6.export"))
-                    act.setIconVisibleInMenu(True)
-
-            self._sigPaletteChanged.connect(_set_icons)
-            _set_icons()
-
-            self.vb.menu.addSeparator()
-
-            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
-            equal_aspect_action.setCheckable(True)
-            equal_aspect_action.setChecked(False)
-            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
-
-            def _update_aspect_lock_state() -> None:
-                locked: bool = self.getViewBox().state["aspectLocked"] is not False
-                if equal_aspect_action.isChecked() != locked:
-                    equal_aspect_action.blockSignals(True)
-                    equal_aspect_action.setChecked(locked)
-                    equal_aspect_action.blockSignals(False)
-
-            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
-
-            croppable_actions.extend(
-                (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                )
-            )
-        else:
-            norm_action = self.vb.menu.addAction("Normalize by mean")
-            norm_action.setCheckable(True)
-            norm_action.setChecked(False)
-            norm_action.toggled.connect(self.set_normalize)
-        self.vb.menu.addSeparator()
-
-        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
-        self.vb.menu.installEventFilter(self._menu_filter)
 
         self.slicer_area = slicer_area
         self.display_axis = display_axis
 
         self.is_image = image
         self._item_kw = item_kw
+
+        self.setup_actions()
 
         if image_cls is None:  # pragma: no branch
             self.image_cls = ItoolImageItem
@@ -2433,8 +2420,13 @@ class ItoolPlotItem(pg.PlotItem):
         self.add_cursor(update=False)
 
         self.proxy = pg.SignalProxy(
-            self._sigDragged, delay=1 / 60, rateLimit=60, slot=self.process_drag
+            self._sigDragged, delay=1 / 120, rateLimit=120, slot=self.process_drag
         )
+        self.slicer_area.qapp.primaryScreenChanged.connect(
+            self._update_signal_refresh_rate
+        )
+        self._update_signal_refresh_rate()
+
         if self.slicer_area.bench:
             self._time_start: float | None = None
             self._time_end: float | None = None
@@ -2481,6 +2473,107 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
+
+    def setup_actions(self) -> None:
+        for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
+            self.setContextMenuActionVisible(act, False)
+
+        for i in (0, 1):
+            # Hide unnecessary menu items
+            self.vb.menu.ctrl[i].linkCombo.setVisible(False)
+            self.vb.menu.ctrl[i].label.setVisible(False)
+
+        self.vb.menu.addSeparator()
+
+        save_action = self.vb.menu.addAction("Save data as HDF5")
+        save_action.triggered.connect(self.save_current_data)
+
+        copy_code_action = self.vb.menu.addAction("Copy selection code")
+        copy_code_action.triggered.connect(self.copy_selection_code)
+
+        self.vb.menu.addSeparator()
+
+        # List of actions that should have '(Crop)' appended when Alt is pressed
+        croppable_actions: list[QtWidgets.QAction] = [save_action]
+
+        if self.is_image:
+            # Aspect ratio lock checkbox
+            equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
+            equal_aspect_action.setCheckable(True)
+            equal_aspect_action.setChecked(False)
+            equal_aspect_action.toggled.connect(self.toggle_aspect_equal)
+
+            def _update_aspect_lock_state() -> None:
+                locked: bool = self.getViewBox().state["aspectLocked"] is not False
+                if equal_aspect_action.isChecked() != locked:
+                    equal_aspect_action.blockSignals(True)
+                    equal_aspect_action.setChecked(locked)
+                    equal_aspect_action.blockSignals(False)
+
+            self.getViewBox().sigStateChanged.connect(_update_aspect_lock_state)
+
+            # AdjustCT-like action
+            adjust_color_action = self.vb.menu.addAction("Normalize to View")
+            adjust_color_action.setToolTip(
+                "Set color limits from the currently visible area of this image.\n"
+                "Similar to 'AdjustCT' in Igor Pro."
+            )
+            adjust_color_action.triggered.connect(self.normalize_to_current_view)
+
+            self.vb.menu.addSeparator()
+
+            # Actions that open new windows
+            itool_action = self.vb.menu.addAction("New Window")
+            itool_action.triggered.connect(self.open_in_new_window)
+
+            goldtool_action = self.vb.menu.addAction("goldtool")
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            restool_action = self.vb.menu.addAction("restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
+            dtool_action = self.vb.menu.addAction("dtool")
+            dtool_action.triggered.connect(self.open_in_dtool)
+
+            croppable_actions.extend(
+                (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                )
+            )
+
+            def _set_icons():
+                for act in (
+                    itool_action,
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                ):
+                    act.setIcon(qtawesome.icon("mdi6.export"))
+                    act.setIconVisibleInMenu(True)
+
+            self._sigPaletteChanged.connect(_set_icons)
+            _set_icons()
+
+        else:
+            norm_action = self.vb.menu.addAction("Normalize by mean")
+            norm_action.setCheckable(True)
+            norm_action.setChecked(False)
+            norm_action.toggled.connect(self.set_normalize)
+        self.vb.menu.addSeparator()
+
+        self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
+        self.vb.menu.installEventFilter(self._menu_filter)
+
+    @QtCore.Slot()
+    def _update_signal_refresh_rate(self) -> None:
+        screen = self.slicer_area.qapp.primaryScreen()
+        if screen:
+            rate = screen.refreshRate()
+            self.proxy.rateLimit = rate if rate > 0 else 60
+            self.proxy.delay = 1 / (rate if rate > 0 else 60)
 
     def connect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
@@ -2659,10 +2752,18 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def axis_dims(self) -> tuple[str | None, str | None]:
+        """Get the names of the data dimensions plotted on each axis.
+
+        Removes '_idx' suffix for non-uniform axes.
+        """
         return self._get_axis_dims(uniform=False)
 
     @property
     def axis_dims_uniform(self) -> tuple[str | None, str | None]:
+        """Get the names of the data dimensions plotted on each axis.
+
+        Retains '_idx' suffix for non-uniform axes.
+        """
         return self._get_axis_dims(uniform=True)
 
     @property
@@ -2673,6 +2774,21 @@ class ItoolPlotItem(pg.PlotItem):
     def _current_data(self) -> xr.DataArray:
         """Data in the current plot item."""
         return self.slicer_data_items[self.slicer_area.current_cursor].sliced_data
+
+    @property
+    def is_view_cropped(self) -> bool:
+        """Whether the current view limits are smaller than the full data range."""
+        manual_limits = dict(self.slicer_area.manual_limits)
+        for ax_idx in self.display_axis:
+            dim_name = str(self.slicer_area.data.dims[ax_idx])
+            if dim_name in manual_limits:
+                mn, mx = sorted(self.slicer_area.array_slicer.lims_uniform[ax_idx])
+                manual_mn, manual_mx = sorted(manual_limits[dim_name])
+
+                if manual_mn > mn or manual_mx < mx:
+                    return True
+
+        return False
 
     @property
     def _current_data_cropped(self) -> xr.DataArray:
@@ -2690,7 +2806,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def current_data(self) -> xr.DataArray:
-        """Data in the current plot item, cropped or uncropped.
+        """Data in the current plot item, optionally cropped to view limits.
 
         If accessed while the Alt (Option) key is pressed, the data is cropped to the
         current axes view limits.
@@ -2707,35 +2823,32 @@ class ItoolPlotItem(pg.PlotItem):
 
     @property
     def selection_code(self) -> str:
+        """Get the selection code for the data.
+
+        Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
+        the current slice of data based on the current cursor location and bin size.
+        """
         return self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
 
-    @property
-    def watched_data_name(self) -> str | None:
-        """Get the name of the watched data variable.
+    def get_selection_code(self, placeholder: str = "data") -> str:
+        """Get selection code for the current cursor and display axis.
 
-        Only applicable if in an ImageTool Manager and the data is linked to a watched
-        variable in a notebook. Returns None if otherwise.
+        Adds a placeholder data name as a prefix to the selection code returned by
+        :attr:`selection_code`. If the data is linked to a watched variable in a
+        notebook through the ImageTool manager, the variable name in the notebook is
+        used instead.
+
+        Parameters
+        ----------
+        placeholder : str, optional
+            Name to fall back to if the data is not linked to a watched variable in a
+            notebook. By default, uses "data".
         """
-        if self.slicer_area._in_manager:
-            manager = self.slicer_area._manager_instance
-            if manager:  # pragma: no branch
-                wrapper = manager.wrapper_from_slicer_area(self.slicer_area)
-                if wrapper:  # pragma: no branch
-                    return wrapper._watched_varname
-        return None
-
-    @property
-    def data_name_for_child(self) -> str:
-        """Get a data name for child tools based on watched variable name.
-
-        If the data is linked to a watched variable in a notebook, use that name.
-        Otherwise, uses "data" as a placeholder name.
-        """
-        data_name = self.watched_data_name
+        data_name = self.slicer_area.watched_data_name
         if not data_name:
-            data_name = "data"
+            data_name = placeholder
         return f"{data_name}{self.selection_code}"
 
     @property
@@ -2792,7 +2905,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             self.slicer_area.add_tool_window(
                 erlab.interactive.goldtool(
-                    data, data_name=self.data_name_for_child, execute=False
+                    data, data_name=self.get_selection_code(), execute=False
                 )
             )
 
@@ -2809,7 +2922,7 @@ class ItoolPlotItem(pg.PlotItem):
                 )
                 return
             tool = erlab.interactive.restool(
-                data, data_name=self.data_name_for_child, execute=False
+                data, data_name=self.get_selection_code(), execute=False
             )
             self.slicer_area.add_tool_window(tool)
 
@@ -2819,9 +2932,24 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.add_tool_window(
                 erlab.interactive.dtool(
                     self.current_data.T,
-                    data_name=self.data_name_for_child,
+                    data_name=self.get_selection_code(),
                     execute=False,
                 )
+            )
+
+    @QtCore.Slot()
+    def normalize_to_current_view(self) -> None:
+        """Adjust color limits to the currently visible area.
+
+        Only available for image plots.
+
+        Sets the color limits of the slicer area to the min and max of the currently
+        visible area of this image (similar to AdjustCT in ImageTool).
+        """
+        if self.is_image:  # pragma: no branch
+            self.slicer_area.lock_levels(True)
+            self.slicer_area.levels = erlab.utils.array.minmax_darr(
+                self._current_data_cropped
             )
 
     @QtCore.Slot()
@@ -2930,6 +3058,7 @@ class ItoolPlotItem(pg.PlotItem):
         if (
             QtCore.Qt.KeyboardModifier.ControlModifier in modifiers
             and ev.button() == QtCore.Qt.MouseButton.LeftButton
+            and self.isVisible()
         ):
             ev.accept()
             if isinstance(ev, mouseEvents.MouseDragEvent):
@@ -3139,7 +3268,11 @@ class ItoolPlotItem(pg.PlotItem):
             strict=True,
         ):
             self.removeItem(line)
+            line.forgetViewBox()
+            line.deleteLater()
             self.removeItem(span)
+            span.forgetViewBox()
+            span.deleteLater()
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
 
@@ -3231,8 +3364,10 @@ class ItoolPlotItem(pg.PlotItem):
     def _remove_guidelines(self) -> None:
         if self.is_image:  # pragma: no branch
             for item in list(self._guidelines_items):
-                self.removeItem(item)
                 self._guidelines_items.remove(item)
+                self.removeItem(item)
+                item.forgetViewBox()
+                item.deleteLater()
             self._guideline_angle = 0.0
             self._guideline_offset = [0.0, 0.0]
             self.setTitle(None)
@@ -3330,10 +3465,10 @@ class ItoolPlotItem(pg.PlotItem):
                 "Selection code is unavailable for main image of 2D data.",
             )
             return
-        data_name = self.watched_data_name
-        if data_name is None:
-            data_name = ""
-        erlab.interactive.utils.copy_to_clipboard(f"{data_name}{self.selection_code}")
+
+        erlab.interactive.utils.copy_to_clipboard(
+            self.get_selection_code(placeholder="")
+        )
 
     @property
     def display_axis(self) -> tuple[int, ...]:
