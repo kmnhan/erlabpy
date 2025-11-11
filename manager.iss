@@ -38,8 +38,8 @@ SolidCompression=yes
 WizardStyle=modern
 
 [InstallDelete]
-; Remove old dist-info directories so that updates work correctly
-Type: filesandordirs; Name: "{app}\_internal\*.dist-info"
+; Remove old files that are no longer needed
+Type: filesandordirs; Name: "{app}\_internal\*"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
