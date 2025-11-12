@@ -56,6 +56,7 @@ extensions = [
     "sphinx_qt_documentation",
     "myst_nb",
     "notfound.extension",
+    "sphinxext.rediraffe",
 ]
 myst_enable_extensions = ["colon_fence", "dollarmath"]
 suppress_warnings = [
@@ -63,6 +64,8 @@ suppress_warnings = [
 ]
 nb_execution_mode = "cache"
 nb_execution_timeout = -1
+
+sd_fontawesome_latex = True
 
 notfound_context = {
     "title": "Page not found",
@@ -256,7 +259,7 @@ intersphinx_mapping = {
     "ipywidgets": ("https://ipywidgets.readthedocs.io/en/stable", None),
     "joblib": ("https://joblib.readthedocs.io/en/latest", None),
     "panel": ("https://panel.holoviz.org", None),
-    "hvplot": ("https://hvplot.holoviz.org", None),
+    "hvplot": ("https://hvplot.holoviz.org/en/docs/latest/", None),
     "nexusformat": ("https://nexpy.github.io/nexpy", None),
     "findiff": ("https://findiff.readthedocs.io/en/stable", None),
 }
@@ -513,7 +516,10 @@ language = "en"
 
 html_title = "ERLabPy"
 html_static_path = ["_static"]
-html_css_files = ["custom.css"]
+html_css_files = [
+    "custom.css",
+    "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css",
+]
 
 html_theme_options: dict[str, object] = {
     "footer_icons": [
@@ -578,4 +584,11 @@ latex_elements = {
 \setsansfont{IBM Plex Sans}
 \setmonofont{IBM Plex Mono}[Scale=0.9,RawFeature={fallback=monofallback}]
 """,
+}
+
+
+# -- Rediraffe settings ------------------------------------------------------
+# https://sphinxext-rediraffe.readthedocs.io/en/latest/
+rediraffe_redirects = {
+    "user-guide/imagetool.md": "user-guide/interactive/imagetool.md",
 }
