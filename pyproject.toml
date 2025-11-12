@@ -86,6 +86,7 @@ docs = [
     "sphinx-qt-documentation>=0.4.1",
     "sphinxcontrib-bibtex>=2.6.3",
     "sphinxcontrib-googleanalytics>=0.4",
+    "sphinxext-rediraffe>=0.3.0",
 ]
 pyinstaller = [
     "cmasher>=1.9.2",
