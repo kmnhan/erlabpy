@@ -34,6 +34,7 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 
+    import dask.array
     import qtawesome
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
@@ -527,6 +528,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigDataEdited()
         Signal to track when the data has been modified by user actions.
+    sigPointValueChanged(value)
+        Signal emitted when the point value at the current cursor has been computed.
+        Only emitted for dask-backed data.
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -566,6 +570,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigWriteHistory = QtCore.Signal()  #: :meta private:
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
+    sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
@@ -1246,7 +1251,86 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigWriteHistory.connect(self.write_state)
+
+        self.sigIndexChanged.connect(self._handle_refresh_dask)
+        self.sigBinChanged.connect(self._handle_refresh_dask)
+
         logger.debug("Connected signals")
+
+    @QtCore.Slot(int, object)
+    @QtCore.Slot(object, object)
+    def _handle_refresh_dask(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None
+    ) -> None:
+        """Handle refresh for dask-backed data.
+
+        This method is called when the data is dask-backed and a refresh is requested.
+        It computes the necessary chunks and updates the plots accordingly.
+
+        For non-dask data, this method does nothing. The updates are calculated by each
+        PlotItem individually.
+
+        This method exists to compute multiple slicing operations across different
+        PlotItems in a single dask.compute() call.
+
+        The implementation essentially loops over multiple PlotItems and executes what
+        :meth:`ItoolPlotItem.refresh_items_data` should do. The lazy dask arrays are
+        returned by :meth:`ItoolPlotItem.collect_dask_objects`.
+
+        Parameters
+        ----------
+        cursor
+            Index of the cursor to refresh.
+        axes
+            Tuple of axis indices to refresh. If `None`, all axes are refreshed.
+
+        """
+        if not self.data_chunked:
+            return
+
+        import dask
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        obj_list = []
+        axes_list = []
+        coord_or_rect_list = []
+        arrays_list_flat = []
+
+        for ax in self.axes:
+            objs, coord_or_rects, arrays = ax.collect_dask_objects(cursor, axes)
+            if objs:
+                obj_list.append(objs)
+                axes_list.append(ax)
+                coord_or_rect_list.append(coord_or_rects)
+                arrays_list_flat.extend(arrays)
+
+        # Also get the point value at the current cursor
+        arrays_list_flat.append(
+            self.array_slicer.point_value(self.current_cursor, binned=True)
+        )
+
+        if arrays_list_flat:
+            arrays_list_flat = dask.compute(*arrays_list_flat)
+
+        arrays_it = iter(arrays_list_flat)
+
+        for ax in self.axes:
+            for c in cursor:
+                ax.refresh_cursor(c)
+
+        for objs, ax, coord_or_rects in zip(
+            obj_list, axes_list, coord_or_rect_list, strict=True
+        ):
+            if len(cursor) == 1:
+                ax.set_active_cursor(cursor[0])
+            ax.vb.blockSignals(True)
+            for obj, coord_or_rect in zip(objs, coord_or_rects, strict=True):
+                obj.update_data(coord_or_rect, next(arrays_it))
+            ax.vb.blockSignals(False)
+
+        self.sigPointValueChanged.emit(float(next(arrays_it)))
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)
@@ -1280,8 +1364,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh_all(
         self, axes: tuple[int, ...] | None = None, only_plots: bool = False
     ) -> None:
-        for c in range(self.n_cursors):
-            self.sigIndexChanged.emit(c, axes)
+        self.sigIndexChanged.emit(tuple(c for c in range(self.n_cursors)), axes)
         if not only_plots:
             for ax in self.axes:
                 ax.refresh_labels()
@@ -2239,8 +2322,20 @@ class ItoolDisplayObject:
                 sliced = sliced.rename(f"{sliced.name} Sliced")
             return sliced
 
+    def fetch_new_data(
+        self,
+    ) -> tuple[
+        npt.NDArray[np.floating] | tuple[float, float, float, float],
+        npt.NDArray[np.floating] | dask.array.Array,
+    ]:
+        raise NotImplementedError
+
+    def update_data(self, *args) -> None:
+        raise NotImplementedError
+
+    @suppressnanwarning
     def refresh_data(self) -> None:
-        pass
+        self.update_data(*self.fetch_new_data())
 
 
 def _pad_1d_plot(
@@ -2262,11 +2357,12 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         self.normalize: bool = False
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
-    def refresh_data(self) -> None:
-        ItoolDisplayObject.refresh_data(self)
-        coord, vals = self.array_slicer.slice_with_coord(
-            self.cursor_index, self.display_axis
-        )
+    def fetch_new_data(
+        self,
+    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating] | dask.array.Array]:
+        return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
+
+    def update_data(self, coord, vals) -> None:
         if self.normalize:
             avg = np.nanmean(vals)
             if not np.isnan(avg):  # pragma: no branch
@@ -2295,12 +2391,15 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
         defaults.update(kargs)
         return self.setImage(*args, **defaults)
 
-    @suppressnanwarning
-    def refresh_data(self) -> None:
-        ItoolDisplayObject.refresh_data(self)
-        rect, img = self.array_slicer.slice_with_coord(
-            self.cursor_index, self.display_axis
-        )
+    def fetch_new_data(
+        self,
+    ) -> tuple[
+        tuple[float, float, float, float],
+        npt.NDArray[np.floating] | dask.array.Array,
+    ]:
+        return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
+
+    def update_data(self, rect, img) -> None:
         self.setImage(
             image=img, rect=rect, autoLevels=not self.slicer_area.levels_locked
         )
@@ -3108,7 +3207,7 @@ class ItoolPlotItem(pg.PlotItem):
                     self.slicer_area.set_value(
                         ax, data_pos_coords[i], update=False, uniform=True, cursor=c
                     )
-                self.slicer_area.refresh(c, self.display_axis)
+            self.slicer_area.refresh_all(self.display_axis)
         else:
             for i, ax in enumerate(self.display_axis):
                 self.slicer_area.set_value(
@@ -3248,10 +3347,12 @@ class ItoolPlotItem(pg.PlotItem):
                 axis, value, update=True, uniform=True, cursor=cursor
             )
         else:
-            for i in range(self.slicer_area.n_cursors):
+            cursors = tuple(c for c in range(self.slicer_area.n_cursors))
+            for c in cursors:
                 self.slicer_area.set_value(
-                    axis, value, update=True, uniform=True, cursor=i
+                    axis, value, update=False, uniform=True, cursor=c
                 )
+            self.sigIndexChanged.emit(cursors, (axis,))
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
@@ -3373,21 +3474,79 @@ class ItoolPlotItem(pg.PlotItem):
             self.setTitle(None)
 
     @QtCore.Slot(int, object)
-    def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
-        self.refresh_cursor(cursor)
+    @QtCore.Slot(object, object)
+    def refresh_items_data(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> None:
+        if self.slicer_area.data_chunked:
+            # When data is chunked, refreshing is handled by _handle_refresh_dask
+            return
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        for c in cursor:
+            # Set cursor lines and spans positions
+            self.refresh_cursor(c)
+
         if axes is not None and all(elem in self.display_axis for elem in axes):
             # When only the indices along display_axis change, it has no effect on the
             # sliced data, so we do not need to refresh the data.
             return
+
+        if len(cursor) == 1:
+            # May have been called from refresh_current upon cursor change, handle
+            # active cursor switching here
+
+            # This hides images corresponding to other plots and hidden items are not
+            # updated due to the isVisible() check below.
+
+            # If multiple cursors are being updated, assume visibility is already set as
+            # expected, so skip
+            self.set_active_cursor(cursor[0])
+
+        self.vb.blockSignals(True)
         for item in self.slicer_data_items:
-            if item.cursor_index != cursor:
+            if item.cursor_index not in cursor or not item.isVisible():
                 continue
-            self.set_active_cursor(cursor)
-            self.vb.blockSignals(True)
             item.refresh_data()
-            self.vb.blockSignals(False)
-            # Block vb state signals, handle axes limits in refresh_all after update by
-            # calling update_manual_range
+        self.vb.blockSignals(False)
+        # Block vb state signals, handle axes limits in refresh_all after update by
+        # calling update_manual_range
+
+    def collect_dask_objects(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> tuple[
+        list[ItoolDisplayObject],
+        list[npt.NDArray[np.floating] | tuple[float, float, float, float]],
+        list[dask.array.Array],
+    ]:
+        # When data is dask-backed, collect all dask arrays in the items that requires
+        # computation
+        if axes is not None and all(elem in self.display_axis for elem in axes):
+            return [], [], []
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        objs: list[ItoolDisplayObject] = []
+        coord_or_rects: list[
+            npt.NDArray[np.floating] | tuple[float, float, float, float]
+        ] = []
+        arrays: list[dask.array.Array] = []
+
+        if len(cursor) == 1:
+            self.set_active_cursor(cursor[0])
+
+        for item in self.slicer_data_items:
+            if item.cursor_index not in cursor or not item.isVisible():
+                continue
+            objs.append(item)
+            c, arr = item.fetch_new_data()
+            coord_or_rects.append(c)
+            arrays.append(typing.cast("dask.array.Array", arr))
+
+        return objs, coord_or_rects, arrays
 
     @QtCore.Slot()
     def refresh_labels(self) -> None:

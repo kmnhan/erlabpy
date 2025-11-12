@@ -251,9 +251,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         try:
             with np.errstate(divide="ignore"):
-                self.spin_dat.setDecimals(
-                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                approx_abs_max = np.nanmax(
+                    np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
+                self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
         except OverflowError:
             self.spin_dat.setDecimals(4)
 
@@ -356,6 +357,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.connect(self.update_colors)
+        self.slicer_area.sigPointValueChanged.connect(self.spin_dat.setValue)
 
     def disconnect_signals(self) -> None:
         super().disconnect_signals()
@@ -366,6 +368,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.disconnect(self.update_colors)
+        self.slicer_area.sigPointValueChanged.disconnect(self.spin_dat.setValue)
 
     @QtCore.Slot()
     def update_colors(self) -> None:
@@ -415,9 +418,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].blockSignals(False)
         try:
             with np.errstate(divide="ignore"):
-                self.spin_dat.setDecimals(
-                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                approx_abs_max = np.nanmax(
+                    np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
+                self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
         except OverflowError:
             self.spin_dat.setDecimals(4)
         self.spin_dat.setValue(
@@ -439,9 +443,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
 
-        self.spin_dat.setValue(
-            self.array_slicer.point_value(self.current_cursor, binned=True)
-        )
+        # For chunked data, updating the point value is expensive, we let slicer_area
+        # emit sigPointValueChanged after computation is done
+        if not self.slicer_area.data_chunked:
+            self.spin_dat.setValue(
+                self.array_slicer.point_value(self.current_cursor, binned=True)
+            )
 
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:

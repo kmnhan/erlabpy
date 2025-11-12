@@ -135,7 +135,7 @@ class ArraySlicer(QtCore.QObject):
 
     Signals
     -------
-    sigIndexChanged(int, tuple)
+    sigIndexChanged(int or tuple of int, tuple or None)
         Emitted when the cursor index is changed. The first argument is the cursor
         index, and the second is a tuple containing the changed axes.
     sigBinChanged(int, tuple)
@@ -166,7 +166,7 @@ class ArraySlicer(QtCore.QObject):
 
     """
 
-    sigIndexChanged = QtCore.Signal(int, object)  #: :meta private:
+    sigIndexChanged = QtCore.Signal(object, object)  #: :meta private:
     sigBinChanged = QtCore.Signal(int, tuple)  #: :meta private:
     sigCursorCountChanged = QtCore.Signal(int)  #: :meta private:
     sigShapeChanged = QtCore.Signal()  #: :meta private:
@@ -401,11 +401,6 @@ class ArraySlicer(QtCore.QObject):
     @property
     def nanmin(self) -> float:
         return self.limits[0]
-
-    @property
-    def absnanmax(self) -> float:
-        mn, mx = self.limits
-        return max(abs(mn), abs(mx))
 
     @functools.cached_property
     def limits(self) -> tuple[float, float]:
@@ -763,10 +758,10 @@ class ArraySlicer(QtCore.QObject):
             return []
         return [axis]
 
-    @QtCore.Slot(int, bool, result=np.floating)
+    @QtCore.Slot(int, bool)
     def point_value(
         self, cursor: int, binned: bool = True
-    ) -> npt.NDArray[np.floating] | np.floating:
+    ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         if binned:
             return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
         return self._obj[tuple(self.get_indices(cursor))].values
@@ -957,16 +952,16 @@ class ArraySlicer(QtCore.QObject):
     ) -> tuple[
         tuple[np.floating, np.floating, np.floating, np.floating]
         | npt.NDArray[np.floating],
-        npt.NDArray[np.floating] | np.floating,
+        npt.NDArray[np.floating] | np.floating | dask.array.Array,
     ]:
         axis = sorted(set(range(self._obj.ndim)) - set(disp))
         return self.array_rect(*disp), self.extract_avg_slice(cursor, axis)
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
-    ) -> npt.NDArray[np.floating] | np.floating:
+    ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         if len(axis) == 0:
-            return np.asarray(self.transposed_data)
+            return self.transposed_data
         if len(axis) == 1:
             return self._bin_along_axis(cursor, axis[0])
         return self._bin_along_multiaxis(cursor, axis)
@@ -992,39 +987,33 @@ class ArraySlicer(QtCore.QObject):
 
     def _bin_along_axis(
         self, cursor: int, axis: int
-    ) -> npt.NDArray[np.floating] | np.floating:
+    ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         axis_val = (axis - 1) % self._obj.ndim
         if not self.get_binned(cursor)[axis]:
-            return np.asarray(
-                self.transposed_data[
-                    (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-                ].squeeze(axis=axis_val)
-            )
+            return self.transposed_data[
+                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
+            ].squeeze(axis=axis_val)
         return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
-            np.asarray(
-                self.transposed_data[
-                    (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-                ]
-            ),
+            self.transposed_data[
+                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
+            ],
             axis=axis_val,
         )
 
     def _bin_along_multiaxis(
         self, cursor: int, axis: Sequence[int]
-    ) -> npt.NDArray[np.floating] | np.floating:
+    ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         if any(self.get_binned(cursor)):
             slices = tuple(self._bin_slice(cursor, ax) for ax in axis)
         else:
             slices = tuple(self.get_indices(cursor)[i] for i in axis)
         axis = tuple((ax - 1) % self._obj.ndim for ax in axis)
-        selected = np.asarray(
-            self.transposed_data[
-                tuple(
-                    slices[axis.index(d)] if d in axis else slice(None)
-                    for d in range(self._obj.ndim)
-                )
-            ]
-        )
+        selected = self.transposed_data[
+            tuple(
+                slices[axis.index(d)] if d in axis else slice(None)
+                for d in range(self._obj.ndim)
+            )
+        ]
         if any(self.get_binned(cursor)):
             return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
                 selected, axis=axis
