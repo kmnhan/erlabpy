@@ -1,6 +1,7 @@
 __all__ = [
     "_dask",
     "_options",
+    "bzplot",
     "colors",
     "data_explorer",
     "derivative",
@@ -20,6 +21,7 @@ __all__ = [
 from . import (
     _dask,
     _options,
+    bzplot,
     colors,
     derivative,
     explorer,

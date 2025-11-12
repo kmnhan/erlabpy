@@ -4,6 +4,12 @@ In addition to ImageTool and the ImageTool manager, other interactive tools for 
 
 Most of these tools can be opened as auxiliary windows from within ImageTool, and are also integrated into the ImageTool manager, allowing you to manage them alongside your ImageTool windows.
 
+More interactive tools will be added in the near future. Current plans include:
+
+- Curve fitting
+- Fourier-based automatic mesh removal
+- Experiment planner
+
 Here are some of the miscellaneous interactive tools provided:
 
 (guide-ktool)=
@@ -184,3 +190,17 @@ It can also be opened from within ImageTool from the right-click context menu of
 :::
 
 Provides a file-browser-like interface for exploring and visualizing ARPES data stored on your disk. See {func}`erlab.interactive.data_explorer` for more information.
+
+## BZPlotter
+
+This tool is not an analysis tool, but rather a utility for creating plots of three-dimensional Brillouin zones and exporting them as vector graphics.
+
+The GUI can be invoked with {class}`erlab.interactive.bzplot.BZPlotter`:
+
+```python
+import erlab.interactive as eri
+
+eri.bzplot.BZPlotter()
+```
+
+Once opened, a matplotlib figure window will appear alongside a control panel for adjusting the lattice parameters. The figure can be rotated interactively using the mouse, and the plot can be exported as any of the formats supported by matplotlib via the standard matplotlib save button.
