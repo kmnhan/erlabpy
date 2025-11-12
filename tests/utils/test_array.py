@@ -15,6 +15,9 @@ from erlab.utils.array import (
     uniform_dims,
 )
 
+suppressnanwarning = np.testing.suppress_warnings()
+suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
+
 
 def test_broadcast_args() -> None:
     def testfunc(x, y):
@@ -247,6 +250,7 @@ def test_minmax_darr_all_nan(use_dask) -> None:
     arr = xr.DataArray(np.array([np.nan, np.nan]))
     if use_dask:
         arr = arr.chunk()
-    mn, mx = minmax_darr(arr, skipna=True)
+    with suppressnanwarning:
+        mn, mx = minmax_darr(arr, skipna=True)
     assert np.isnan(mn)
     assert np.isnan(mx)
