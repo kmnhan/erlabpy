@@ -967,7 +967,9 @@ def test_manager_open_files(
         # Dialogs created are:
         # select loader → failed alert → retry → select loader
         def _choose_wrong_filter(dialog: _NameFilterDialog):
-            assert dialog._valid_name_filters[0] == "xarray HDF5 Files (*.h5)"
+            assert (
+                next(iter(dialog._valid_loaders.keys())) == "xarray HDF5 Files (*.h5)"
+            )
             dialog._button_group.buttons()[-1].setChecked(True)
 
         def _choose_correct_filter(dialog: _NameFilterDialog):
