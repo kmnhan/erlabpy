@@ -66,74 +66,88 @@ _TEST_DATA: dict[str, xr.DataArray] = {
     "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
 )
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
-def test_itool_tools(qtbot, test_data_type, condition) -> None:
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
+def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
     data = _TEST_DATA[test_data_type].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    win.show()
+    if use_dask:
+        data = data.chunk()
 
-    main_image = win.slicer_area.images[0]
+        old_threshold = erlab.interactive.options["io/dask/compute_threshold"]
+        # force compute for dask
+        erlab.interactive.options["io/dask/compute_threshold"] = 0
 
-    logger.info("Test code generation")
-    if data.ndim == 2:
-        assert main_image.get_selection_code(placeholder="") == ""
-    else:
-        assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
+    try:
+        win = itool(data, execute=False)
+        qtbot.addWidget(win)
+        win.show()
 
-    if condition == "binned":
-        logger.info("Set bins")
-        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-        win.array_slicer.set_bin(0, axis=1, value=2, update=data.ndim != 3)
-        if data.ndim == 3:
-            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+        main_image = win.slicer_area.images[0]
 
-    logger.info("Test alt key menu")
-    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
-    main_image.vb.menu.eventFilter(
-        main_image.vb.menu,
-        QtGui.QKeyEvent(
-            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
-        ),
-    )
-    for action in main_image.vb.menu.actions():
-        if action.text().startswith("goldtool"):
-            action.text().endswith("(Crop)")
+        logger.info("Test code generation")
+        if data.ndim == 2:
+            assert main_image.get_selection_code(placeholder="") == ""
+        else:
+            assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
 
-    logger.info("Check access to cropped data")
-    assert isinstance(main_image._current_data_cropped, xr.DataArray)
+        if condition == "binned":
+            logger.info("Set bins")
+            win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+            win.array_slicer.set_bin(0, axis=1, value=2, update=data.ndim != 3)
+            if data.ndim == 3:
+                win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
-    if not test_data_type.endswith("nonuniform"):
-        logger.info("Opening goldtool from main image")
-        main_image.open_in_goldtool()
-        qtbot.wait_until(
-            lambda: isinstance(win.slicer_area._associated_tools_list[-1], GoldTool),
-            timeout=2000,
-        )
-
-        logger.info("Opening restool from main image")
-        main_image.open_in_restool()
-        qtbot.wait_until(
-            lambda: isinstance(
-                win.slicer_area._associated_tools_list[-1], ResolutionTool
+        logger.info("Test alt key menu")
+        main_image.vb.menu.popup(QtCore.QPoint(0, 0))
+        main_image.vb.menu.eventFilter(
+            main_image.vb.menu,
+            QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
             ),
-            timeout=2000,
         )
+        for action in main_image.vb.menu.actions():
+            if action.text().startswith("goldtool"):
+                action.text().endswith("(Crop)")
 
-        logger.info("Opening dtool from main image")
-        main_image.open_in_dtool()
+        logger.info("Check access to cropped data")
+        assert isinstance(main_image._current_data_cropped, xr.DataArray)
+
+        if not test_data_type.endswith("nonuniform"):
+            logger.info("Opening goldtool from main image")
+            main_image.open_in_goldtool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], GoldTool
+                ),
+                timeout=2000,
+            )
+
+            logger.info("Opening restool from main image")
+            main_image.open_in_restool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], ResolutionTool
+                ),
+                timeout=2000,
+            )
+
+            logger.info("Opening dtool from main image")
+            main_image.open_in_dtool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], DerivativeTool
+                ),
+                timeout=2000,
+            )
+
+        logger.info("Open main image in new window")
+        main_image.open_in_new_window()
         qtbot.wait_until(
-            lambda: isinstance(
-                win.slicer_area._associated_tools_list[-1], DerivativeTool
-            ),
+            lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
             timeout=2000,
         )
-
-    logger.info("Open main image in new window")
-    main_image.open_in_new_window()
-    qtbot.wait_until(
-        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
-        timeout=2000,
-    )
+    finally:
+        if use_dask:
+            erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     logger.info("Closing ImageTool")
     win.close()
