@@ -578,6 +578,11 @@ def file_loaders(
             {"engine": "erlab-igor"},
         ),
     }
+    if importlib.util.find_spec("zarr"):  # pragma: no branch
+        valid_loaders["Zarr Store (*.zarr)"] = (
+            xr.open_dataarray,
+            {"engine": "zarr", "chunks": "auto"},
+        )
 
     additional_loaders: dict[str, tuple[Callable, dict]] = {}
     for k in erlab.io.loaders:
