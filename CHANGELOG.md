@@ -1,3 +1,25 @@
+## v3.16.2 (2025-11-13)
+
+### 🐞 Bug Fixes
+
+- **analysis.gold.correct_with_edge:** allow fit result datasets without `modelfit_results` and also allow passing bare polynomial coefficients ([0b903c9](https://github.com/kmnhan/erlabpy/commit/0b903c9f824aba8be7ec919cf34ed73d48a9c989))
+
+### ⚡️ Performance
+
+- **imagetool:** micro-optimizations for slicing ([0c906a3](https://github.com/kmnhan/erlabpy/commit/0c906a375533c1603d27638fc3099b44675f7edb))
+
+- **imagetool:** disable caching transposed data ([2e7cca2](https://github.com/kmnhan/erlabpy/commit/2e7cca29cae03ed80340e11db71d21626eee8bb2))
+
+  Improves memory usage and performance by accessing the data directly without caching transposed versions.
+
+- **imagetool:** greatly improve performance for dask-based data (#197) ([171c18f](https://github.com/kmnhan/erlabpy/commit/171c18f5f89f8f3a404de4ec85b2693cbd429512))
+
+  Previously, indexing/slicing/averaging was done for all plots individually. This commit changes the behavior for dask-based data so that dask.compute is now called only once for a given update, which greatly improves performance when working with dask. Regular data retains the original behavior, but should benefit from additional optimizations such as improved signal handling when moving multiple cursors simultaneously and ignored image updates for plots that are hidden.
+
+### ♻️ Code Refactor
+
+- **io:** add `zarr` to optional dependencies and allow loading dataarrays stored with zarr if installed ([b42ccba](https://github.com/kmnhan/erlabpy/commit/b42ccbafdef6147c66200f78ccf844e2142da9f1))
+
 ## v3.16.1 (2025-11-11)
 
 ### 🐞 Bug Fixes
