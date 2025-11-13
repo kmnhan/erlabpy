@@ -2983,21 +2983,16 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_goldtool(self) -> None:
         if self.is_image:  # pragma: no branch
             data = self.current_data
-
-            if set(data.dims) != {"alpha", "eV"}:
-                QtWidgets.QMessageBox.critical(
-                    None,
-                    "Error",
-                    "Data must have 'alpha' and 'eV' dimensions "
-                    "to be opened in goldtool.",
+            try:
+                self.slicer_area.add_tool_window(
+                    erlab.interactive.goldtool(
+                        data, data_name=self.get_selection_code(), execute=False
+                    )
                 )
-                return
-
-            self.slicer_area.add_tool_window(
-                erlab.interactive.goldtool(
-                    data, data_name=self.get_selection_code(), execute=False
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    None, "Error", "An error occurred while opening goldtool."
                 )
-            )
 
     @QtCore.Slot()
     def open_in_restool(self) -> None:

@@ -37,6 +37,19 @@ else:
     joblib = _lazy.load("joblib")
 
 
+def _eval_edge(modelresult: lmfit.model.ModelResult, *, evalute_at: npt.NDArray):
+    model = modelresult.model
+    if isinstance(model, erlab.analysis.fit.models.FermiEdge2dModel):
+        return np.polynomial.polynomial.polyval(
+            evalute_at,
+            tuple(
+                modelresult.best_values[f"c{i}"]
+                for i in range(modelresult.model.func.poly.degree + 1)
+            ),
+        )
+    return modelresult.eval(x=evalute_at)
+
+
 def correct_with_edge(
     darr: xr.DataArray,
     modelresult: lmfit.model.ModelResult
@@ -44,24 +57,28 @@ def correct_with_edge(
     | npt.NDArray[np.floating]
     | Callable
     | tuple[float, ...],
+    *,
+    along: str = "alpha",
     shift_coords: bool = True,
     plot: bool = False,
     plot_kw: dict | None = None,
     **shift_kwargs,
 ):
-    """
-    Corrects the given data array `darr` with the given values or fit result.
+    """Corrects the given data array `darr` with the given values or fit result.
 
     Parameters
     ----------
     darr
         The input data array to be corrected.
     modelresult
-        The model result that contains the fermi edge information. It can be an instance
+        The model result that contains the Fermi edge information. It can be an instance
         of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
         angle, a fit result dataset that contains polynomial coefficients, a callable
         function that takes an array of angles and returns the corresponding energy
         value, or a tuple of coefficients for a polynomial (lowest order first).
+    along
+        The anglular dimension name in the data. If `None`, it is assumed to be
+        ``"alpha"``.
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output
         contains all the values of the original data. If `False`, the coordinates and
@@ -79,63 +96,80 @@ def correct_with_edge(
     corrected : xarray.DataArray
         The edge corrected data.
     """
-    if plot_kw is None:
+    if plot_kw is None:  # pragma: no branch
         plot_kw = {}
 
     if isinstance(modelresult, xr.Dataset):
         if "modelfit_results" in modelresult:
-            modelresult = modelresult.modelfit_results.values.item()
+            results = modelresult.modelfit_results
+
+            if results.size == 1:
+                modelresult = results.values.item()
+            else:
+                modelresult = xr.apply_ufunc(
+                    _eval_edge,
+                    results,
+                    output_core_dims=[[along]],
+                    output_dtypes=[float],
+                    dask="parallelized",
+                    dask_gufunc_kwargs={"output_sizes": {along: darr.sizes[along]}},
+                    vectorize=True,
+                    kwargs={"evalute_at": darr[along].values},
+                ).assign_coords({along: darr[along]})
+
         elif "modelfit_coefficients" in modelresult:
+            # Only coefficients are provided
             coeffs = modelresult.modelfit_coefficients
             if all(p.startswith("c") for p in coeffs.param.values):
-                modelresult = tuple(
-                    float(coeffs.sel(param=f"c{i}")) for i in range(len(coeffs.param))
-                )
+                coeffs = coeffs.assign_coords(
+                    param=[int(d.removeprefix("c")) for d in coeffs.param.values]
+                ).rename(param="degree")
+                modelresult = xr.polyval(darr[along], coeffs)
             else:
                 raise ValueError(
                     "Fit result dataset does not seem to contain valid polynomial "
                     "coefficients."
                 )
-
-    if isinstance(modelresult, lmfit.model.ModelResult):
-        if isinstance(modelresult.model, erlab.analysis.fit.models.FermiEdge2dModel):
-            modelresult = tuple(
-                modelresult.best_values[f"c{i}"]
-                for i in range(modelresult.model.func.poly.degree + 1)
-            )
         else:
-            modelresult = modelresult.eval(x=darr.alpha)
+            raise ValueError(
+                "Fit result dataset does not seem to contain valid fit results."
+            )
+    if isinstance(modelresult, lmfit.model.ModelResult):
+        modelresult = _eval_edge(modelresult, evalute_at=darr[along].values)
 
     if callable(modelresult):
-        edge_quad = modelresult(darr.alpha.values)
+        edge_quad = modelresult(darr[along].values)
 
     elif isinstance(modelresult, tuple):
-        edge_quad = np.polynomial.polynomial.polyval(darr.alpha, modelresult)
+        edge_quad = np.polynomial.polynomial.polyval(darr[along], modelresult)
 
-    elif isinstance(modelresult, np.ndarray | xr.DataArray):
-        if len(darr.alpha) != len(modelresult):
+    elif isinstance(modelresult, np.ndarray):
+        if len(darr[along]) != len(modelresult):
             raise ValueError(
-                "Length of modelresult must be equal to the length of alpha in data"
+                "Length of modelresult array does not match length of data along "
+                f"dimension '{along}'."
             )
+        edge_quad = modelresult
+
+    elif isinstance(modelresult, xr.DataArray):
         edge_quad = modelresult
 
     else:
         raise TypeError(
-            "modelresult must be one of "
-            "lmfit.model.ModelResult, "
-            "and np.ndarray or a callable"
+            "modelresult must be one of lmfit.model.ModelResult, xarray.Dataset, "
+            "numpy.ndarray, callable, or tuple of float."
         )
 
     if isinstance(edge_quad, np.ndarray):
-        edge_quad = xr.DataArray(
-            edge_quad, coords={"alpha": darr.alpha}, dims=["alpha"]
-        )
+        edge_quad = xr.DataArray(edge_quad, coords={along: darr[along]}, dims=[along])
 
     corrected = erlab.analysis.transform.shift(
         darr, -edge_quad, "eV", shift_coords=shift_coords, **shift_kwargs
     )
 
     if plot is True:
+        if edge_quad.ndim > 1:
+            raise ValueError("Plotting is only supported for 1D edge corrections.")
         axes = typing.cast(
             "npt.NDArray", plt.subplots(1, 2, layout="constrained", figsize=(10, 5))[1]
         )
@@ -145,7 +179,7 @@ def correct_with_edge(
 
         if darr.ndim > 2:
             avg_dims = list(darr.dims)[:]
-            avg_dims.remove("alpha")
+            avg_dims.remove(along)
             avg_dims.remove("eV")
             erlab.plotting.plot_array(darr.mean(avg_dims), ax=axes[0], **plot_kw)
             erlab.plotting.plot_array(corrected.mean(avg_dims), ax=axes[1], **plot_kw)
@@ -165,6 +199,7 @@ def correct_with_edge(
 def edge(
     gold: xr.DataArray,
     *,
+    along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -181,6 +216,7 @@ def edge(
     parallel_kw: dict | None = None,
     parallel_obj: joblib.Parallel | None = None,
     return_full: bool = False,
+    drop_nans: bool = False,
     **kwargs,
 ) -> tuple[xr.DataArray, xr.DataArray] | xr.Dataset:
     """
@@ -192,8 +228,14 @@ def edge(
     ----------
     gold
         The gold data to fit the edge model to.
+    along
+        The dimension along which to parallelize the fitting. By default ``"alpha"``. It
+        is better to choose the dimension with the largest number of points.
+
+        If `gold` is chunked, this parameter is only used to specify the dimension along
+        which to apply `angle_range`.
     angle_range
-        The range of alpha values to consider.
+        The range of values along the ``along`` dimension to consider.
     eV_range
         The range of eV values to consider.
     bin_size
@@ -229,6 +271,11 @@ def edge(
         `parallel_kw` will be ignored.
     return_full
         Whether to return the full fit results, by default `False`.
+    drop_nans
+        Whether to drop fits that resulted in NaN values, by default `False`. If `True`,
+        the function will always return the computed data even for chunked inputs,
+        because dropping NaNs requires computing all fit results. If ``return_full`` is
+        `True`, this option is ignored.
     **kwargs
         Additional keyword arguments to fitting.
 
@@ -243,10 +290,12 @@ def edge(
 
     """
     if any(b != 1 for b in bin_size):
-        gold_binned = gold.coarsen(alpha=bin_size[0], eV=bin_size[1], boundary="trim")
+        gold_binned = gold.coarsen(
+            {along: bin_size[0], "eV": bin_size[1]}, boundary="trim"
+        )
         gold = gold_binned.mean()  # type: ignore[attr-defined]
 
-    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+    gold_sel = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
 
     if normalize:
         # Normalize energy coordinates
@@ -290,16 +339,12 @@ def edge(
         params["back1"] = lmfit.Parameter("center", value=fixed_center, vary=False)
 
     # Assuming Poisson noise, the weights are the square root of the counts.
-    weights = 1 / np.sqrt(np.asarray(gold_sel.sum("eV").values))
+    weights = (1 / gold_sel.sum("eV").clip(min=1e-15)) ** 0.5
 
-    n_fits = len(gold_sel.alpha)
+    n_fits = len(gold_sel[along])
 
     if parallel_obj is None:
-        if n_fits > 20:
-            parallel_kw.setdefault("n_jobs", -1)
-        else:
-            parallel_kw.setdefault("n_jobs", 1)
-
+        parallel_kw.setdefault("n_jobs", -1 if n_fits > 40 else 1)
         parallel_kw.setdefault("max_nbytes", None)
         parallel_kw.setdefault("return_as", "generator")
         parallel_kw.setdefault("pre_dispatch", "n_jobs")
@@ -319,82 +364,91 @@ def edge(
                     "Using UFloat objects with std_dev==0 may give unexpected results."
                 ),
             )
-            pars = model.guess(data, x=data["eV"]).update(params)
-
             return data.xlm.modelfit(
                 "eV",
                 model=model,
-                params=pars,
+                params=params,
                 method=method,
                 scale_covar=scale_covar,
                 weights=w,
+                guess=True,
                 **kwargs,
             )
 
-    tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
+    if gold_sel.chunks is None:
+        tqdm_kw = {"desc": "Fitting", "total": n_fits, "disable": not progress}
 
-    if parallel_obj.return_generator:
-        tqdm = erlab.utils.misc.get_tqdm()
+        if parallel_obj.return_generator:
+            tqdm = erlab.utils.misc.get_tqdm()
 
-        fit_result = tqdm(
-            parallel_obj(
-                joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
-                for i in range(n_fits)
-            ),
-            **tqdm_kw,
-        )
-    elif progress:
-        with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
+            fit_result = tqdm(
+                parallel_obj(
+                    joblib.delayed(_fit)(
+                        gold_sel.isel({along: i}), weights.isel({along: i})
+                    )
+                    for i in range(n_fits)
+                ),
+                **tqdm_kw,
+            )
+        elif progress:
+            with erlab.utils.parallel.joblib_progress(**tqdm_kw) as _:
+                fit_result = parallel_obj(
+                    joblib.delayed(_fit)(
+                        gold_sel.isel({along: i}), weights.isel({along: i})
+                    )
+                    for i in range(n_fits)
+                )
+        else:
             fit_result = parallel_obj(
-                joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
+                joblib.delayed(_fit)(
+                    gold_sel.isel({along: i}), weights.isel({along: i})
+                )
                 for i in range(n_fits)
             )
+        fit_result = xr.concat(fit_result, along)
     else:
-        fit_result = parallel_obj(
-            joblib.delayed(_fit)(gold_sel.isel(alpha=i), weights[i])
-            for i in range(n_fits)
-        )
-
-    fit_result = xr.concat(fit_result, "alpha")
+        fit_result = _fit(gold_sel, weights)
 
     if return_full:
         return fit_result
 
-    xval: list[npt.NDArray] = []
-    res_vals = []
+    vals = fit_result.modelfit_coefficients.sel(param="center").drop_vars("param")
+    errs = fit_result.modelfit_stderr.sel(param="center").drop_vars("param")
 
-    for i, r in enumerate(fit_result.modelfit_results.values):
-        if hasattr(r, "uvars"):
-            center_ufloat = r.uvars["center"]
+    if drop_nans:
+        if vals.chunks is not None:
+            import dask
 
-            if normalize:
-                center_ufloat = center_ufloat * stdx + avgx
+            vals, errs = dask.compute(vals, errs)
 
-            if not np.isnan(center_ufloat.std_dev):
-                xval.append(gold_sel.alpha.values[i])
-                res_vals.append([center_ufloat.nominal_value, center_ufloat.std_dev])
+        mask = errs.isnull()
+        vals, errs = (vals.where(~mask, drop=True), errs.where(~mask, drop=True))
 
-    if len(res_vals) == 0:
-        erlab.utils.misc.emit_user_level_warning(
-            "No valid fits found, returning empty arrays"
-        )
-        return xr.DataArray([], dims=["alpha"]), xr.DataArray([], dims=["alpha"])
+    if normalize:
+        vals = vals * stdx + avgx
+        errs = errs * stdx
 
-    coords = {"alpha": np.asarray(xval)}
-    yval, yerr = np.asarray(res_vals).T
+    # Clear attrs to match previous behavior
+    vals.attrs = {}
+    errs.attrs = {}
 
-    return xr.DataArray(yval, coords=coords), xr.DataArray(yerr, coords=coords)
+    return vals, errs
 
 
 def poly_from_edge(
-    center, weights=None, degree=4, method="least_squares", scale_covar=True
+    center: xr.DataArray,
+    weights=None,
+    degree: int = 4,
+    method="least_squares",
+    scale_covar=True,
+    along: str = "alpha",
 ) -> xr.Dataset:
     model = erlab.analysis.fit.models.PolynomialModel(degree=degree)
     return center.xlm.modelfit(
-        "alpha",
+        along,
         model=model,
-        params=model.guess(center.values, x=center["alpha"].values),
-        weights=np.asarray(weights),
+        guess=True,
+        weights=weights,
         method=method,
         scale_covar=scale_covar,
         output_result=True,
@@ -402,15 +456,18 @@ def poly_from_edge(
 
 
 def spline_from_edge(
-    center, weights: npt.ArrayLike | None = None, lam: float | None = None
+    center,
+    weights: npt.ArrayLike | None = None,
+    lam: float | None = None,
+    along: str = "alpha",
 ) -> scipy.interpolate.BSpline:
     return scipy.interpolate.make_smoothing_spline(
-        center.alpha.values, center.values, w=np.asarray(weights), lam=lam
+        center[along].values, center.values, w=np.asarray(weights), lam=lam
     )
 
 
 def _plot_gold_fit(
-    fig, gold, angle_range, eV_range, center_arr, center_stderr, res
+    fig, gold, along, angle_range, eV_range, center_arr, center_stderr, res
 ) -> None:
     if isinstance(res, xr.Dataset) and "modelfit_results" in res:
         is_callable = False
@@ -450,7 +507,7 @@ def _plot_gold_fit(
     )
     ax0.add_patch(rect)
     ax0.errorbar(
-        center_arr.alpha,
+        center_arr[along],
         center_arr,
         center_stderr,
         fmt="o",
@@ -461,24 +518,24 @@ def _plot_gold_fit(
     )
 
     if is_callable:
-        ax0.plot(gold.alpha, res(gold.alpha), "r-", lw=0.75)
+        ax0.plot(gold[along], res(gold[along]), "r-", lw=0.75)
     else:
-        ax0.plot(gold.alpha, res.eval(res.params, x=gold.alpha), "r-", lw=0.75)
+        ax0.plot(gold[along], res.eval(res.params, x=gold[along]), "r-", lw=0.75)
     ax0.set_ylim(gold.eV[[0, -1]])
 
     data_kws = {"lw": 0.5, "ms": 2, "mfc": "w", "zorder": 0, "c": "0.4", "capsize": 0}
     fit_kws = {"c": "r", "lw": 0.75}
 
     if is_callable:
-        residuals = res(center_arr.alpha.values) - center_arr.values
+        residuals = res(center_arr[along].values) - center_arr.values
         x_eval = np.linspace(
-            min(center_arr.alpha.values),
-            max(center_arr.alpha.values),
-            3 * len(center_arr.alpha),
+            min(center_arr[along].values),
+            max(center_arr[along].values),
+            3 * len(center_arr[along]),
         )
         ax1.axhline(0, **fit_kws)
         ax1.errorbar(
-            center_arr.alpha,
+            center_arr[along],
             residuals,
             yerr=lmfit.model.propagate_err(
                 center_arr.values, center_stderr.values, "abs"
@@ -489,7 +546,7 @@ def _plot_gold_fit(
         ax1.set_ylabel("residuals")
 
         ax2.errorbar(
-            center_arr.alpha,
+            center_arr[along],
             center_arr.values,
             yerr=lmfit.model.propagate_err(
                 center_arr.values, center_stderr.values, "abs"
@@ -508,7 +565,7 @@ def _plot_gold_fit(
             ax=ax2,
             data_kws=data_kws,
             fit_kws=fit_kws,
-            numpoints=3 * len(center_arr.alpha),
+            numpoints=3 * len(center_arr[along]),
         )
         ax1.relim()
         ax2.relim()
@@ -519,6 +576,7 @@ def _plot_gold_fit(
 def poly(
     gold: xr.DataArray,
     *,
+    along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -542,6 +600,7 @@ def poly(
         "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
+            along=along,
             angle_range=angle_range,
             eV_range=eV_range,
             bin_size=bin_size,
@@ -554,6 +613,7 @@ def poly(
             normalize=normalize,
             parallel_kw=parallel_kw,
             scale_covar=scale_covar_edge,
+            drop_nans=True,
         ),
     )
 
@@ -563,14 +623,15 @@ def poly(
         degree=degree,
         method=method,
         scale_covar=scale_covar,
+        along=along,
     )
     if plot:
         _plot_gold_fit(
-            fig, gold, angle_range, eV_range, center_arr, center_stderr, results
+            fig, gold, along, angle_range, eV_range, center_arr, center_stderr, results
         )
     if correct:
         if crop_correct:
-            gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+            gold = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
         corr = correct_with_edge(gold, results, plot=False)
         return results, corr
     return results
@@ -579,6 +640,7 @@ def poly(
 def spline(
     gold: xr.DataArray,
     *,
+    along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
     bin_size: tuple[int, int] = (1, 1),
@@ -600,6 +662,7 @@ def spline(
         "tuple[xr.DataArray, xr.DataArray]",
         edge(
             gold,
+            along=along,
             angle_range=angle_range,
             eV_range=eV_range,
             bin_size=bin_size,
@@ -611,15 +674,18 @@ def spline(
             method=method,
             parallel_kw=parallel_kw,
             scale_covar=scale_covar_edge,
+            drop_nans=True,
         ),
     )
 
     spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
     if plot:
-        _plot_gold_fit(fig, gold, angle_range, eV_range, center_arr, center_stderr, spl)
+        _plot_gold_fit(
+            fig, gold, along, angle_range, eV_range, center_arr, center_stderr, spl
+        )
     if correct:
         if crop_correct:
-            gold = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+            gold = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
         corr = correct_with_edge(gold, spl, plot=False)
         return spl, corr
     return spl
