@@ -306,10 +306,10 @@ class _NameFilterDialog(QtWidgets.QDialog):
         layout.addWidget(self.func_label)
 
         self.kwargs_line = QtWidgets.QLineEdit()
-        font = self.kwargs_line.font()
-        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
-        font.setFamily("monospace")
-        self.kwargs_line.setFont(font)
+        self.kwargs_line.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
+
         layout.addWidget(self.kwargs_line)
 
         button_box = QtWidgets.QDialogButtonBox(

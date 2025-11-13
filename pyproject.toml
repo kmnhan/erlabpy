@@ -44,7 +44,7 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
-    "xarray-lmfit>=0.3.0",
+    "xarray-lmfit>=0.4.1",
 ]
 
 [project.optional-dependencies]

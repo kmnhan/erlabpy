@@ -59,8 +59,9 @@ class EdgeFitter(QtCore.QThread):
     sigIterated = QtCore.Signal(int)
     sigFinished = QtCore.Signal()
 
-    def set_params(self, data, x0, y0, x1, y1, params) -> None:
+    def set_params(self, data, along, x0, y0, x1, y1, params) -> None:
         self.data = data.copy()
+        self.along = along
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
@@ -92,6 +93,7 @@ class EdgeFitter(QtCore.QThread):
                 "tuple[xr.DataArray, xr.DataArray]",
                 erlab.analysis.gold.edge(
                     gold=self.data,
+                    along=self.along,
                     angle_range=self.x_range,
                     eV_range=self.y_range,
                     bin_size=(self.params["Bin x"], self.params["Bin y"]),
@@ -104,6 +106,7 @@ class EdgeFitter(QtCore.QThread):
                     scale_covar=self.params["Scale cov"],
                     progress=False,
                     parallel_obj=self.parallel_obj,
+                    drop_nans=True,
                 ),
             )
         self.sigFinished.emit()
@@ -151,12 +154,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         execute: bool = True,
         **kwargs,
     ) -> None:
-        if set(data.dims) != {"alpha", "eV"}:
-            raise ValueError(
-                "`data` must be a DataArray with dimensions `alpha` and `eV`"
-            )
+        if data.ndim != 2 or "eV" not in data.dims:
+            raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
         if data.dims[0] != "eV":
             data = data.copy().T
+
+        self._along_dim: str = str(data.dims[1])
 
         super().__init__(
             data,
@@ -393,9 +396,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         # Resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
-        ang_span = self.data.alpha.values[-1] - self.data.alpha.values[0]
-        x1 = self.data.alpha.values.mean() + ang_span * 0.45
-        x0 = self.data.alpha.values.mean() - ang_span * 0.45
+        ang_span = (
+            self.data[self._along_dim].values[-1] - self.data[self._along_dim].values[0]
+        )
+        x1 = self.data[self._along_dim].values.mean() + ang_span * 0.45
+        x0 = self.data[self._along_dim].values.mean() - ang_span * 0.45
         y1 = self.data.eV.values[-1] - eV_span * 0.015
         y0 = y1 - eV_span * 0.3
         self.params_roi.modify_roi(x0, y0, x1, y1)
@@ -438,12 +443,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
         params = self.params_edge.values
         n_total: int = len(
-            self.data.alpha.coarsen(alpha=params["Bin x"], boundary="trim")
+            self.data[self._along_dim]
+            .coarsen({self._along_dim: int(params["Bin x"])}, boundary="trim")
             .mean()
-            .sel(alpha=slice(x0, x1))
+            .sel({self._along_dim: slice(x0, x1)})
         )
         self.progress.setMaximum(n_total)
-        self.fitter.set_params(self.data, x0, y0, x1, y1, params)
+        self.fitter.set_params(self.data, self._along_dim, x0, y0, x1, y1, params)
         self.fitter.start()
 
     @QtCore.Slot()
@@ -458,7 +464,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             typing.cast("xr.DataArray", self.fitter.edge_stderr),
         )
 
-        xval = self.edge_center.alpha.values
+        xval = self.edge_center[self._along_dim].values
         yval = self.edge_center.values
         for i in range(2):
             self.scatterplots[i].setData(x=xval, y=yval)
@@ -488,14 +494,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         params = self.edge_params
 
         for i in range(2):
-            xval = self.data.alpha.values
+            xval = self.data[self._along_dim].values
             if i == 1 and params["Residuals"]:
                 yval = np.zeros_like(xval)
             else:
                 yval = edgefunc(xval)
             self.polycurves[i].setData(x=xval, y=yval)
 
-        xval = self.edge_center.alpha.values
+        xval = self.edge_center[self._along_dim].values
         if params["Residuals"]:
             yval = edgefunc(xval) - self.edge_center.values
         else:
@@ -519,6 +525,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             degree=params["Degree"],
             method=self.params_edge.values["Method"],
             scale_covar=params["Scale cov"],
+            along=self._along_dim,
         )
 
         return lambda x: self.result.modelfit_results.values.item().eval(x=x)
@@ -531,6 +538,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             center=self.edge_center,
             weights=np.asarray(1 / self.edge_stderr),
             lam=params["lambda"],
+            along=self._along_dim,
         )
         return self.result
 
@@ -540,6 +548,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         return erlab.analysis.gold.correct_with_edge(
             target,
             self.result,
+            along=self._along_dim,
             plot=False,
             shift_coords=self.edge_params["Shift coords"],
         )
@@ -574,6 +583,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
 
         arg_dict: dict[str, typing.Any] = {
+            "along": self._along_dim,
             "angle_range": (x0, x1),
             "eV_range": (y0, y1),
             "bin_size": (p0["Bin x"], p0["Bin y"]),
@@ -613,8 +623,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if self.data_corr is not None:
             code_str += "\n" + erlab.interactive.utils.generate_code(
                 erlab.analysis.gold.correct_with_edge,
-                [f"|{self._argnames['data_corr']}|", "|modelresult|"],
-                {"shift_coords": p1["Shift coords"]},
+                args=[f"|{self._argnames['data_corr']}|", "|modelresult|"],
+                kwargs={"along": self._along_dim, "shift_coords": p1["Shift coords"]},
                 module="era.gold",
                 assign="corrected",
             )
@@ -1115,9 +1125,10 @@ def goldtool(
     Parameters
     ----------
     data
-        The data to perform Fermi edge fitting on.
+        The data to perform Fermi edge fitting on. Must be a 2D DataArray with an 'eV'
+        dimension.
     data_corr
-        The data to correct with the edge. Defaults to `data`.
+        The data to correct with the edge. Defaults to ``data``.
     data_name
         Name of the data used in generating the code snipped copied to the clipboard.
         Overrides automatic detection.
