@@ -1618,15 +1618,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             func, kargs = next(iter(valid_loaders.values()))
             self._recent_name_filter = next(iter(valid_loaders.keys()))
         else:
-            valid_name_filters: list[str] = list(valid_loaders.keys())
-
-            dialog = _NameFilterDialog(self, valid_name_filters)
+            dialog = _NameFilterDialog(self, valid_loaders)
             dialog.check_filter(self._recent_name_filter)
 
             if dialog.exec():
-                selected = dialog.checked_filter()
-                func, kargs = valid_loaders[selected]
-                self._recent_name_filter = selected
+                self._recent_name_filter, func, kargs = dialog.checked_filter()
             else:
                 return
 

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import ast
 import typing
 import weakref
 
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
     import xarray
 
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -245,20 +248,69 @@ class _StoreDialog(QtWidgets.QDialog):
         super().accept()
 
 
+def _kwargs_to_text(kwargs: dict) -> str:
+    """Convert a kwargs dict to a Python-like argument list."""
+    return ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+
+
+def _text_to_kwargs(text: str) -> dict[str, typing.Any]:
+    """Parse ``a=1, b='x'`` style text into a kwargs dict."""
+    text = text.strip()
+    if not text:
+        return {}
+
+    # Wrap in fake function call so Python can parse it as a Call node
+    expr = ast.parse(f"f({text})", mode="eval")
+
+    if not isinstance(expr.body, ast.Call):
+        raise TypeError("Input must be a comma-separated list of keyword arguments")
+
+    call = expr.body
+    if call.args:
+        raise ValueError("Only keyword arguments are supported")
+
+    result: dict = {}
+    for kw in call.keywords:
+        try:
+            value = ast.literal_eval(kw.value)
+        except ValueError as e:
+            raise ValueError(f"Value for {kw.arg!r} is not a valid literal") from e
+        result[kw.arg] = value
+
+    return result
+
+
 class _NameFilterDialog(QtWidgets.QDialog):
-    def __init__(self, parent: ImageToolManager, valid_name_filters: list[str]) -> None:
+    def __init__(
+        self, parent: ImageToolManager, valid_loaders: dict[str, tuple[Callable, dict]]
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Select Loader")
 
-        self._valid_name_filters = valid_name_filters
+        self._valid_loaders = valid_loaders
 
         layout = QtWidgets.QVBoxLayout(self)
         self._button_group = QtWidgets.QButtonGroup(self)
 
-        for i, name in enumerate(valid_name_filters):
+        for i, name in enumerate(self._valid_loaders.keys()):
             radio_button = QtWidgets.QRadioButton(name)
             self._button_group.addButton(radio_button, i)
             layout.addWidget(radio_button)
+
+        self._button_group.idToggled.connect(self._update_func_kwargs)
+
+        layout.addSpacing(10)
+        layout.addStretch()
+
+        self.func_label = QtWidgets.QLabel()
+        layout.addWidget(self.func_label)
+
+        self.kwargs_line = QtWidgets.QLineEdit()
+        font = self.kwargs_line.font()
+        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        font.setFamily("monospace")
+        self.kwargs_line.setFont(font)
+        layout.addWidget(self.kwargs_line)
 
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -269,14 +321,26 @@ class _NameFilterDialog(QtWidgets.QDialog):
         layout.addWidget(button_box)
 
     def check_filter(self, name_filter: str | None) -> None:
-        self._button_group.buttons()[
-            self._valid_name_filters.index(name_filter)
-            if name_filter in self._valid_name_filters
+        index = (
+            tuple(self._valid_loaders.keys()).index(name_filter)
+            if name_filter in self._valid_loaders
             else 0
-        ].setChecked(True)
+        )
+        self._button_group.buttons()[index].setChecked(True)
+        self._update_func_kwargs()
 
-    def checked_filter(self) -> str:
-        return self._valid_name_filters[self._button_group.checkedId()]
+    @QtCore.Slot()
+    def _update_func_kwargs(self) -> None:
+        func, kargs = list(self._valid_loaders.values())[self._button_group.checkedId()]
+        self.func_label.setText(f"Arguments for <code>{func.__name__}</code>:")
+        self.kwargs_line.setText(_kwargs_to_text(kargs))
+
+    def checked_filter(self) -> tuple[str, Callable, dict[str, typing.Any]]:
+        idx = self._button_group.checkedId()
+        filter_name = list(self._valid_loaders.keys())[idx]
+        func = self._valid_loaders[filter_name][0]
+        kwargs = _text_to_kwargs(self.kwargs_line.text())
+        return filter_name, func, kwargs
 
 
 class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
