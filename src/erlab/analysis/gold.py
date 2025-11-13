@@ -42,7 +42,8 @@ def correct_with_edge(
     modelresult: lmfit.model.ModelResult
     | xr.Dataset
     | npt.NDArray[np.floating]
-    | Callable,
+    | Callable
+    | tuple[float, ...],
     shift_coords: bool = True,
     plot: bool = False,
     plot_kw: dict | None = None,
@@ -58,9 +59,9 @@ def correct_with_edge(
     modelresult
         The model result that contains the fermi edge information. It can be an instance
         of `lmfit.model.ModelResult`, a numpy array containing the edge position at each
-        angle, a fit result dataset that contains polynomial coefficients, or a callable
+        angle, a fit result dataset that contains polynomial coefficients, a callable
         function that takes an array of angles and returns the corresponding energy
-        value.
+        value, or a tuple of coefficients for a polynomial (lowest order first).
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output
         contains all the values of the original data. If `False`, the coordinates and
@@ -81,25 +82,35 @@ def correct_with_edge(
     if plot_kw is None:
         plot_kw = {}
 
-    if isinstance(modelresult, xr.Dataset) and "modelfit_results" in modelresult:
-        modelresult = modelresult.modelfit_results.values.item()
+    if isinstance(modelresult, xr.Dataset):
+        if "modelfit_results" in modelresult:
+            modelresult = modelresult.modelfit_results.values.item()
+        elif "modelfit_coefficients" in modelresult:
+            coeffs = modelresult.modelfit_coefficients
+            if all(p.startswith("c") for p in coeffs.param.values):
+                modelresult = tuple(
+                    float(coeffs.sel(param=f"c{i}")) for i in range(len(coeffs.param))
+                )
+            else:
+                raise ValueError(
+                    "Fit result dataset does not seem to contain valid polynomial "
+                    "coefficients."
+                )
 
     if isinstance(modelresult, lmfit.model.ModelResult):
         if isinstance(modelresult.model, erlab.analysis.fit.models.FermiEdge2dModel):
-            edge_quad = np.polynomial.polynomial.polyval(
-                darr.alpha,
-                np.array(
-                    [
-                        modelresult.best_values[f"c{i}"]
-                        for i in range(modelresult.model.func.poly.degree + 1)
-                    ]
-                ),
+            modelresult = tuple(
+                modelresult.best_values[f"c{i}"]
+                for i in range(modelresult.model.func.poly.degree + 1)
             )
         else:
-            edge_quad = modelresult.eval(x=darr.alpha)
+            modelresult = modelresult.eval(x=darr.alpha)
 
-    elif callable(modelresult):
+    if callable(modelresult):
         edge_quad = modelresult(darr.alpha.values)
+
+    elif isinstance(modelresult, tuple):
+        edge_quad = np.polynomial.polynomial.polyval(darr.alpha, modelresult)
 
     elif isinstance(modelresult, np.ndarray | xr.DataArray):
         if len(darr.alpha) != len(modelresult):
