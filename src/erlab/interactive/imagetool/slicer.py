@@ -15,7 +15,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Sequence
+    from collections.abc import Hashable, Iterator, Sequence
 
     import dask.array
 
@@ -594,9 +594,19 @@ class ArraySlicer(QtCore.QObject):
             return []
         return [axis]
 
+    def _binned_iter(self, cursor: int) -> Iterator[bool]:
+        """Iterate over whether each axis is binned for the given cursor."""
+        for b in self.get_bins(cursor):
+            yield b != 1
+
     @QtCore.Slot(int, result=tuple)
     def get_binned(self, cursor: int) -> tuple[bool, ...]:
-        return tuple(b != 1 for b in self.get_bins(cursor))
+        """Return whether each axis is binned for the given cursor."""
+        return tuple(self._binned_iter(cursor))
+
+    def is_binned(self, cursor: int) -> bool:
+        """Return whether any axis is binned for the given cursor."""
+        return any(self._binned_iter(cursor))
 
     @QtCore.Slot(int, result=list)
     def get_indices(self, cursor: int) -> list[int]:
@@ -900,11 +910,13 @@ class ArraySlicer(QtCore.QObject):
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
-        if len(axis) == 0:
-            return self._obj.data
-        if len(axis) == 1:
-            return self._bin_along_axis(cursor, axis[0])
-        return self._bin_along_multiaxis(cursor, axis)
+        match len(axis):
+            case 0:
+                return self._obj.data
+            case 1:
+                return self._bin_along_axis(cursor, axis[0])
+            case _:
+                return self._bin_along_multiaxis(cursor, axis)
 
     def span_bounds(self, cursor: int, axis: int) -> npt.NDArray[np.floating]:
         slc = self._bin_slice(cursor, axis)
@@ -940,17 +952,20 @@ class ArraySlicer(QtCore.QObject):
     def _bin_along_multiaxis(
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
-        if any(self.get_binned(cursor)):
-            slices = tuple(self._bin_slice(cursor, ax) for ax in axis)
-        else:
-            slices = tuple(self.get_indices(cursor)[i] for i in axis)
+        binned: bool = self.get_binned(cursor)
         selected = self._obj.data[
             tuple(
-                slices[axis.index(d)] if d in axis else slice(None)
-                for d in range(self._obj.ndim)
+                (
+                    self._bin_slice(cursor, ax)
+                    if binned
+                    else self.get_indices(cursor)[ax]
+                )
+                if ax in axis
+                else slice(None)
+                for ax in range(self._obj.ndim)
             )
         ]
-        if any(self.get_binned(cursor)):
+        if binned:
             return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
                 selected, axis=axis
             )
