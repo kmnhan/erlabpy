@@ -1025,15 +1025,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         finally:
             self._write_history = original
 
-    # def on_close(self) -> None:
-    #     if hasattr(self, "array_slicer"):
-    #         self.array_slicer.clear_cache()
-    #     if hasattr(self, "data"):
-    #         self.data.close()
-    #     if hasattr(self, "_data") and self._data is not None:
-    #         self._data.close()
-    #         del self._data
-
     @QtCore.Slot()
     def write_state(self) -> None:
         if not self._write_history:
@@ -1629,7 +1620,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.array_slicer._obj[:] = values
 
         if update:  # pragma: no branch
-            self.array_slicer.clear_val_cache(include_vals=True)
+            self.array_slicer.clear_val_cache()
             self.refresh_all(only_plots=True)
 
             # This will update colorbar limits if visible

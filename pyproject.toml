@@ -1,6 +1,6 @@
 [project]
 name = "erlab"
-version = "3.16.1"
+version = "3.16.2"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
@@ -50,7 +50,12 @@ dependencies = [
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
 viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
-io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
+io = [
+    "astropy>=5.1.1",
+    "libarchive-c>=5.2",
+    "nexusformat>=1.0.6",
+    "zarr>=3.1.2",
+]
 perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
 misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0"]
 
@@ -64,7 +69,7 @@ dev = [
     "mypy[faster-cache,reports]>=1.16.0",
     "pooch>=1.8.0",
     "pre-commit>=3.7.0",
-    "pytest>=8.3.0",
+    "pytest>=9.0.0",
     "pytest-cov>=7.0.0",
     "pytest-datadir>=1.5.0",
     "pytest-env>=1.1.5",
@@ -244,16 +249,16 @@ line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
-[tool.pytest.ini_options]
+[tool.pytest]
+minversion = "9.0"
 addopts = [
     "-ra",
     "--strict-config",
     "--strict-markers",
     "--import-mode=importlib",
 ]
-pythonpath = "src"
-testpaths = "tests"
-minversion = "8.3"
+pythonpath = ["src"]
+testpaths = ["tests"]
 log_cli_level = "INFO"
 xfail_strict = true
 filterwarnings = [
