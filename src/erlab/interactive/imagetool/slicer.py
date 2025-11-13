@@ -246,9 +246,9 @@ class ArraySlicer(QtCore.QObject):
             i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
         ]
 
-        self.clear_dim_cache(include_vals=True)
+        self.clear_dim_cache()
         if validate:
-            self.clear_val_cache(include_vals=False)
+            self.clear_val_cache()
 
         if reset:
             self._bins: list[list[int]] = [[1] * self._obj.ndim]
@@ -350,49 +350,6 @@ class ArraySlicer(QtCore.QObject):
         Non-uniform dimensions are converted to uniform indices.
         """
         return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
-
-    @functools.cached_property
-    def data_vals_T(self) -> npt.NDArray[np.floating]:
-        """Transposed data values.
-
-        This property stores a transposed view of the data values for fast slicing. This
-        attribute is only used for in-memory (numpy-backed) arrays.
-
-        The :attr:`transposed_data` property returns this for numpy-backed DataArrays,
-        and a dask array (which is transposed on-the-fly) for dask-backed DataArrays.
-        """
-        return erlab.interactive.imagetool.fastslicing._transposed(self._obj.values)
-
-    @functools.cached_property
-    def data_dask_T(self) -> dask.array.Array:
-        """Transposed dask array.
-
-        This method returns a transposed view of the dask array for fast slicing. This
-        method is only used for dask-backed arrays.
-        """
-        match self._obj.ndim:
-            case 2:
-                return self._obj.T.data
-            case 3:
-                return self._obj.transpose(
-                    self._obj.dims[1], self._obj.dims[2], self._obj.dims[0]
-                ).data
-        return self._obj.transpose(
-            self._obj.dims[1],
-            self._obj.dims[2],
-            self._obj.dims[3],
-            self._obj.dims[0],
-        ).data
-
-    @property
-    def transposed_data(self) -> npt.NDArray[np.floating] | dask.array.Array:
-        """Transposed data values.
-
-        This property is used for fast slicing and binning operations. If the underlying
-        DataArray is a dask array, a transposed view of the dask array is returned.
-        Otherwise, the cached transposed data values are returned as a numpy array.
-        """
-        return self.data_vals_T if self._obj.chunks is None else self.data_dask_T
 
     @property
     def nanmax(self) -> float:
@@ -508,16 +465,10 @@ class ArraySlicer(QtCore.QObject):
     def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
-    def clear_dim_cache(self, include_vals: bool = False) -> None:
+    def clear_dim_cache(self) -> None:
         """Clear cached properties related to dimensions.
 
         This method clears the cached coordinate values, increments, and limits.
-
-        Parameters
-        ----------
-        include_vals
-            Whether to clear the cache that contains the transposed data values.
-
         """
         for prop in (
             "coords",
@@ -530,32 +481,18 @@ class ArraySlicer(QtCore.QObject):
         ):
             self._reset_property_cache(prop)
 
-        if include_vals:
-            self._reset_property_cache("data_vals_T")
-            self._reset_property_cache("data_dask_T")
-
-    def clear_val_cache(self, include_vals: bool = False) -> None:
+    def clear_val_cache(self) -> None:
         """Clear cached properties related to data values.
 
         This method clears the cached properties that depend on the data values, such as
         the global minima and maxima.
-
-        Parameters
-        ----------
-        include_vals
-            Whether to clear the cache that contains the transposed data values.
-
         """
         self._reset_property_cache("limits")
-
-        if include_vals:
-            self._reset_property_cache("data_vals_T")
-            self._reset_property_cache("data_dask_T")
 
     def clear_cache(self) -> None:
         """Clear all cached properties."""
         self.clear_dim_cache()
-        self.clear_val_cache(include_vals=True)
+        self.clear_val_cache()
 
     def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.floating]:
         """Fast equivalent of :code:`self._obj[dim].values`.
@@ -955,13 +892,16 @@ class ArraySlicer(QtCore.QObject):
         npt.NDArray[np.floating] | np.floating | dask.array.Array,
     ]:
         axis = sorted(set(range(self._obj.ndim)) - set(disp))
-        return self.array_rect(*disp), self.extract_avg_slice(cursor, axis)
+        data = self.extract_avg_slice(cursor, axis)
+        if len(disp) == 2 and 0 in disp:
+            data = data.T
+        return self.array_rect(*disp), data
 
     def extract_avg_slice(
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         if len(axis) == 0:
-            return self.transposed_data
+            return self._obj.data
         if len(axis) == 1:
             return self._bin_along_axis(cursor, axis[0])
         return self._bin_along_multiaxis(cursor, axis)
@@ -988,16 +928,13 @@ class ArraySlicer(QtCore.QObject):
     def _bin_along_axis(
         self, cursor: int, axis: int
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
-        axis_val = (axis - 1) % self._obj.ndim
         if not self.get_binned(cursor)[axis]:
-            return self.transposed_data[
-                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-            ].squeeze(axis=axis_val)
+            return self._obj.data[
+                (slice(None),) * axis + (self._bin_slice(cursor, axis),)
+            ].squeeze(axis=axis)
         return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
-            self.transposed_data[
-                (slice(None),) * axis_val + (self._bin_slice(cursor, axis),)
-            ],
-            axis=axis_val,
+            self._obj.data[(slice(None),) * axis + (self._bin_slice(cursor, axis),)],
+            axis=axis,
         )
 
     def _bin_along_multiaxis(
@@ -1007,8 +944,7 @@ class ArraySlicer(QtCore.QObject):
             slices = tuple(self._bin_slice(cursor, ax) for ax in axis)
         else:
             slices = tuple(self.get_indices(cursor)[i] for i in axis)
-        axis = tuple((ax - 1) % self._obj.ndim for ax in axis)
-        selected = self.transposed_data[
+        selected = self._obj.data[
             tuple(
                 slices[axis.index(d)] if d in axis else slice(None)
                 for d in range(self._obj.ndim)
