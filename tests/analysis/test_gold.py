@@ -1,15 +1,14 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+import xarray as xr
 from numpy.testing import assert_allclose
 
 from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 
 
 @pytest.mark.parametrize(
-    "parallel_kw",
-    [None, {"return_as": "list"}],
-    ids=["generator", "list"],
+    "parallel_kw", [None, {"return_as": "list"}], ids=["generator", "list"]
 )
 @pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
 def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
@@ -32,8 +31,22 @@ def test_poly(gold, parallel_kw: dict, fast: bool) -> None:
         atol=1e-2,
     )
 
-    correct_with_edge(gold, res, shift_coords=True, plot=False)
-    correct_with_edge(gold, res, shift_coords=False, plot=False)
+    corr_shift = correct_with_edge(gold, res, shift_coords=True, plot=False)
+    assert_allclose(
+        corr_shift.eV[[0, -1]], np.array([-1.34295302, 0.33221477]), atol=1e-5
+    )
+
+    corr_noshift = correct_with_edge(gold, res, shift_coords=False, plot=False)
+    assert_allclose(corr_noshift.eV, gold.eV)
+
+    res = res.drop_vars("modelfit_results")
+
+    xr.testing.assert_allclose(
+        corr_shift, correct_with_edge(gold, res, shift_coords=True, plot=False)
+    )
+    xr.testing.assert_allclose(
+        corr_noshift, correct_with_edge(gold, res, shift_coords=False, plot=False)
+    )
 
 
 def test_spline(gold) -> None:
