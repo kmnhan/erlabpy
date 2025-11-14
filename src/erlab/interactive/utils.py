@@ -535,6 +535,14 @@ def _parse_single_arg(arg):
             + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
             + "}"
         )
+    elif isinstance(arg, np.ndarray):
+        arg = np.array2string(
+            arg,
+            separator=", ",
+            threshold=sys.maxsize,
+            formatter={"float_kind": lambda v: np.format_float_positional(v, trim="-")},
+        ).replace("\n", "")
+        arg = f"np.array({arg})"
 
     return arg
 

@@ -26,7 +26,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 - Easy size adjustment
 - Advanced colormap controls
 - Support for dask-backed data
-- Interactive editing: rotation, normalization, cropping, momentum conversion, and more
+- Interactive editing: rotation, normalization, cropping, momentum conversion, ROIs, and more
 
 ## Getting started
 
@@ -90,7 +90,7 @@ There are several ways to display data in ImageTool:
 
 - Most actions have associated keyboard shortcuts. Explore the menu bar to learn them.
 
-- Right-click on plots for context menus with options like copying slicing code, locking aspect ratio, exporting to a file, opening various tools, and more.
+- Right-click on plots for context menus with options like copying slicing code, locking aspect ratio, exporting to a file, opening various tools, creating ROIs, and more.
 
   :::{hint}
   Holding {kbd}`Alt` inside the context menu will transform some menu items to work with the data cropped to the currently visible area.

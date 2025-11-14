@@ -64,6 +64,7 @@ class PlotItemState(typing.TypedDict):
     vb_aspect_locked: bool | float
     vb_x_inverted: bool
     vb_y_inverted: bool
+    roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
 
 
 class ImageSlicerState(typing.TypedDict):
@@ -2150,6 +2151,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             font_size=self.TICK_FONT_SIZE,
         )
 
+        # Remove all ROI since they may not be valid anymore
+        for ax in self.axes:
+            ax.clear_rois()
+
     def _cursor_name(self, i: int) -> str:
         return f" Cursor {int(i)}"
 
@@ -2564,6 +2569,8 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
 
+        self._roi_list: list[ItoolROI] = []
+
     def setup_actions(self) -> None:
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
@@ -2572,6 +2579,12 @@ class ItoolPlotItem(pg.PlotItem):
             # Hide unnecessary menu items
             self.vb.menu.ctrl[i].linkCombo.setVisible(False)
             self.vb.menu.ctrl[i].label.setVisible(False)
+
+        if self.is_image:
+            # ROI actions
+            self.vb.menu.addSeparator()
+            roi_action = self.vb.menu.addAction("Add ROI")
+            roi_action.triggered.connect(self.add_roi)
 
         self.vb.menu.addSeparator()
 
@@ -2668,10 +2681,12 @@ class ItoolPlotItem(pg.PlotItem):
     def connect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
-        if not self.is_image:
+        if self.is_image:
+            self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
+            self.slicer_area.sigShapeChanged.connect(self.clear_rois)
+        else:
             self.slicer_area.sigDataChanged.connect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
@@ -2679,10 +2694,12 @@ class ItoolPlotItem(pg.PlotItem):
     def disconnect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
-        if not self.is_image:
+        if self.is_image:
+            self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
+            self.slicer_area.sigShapeChanged.disconnect(self.clear_rois)
+        else:
             self.slicer_area.sigDataChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
@@ -2799,6 +2816,38 @@ class ItoolPlotItem(pg.PlotItem):
                 self.vb1.removeItem(item)
                 item.forgetViewBox()
 
+    @QtCore.Slot()
+    @record_history
+    def add_roi(self) -> None:
+        # Start from current cursor position
+        x0, y0 = tuple(
+            self.array_slicer.get_value(
+                self.slicer_area.current_cursor, ax, uniform=True
+            )
+            for ax in self.display_axis
+        )
+        xrange, yrange = self.vb.state["viewRange"]
+        dx, dy = 0.2 * (xrange[1] - xrange[0]), 0.2 * (yrange[1] - yrange[0])
+        roi = ItoolROI(self, positions=[(x0, y0), (x0 + dx, y0 + dy)])
+        self._roi_list.append(roi)
+        self.addItem(roi)
+        roi.sigRemoveRequested.connect(self.remove_roi)
+
+    @QtCore.Slot(object)
+    @record_history
+    def remove_roi(self, roi: ItoolROI) -> None:
+        if roi in self._roi_list:
+            self._roi_list.remove(roi)
+            self.removeItem(roi)
+            roi.deleteLater()
+
+    @QtCore.Slot()
+    @suppress_history
+    def clear_rois(self) -> None:
+        """Remove all ROIs from the plot."""
+        for roi in self._roi_list.copy():
+            self.remove_roi(roi)
+
     @property
     def _serializable_state(self) -> PlotItemState:
         """Subset of the state of the underlying viewbox that should be restorable."""
@@ -2807,6 +2856,7 @@ class ItoolPlotItem(pg.PlotItem):
             "vb_aspect_locked": vb.state["aspectLocked"],
             "vb_x_inverted": vb.state["xInverted"],
             "vb_y_inverted": vb.state["yInverted"],
+            "roi_states": [roi.saveState() for roi in self._roi_list],
         }
 
     @_serializable_state.setter
@@ -2821,6 +2871,17 @@ class ItoolPlotItem(pg.PlotItem):
 
         vb.invertX(state["vb_x_inverted"])
         vb.invertY(state["vb_y_inverted"])
+
+        if "roi_states" in state:
+            self.clear_rois()
+
+            with self.slicer_area.history_suppressed():
+                for s in state["roi_states"]:
+                    roi = ItoolROI(self, positions=s["points"])
+                    self._roi_list.append(roi)
+                    self.addItem(roi)
+                    roi.sigRemoveRequested.connect(self.remove_roi)
+                    roi.setState(s)
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
         dim_list: list[str] = [
@@ -3731,3 +3792,227 @@ class ItoolColorBar(pg.PlotWidget):
 
         if visible:
             self.cb.setSpanRegion(self.cb.limits)
+
+
+class ItoolROI(pg.PolyLineROI):
+    """Custom ROI for ImageTool.
+
+    Additional functionality includes context menu actions for editing the ROI, slicing
+    along the ROI path, and masking data with the ROI.
+
+    Parameters
+    ----------
+    plot_item : ItoolPlotItem
+        Parent plot item.
+    positions : list[tuple[float, float]]
+        List of (x, y) positions for the ROI vertices.
+    closed : bool, optional
+        Whether the ROI is closed (polygon) or open (polyline). Default is False.
+
+    """
+
+    def __init__(
+        self,
+        plot_item: ItoolPlotItem,
+        positions: list[tuple[float, float]],
+        closed: bool = False,
+    ) -> None:
+        super().__init__(
+            positions, closed=closed, rotatable=False, resizable=False, removable=True
+        )
+        self._plot_item = weakref.ref(plot_item)
+
+    @property
+    def plot_item(self) -> ItoolPlotItem:
+        plot_item = self._plot_item()
+        if plot_item:
+            return plot_item
+        raise LookupError("Parent was destroyed")
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self.plot_item.slicer_area
+
+    def getMenu(self):
+        if self.menu is None:
+            self.menu = super().getMenu()
+
+            edit_act = QtWidgets.QAction("Edit ROI...", self.menu)
+            edit_act.triggered.connect(self.edit_roi)
+            self.menu.addAction(edit_act)
+            self.menu.edit_act = edit_act
+
+            slice_path_act = QtWidgets.QAction("Slice Along ROI Path", self.menu)
+            slice_path_act.triggered.connect(self.slice_along_path)
+            self.menu.addAction(slice_path_act)
+            self.menu.slice_path_act = slice_path_act
+
+            mask_roi_act = QtWidgets.QAction("Mask Data with ROI", self.menu)
+            mask_roi_act.triggered.connect(self.mask_with_roi)
+            self.menu.addAction(mask_roi_act)
+            self.menu.mask_roi_act = mask_roi_act
+
+        return self.menu
+
+    @record_history
+    def handleMoveStarted(self):
+        """Inherited to add history recording on move start."""
+        super().handleMoveStarted()
+
+    @record_history
+    def segmentClicked(self, segment, ev=None, pos=None):
+        """Inherited to add history recording on segment click."""
+        super().segmentClicked(segment, ev, pos)
+
+    @QtCore.Slot()
+    def edit_roi(self) -> None:
+        """Open dialog to edit ROI vertices."""
+        dialog = _ROIEditDialog(self)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def slice_along_path(self) -> None:
+        """Extract line profile as an xarray DataArray."""
+        dialog = erlab.interactive.imagetool.dialogs.ROIPathDialog(self)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def mask_with_roi(self) -> None:
+        """Mask data with the polygon defined by the ROI."""
+        dialog = erlab.interactive.imagetool.dialogs.ROIMaskDialog(self)
+        dialog.exec()
+
+    def _get_vertices(self, uniform: bool = False) -> dict[Hashable, list[float]]:
+        array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
+            self.plot_item.array_slicer
+        )
+
+        coords = self.getState()["points"]
+        raw_xy = (
+            np.array([p[0] for p in coords], dtype=float),
+            np.array([p[1] for p in coords], dtype=float),
+        )
+
+        vertices: dict[Hashable, list[float]] = {}
+        for ax, dim, values in zip(
+            self.plot_item.display_axis, self.plot_item.axis_dims, raw_xy, strict=True
+        ):
+            decimals: int = array_slicer.get_significant(ax, uniform=uniform)
+            if not uniform and ax in array_slicer._nonuniform_axes:
+                # Convert from index to true coordinates
+                vertices[dim] = (
+                    np.interp(
+                        values, array_slicer.coords_uniform[ax], array_slicer.coords[ax]
+                    )
+                    .round(decimals)
+                    .tolist()
+                )
+            else:
+                vertices[dim] = values.round(decimals).tolist()
+
+        return vertices
+
+
+class _ROIEditDialog(QtWidgets.QDialog):
+    def __init__(self, roi: ItoolROI) -> None:
+        super().__init__()
+        self.roi = roi
+        self.setWindowTitle("Edit ROI")
+        self.setModal(True)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
+
+        self.table = QtWidgets.QTableWidget(self)
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims_uniform)
+        hdr = self.table.horizontalHeader()
+        if hdr:  # pragma: no branch
+            hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+
+        self.closed_check = QtWidgets.QCheckBox("Closed", self)
+        self.closed_check.setChecked(self.roi.closed)
+        layout.addWidget(self.closed_check)
+
+        # Add/Remove row buttons
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.add_row_btn = QtWidgets.QPushButton("Add Row")
+        self.del_row_btn = QtWidgets.QPushButton("Delete Row")
+        btn_layout.addWidget(self.add_row_btn)
+        btn_layout.addWidget(self.del_row_btn)
+        layout.addLayout(btn_layout)
+
+        self.add_row_btn.clicked.connect(self._add_row)
+        self.del_row_btn.clicked.connect(self._delete_row)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        model = self.table.model()
+        if model:  # pragma: no branch
+            model.rowsRemoved.connect(self._rowcount_changed)
+
+        self._populate_table()
+
+    def _populate_table(self) -> None:
+        values = np.column_stack(tuple(self.roi._get_vertices(uniform=True).values()))
+        self.table.setRowCount(len(values))
+        for i in range(values.shape[0]):
+            for j in range(2):
+                item = QtWidgets.QTableWidgetItem(
+                    np.format_float_positional(values[i, j], trim="-")
+                )
+                item.setTextAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignRight
+                    | QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
+                self.table.setItem(i, j, item)
+
+    @QtCore.Slot()
+    def _rowcount_changed(self) -> None:
+        """Enable/disable delete row button based on row count."""
+        self.del_row_btn.setEnabled(self.table.rowCount() >= 3)
+
+    @QtCore.Slot()
+    def _add_row(self) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        # Optionally, initialize with zeros or NaN
+        for j in range(2):
+            item = QtWidgets.QTableWidgetItem("0")
+            item.setTextAlignment(
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
+            self.table.setItem(row, j, item)
+
+    @QtCore.Slot()
+    def _delete_row(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def accept(self) -> None:
+        points = []
+        for i in range(self.table.rowCount()):
+            x_item = self.table.item(i, 0)
+            y_item = self.table.item(i, 1)
+            try:
+                if x_item is not None and y_item is not None:
+                    points.append((float(x_item.text()), float(y_item.text())))
+            except ValueError:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Invalid value at row {i + 1}. Please enter numeric values.",
+                )
+                return
+        self.roi.slicer_area.sigWriteHistory.emit()
+        self.roi.setPoints(points, closed=self.closed_check.isChecked())
+        super().accept()
