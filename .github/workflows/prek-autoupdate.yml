@@ -1,0 +1,55 @@
+name: Prek Autoupdate
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  schedule:
+    # Every 15th at 22:00 UTC (16th at 07:00 KST/JST)
+    - cron: "0 22 15 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  autoupdate:
+    name: Autoupdate hooks
+    if: github.repository == 'kmnhan/erlabpy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.13"
+
+      - name: Run prek autoupdate
+        run: uv tool run --from prek prek autoupdate
+
+      - name: Detect autoupdate changes
+        id: autoupdate_changes
+        run: |
+          if git status --short | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create pull request with updated hooks
+        if: steps.autoupdate_changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: "ci(prek): prek autoupdate"
+          body: |
+            Automated prek autoupdate run to keep hook revisions current.
+          commit-message: "ci(prek): prek autoupdate"
+          branch: prek-update-config-{{ github.run_id }}
