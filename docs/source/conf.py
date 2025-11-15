@@ -522,6 +522,9 @@ html_css_files = [
 ]
 
 html_theme_options: dict[str, object] = {
+    "light_logo": "logo_light.png",
+    "dark_logo": "logo_dark.png",
+    "sidebar_hide_name": True,
     "footer_icons": [
         {
             "name": "GitHub",
