@@ -190,7 +190,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.hide_action = QtWidgets.QAction("Hide", self)
         self.hide_action.triggered.connect(self.hide_selected)
-        self.hide_action.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self.hide_action.setShortcut("Ctrl+W")
         self.hide_action.setToolTip("Hide selected windows")
 
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
