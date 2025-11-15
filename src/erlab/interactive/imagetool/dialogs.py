@@ -7,6 +7,7 @@ import weakref
 
 import numpy as np
 import numpy.typing as npt
+import pyqtgraph as pg
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -15,7 +16,11 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
-    from erlab.interactive.imagetool.core import ColorMapState, ImageSlicerArea
+    from erlab.interactive.imagetool.core import (
+        ColorMapState,
+        ImageSlicerArea,
+        ItoolROI,
+    )
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -177,6 +182,12 @@ class DataTransformDialog(_DataManipulationDialog):
     keep_color_limits: bool = True
     """Whether to also keep manual color limits when opening in a new window."""
 
+    apply_on_nonuniform_data: bool = False
+    """Whether to apply the transform on data with non-uniform dimensions.
+
+    Set to `True` for transforms that can handle coordinates that are not evenly spaced.
+    """
+
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
         self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
@@ -188,7 +199,7 @@ class DataTransformDialog(_DataManipulationDialog):
         if self.slicer_area.data.name is not None:
             new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
         else:
-            new_name = None
+            new_name = self.suffix.lstrip("_")
 
         try:
             applied_func = None
@@ -197,9 +208,18 @@ class DataTransformDialog(_DataManipulationDialog):
                 applied_func = self.slicer_area._applied_func
                 self.slicer_area.apply_func(None)
 
-            processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                self.process_data(self.slicer_area.data)
-            ).rename(new_name)
+            if self.apply_on_nonuniform_data:
+                processed = self.process_data(
+                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                        self.slicer_area.data
+                    )
+                )
+            else:
+                processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                    self.process_data(self.slicer_area.data)
+                )
+
+            processed = processed.rename(new_name)
 
             if self.new_window_check.isChecked():
                 itool_kw: dict[str, typing.Any] = {
@@ -1032,4 +1052,134 @@ class AssignCoordsDialog(DataTransformDialog):
             ),
             keys=data.coords.keys(),
             dims_first=False,
+        )
+
+
+class ROIPathDialog(DataTransformDialog):
+    title = "Slice Along ROI Path"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    @property
+    def suffix(self) -> str:
+        return "_path"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def __init__(self, roi: ItoolROI) -> None:
+        self.roi = roi
+        super().__init__(self.roi.plot_item.slicer_area)
+
+    def setup_widgets(self) -> None:
+        group = QtWidgets.QGroupBox()
+        layout = QtWidgets.QFormLayout()
+        group.setLayout(layout)
+
+        decimals = max(
+            self.array_slicer.get_significant(ax, uniform=False)
+            for ax in self.roi.plot_item.display_axis
+        )
+        default_step = min(
+            self.roi.slicer_area.array_slicer.incs[ax]
+            for ax in self.roi.plot_item.display_axis
+        )  # Reasonable default step size
+
+        # TODO: add vertice customization
+
+        self._step_spin = pg.SpinBox()
+        self._step_spin.setDecimals(decimals)
+        self._step_spin.setSingleStep(10 ** (-decimals))
+        self._step_spin.setMinimum(10 ** (-decimals - 1))
+        self._step_spin.setOpts(compactHeight=False)
+        self._step_spin.setValue(round(default_step, decimals))
+
+        layout.addRow("Step Size", self._step_spin)
+
+        self._dim_name_line = QtWidgets.QLineEdit()
+        self._dim_name_line.setText("path")
+        layout.addRow("New Dim Name", self._dim_name_line)
+
+        self.layout_.addRow(group)
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        vert_dict = self.roi._get_vertices()
+
+        if self.roi.closed:
+            for k, v in dict(vert_dict).items():
+                vert_dict[k] = [*v, v[0]]  # Close the path
+
+        return {
+            "vertices": vert_dict,
+            "step_size": self._step_spin.value(),
+            "dim_name": self._dim_name_line.text().strip(),
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.interpolate.slice_along_path(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.interpolate.slice_along_path,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.interpolate",
+        )
+
+
+class ROIMaskDialog(DataTransformDialog):
+    title = "Mask with ROI"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    @property
+    def suffix(self) -> str:
+        return "_masked"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def __init__(self, roi: ItoolROI) -> None:
+        self.roi = roi
+        super().__init__(self.roi.plot_item.slicer_area)
+
+    def setup_widgets(self) -> None:
+        group = QtWidgets.QGroupBox()
+        layout = QtWidgets.QFormLayout()
+        group.setLayout(layout)
+
+        self._invert_check = QtWidgets.QCheckBox("Invert Mask")
+        layout.addRow(self._invert_check)
+
+        self._drop_check = QtWidgets.QCheckBox("Drop Masked Values")
+        layout.addRow(self._drop_check)
+
+        self.layout_.addRow(group)
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        vert_dict = self.roi._get_vertices()
+        return {
+            "vertices": np.column_stack(tuple(vert_dict.values())),
+            "dims": tuple(vert_dict.keys()),
+            "invert": self._invert_check.isChecked(),
+            "drop": self._drop_check.isChecked(),
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.mask.mask_with_polygon(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.mask.mask_with_polygon,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.mask",
         )
