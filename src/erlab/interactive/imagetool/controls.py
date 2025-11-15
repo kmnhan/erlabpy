@@ -274,11 +274,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
         typing.cast("QtWidgets.QLayout", self.layout()).addWidget(self.values_groups[0])
 
         # info widgets
-        self.label_dim = tuple(
-            QtWidgets.QPushButton(grp) for grp in self.values_groups[1:]
-        )
+        self.label_dim = tuple(QtWidgets.QLabel(grp) for grp in self.values_groups[1:])
         for lab in self.label_dim:
-            lab.setCheckable(True)
+            lab.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            lab.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignHCenter
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
 
         self.spin_idx = tuple(
             erlab.interactive.utils.BetterSpinBox(
@@ -313,8 +317,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
         # add and connect info widgets
         for i in range(self.data.ndim):
-            # TODO: implelemnt cursor locking
-            # self.label_dim[i].toggled.connect()
             self.spin_idx[i].valueChanged.connect(
                 lambda ind, axis=i: self.slicer_area.set_index(axis, ind)
             )
@@ -387,7 +389,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.initialize_widgets()
 
         for i in range(self.data.ndim):
-            self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
 
@@ -395,14 +396,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.label_dim[i].setText(str(self.data.dims[i]).removesuffix("_idx"))
             else:
                 self.label_dim[i].setText(str(self.data.dims[i]))
-
-            lw = (
-                self.label_dim[i]
-                .fontMetrics()
-                .boundingRect(self.label_dim[i].text())
-                .width()
-            )
-            self.label_dim[i].setMaximumWidth(lw + 15)
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
@@ -413,7 +406,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setValue(self.slicer_area.get_current_value(i))
             self.spin_val[i].setDecimals(self.array_slicer.get_significant(i))
 
-            self.label_dim[i].blockSignals(False)
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
         try:
