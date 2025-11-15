@@ -496,7 +496,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
-def format_kwargs(d: dict[str, typing.Any]) -> str:
+def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -508,7 +508,7 @@ def format_kwargs(d: dict[str, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(s.isidentifier() for s in d):
+    if all(isinstance(k, str) and k.isidentifier() for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
     return "{" + out + "}"
@@ -526,7 +526,6 @@ def _parse_single_arg(arg):
             arg = f"'{arg}'"
         else:
             arg = f'"{arg}"'
-
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
         arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
@@ -535,6 +534,15 @@ def _parse_single_arg(arg):
             + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
             + "}"
         )
+    elif isinstance(arg, slice):
+        start, stop, step = arg.start, arg.stop, arg.step
+        if step is not None:
+            args = [start, stop, step]
+        elif start is None:
+            args = [stop]
+        else:
+            args = [start, stop]
+        return f"slice({', '.join(repr(_parse_single_arg(a)) for a in args)})"
     elif isinstance(arg, np.ndarray):
         arg = np.array2string(
             arg,

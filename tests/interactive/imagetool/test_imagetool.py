@@ -69,6 +69,15 @@ _TEST_DATA: dict[str, xr.DataArray] = {
 }
 
 
+def _press_alt(monkeypatch):
+    """Pretend that the Alt/Option key is currently pressed."""
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        lambda: QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+
 @pytest.mark.parametrize(
     "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
 )
@@ -157,6 +166,49 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
             erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     logger.info("Closing ImageTool")
+    win.close()
+
+
+def test_copy_selection_code_includes_crop_with_alt(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+    win.slicer_area.set_manual_limits({"x": [1.0, 3.0], "y": [0.0, 2.0]})
+
+    _press_alt(monkeypatch)
+
+    copied: list[str] = []
+
+    def fake_copy(content: str | list[str]) -> str:
+        copied.append(content if isinstance(content, str) else "\n".join(content))
+        return copied[-1]
+
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", fake_copy)
+
+    main_image.copy_selection_code()
+    assert copied == [".sel(x=slice(1.0, 3.0), y=slice(0.0, 2.0))"]
+    win.close()
+
+
+def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    main_image = win.slicer_area.images[0]
+    alpha_dim = next(str(d) for d in win.slicer_area.data.dims if "alpha" in str(d))
+    e_dim = next(str(d) for d in win.slicer_area.data.dims if "eV" in str(d))
+    win.slicer_area.set_manual_limits({alpha_dim: [0.0, 2.0], e_dim: [1.0, 3.0]})
+
+    _press_alt(monkeypatch)
+
+    sel_code = main_image.selection_code
+    assert sel_code == ".qsel(beta=2.0, eV=slice(1.0, 3.0)).isel(alpha=slice(0, 2))"
     win.close()
 
 
