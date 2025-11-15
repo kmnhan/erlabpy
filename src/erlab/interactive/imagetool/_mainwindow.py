@@ -343,7 +343,7 @@ class ImageTool(BaseImageTool):
         self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
 
         self.close_act = QtWidgets.QAction("&Close", self)
-        self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self.close_act.setShortcut("Ctrl+W")
         self.close_act.triggered.connect(self.close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 

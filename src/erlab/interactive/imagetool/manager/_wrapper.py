@@ -371,7 +371,7 @@ class _ImageToolWrapper(QtCore.QObject):
 
         # Enable closing with keyboard shortcut
         tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]
-            QtGui.QKeySequence.StandardKey.Close, tool, tool.hide
+            "Ctrl+W", tool, tool.hide
         )
         if show:
             tool.show()
