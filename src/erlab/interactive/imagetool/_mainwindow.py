@@ -498,7 +498,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "redoAct": self.slicer_area.redo_act,
                     "sep": {"separator": True},
                     "&Copy Cursor Values": {
-                        "shortcut": "Ctrl+C",
+                        "shortcut": "Ctrl+Shift+C",
                         "triggered": self._copy_cursor_val,
                     },
                     "&Copy Cursor Indices": {

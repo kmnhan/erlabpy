@@ -131,7 +131,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Hover over any toolbar icon to see a short description of its function.
 
-- Copy the numeric readouts at any time with {kbd}`Ctrl+C` (cursor values) or {kbd}`Ctrl+Alt+C` (cursor indices). ImageTool copies native Python literals so you can paste them directly into scripts.
+- Copy the numeric readouts at any time with {kbd}`Ctrl+Shift+C` (cursor values) or {kbd}`Ctrl+Alt+C` (cursor indices). ImageTool copies native Python literals so you can paste them directly into scripts.
 
 - Multiple cursors can be added to the image using the {material-regular}`add` button in the cursor panel. They can each be dragged independently, and their bin widths can be set separately in the binning panel. To switch the active cursor, simply click on it or select it from dropdown menu in the cursor panel.
 
