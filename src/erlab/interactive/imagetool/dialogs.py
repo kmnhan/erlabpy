@@ -20,7 +20,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.core import (
         ColorMapState,
         ImageSlicerArea,
-        ItoolROI,
+        ItoolPolyLineROI,
     )
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
@@ -1054,7 +1054,7 @@ class ROIPathDialog(DataTransformDialog):
         # To satisfy mypy
         pass
 
-    def __init__(self, roi: ItoolROI) -> None:
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi
         super().__init__(self.roi.plot_item.slicer_area)
 
@@ -1130,7 +1130,7 @@ class ROIMaskDialog(DataTransformDialog):
         # To satisfy mypy
         pass
 
-    def __init__(self, roi: ItoolROI) -> None:
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi
         super().__init__(self.roi.plot_item.slicer_area)
 

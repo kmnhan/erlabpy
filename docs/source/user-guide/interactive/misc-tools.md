@@ -1,3 +1,5 @@
+(interactive-misc-tools)=
+
 # Other interactive tools
 
 In addition to ImageTool and the ImageTool manager, other interactive tools for specific tasks are available in the {mod}`erlab.interactive` module.
@@ -38,7 +40,7 @@ There are three ways to invoke the GUI.
 
 3. From within ImageTool
 
-   Click "Open in ktool" from the "View" menu in the menu bar.
+   Click {guilabel}`View → Open in ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
 
@@ -62,9 +64,9 @@ The GUI is divided into two tabs.
 
 The first tab is for setting momentum conversion parameters. The image is updated in real time as you change the parameters.
 
-Clicking the "Copy code" button will copy the code for conversion to the clipboard.
+Clicking {guilabel}`Copy code` will copy the code for conversion to the clipboard.
 
-The "Open in ImageTool" button performs a full three-dimensional conversion and opens the result in the ImageTool.
+{guilabel}`Open in ImageTool` performs a full conversion and opens the result in a new ImageTool.
 
 ```{image} ../../images/ktool_2_light.png
 :align: center
@@ -84,7 +86,7 @@ The "Open in ImageTool" button performs a full three-dimensional conversion and 
 
 The second tab provides visualization options. You can overlay Brillouin zones and high symmetry points on the result, adjust colors, apply binning, and more.
 
-The "Add Circle ROI" button allows you to add a circular region of interest to the image, which can be edited by dragging or right-clicking on it.
+The {guilabel}`Add Circle ROI` button allows you to add a circular region of interest to the image, which can be edited by dragging or right-clicking on it.
 
 You can pass some parameters to customize the GUI. For example, you can set the Brillouin zone size/orientation and the colormap like this:
 
