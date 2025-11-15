@@ -524,9 +524,8 @@ class ArraySlicer(QtCore.QObject):
     def get_significant(self, axis: int, uniform: bool = False) -> int:
         """Return the number of significant digits for a given axis."""
         if uniform and axis in self._nonuniform_axes:
-            step = self.incs_uniform[axis]
-        else:
-            step = self.incs[axis]
+            return 0  # Index axis, no decimals
+        step = self.incs[axis]
         if step == 0:
             return 3  # Default to 3 decimal places for zero step size
         return erlab.utils.array.effective_decimals(step)
@@ -801,17 +800,18 @@ class ArraySlicer(QtCore.QObject):
         disp: Sequence[int],
         int_if_one: bool = False,
         uniform: bool = False,
-    ) -> dict[str, slice | int]:
+    ) -> dict[Hashable, slice | int]:
         axis: list[int] = sorted(set(range(self._obj.ndim)) - set(disp))
-        return {
-            str(self._obj.dims[ax]).removesuffix("_idx")
-            if (ax in self._nonuniform_axes and not uniform)
-            else str(self._obj.dims[ax]): self._bin_slice(cursor, ax, int_if_one)
-            for ax in axis
-        }
+        out: dict[Hashable, slice | int] = {}
+        for ax in axis:
+            dim_name = self._obj.dims[ax]
+            if ax in self._nonuniform_axes and not uniform:
+                dim_name = str(dim_name).removesuffix("_idx")
+            out[dim_name] = self._bin_slice(cursor, ax, int_if_one)
+        return out
 
     def qsel_args(self, cursor: int, disp: Sequence[int]) -> dict:
-        out: dict[str, float] = {}
+        out: dict[Hashable, float] = {}
         binned = self.get_binned(cursor)
 
         for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
@@ -836,7 +836,7 @@ class ArraySlicer(QtCore.QObject):
                         "Bin does not contain the same values as the original data."
                     )
 
-                out[dim + "_width"] = width
+                out[str(dim) + "_width"] = width
 
             else:
                 out[dim] = float(np.round(self._obj[dim].values[selector], order))

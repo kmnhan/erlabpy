@@ -1685,6 +1685,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if ax is not axes:
                 ax.update_manual_range()
 
+    def make_slice_dict(self) -> dict[Hashable, slice]:
+        """Create a dictionary of slices for current manual limits.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping dimension names to slices.
+        """
+        slice_dict: dict[Hashable, slice] = {}
+        for k, v in self.manual_limits.items():
+            ax_idx = self.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+            start, end = sorted(np.round(v, sig_digits).astype(float))
+            if sig_digits == 0:
+                start, end = int(start), int(end)
+            slice_dict[k] = slice(start, end)
+        return slice_dict
+
     @property
     def watched_data_name(self) -> str | None:
         """Get the name of the watched data variable.
@@ -2597,7 +2615,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb.menu.addSeparator()
 
         # List of actions that should have '(Crop)' appended when Alt is pressed
-        croppable_actions: list[QtWidgets.QAction] = [save_action]
+        croppable_actions: list[QtWidgets.QAction] = [save_action, copy_code_action]
 
         if self.is_image:
             # Aspect ratio lock checkbox
@@ -2942,18 +2960,18 @@ class ItoolPlotItem(pg.PlotItem):
         return False
 
     @property
+    def _crop_indexers(self) -> dict[Hashable, slice]:
+        """Returns argument to `DataArray.sel` for cropping to current view limits."""
+        return {
+            k: v
+            for k, v in self.slicer_area.make_slice_dict().items()
+            if k in self._current_data.dims
+        }
+
+    @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
-        darr: xr.DataArray = self._current_data
-        slice_dict: dict[Hashable, slice] = {}
-        for k, v in self.slicer_area.manual_limits.items():
-            if k in darr.dims:
-                ax_idx = self.slicer_area.data.dims.index(k)
-                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-                slice_dict[k] = slice(
-                    *sorted(float(np.round(val, sig_digits)) for val in v)
-                )
-        return self._current_data.sel(slice_dict)
+        return self._current_data.sel(self._crop_indexers)
 
     @property
     def current_data(self) -> xr.DataArray:
@@ -2979,9 +2997,50 @@ class ItoolPlotItem(pg.PlotItem):
         Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
         the current slice of data based on the current cursor location and bin size.
         """
-        return self.array_slicer.qsel_code(
+        sel_code = self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
+        # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
+
+        if (
+            QtCore.Qt.KeyboardModifier.AltModifier
+            in QtWidgets.QApplication.queryKeyboardModifiers()
+        ):
+            sel_indexers = self._crop_indexers
+            isel_indexers: dict[Hashable, slice] = {}
+            for k in list(sel_indexers.keys()):
+                if str(k).endswith("_idx"):
+                    isel_indexers[str(k).removesuffix("_idx")] = sel_indexers.pop(k)
+
+            if sel_code.startswith(".qsel"):
+                qsel_kw = self.array_slicer.qsel_args(
+                    self.slicer_area.current_cursor, self.display_axis
+                )
+                qsel_kw = qsel_kw | sel_indexers
+
+                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
+                sel_code = f".qsel({sel_code})"
+
+                if isel_indexers:
+                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
+                    sel_code = sel_code + f".isel({isel_code})"
+
+                return sel_code
+
+            if sel_code.startswith(".isel"):
+                isel_kw = self.array_slicer.isel_args(
+                    self.slicer_area.current_cursor, self.display_axis, int_if_one=True
+                )
+                isel_kw = isel_kw | isel_indexers
+
+                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
+                sel_code = f".isel({sel_code})"
+
+            if sel_indexers:
+                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
+                sel_code = sel_code + f".sel({crop_code})"
+
+        return sel_code
 
     def get_selection_code(self, placeholder: str = "data") -> str:
         """Get selection code for the current cursor and display axis.
@@ -3664,17 +3723,13 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:
-        if self.selection_code == "":
+        code = self.get_selection_code(placeholder="")
+        if code == "":
             QtWidgets.QMessageBox.critical(
-                None,
-                "Error",
-                "Selection code is unavailable for main image of 2D data.",
+                None, "Error", "Selection code is unavailable for this data."
             )
             return
-
-        erlab.interactive.utils.copy_to_clipboard(
-            self.get_selection_code(placeholder="")
-        )
+        erlab.interactive.utils.copy_to_clipboard(code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:

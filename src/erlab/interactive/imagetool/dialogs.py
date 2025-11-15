@@ -8,13 +8,14 @@ import weakref
 import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
+
+    import xarray as xr
 
     from erlab.interactive.imagetool.core import (
         ColorMapState,
@@ -610,35 +611,20 @@ class _BaseCropDialog(DataTransformDialog):
         return data.sel(self._slice_kwargs)
 
     def make_code(self) -> str:
-        kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+        isel_kwargs: dict[Hashable, slice] = {}
 
-        isel_kwargs: dict[str, slice] = {}
-        for k in list(kwargs.keys()):
+        for k in list(sel_kwargs.keys()):
             if str(k).endswith("_idx"):
-                isel_kwargs[str(k).removesuffix("_idx")] = kwargs.pop(k)
+                isel_kwargs[str(k).removesuffix("_idx")] = sel_kwargs.pop(k)
 
         out: str = ""
-
-        if kwargs:
-            if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.sel,
-                    [],
-                    kwargs=typing.cast("dict[str, slice]", kwargs),
-                    module=out,
-                )
-            else:
-                out += f".sel({kwargs})"
-
+        if sel_kwargs:
+            out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
         if isel_kwargs:
-            if all(k.isidentifier() for k in isel_kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.isel, [], isel_kwargs, module=out
-                )
-            else:
-                out += f".isel({isel_kwargs})"
+            out += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
 
-        return out.replace(", None)", ")")
+        return out
 
 
 class CropToViewDialog(_BaseCropDialog):
@@ -668,16 +654,11 @@ class CropToViewDialog(_BaseCropDialog):
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
-        slice_dict: dict[Hashable, slice] = {}
-        for k, v in self.slicer_area.manual_limits.items():
-            if self.dim_checks[k].isChecked():
-                ax_idx = self.slicer_area.data.dims.index(k)
-                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-                slice_dict[k] = slice(
-                    *sorted(float(np.round(val, sig_digits)) for val in v)
-                )
-
-        return slice_dict
+        return {
+            k: v
+            for k, v in self.slicer_area.make_slice_dict().items()
+            if self.dim_checks[k].isChecked()
+        }
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -723,15 +704,19 @@ class CropDialog(_BaseCropDialog):
             ax_idx = self.slicer_area.data.dims.index(k)
             sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
 
-            v0 = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
-            v1 = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
+            start = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
+            end = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
 
-            if v0 > v1:
-                v0, v1 = v1, v0
+            if start > end:
+                start, end = end, start
 
-            slice_dict[k] = slice(
-                float(np.round(v0, sig_digits)), float(np.round(v1, sig_digits))
-            )
+            start = float(np.round(start, sig_digits))
+            end = float(np.round(end, sig_digits))
+
+            if sig_digits == 0:
+                start, end = int(start), int(end)
+
+            slice_dict[k] = slice(start, end)
 
         return slice_dict
 
