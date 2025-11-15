@@ -1,3 +1,47 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool:** add polygon ROI support (#202) ([dcd9754](https://github.com/kmnhan/erlabpy/commit/dcd97547f0acaf57c81c9e5809ec71119a3f272c))
+
+  This commit introduces support for polygonal Regions of Interest (ROIs) in ImageTool. For each image plot, users can now create a polygon or line ROI from the right-click context menu. The created ROI can be manipulated by dragging its vertices. New vertices can be added by clicking on the edges of the polygon, and existing vertices can be removed by right-clicking on them. The right-click context menu of a ROI also includes options such as editing the ROI's coordinates directly, deleting the ROI, and multidimensional slicing of the data along the edges of the ROI or masking within the polygonal area.
+
+- **analysis.gold:** allow fermi edge fitting functions to be used with any angle dimension and higher dimensional data ([b5f007a](https://github.com/kmnhan/erlabpy/commit/b5f007ac2502d1e34062c8e6e2216b0c36bd0aa3))
+
+  Adds an 'along' parameter to the functions like `edge`, `poly`, and `correct_with_edge` to specify which dimension to use for fitting. Previously, these functions assumed an 'alpha' dimension, limiting their applicability.
+
+  With this change, the functions can also fit higher dimensional data; for instance, a 3D DataArray containing hν-alpha-eV data can be passed directly to `edge` or `poly` to get a multidimensional fit.
+
+  Dask parallelization is also automatically handled for chunked inputs, as long as the data is not chunked along the energy dimension. Previously, passing a dask array to `edge` used to fail miserably.
+
+- **manager:** allow user to edit keyword arguments when loading data by drag-and-drop (#199) ([7fc89db](https://github.com/kmnhan/erlabpy/commit/7fc89dbc94c31298ae1d2543a0cee06b07fe5548))
+
+  When loading data via drag-and-drop, users can now specify custom keyword arguments for the loader functions.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** update shortcut for copying cursor values to `Ctrl+Shift+C` instead of `Ctrl+C` due to conflict with standard copy action ([336cc99](https://github.com/kmnhan/erlabpy/commit/336cc9979496a35346aaf69c43e3bbd8ce75f37b))
+
+- **imagetool:** apply crop to copied selection code ([6f3cf44](https://github.com/kmnhan/erlabpy/commit/6f3cf4496dd7ea05f0c1463d67451f4713adeab1))
+
+- **manager:** unify window close shortcut across all platforms ([0d32830](https://github.com/kmnhan/erlabpy/commit/0d32830e3a892b3c039c71db6b65b32603e25504))
+
+  Windows sometimes had `Ctrl+F4` as the close shortcut. This change makes `Ctrl+W` the standard close shortcut across all platforms and all interactive windows, improving consistency.
+
+- **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
+
+### ♻️ Code Refactor
+
+- **manager:** use macOS icon on other platforms ([da52629](https://github.com/kmnhan/erlabpy/commit/da52629f4ef3f5af695315d5821d16f95835b47c))
+
+  Use the current macOS icon for the application window on all platforms to maintain a consistent look and feel across different operating systems.
+
+- **imagetool:** change dimension name label buttons to labels ([44f4f48](https://github.com/kmnhan/erlabpy/commit/44f4f48e55b07d4840b41e13bcf6ed302c2e33a7))
+
+  The dimension name label buttons in ImageTool actually did nothing, so they have been converted to static labels.
+
+- **analysis.transform.shift:** do not prefilter by default since prefiltering messes up `shift_coords=True` use case ([5b671f4](https://github.com/kmnhan/erlabpy/commit/5b671f42716538af22a9d17096220669f60cc3d9))
+
 ## v3.16.2 (2025-11-13)
 
 ### 🐞 Bug Fixes
