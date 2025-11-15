@@ -1,0 +1,135 @@
+name: Prek Autoupdate
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  schedule:
+    # Every 15th at 22:00 UTC (16th at 07:00 KST/JST)
+    - cron: "0 22 15 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  autoupdate:
+    name: Autoupdate hooks
+    if: github.repository == 'kmnhan/erlabpy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          fetch-depth: 0
+
+      - name: Install prek
+        uses: j178/prek-action@v1
+        with:
+          install-only: true
+
+      - name: Run prek autoupdate
+        run: prek autoupdate
+
+      - name: Detect autoupdate changes
+        id: autoupdate_changes
+        run: |
+          if git status --short | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate update summary
+        id: summary
+        if: steps.autoupdate_changes.outputs.changed == 'true'
+        run: |
+          python <<'PY'
+          from __future__ import annotations
+
+          import os
+          from pathlib import Path
+          import subprocess
+
+
+          def parse_versions(text: str) -> dict[str, str]:
+              versions: dict[str, str] = {}
+              current_repo: str | None = None
+              for raw_line in text.splitlines():
+                  line = raw_line.strip()
+                  if not line:
+                      continue
+                  if line.startswith("- repo:"):
+                      current_repo = line.split(":", 1)[1].strip()
+                      continue
+                  if line.startswith("repo:"):
+                      current_repo = line.split(":", 1)[1].strip()
+                      continue
+                  if line.startswith("rev:") and current_repo:
+                      value = line.split(":", 1)[1].strip()
+                      value = value.split("#", 1)[0].strip().strip("'\"")
+                      versions[current_repo] = value
+                      current_repo = None
+              return versions
+
+
+          before = subprocess.check_output(
+              ["git", "show", "HEAD:.pre-commit-config.yaml"],
+              text=True,
+          )
+          after = Path(".pre-commit-config.yaml").read_text()
+          previous = parse_versions(before)
+          current = parse_versions(after)
+
+          updates: list[str] = []
+          for repo, new_rev in current.items():
+              old_rev = previous.get(repo)
+              if not old_rev or old_rev == new_rev:
+                  continue
+              label = repo
+              link = None
+              prefix = "https://github.com/"
+              if repo.startswith(prefix):
+                  slug = repo[len(prefix) :].rstrip("/")
+                  label = f"github.com/{slug}"
+                  link = f"https://github.com/{slug}/compare/{old_rev}...{new_rev}"
+              entry_text = f"{label}: {old_rev} → {new_rev}"
+              if link:
+                  updates.append(f"- [{entry_text}]({link})")
+              else:
+                  updates.append(f"- {entry_text}")
+
+          body_lines: list[str] = []
+          if updates:
+              body_lines.append("updates:")
+              body_lines.extend(updates)
+          else:
+              body_lines.append("updates: (no tracked repositories changed)")
+
+          body = "\n".join(body_lines) + "\n"
+          Path("prek-autoupdate-body.md").write_text(body)
+
+          title = "ci(pre-commit): pre-commit autoupdate"
+          commit_message = f"{title}\n\n{body}"
+          Path("prek-autoupdate-commit.txt").write_text(commit_message)
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a") as fh:
+              fh.write("commit_message<<EOF\n")
+              fh.write(commit_message)
+              if not commit_message.endswith("\n"):
+                  fh.write("\n")
+              fh.write("EOF\n")
+          PY
+
+      - name: Create pull request with updated hooks
+        if: steps.autoupdate_changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: "ci(pre-commit): pre-commit autoupdate"
+          body-path: prek-autoupdate-body.md
+          commit-message: ${{ steps.summary.outputs.commit_message }}
+          branch: chore/prek-autoupdate
+          delete-branch: true
