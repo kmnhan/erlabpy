@@ -27,16 +27,11 @@ jobs:
           ssh-key: ${{ secrets.DEPLOY_KEY }}
           fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          python-version: "3.13"
-
       - name: Run prek
         id: prek
-        run: uv tool run --from prek prek run --all-files --color always --show-diff-on-failure
+        uses: j178/prek-action@v1
+        with:
+          extra-args: "--all-files --color always --show-diff-on-failure"
         continue-on-error: true
 
       - name: Detect modifications
@@ -66,7 +61,10 @@ jobs:
       - name: Re-run prek after autoupdate
         if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true'
         id: prek_rerun
-        run: uv tool run --from prek prek run --all-files --color always --show-diff-on-failure
+        uses: j178/prek-action@v1
+        with:
+          extra-args: "--all-files --color always --show-diff-on-failure"
+        continue-on-error: true
 
       - name: Fail if rerun is still failing
         if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true' && steps.prek_rerun.outcome == 'failure'
