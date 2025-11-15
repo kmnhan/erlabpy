@@ -31,7 +31,7 @@ jobs:
         id: prek
         uses: j178/prek-action@v1
         with:
-          extra-args: "--all-files --color always --show-diff-on-failure"
+          extra-args: "--all-files"
         continue-on-error: true
 
       - name: Detect modifications
@@ -63,7 +63,7 @@ jobs:
         id: prek_rerun
         uses: j178/prek-action@v1
         with:
-          extra-args: "--all-files --color always --show-diff-on-failure"
+          extra-args: "--all-files"
         continue-on-error: true
 
       - name: Fail if rerun is still failing
