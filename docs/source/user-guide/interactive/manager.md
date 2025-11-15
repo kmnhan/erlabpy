@@ -2,8 +2,6 @@
 
 # ImageTool Manager
 
-ImageTools can also be opened in a manager window for organizing and managing multiple ImageTool windows, called {class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>`.
-
 ```{image} ../../images/manager_light.png
 :align: center
 :alt: ImageToolManager window screenshot
@@ -22,11 +20,20 @@ ImageTools can also be opened in a manager window for organizing and managing mu
 
 :::
 
-The manager shows a list of opened ImageTool windows along with some buttons. Information and preview about the data displayed in the currently selected ImageTool is shown in the right panel.
+{class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>` keeps large analysis sessions organized. It tracks every ImageTool window, preview, and metadata entry in a single tree view so you can link, archive, and share them without juggling dozens of floating windows.
 
-:::{hint}
-Hovering your mouse over each button will show a brief description of its function.
-:::
+(imagetool-manager-overview)=
+
+## Why use the manager?
+
+- Launch and watch many ImageTool windows simultaneously without interrupting your notebook or script.
+- Link multiple ImageTools, duplicate them, or update their data in place in case of real-time data acquisition.
+- Save and reopen complete workspaces, including colormaps, cursor positions, window geometry, and ROIs.
+- Archive rarely used windows to disk so they can be restored later without consuming RAM.
+- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, and perform quick analyses through a built-in IPython console.
+- Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
+
+(imagetool-manager-start)=
 
 ## Starting the manager
 
@@ -36,111 +43,119 @@ Run `itool-manager` in a terminal or command prompt window in an environment whe
 
 - Only one manager can run per machine.
 
-- Opening an ImageTool window for the very first time may take a couple of minutes. Subsequent openings will be much faster.
+- Opening an ImageTool window for the very first time after installing may take a couple of minutes as caches are built. Subsequent launches will be much faster.
 
-- The manager can be installed as a standalone application, which enables some convenient features. See [Installing as a standalone application](#installing-as-a-standalone-application) below for more information.
+- The manager can be installed as a packaged build which enables some convenient features as described in {ref}`imagetool-manager-standalone`.
 
 :::
 
-## Adding ImageTool windows
+(imagetool-manager-open)=
 
-When the manager is running, new data can be opened in the manager by:
+## Opening and replacing ImageTool windows
 
-- Invoking ImageTool from {func}`itool() <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow` with `manager=True`.
+Once the manager is running, you can open ImageTools in several ways:
+
+- {meth}`xarray.DataArray.qshow` or {func}`erlab.interactive.imagetool.itool` with `manager=True` sends windows directly to the manager:
 
   ```python
-  darr.qshow(manager=True)
+  data.qshow(manager=True)
+  eri.itool([d1, d2], manager=True, replace=[1, 2])
   ```
 
-- Using the `%itool` magic command with the `--manager` (or `-m`) option in an IPython session or Jupyter notebook.
+  Pass `replace=` to update data in existing windows instead of creating new ones.
+
+- {ref}`ImageTool’s %itool magic command <imagetool-entry-points>` with the `--manager` (or `-m`) flag in an IPython session or Jupyter notebook.
 
   ```python
   %itool -m darr
   ```
 
-- Watching a variable in a Jupyter notebook with the `%watch` magic command.
+- The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool window opened outside the manager. This action moves the active ImageTool to the manager.
 
-  See [Working with notebooks](#working-with-notebooks) below for more information.
+- Use the manager’s {guilabel}`File → Open File…` action to load data in a new ImageTool.
 
-- The `Move to Manager` ({kbd}`Ctrl+Shift+M`) action in the `File` menu from an ImageTool window opened outside the manager. This action moves the active ImageTool to the manager.
-
-- Opening supported files through the `File` menu in the manager.
-
-- Dragging and dropping supported ARPES data into the manager window.
+- Drag and drop supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data.
 
   :::{hint}
-  For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with "Single File" in the dialog.
+  For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
   :::
 
-- Using the data explorer built into the manager. Access it from the `File` menu or with the keyboard shortcut {kbd}`Ctrl+E`.
+- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`. Browse arbitrary folders, preview metadata, and open selected files in the manager.
 
-  See {mod}`erlab.interactive.explorer` for more information.
+- Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. See {ref}`working-with-notebooks`.
 
-## Saving and loading workspaces
+- For custom integration with other workflows, scripts can call {func}`erlab.interactive.imagetool.manager.show_in_manager` or {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see {ref}`imagetool-manager-automation`).
 
-You can save all open ImageTool windows to a file using the `Save Workspace As...` menu item in the manager. The workspace is saved as a single file with the `.itws` extension.
+(imagetool-manager-organize)=
 
-Later, restore your workspace with `Open Workspace...` or by dragging and dropping the workspace file into the manager.
+## Navigating and organizing tools
 
-Colormaps, cursor positions, window sizes, and other settings are preserved.
+The left pane lists every ImageTool window by index and optional name (`index: name`). Selecting entries populates the right pane with metadata and a live preview.
 
-Workspace files are portable and can be shared with others, who can open them in their own ImageTool manager.
+:::{note}
+Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.
+:::
 
-## Additional features
+The following lists common actions included in the {guilabel}`Edit` and right-click context menus:
 
-- Replace data in an existing ImageTool window by supplying the `replace` argument to {func}`itool() <erlab.interactive.imagetool.itool>` or {meth}`xarray.DataArray.qshow`:
+- {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely.
+- {guilabel}`Rename` / {guilabel}`Duplicate` – Rename multiple selections at once or activate in-place editing for a single tool. {guilabel}`Duplicate` clones the currently selected windows, including their state.
+- {guilabel}`Reset Index` – Renumbers all windows from zero.
+- {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
+- {guilabel}`Archive` / {guilabel}`Unarchive` – {guilabel}`Archive` writes a tool’s dataset and UI state to a temporary file, frees its memory, and grays it out in the list. {guilabel}`Unarchive` reopens it.
+- {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
+- {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
+
+Icons next to each entry indicate special states: linked windows share a colored badge, chunked Dask arrays show the dask icon, and watched variables display their notebook name. Right-click to see all context-sensitive actions.
+
+(imagetool-manager-archive-workspace)=
+
+## Workspaces
+
+Choose {guilabel}`File → Save Workspace As…` to save multiple open windows to a single `.itws` file. Workspaces store not only the data, but also the ImageTool settings such as cursor locations, colormaps, window geometry, and ROIs.
+
+Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…` or by dragging the `.itws` file back into the manager to recreate your windows exactly as they were. Share the file with collaborators and they will see the identical layout.
+
+## Built-in explorer and console
+
+- {guilabel}`Data Explorer` – The explorer window ({guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`) provides a filesystem browser tailored for ARPES datasets. Preview metadata, queue batch loads, or open entire directories as tabs.
+
+- {guilabel}`Console` – Toggle the embedded IPython console with {kbd}`⌃+` on macOS or {kbd}`Ctrl+` on Windows/Linux, or via the {guilabel}`View` menu. The console exposes a `tools` list containing wrappers for every ImageTool. For example:
 
   ```python
-  data.qshow(manager=True, replace=1)
+  # List names of all windows
+  [tool.name for tool in tools]
+
+  # Access the underlying DataArray of the first window
+  tools[0].data
+
+  # Replace data in the first window
+  tools[0].data = new_data
   ```
 
-  To replace data in multiple windows at once:
-
-  ```python
-  eri.itool([data1, data2], manager=True, replace=[1, 2])
-  ```
-
-- Save all ImageTool windows to a file via the `Save Workspace As...` menu item.
-
-  The saved windows can be restored later with `Open Workspace...` or by dragging and dropping the file into the manager.
-
-- The manager includes a built-in IPython console for manipulating ImageTool windows and data, and running Python code.
-
-  Toggle the console with {kbd}`⌃+` (Mac) or {kbd}`Ctrl+` (Windows/Linux), or use the `View` menu.
-
-  :::{hint}
-  The console provides access to the `tools` list, which contains all open ImageTool windows. You can manipulate each window’s data via the `data` attribute, e.g., `tools[0].data`.
-  The console is a full-featured IPython environment, supporting tab completion, magic commands, and other IPython features. For example, use the `?` operator to view function signatures and docstrings, e.g., `xr.concat?`.
-  :::
-
-- Enable the `Preview on Hover` option in the `View` menu to show a preview of the main image when hovering over each tool.
-
-- After selecting multiple tools, you can perform actions on all selected tools at once using the right-click context menu.
-
-- Use the `Concatenate` option in the right-click context menu to combine data from all selected tools and open a new ImageTool window with the concatenated data. See {func}`xarray.concat <xarray.concat>` for details.
-
-- Explore the menu bar for additional features!
+  Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would in a notebook.
 
 (working-with-notebooks)=
 
-## Working with notebooks
+## Notebook integration
 
-### Synchronization
+The manager keeps notebooks synchronized through the `%watch` magic and exposes helper APIs for retrieving and storing data.
 
-The ImageTool manager supports automatic synchronization between Jupyter notebook variables and ImageTool windows. When you *watch* a variable, any changes to the variable in the notebook are reflected in the corresponding ImageTool window, and vice versa—transformations performed in ImageTool (such as rotation, symmetrization, or cropping) update the notebook variable as well. This seamless two-way synchronization is referred to as *watching* a variable.
+(imagetool-manager-watching)=
 
-First, load the IPython extension in your notebook:
+### Watching notebook variables
+
+Load the IPython extension and start watching variables:
 
 ```python
 %load_ext erlab.interactive
+%watch my_data
 ```
 
 :::{note}
-To load the extension automatically in new notebooks, add `erlab.interactive` to your IPython config. See the [IPython documentation](https://ipython.readthedocs.io/en/stable/config/intro.html) for details.
-
-If you use VS Code with the Jupyter extension, add this to your workspace or user `settings.json`:
+To load the extension automatically, add `erlab.interactive` to your [IPython configuration](https://ipython.readthedocs.io/en/stable/config/intro.html), or configure VS Code’s Jupyter extension with
 
 ```json
 "jupyter.runStartupCommands": [
@@ -148,146 +163,109 @@ If you use VS Code with the Jupyter extension, add this to your workspace or use
 ]
 ```
 
+so `%watch` is always available.
 :::
 
-Then watch a variable (e.g., `my_data`):
-
-```python
-%watch my_data
-```
-
-This opens a new ImageTool window in the manager displaying `my_data`. When `my_data` changes, the window updates automatically. A label with the variable name appears next to the tool in the manager.
+Watching creates a labeled ImageTool window. Any time `my_data` changes in the notebook, the manager updates the matching window. Editing inside ImageTool—rotation, symmetrization, cropping, or other {ref}`ImageTool operations <imagetool-editing>`—writes the results back to the notebook variable.
 
 :::{note}
-Change detection runs after each cell execution. To avoid slow comparisons, only a subset of large arrays is checked. If an update is missed, force a refresh by re-running `%watch my_data`.
+To keep comparisons fast, only small subsets of large arrays are compared to check whether data has been modified. If a change slips by, re-run `%watch my_data` to force a refresh.
 :::
 
-You can watch multiple variables:
+Controlling watches:
 
 ```python
-%watch data1 data2 data3
+%watch data1 data2 data3   # add multiple variables
+%watch                     # list watched names
+%watch -d data1 data2      # stop watching specific variables
+%watch -x data1            # stop watching and close the window
+%watch -z                  # stop watching everything
+%watch -xz                 # stop watching and close every watched window
 ```
 
-List watched variables:
+You can also right-click a tool in the manager and choose {guilabel}`Stop Watching`.
 
-```python
-%watch
-```
-
-Stop watching specific variables:
-
-```python
-%watch -d data1 data2
-```
-
-You can also stop watching from the tool’s right-click context menu in the manager.
-
-If a variable is deleted or changed to a non-compatible type, it stops being watched:
-
-```python
-del data1
-data2 = "not a DataArray anymore"
-```
-
-The corresponding ImageTool windows become regular windows and no longer update automatically.
-
-To stop watching and also close the corresponding windows:
-
-```python
-%watch -x data1 data2
-```
-
-Stop watching all variables:
-
-```python
-%watch -z
-```
-
-Combine with `-x` to also close all corresponding windows:
-
-```python
-%watch -xz
-```
+If a variable is deleted or replaced with a non-`DataArray`, the manager automatically breaks the link and keeps the window as a regular ImageTool.
 
 :::{note}
-If you close the notebook or restart the kernel, watched variables remain in the manager but are no longer synchronized with the notebook. The corresponding windows keep their labels, but they no longer update automatically. You can remove the labels by right-clicking the tools and choosing "Stop Watching". To avoid confusion, stop watching all variables before closing the notebook or restarting the kernel.
+When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion.
 :::
 
-### Accessing data from a notebook
+(imagetool-manager-fetch)=
 
-Fetch data from a manager window by index with {func}`erlab.interactive.imagetool.manager.fetch`:
+### Accessing manager data programmatically
+
+Use {func}`fetch <erlab.interactive.imagetool.manager.fetch>` inside a notebook or script to copy data out of the manager:
 
 ```python
 from erlab.interactive.imagetool.manager import fetch
+
+data = fetch(0)  # returns an xarray.DataArray copy
 ```
 
-```python
-data = fetch(0)
-```
+Because `fetch` returns a copy, you can safely modify it without touching the live window.
 
-:::{note}
-The fetched data is a copy. Modifying it does not affect the displayed data.
-:::
+### Sharing data via `%store`
 
-### Integration with `%store` magic command
-
-The [%store](https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html) magic command in IPython allows you to persist variables across different sessions. You can use this feature to store data from an ImageTool window in the manager and retrieve it later in any notebook session. The manager has built-in support for this feature, making it easy to store data from an ImageTool window using the `%store` magic command.
-
-Suppose you want to store the data displayed in a tool with index 0. First select the tool in the manager. Then, trigger the `Store with IPython` action from the right-click context menu or the `File` menu. This will open a dialog to enter a variable name. Enter a variable name (e.g., `my_data`) and click OK.
-
-:::{note}
-This is equivalent to running the following code in the manager console:
+The [%store](https://ipython.readthedocs.io/en/stable/config/extensions/storemagic.html) magic can persist variables between notebook sessions. Select tools in the manager and run {guilabel}`File → Store with IPython` (or the matching context-menu command) to push their `DataArray` objects into the `%store` database. Internally, this executes:
 
 ```python
 my_data = tools[0].data
 %store my_data
 ```
 
-:::
+Later, in any notebook, retrieve the stored variable with `%store -r my_data` and continue analysis without reopening files.
 
-Now, in any notebook, you can retrieve the data by running:
+(imagetool-manager-automation)=
+
+## Automation APIs
+
+If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public helpers exported from {mod}`erlab.interactive.imagetool.manager`:
 
 ```python
-%store -r my_data
+from erlab.interactive.imagetool.manager import load_in_manager, show_in_manager
+
+# Open raw files and let the manager choose the loader interactively
+load_in_manager(["scan1.pxt", "scan2.pxt"])
+
+# Open two ImageTools and link their cursors
+show_in_manager([data_a, data_b], link=True)
+
+# Replace the dataset at index 3 with a new result
+show_in_manager(new_data, replace=3)
 ```
 
-after which the data will be available as `my_data` in the notebook.
+Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch_data <erlab.interactive.imagetool.manager.watch_data>`, and {func}`unwatch_data <erlab.interactive.imagetool.manager.unwatch_data>` give you finer control when building custom acquisition pipelines.
 
-(installing-as-a-standalone-application)=
+Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
+
+(imagetool-manager-standalone)=
 
 ## Installing as a standalone application
 
-The ImageTool manager can be installed as a standalone application, which enables launching it without setting up a Python environment. It also enables some additional features:
+Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon). For macOS 26 and later, the app also features a dynamic icon that matches the new design language.
 
-- Double-clicking supported files in your file explorer to open them in the manager.
+Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon) and include a macOS “liquid glass” icon for clarity.
 
-  :::{note}
-  On macOS, this also includes drag-and-dropping supported files onto the application icon in the Dock.
-  :::
-
-- Liquid glass icon on macOS 26 and later.
-
-Builds for Windows and macOS can be downloaded from the [releases page](https://github.com/kmnhan/erlabpy/releases). Follow the instructions below to install the application.
-
-For other platforms, build the application from source as described [below](#build-from-source).
+Download the latest release from the [project’s releases page](https://github.com/kmnhan/erlabpy/releases), then follow the platform-specific steps below. For other platforms, or if you prefer full control, build from source via {ref}`build-from-source`.
 
 ### Windows
 
-1. Download the latest Windows build (a `.zip` file) from the [releases page](https://github.com/kmnhan/erlabpy/releases).
+1. Download the latest Windows build `.zip` file from the [releases page](https://github.com/kmnhan/erlabpy/releases).
 
-2. Extract the contents of the `.zip` file and double click on the extracted `.exe` file to run the installer. Follow the prompts to complete the installation.
+2. Extract it and double-click the included `.exe` installer, then follow the prompts.
 
 ### macOS
 
-1. Download the latest macOS build `.zip` file from the [releases page](https://github.com/kmnhan/erlabpy/releases) corresponding to your platform.
+1. Download the latest `.zip` archive that matches your architecture from the [releases page](https://github.com/kmnhan/erlabpy/releases).
 
-2. Extract the contents of the `.zip` file. This will create an `ImageTool Manager.app` file.
+2. Extract it to obtain `ImageTool Manager.app`.
 
-3. Move `ImageTool Manager.app` to your `Applications` folder, or any desired location.
+3. Move the app into `/Applications` (or any folder you prefer) and launch it like any other macOS application.
 
 ### Updating the application
 
-Updates can be checked and installed from within the application itself. Select `Check for Updates...` in the menu bar under `Help` (Windows) or the application name next to {fab}`apple` (macOS) and follow the prompts.
+Updates can be checked and installed from within the application itself. Select {guilabel}`Check for Updates...` in the menu bar under {guilabel}`Help` (Windows) or {guilabel}`ImageTool Manager` next to {fab}`apple` (macOS) and follow the prompts.
 
 (build-from-source)=
 
@@ -297,34 +275,23 @@ If you want to build the standalone application from source due to platform comp
 
 1. Clone the repository:
 
-    ```bash
-    git clone https://github.com/kmnhan/erlabpy.git
-    ```
+   ```bash
+   git clone https://github.com/kmnhan/erlabpy.git
+   cd erlabpy
+   ```
 
-2. Navigate to the `erlabpy` directory:
+2. Install dependencies (requires `uv`):
 
-    ```bash
-    cd erlabpy
-    ```
+   ```bash
+   uv sync --all-extras --group pyinstaller --group pyqt6
+   ```
 
-3. Install the required dependencies (assuming you have uv installed):
+3. Build the application:
 
-    ```bash
-    uv sync --all-extras --group pyinstaller --group pyqt6
-    ```
+   ```bash
+   uv run pyinstaller manager.spec
+   ```
 
-4. Build the standalone application using PyInstaller:
+4. The resulting app will be in `dist/ImageTool Manager`.
 
-    ```bash
-    uv run pyinstaller manager.spec
-    ```
-
-5. The built application will be located in `dist/ImageTool Manager`.
-
-6. (Optional, Windows only) To create an installer, install [Inno Setup](https://jrsoftware.org/isinfo.php) and add to your system PATH. Then run:
-
-    ```bash
-    iscc manager.iss
-    ```
-
-    The installer will be located in `dist`.
+5. *(Optional, Windows only)* Install [Inno Setup](https://jrsoftware.org/isinfo.php) and add to your system PATH. Then run `iscc manager.iss` to create an installer file.

@@ -2587,7 +2587,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
 
-        self._roi_list: list[ItoolROI] = []
+        self._roi_list: list[ItoolPolyLineROI] = []
 
     def setup_actions(self) -> None:
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
@@ -2601,8 +2601,8 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:
             # ROI actions
             self.vb.menu.addSeparator()
-            roi_action = self.vb.menu.addAction("Add ROI")
-            roi_action.triggered.connect(self.add_roi)
+            poly_roi_action = self.vb.menu.addAction("Add Polygon ROI")
+            poly_roi_action.triggered.connect(self.add_roi)
 
         self.vb.menu.addSeparator()
 
@@ -2846,14 +2846,14 @@ class ItoolPlotItem(pg.PlotItem):
         )
         xrange, yrange = self.vb.state["viewRange"]
         dx, dy = 0.2 * (xrange[1] - xrange[0]), 0.2 * (yrange[1] - yrange[0])
-        roi = ItoolROI(self, positions=[(x0, y0), (x0 + dx, y0 + dy)])
+        roi = ItoolPolyLineROI(self, positions=[(x0, y0), (x0 + dx, y0 + dy)])
         self._roi_list.append(roi)
         self.addItem(roi)
         roi.sigRemoveRequested.connect(self.remove_roi)
 
     @QtCore.Slot(object)
     @record_history
-    def remove_roi(self, roi: ItoolROI) -> None:
+    def remove_roi(self, roi: ItoolPolyLineROI) -> None:
         if roi in self._roi_list:
             self._roi_list.remove(roi)
             self.removeItem(roi)
@@ -2895,7 +2895,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             with self.slicer_area.history_suppressed():
                 for s in state["roi_states"]:
-                    roi = ItoolROI(self, positions=s["points"])
+                    roi = ItoolPolyLineROI(self, positions=s["points"])
                     self._roi_list.append(roi)
                     self.addItem(roi)
                     roi.sigRemoveRequested.connect(self.remove_roi)
@@ -3844,7 +3844,7 @@ class ItoolColorBar(pg.PlotWidget):
             self.cb.setSpanRegion(self.cb.limits)
 
 
-class ItoolROI(pg.PolyLineROI):
+class ItoolPolyLineROI(pg.PolyLineROI):
     """Custom ROI for ImageTool.
 
     Additional functionality includes context menu actions for editing the ROI, slicing
@@ -3917,7 +3917,7 @@ class ItoolROI(pg.PolyLineROI):
     @QtCore.Slot()
     def edit_roi(self) -> None:
         """Open dialog to edit ROI vertices."""
-        dialog = _ROIEditDialog(self)
+        dialog = _PolyROIEditDialog(self)
         dialog.exec()
 
     @QtCore.Slot()
@@ -3963,8 +3963,8 @@ class ItoolROI(pg.PolyLineROI):
         return vertices
 
 
-class _ROIEditDialog(QtWidgets.QDialog):
-    def __init__(self, roi: ItoolROI) -> None:
+class _PolyROIEditDialog(QtWidgets.QDialog):
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
         super().__init__()
         self.roi = roi
         self.setWindowTitle("Edit ROI")

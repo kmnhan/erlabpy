@@ -20,7 +20,7 @@ from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.core import (
     _AssociatedCoordsDialog,
     _parse_input,
-    _ROIEditDialog,
+    _PolyROIEditDialog,
 )
 from erlab.interactive.imagetool.dialogs import (
     AssignCoordsDialog,
@@ -1059,7 +1059,7 @@ def test_itool_roi_edit_dialog_updates_points(qtbot) -> None:
     roi = plot_item._roi_list[0]
     roi.setPoints([(0.0, 0.0), (2.0, 1.0)], closed=False)
 
-    dialog = _ROIEditDialog(roi)
+    dialog = _PolyROIEditDialog(roi)
     qtbot.addWidget(dialog)
     dialog.show()
 
@@ -1112,7 +1112,7 @@ def test_itool_roi_edit_dialog_invalid_values(qtbot, monkeypatch) -> None:
     original_points = [(0.0, 0.0), (1.0, 1.0)]
     roi.setPoints(original_points, closed=False)
 
-    dialog = _ROIEditDialog(roi)
+    dialog = _PolyROIEditDialog(roi)
     qtbot.addWidget(dialog)
     dialog.show()
 
