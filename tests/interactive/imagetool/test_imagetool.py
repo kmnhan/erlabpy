@@ -896,7 +896,7 @@ def test_itool_roi_lifecycle(qtbot) -> None:
 
     plot_item = win.slicer_area.main_image
     add_roi_action = next(
-        act for act in plot_item.vb.menu.actions() if act.text() == "Add ROI"
+        act for act in plot_item.vb.menu.actions() if act.text() == "Add Polygon ROI"
     )
     add_roi_action.trigger()
 
