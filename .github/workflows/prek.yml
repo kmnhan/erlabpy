@@ -1,8 +1,7 @@
 name: Prek Checks
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 on:
   pull_request:
@@ -24,7 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
           fetch-depth: 0
 
       - name: Run prek
@@ -32,42 +30,3 @@ jobs:
         uses: j178/prek-action@v1
         with:
           extra-args: "--all-files"
-        continue-on-error: true
-
-      - name: Detect modifications
-        id: changes
-        run: |
-          if git status --short | grep -q .; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Push auto-fixes
-        if: steps.changes.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "style: apply prek fixes"
-          git push
-
-      - name: Fail when no auto-fixes were produced and prek failed
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed != 'true'
-        run: |
-          echo "prek failed without producing auto-fixes"
-          exit 1
-
-      - name: Re-run prek after autoupdate
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true'
-        id: prek_rerun
-        uses: j178/prek-action@v1
-        with:
-          extra-args: "--all-files"
-        continue-on-error: true
-
-      - name: Fail if rerun is still failing
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true' && steps.prek_rerun.outcome == 'failure'
-        run: |
-          echo "::error::prek still failing after auto-fixes"
-          exit 1
