@@ -1,35 +1,23 @@
 name: Prek Checks
 
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
     branches: ["main"]
-  schedule:
-    # Every 15th at 22:00 UTC (16th at 07:00 KST/JST)
-    - cron: "0 22 15 * *"
   workflow_dispatch:
-    inputs:
-      autoupdate:
-        description: "Run prek autoupdate instead of the standard checks"
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 jobs:
   prek:
-    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.autoupdate != 'true')
+    if: github.repository == 'kmnhan/erlabpy'
     name: Run prek hooks
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
     env:
       FORCE_COLOR: "1"
     steps:
@@ -37,107 +25,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          python-version: "3.13"
-
       - name: Run prek
         id: prek
-        run: uv tool run --from prek prek run --all-files --color always --show-diff-on-failure
-        continue-on-error: true
-
-      - name: Detect modifications
-        id: changes
-        run: |
-          if git status --short | grep -q .; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check auto-fix push eligibility
-        if: github.event_name == 'pull_request' && steps.changes.outputs.changed == 'true'
-        id: push_eligibility
-        run: |
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-            echo "can_push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "can_push=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Push auto-fixes
-        if: steps.push_eligibility.outputs.can_push == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "style: apply prek fixes"
-          git push
-
-      - name: Fail when fixes cannot be pushed to the source branch
-        if: steps.prek.outcome == 'failure' && steps.push_eligibility.outputs.can_push == 'false'
-        run: |
-          echo "::error::prek produced auto-fixes but the workflow cannot push to forked branches."
-          echo "Please run 'uv tool run --from prek prek run --all-files' locally and push the result."
-          exit 1
-
-      - name: Fail when no auto-fixes were produced
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed != 'true'
-        run: |
-          echo "::error::prek failed without producing auto-fixes"
-          exit 1
-
-      - name: Re-run prek after autoupdate
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true'
-        id: prek_rerun
-        run: uv tool run --from prek prek run --all-files --color always --show-diff-on-failure
-
-      - name: Fail if rerun is still failing
-        if: steps.prek.outcome == 'failure' && steps.changes.outputs.changed == 'true' && steps.prek_rerun.outcome == 'failure'
-        run: |
-          echo "::error::prek still failing after auto-fixes"
-          exit 1
-
-  autoupdate:
-    name: Autoupdate hooks
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.autoupdate == 'true')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v5
+        uses: j178/prek-action@v1
         with:
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          python-version: "3.13"
-
-      - name: Run prek autoupdate
-        run: uv tool run --from prek prek autoupdate
-
-      - name: Detect autoupdate changes
-        id: autoupdate_changes
-        run: |
-          if git status --short | grep -q .; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create pull request with updated hooks
-        if: steps.autoupdate_changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          title: "ci(prek): prek autoupdate"
-          body: |
-            Automated prek autoupdate run to keep hook revisions current.
-          commit-message: "ci(prek): prek autoupdate"
-          branch: chore-prek-autoupdate
+          extra-args: "--all-files"
