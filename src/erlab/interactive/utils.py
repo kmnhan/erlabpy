@@ -2472,23 +2472,31 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             self.images[0].setDataArray(
                 self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
+            self.axes[0].autoRange()
 
-    def add_roi(self, i):
-        self.roi[i] = pg.ROI(
+    def add_roi(self, i: int) -> pg.ROI:
+        vb: pg.ViewBox = self.axes[i].getViewBox()
+        vb.updateAutoRange()
+        vb.updateMatrix()
+        rect = vb.itemBoundingRect(self.images[i])
+
+        roi = pg.ROI(
             [-0.1, -0.5],
             [0.3, 0.5],
             parent=self.images[i],
             rotatable=False,
             resizable=True,
-            maxBounds=self.axes[i].getViewBox().itemBoundingRect(self.images[i]),
+            maxBounds=rect,
         )
-        self.roi[i].addScaleHandle([0.5, 1], [0.5, 0])
-        self.roi[i].addScaleHandle([0.5, 0], [0.5, 1])
-        self.roi[i].addScaleHandle([1, 0.5], [0, 0.5])
-        self.roi[i].addScaleHandle([0, 0.5], [1, 0.5])
-        self.axes[i].addItem(self.roi[i])
-        self.roi[i].setZValue(10)
-        return self.roi[i]
+        roi.addScaleHandle([0.5, 1], [0.5, 0])
+        roi.addScaleHandle([0.5, 0], [0.5, 1])
+        roi.addScaleHandle([1, 0.5], [0, 0.5])
+        roi.addScaleHandle([0, 0.5], [1, 0.5])
+        self.axes[i].addItem(roi)
+        roi.setZValue(10)
+
+        self.roi[i] = roi
+        return roi
 
 
 class ComparisonWidget(AnalysisWidgetBase):
@@ -2529,6 +2537,7 @@ class ComparisonWidget(AnalysisWidgetBase):
             self.images[0].setDataArray(
                 self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
+        self.axes[0].autoRange()
 
     def set_pre_function(self, func, only_values=False, **kwargs) -> None:
         self.prefunc_only_values = only_values

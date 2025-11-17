@@ -5,6 +5,7 @@ import weakref
 
 import numpy as np
 import pyperclip
+import pyqtgraph as pg
 import pytest
 import xarray as xr
 import xarray.testing
@@ -751,6 +752,13 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def set_vb_range(
+    vb: pg.ViewBox, x_range: tuple[float, float], y_range: tuple[float, float]
+) -> None:
+    vb.setRange(xRange=x_range, yRange=y_range)
+    vb.sigRangeChangedManually.emit(vb.state["mouseEnabled"][:])
+
+
 def test_itool_normalize_to_view(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
@@ -760,15 +768,26 @@ def test_itool_normalize_to_view(qtbot) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
+    with qtbot.wait_exposed(win):
+        win.show()
+        win.activateWindow()
+
     # Change limits
-    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
-    # Trigger manual range propagation
-    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
-        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    set_vb_range(
+        win.slicer_area.main_image.getViewBox(), x_range=(1, 4), y_range=(0, 3)
     )
+    assert win.slicer_area.manual_limits == {"x": [1.0, 4.0], "y": [0.0, 3.0]}
+    slice_dict = {"x": slice(1.0, 4.0), "y": slice(0.0, 3.0)}
+    assert win.slicer_area.make_slice_dict() == slice_dict
 
     # Adjust colors
     win.slicer_area.main_image.normalize_to_current_view()
+
+    cropped = data.sel(**slice_dict)
+    xr.testing.assert_identical(
+        win.slicer_area.main_image._current_data_cropped, cropped
+    )
+    assert erlab.utils.array.minmax_darr(cropped) == (5.0, 23.0)
 
     mn, mx = win.slicer_area.levels
     np.testing.assert_allclose(mn, 5.0)
