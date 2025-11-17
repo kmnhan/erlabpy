@@ -151,7 +151,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         data_corr: xr.DataArray | None = None,
         *,
         data_name: str | None = None,
-        execute: bool = True,
         **kwargs,
     ) -> None:
         if data.ndim != 2 or "eV" not in data.dims:
@@ -410,8 +409,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
-
-        self.__post_init__(execute=execute)
 
     def _toggle_fast(self) -> None:
         self.params_edge.widgets["T (K)"].setDisabled(
@@ -1115,6 +1112,7 @@ def goldtool(
     data_corr: xr.DataArray | None = None,
     *,
     data_name: str | None = None,
+    execute: bool | None = None,
     **kwargs,
 ) -> GoldTool:
     """Interactive tool for correcting curved Fermi edges.
@@ -1140,7 +1138,14 @@ def goldtool(
             data_name = str(varname.argname("data", func=goldtool, vars_only=False))
         except varname.VarnameRetrievingError:
             data_name = "data"
-    return GoldTool(data, data_corr, data_name=data_name, **kwargs)
+
+    with erlab.interactive.utils.setup_qapp(execute):
+        win = GoldTool(data, data_corr, data_name=data_name, **kwargs)
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+    return win
 
 
 def restool(
