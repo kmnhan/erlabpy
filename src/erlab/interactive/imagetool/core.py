@@ -1697,7 +1697,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for k, v in self.manual_limits.items():
             ax_idx = self.data.dims.index(k)
             sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            start, end = sorted(np.round(v, sig_digits).astype(float))
+            start, end = (
+                float(np.round(v[0], sig_digits)),
+                float(np.round(v[1], sig_digits)),
+            )
             if sig_digits == 0:
                 start, end = int(start), int(end)
             slice_dict[k] = slice(start, end)

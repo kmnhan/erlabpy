@@ -1908,7 +1908,7 @@ class ROIControls(ParameterGroup):
             spinbox_kw = {}
         self.roi = roi
         x0, y0, x1, y1 = self.roi_limits
-        xm, ym, xM, yM = self.roi.maxBounds.getCoords()
+        xm, ym, xM, yM = self.max_bounds
 
         default_properties = {
             "decimals": 3,
@@ -1970,6 +1970,17 @@ class ROIControls(ParameterGroup):
         x1, y1 = x0 + w, y0 + h
         return x0, y0, x1, y1
 
+    @property
+    def max_bounds(self) -> tuple[float, float, float, float]:
+        bounds: QtCore.QRectF | None = self.roi.maxBounds
+        if bounds is None:
+            coords = (-np.inf, -np.inf, np.inf, np.inf)
+        else:
+            coords = typing.cast(
+                "tuple[float, float, float, float]", bounds.getCoords()
+            )
+        return coords
+
     @typing.no_type_check
     def update_pos(self) -> None:
         self.widgets["x0"].setMaximum(self.widgets["x1"].value())
@@ -1987,7 +1998,7 @@ class ROIControls(ParameterGroup):
         x0, y0, x1, y1 = (
             (f if f is not None else i) for i, f in zip(lim_old, lim_new, strict=True)
         )
-        xm, ym, xM, yM = self.roi.maxBounds.getCoords()
+        xm, ym, xM, yM = self.max_bounds
         x0, y0, x1, y1 = max(x0, xm), max(y0, ym), min(x1, xM), min(y1, yM)
         self.roi.setPos((x0, y0), update=False)
         self.roi.setSize((x1 - x0, y1 - y0), update=update)
