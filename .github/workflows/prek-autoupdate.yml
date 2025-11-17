@@ -19,9 +19,6 @@ jobs:
     name: Autoupdate hooks
     if: github.repository == 'kmnhan/erlabpy'
     runs-on: ubuntu-latest
-    env:
-      PREK_AUTOUPDATE_BODY: ${{ runner.temp }}/prek-autoupdate-body.md
-      PREK_AUTOUPDATE_COMMIT: ${{ runner.temp }}/prek-autoupdate-commit.txt
     steps:
       - uses: actions/create-github-app-token@v2
         id: app-token
@@ -31,8 +28,6 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
 
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Install prek
         uses: j178/prek-action@v1
@@ -50,6 +45,13 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set temporary file paths
+        id: paths
+        env:
+          PREK_AUTOUPDATE_BODY: ${{ runner.temp }}/prek-autoupdate-body.md
+        run: |
+          echo "body_path=${{ env.PREK_AUTOUPDATE_BODY }}" >> "$GITHUB_OUTPUT"
 
       - name: Generate update summary
         id: summary
@@ -118,11 +120,10 @@ jobs:
               body_lines.append("updates: (no tracked repositories changed)")
 
           body = "\n".join(body_lines) + "\n"
-          Path("${{ env.PREK_AUTOUPDATE_BODY }}").write_text(body)
+          Path("${{ steps.paths.outputs.body_path }}").write_text(body)
 
           title = "ci(prek): prek autoupdate"
           commit_message = f"{title}\n\n{body}"
-          Path("${{ env.PREK_AUTOUPDATE_COMMIT }}").write_text(commit_message)
 
           output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a") as fh:
@@ -138,7 +139,7 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           title: "ci(prek): prek autoupdate"
-          body-path: ${{ env.PREK_AUTOUPDATE_BODY }}
+          body-path: ${{ steps.paths.outputs.body_path }}
           commit-message: ${{ steps.summary.outputs.commit_message }}
           branch: prek-autoupdate
           delete-branch: true
