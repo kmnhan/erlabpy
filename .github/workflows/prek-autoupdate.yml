@@ -20,10 +20,14 @@ jobs:
     if: github.repository == 'kmnhan/erlabpy'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        name: Create GitHub App token
         with:
-          ssh-key: ${{ secrets.DEPLOY_KEY }}
-          fetch-depth: 0
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
 
       - name: Install prek
         uses: j178/prek-action@v1
@@ -41,6 +45,13 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set temporary file paths
+        id: paths
+        env:
+          PREK_AUTOUPDATE_BODY: ${{ runner.temp }}/prek-autoupdate-body.md
+        run: |
+          echo "body_path=${{ env.PREK_AUTOUPDATE_BODY }}" >> "$GITHUB_OUTPUT"
 
       - name: Generate update summary
         id: summary
@@ -109,11 +120,10 @@ jobs:
               body_lines.append("updates: (no tracked repositories changed)")
 
           body = "\n".join(body_lines) + "\n"
-          Path("prek-autoupdate-body.md").write_text(body)
+          Path("${{ steps.paths.outputs.body_path }}").write_text(body)
 
-          title = "ci(pre-commit): pre-commit autoupdate"
+          title = "ci(prek): prek autoupdate"
           commit_message = f"{title}\n\n{body}"
-          Path("prek-autoupdate-commit.txt").write_text(commit_message)
 
           output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a") as fh:
@@ -128,8 +138,9 @@ jobs:
         if: steps.autoupdate_changes.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
-          title: "ci(pre-commit): pre-commit autoupdate"
-          body-path: prek-autoupdate-body.md
+          title: "ci(prek): prek autoupdate"
+          body-path: ${{ steps.paths.outputs.body_path }}
           commit-message: ${{ steps.summary.outputs.commit_message }}
-          branch: chore/prek-autoupdate
+          branch: prek-autoupdate
           delete-branch: true
+          token: ${{ steps.app-token.outputs.token }}
