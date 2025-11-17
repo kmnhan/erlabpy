@@ -20,6 +20,10 @@
 
 ### 🐞 Bug Fixes
 
+- **interactive:** ensure compatiblilty with pyqtgraph 0.14.0 ([e12cb4e](https://github.com/kmnhan/erlabpy/commit/e12cb4edee7f6b95337949bc3112e76174329689))
+
+  `pyqtgraph 0.14.0` introduced changes that affected the behavior of linked views and range updates, which impacted some tools and tests.
+
 - **imagetool:** update shortcut for copying cursor values to `Ctrl+Shift+C` instead of `Ctrl+C` due to conflict with standard copy action ([336cc99](https://github.com/kmnhan/erlabpy/commit/336cc9979496a35346aaf69c43e3bbd8ce75f37b))
 
 - **imagetool:** apply crop to copied selection code ([6f3cf44](https://github.com/kmnhan/erlabpy/commit/6f3cf4496dd7ea05f0c1463d67451f4713adeab1))
@@ -31,6 +35,8 @@
 - **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
 
 ### ♻️ Code Refactor
+
+- **goldtool:** use execute like other tools ([ab5b80b](https://github.com/kmnhan/erlabpy/commit/ab5b80b419f7f096a47ffc2eb9894e85eb6ced78))
 
 - **manager:** use macOS icon on other platforms ([da52629](https://github.com/kmnhan/erlabpy/commit/da52629f4ef3f5af695315d5821d16f95835b47c))
 
