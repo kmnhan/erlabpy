@@ -263,6 +263,9 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         self.copy_btn.clicked.connect(self.copy_code)
 
+        self.images[0].setDataArray(self.data)
+        self.plots[0].autoRange()
+
         self.update_result()
 
     @QtCore.Slot()
