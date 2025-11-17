@@ -6,7 +6,6 @@
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/erlab?logo=condaforge&logoColor=white)](https://anaconda.org/conda-forge/erlab)
 [![Workflow Status](https://img.shields.io/github/actions/workflow/status/kmnhan/erlabpy/ci.yml?branch=main&logo=github&label=tests)](https://github.com/kmnhan/erlabpy/actions/workflows/ci.yml)
 [![Documentation Status](https://img.shields.io/readthedocs/erlabpy?logo=readthedocs&logoColor=white)](https://erlabpy.readthedocs.io/)
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kmnhan/erlabpy/main.svg)](https://results.pre-commit.ci/latest/github/kmnhan/erlabpy/main)
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white)](https://codecov.io/gh/kmnhan/erlabpy)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)

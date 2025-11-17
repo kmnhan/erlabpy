@@ -295,10 +295,10 @@ these steps:
   used to working with type annotations, please try to add them to any new code you
   contribute.
 
-- If you wish to contribute, using [pre-commit](https://pre-commit.com) is recommended.
+- If you wish to contribute, using [prek](https://github.com/j178/prek) is recommended.
   This will ensure that your code and commit message is properly formatted before you
-  commit it. A pre-commit configuration file is included in the repository, and you can
-  install it by running `pre-commit install` in the repository root.
+  commit it. A configuration file is included in the repository, and you can
+  install it by running `prek install` in the repository root.
 
 - When writing code that uses Qt, please adhere to the following rules:
 
