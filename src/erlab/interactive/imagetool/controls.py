@@ -255,7 +255,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                     np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
                 self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
-        except OverflowError:
+        except Exception:
             self.spin_dat.setDecimals(4)
 
         # add multicursor widgets
@@ -414,7 +414,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                     np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
                 self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
-        except OverflowError:
+        except Exception:
             self.spin_dat.setDecimals(4)
         self.spin_dat.setValue(
             self.array_slicer.point_value(self.current_cursor, binned=True)
