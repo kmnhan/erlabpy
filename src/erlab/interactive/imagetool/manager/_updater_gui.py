@@ -67,6 +67,39 @@ class Downloader(QtCore.QThread):
         self._stop = True
 
 
+class Extractor(QtCore.QThread):
+    progress = QtCore.Signal(int, int)  # bytes_processed, total_bytes (-1 if unknown)
+    finished_ok = QtCore.Signal(str)  # path to extracted dir
+    failed = QtCore.Signal(str)
+
+    def __init__(self, zip_path: pathlib.Path, out_dir: pathlib.Path):
+        super().__init__()
+        self.zip_path = zip_path
+        self.out_dir = out_dir
+        self._stop = False
+
+    def run(self):
+        try:
+            with zipfile.ZipFile(self.zip_path) as zf:
+                infos = zf.infolist()
+                total = sum(info.file_size for info in infos if not info.is_dir())
+                processed = 0
+                for info in infos:
+                    if self._stop:
+                        return
+                    zf.extract(info, self.out_dir)
+                    if info.is_dir():
+                        continue
+                    processed += info.file_size
+                    self.progress.emit(processed, total or -1)
+            self.finished_ok.emit(str(self.out_dir))
+        except Exception as e:
+            self.failed.emit(f"Extraction failed: {e}")
+
+    def stop(self):
+        self._stop = True
+
+
 class AutoUpdater(QtCore.QObject):
     def __init__(self, current_version: str | None = None):
         super().__init__()
@@ -92,11 +125,22 @@ class AutoUpdater(QtCore.QObject):
         new = packaging.version.Version(info.tag)
         cur = packaging.version.Version(self.current_version)
         if new <= cur:
-            QtWidgets.QMessageBox.information(
-                parent,
-                "Up to date",
-                f"You are running the latest version (v{self.current_version}).",
+            msg_box = QtWidgets.QMessageBox(parent)
+            style = parent.style()
+            if style is not None:
+                icon_size = (
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize
+                    )
+                    or 48
+                )
+                msg_box.setIconPixmap(parent.windowIcon().pixmap(icon_size, icon_size))
+            msg_box.setText("Up to date!")
+            msg_box.setInformativeText(
+                f"You are running the latest version (v{self.current_version})."
             )
+
+            msg_box.exec()
             return
 
         # Show changelog in a custom dialog with Markdown rendering
@@ -140,10 +184,24 @@ class AutoUpdater(QtCore.QObject):
         if not dlg.exec():
             return
 
+        install_root = get_install_root()
+        if sys.platform == "darwin" and not self._macos_location_is_writable(
+            install_root
+        ):
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "Move to Applications",
+                "ImageTool Manager needs to live in the Applications folder "
+                "to install updates.\n\n"
+                f"Current location: {install_root}\n\n"
+                "Please move it to the Applications folder and try again.",
+            )
+            return
+
         match QtWidgets.QMessageBox.question(
             parent,
             "Update",
-            "The application will download and install the update automatically. "
+            "The application will download and install the update. "
             "The application will close and relaunch during the process. "
             "Make sure to save your work. Continue?",
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -170,9 +228,7 @@ class AutoUpdater(QtCore.QObject):
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        progress = QtWidgets.QProgressDialog(
-            "Downloading update…", "Cancel", 0, 100, parent
-        )
+        progress = QtWidgets.QProgressDialog("Downloading…", "Cancel", 0, 100, parent)
         progress.setAutoClose(False)
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
@@ -181,13 +237,18 @@ class AutoUpdater(QtCore.QObject):
         total_hint = info.asset.size if info.asset.size > 0 else None
         dl = Downloader(info.asset.download_url, zippath, total_hint, headers)
 
+        factor = 1024 * 1024  # Bytes to MiB
+
         def _on_prog(done: int, total: int):
             if total <= 0:
-                progress.setLabelText(f"Downloading… {done // (1024 * 1024)} MB")
+                progress.setLabelText(f"Downloading…<br>{done / factor:.1f} MiB")
                 progress.setRange(0, 0)  # busy
             else:
                 progress.setRange(0, total)
                 progress.setValue(done)
+                progress.setLabelText(
+                    f"Downloading…<br>{done / factor:.1f} / {total / factor:.1f} MiB"
+                )
 
         def _on_fail(msg: str):
             progress.cancel()
@@ -216,6 +277,8 @@ class AutoUpdater(QtCore.QObject):
 
     def _extract_and_update(self, zip_path: pathlib.Path, parent: QtWidgets.QWidget):
         install_root = get_install_root()
+
+        self._confirm_install_ready(parent)
 
         tmpdir = zip_path.parent
 
@@ -313,6 +376,33 @@ class AutoUpdater(QtCore.QObject):
         qapp = QtWidgets.QApplication.instance()
         if qapp:
             qapp.quit()
+
+    @staticmethod
+    def _confirm_install_ready(parent: QtWidgets.QWidget | None) -> None:
+        msg = QtWidgets.QMessageBox(parent)
+        msg.setWindowTitle("Update Ready")
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
+        msg.setText("Update ready to install")
+        install_btn = msg.addButton(
+            "Install Update"
+            if sys.platform.startswith("win")
+            else "Install and Relaunch",
+            QtWidgets.QMessageBox.ButtonRole.AcceptRole,
+        )
+        msg.setDefaultButton(install_btn)
+        msg.exec()
+
+    @staticmethod
+    def _macos_location_is_writable(app_path: pathlib.Path) -> bool:
+        resolved = app_path.resolve()
+        parent_dir = resolved.parent
+        in_applications = False
+        try:
+            in_applications = resolved.is_relative_to(pathlib.Path("/Applications"))
+        except AttributeError:
+            in_applications = str(resolved).startswith("/Applications")
+        writable = os.access(parent_dir, os.W_OK)
+        return in_applications and writable
 
 
 def _macos_helper_script(new_app: pathlib.Path, old_app: pathlib.Path, pid: int) -> str:
