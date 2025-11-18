@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 import xarray as xr
 
@@ -47,6 +49,16 @@ def test_load_multiple(expected_dir) -> None:
     xr.testing.assert_identical(
         erlab.io.load(5), xr.load_dataarray(expected_dir / "5.h5")
     )
+
+
+def test_load_multiregion(data_dir, expected_dir) -> None:
+    expected = xr.load_datatree(expected_dir / "8.h5")
+
+    xr.testing.assert_identical(erlab.io.load("f_008_R0_S001.pxt"), expected)
+    xr.testing.assert_identical(erlab.io.load(8), expected)
+
+    shutil.copy(data_dir / "f_008_R0_S001.pxt", data_dir / "f_009_R0.pxt")
+    shutil.copy(data_dir / "f_008_R1_S001.pxt", data_dir / "f_009_R1.pxt")
 
 
 def test_load_live(expected_dir) -> None:

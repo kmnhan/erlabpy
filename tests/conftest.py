@@ -34,10 +34,10 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
+DATA_COMMIT_HASH = "065632d4c5865ce6012c4b7cdc568af3db506104"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
+DATA_KNOWN_HASH = "892783c7c5030aea81d437d9344947632d17bbd28794c67f09d6a9746e79dce1"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
