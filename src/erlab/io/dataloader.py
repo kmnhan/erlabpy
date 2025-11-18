@@ -45,7 +45,6 @@ if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import (
         Callable,
-        Hashable,
         Iterable,
         Iterator,
         KeysView,
@@ -156,6 +155,27 @@ class _Loader(type):
             new_class._original_load_single = original_load_single
 
         return new_class
+
+
+def _combine_by_coords_general(
+    data_objects: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree], **kwargs
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    # xr.combine_by_coords does not support DataTrees yet, so we implement it manually
+    # here using group_subtrees
+    if isinstance(data_objects[0], xr.DataTree):
+        out_dict: dict[str, xr.Dataset] = {}
+        for path, nodes in xr.group_subtrees(*data_objects):
+            if any(not node.is_leaf for node in nodes):
+                out_dict[path] = xr.Dataset()
+            else:
+                out_dict[path] = typing.cast(
+                    "xr.Dataset",
+                    xr.combine_by_coords([node.dataset for node in nodes], **kwargs),
+                )
+        return xr.DataTree.from_dict(out_dict)
+    return xr.combine_by_coords(
+        typing.cast("list[xr.DataArray] | list[xr.Dataset]", data_objects), **kwargs
+    )
 
 
 class LoaderBase(metaclass=_Loader):
@@ -1620,41 +1640,40 @@ class LoaderBase(metaclass=_Loader):
         data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
         coord_dict: dict[str, Sequence],
     ) -> xr.DataArray | xr.Dataset | xr.DataTree:
-        if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
-            raise NotImplementedError(
-                "Combining DataTrees into a single tree will be supported "
-                "in a future release of ERLabPy. In the meantime, consider supplying "
-                "`combine=False` to get a list of the data in each file, or "
-                "`single=True` to load only one file."
-            )
+        if len(coord_dict) == 0 and len(data_list) == 1:
+            # Single file, no coordinates to combine
+            return data_list[0]
 
         if len(coord_dict) == 0:
             # No coordinates to combine given
             # Multiregion scans over multiple files may be provided like this
-
-            if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
-                pass
-            else:
-                try:
-                    return xr.combine_by_coords(
-                        typing.cast(
-                            "Sequence[xr.DataArray] | Sequence[xr.Dataset]", data_list
-                        ),
+            try:
+                if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
+                    return xr.merge(
+                        data_list,
                         compat="no_conflicts",
-                        data_vars="all",
-                        coords="all",
                         join="exact",
                         combine_attrs=self.combine_attrs,
                     )
-                except Exception as e:
-                    raise RuntimeError(
-                        "Failed to combine data. Try passing "
-                        "`combine=False` to `erlab.io.load`"
-                    ) from e
+                return xr.combine_by_coords(
+                    typing.cast("list[xr.DataArray] | list[xr.Dataset]", data_list),
+                    compat="no_conflicts",
+                    data_vars="all",
+                    coords="all",
+                    join="exact",
+                    combine_attrs=self.combine_attrs,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    "Failed to combine data. Try passing "
+                    "`combine=False` to `erlab.io.load`"
+                ) from e
 
-        if erlab.utils.misc.is_sequence_of(
-            data_list, xr.DataArray
-        ) or erlab.utils.misc.is_sequence_of(data_list, xr.Dataset):
+        if (
+            erlab.utils.misc.is_sequence_of(data_list, xr.DataArray)
+            or erlab.utils.misc.is_sequence_of(data_list, xr.Dataset)
+            or erlab.utils.misc.is_sequence_of(data_list, xr.DataTree)
+        ):
             # If all coordinates are monotonic, all points are unique; in this case,
             # indexing along only the first dimension will not discard any data. For
             # example, hv-dependent cuts with coords 'hv' and 'beta' should be combined
@@ -1674,40 +1693,40 @@ class LoaderBase(metaclass=_Loader):
                 # This is necessary to ensure that coordinate_attrs are preserved.
                 concat_dim = next(iter(coord_dict.keys()))
                 concat_coord = coord_dict.pop(concat_dim)
-                processed: list[xr.DataArray] = [
-                    self.process_keys(
-                        data.assign_coords({concat_dim: concat_coord[i]})
+
+                def process_func(darr: xr.DataArray, idx: int) -> xr.DataArray:
+                    return self.process_keys(
+                        darr.assign_coords({concat_dim: concat_coord[idx]})
                         .expand_dims(concat_dim)
                         .assign_coords(
-                            {k: (concat_dim, [v[i]]) for k, v in coord_dict.items()}
+                            {k: (concat_dim, [v[idx]]) for k, v in coord_dict.items()}
                         )
                     )
-                    for i, data in enumerate(data_list)
-                ]
             else:
-                processed = [
-                    self.process_keys(
-                        data.assign_coords(
-                            {k: v[i] for k, v in coord_dict.items()}
+                concat_dim = None
+
+                def process_func(darr: xr.DataArray, idx: int) -> xr.DataArray:
+                    return self.process_keys(
+                        darr.assign_coords(
+                            {k: v[idx] for k, v in coord_dict.items()}
                         ).expand_dims(tuple(coord_dict.keys()))
                     )
-                    for i, data in enumerate(data_list)
-                ]
 
-            # Ensure all processed data have the same set of coordinates by assigning
-            # NaN to missing coordinates. This is necessary for some setups where some
-            # data files have missing header entries, possibly due to a bug in the data
-            # acquisition software.
-            all_coord_names: set[Hashable] = set().union(
-                *(d.coords.keys() for d in processed)
+            processed = typing.cast(
+                "list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]",
+                [
+                    erlab.utils.array.apply_dataarray_func(
+                        typing.cast("xr.DataArray | xr.Dataset | xr.DataTree", data),
+                        process_func,
+                        idx=i,
+                    )
+                    for i, data in enumerate(data_list)
+                ],
             )
-            for i, data in enumerate(processed):
-                missing = all_coord_names - set(data.coords.keys())
-                if missing:
-                    processed[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
+            erlab.utils.array.ensure_same_coord_names(processed)
 
             # Magically combine the data
-            combined = xr.combine_by_coords(
+            combined = _combine_by_coords_general(
                 processed,
                 compat="no_conflicts",
                 data_vars="all",
@@ -1850,6 +1869,9 @@ class LoaderBase(metaclass=_Loader):
             dims_first=True,
         )
 
+    def _reorder_and_postprocess(self, darr: xr.DataArray) -> xr.DataArray:
+        return self._reorder_coords(self.post_process(darr))
+
     @typing.overload
     def post_process_general(self, data: xr.DataArray) -> xr.DataArray: ...
 
@@ -1889,23 +1911,8 @@ class LoaderBase(metaclass=_Loader):
         DataArray or Dataset or DataTree
             The post-processed data with the same type as the input.
         """
-        if isinstance(data, xr.DataArray):
-            return self._reorder_coords(self.post_process(data))
-
-        if isinstance(data, xr.Dataset):
-            return xr.Dataset(
-                {
-                    k: self._reorder_coords(self.post_process(v))
-                    for k, v in data.data_vars.items()
-                },
-                attrs=data.attrs,
-            )
-
-        if isinstance(data, xr.DataTree):
-            return data.map_over_datasets(self.post_process_general)
-
-        raise TypeError(
-            "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
+        return erlab.utils.array.apply_dataarray_func(
+            data, self._reorder_and_postprocess
         )
 
     @classmethod

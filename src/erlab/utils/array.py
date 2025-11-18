@@ -1,11 +1,13 @@
 """Utility functions for working with numpy and xarray."""
 
 __all__ = [
+    "apply_dataarray_func",
     "broadcast_args",
     "check_arg_2d_darr",
     "check_arg_has_no_nans",
     "check_arg_uniform_dims",
     "effective_decimals",
+    "ensure_same_coord_names",
     "is_dims_uniform",
     "is_monotonic",
     "is_uniform_spaced",
@@ -474,3 +476,113 @@ def to_native_endian(arr: npt.NDArray) -> npt.NDArray:
         arr = arr.astype(arr.dtype.newbyteorder("="))
 
     return arr
+
+
+@typing.overload
+def apply_dataarray_func(
+    data: xr.DataArray,
+    func: Callable[..., xr.DataArray],
+    **kwargs,
+) -> xr.DataArray: ...
+
+
+@typing.overload
+def apply_dataarray_func(
+    data: xr.Dataset,
+    func: Callable[..., xr.DataArray],
+    **kwargs,
+) -> xr.Dataset: ...
+
+
+@typing.overload
+def apply_dataarray_func(
+    data: xr.DataTree,
+    func: Callable[..., xr.DataArray],
+    **kwargs,
+) -> xr.DataTree: ...
+
+
+def apply_dataarray_func(
+    data: xr.DataArray | xr.Dataset | xr.DataTree,
+    func: Callable[..., xr.DataArray],
+    **kwargs,
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    """Apply a function to a DataArray, Dataset, or DataTree.
+
+    Parameters
+    ----------
+    data
+        The input data.
+    func
+        The function to apply to each DataArray. The first positional argument must be a
+        DataArray, and it must return a DataArray.
+    **kwargs
+        Additional keyword arguments to pass to ``func``.
+
+    Returns
+    -------
+    DataArray or Dataset or DataTree
+        The post-processed data with the same type as the input.
+    """
+    if isinstance(data, xr.DataArray):
+        return func(data, **kwargs)
+
+    if isinstance(data, xr.Dataset):
+        return xr.Dataset(
+            {k: func(v, **kwargs) for k, v in data.data_vars.items()},
+            attrs=data.attrs,
+        )
+
+    if isinstance(data, xr.DataTree):
+        return data.map_over_datasets(
+            apply_dataarray_func, kwargs={"func": func, **kwargs}
+        )
+
+    raise TypeError(
+        "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
+    )
+
+
+def ensure_same_coord_names(
+    data_list: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree],
+) -> None:
+    """Ensure all data has the same set of coordinate names.
+
+    This function modifies the provided list in place by adding missing coordinates with
+    NaN values to each DataArray, Dataset, or DataTree in the list.
+
+    All inputs must be of the same type: either all DataArrays, all Datasets, or all
+    DataTrees.
+
+    This function is used by the data loading utilities to ensure that all files in a
+    single load operation have the same set of coordinate names. This is required
+    because some endstations produce files with missing header entries, possibly due to
+    a bug in the data acquisition software.
+    """
+    if isinstance(data_list[0], xr.DataTree):
+        data_list = typing.cast("list[xr.DataTree]", data_list)
+        all_coord_name_dict: dict[str, set[Hashable]] = {}
+        for path, nodes in xr.group_subtrees(*data_list):
+            all_coord_name_dict[path] = set().union(
+                *(d.dataset.coords.keys() for d in nodes)
+            )
+
+        results: list[dict[str, xr.Dataset]] = [{} for _ in range(len(data_list))]
+        for path, nodes in xr.group_subtrees(*data_list):
+            for i, node in enumerate(nodes):
+                missing = all_coord_name_dict[path] - set(node.dataset.coords.keys())
+                results[i][path] = (
+                    node.dataset.assign_coords(dict.fromkeys(missing, np.nan))
+                    if missing
+                    else node.dataset
+                )
+        for i, result in enumerate(results):
+            data_list[i] = xr.DataTree.from_dict(result)
+    else:
+        all_coord_names: set[Hashable] = set().union(
+            *(d.coords.keys() for d in data_list)
+        )
+        for i, data in enumerate(data_list):
+            missing = all_coord_names - set(data.coords.keys())
+            if missing:
+                data_list[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
