@@ -662,15 +662,21 @@ class LoaderBase(metaclass=_Loader):
             else:
                 # Multiple files resolved
                 if combine:
-                    data_list, coord_dict = self.pre_combine_multiple(
-                        self.load_multiple_parallel(
-                            file_paths,
-                            parallel=parallel,
-                            progress=progress,
-                            **load_kwargs,
-                        ),
-                        coord_dict,
+                    data_list = self.load_multiple_parallel(
+                        file_paths,
+                        parallel=parallel,
+                        progress=progress,
+                        **load_kwargs,
                     )
+                    try:
+                        data_list, coord_dict = self.pre_combine_multiple(
+                            data_list, coord_dict
+                        )
+                    except Exception as e:
+                        raise RuntimeError(
+                            "Preprocessing before combining multiple files failed. "
+                            "Try passing `combine=False` to `erlab.io.load`"
+                        ) from e
                     data = self._combine_multiple(data_list, coord_dict)
                     del data_list, coord_dict  # Free memory
                 else:
