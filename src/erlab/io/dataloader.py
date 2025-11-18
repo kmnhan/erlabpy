@@ -1648,15 +1648,8 @@ class LoaderBase(metaclass=_Loader):
             # No coordinates to combine given
             # Multiregion scans over multiple files may be provided like this
             try:
-                if erlab.utils.misc.is_sequence_of(data_list, xr.DataTree):
-                    return xr.merge(
-                        data_list,
-                        compat="no_conflicts",
-                        join="exact",
-                        combine_attrs=self.combine_attrs,
-                    )
-                return xr.combine_by_coords(
-                    typing.cast("list[xr.DataArray] | list[xr.Dataset]", data_list),
+                return _combine_by_coords_general(
+                    data_list,
                     compat="no_conflicts",
                     data_vars="all",
                     coords="all",

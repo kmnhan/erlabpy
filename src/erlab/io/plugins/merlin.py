@@ -129,6 +129,30 @@ class MERLINLoader(LoaderBase):
         # One file always corresponds to single region
         return xr.open_dataarray(file_path, engine="erlab-igor")
 
+    def _parse_motor_file(
+        self, data_dir: pathlib.Path, prefix: str, num: int
+    ) -> tuple[list[str], npt.NDArray[np.float64]]:
+        motor_file = data_dir / f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
+
+        # Load as string first to avoid issues with empty lines and trailing spaces
+        coord_arr = np.loadtxt(motor_file, dtype=str, skiprows=1).astype(np.float64)
+
+        with motor_file.open(encoding="utf-8") as f:
+            header = f.readline().strip().split("\t")  # motor coordinate names
+
+        if coord_arr.ndim <= 1:
+            coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
+
+        return header, coord_arr
+
+    def _get_prefix(self, file_name: str, num: int) -> str:
+        match_prefix = re.match(
+            r"(.*?)_" + str(num).zfill(3) + r"(_R\d)?(?:_S\d{3})?.pxt", file_name
+        )
+        if match_prefix is None:
+            raise RuntimeError(f"Failed to determine prefix from {file_name}")
+        return match_prefix.group(1)
+
     def identify(self, num: int, data_dir: str | os.PathLike):
         data_dir = pathlib.Path(data_dir)
 
@@ -138,28 +162,53 @@ class MERLINLoader(LoaderBase):
         files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_S*.pxt"))
 
         if len(files) == 0:
-            # Look for multiregion scan
-            files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*.pxt"))
+            # Look for multiregion AND multi-file scan, like f_001_R0_S001.pxt
+            files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*_S*.pxt"))
+
+            if len(files) != 0:
+                # Parse motor file for multiregion multi-file scan
+                prefix = self._get_prefix(files[0].name, num)
+                header, coord_arr = self._parse_motor_file(data_dir, prefix, num)
+
+                prefix = re.escape(prefix)
+
+                region_list: list[int] = []
+                coords_tmp: dict[str, list[float]] = {dim: [] for dim in header}
+
+                for f in files:
+                    match_r_s = re.match(
+                        f"{prefix}_" + str(num).zfill(3) + r"_R(\d)_S(\d{3}).pxt",
+                        f.name,
+                    )
+                    if match_r_s is None:
+                        raise RuntimeError(f"Failed to parse file name {f.name}")
+
+                    region = int(match_r_s.group(1))
+                    scan_idx = int(match_r_s.group(2)) - 1
+
+                    region_list.append(region)
+                    for i, dim in enumerate(header):
+                        coords_tmp[dim].append(coord_arr[scan_idx, i])
+
+                for dim in header:
+                    coord_dict[dim] = np.array(coords_tmp[dim])
+                coord_dict["__region"] = np.array(region_list)
+
+            else:
+                # Look for multiregion scan like f_001_R0.pxt
+                files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*.pxt"))
+                region_numbers = []
+                for f in files:
+                    match_r = re.match(rf".*?_{str(num).zfill(3)}_R(\d).pxt", f.name)
+                    if match_r is None:
+                        raise RuntimeError(f"Failed to parse file name {f.name}")
+                    region_numbers.append(int(match_r.group(1)))
+                coord_dict["__region"] = np.array(region_numbers)
 
         elif len(files) > 1:
             # Extract motor positions for multi-file scan
-            match_prefix = re.match(
-                r"(.*?)_" + str(num).zfill(3) + r"(?:_S\d{3})?.pxt", files[0].name
-            )
-            if match_prefix is None:
-                raise RuntimeError(f"Failed to determine prefix from {files[0]}")
-            prefix: str = match_prefix.group(1)
-
-            motor_file = data_dir / f"{prefix}_{str(num).zfill(3)}_Motor_Pos.txt"
-
-            # Load as string first to avoid issues with empty lines and trailing spaces
-            coord_arr = np.loadtxt(motor_file, dtype=str, skiprows=1).astype(np.float64)
-
-            with motor_file.open(encoding="utf-8") as f:
-                header = f.readline().strip().split("\t")  # motor coordinate names
-
-            if coord_arr.ndim <= 1:
-                coord_arr = coord_arr.reshape(-1, 1)  # ensure 2D
+            prefix = self._get_prefix(files[0].name, num)
+            header, coord_arr = self._parse_motor_file(data_dir, prefix, num)
 
             if len(files) > coord_arr.shape[0]:
                 raise RuntimeError(
@@ -189,7 +238,7 @@ class MERLINLoader(LoaderBase):
 
     def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         try:
-            match_scan = re.match(r".*?(\d{3})(?:_S\d{3})", name)
+            match_scan = re.match(r".*?(\d{3})(_R\d)?(?:_S\d{3})?", name)
             if match_scan is None:
                 return None, {}
 
@@ -245,7 +294,42 @@ class MERLINLoader(LoaderBase):
             )
         return data.assign_coords(eV=-data.eV)
 
-    def pre_combine_multiple(self, data_list, coord_dict):
+    def pre_combine_multiple(
+        self, data_list, coord_dict
+    ) -> tuple[list[xr.DataArray] | list[xr.DataTree], dict]:
+        if "__region" in coord_dict:
+            # Group data with same scan index into single DataTree
+            regions = coord_dict.pop("__region")
+
+            unique_regions = np.unique(regions)
+
+            # Group data by region to set equal energy axis for each region
+            data_for_region: list[list[xr.DataArray]] = [
+                [
+                    data
+                    for r, data in zip(regions, data_list, strict=True)
+                    if r == region
+                ]
+                for region in unique_regions
+            ]
+            data_for_region = [
+                self.pre_combine_multiple(d, {})[0] for d in data_for_region
+            ]
+
+            # Combine regions that correspond to same scan index into single DataTree
+            scan_length = len(data_list) // len(unique_regions)
+            combined_list = [
+                xr.DataTree.from_dict(
+                    {
+                        f"R{int(region)}": data_for_region[n][scan_idx].to_dataset()
+                        for n, region in enumerate(unique_regions)
+                    }
+                )
+                for scan_idx in range(scan_length)
+            ]
+            coord_dict = {k: v[:scan_length] for k, v in coord_dict.items()}
+            return combined_list, coord_dict
+
         # Energy start & step may have very small offsets on the order of 1e-6 eV, which
         # can cause issues with merging. We just assume that the energy axis is the same
         # for all data arrays in the list, so we can assign the first one to all of
