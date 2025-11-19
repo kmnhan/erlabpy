@@ -1297,11 +1297,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         indices: list[int] = []
         kwargs["_in_manager"] = True
 
-        for d in data:
+        load_func = kwargs.pop("load_func", None)
+
+        for i, d in enumerate(data):
+            # Set index-specific load function if provided
+            this_load_func = (*load_func[:2], i) if load_func else None
             try:
                 indices.append(
                     self.add_imagetool(
-                        ImageTool(d, **kwargs), activate=True, watched_var=watched_var
+                        ImageTool(d, **kwargs, load_func=this_load_func),
+                        activate=True,
+                        watched_var=watched_var,
                     )
                 )
                 if watched_var is not None:
