@@ -393,7 +393,7 @@ class RotationDialog(DataTransformDialog):
         return erlab.analysis.transform.rotate(data, **self._rotate_params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.rotate,
             [f"|{placeholder}|"],
@@ -556,7 +556,7 @@ class SymmetrizeDialog(DataTransformDialog):
         return erlab.analysis.transform.symmetrize(data, **self._params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.symmetrize,
             [f"|{placeholder}|"],
@@ -1107,7 +1107,7 @@ class ROIPathDialog(DataTransformDialog):
         return erlab.analysis.interpolate.slice_along_path(data, **self._params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.interpolate.slice_along_path,
             [f"|{placeholder}|"],
@@ -1161,7 +1161,7 @@ class ROIMaskDialog(DataTransformDialog):
         return erlab.analysis.mask.mask_with_polygon(data, **self._params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.mask.mask_with_polygon,
             [f"|{placeholder}|"],
