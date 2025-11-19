@@ -188,11 +188,7 @@ class _MultiFileHandler(QtCore.QObject):
 
         self.manager._data_recv(
             data_list,
-            kwargs={
-                "file_path": file_path,
-                "load_func": (func, self._kwargs.copy()),
-                "_disable_reload": len(data_list) > 1,
-            },
+            kwargs={"file_path": file_path, "load_func": (func, self._kwargs.copy())},
         )
         QtCore.QTimer.singleShot(0, self._load_next)
 

@@ -963,6 +963,20 @@ def test_manager_open_files(
             manager.get_imagetool(0).slicer_area.data, test_data
         )
 
+        # Try reload
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()
+
+        # Try archive
+        manager._imagetool_wrappers[0].archive()
+        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
+
+        # Unarchive
+        manager._imagetool_wrappers[0].unarchive()
+        qtbot.wait_until(
+            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
+        )
+
         # Simulate drag and drop with wrong filter, retry with correct filter
         # Dialogs created are:
         # select loader → failed alert → retry → select loader
@@ -1147,3 +1161,41 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
+
+
+def test_manager_reload(
+    qtbot,
+    example_loader,
+    example_data_dir,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        manager.activateWindow()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        load_in_manager(
+            [example_data_dir / "data_006.h5"], loader_name=example_loader.name
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        # Try reload
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()
+
+        # Try archive
+        manager._imagetool_wrappers[0].archive()
+        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
+
+        # Unarchive
+        manager._imagetool_wrappers[0].unarchive()
+        qtbot.wait_until(
+            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
+        )
+
+        # Try reload again
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()

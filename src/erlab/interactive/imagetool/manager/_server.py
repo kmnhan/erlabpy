@@ -441,8 +441,8 @@ def _manager_running(func: Callable) -> Callable:
     def _wrapper(*args, **kwargs):
         if not erlab.interactive.imagetool.manager.is_running():
             raise RuntimeError(
-                "ImageToolManager is not running. Please start the ImageToolManager "
-                "application before using this function"
+                "ImageTool manager is not running. Please start the ImageTool manager "
+                "application before using this function."
             )
         return func(*args, **kwargs)
 
