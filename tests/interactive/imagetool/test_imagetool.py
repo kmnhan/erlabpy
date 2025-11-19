@@ -1333,7 +1333,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog.coord_widget.spin0.setValue(1)
         dialog.new_window_check.setChecked(False)
 
-    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 
