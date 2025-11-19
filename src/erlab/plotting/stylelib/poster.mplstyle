@@ -2,28 +2,28 @@
 ### CONFIGURATION BEGINS HERE
 
 ### FONT RELATED
-font.size: 10.0
+font.size: 7.0
 
 ### EVERYTHING ELSE
 
-axes.linewidth: 0.75
+axes.linewidth: 0.5
 xtick.direction: out
 xtick.major.size: 4.0
 xtick.minor.size: 2.4
-xtick.major.width: 0.75
-xtick.minor.width: 0.75
+xtick.major.width: 0.5
+xtick.minor.width: 0.5
 xtick.major.pad: 2.0
 xtick.minor.pad: 2.0
 ytick.direction: out
 ytick.major.size: 4.0
 ytick.minor.size: 2.4
-ytick.major.width: 0.75
-ytick.minor.width: 0.75
+ytick.major.width: 0.5
+ytick.minor.width: 0.5
 ytick.major.pad: 2.0
 ytick.minor.pad: 2.0
 figure.constrained_layout.h_pad: 0.06944444444
 figure.constrained_layout.w_pad: 0.06944444444
-lines.dashed_pattern: 12.0, 6.0
+lines.dashed_pattern: 6.0, 3.0
 
 savefig.dpi: 600
 savefig.bbox: tight
