@@ -181,9 +181,18 @@ class _MultiFileHandler(QtCore.QObject):
     def _deliver_and_queue(
         self, file_path: pathlib.Path, data_list: list[xr.DataArray]
     ) -> None:
+        func: Callable | str = self._func
+        func_instance = getattr(func, "__self__", None)
+        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+            func = func_instance.name
+
         self.manager._data_recv(
             data_list,
-            kwargs={"file_path": file_path, "_disable_reload": len(data_list) > 1},
+            kwargs={
+                "file_path": file_path,
+                "load_func": (func, self._kwargs.copy()),
+                "_disable_reload": len(data_list) > 1,
+            },
         )
         QtCore.QTimer.singleShot(0, self._load_next)
 

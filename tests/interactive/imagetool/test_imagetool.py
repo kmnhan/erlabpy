@@ -433,6 +433,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
         "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
+        "load_func": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
         "plotitem_states": [
             {

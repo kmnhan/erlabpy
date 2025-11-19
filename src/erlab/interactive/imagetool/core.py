@@ -11,6 +11,7 @@ import collections
 import contextlib
 import copy
 import functools
+import importlib
 import inspect
 import itertools
 import logging
@@ -76,6 +77,7 @@ class ImageSlicerState(typing.TypedDict):
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
     file_path: typing.NotRequired[str | None]
+    load_func: typing.NotRequired[tuple[str, dict[str, typing.Any]] | None]
     splitter_sizes: typing.NotRequired[list[list[int]]]
     plotitem_states: typing.NotRequired[list[PlotItemState]]
 
@@ -614,6 +616,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bench: bool = False,
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
+        load_func: tuple[Callable | str, dict[str, typing.Any]] | None = None,
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
@@ -773,9 +776,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._splitters[6].addWidget(self._plots[i])
 
         self._file_path: pathlib.Path | None = None
+        self._load_func: tuple[Callable | str, dict[str, typing.Any]] | None = None
         self.current_cursor: int = 0
 
-        self.set_data(data, rad2deg=rad2deg, file_path=file_path)
+        self.set_data(data, rad2deg=rad2deg, file_path=file_path, load_func=load_func)
 
         if self.bench:
             print("\n")
@@ -852,6 +856,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def state(self) -> ImageSlicerState:
+        load_func = self._load_func
+        if load_func is not None:
+            fn = load_func[0]
+            func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
+            load_func = (func_name, copy.deepcopy(load_func[1]))
         return {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
@@ -859,6 +868,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "manual_limits": copy.deepcopy(self.manual_limits),
             "splitter_sizes": self.splitter_sizes,
             "file_path": str(self._file_path) if self._file_path is not None else None,
+            "load_func": load_func,
             "cursor_colors": [c.name() for c in self.cursor_colors],
             "plotitem_states": [p._serializable_state for p in self.axes],
         }
@@ -884,6 +894,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if file_path is not None:
             self._file_path = pathlib.Path(file_path)
             self.sigDataChanged.emit()
+
+        load_func = state.get("load_func", None)
+        if load_func is not None:
+            fn: str = load_func[0]
+            if ":" in fn:
+                self._load_func = load_func
+                try:
+                    mod_name, qual = fn.split(":")
+                    mod = importlib.import_module(mod_name)
+                    func_obj = mod
+                    for attr in qual.split("."):
+                        func_obj = getattr(func_obj, attr)
+                    self._load_func = (typing.cast("Callable", func_obj), load_func[1])
+                except Exception:
+                    self._load_func = None
+            elif fn in erlab.io.loaders:
+                self._load_func = load_func
+            else:
+                self._load_func = None
 
         plotitem_states = state.get("plotitem_states", None)
         if plotitem_states is not None:  # pragma: no branch
@@ -1408,6 +1437,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
+        load_func: tuple[Callable | str, dict[str, typing.Any]] | None = None,
         auto_compute: bool = True,
     ) -> None:
         """Set the data to be displayed.
@@ -1426,13 +1456,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
             correspond to the given strings are converted.
         file_path
             Path to the file from which the data was loaded. If given, the file path is
-            used to set the window title.
+            used to set the window title and when reloading the data.
+        load_func
+            Tuple containing the function and keyword arguments used to load the data.
+            If given, this function is used when reloading the data. If from a data
+            loader plugin, the function may be given as a string representing the loader
+            name.
         auto_compute
             If `True` and the data is dask-backed, automatically compute the data if its
             size is below the threshold defined in options.
 
         """
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
+
+        if load_func is not None:
+            func: Callable | str = load_func[0]
+            func_instance = getattr(func, "__self__", None)
+            if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+                func = func_instance.name
+            self._load_func = (func, load_func[1].copy())
+        else:
+            self._load_func = None
+
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):  # pragma: no branch
@@ -1544,14 +1589,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return False
         return (
             (self._file_path is not None)
-            and ("data_loader_name" in self._data.attrs)
             and self._file_path.exists()
+            and self._load_func is not None
+            and (callable(self._load_func[0]) or self._load_func[0] in erlab.io.loaders)
         )
 
     def _fetch_for_reload(self) -> xr.DataArray:
-        reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
-            typing.cast("pathlib.Path", self._file_path)
+        file_path = typing.cast("pathlib.Path", self._file_path)
+        load_func = typing.cast(
+            "tuple[Callable | str, dict[str, typing.Any]]", self._load_func
         )
+        func = (
+            load_func[0]
+            if callable(load_func[0])
+            else erlab.io.loaders[load_func[0]].load
+        )
+
+        reloaded = func(file_path, **load_func[1])
         if not isinstance(reloaded, xr.DataArray):
             raise TypeError(
                 "Reloading data opened from files that contain "
@@ -1571,7 +1625,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.reloadable:  # pragma: no branch
             try:
-                self.set_data(self._fetch_for_reload(), file_path=self._file_path)
+                self.set_data(
+                    self._fetch_for_reload(),
+                    file_path=self._file_path,
+                    load_func=self._load_func,
+                )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."
