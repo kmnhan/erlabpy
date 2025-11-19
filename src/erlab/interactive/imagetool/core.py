@@ -3095,6 +3095,8 @@ class ItoolPlotItem(pg.PlotItem):
             }
             if color_props["levels_locked"]:
                 itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+            if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
+                itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
             tool = typing.cast(
                 "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
