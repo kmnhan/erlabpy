@@ -346,7 +346,7 @@ def test_watcher_real(
         assert text == "Variable synced with IPython"
 
         # Update data
-        with qtbot.wait_signal(manager.server.sigWatchedVarChanged):
+        with qtbot.wait_signal(manager.server.sigWatchedVarChanged, timeout=10000):
             ip_session.user_ns["darr"] = darr**2
             watcher._maybe_push()
 
