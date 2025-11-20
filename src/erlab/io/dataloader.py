@@ -744,8 +744,7 @@ class LoaderBase(metaclass=_Loader):
                             "Possible causes:\n"
                             "- The inferred index may be incorrect.\n"
                             "- The file may be corrupted or in an unsupported format.\n"
-                            "Full traceback:\n"
-                            f"{traceback.format_exc()}"
+                            f"\n{traceback.format_exc()}"
                         )
                         erlab.utils.misc.emit_user_level_warning(warning_message)
 

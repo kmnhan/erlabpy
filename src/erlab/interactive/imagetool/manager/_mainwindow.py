@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import os
@@ -8,6 +9,7 @@ import platform
 import sys
 import tempfile
 import threading
+import traceback
 import typing
 import uuid
 
@@ -28,6 +30,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
@@ -35,8 +38,41 @@ from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
-
 logger = logging.getLogger(__name__)
+
+
+class _WarningEmitter(QtCore.QObject):
+    warning_received = QtCore.Signal(str, int, str, str)
+
+
+class _WarningNotificationHandler(logging.Handler):
+    def __init__(self, emitter: _WarningEmitter):
+        super().__init__(level=logging.WARNING)
+        self._emitter = emitter
+
+    def emit(self, record: logging.LogRecord) -> None:
+        traceback_msg = ""
+        try:
+            message = str(record.message)
+            traceback_header = "Traceback (most recent call last):"
+            if traceback_header in message:
+                message, traceback_msg = message.split(traceback_header, 1)
+                traceback_msg = traceback_header + traceback_msg
+            if record.exc_info:
+                traceback_msg = "".join(traceback.format_exception(record.exc_info[1]))
+
+            if traceback_msg:
+                traceback_msg = erlab.interactive.utils._format_traceback(traceback_msg)
+
+            # emit_user_level_warning adds "<sys>:0: " when triggerd from GUI actions
+            message = message.strip().replace("<sys>:0: ", "")
+
+        except Exception:
+            self.handleError(record)
+            return
+        self._emitter.warning_received.emit(
+            record.levelname, record.levelno, message, traceback_msg
+        )
 
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
@@ -136,6 +172,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+
+        # Initialize warning notifications
+        self._warning_emitter = _WarningEmitter(self)
+        self._warning_emitter.warning_received.connect(self._show_alert)
+        self._warning_handler = _WarningNotificationHandler(self._warning_emitter)
+        logging.getLogger().addHandler(self._warning_handler)
+        self._alert_dialogs: list[erlab.interactive.utils.MessageDialog] = []
+
+        # Setup uncaught exception handler
+        self._previous_excepthook = sys.excepthook
+        sys.excepthook = self._handle_uncaught_exception
+
+        # Setup servers and connect signals
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
@@ -291,7 +340,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             QtWidgets.QAction.MenuRole.ApplicationSpecificRole
         )
         self.check_update_action.triggered.connect(self.check_for_updates)
-        # self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
+        self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
+
+        self.open_log_folder_action = QtWidgets.QAction("Open Log Directory", self)
+        self.open_log_folder_action.triggered.connect(self.open_log_directory)
 
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
@@ -344,8 +396,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Help")
         )
         help_menu.addAction(self.about_action)
-        help_menu.addSeparator()
         help_menu.addAction(self.check_update_action)
+        help_menu.addAction(self.open_log_folder_action)
 
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
@@ -509,6 +561,69 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
         msg_box.exec()
+
+    @QtCore.Slot()
+    def open_log_directory(self) -> None:
+        """Open the log directory in the system file explorer."""
+        erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
+
+    @QtCore.Slot(str, int, str, str)
+    def _show_alert(
+        self, levelname: str, levelno: int, message: str, formatted_traceback: str
+    ) -> None:
+        """Show a non-intrusive warning message in a floating window."""
+        dialog = erlab.interactive.utils.MessageDialog(
+            self,
+            title=levelname,
+            text=message,
+            detailed_text=formatted_traceback,
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+            if levelno <= logging.WARNING
+            else QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+        )
+        dialog.setModal(False)
+        dialog.setWindowFlags(
+            dialog.windowFlags()
+            | QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+        )
+
+        btn = QtWidgets.QPushButton("Dismiss All", dialog)
+        btn.setObjectName("warningDismissAllButton")
+        btn.clicked.connect(self._clear_all_alerts)
+        btn.setDefault(False)
+        btn.setAutoDefault(False)
+        dialog._button_box.addButton(
+            btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+        dialog._dismiss_all_btn = btn  # type: ignore[attr-defined]
+        self._alert_dialogs.append(dialog)
+        dialog.finished.connect(lambda *, d=dialog: self._unregister_alert(d))
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _unregister_alert(self, alert: erlab.interactive.utils.MessageDialog) -> None:
+        with contextlib.suppress(ValueError):  # pragma: no cover - defensive cleanup
+            self._alert_dialogs.remove(alert)
+
+    @QtCore.Slot()
+    def _clear_all_alerts(self) -> None:
+        for notification in list(self._alert_dialogs):
+            notification.close()
+
+    def _handle_uncaught_exception(self, exc_type, exc_value, exc_traceback):
+        """Show a dialog for uncaught exceptions and log them."""
+        if not issubclass(exc_type, KeyboardInterrupt):
+            logger.error(
+                "An unexpected error occurred.",
+                exc_info=(exc_type, exc_value, exc_traceback),
+            )
+        if self._previous_excepthook is not None:
+            with contextlib.suppress(Exception):
+                self._previous_excepthook(exc_type, exc_value, exc_traceback)
 
     @property
     def _reindex_lock(self) -> threading.Lock:
@@ -1914,5 +2029,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         logger.debug("Closing dask client (if any)...")
         self._dask_menu.close_client()
+
+        root_logger = logging.getLogger()
+        if self._warning_handler in root_logger.handlers:
+            root_logger.removeHandler(self._warning_handler)
+
+        self._clear_all_alerts()
+
+        if sys.excepthook is self._handle_uncaught_exception:
+            sys.excepthook = self._previous_excepthook
 
         super().closeEvent(event)
