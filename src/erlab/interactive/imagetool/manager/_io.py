@@ -127,9 +127,8 @@ class _MultiFileHandler(QtCore.QObject):
 
         self._abort: bool = False
 
-    @property
-    def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
+        self._threadpool = QtCore.QThreadPool(self)
+        self._threadpool.setExpiryTimeout(0)
 
     @property
     def manager(self) -> ImageToolManager:
@@ -220,6 +219,9 @@ class _MultiFileHandler(QtCore.QObject):
         will be loaded.
         """
         self._abort = True
+        self._queue.clear()
+        if hasattr(self._threadpool, "clear"):
+            self._threadpool.clear()
 
     def wait(self) -> None:
         """Block until all files are loaded or the loading process is aborted."""

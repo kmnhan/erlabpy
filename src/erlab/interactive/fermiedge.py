@@ -881,13 +881,11 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         self._result_ds: xr.Dataset | None = None
 
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
-        self.destroyed.connect(
-            lambda *, executor=self._executor: executor.shutdown(
-                wait=False, cancel_futures=True
-            )
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = (
+            concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
+
+        self.destroyed.connect(self._shutdown_executor)
 
     @property
     def x_range(self) -> tuple[float, float]:
@@ -902,6 +900,16 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         y0 = round(self.y0_spin.value(), self._y_decimals)
         y1 = round(self.y1_spin.value(), self._y_decimals)
         return y0, y1
+
+    def _shutdown_executor(self) -> None:
+        if self._executor is None:
+            return
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._executor = None
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._shutdown_executor()
+        super().closeEvent(event)
 
     def _update_edc(self) -> None:
         """Calculate averaged EDC and update the plot."""
@@ -954,6 +962,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     def do_fit(self) -> None:
         """Perform a fit on the averaged EDC and update results."""
         t0 = time.perf_counter()
+
+        if self._executor is None:
+            raise RuntimeError("Executor has been shut down.")
 
         # Execute in threadpool
         future = self._executor.submit(
