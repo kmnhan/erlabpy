@@ -53,7 +53,7 @@ class Downloader(QtCore.QThread):
                 received = 0
                 with open(self.out_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 64):
-                        if self._stop:
+                        if self._stop or self.isInterruptionRequested():
                             return
                         if chunk:
                             f.write(chunk)
@@ -65,6 +65,7 @@ class Downloader(QtCore.QThread):
 
     def stop(self):
         self._stop = True
+        self.requestInterruption()
 
 
 class Extractor(QtCore.QThread):
@@ -85,7 +86,7 @@ class Extractor(QtCore.QThread):
                 total = sum(info.file_size for info in infos if not info.is_dir())
                 processed = 0
                 for info in infos:
-                    if self._stop:
+                    if self._stop or self.isInterruptionRequested():
                         return
                     zf.extract(info, self.out_dir)
                     if info.is_dir():
@@ -98,6 +99,7 @@ class Extractor(QtCore.QThread):
 
     def stop(self):
         self._stop = True
+        self.requestInterruption()
 
 
 class AutoUpdater(QtCore.QObject):
