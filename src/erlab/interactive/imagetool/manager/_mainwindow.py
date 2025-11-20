@@ -67,7 +67,7 @@ class _WarningNotificationHandler(logging.Handler):
             # emit_user_level_warning adds "<sys>:0: " when triggerd from GUI actions
             message = message.strip().replace("<sys>:0: ", "")
 
-        except Exception:
+        except Exception:  # pragma: no cover
             self.handleError(record)
             return
         self._emitter.warning_received.emit(
@@ -621,7 +621,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 "An unexpected error occurred.",
                 exc_info=(exc_type, exc_value, exc_traceback),
             )
-        if self._previous_excepthook is not None:
+        if self._previous_excepthook is not None:  # pragma: no branch
             with contextlib.suppress(Exception):
                 self._previous_excepthook(exc_type, exc_value, exc_traceback)
 
@@ -2031,12 +2031,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._dask_menu.close_client()
 
         root_logger = logging.getLogger()
-        if self._warning_handler in root_logger.handlers:
+        if self._warning_handler in root_logger.handlers:  # pragma: no branch
             root_logger.removeHandler(self._warning_handler)
 
         self._clear_all_alerts()
 
-        if sys.excepthook is self._handle_uncaught_exception:
+        if sys.excepthook == self._handle_uncaught_exception:
             sys.excepthook = self._previous_excepthook
 
         super().closeEvent(event)

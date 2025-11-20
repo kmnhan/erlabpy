@@ -13,7 +13,7 @@ from qtpy import QtCore
 import erlab
 
 
-class _StreamToLogger(io.TextIOBase):
+class _StreamToLogger(io.TextIOBase):  # pragma: no cover
     def __init__(self, logger: logging.Logger, level: int) -> None:
         super().__init__()
         self.logger = logger
@@ -34,7 +34,7 @@ def _log_directory() -> pathlib.Path:
     location = QtCore.QStandardPaths.writableLocation(
         QtCore.QStandardPaths.StandardLocation.AppDataLocation
     )
-    if not location:
+    if not location:  # pragma: no cover
         location = str(pathlib.Path.home() / ".erlab" / "logs")
 
     path = pathlib.Path(location)
@@ -59,13 +59,15 @@ def configure_logging() -> None:
         logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
     )
     root_logger.addHandler(file_handler)
-    if root_logger.level == logging.NOTSET or root_logger.level > logging.INFO:
+    if (
+        root_logger.level == logging.NOTSET or root_logger.level > logging.INFO
+    ):  # pragma: no cover
         root_logger.setLevel(logging.INFO)
     root_logger.info("Writing ImageTool Manager logs to %s", log_path)
 
     logging.captureWarnings(True)
 
-    if erlab.utils.misc._IS_PACKAGED:
+    if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
         sys.stdout = _StreamToLogger(
             logging.getLogger("imagetool.stdout"), logging.INFO
         )
