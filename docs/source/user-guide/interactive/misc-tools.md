@@ -20,7 +20,7 @@ Here are some of the miscellaneous interactive tools provided:
 
 Interactive conversion from angles to momentum space.
 
-There are three ways to invoke the GUI.
+There are four ways to invoke the GUI.
 
 1. {meth}`xarray.DataArray.kspace.interactive`
 
@@ -43,6 +43,8 @@ There are three ways to invoke the GUI.
    Click {guilabel}`View → Open in ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
+
+4. From IPython using the `%ktool` magic described in {ref}`interactive-misc-magics`.
 
 The GUI is divided into two tabs.
 
@@ -114,6 +116,8 @@ eri.dtool(data)
 
 It can also be opened from within ImageTool from the right-click context menu of any image plot.
 
+The `%dtool` line magic (see {ref}`interactive-misc-magics`) provides the same entry point from notebooks.
+
 ```{image} ../../images/dtool_light.png
 :align: center
 :alt: DerivativeTool window in light mode
@@ -157,6 +161,8 @@ eri.goldtool(data)
 
 It can also be opened from within ImageTool from the right-click context menu of any image plot.
 
+Use the `%goldtool` magic (see {ref}`interactive-misc-magics`) to launch it directly from IPython.
+
 (guide-restool)=
 
 ## restool
@@ -172,6 +178,8 @@ eri.restool(data)
 ```
 
 It can also be opened from within ImageTool from the right-click context menu of any image plot that contains an energy axis.
+
+The `%restool` magic mirrors this behavior for notebook workflows.
 
 ## Data explorer
 
@@ -206,3 +214,19 @@ eri.bzplot.BZPlotter()
 ```
 
 Once opened, a matplotlib figure window will appear alongside a control panel for adjusting the lattice parameters. The figure can be rotated interactively using the mouse, and the plot can be exported as any of the formats supported by matplotlib via the standard matplotlib save button.
+
+(interactive-misc-magics)=
+
+## Notebook shortcuts
+
+Loading the :mod:`erlab.interactive` IPython extension (`%load_ext erlab.interactive`) registers convenient line magics for quickly launching the various interactive tools from within a Jupyter notebook or IPython console.
+
+```ipython
+%ktool --cmap viridis darr.sel(eV=0)
+
+%dtool darr
+
+%goldtool darr.isel(beta=1)
+
+%restool darr.mean(dim='kx')
+```
