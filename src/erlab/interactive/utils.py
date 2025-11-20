@@ -2131,6 +2131,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        # Enable closing with keyboard shortcut
+        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
+
     @property
     def tool_status(self) -> M:
         raise NotImplementedError(
