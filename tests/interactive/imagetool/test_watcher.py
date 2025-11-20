@@ -338,7 +338,7 @@ def test_watcher_real(
 
         # Update data
         with qtbot.wait_signal(manager.server.sigWatchedVarChanged, timeout=10000):
-            ip_session.user_ns["darr"] = darr**2
+            ip_shell.user_ns["darr"] = darr**2
             watcher._maybe_push()
 
         xr.testing.assert_equal(
