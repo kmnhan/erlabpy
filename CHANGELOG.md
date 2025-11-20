@@ -2,6 +2,14 @@
 
 ### ✨ Features
 
+- **manager:** support reloading data containing multiple DataArrays in a single file ([1d76d34](https://github.com/kmnhan/erlabpy/commit/1d76d34053eefb49864005a617b97b58142138b4))
+
+- **io.plugins.merlin:** add support for multi-region scans ([9293556](https://github.com/kmnhan/erlabpy/commit/92935560680a2a2e5aec9531caca8dd70e21d438))
+
+  Multi-region scans are now loaded as DataTrees, with each region as a separate branch. Multi-region motor scans are also supported.
+
+- **io:** add support for automatic concatenation of DataTrees ([3324a17](https://github.com/kmnhan/erlabpy/commit/3324a17377f752e97198d2818739f38d47ec211d))
+
 - **imagetool:** add polygon ROI support (#202) ([dcd9754](https://github.com/kmnhan/erlabpy/commit/dcd97547f0acaf57c81c9e5809ec71119a3f272c))
 
   This commit introduces support for polygonal Regions of Interest (ROIs) in ImageTool. For each image plot, users can now create a polygon or line ROI from the right-click context menu. The created ROI can be manipulated by dragging its vertices. New vertices can be added by clicking on the edges of the polygon, and existing vertices can be removed by right-clicking on them. The right-click context menu of a ROI also includes options such as editing the ROI's coordinates directly, deleting the ROI, and multidimensional slicing of the data along the edges of the ROI or masking within the polygonal area.
@@ -20,6 +28,14 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** retain keyword arguments to loader function when reloading data ([8717bd1](https://github.com/kmnhan/erlabpy/commit/8717bd1c35fe14bb57739045a2eae600bed817a5))
+
+- **imagetool:** retain colorbar reversed state when opening in new window ([3c2e14d](https://github.com/kmnhan/erlabpy/commit/3c2e14d87d078cff392b4e4742f340007f2495da))
+
+- **imagetool:** include watched variable name in code copied from dialogs ([1248dfd](https://github.com/kmnhan/erlabpy/commit/1248dfdd79c3b2219fc504272f4c9a8a3f99e4bd))
+
+- **imagetool:** fix regression with all-NaN data ([41d13ed](https://github.com/kmnhan/erlabpy/commit/41d13ed0f8457f849dd9470821f209cff87e2840))
+
 - **interactive:** ensure compatiblilty with pyqtgraph 0.14.0 ([e12cb4e](https://github.com/kmnhan/erlabpy/commit/e12cb4edee7f6b95337949bc3112e76174329689))
 
   `pyqtgraph 0.14.0` introduced changes that affected the behavior of linked views and range updates, which impacted some tools and tests.
@@ -35,6 +51,8 @@
 - **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
 
 ### ♻️ Code Refactor
+
+- **io:** improve error message upon failure during preparing data for combination ([f5f5ede](https://github.com/kmnhan/erlabpy/commit/f5f5ede3f4c8ab72925f7843843a306df0ef9f88))
 
 - **goldtool:** use execute like other tools ([ab5b80b](https://github.com/kmnhan/erlabpy/commit/ab5b80b419f7f096a47ffc2eb9894e85eb6ced78))
 
