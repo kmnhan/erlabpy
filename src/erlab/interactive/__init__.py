@@ -67,6 +67,11 @@ def load_ipython_extension(ipython) -> None:
     ipython.register_magics(watcher_magics)
     ipython.events.register("post_run_cell", watcher_magics._watcher._maybe_push)
 
+    # Other tools
+    from erlab.interactive._magic import InteractiveToolMagics
+
+    ipython.register_magics(InteractiveToolMagics)
+
 
 def unload_ipython_extension(ipython) -> None:
     watcher_magics = ipython.magics_manager.registry.get("WatcherMagics")
