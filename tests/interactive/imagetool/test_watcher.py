@@ -2,6 +2,7 @@ import threading
 import typing
 from collections.abc import Callable
 
+import IPython
 import numpy as np
 import pytest
 import xarray as xr
@@ -10,9 +11,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool.manager import _watcher as watcher_mod
 from erlab.interactive.imagetool.manager._watcher import _Watcher
-
-if typing.TYPE_CHECKING:
-    import IPython
 
 
 class FakeIOLoop:
@@ -278,6 +276,7 @@ def test_stop_watching_all_with_remove(fake_shell, patch_manager, monkeypatch):
 
 def test_watcher_real(
     qtbot,
+    ip_shell: IPython.InteractiveShell,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -287,25 +286,17 @@ def test_watcher_real(
         qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
 
-        # Start IPython session
-        from IPython.testing.globalipapp import start_ipython
-
-        ip_session: IPython.InteractiveShell = start_ipython()
-
-        # Load extension
-        ip_session.run_line_magic("load_ext", "erlab.interactive")
-
         darr = xr.DataArray(
             np.arange(125).reshape((5, 5, 5)),
             dims=["alpha", "beta", "eV"],
             coords={"alpha": np.arange(5), "beta": np.arange(5), "eV": np.arange(5)},
         )
-        ip_session.user_ns.update({"darr": darr})
+        ip_shell.user_ns.update({"darr": darr})
 
-        watcher = ip_session.magics_manager.registry.get("WatcherMagics")._watcher
+        watcher = ip_shell.magics_manager.registry.get("WatcherMagics")._watcher
 
         # Try watching
-        ip_session.run_line_magic("watch", "darr")
+        ip_shell.run_line_magic("watch", "darr")
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         # Check watched
@@ -351,7 +342,7 @@ def test_watcher_real(
             watcher._maybe_push()
 
         xr.testing.assert_equal(
-            manager.get_imagetool(0).slicer_area._data, ip_session.user_ns["darr"]
+            manager.get_imagetool(0).slicer_area._data, ip_shell.user_ns["darr"]
         )
 
         # Modify data from manager side
@@ -361,46 +352,39 @@ def test_watcher_real(
             manager._imagetool_wrappers[0]._trigger_watched_update()
 
         qtbot.wait(1000)  # wait for async update to complete
-        xr.testing.assert_equal(ip_session.user_ns["darr"], darr + 10)
+        xr.testing.assert_equal(ip_shell.user_ns["darr"], darr + 10)
 
         # Unwatch
-        ip_session.run_line_magic("watch", "-d darr")
+        ip_shell.run_line_magic("watch", "-d darr")
         qtbot.wait_until(lambda: not manager._imagetool_wrappers[0].watched)
 
         # Watch again
-        ip_session.run_line_magic("watch", "darr")
+        ip_shell.run_line_magic("watch", "darr")
         qtbot.wait_until(lambda: manager.ntools == 2)
         assert manager._imagetool_wrappers[1].watched
 
         # Remove watched
-        ip_session.run_line_magic("watch", "-x darr")
+        ip_shell.run_line_magic("watch", "-x darr")
         qtbot.wait_until(lambda: manager.ntools == 1)
 
         # Watch again
-        ip_session.run_line_magic("watch", "darr")
+        ip_shell.run_line_magic("watch", "darr")
         qtbot.wait_until(lambda: manager.ntools == 2)
         assert manager._imagetool_wrappers[1].watched
 
         # Stop watching all
-        ip_session.run_line_magic("watch", "-z")
+        ip_shell.run_line_magic("watch", "-z")
         qtbot.wait_until(lambda: not manager._imagetool_wrappers[1].watched)
 
         # Watch again
-        ip_session.run_line_magic("watch", "darr")
+        ip_shell.run_line_magic("watch", "darr")
         qtbot.wait_until(lambda: manager.ntools == 3)
         assert manager._imagetool_wrappers[2].watched
 
         # Stop watching and close all watched
-        ip_session.run_line_magic("watch", "-xz")
+        ip_shell.run_line_magic("watch", "-xz")
         qtbot.wait_until(lambda: manager.ntools == 2)
 
         watcher.shutdown()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0)
-
-    # Unload the extension and clean up
-    ip_session.run_line_magic("unload_ext", "erlab.interactive")
-    ip_session.user_ns.clear()  # Clear the user namespace
-
-    ip_session.clear_instance()
-    del start_ipython.already_called

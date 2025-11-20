@@ -11,7 +11,7 @@ import typing
 import uuid
 import weakref
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -369,10 +369,6 @@ class _ImageToolWrapper(QtCore.QObject):
 
         tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
 
-        # Enable closing with keyboard shortcut
-        tool.__close_shortcut = QtWidgets.QShortcut(  # type: ignore[attr-defined]
-            "Ctrl+W", tool, tool.hide
-        )
         if show:
             tool.show()
         return uid

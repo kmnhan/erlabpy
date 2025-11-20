@@ -2131,6 +2131,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        # Enable closing with keyboard shortcut
+        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
+
     @property
     def tool_status(self) -> M:
         raise NotImplementedError(
@@ -2236,10 +2242,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
         if tool_data_name == "<none-value>":
             tool_data_name = None
-        tool = cls_obj(
-            ds["<saved-tool-data>"].rename(tool_data_name),  # type: ignore[arg-type]
-            **kwargs,
-        )
+        tool = cls_obj(ds["<saved-tool-data>"].rename(tool_data_name), **kwargs)
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
