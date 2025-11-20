@@ -481,6 +481,23 @@ def cover_qthreadpool(monkeypatch, qtbot):
     monkeypatch.setattr(QThreadPool, "start", start_with_trace)
 
 
+@pytest.fixture
+def ip_shell():
+    """IPython shell with the interactive extension loaded."""
+    from IPython.testing.globalipapp import start_ipython
+
+    ip_session = start_ipython()
+    ip_session.run_line_magic("load_ext", "erlab.interactive")
+
+    yield ip_session
+
+    ip_session.run_line_magic("unload_ext", "erlab.interactive")
+    ip_session.user_ns.clear()
+    ip_session.clear_instance()
+    with contextlib.suppress(AttributeError):
+        del start_ipython.already_called
+
+
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):
     data = generate_data_angles(
         shape=(250, 1, 300),

@@ -1,5 +1,4 @@
-import contextlib
-
+import IPython
 import numpy as np
 import pytest
 import xarray as xr
@@ -21,22 +20,6 @@ def _isel_alpha1(data):
 
 def _isel_eV0(data):
     return data.isel(eV=0)
-
-
-@pytest.fixture
-def ip_shell():
-    from IPython.testing.globalipapp import start_ipython
-
-    ip_session = start_ipython()
-    ip_session.run_line_magic("load_ext", "erlab.interactive")
-
-    yield ip_session
-
-    ip_session.run_line_magic("unload_ext", "erlab.interactive")
-    ip_session.user_ns.clear()
-    ip_session.clear_instance()
-    with contextlib.suppress(AttributeError):
-        del start_ipython.already_called
 
 
 @pytest.mark.parametrize(
@@ -61,7 +44,13 @@ def ip_shell():
     ],
 )
 def test_interactive_tool_magics_forward_data(
-    ip_shell, monkeypatch, magic_name, tool_attr, line, expected_name, expected_fn
+    ip_shell: IPython.InteractiveShell,
+    monkeypatch,
+    magic_name,
+    tool_attr,
+    line,
+    expected_name,
+    expected_fn,
 ):
     darr = xr.DataArray(
         np.arange(12).reshape((3, 4)),
