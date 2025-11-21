@@ -65,6 +65,7 @@ class PlotItemState(typing.TypedDict):
     vb_aspect_locked: bool | float
     vb_x_inverted: bool
     vb_y_inverted: bool
+    vb_autorange: typing.NotRequired[tuple[bool, bool]]
     roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
 
 
@@ -876,25 +877,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @state.setter
     def state(self, state: ImageSlicerState) -> None:
+        logger.debug("Restoring state...")
         if "splitter_sizes" in state:
             self.splitter_sizes = state["splitter_sizes"]
 
-        # Restore cursor number and colors
-        self.make_cursors(state["cursor_colors"])
+        plotitem_states = state.get("plotitem_states", None)
+        if plotitem_states is not None:  # pragma: no branch
+            for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
+                ax._serializable_state = plotitem_state
+        logger.debug("Restored plotitem states")
 
-        # Set current cursor before restoring coordinates
+        self.set_manual_limits(state.get("manual_limits", {}))
+        logger.debug("Restored manual limits")
+
+        self.make_cursors(state["cursor_colors"], update=False)
+        logger.debug("Restored cursor number and colors")
+
         self.set_current_cursor(state["current_cursor"], update=False)
+        logger.debug("Restored current cursor")
 
-        # Restore coordinates, bins, etc.
         self.array_slicer.state = state["slice"]
-
-        self.manual_limits = state.get("manual_limits", {})
-        self.sigShapeChanged.emit()  # to trigger manual limits update
+        logger.debug("Restored array slicer state")
 
         file_path = state.get("file_path", None)
         if file_path is not None:
             self._file_path = pathlib.Path(file_path)
-            self.sigDataChanged.emit()
 
         load_func = state.get("load_func", None)
         if load_func is not None:
@@ -918,18 +925,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
             else:
                 self._load_func = None
 
-        plotitem_states = state.get("plotitem_states", None)
-        if plotitem_states is not None:  # pragma: no branch
-            for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
-                ax._serializable_state = plotitem_state
+        if file_path is not None:
+            self.sigDataChanged.emit()
+            logger.debug("Restored file path")
 
         # Restore colormap settings
         try:
-            self.set_colormap(**state.get("color", {}), update=True)
+            self.set_colormap(**state.get("color", {}), update=False)
         except Exception:
             erlab.utils.misc.emit_user_level_warning(
                 "Failed to restore colormap settings, skipping"
             )
+        logger.debug("Restored colormap settings")
+
+        self.refresh_all()
+        logger.debug("Refreshed after state restoration")
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -1065,7 +1075,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         last_state = self._prev_states[-1] if self.undoable else None
-        curr_state = self.state
+        curr_state = self.state.copy()
 
         # Don't store splitter sizes in history
         if last_state is not None:
@@ -1904,25 +1914,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
 
-    def make_cursors(self, colors: Iterable[QtGui.QColor | str]) -> None:
+    def make_cursors(
+        self, colors: Iterable[QtGui.QColor | str], *, update: bool = True
+    ) -> None:
         """Create cursors with the specified colors.
 
         Used when restoring the state of the slicer. All existing cursors are removed.
         """
         while self.n_cursors > 1:
-            self.remove_cursor(0)
+            self.remove_cursor(0, update=False)
 
         for clr in colors:
-            self.add_cursor(color=clr)
+            self.add_cursor(color=clr, update=False)
 
-        self.remove_cursor(0)
-        self.refresh_all()
+        self.remove_cursor(0, update=False)
+        if update:
+            self.refresh_all()
 
     @QtCore.Slot()
     @QtCore.Slot(object)
     @link_slicer
     @record_history
-    def add_cursor(self, color: QtGui.QColor | str | None = None) -> None:
+    def add_cursor(
+        self, color: QtGui.QColor | str | None = None, *, update: bool = True
+    ) -> None:
         self.array_slicer.add_cursor(self.current_cursor, update=False)
         if color is None:
             self.cursor_colors.append(self.color_for_cursor(self.n_cursors - 1))
@@ -1932,15 +1947,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
-        self._colorbar.cb.level_change()
-        self.refresh_current()
-        self.sigCursorCountChanged.emit(self.n_cursors)
-        self.sigCurrentCursorChanged.emit(self.current_cursor)
+        if update:
+            self._colorbar.cb.level_change()  # <- why is this required?
+            self.refresh_current()
+            self.sigCursorCountChanged.emit(self.n_cursors)
+            self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot(int)
     @link_slicer
     @record_history
-    def remove_cursor(self, index: int) -> None:
+    def remove_cursor(self, index: int, *, update: bool = True) -> None:
         index = index % self.n_cursors
         if self.n_cursors == 1:
             return
@@ -1955,9 +1971,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         for ax in self.axes:
             ax.remove_cursor(index)
-        self.refresh_current()
-        self.sigCursorCountChanged.emit(self.n_cursors)
-        self.sigCurrentCursorChanged.emit(self.current_cursor)
+        if update:
+            self.refresh_current()
+            self.sigCursorCountChanged.emit(self.n_cursors)
+            self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot()
     @record_history
@@ -2932,26 +2949,27 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def _serializable_state(self) -> PlotItemState:
         """Subset of the state of the underlying viewbox that should be restorable."""
-        vb = self.getViewBox()
+        vb_state = self.getViewBox().getState()
         return {
-            "vb_aspect_locked": vb.state["aspectLocked"],
-            "vb_x_inverted": vb.state["xInverted"],
-            "vb_y_inverted": vb.state["yInverted"],
+            "vb_aspect_locked": vb_state["aspectLocked"],
+            "vb_x_inverted": vb_state["xInverted"],
+            "vb_y_inverted": vb_state["yInverted"],
+            "vb_autorange": tuple(vb_state["autoRange"]),
             "roi_states": [roi.saveState() for roi in self._roi_list],
         }
 
     @_serializable_state.setter
     def _serializable_state(self, state: PlotItemState) -> None:
         vb = self.getViewBox()
-
-        locked = state["vb_aspect_locked"]
-        if isinstance(locked, bool):
-            vb.setAspectLocked(locked)
-        else:
-            vb.setAspectLocked(True, ratio=locked)
-
-        vb.invertX(state["vb_x_inverted"])
-        vb.invertY(state["vb_y_inverted"])
+        state_dict: dict[str, typing.Any] = {
+            "aspectLocked": state["vb_aspect_locked"],
+            "xInverted": state["vb_x_inverted"],
+            "yInverted": state["vb_y_inverted"],
+        }
+        autorange = state.get("vb_autorange", None)
+        if autorange:
+            state_dict["autoRange"] = list(autorange)
+        vb.state.update()
 
         if "roi_states" in state:
             self.clear_rois()
@@ -3528,11 +3546,6 @@ class ItoolPlotItem(pg.PlotItem):
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
 
-        # Store autorange state and disable it temporarily to prevent the viewbox from
-        # trying to autorange while removing items.
-        auto_range = self.vb.state["autoRange"]
-        self.enableAutoRange(enable=False)
-
         self.removeItem(item)
         for line, span in zip(
             self.cursor_lines.pop(index).values(),
@@ -3547,11 +3560,6 @@ class ItoolPlotItem(pg.PlotItem):
             span.deleteLater()
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
-
-        # Restore autorange state
-        for enable, axis in zip(auto_range, ("x", "y"), strict=True):
-            if enable is not False:
-                self.enableAutoRange(axis=axis, enable=enable)
 
     def refresh_cursor(self, cursor: int) -> None:
         for ax, line in self.cursor_lines[cursor].items():
