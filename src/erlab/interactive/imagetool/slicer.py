@@ -393,8 +393,10 @@ class ArraySlicer(QtCore.QObject):
         ):
             self.center_cursor(i)
             self.set_indices(i, indices, update=False)
-            self.set_values(i, values, update=True)
-            self.set_bins(i, bins, update=True)
+            self.set_values(i, values, update=False)
+            self.set_bins(i, bins, update=False)
+
+            # We call set_array below so use update=False
 
         self.twin_coord_names = set(state.get("twin_coord_names", set()))
 
