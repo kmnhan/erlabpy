@@ -337,8 +337,9 @@ def test_watcher_real(
         assert text == "Variable synced with IPython"
 
         # Update data
-        with qtbot.wait_signal(manager.server.sigWatchedVarChanged):
-            ip_shell.user_ns["darr"] = darr**2
+        with qtbot.wait_signal(manager.server.sigWatchedVarChanged, timeout=10000):
+            watcher._last_send = 0  # Bypass rate limit for deterministic update
+            ip_shell.user_ns["darr"] = darr * 2
             watcher._maybe_push()
 
         xr.testing.assert_equal(

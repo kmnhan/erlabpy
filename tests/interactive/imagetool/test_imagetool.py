@@ -167,6 +167,7 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
             erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     logger.info("Closing ImageTool")
+    win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
     win.close()
 
 

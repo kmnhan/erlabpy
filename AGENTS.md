@@ -6,9 +6,9 @@ Place runtime code in `src/erlab/` (analysis routines, interactive Qt tools, IO 
 
 ## Build, Test, and Development Commands
 
-- `uv sync --all-extras --dev` — editable env with every optional feature.
+- `uv sync --all-extras --dev --group pyqt6` — editable env with every optional feature and Qt bindings installed for GUI tests.
 - `uv run pytest` — whole suite with coverage configuration from `pyproject.toml`.
-- `uv run ruff check .` / `uv run ruff format --check` — lint + formatting gate.
+- `uv run ruff format .` and `uv run ruff check --fix .` after every change to keep style consistent. Prefer automatic fixes instead of manual lint cleanups.
 - `uv run mypy src` — static typing pass.
 - `uv run pyinstaller manager.spec` — bundle the ImageTool manager app.
 - `uv build` — produce wheels and sdists for release.

@@ -2134,17 +2134,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     manager.add_widget(widget)
                 return
 
-        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
             self._associated_tools[uid] = widget  # Store reference to prevent gc
 
-        def _on_destroyed() -> None:
-            with self._assoc_tools_lock:
-                self._associated_tools.pop(uid, None)
+        old_close_event = widget.closeEvent
 
-        widget.destroyed.connect(_on_destroyed)
+        def new_close_event(event: QtGui.QCloseEvent) -> None:
+            with self._assoc_tools_lock:
+                if uid in self._associated_tools:
+                    tool = self._associated_tools.pop(uid)
+                    tool.deleteLater()
+            old_close_event(event)
+
+        widget.closeEvent = new_close_event  # type: ignore[assignment]
         widget.show()
 
     @QtCore.Slot()

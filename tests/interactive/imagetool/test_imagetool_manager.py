@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import logging
+import sys
 import tempfile
 import typing
 from collections.abc import Callable
@@ -1161,6 +1162,73 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
+
+
+def test_warning_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        warning_logger = logging.getLogger("test.warning.history")
+        warning_logger.warning("First warning")
+        warning_logger.warning("Second warning")
+
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 2)
+        qtbot.wait_until(
+            lambda: all(warning.isVisible() for warning in manager._alert_dialogs)
+        )
+
+        texts = [notification.text() for notification in manager._alert_dialogs]
+        assert any("First warning" in text for text in texts)
+        assert any("Second warning" in text for text in texts)
+
+        clear_all_button = manager._alert_dialogs[-1].findChild(
+            QtWidgets.QPushButton, "warningDismissAllButton"
+        )
+        assert clear_all_button is not None
+
+        qtbot.mouseClick(clear_all_button, QtCore.Qt.MouseButton.LeftButton, delay=10)
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 0)
+
+
+def test_uncaught_exception_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        assert sys.excepthook == manager._handle_uncaught_exception
+        manager._previous_excepthook = lambda *exc: None
+
+        try:
+            raise RuntimeError("boom")  # noqa: TRY301
+        except RuntimeError:
+            exc_info = sys.exc_info()
+
+        sys.excepthook(*exc_info)
+
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 1)
+        qtbot.wait_until(manager._alert_dialogs[0].isVisible)
+
+        text = manager._alert_dialogs[0].text()
+        detailed_text = manager._alert_dialogs[0].detailedText()
+
+        assert "ERROR" in manager._alert_dialogs[0].windowTitle()
+        assert "An unexpected error occurred" in text
+        assert detailed_text is not None
+        assert "boom" in detailed_text
+        assert "RuntimeError" in detailed_text
 
 
 def test_manager_reload(
