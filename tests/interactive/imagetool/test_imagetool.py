@@ -163,6 +163,10 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
             timeout=2000,
         )
     finally:
+        for img in win.slicer_area.images:
+            # Prevent segfault before shutdown
+            img.disconnect_signals()
+            img.deleteLater()
         if use_dask:
             erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
@@ -431,7 +435,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
             "twin_coord_names": (),
         },
         "current_cursor": 1,
-        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
+        "manual_limits": {},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
         "load_func": None,
@@ -440,18 +444,21 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
             {
                 "roi_states": [],
                 "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
                 "vb_x_inverted": False,
                 "vb_y_inverted": False,
             },
             {
                 "roi_states": [],
                 "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
                 "vb_x_inverted": False,
                 "vb_y_inverted": False,
             },
             {
                 "roi_states": [],
                 "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
                 "vb_x_inverted": False,
                 "vb_y_inverted": False,
             },
