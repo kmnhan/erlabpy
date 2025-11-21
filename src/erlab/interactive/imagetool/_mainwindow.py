@@ -300,6 +300,9 @@ class ImageTool(BaseImageTool):
         self.__recent_directory: str | None = None
 
         self._dask_menu = erlab.interactive._dask.DaskMenu(self, "Dask")
+        self._history_menu = erlab.interactive.imagetool._history.HistoryMenu(
+            self.slicer_area, "History"
+        )
         self.initialize_actions()
         self.setMenuBar(ItoolMenuBar(self))
 
@@ -498,6 +501,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                 "actions": {
                     "undoAct": self.slicer_area.undo_act,
                     "redoAct": self.slicer_area.redo_act,
+                    "historyMenu": {"menu": self.image_tool._history_menu},
                     "sep": {"separator": True},
                     "&Copy Cursor Values": {
                         "shortcut": "Ctrl+Shift+C",

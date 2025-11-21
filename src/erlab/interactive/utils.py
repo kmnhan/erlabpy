@@ -2647,7 +2647,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
                     act = actopts
                     sep_before, sep_after = False, False
                 else:
-                    if "actions" in actopts:
+                    if "actions" in actopts or "menu" in actopts:
                         self.parse_menu(menu, **{actname: actopts})
                         continue
                     sep_before = actopts.pop("sep_before", False)
