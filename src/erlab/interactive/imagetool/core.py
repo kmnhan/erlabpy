@@ -707,7 +707,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 cmap_reversed = True
             if cmap.startswith("cet_CET"):
                 cmap = cmap.removeprefix("cet_")
-        self._colormap_properties = {"cmap": cmap, "gamma": gamma}
+        self._colormap_properties = {
+            "cmap": cmap,
+            "gamma": gamma,
+            "reverse": cmap_reversed,
+            "high_contrast": high_contrast,
+            "zero_centered": zero_centered,
+            "levels_locked": False,
+        }
 
         self.manual_limits: dict[str, list[float]] = {}
         # Dictionary of current axes limits for each data dimension to ensure all plots
@@ -847,11 +854,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
-        prop["reverse"] = self.reverse_act.isChecked()
-        prop["high_contrast"] = self.high_contrast_act.isChecked()
-        prop["zero_centered"] = self.zero_centered_act.isChecked()
-        prop["levels_locked"] = self.levels_locked
 
+        prop["levels_locked"] = self.levels_locked  # history handled by lock_levels()
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
         return typing.cast("ColorMapState", prop)
@@ -1115,6 +1119,36 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._prev_states.append(self.state)
             self.state = self._next_states.pop()
             self.sigHistoryChanged.emit()
+
+    def history_states(self) -> tuple[list[ImageSlicerState], int]:
+        states = list(self._prev_states)
+        current_state = self.state.copy()
+        if not states or states[-1] != current_state:
+            states.append(current_state)
+        current_index = len(states) - 1
+
+        if self._next_states:
+            states.extend(reversed(self._next_states))
+
+        return states, current_index
+
+    def go_to_history_index(self, index: int) -> None:
+        """Go to a specific index in the history.
+
+        Parameters
+        ----------
+        index
+            Index in the history to go to. 0 corresponds to the current state. Positive
+            indices point to the future, while negative indices point to the past.
+        """
+        if index == 0:
+            return
+        if index < 0:
+            for _ in range(-index):
+                self.undo_act.trigger()
+        else:
+            for _ in range(index):
+                self.redo_act.trigger()
 
     def initialize_actions(self) -> None:
         """Initialize :class:`QtWidgets.QAction` instances."""
@@ -2027,7 +2061,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         if gamma is None and levels_locked is None and levels is None:
             # These will be handled in their respective methods or calling widgets
-            self.sigWriteHistory.emit()
+            self.write_state()
+            prop = copy.deepcopy(self._colormap_properties)
+            new_reverse = self.reverse_act.isChecked()
+            new_high_contrast = self.high_contrast_act.isChecked()
+            new_zero_centered = self.zero_centered_act.isChecked()
+            if any(
+                (
+                    prop["reverse"] != new_reverse,
+                    prop["high_contrast"] != new_high_contrast,
+                    prop["zero_centered"] != new_zero_centered,
+                )
+            ):
+                self._colormap_properties["reverse"] = new_reverse
+                self._colormap_properties["high_contrast"] = new_high_contrast
+                self._colormap_properties["zero_centered"] = new_zero_centered
 
         if cmap is not None:
             self._colormap_properties["cmap"] = cmap

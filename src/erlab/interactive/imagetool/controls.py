@@ -534,7 +534,7 @@ class ItoolColormapControls(ItoolControlsBase):
         self.cb_colormap = erlab.interactive.colors.ColorMapComboBox(
             self, maximumWidth=175
         )
-        self.cb_colormap.textActivated.connect(self.slicer_area.set_colormap)
+        self.cb_colormap.currentTextChanged.connect(self.slicer_area.set_colormap)
 
         self.gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
             spin_cls=erlab.interactive.utils.BetterSpinBox
