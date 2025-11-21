@@ -2,6 +2,12 @@
 
 ### ✨ Features
 
+- **interactive:** add magic commands `%ktool`, `%dtool`, `%goldtool`, and `%restool` for launching various interactive tools from Jupyter notebooks ([1c69e3e](https://github.com/kmnhan/erlabpy/commit/1c69e3e1f1db4d8245fdef35d60ea9d2ad2d4747))
+
+- **manager:** show warnings as pop-up ([acabaf9](https://github.com/kmnhan/erlabpy/commit/acabaf921788f719327eeceba0415010e3550e75))
+
+  Warnings emitted from the code are now shown in the ImageTool manager in dialogs. Also adds logging functionality for debugging.
+
 - **manager:** support reloading data containing multiple DataArrays in a single file ([1d76d34](https://github.com/kmnhan/erlabpy/commit/1d76d34053eefb49864005a617b97b58142138b4))
 
 - **io.plugins.merlin:** add support for multi-region scans ([9293556](https://github.com/kmnhan/erlabpy/commit/92935560680a2a2e5aec9531caca8dd70e21d438))
@@ -28,6 +34,8 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** fix state restoration of viewbox autorange and reduce unnecessary refreshes (#214) ([27989f1](https://github.com/kmnhan/erlabpy/commit/27989f1b7f00c13bf4d587d0a8eb2829861298f1))
+
 - **imagetool:** retain keyword arguments to loader function when reloading data ([8717bd1](https://github.com/kmnhan/erlabpy/commit/8717bd1c35fe14bb57739045a2eae600bed817a5))
 
 - **imagetool:** retain colorbar reversed state when opening in new window ([3c2e14d](https://github.com/kmnhan/erlabpy/commit/3c2e14d87d078cff392b4e4742f340007f2495da))
@@ -51,6 +59,8 @@
 - **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
 
 ### ♻️ Code Refactor
+
+- **interactive:** allow closing interactive tools with Ctrl+W ([6fdcf86](https://github.com/kmnhan/erlabpy/commit/6fdcf864b847f939f81cea148192ed69a34ed56c))
 
 - **io:** improve error message upon failure during preparing data for combination ([f5f5ede](https://github.com/kmnhan/erlabpy/commit/f5f5ede3f4c8ab72925f7843843a306df0ef9f88))
 
