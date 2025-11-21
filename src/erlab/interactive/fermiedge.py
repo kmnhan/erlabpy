@@ -564,9 +564,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if isinstance(tool, QtWidgets.QWidget):
             if self._itool is not None:
                 self._itool.close()
-
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            tool.destroyed.connect(lambda: setattr(self, "_itool", None))
+                self._itool.deleteLater()
             self._itool = tool
             self._itool.show()
 
@@ -633,10 +631,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if self.fitter.isRunning():
             self.fitter.abort_fit()
             self.fitter.wait()
-
-    def __del__(self) -> None:
-        """Ensure the fitter thread is stopped when the object is deleted."""
-        self._stop_server()
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
@@ -884,8 +878,6 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._executor: concurrent.futures.ThreadPoolExecutor | None = (
             concurrent.futures.ThreadPoolExecutor(max_workers=1)
         )
-
-        self.destroyed.connect(self._shutdown_executor)
 
     @property
     def x_range(self) -> tuple[float, float]:

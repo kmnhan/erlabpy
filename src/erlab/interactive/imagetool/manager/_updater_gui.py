@@ -109,7 +109,9 @@ class AutoUpdater(QtCore.QObject):
             current_version = erlab.__version__
         self.current_version = current_version
 
-    def check_for_updates(self, parent: QtWidgets.QWidget):
+    def check_for_updates(
+        self, parent: erlab.interactive.imagetool.manager.ImageToolManager
+    ):
         try:
             info = fetch_latest_release()
         except Exception:
@@ -127,16 +129,7 @@ class AutoUpdater(QtCore.QObject):
         new = packaging.version.Version(info.tag)
         cur = packaging.version.Version(self.current_version)
         if new <= cur:
-            msg_box = QtWidgets.QMessageBox(parent)
-            style = parent.style()
-            if style is not None:
-                icon_size = (
-                    style.pixelMetric(
-                        QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize
-                    )
-                    or 48
-                )
-                msg_box.setIconPixmap(parent.windowIcon().pixmap(icon_size, icon_size))
+            msg_box = parent._make_icon_msgbox()
             msg_box.setText("Up to date!")
             msg_box.setInformativeText(
                 f"You are running the latest version (v{self.current_version})."
@@ -147,13 +140,13 @@ class AutoUpdater(QtCore.QObject):
 
         # Show changelog in a custom dialog with Markdown rendering
         dlg = QtWidgets.QDialog(parent)
-        dlg.setWindowTitle("Update available")
+        dlg.setWindowTitle("")
         dlg.setModal(True)
 
         vbox = QtWidgets.QVBoxLayout(dlg)
 
         title_label = QtWidgets.QLabel(
-            f"Version {info.tag} is available. You have v{self.current_version}.", dlg
+            "A new version of ImageTool Manager is available!", dlg
         )
         font = title_label.font()
         font.setBold(True)
@@ -162,7 +155,9 @@ class AutoUpdater(QtCore.QObject):
         vbox.addWidget(title_label)
 
         info_label = QtWidgets.QLabel(
-            "Do you want to download and install it now?", dlg
+            f"{info.tag} is available—you have v{self.current_version}. "
+            "Would you like to download it now?",
+            dlg,
         )
         info_label.setWordWrap(True)
         vbox.addWidget(info_label)
@@ -277,7 +272,11 @@ class AutoUpdater(QtCore.QObject):
         progress.canceled.connect(on_cancel)
         dl.start()
 
-    def _extract_and_update(self, zip_path: pathlib.Path, parent: QtWidgets.QWidget):
+    def _extract_and_update(
+        self,
+        zip_path: pathlib.Path,
+        parent: erlab.interactive.imagetool.manager.ImageToolManager,
+    ):
         install_root = get_install_root()
 
         self._confirm_install_ready(parent)
@@ -380,11 +379,12 @@ class AutoUpdater(QtCore.QObject):
             qapp.quit()
 
     @staticmethod
-    def _confirm_install_ready(parent: QtWidgets.QWidget | None) -> None:
-        msg = QtWidgets.QMessageBox(parent)
-        msg.setWindowTitle("Update Ready")
-        msg.setIcon(QtWidgets.QMessageBox.Icon.Information)
-        msg.setText("Update ready to install")
+    def _confirm_install_ready(
+        parent: erlab.interactive.imagetool.manager.ImageToolManager,
+    ) -> None:
+        msg = parent._make_icon_msgbox()
+        msg.setWindowTitle("Updating ImageTool Manager")
+        msg.setText("Ready to install")
         install_btn = msg.addButton(
             "Install Update"
             if sys.platform.startswith("win")
