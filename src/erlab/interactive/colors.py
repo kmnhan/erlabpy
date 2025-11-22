@@ -75,16 +75,17 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def load_thumbnail(self, index: int) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
-            with contextlib.suppress(KeyError):
+            with contextlib.suppress(RuntimeError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
-        load_all_colormaps()
-        self.clear()
-        for name in pg_colormap_names("all", exclude_local=True):
-            self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
+        with QtCore.QSignalBlocker(self):
+            load_all_colormaps()
+            self.loaded_all = True
+            self.clear()
+            for name in pg_colormap_names("all", exclude_local=True):
+                self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
         self.thumbnails_loaded = False
-        self.loaded_all = True
         self.resetCmap()
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
@@ -782,21 +783,23 @@ def pg_colormap_from_name(
     pyqtgraph.ColorMap
 
     """
-    try:
-        return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
-    except ValueError:
-        try:
-            return pg.colormap.get(name, skipCache=skipCache)
-        except (FileNotFoundError, IndexError):
-            try:
-                return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
-            except KeyError:
-                if not _loaded_all:
-                    load_all_colormaps()
-                    return pg_colormap_from_name(
-                        name, skipCache=skipCache, _loaded_all=True
-                    )
-                raise
+    cmap: pg.ColorMap | None = None
+    with contextlib.suppress(ValueError):
+        cmap = pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
+
+    if not cmap:
+        with contextlib.suppress(FileNotFoundError, IndexError, KeyError):
+            cmap = pg.colormap.get(name, skipCache=skipCache)
+    if not cmap:
+        with contextlib.suppress(KeyError):
+            cmap = pg.colormap.get(name, source="colorcet", skipCache=skipCache)
+    if not cmap and not _loaded_all:
+        with contextlib.suppress(ValueError, FileNotFoundError, IndexError, KeyError):
+            load_all_colormaps()
+            cmap = pg_colormap_from_name(name, skipCache=skipCache, _loaded_all=True)
+    if not cmap:
+        raise RuntimeError(f"Colormap '{name}' not found in any source.")
+    return cmap
 
 
 def pg_colormap_powernorm(

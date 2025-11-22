@@ -93,6 +93,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
+        # Allow writing history after initialization
+        self.slicer_area._write_history = True
+
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
         """
