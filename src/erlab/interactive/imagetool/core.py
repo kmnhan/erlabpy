@@ -666,8 +666,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             maxlen=1000
         )
 
-        # Flag to prevent writing history when restoring state
-        self._write_history: bool = True
+        # Flag to prevent writing history when restoring state, must be set to True
+        # after initialization is complete
+        self._write_history = False
 
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
@@ -2061,7 +2062,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         if gamma is None and levels_locked is None and levels is None:
             # These will be handled in their respective methods or calling widgets
-            self.write_state()
+            self.sigWriteHistory.emit()
             prop = copy.deepcopy(self._colormap_properties)
             new_reverse = self.reverse_act.isChecked()
             new_high_contrast = self.high_contrast_act.isChecked()
