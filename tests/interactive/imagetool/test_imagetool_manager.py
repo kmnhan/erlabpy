@@ -1,8 +1,12 @@
 import concurrent.futures
+import io
 import json
 import logging
+import pickle
 import sys
 import tempfile
+import time
+import types
 import typing
 from collections.abc import Callable
 
@@ -10,6 +14,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import xarray.testing
+import zmq
 from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -28,7 +33,15 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
-from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
+from erlab.interactive.imagetool.manager._server import (
+    HOST_IP,
+    PORT,
+    AddDataPacket,
+    Response,
+    _recv_multipart,
+    _remove_idx,
+    _show_idx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1267,3 +1280,80 @@ def test_manager_reload(
         # Try reload again
         with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
             manager.get_imagetool(0).slicer_area.reload()
+
+
+def make_dataarray_unpicklable(darr):
+    mod = types.ModuleType("temp_mod_for_apply_ufunc")
+    exec(  # noqa: S102
+        "def myfunc(dat):\n    return dat * 2\n",
+        mod.__dict__,
+    )
+    sys.modules[mod.__name__] = mod
+    from temp_mod_for_apply_ufunc import myfunc
+
+    darr = xr.apply_ufunc(myfunc, darr.chunk(), vectorize=True, dask="parallelized")
+    return darr, mod.__name__
+
+
+def _create_frames(
+    obj: dict[str, typing.Any], pickler_cls: type[pickle.Pickler]
+) -> list[memoryview]:
+    buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
+    bio = io.BytesIO()
+
+    p = pickler_cls(bio, protocol=5, buffer_callback=buffers.append)
+    p.dump(obj)
+    header = memoryview(bio.getbuffer())
+    return [header] + [memoryview(b) for b in buffers]
+
+
+def test_manager_cloudpickle(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context(use_socket=True) as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        # Test with unpicklable data
+        darr, modname = make_dataarray_unpicklable(test_data)
+        del sys.modules[modname]
+        erlab.interactive.imagetool.manager.show_in_manager(darr)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        logger.info("Confirmed tool is added, checking data")
+        assert manager.get_imagetool(0).array_slicer.point_value(0) == 24.0
+
+        # Pickle data first and remove module before trying unpickle
+        darr, modname = make_dataarray_unpicklable(test_data)
+        content = AddDataPacket(
+            packet_type="add", data_list=darr, arguments={}
+        ).model_dump(exclude_unset=True)
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.SNDHWM, 0)
+        sock.setsockopt(zmq.RCVHWM, 0)
+        try:
+            sock.connect(f"tcp://{HOST_IP}:{PORT}")
+            frames = _create_frames(content, pickler_cls=pickle.Pickler)
+            del sys.modules[modname]
+            sock.send_multipart(frames, copy=False)
+
+            timeout_seconds = 5.0
+            start_time = time.time()
+            while True:
+                try:
+                    response = Response(**_recv_multipart(sock, flags=zmq.NOBLOCK))
+                except zmq.Again as e:
+                    if time.time() - start_time > timeout_seconds:
+                        raise TimeoutError(
+                            "Timed out waiting for response from ZeroMQ socket."
+                        ) from e
+                else:
+                    break
+            assert response.status == "unpickle-failed"
+        finally:
+            sock.close()
