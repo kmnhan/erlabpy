@@ -6,6 +6,7 @@ import unittest.mock
 import numpy as np
 import pytest
 import xarray as xr
+from qtpy import QtCore
 
 from erlab.interactive.imagetool import ImageTool, _history
 
@@ -29,6 +30,44 @@ def _base_state() -> dict:
             "dims": ["x", "y"],
         },
     }
+
+
+class _DummySlicerArea(QtCore.QObject):
+    sigHistoryChanged = QtCore.Signal()
+
+    def __init__(self, states, current_index: int):
+        super().__init__()
+        self._states = states
+        self._current_index = current_index
+        self.go_to_history_calls: list[int] = []
+
+    def history_states(self):
+        return self._states, self._current_index
+
+    def go_to_history_index(self, idx: int) -> None:
+        self.go_to_history_calls.append(idx)
+
+
+@pytest.mark.parametrize(
+    ("key", "new", "expected"),
+    [
+        ("cursor_colors", None, "Cursor colors changed"),
+        ("slice.indices", None, "Cursor moved"),
+        ("slice.bins", None, "Number of bins changed"),
+        ("slice.dims", None, "Transposed"),
+        ("color.reverse", True, "Colormap reversed"),
+        ("color.cmap", "magma", "Changed colormap to magma"),
+        ("color.gamma", 2.0, "Colormap options changed"),
+        ("color.high_contrast", True, "Colormap options changed"),
+        ("color.zero_centered", True, "Colormap options changed"),
+        ("color.levels_locked", True, "Colormap levels locked"),
+        ("color.levels_locked", False, "Colormap levels unlocked"),
+        ("color.levels", [0, 1], "Colormap levels changed"),
+        ("other.key", None, "other.key changed"),
+    ],
+)
+def test_parse_change(key, new, expected):
+    assert _history.parse_change(key, None, new) == expected
 
 
 def test_describe_state_diff_ignores_value_only_changes():
@@ -139,3 +178,45 @@ def test_go_to_history_index_triggers_expected_actions(qtbot):
     assert undo_mock.call_count == 0
     assert redo_mock.call_count == 3
     win.close()
+
+
+def test_history_menu_handles_empty_history(qtbot):
+    area = _DummySlicerArea([{"state": 1}], 0)
+    menu = _history.HistoryMenu(area)
+    qtbot.addWidget(menu)
+
+    menu.update_actions()
+
+    actions = menu.actions()
+    assert len(actions) == 1
+    assert actions[0].text() == "No history recorded yet"
+    assert not actions[0].isEnabled()
+
+
+def test_history_menu_populates_actions_and_triggers(monkeypatch, qtbot):
+    states = [
+        {"color": {"cmap": "viridis"}},
+        {"color": {"cmap": "magma"}},
+        {"color": {"cmap": "plasma"}},
+    ]
+    area = _DummySlicerArea(states, 1)
+    monkeypatch.setattr(
+        _history,
+        "describe_state_diff",
+        lambda prev, curr: f"{prev['color']['cmap']}->{curr['color']['cmap']}",
+    )
+
+    menu = _history.HistoryMenu(area)
+    qtbot.addWidget(menu)
+
+    menu.update_actions()
+
+    actions = menu.actions()
+    assert [action.text() for action in actions] == [
+        "  magma->plasma",
+        "• viridis->magma",
+    ]
+
+    actions[0].trigger()
+    actions[1].trigger()
+    assert area.go_to_history_calls == [1, 0]
