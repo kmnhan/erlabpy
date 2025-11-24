@@ -188,7 +188,7 @@ You can also right-click a tool in the manager and choose {guilabel}`Stop Watchi
 If a variable is deleted or replaced with a non-`DataArray`, the manager automatically breaks the link and keeps the window as a regular ImageTool.
 
 :::{note}
-When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion.
+When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
 :::
 
 (imagetool-manager-fetch)=
