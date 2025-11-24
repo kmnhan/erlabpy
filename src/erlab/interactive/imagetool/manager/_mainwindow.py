@@ -101,6 +101,15 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
 )
 """Colors for different linkers."""
 
+_WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
+    QtGui.QColor(72, 120, 208),
+    QtGui.QColor(238, 133, 74),
+    QtGui.QColor(106, 204, 100),
+    QtGui.QColor(214, 95, 95),
+    QtGui.QColor(149, 108, 180),
+)
+"""Colors for watched variables from different kernels."""
+
 _manager_instance: ImageToolManager | None = None
 """Reference to the running manager instance."""
 
@@ -1477,6 +1486,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if v._watched_uid == uid:
                 return k
         return None
+
+    def color_for_watched_var_kernel(self, kernel_uid: str) -> QtGui.QColor:
+        """Return a different color for different source kernels."""
+        all_kernel_uids = tuple(
+            typing.cast("str", v._watched_uid).removeprefix(f"{v._watched_varname} ")
+            for v in self._imagetool_wrappers.values()
+            if v.watched
+        )
+        idx = all_kernel_uids.index(kernel_uid)
+        return _WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)]
 
     @QtCore.Slot(str)
     def _remove_watched(self, uid: str) -> None:
