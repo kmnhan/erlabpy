@@ -1,6 +1,16 @@
-## Unreleased
+## v3.17.0 (2025-11-24)
 
 ### ✨ Features
+
+- **manager:** label watched variables from different notebooks with different colors ([413eb00](https://github.com/kmnhan/erlabpy/commit/413eb00f4fb29e5e455465df21643b8277a7e3c6))
+
+- **manager:** fully support dask arrays (#216) ([46ce5a3](https://github.com/kmnhan/erlabpy/commit/46ce5a31a79df49e8007d494243a66c62ff23dc9))
+
+  Dask-based DataArrays are now fully supported for all ImageTool manager features including notebook integration and data retrieval. If a dask graph includes non-picklable functions, it will be automatically serialized using cloudpickle to ensure compatibility.
+
+  This change introduces incompatibility with older versions of ImageTool manager. The manager will still be able to receive data from older versions, but older versions of the manager will not be able to handle requests from this version.
+
+- **imagetool:** add menu for viewing all undo/redo history ([3b8fbad](https://github.com/kmnhan/erlabpy/commit/3b8fbad15a5196a1bbc8cbc2883afb9435258882))
 
 - **interactive:** add magic commands `%ktool`, `%dtool`, `%goldtool`, and `%restool` for launching various interactive tools from Jupyter notebooks ([1c69e3e](https://github.com/kmnhan/erlabpy/commit/1c69e3e1f1db4d8245fdef35d60ea9d2ad2d4747))
 
@@ -34,6 +44,12 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** make coordinate edit dialog display the full precision of coordinate values ([4afa974](https://github.com/kmnhan/erlabpy/commit/4afa974a9cdff1006bb70f0b5ecb9f4a5a174129))
+
+  When editing coordinate values in the image tool, the start and end/step spinboxes were only showing up to 4 decimal places, which could lead to loss of precision. This change updates the dialog to allow full precision input.
+
+- **imagetool:** fix coordinate edit dialog reset button not working ([66b7427](https://github.com/kmnhan/erlabpy/commit/66b74279254f559250f17b45745924779c947420))
+
 - **imagetool:** fix state restoration of viewbox autorange and reduce unnecessary refreshes (#214) ([27989f1](https://github.com/kmnhan/erlabpy/commit/27989f1b7f00c13bf4d587d0a8eb2829861298f1))
 
 - **imagetool:** retain keyword arguments to loader function when reloading data ([8717bd1](https://github.com/kmnhan/erlabpy/commit/8717bd1c35fe14bb57739045a2eae600bed817a5))
@@ -59,6 +75,8 @@
 - **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
 
 ### ♻️ Code Refactor
+
+- **imagetool:** improve colormap handling logic ([00c7b90](https://github.com/kmnhan/erlabpy/commit/00c7b90beb7b9566ea744516bbd9106216ba913a))
 
 - **interactive:** allow closing interactive tools with Ctrl+W ([6fdcf86](https://github.com/kmnhan/erlabpy/commit/6fdcf864b847f939f81cea148192ed69a34ed56c))
 
