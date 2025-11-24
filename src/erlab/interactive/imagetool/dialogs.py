@@ -883,6 +883,7 @@ class _CoordinateWidget(QtWidgets.QWidget):
         left_layout.addRow(self.mode_combo, self.spin1)
 
         self.reset_btn = QtWidgets.QPushButton("Reset")
+        self.reset_btn.clicked.connect(self.reset)
         left_layout.addRow(self.reset_btn)
 
         self.table = QtWidgets.QTableWidget()
