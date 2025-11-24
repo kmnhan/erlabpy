@@ -183,6 +183,7 @@ def manager_context() -> Callable[
             QtWidgets.QApplication.processEvents()
             erlab.interactive.imagetool.manager._manager_instance.remove_all_tools()
             erlab.interactive.imagetool.manager._manager_instance.close()
+            erlab.interactive.imagetool.manager._manager_instance.deleteLater()
             erlab.interactive.imagetool.manager._manager_instance = None
             erlab.interactive.imagetool.manager._always_use_socket = False
 
