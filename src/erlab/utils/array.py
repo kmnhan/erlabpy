@@ -16,6 +16,7 @@ __all__ = [
     "to_native_endian",
     "trim_na",
     "uniform_dims",
+    "unique_decimals",
 ]
 
 import functools
@@ -396,6 +397,35 @@ def effective_decimals(step_or_coord: float | np.floating | npt.NDArray) -> int:
     if step == 0.0:
         return 3
     return int(np.clip(np.ceil(-np.log10(np.abs(step)) + 1), a_min=0, a_max=None))
+
+
+def _calc_unique_dec(num: float) -> int:
+    s = np.format_float_positional(num, unique=True, trim=".")
+    _, sep, tail = s.partition(".")
+    dec = len(tail) if sep else 0
+    return min(dec, 15)
+
+
+def unique_decimals(arr: npt.NDArray) -> int:
+    """Compute digits needed to represent floating point values uniquely.
+
+    This function determines the minimum number of decimal places required to uniquely
+    represent floating point values in the given array.
+
+    Parameters
+    ----------
+    arr
+        The input array.
+
+    Returns
+    -------
+    int
+        The maximum number of decimal places.
+    """
+    arr = np.asarray(arr).ravel()
+    if arr.size != 0:  # pragma: no branch
+        return max(_calc_unique_dec(num) for num in arr)
+    return 0
 
 
 def sort_coord_order(
