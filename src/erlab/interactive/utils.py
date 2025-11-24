@@ -1019,6 +1019,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         scientific: bool = False,
         value: float = 0.0,
         prefix: str = "",
+        trim: typing.Literal["k", ".", "0", "-"] = "k",
         **kwargs,
     ) -> None:
         self._only_int = integer
@@ -1034,6 +1035,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
         self._prefix = prefix
+        self._trim = trim
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
         kwargs.setdefault("keyboardTracking", False)
@@ -1133,7 +1135,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     value,
                     precision=self.decimals(),
                     unique=False,
-                    trim="k",
+                    trim=self._trim,
                     exp_digits=1,
                 )
             return self.prefix() + np.format_float_positional(
@@ -1141,7 +1143,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                 precision=self.decimals(),
                 unique=False,
                 fractional=not self._decimal_significant,
-                trim="k",
+                trim=self._trim,
             )
         return self.prefix() + str(int(value))
 

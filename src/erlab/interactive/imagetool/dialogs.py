@@ -859,21 +859,11 @@ class _CoordinateWidget(QtWidgets.QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_widget.setLayout(left_layout)
 
-        self.spin0 = QtWidgets.QDoubleSpinBox()
-        self.spin0.setRange(-1e9, 1e9)
-        self.spin0.setSingleStep(0.01)
-        self.spin0.setValue(0.0)
-        self.spin0.setDecimals(4)
-        self.spin0.setKeyboardTracking(False)
-        left_layout.addRow("Start", self.spin0)
+        self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin0.valueChanged.connect(self.update_table)
+        left_layout.addRow("Start", self.spin0)
 
-        self.spin1 = QtWidgets.QDoubleSpinBox()
-        self.spin1.setRange(-1e9, 1e9)
-        self.spin1.setSingleStep(0.01)
-        self.spin1.setValue(0.0)
-        self.spin1.setDecimals(4)
-        self.spin1.setKeyboardTracking(False)
+        self.spin1 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin1.valueChanged.connect(self.update_table)
 
         self.mode_combo = QtWidgets.QComboBox()
@@ -918,19 +908,20 @@ class _CoordinateWidget(QtWidgets.QWidget):
         self.mode_combo.setDisabled(is_scalar)
 
         if not is_scalar:
-            self.spin0.blockSignals(True)
-            self.spin1.blockSignals(True)
-            if erlab.utils.array.is_uniform_spaced(self._old_coord):
-                self.spin0.setValue(float(self._old_coord[0]))
-                if self.mode_combo.currentText() == "End":
-                    self.spin1.setValue(float(self._old_coord[-1]))
+            with QtCore.QSignalBlocker(self.spin0), QtCore.QSignalBlocker(self.spin1):
+                decimals = erlab.utils.array.unique_decimals(self._old_coord)
+                self.spin0.setDecimals(decimals)
+                self.spin1.setDecimals(decimals)
+
+                if erlab.utils.array.is_uniform_spaced(self._old_coord):
+                    self.spin0.setValue(float(self._old_coord[0]))
+                    if self.mode_combo.currentText() == "End":
+                        self.spin1.setValue(float(self._old_coord[-1]))
+                    else:
+                        self.spin1.setValue(self._old_coord[1] - self._old_coord[0])
                 else:
-                    self.spin1.setValue(float(self._old_coord[1] - self._old_coord[0]))
-            else:
-                self.spin0.setValue(0.0)
-                self.spin1.setValue(0.0)
-            self.spin0.blockSignals(False)
-            self.spin1.blockSignals(False)
+                    self.spin0.setValue(0.0)
+                    self.spin1.setValue(0.0)
 
         self._set_table_values(np.atleast_1d(self._old_coord))
 
@@ -983,12 +974,15 @@ class _CoordinateWidget(QtWidgets.QWidget):
         # Make zero-based
         self.table.setVerticalHeaderLabels([str(i) for i in range(len(values))])
         for i, val in enumerate(values):
-            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="-"))
+            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="0"))
             item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
             self.table.setItem(i, 0, item)
+        self.table.resizeColumnsToContents()
+        self.setMinimumWidth(
+            self.table.horizontalHeader().length() + self.table.verticalHeader().width()
+        )
 
 
 class AssignCoordsDialog(DataTransformDialog):
