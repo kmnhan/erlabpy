@@ -542,6 +542,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def about(self) -> None:
         """Show the about dialog."""
+        import h5netcdf
         import xarray_lmfit
 
         msg_box = self._make_icon_msgbox()
@@ -549,6 +550,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         version_info = {
             "numpy": np.__version__,
             "xarray": xr.__version__,
+            "h5netcdf": h5netcdf.__version__,
             "xarray-lmfit": xarray_lmfit.__version__,
             "pyqtgraph": pyqtgraph.__version__,
             "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
@@ -559,10 +561,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             version_info["Location"] = os.path.dirname(sys.executable).removesuffix(
                 "/Contents/MacOS"
             )
+        version_info_str = "\n".join(f"{k}: {v}" for k, v in version_info.items())
         msg_box.setText(f"ImageTool Manager {erlab.__version__}")
-        msg_box.setInformativeText(
-            "\n".join(f"{k}: {v}" for k, v in version_info.items())
-        )
+        msg_box.setInformativeText(version_info_str)
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Close)
         copy_btn = msg_box.addButton(
             "Copy", QtWidgets.QMessageBox.ButtonRole.AcceptRole
@@ -570,9 +571,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.exec()
 
         if msg_box.clickedButton() == copy_btn:
-            cb = QtWidgets.QApplication.clipboard()
-            if cb:
-                cb.setText(msg_box.informativeText())
+            erlab.interactive.utils.copy_to_clipboard(
+                f"erlab: {erlab.__version__}\n" + version_info_str
+            )
 
     def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
         """Notify the user that the application has been updated."""
