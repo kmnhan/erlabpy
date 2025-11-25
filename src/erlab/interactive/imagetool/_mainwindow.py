@@ -477,6 +477,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def _generate_menu_kwargs(self) -> dict:
         guideline_actions = self.slicer_area.main_image._guideline_actions
+        release_notes_action, open_docs_action, report_issue_action = (
+            erlab.interactive.utils.make_help_actions(self.image_tool)
+        )
         menu_kwargs: dict[str, typing.Any] = {
             "fileMenu": {
                 "title": "&File",
@@ -570,11 +573,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             "helpMenu": {
                 "title": "&Help",
                 "actions": {
-                    "helpAction": {"text": "Help (WIP)"},
-                    "shortcutsAction": {
-                        "text": "Keyboard Shortcuts Reference (WIP)",
-                        "sep_before": True,
-                    },
+                    "releaseNotesAct": release_notes_action,
+                    "help_sep": {"separator": True},
+                    "openDocsAct": open_docs_action,
+                    "reportIssueAct": report_issue_action,
                 },
             },
         }

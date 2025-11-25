@@ -21,6 +21,7 @@ import types
 import typing
 import warnings
 import weakref
+import webbrowser
 from collections.abc import Iterable
 
 import numpy as np
@@ -932,6 +933,27 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
             )
 
     return None
+
+
+def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
+    """Create shared help actions for ImageTool and ImageTool Manager."""
+    release_notes_action = QtWidgets.QAction("Release Notes", parent)
+    release_notes_action.triggered.connect(
+        lambda _: webbrowser.open("https://github.com/kmnhan/erlabpy/releases")
+    )
+
+    open_docs_action = QtWidgets.QAction("Documentation", parent)
+    open_docs_action.triggered.connect(
+        lambda _: webbrowser.open(
+            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+        )
+    )
+    report_issue_action = QtWidgets.QAction("Report an Issue", parent)
+    report_issue_action.triggered.connect(
+        lambda _: webbrowser.open("https://github.com/kmnhan/erlabpy/issues")
+    )
+
+    return release_notes_action, open_docs_action, report_issue_action
 
 
 class KeyboardEventFilter(QtCore.QObject):

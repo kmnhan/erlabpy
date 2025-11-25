@@ -351,6 +351,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.check_update_action.triggered.connect(self.check_for_updates)
         self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
 
+        release_notes_action, open_docs_action, report_issue_action = (
+            erlab.interactive.utils.make_help_actions(self)
+        )
+
         self.open_log_folder_action = QtWidgets.QAction("Open Log Directory", self)
         self.open_log_folder_action.triggered.connect(self.open_log_directory)
 
@@ -406,6 +410,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         help_menu.addAction(self.about_action)
         help_menu.addAction(self.check_update_action)
+        help_menu.addAction(release_notes_action)
+        help_menu.addSeparator()
+        help_menu.addAction(open_docs_action)
+        help_menu.addAction(report_issue_action)
+        help_menu.addSeparator()
         help_menu.addAction(self.open_log_folder_action)
 
         # Initialize sidebar buttons linked to actions
@@ -533,22 +542,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def about(self) -> None:
         """Show the about dialog."""
+        import h5netcdf
+        import xarray_lmfit
+
         msg_box = self._make_icon_msgbox()
 
         version_info = {
-            "erlab": erlab.__version__,
             "numpy": np.__version__,
             "xarray": xr.__version__,
+            "h5netcdf": h5netcdf.__version__,
+            "xarray-lmfit": xarray_lmfit.__version__,
             "pyqtgraph": pyqtgraph.__version__,
             "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
             "Python": platform.python_version(),
             "OS": platform.platform(),
         }
         if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
-            version_info["Location"] = os.path.dirname(sys.executable)
-        msg_box.setInformativeText(
-            "\n".join(f"{k}: {v}" for k, v in version_info.items())
-        )
+            version_info["Location"] = os.path.dirname(sys.executable).removesuffix(
+                "/Contents/MacOS"
+            )
+        version_info_str = "\n".join(f"{k}: {v}" for k, v in version_info.items())
+        msg_box.setText(f"ImageTool Manager {erlab.__version__}")
+        msg_box.setInformativeText(version_info_str)
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Close)
         copy_btn = msg_box.addButton(
             "Copy", QtWidgets.QMessageBox.ButtonRole.AcceptRole
@@ -556,9 +571,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.exec()
 
         if msg_box.clickedButton() == copy_btn:
-            cb = QtWidgets.QApplication.clipboard()
-            if cb:
-                cb.setText(msg_box.informativeText())
+            erlab.interactive.utils.copy_to_clipboard(
+                f"erlab: {erlab.__version__}\n" + version_info_str
+            )
 
     def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
         """Notify the user that the application has been updated."""
