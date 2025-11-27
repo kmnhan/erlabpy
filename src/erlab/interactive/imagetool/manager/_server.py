@@ -189,9 +189,17 @@ def _send_multipart(
     obj: dict[str, typing.Any],
     *,
     use_cloudpickle: bool = False,
+    max_frame_size: int = 2**30,
     **kwargs,
 ) -> None:
-    """Send a Python object as a multipart ZeroMQ message using pickle protocol 5."""
+    """Send a Python object as a multipart ZeroMQ message using pickle protocol 5.
+
+    Parameters
+    ----------
+    max_frame_size
+        Upper bound for each multipart frame. Messages exceeding this are split into
+        smaller chunks. Defaults to 2**30 to stay below the 2 GiB ZMQ ceiling.
+    """
     pickler_cls = pickle.Pickler
     if use_cloudpickle:
         import cloudpickle
@@ -213,8 +221,42 @@ def _send_multipart(
 
     pickler_kind = b"cloudpickle" if use_cloudpickle else b"pickle"
     header = memoryview(bio.getbuffer())
-    frames = [pickler_kind, header] + [memoryview(b) for b in buffers]
-    sock.send_multipart(frames, copy=False, **kwargs)
+    frames: list[memoryview | bytes] = [pickler_kind, header] + [
+        memoryview(b) for b in buffers
+    ]
+
+    def _normalize_frame(frame: memoryview | bytes) -> memoryview | bytes:
+        if not isinstance(frame, memoryview):
+            return frame
+        if frame.ndim == 1 and frame.format == "B":
+            return frame
+        try:
+            return frame.cast("B")
+        except TypeError:
+            return memoryview(bytes(frame))
+
+    def _frame_size(frame: memoryview | bytes) -> int:
+        return frame.nbytes if isinstance(frame, memoryview) else len(frame)
+
+    normalized_frames = [_normalize_frame(frame) for frame in frames]
+
+    if all(_frame_size(frame) <= max_frame_size for frame in normalized_frames):
+        sock.send_multipart(normalized_frames, copy=False, **kwargs)
+        return
+
+    chunked_frames: list[memoryview | bytes] = [pickler_kind, memoryview(b"chunked-v1")]
+    for frame in normalized_frames[1:]:
+        frame_len = _frame_size(frame)
+        chunk_count = (frame_len + max_frame_size - 1) // max_frame_size
+        chunk_header = memoryview(f"{chunk_count}:{frame_len}".encode())
+        chunked_frames.append(chunk_header)
+        start = 0
+        for _ in range(chunk_count):
+            end = min(start + max_frame_size, frame_len)
+            chunked_frames.append(frame[start:end])
+            start = end
+
+    sock.send_multipart(chunked_frames, copy=False, **kwargs)
 
 
 def _recv_multipart(sock: zmq.Socket, **kwargs) -> dict[str, typing.Any]:
@@ -224,9 +266,52 @@ def _recv_multipart(sock: zmq.Socket, **kwargs) -> dict[str, typing.Any]:
     if parts[0].bytes in {b"pickle", b"cloudpickle"}:
         pickler_kind = parts[0].bytes
         parts = parts[1:]
+
+    if parts and parts[0].bytes == b"chunked-v1":
+        parts = parts[1:]
+        rebuilt_parts: list[memoryview] = []
+        idx = 0
+        while idx < len(parts):
+            try:
+                chunk_info = parts[idx].bytes
+                idx += 1
+                chunk_count_str, total_len_str = chunk_info.split(b":", maxsplit=1)
+                chunk_count = int(chunk_count_str)
+                total_len = int(total_len_str)
+            except Exception as exc:  # pragma: no cover - defensive parsing
+                raise RuntimeError(
+                    "Malformed chunk header in multipart message"
+                ) from exc
+
+            if idx + chunk_count > len(parts):  # pragma: no cover - defensive parsing
+                raise RuntimeError("Incomplete chunked multipart message")
+
+            if chunk_count == 1:
+                rebuilt_parts.append(parts[idx].buffer)
+                idx += 1
+                continue
+
+            combined = bytearray(total_len)
+            offset = 0
+            for _ in range(chunk_count):
+                chunk = parts[idx].buffer
+                combined[offset : offset + len(chunk)] = chunk
+                offset += len(chunk)
+                idx += 1
+            rebuilt_parts.append(memoryview(combined))
+        parts = rebuilt_parts
+
+    def _as_buffer(frame: typing.Any) -> memoryview:
+        if isinstance(frame, memoryview):
+            return frame
+        return memoryview(frame)
+
     try:
         payload_dict = pickle.loads(
-            parts[0].buffer, buffers=(p.buffer for p in parts[1:])
+            _as_buffer(parts[0]),
+            buffers=(
+                p.buffer if hasattr(p, "buffer") else _as_buffer(p) for p in parts[1:]
+            ),
         )
     except (AttributeError, ModuleNotFoundError) as e:
         logger.info("Unpickling failed with %s: %s", type(e).__name__, e)
