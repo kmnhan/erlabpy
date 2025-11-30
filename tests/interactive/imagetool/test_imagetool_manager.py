@@ -1210,6 +1210,71 @@ def test_warning_alert(
         qtbot.wait_until(lambda: len(manager._alert_dialogs) == 0)
 
 
+def test_manager_progressbar_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        message = "Load data:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
+        manager._show_alert("INFO", logging.INFO, message, "")
+
+        assert 12 in manager._progress_bars
+        pbar = manager._progress_bars[12]
+        assert pbar.labelText() == "Load data"
+        assert pbar.value() == 1
+        assert manager._alert_dialogs == []
+
+        manager._show_alert(
+            "INFO",
+            logging.INFO,
+            "Load data:  50%|50        | 6/12 [00:00<00:07,  1.54it/s]",
+            "",
+        )
+        assert manager._progress_bars[12] is pbar
+        assert pbar.value() == 6
+
+        pbar.close()
+
+
+def test_manager_alert_icons(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    recorded_icons: list[QtWidgets.QStyle.StandardPixmap | None] = []
+
+    class _RecordingMessageDialog(erlab.interactive.utils.MessageDialog):
+        def __init__(self, *args, icon_pixmap=None, **kwargs):
+            recorded_icons.append(icon_pixmap)
+            super().__init__(*args, icon_pixmap=icon_pixmap, **kwargs)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        manager._show_alert("INFO", logging.INFO, "info", "")
+        manager._show_alert("WARNING", logging.WARNING, "warning", "")
+        manager._show_alert("ERROR", logging.ERROR, "error", "")
+
+        assert recorded_icons == [
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation,
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+        ]
+
+        manager._clear_all_alerts()
+        QtWidgets.QApplication.processEvents()
+
+
 def test_uncaught_exception_alert(
     qtbot,
     manager_context: Callable[

@@ -231,6 +231,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
 
+        # Store progress bar widgets
+        self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
+
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
         self.settings_action.triggered.connect(self.open_settings)
@@ -591,20 +594,70 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Open the log directory in the system file explorer."""
         erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
 
+    def _check_message_is_progressbar(self, message: str) -> bool:
+        """Check if a log message contains a progress bar.
+
+        example: "Title:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
+        """
+        return "|" in message and "%" in message and message.endswith("]")
+
+    def _parse_progressbar(self, message: str):
+        """Parse and display a progress bar from a log message."""
+        title_part, _, info_part = message.split("|", 2)
+        title: str = title_part.split(":", 1)[0].strip()
+        current: int = int(info_part.split("/", 1)[0].strip())
+        total: int = int(info_part.split("/", 1)[1].split("[", 1)[0].strip())
+
+        if total in self._progress_bars:
+            pbar = self._progress_bars[total]
+        else:
+            pbar = QtWidgets.QProgressDialog(self)
+            pbar.setLabelText(title)
+            pbar.setMinimum(0)
+            pbar.setMaximum(total)
+            pbar.setAutoReset(True)
+            pbar.setAutoClose(True)
+            pbar.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+            pbar.setWindowFlags(
+                pbar.windowFlags()
+                | QtCore.Qt.WindowType.Tool
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+            pbar.findChild(QtWidgets.QProgressBar).setFormat("%p% (%v/%m)")
+            self._progress_bars[total] = pbar
+            pbar.show()
+            pbar.raise_()
+            pbar.activateWindow()
+
+        pbar.setValue(current)
+
     @QtCore.Slot(str, int, str, str)
     def _show_alert(
         self, levelname: str, levelno: int, message: str, formatted_traceback: str
     ) -> None:
         """Show a non-intrusive warning message in a floating window."""
+        if self._check_message_is_progressbar(message):
+            try:
+                self._parse_progressbar(message)
+            except Exception:  # pragma: no cover
+                logger.exception("Failed to parse progress bar message %r", message)
+            else:
+                return
+
+        if levelno >= logging.ERROR:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
+        elif levelno >= logging.WARNING:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+        else:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
+
         dialog = erlab.interactive.utils.MessageDialog(
             self,
             title=levelname,
             text=message,
             detailed_text=formatted_traceback,
             buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
-            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
-            if levelno <= logging.WARNING
-            else QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+            icon_pixmap=icon_pixmap,
         )
         dialog.setModal(False)
         dialog.setWindowFlags(
