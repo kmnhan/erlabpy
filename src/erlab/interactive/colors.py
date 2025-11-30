@@ -554,9 +554,12 @@ class BetterColorBarItem(pg.PlotItem):
                     img.sigLevelsChanged.connect(self.image_level_changed)
                 if hasattr(img, "sigImageChanged"):
                     img.sigImageChanged.connect(self.image_changed)
-                if img.getColorMap() is not None:
-                    self._primary_image = img_ref
-                    break
+
+        for img_ref in self._images:
+            img = img_ref()
+            if img is not None and img.getColorMap() is not None:
+                self._primary_image = img_ref
+                break
 
         if self._primary_image is None:
             raise ValueError("ImageItem with a colormap was not found")
@@ -643,7 +646,9 @@ class BetterColorBarItem(pg.PlotItem):
         mn, mx = self.limits
         self._colorbar.setRect(0.0, mn, 1.0, mx - mn)
         if self.levels is not None:
-            self._colorbar.setLevels((np.asarray(self.levels) - mn) / (mx - mn))
+            self._colorbar.setLevels(
+                (np.asarray(self.levels) - mn) / max(mx - mn, 1e-15)
+            )
         self._span.setBounds((mn, mx))
 
     # def cmap_changed(self):
