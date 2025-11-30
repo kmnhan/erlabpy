@@ -1565,7 +1565,9 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
         if cut_to_data:
             kargs["levels"] = self.data_cut_levels(data=image)
         super().setImage(image=image, autoLevels=autoLevels, **kargs)
-        self.data_array = None
+
+        if image is not None and self.data_array is not None:
+            self.data_array = None
 
     def setDataArray(
         self, data: xr.DataArray, update_labels: bool = True, **kargs
