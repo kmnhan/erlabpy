@@ -15,6 +15,7 @@ Various functions for data analysis.
    image
    interpolate
    kspace
+   mesh
    transform
 
 """
