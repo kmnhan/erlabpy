@@ -633,7 +633,7 @@ def generate_code(
     kwargs: dict[str, typing.Any],
     module: str | None = None,
     name: str | None = None,
-    assign: str | None = None,
+    assign: str | tuple[str, ...] | None = None,
     prefix: str | None = None,
     remove_defaults: bool = True,
     line_length: int = 88,
@@ -659,7 +659,8 @@ def generate_code(
     name
         Name of the function. If `None`, `func.__name__` is used.
     assign
-        If provided, the return value will be assigned to this variable.
+        If provided, the return value will be assigned to this variable. For multiple
+        assignment, pass a tuple.
     prefix
         Prefix to add to the generated string.
     remove_defaults
@@ -695,6 +696,8 @@ def generate_code(
     if name is None:
         name = func.__name__
     if assign is not None:
+        if isinstance(assign, tuple):
+            assign = ", ".join(assign)
         module = f"{assign} = {module}"
     if prefix is not None:
         module = f"{prefix}{module}"
