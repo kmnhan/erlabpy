@@ -331,5 +331,6 @@ module = [
     "erlab.interactive.derivative",
     "erlab.interactive.fermiedge",
     "erlab.interactive.kspace",
+    "erlab.interactive._mesh",
 ]
 disable_error_code = ["attr-defined"]

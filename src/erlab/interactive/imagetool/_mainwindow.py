@@ -560,6 +560,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "lockLevelsAct": self.slicer_area.lock_levels_act,
                     "sep3": {"separator": True},
                     "ktoolAct": self.slicer_area.ktool_act,
+                    "meshtoolAct": self.slicer_area.meshtool_act,
                     "sep4": {"separator": True},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
