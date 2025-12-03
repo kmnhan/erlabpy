@@ -13,6 +13,7 @@ __all__ = [
     "itool",
     "kspace",
     "ktool",
+    "meshtool",
     "options",
     "restool",
     "utils",
@@ -30,6 +31,7 @@ from . import (
     kspace,
     utils,
 )
+from ._mesh import meshtool
 from ._options import options
 from .derivative import dtool
 from .explorer import data_explorer

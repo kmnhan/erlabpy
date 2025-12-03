@@ -1238,6 +1238,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "Open data in the interactive momentum conversion tool"
         )
 
+        self.meshtool_act = QtWidgets.QAction("Open meshtool", self)
+        self.meshtool_act.triggered.connect(self.open_in_meshtool)
+        self.meshtool_act.setToolTip("Open data in the interactive mesh removal tool")
+
         self.associated_coords_act = QtWidgets.QAction(
             "Plot Associated Coordinates", self
         )
@@ -1305,6 +1309,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         actions is about to be shown.
         """
         self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
+        self.meshtool_act.setEnabled(
+            all(dim in self.data.dims for dim in {"alpha", "eV"})
+        )
 
     def connect_axes_signals(self) -> None:
         for ax in self.axes:
@@ -2219,6 +2226,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 gamma=gamma,
                 data_name=self.watched_data_name,
                 execute=False,
+            )
+        )
+
+    @QtCore.Slot()
+    def open_in_meshtool(self) -> None:
+        """Open the interactive mesh removal tool."""
+        self.add_tool_window(
+            erlab.interactive.meshtool(
+                self.data, data_name=self.watched_data_name, execute=False
             )
         )
 
@@ -3837,6 +3853,8 @@ class ItoolPlotItem(pg.PlotItem):
 
         last_dir = pg.PlotItem.lastFileDir
         if not last_dir:
+            last_dir = erlab.interactive.imagetool.manager._get_recent_directory()
+        if not last_dir:
             last_dir = os.getcwd()
 
         dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
@@ -3897,6 +3915,7 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
                 for a in ("left", "right", "top", "bottom")
             },
         )
+        kwargs["show_colormap_edit_menu"] = False
         super().__init__(**kwargs)
 
         copy_action = self.vb.menu.addAction("Copy color limits to clipboard")

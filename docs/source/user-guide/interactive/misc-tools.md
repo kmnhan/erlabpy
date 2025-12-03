@@ -179,7 +179,58 @@ eri.restool(data)
 
 It can also be opened from within ImageTool from the right-click context menu of any image plot that contains an energy axis.
 
-The `%restool` magic mirrors this behavior for notebook workflows.
+The `%restool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
+
+(guide-meshtool)=
+
+## meshtool
+
+Interactive tool for removing grid-like mesh artifacts from fixed mode ARPES data.
+
+The GUI can be invoked with {func}`erlab.interactive.meshtool`:
+
+```python
+import erlab.interactive as eri
+
+eri.meshtool(data)
+```
+
+It can also be opened from within ImageTool by clicking {guilabel}`View → Open in meshtool`.
+
+The `%meshtool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
+
+```{image} ../../images/meshtool_light.png
+:align: center
+:alt: meshtool
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/meshtool_dark.png
+:align: center
+:alt: meshtool
+:class: only-dark
+```
+
+:::
+
+This tool accepts any DataArray with `eV` and `alpha` dimensions. When additional dimensions are present, the data will be averaged over those dimensions to detect the mesh pattern. The original data will be corrected using the detected mesh parameters.
+
+- The first checkbox enables/disables undoing of software edge correction for straight analyzer slits that some analyzers apply automatically (currently only tested with Scienta DA30L).
+
+- In the next section, you must specify the location of the first order mesh peaks in the FFT of the data.
+
+  - Place the two yellow targets on the FFT plot over the two first order mesh peaks by dragging them with the mouse.
+  - Alternatively, an automatic search can be performed by clicking {guilabel}`Find` under {guilabel}`Auto locate peaks`.
+
+- In the final section, several parameters for mesh removal are provided. For more information on these parameters, see the documentation for {func}`erlab.analysis.mesh.remove_mesh`. You may have to experiment with these parameters to achieve optimal results for your dataset.
+
+- Once you are satisfied with the parameters, click {guilabel}`Go!` to perform mesh removal.
+
+:::{note}
+Mesh removal is currently experimental and may not work well for all datasets, and may introduce unwanted artifacts. Please use with caution and verify the results carefully.
+:::
 
 ## Data explorer
 

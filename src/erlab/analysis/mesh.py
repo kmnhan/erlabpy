@@ -103,8 +103,8 @@ def find_peaks(
     """Find peaks in the FFT log magnitude image.
 
     Selects the upper half of the FFT magnitude image, downsamples it by the specified
-    binning factor, and uses :func:`skimage.feature.peak_local_max` to find the peaks.
-    The detected peak coordinates are then mapped back to the original image resolution.
+    binning factor, and applies a local maximum filter to find the peaks. The detected
+    peak coordinates are then mapped back to the original image resolution.
 
     Parameters
     ----------
@@ -231,10 +231,10 @@ def higher_order_peaks(
             if {nx, ny} == {0, 1} or {nx, ny} == {0}:
                 continue
             p = c + nx * b1 + ny * b2
-            if not (0 <= p[0] < shape[1] and 0 <= p[1] < shape[0]):
+            if not (0 <= p[0] < shape[0] and 0 <= p[1] < shape[1]):
                 # Out of bounds
                 continue
-            if only_upper and p[0] > shape[1] // 2:
+            if only_upper and p[0] > shape[0] // 2:
                 # Skip lower half
                 continue
             pts.append(tuple(p))
@@ -274,29 +274,27 @@ def _extract_blob_mask(S, center, roi_hw=50, k=1.0):
     return mask
 
 
-def _fit_moments(mask):
+def _fit_moments(mask, center):
     """Second-moment ellipse fit from a binary mask (fftshifted coords)."""
     ys, xs = np.nonzero(mask)
     if len(xs) < 5:
         return (0, 0), 2.0, 2.0, 0.0  # fallback
-    y0 = ys.mean()
-    x0 = xs.mean()
-    y = ys - y0
-    x = xs - x0
-    Cyy = (y * y).mean()
-    Cxx = (x * x).mean()
-    Cxy = (x * y).mean()
-    # eigen-decomp for major/minor axes
+    y0, x0 = center
+    x, y = (xs - x0, ys - y0)
+    Cxx, Cxy, Cyy = (x * x).mean(), (x * y).mean(), (y * y).mean()
+
+    # Eigenvalue decomposition
     trace = Cxx + Cyy
     det = Cxx * Cyy - Cxy * Cxy
     tmp = np.sqrt(max(trace * trace / 4 - det, 0.0))
-    lam1 = trace / 2 + tmp
-    lam2 = trace / 2 - tmp
-    # principal axis angle
+
+    # Principal axis angle
     theta = 0.5 * np.arctan2(2 * Cxy, (Cxx - Cyy + 1e-12))
-    # convert variances to sigmas (soften a bit)
-    sig_major = np.sqrt(max(lam1, 1e-6)) * 1.25
-    sig_minor = np.sqrt(max(lam2, 1e-6)) * 1.25
+
+    # Convert variances to sigmas (soften)
+    sig_major = np.sqrt(max(trace / 2 + tmp, 1e-3)) * 1.25
+    sig_minor = np.sqrt(max(trace / 2 - tmp, 1e-3)) * 1.25
+
     return (y0, x0), sig_major, sig_minor, float(theta)
 
 
@@ -312,16 +310,6 @@ def _rotated_gaussian_notch(
     v = -st * dx + ct * dy  # along minor axis
     G = np.exp(-0.5 * ((u / sig_major) ** 2 + (v / sig_minor) ** 2))
     return 1.0 - strength * G
-
-
-def _data_driven_notch(mask, feather=3, strength=1.0, gamma=1.0):
-    dist = scipy.ndimage.distance_transform_edt(mask)
-    if dist.max() > 0:
-        dist = dist / dist.max()
-    # feather outward by blurring the binary mask a bit
-    blur = scipy.ndimage.gaussian_filter(mask.astype(np.float64), sigma=feather)
-    B = np.clip(0.5 * dist + 0.5 * blur, 0, 1) ** gamma
-    return 1.0 - strength * B
 
 
 @numba.njit(cache=True)
@@ -377,17 +365,17 @@ def auto_correct_curvature(
     # Fit polynomial to the profile
     step = float(np.abs(edge.eV[1] - edge.eV[0]))
     profile_fit = correction_profile_idx.polyfit("alpha", deg=poly_deg)
-    shift_idx_arr = xr.polyval(darr.alpha, profile_fit).polyfit_coefficients.round()
+    poly_values = xr.polyval(darr.alpha, profile_fit).polyfit_coefficients
+    shift_idx_arr = poly_values.round()
 
     max_idx = shift_idx_arr.argmax("alpha")
     cutoff_index = int(shift_idx_arr.max()) + 2
-    shift_idx_arr = shift_idx_arr[max_idx] - shift_idx_arr
 
     # Get shift in eV
-    shift_arr = shift_idx_arr * step
+    shift_arr = (shift_idx_arr[max_idx] - poly_values) * step
     shifted = erlab.analysis.transform.shift(
-        darr, shift_arr, "eV", shift_coords=False, order=0, cval=0.0
-    )
+        darr, shift_arr, "eV", shift_coords=False, order=3, cval=0.0, prefilter=True
+    ).clip(min=0)
 
     shifted_trimmed = shifted.copy()
     original_dim_order = list(darr.dims)
@@ -395,13 +383,17 @@ def auto_correct_curvature(
         "alpha", "eV"
     )
 
-    shifted = shifted.copy(
-        data=np.pad(
-            shifted_trimmed.values,
-            ((0, 0), (cutoff_index, 5)),
-            mode="edge",
+    shifted = (
+        shifted.transpose("alpha", "eV")
+        .copy(
+            data=np.pad(
+                shifted_trimmed.values,
+                ((0, 0), (cutoff_index, 5)),
+                mode="edge",
+            )
         )
-    ).transpose(*original_dim_order)
+        .transpose(*original_dim_order)
+    )
 
     return shift_arr, shifted
 
@@ -466,7 +458,7 @@ def remove_mesh(
     feather: float = 3.0,
     undo_edge_correction: bool = False,
     full_output: bool = False,
-    method: typing.Literal["gaussian", "constant", "edt"] = "constant",
+    method: typing.Literal["constant", "gaussian", "circular"] = "constant",
 ) -> (
     tuple[xr.DataArray, xr.DataArray]
     | tuple[
@@ -479,7 +471,7 @@ def remove_mesh(
         npt.NDArray,
     ]
 ):
-    """Remove mesh pattern from ARPES data using notch filtering in the FFT domain.
+    """Remove mesh patterns from ARPES data using notch filtering in the FFT domain.
 
     This function identifies mesh patterns in the FFT log-magnitude of the input data,
     creates notch filters to suppress these patterns, and applies the filters to remove
@@ -526,7 +518,7 @@ def remove_mesh(
 
         - "gaussian": Gaussian-shaped notch fitted to the blob shape.
 
-        - "edt": Data-driven notch using Euclidean distance transform.
+        - "circular": Circular notch with radius based on blob size.
 
         It is recommended to use "constant" for most cases. Needs more testing.
 
@@ -602,17 +594,19 @@ def remove_mesh(
         match method:
             case "constant":
                 mask = mask * (1 - peak_blob)
-            case "edt":
-                mask = mask * (
-                    _data_driven_notch(
-                        peak_blob, feather=feather, strength=1.0, gamma=1.0
-                    )
-                )
             case "gaussian":
-                gaussian_moments = _fit_moments(peak_blob)
+                gaussian_moments = _fit_moments(peak_blob, peak)
                 mask = mask * (
                     _rotated_gaussian_notch(log_magnitude.shape, *gaussian_moments)
                 )
+            case "circular":
+                blob_radius = np.sqrt(peak_blob.sum() / np.pi)
+                y0, x0 = peak
+                H, W = log_magnitude.shape
+                y, x = np.indices((H, W))
+                r = np.sqrt((x - x0) ** 2 + (y - y0) ** 2)
+                circular_notch = r >= blob_radius
+                mask = mask * circular_notch.astype(np.float64)
             case _:
                 raise ValueError(f"Unknown mesh removal method: {method}")
 
@@ -623,7 +617,9 @@ def remove_mesh(
             mask = 1 - scipy.ndimage.binary_opening(
                 1 - mask, structure=np.ones((3, 3), bool)
             )
-            mask = scipy.ndimage.gaussian_filter(mask.astype(np.float64), sigma=feather)
+
+    # Feather the mask
+    mask = scipy.ndimage.gaussian_filter(mask.astype(np.float64), sigma=feather)
 
     mesh_arr = 1 / np.exp(
         scipy.fft.ifft2(scipy.fft.ifftshift(log_fft * (1 - mask))).real
@@ -637,9 +633,10 @@ def remove_mesh(
             -typing.cast("xr.DataArray", shift_arr),
             "eV",
             shift_coords=False,
-            order=1,
+            order=3,
             cval=0.0,
-        )
+            prefilter=True,
+        ).clip(min=0)
 
     corrected = darr * mesh
     if full_output:
