@@ -1231,7 +1231,7 @@ def test_manager_progressbar_alert(
         manager._show_alert(
             "INFO",
             logging.INFO,
-            "Load data:  50%|50        | 6/12 [00:00<00:07,  1.54it/s]",
+            "Load data:  50%|##        | 6/12 [00:00<00:07,  1.54it/s]",
             "",
         )
         assert manager._progress_bars[12] is pbar
