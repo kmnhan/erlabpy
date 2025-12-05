@@ -91,7 +91,7 @@ def describe_state_diff(
         curr_flat["slice.dims"]
     ):
         # Transposed
-        changes.remove("slice.indices")
+        changes.discard("slice.indices")
 
     return (
         ", ".join(

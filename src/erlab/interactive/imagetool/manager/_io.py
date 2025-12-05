@@ -70,7 +70,9 @@ class _DataLoader(QtCore.QRunnable):
                 )
             )
         except Exception:
-            logger.exception("Error loading data from %s", self._file_path)
+            logger.debug(
+                "Error loading data from %s", self._file_path
+            )  # Use debug level to avoid duplicate popup
             self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)

@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 import pydantic
 import pyqtgraph as pg
+import scipy.fft
 import varname
 import xarray as xr
 from qtpy import QtCore, QtWidgets, uic
@@ -237,7 +238,9 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         label.anchor((0, 0), (0, 0), offset=(5, 0))
 
     def get_reduced(self) -> tuple[xr.DataArray, npt.NDArray]:
-        reduced = self.reduce_to_cut(self._data)
+        if not hasattr(self, "_data_averaged"):
+            self._data_averaged = self.reduce_to_cut(self._data).compute()
+        reduced = self._data_averaged
         if self.undo_edge_correction_check.isChecked():
             _, reduced = erlab.analysis.mesh.auto_correct_curvature(reduced)
 
@@ -245,7 +248,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         image = erlab.analysis.mesh.pad_and_taper(image, self.tool_status.n_pad)
 
         log_magnitude = np.log(
-            np.abs(np.fft.fftshift(np.fft.fft2(image))).clip(min=1e-15)
+            np.abs(scipy.fft.fftshift(scipy.fft.fft2(image))).clip(min=1e-15)
         )
         return reduced, log_magnitude
 
@@ -350,44 +353,45 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def update(self) -> None:
-        (
-            self._corrected,
-            self._mesh,
-            shift,
-            log_magnitude,
-            log_magnitude_corr,
-            _,
-            mask,
-        ) = erlab.analysis.mesh.remove_mesh(
-            self._data, **self.get_params_dict(), full_output=True
-        )  # type: ignore[misc]
-        self.main_fft_image.setImage(log_magnitude)
-        self.mask_fft_image.setImage(mask)
+        with erlab.interactive.utils.wait_dialog(self, "Removing mesh..."):
+            (
+                self._corrected,
+                self._mesh,
+                shift,
+                log_magnitude,
+                log_magnitude_corr,
+                _,
+                mask,
+            ) = erlab.analysis.mesh.remove_mesh(
+                self._data, **self.get_params_dict(), full_output=True
+            )  # type: ignore[misc]
+            self.main_fft_image.setImage(log_magnitude)
+            self.mask_fft_image.setImage(mask)
 
-        # Plot corrected and mesh
-        corrected = self.reduce_to_cut(self._corrected)
-        mesh = self._mesh.copy()
-        if self.undo_edge_correction_check.isChecked():
-            # Corrected and mesh plots should display shifted data to match FFT plots
-            corrected = erlab.analysis.transform.shift(
-                corrected,
-                typing.cast("xr.DataArray", shift),
-                "eV",
-                shift_coords=False,
-                order=1,
-                cval=0.0,
-            )
-            mesh = erlab.analysis.transform.shift(
-                mesh,
-                typing.cast("xr.DataArray", shift),
-                "eV",
-                shift_coords=False,
-                order=1,
-                cval=0.0,
-            )
-        self.corr_image.setDataArray(corrected.T, update_labels=False)
-        self.mesh_image.setDataArray(mesh.T, update_labels=False)
-        self.corr_fft_image.setImage(log_magnitude_corr)
+            # Plot corrected and mesh
+            corrected = self.reduce_to_cut(self._corrected).compute()
+            mesh = self._mesh.copy()
+            if self.undo_edge_correction_check.isChecked():
+                # Corrected and mesh plots should display shifted data to match FFTs
+                corrected = erlab.analysis.transform.shift(
+                    corrected,
+                    typing.cast("xr.DataArray", shift),
+                    "eV",
+                    shift_coords=False,
+                    order=1,
+                    cval=0.0,
+                )
+                mesh = erlab.analysis.transform.shift(
+                    mesh,
+                    typing.cast("xr.DataArray", shift),
+                    "eV",
+                    shift_coords=False,
+                    order=1,
+                    cval=0.0,
+                )
+            self.corr_image.setDataArray(corrected.T, update_labels=False)
+            self.mesh_image.setDataArray(mesh.T, update_labels=False)
+            self.corr_fft_image.setImage(log_magnitude_corr)
 
     @QtCore.Slot()
     def _corr_itool(self) -> None:
