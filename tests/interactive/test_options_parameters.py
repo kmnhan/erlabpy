@@ -1,6 +1,6 @@
 from qtpy import QtGui, QtWidgets
 
-from erlab.interactive._options.parameters import ColorListWidget
+from erlab.interactive._options.parameters import ColorListParameter, ColorListWidget
 
 
 def test_colorlistwidget_initialization(qtbot):
@@ -53,3 +53,9 @@ def test_colorlistwidget_sigColorChanged_emitted(qtbot):
     with qtbot.waitSignal(widget.sigColorChanged, timeout=1000) as blocker:
         widget.set_colors(["#123456"])
     assert blocker.args[0][0].name() == "#123456"
+
+
+def test_colorlistparameter_save_state() -> None:
+    param = ColorListParameter(name="colors", value=[QtGui.QColor("#010203")])
+    state = param.saveState()
+    assert state["value"][0][:3] == (1, 2, 3)
