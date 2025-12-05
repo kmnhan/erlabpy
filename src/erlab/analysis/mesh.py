@@ -368,11 +368,11 @@ def auto_correct_curvature(
     poly_values = xr.polyval(darr.alpha, profile_fit).polyfit_coefficients
     shift_idx_arr = poly_values.round()
 
-    max_idx = shift_idx_arr.argmax("alpha")
+    max_idx = int(shift_idx_arr.argmax("alpha"))
     cutoff_index = int(shift_idx_arr.max()) + 2
 
     # Get shift in eV
-    shift_arr = (shift_idx_arr[max_idx] - poly_values) * step
+    shift_arr = (shift_idx_arr.values[max_idx] - poly_values) * step
     shifted = erlab.analysis.transform.shift(
         darr, shift_arr, "eV", shift_coords=False, order=3, cval=0.0, prefilter=True
     ).clip(min=0)
@@ -553,7 +553,7 @@ def remove_mesh(
     other_dims = tuple(dim for dim in darr.dims if dim not in core_dims)
 
     # DataArray to extract the mesh from
-    original = darr.mean(other_dims).transpose(*core_dims)
+    original = darr.mean(other_dims).transpose(*core_dims).compute()
 
     shift_arr: xr.DataArray | None = None
 
