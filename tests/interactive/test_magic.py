@@ -23,31 +23,19 @@ def _isel_eV0(data):
 
 
 @pytest.mark.parametrize(
-    ("magic_name", "tool_attr", "line", "expected_name", "expected_fn"),
+    ("magic_name", "line", "expected_name", "expected_fn"),
     [
-        (
-            "ktool",
-            "ktool",
-            "--cmap plasma darr.sel(eV=1)",
-            "darr.sel(eV=1)",
-            _sel_eV1,
-        ),
-        ("dtool", "dtool", "darr", "darr", _identity),
-        (
-            "goldtool",
-            "goldtool",
-            "darr.isel(alpha=1)",
-            "darr.isel(alpha=1)",
-            _isel_alpha1,
-        ),
-        ("restool", "restool", "darr.isel(eV=0)", "darr.isel(eV=0)", _isel_eV0),
+        ("ktool", "--cmap plasma darr.sel(eV=1)", "darr.sel(eV=1)", _sel_eV1),
+        ("dtool", "darr", "darr", _identity),
+        ("goldtool", "darr.isel(alpha=1)", "darr.isel(alpha=1)", _isel_alpha1),
+        ("restool", "darr.isel(eV=0)", "darr.isel(eV=0)", _isel_eV0),
+        ("meshtool", "darr", "darr", _identity),
     ],
 )
 def test_interactive_tool_magics_forward_data(
     ip_shell: IPython.InteractiveShell,
     monkeypatch,
     magic_name,
-    tool_attr,
     line,
     expected_name,
     expected_fn,
@@ -63,18 +51,18 @@ def test_interactive_tool_magics_forward_data(
 
     def fake_tool(**kwargs):
         calls.append(kwargs)
-        return f"{tool_attr}-result"
+        return f"{magic_name}-result"
 
-    monkeypatch.setattr(interactive_mod, tool_attr, fake_tool, raising=False)
+    monkeypatch.setattr(interactive_mod, magic_name, fake_tool, raising=False)
 
     result = ip_shell.run_line_magic(magic_name, line)
 
-    assert result == f"{tool_attr}-result"
+    assert result == f"{magic_name}-result"
     call_kwargs = calls[-1]
     xr.testing.assert_identical(call_kwargs["data"], expected_fn(darr))
     assert call_kwargs["data_name"] == expected_name
 
-    if tool_attr == "ktool":
+    if magic_name == "ktool":
         assert call_kwargs["cmap"] == "plasma"
     else:
         assert "cmap" not in call_kwargs
