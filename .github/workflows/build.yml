@@ -2,6 +2,12 @@ name: Build ImageTool Manager
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_release:
+        description: "Upload artifacts to release"
+        required: false
+        default: false
+        type: boolean
   workflow_run:
     workflows: [Release]
     types:
@@ -88,6 +94,9 @@ jobs:
           path: ${{ steps.info.outputs.FILENAME }}.zip
 
       - name: Upload asset to release (overwrite if exists)
+        if: |
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_release == 'true') ||
+          (github.event_name == 'workflow_run' && github.ref == 'refs/heads/main' && github.repository == 'kmnhan/erlabpy')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "v${{ steps.info.outputs.VERSION }}" "${{ steps.info.outputs.FILENAME }}.zip" --clobber
