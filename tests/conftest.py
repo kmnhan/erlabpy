@@ -467,6 +467,7 @@ def cover_qthreadpool(monkeypatch, qtbot):
     from qtpy.QtCore import QThreadPool
 
     base_start = QThreadPool.start
+    QThreadPool.globalInstance().setMaxThreadCount(1)
 
     def start_with_trace(self, runnable, *args, **kwargs):
         if "coverage" in sys.modules:
@@ -480,6 +481,48 @@ def cover_qthreadpool(monkeypatch, qtbot):
         return base_start(self, runnable, *args, **kwargs)
 
     monkeypatch.setattr(QThreadPool, "start", start_with_trace)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def serialize_hdf5_loads():
+    """Prevent non-threadsafe HDF5 wheels from crashing during threaded loads."""
+    mp = pytest.MonkeyPatch()
+    from erlab.interactive.imagetool.manager import _io
+
+    lock = threading.Lock()
+    original_run = _io._DataLoader.run
+
+    def locked_run(self):
+        with lock:
+            return original_run(self)
+
+    mp.setattr(_io._DataLoader, "run", locked_run)
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def patch_pyqtgraph_boundingrect():
+    """Guard pyqtgraph InfiniteLine boundingRect from None viewboxes during teardown."""
+    mp = pytest.MonkeyPatch()
+    import pyqtgraph as pg
+    from qtpy import QtCore
+
+    original_br = pg.InfiniteLine.boundingRect
+
+    def safe_br(self):
+        vb = self.getViewBox()
+        if vb is None:
+            return QtCore.QRectF()
+        return original_br(self)
+
+    mp.setattr(pg.InfiniteLine, "boundingRect", safe_br, raising=False)
+    try:
+        yield
+    finally:
+        mp.undo()
 
 
 @pytest.fixture

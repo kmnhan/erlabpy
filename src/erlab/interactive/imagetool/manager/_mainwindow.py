@@ -1389,7 +1389,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._recent_directory = os.path.dirname(fname)
             try:
                 self._from_datatree(
-                    xr.open_datatree(fname, engine="h5netcdf", chunks="auto")
+                    xr.open_datatree(
+                        fname, engine="h5netcdf", chunks="auto", phony_dims="sort"
+                    )
                 )
             except Exception:
                 logger.exception("Error while loading workspace")
@@ -1778,7 +1780,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if try_workspace:
             for p in list(queued):
                 try:
-                    dt = xr.open_datatree(p, engine="h5netcdf", chunks="auto")
+                    dt = xr.open_datatree(
+                        p, engine="h5netcdf", chunks="auto", phony_dims="sort"
+                    )
                 except Exception:
                     logger.debug("Failed to open %s as datatree workspace", p)
                 else:
