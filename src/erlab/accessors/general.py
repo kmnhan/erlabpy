@@ -665,6 +665,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         for s in slice_list
                     ],
                     dim=dim,
+                    coords="minimal",
+                    compat="override",
+                    join="override",
+                    combine_attrs="override",
                 )
         else:
             out = self._qsel_scalar(
