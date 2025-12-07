@@ -441,10 +441,10 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
         self._layout = QtWidgets.QFormLayout()
         self.setLayout(self._layout)
 
-        self._checks: dict[str, QtWidgets.QCheckBox] = {}
+        self._checks: dict[Hashable, QtWidgets.QCheckBox] = {}
         for dim, coords in slicer_area.array_slicer.associated_coords.items():
             for k in coords:
-                self._checks[k] = QtWidgets.QCheckBox(k)
+                self._checks[k] = QtWidgets.QCheckBox(str(k))
                 self._checks[k].setChecked(
                     k in slicer_area.array_slicer.twin_coord_names
                 )
@@ -2304,8 +2304,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for i in range(8):
             visible: bool = i not in invalid
             self.get_axes_widget(i).setVisible(visible)
-            if visible:
-                self.get_axes(i).setup_twin()
 
         # reserve space, only hide plotItem
         self.get_axes(3).setVisible(self.data.ndim != 2)
@@ -2931,56 +2929,72 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def update_twin_plots(self) -> None:
-        if self.vb1 is not None:  # pragma: no branch
-            display_dim: str = str(self.slicer_area.data.dims[self.display_axis[0]])
-            associated: dict[str, tuple[npt.NDArray, npt.NDArray]] = (
-                self.array_slicer.associated_coords[display_dim]
+        if not self.isVisible():
+            return
+        if self.vb1 is None:
+            # Never initialized
+            if self.array_slicer.twin_coord_names:
+                # May or may not have twin coords to plot
+                self.setup_twin()
+            else:
+                # Defer setup until first use
+                return
+
+        display_dim: str = str(self.slicer_area.data.dims[self.display_axis[0]])
+        associated: dict[Hashable, tuple[npt.NDArray, npt.NDArray]] = (
+            self.array_slicer.associated_coords[display_dim]
+        )
+
+        n_plots: int = 0
+        labels: list[str] = []
+        if self.vb1 is None:  # pragma: no cover
+            raise RuntimeError(
+                "Twin axis ViewBox is not initialized; this should not happen. "
+                "Please report a bug."
             )
-            loc = self.twin_axes_location
 
-            n_plots: int = 0
-            labels: list[str] = []
-            for k, (x, y) in associated.items():
-                if k in self.array_slicer.twin_coord_names:
-                    if n_plots >= len(self.other_data_items):
-                        item = pg.PlotDataItem()
-                        self.other_data_items.append(item)
-                        self.vb1.addItem(item)
-                    else:
-                        item = self.other_data_items[n_plots]
+        for k in tuple(self.array_slicer.twin_coord_names):
+            if k in associated:
+                x, y = associated[k]
+                if n_plots >= len(self.other_data_items):
+                    item = pg.PlotDataItem()
+                    self.other_data_items.append(item)
+                    self.vb1.addItem(item)
+                else:
+                    item = self.other_data_items[n_plots]
 
-                    clr: QtGui.QColor = self.slicer_area.TWIN_COLORS[
-                        tuple(associated.keys()).index(k)
-                        % len(self.slicer_area.TWIN_COLORS)
-                    ]  # Color by index among coords associated with this dim
-                    labels.append(
-                        "<tr>"
-                        f"<td style='color:{clr.name()}; text-align: center;'>{k}</td>"
-                        "</tr>"
-                    )
+                clr: QtGui.QColor = self.slicer_area.TWIN_COLORS[
+                    tuple(associated.keys()).index(k)
+                    % len(self.slicer_area.TWIN_COLORS)
+                ]  # Color by index among coords associated with this dim
+                labels.append(
+                    "<tr>"
+                    f"<td style='color:{clr.name()}; text-align: center;'>{k}</td>"
+                    "</tr>"
+                )
 
-                    x, y = _pad_1d_plot(x, y)
-                    if self.slicer_data_items[-1].is_vertical:
-                        item.setData(y, x)
-                    else:
-                        item.setData(x, y)
-                    item.setPen(width=2, color=clr)
-                    n_plots += 1
+                x, y = _pad_1d_plot(x, y)
+                if self.slicer_data_items[-1].is_vertical:
+                    item.setData(y, x)
+                else:
+                    item.setData(x, y)
+                item.setPen(width=2, color=clr)
+                n_plots += 1
 
-            self._twin_visible = n_plots > 0
-            ax = self.getAxis(loc)
-            ax.show() if self._twin_visible else ax.hide()
-            ax.setStyle(showValues=self._twin_visible)
+        self._twin_visible = n_plots > 0
+        ax = self.getAxis(self.twin_axes_location)
+        ax.show() if self._twin_visible else ax.hide()
+        ax.setStyle(showValues=self._twin_visible)
 
-            if self._twin_visible:
-                label_html = "<table cellspacing='0'>" + "".join(labels) + "</table>"
-                ax.setLabel(text=label_html)
-                ax.resizeEvent()
+        if self._twin_visible:
+            label_html = "<table cellspacing='0'>" + "".join(labels) + "</table>"
+            ax.setLabel(text=label_html)
+            ax.resizeEvent()
 
-            while len(self.other_data_items) != n_plots:
-                item = self.other_data_items.pop()
-                self.vb1.removeItem(item)
-                item.forgetViewBox()
+        while len(self.other_data_items) != n_plots:
+            item = self.other_data_items.pop()
+            self.vb1.removeItem(item)
+            item.forgetViewBox()
 
     @QtCore.Slot()
     @record_history
