@@ -265,20 +265,31 @@ class ArraySlicer(QtCore.QObject):
     @functools.cached_property
     def associated_coords(
         self,
-    ) -> dict[str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]]:
+    ) -> dict[
+        Hashable,
+        dict[Hashable, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+    ]:
         out: dict[
-            str, dict[str, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
-        ] = {str(d): {} for d in self._obj.dims}
+            Hashable,
+            dict[Hashable, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+        ] = {d: {} for d in self._obj.dims}
         for k, coord in self._obj.coords.items():
+            # Select 1D coords that are not the dimension itself
             if (
                 isinstance(coord, xr.DataArray)
                 and len(coord.dims) == 1
-                and str(coord.dims[0]) != k
+                and coord.dims[0] != k
             ):
-                out[str(coord.dims[0])][str(k)] = (
-                    coord[coord.dims[0]].values.astype(np.float64),
-                    coord.values.astype(np.float64),
-                )
+                try:
+                    vals = coord.values.astype(np.float64)
+                except ValueError:
+                    # Cannot convert to float64, nontrivial to plot these coords so skip
+                    continue
+                else:
+                    out[coord.dims[0]][k] = (
+                        coord[coord.dims[0]].values.astype(np.float64),
+                        vals,
+                    )
         return out
 
     @functools.cached_property
