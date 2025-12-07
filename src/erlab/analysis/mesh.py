@@ -638,6 +638,7 @@ def remove_mesh(
             prefilter=True,
         ).clip(min=0)
 
+    mesh = mesh.astype(darr.dtype)
     corrected = darr * mesh
     if full_output:
         log_magnitude_corr = np.log(
